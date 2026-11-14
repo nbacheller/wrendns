@@ -297,7 +297,7 @@ dnssec_nta = true</code></pre>
     <li><b>Your servers win</b> over what the public DNS says about the domain, so the inside view is what devices get.</li>
     <li><b>Hand-offs are followed:</b> a sub-domain the servers delegate is asked of its own servers, with the same safety checks as <a href="#recursive">resolving without a forwarder</a>.</li>
     <li><b>Names outside the domain</b> that an answer points to (an alias to a cloud service, say) are looked up from the root servers. The root never sees the domain's own names.</li>
-    <li><b>Health checks</b> only ask whether those servers answer at all (any answer counts, even a refusal), so they aren't benched for refusing questions about other domains.</li>
+    <li><b>Health checks</b> only ask whether those servers answer at all (any answer counts, even a refusal, except a SERVFAIL), so they aren't benched for refusing questions about other domains.</li>
     <li>The servers are used as you list them (BIND's <code>static-stub</code>): list every one you want asked.</li>
   </ul>
 </section>

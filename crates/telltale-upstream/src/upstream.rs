@@ -726,25 +726,33 @@ impl Upstream {
         &self.conns
     }
 
-    /// REQ: UPS-006 — one active health check. A stub upstream (DNS-022) is up when one of
-    /// its servers answers at all (authoritative servers may refuse even the apex they
-    /// delegate from); any other asks [`Self::health_question`] as a client would.
+    /// REQ: UPS-006 — one active health check. A stub upstream (DNS-022) is up by
+    /// [`Self::stub_liveness`]; any other asks [`Self::health_question`] as a client would.
     pub async fn health_check(&self) {
-        if let Transport::Recursive(r) = &self.transport {
-            let t0 = Instant::now();
-            if let Some(up) = r.probe_stub().await {
-                let (outcome, latency) = if up {
-                    (Outcome::Ok, t0.elapsed())
-                } else {
-                    (Outcome::Timeout, t0.elapsed().max(self.attempt_timeout()))
-                };
-                self.health.record_outcome(outcome, latency, Instant::now());
-                return;
-            }
+        let t0 = Instant::now();
+        if let Some(up) = self.stub_liveness().await {
+            let (outcome, latency) = if up {
+                (Outcome::Ok, t0.elapsed())
+            } else {
+                (Outcome::Timeout, t0.elapsed().max(self.attempt_timeout()))
+            };
+            self.health.record_outcome(outcome, latency, Instant::now());
+            return;
         }
         let _ = self
             .exchange(&self.health_question(), self.attempt_timeout())
             .await;
+    }
+
+    /// REQ: UPS-006, DNS-022 — a stub upstream's liveness: one of its servers answers the zone's
+    /// SOA (a refusal counts, since authoritative servers may refuse even the apex they delegate
+    /// from; a SERVFAIL doesn't). The one rule behind the active check and the draft-upstream
+    /// check. `None` for an upstream that isn't a stub.
+    pub async fn stub_liveness(&self) -> Option<bool> {
+        match &self.transport {
+            Transport::Recursive(r) => r.probe_stub().await,
+            _ => None,
+        }
     }
 
     /// REQ: UPS-006, DNS-022 — what a health check asks: a stub zone's SOA (its servers are

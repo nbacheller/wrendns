@@ -296,8 +296,10 @@ impl Recursor {
     }
 
     /// REQ: UPS-006, DNS-022 — a stub zone's liveness, for health checks: whether one of its
-    /// servers answers the zone's SOA question at all. Any RCODE counts: an authoritative
-    /// server that refuses the apex (it serves only zones below it) is still up. `None`
+    /// servers answers the zone's SOA question. A refusal counts: an authoritative server that
+    /// serves only zones below the apex refuses it, and is up. SERVFAIL does not: a server
+    /// that says it is failing for its own zone (the zone didn't load, or it expired) isn't up
+    /// for it. This is the one rule behind both the active check and the draft check. `None`
     /// without a stub zone.
     pub async fn probe_stub(&self) -> Option<bool> {
         let s = self.settings.stubs.first()?;
@@ -308,7 +310,9 @@ impl Recursor {
             let r = net::ask(addr, &s.zone, rtype::SOA, false, false, timeout).await;
             self.caches
                 .record(ip, r.is_ok().then(|| t0.elapsed()), timeout);
-            if r.is_ok() {
+            if r.is_ok_and(|reply| {
+                msg::parse(&reply).is_some_and(|p| p.rcode != telltale_proto::rcode::SERVFAIL)
+            }) {
                 return Some(true);
             }
         }

@@ -60,7 +60,29 @@ pub(crate) async fn upstream(
             ..CheckResult::default()
         });
     };
-    // REQ: DNS-022 — the question health checks ask (a stub zone's SOA, else the root's NS).
+    // REQ: UPS-006, DNS-022 — a stub upstream is judged as the background check judges it: up
+    // when one of its servers answers the zone's SOA (a refusal counts, a SERVFAIL doesn't),
+    // not by the rcode of a resolved answer.
+    let started = Instant::now();
+    let stub = tokio::time::timeout(PROBE_TIMEOUT, up.stub_liveness())
+        .await
+        .unwrap_or(Some(false));
+    if let Some(alive) = stub {
+        return Ok(CheckResult {
+            ok: alive,
+            error: (!alive).then(|| {
+                "no server of the stub zone answered (a SERVFAIL doesn't count)".to_owned()
+            }),
+            detail: if alive {
+                "a server of the stub zone answered".to_owned()
+            } else {
+                "no answer".to_owned()
+            },
+            elapsed_ms: ms(started.elapsed()),
+            ..CheckResult::default()
+        });
+    }
+    // Any other upstream: the question health checks ask (the root's NS records).
     let probe = up.health_question();
     let started = Instant::now();
     let r = up.exchange(&probe, PROBE_TIMEOUT).await;

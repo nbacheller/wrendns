@@ -1517,8 +1517,9 @@ dnssec_nta = true             # internal zones are usually unsigned
   never sees the stub zone's own names.
 - **Health checks** ask the stub's servers for the zone's SOA rather than the root's NS
   (which authoritative servers refuse, so a plain forward to them gets benched), and any
-  answer counts as up, even REFUSED from servers that host only zones below it. A name
-  under a delegated server that fails is a failed lookup, like with `recursive://`.
+  answer except SERVFAIL counts as up, even REFUSED from servers that host only zones below
+  it (a server that says it is failing for its own zone isn't up). A name under a delegated
+  server that fails is a failed lookup, like with `recursive://`.
 - From the UI: **Names on my network → Send a domain to another server**, and tick **These
   servers only know this domain**. Through the API:
   `PUT /api/v1/forwards/corp.example` with `{"servers": ["10.0.0.53"], "stub": true}`

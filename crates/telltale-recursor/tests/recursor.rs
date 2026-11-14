@@ -28,6 +28,8 @@ struct Zone {
     lame: bool,
     /// Answers REFUSED to everything (an authoritative server asked outside its zones).
     refuse: bool,
+    /// Answers SERVFAIL to everything (a server whose zone failed to load, or expired).
+    servfail: bool,
     /// Before every answer, sends a forged one first: the question in lowercase and the
     /// address 6.6.6.6 (an off-path spoofer who guessed the ID and port, but not the case).
     spoof: bool,
@@ -76,7 +78,10 @@ fn respond(z: &Zone, query: &[u8]) -> Vec<u8> {
     let (mut na, mut nn, mut nd) = (0u16, 0u16, 0u16);
     let mut aa = true;
     let mut rc = rcode::NOERROR;
-    if z.refuse {
+    if z.servfail {
+        aa = false;
+        rc = rcode::SERVFAIL;
+    } else if z.refuse {
         aa = false;
         rc = rcode::REFUSED;
     } else if z.lame {
@@ -729,4 +734,37 @@ async fn dns_022_stub_probe_counts_any_answer() {
     assert_eq!(Recursor::new(s.clone()).probe_stub().await, Some(false));
     s.stubs.clear();
     assert_eq!(Recursor::new(s).probe_stub().await, None);
+}
+
+/// REQ: UPS-006, DNS-022 — a stub server that answers SERVFAIL for its own zone is failing (the
+/// zone didn't load, or it expired), so unlike a refusal it doesn't make the stub up; a second
+/// server that does answer does.
+#[tokio::test]
+async fn dns_022_stub_probe_servfail_is_down() {
+    let (mut s, _) = tree(|z| {
+        z.push((
+            11,
+            Zone {
+                origin: "corp.example.com",
+                servfail: true,
+                ..Zone::default()
+            },
+        ));
+        z.push((
+            13,
+            Zone {
+                origin: "corp.example.com",
+                refuse: true,
+                ..Zone::default()
+            },
+        ));
+    })
+    .await;
+    s.stubs = vec![telltale_recursor::Stub {
+        zone: name("corp.example.com"),
+        servers: vec![IpAddr::from([127, 0, 0, 11])],
+    }];
+    assert_eq!(Recursor::new(s.clone()).probe_stub().await, Some(false));
+    s.stubs[0].servers = vec![IpAddr::from([127, 0, 0, 11]), IpAddr::from([127, 0, 0, 13])];
+    assert_eq!(Recursor::new(s).probe_stub().await, Some(true));
 }
