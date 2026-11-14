@@ -203,11 +203,7 @@ fn sqlite_tables(path: &Path) -> Result<BTreeMap<String, Vec<Row>>, String> {
         let mut stmt = db
             .prepare(&format!("SELECT * FROM \"{t}\""))
             .map_err(|e| format!("{shown}: table `{t}`: {e} (is this Pi-hole's gravity.db?)"))?;
-        let cols: Vec<String> = stmt
-            .column_names()
-            .iter()
-            .map(|c| (*c).to_owned())
-            .collect();
+        let cols: Vec<String> = stmt.column_names().map(str::to_owned).collect();
         let mut rows = stmt.query([]).map_err(|e| format!("{shown}: {e}"))?;
         let mut list = Vec::new();
         while let Some(r) = rows.next().map_err(|e| format!("{shown}: {e}"))? {
