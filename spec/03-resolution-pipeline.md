@@ -62,6 +62,7 @@ Each shard follows a 1-in-16 sample of keys (fingerprint bits 32–35 clear) aft
 - Iterative from root hints, with QNAME minimization (relaxed mode), 0x20 case randomization (configurable), NS selection by smoothed RTT, glue validation within bailiwick, a CNAME/DNAME chase limit of 16, and a max 32 referrals per query.
 - Aggressive NSEC caching (RFC 8198) when DNSSEC is validated (T9.16, ADR-092: NSEC; NSEC3 not yet).
 - Exposed as an upstream of type `recursive`, so the default homelab setup ("Pi-hole + unbound") becomes one upstream group with a single entry.
+- **Stub zones** (DNS-022, ADR-153): `[upstream.recursive] stub_zone` + `stub_servers` make names at or under the zone start at those servers (RD=0) instead of the root; their referrals are followed with the usual bailiwick and glue rules. A cached cut at or above the stub zone (the public view) never wins over it; cuts below it do. Stub names don't trigger root priming. Names an answer leads outside the zone (CNAME targets, out-of-zone server names) start from the root.
 
 ## 7. Response synthesis rules
 - Blocked A/AAAA in `null` mode: A `0.0.0.0` / AAAA `::`, TTL `block_ttl` (default 10 s; short so unblocking is fast).

@@ -298,7 +298,7 @@
       "summary": "Questions for one domain go to a specific server instead of the public ones, such as your work network's or your router's.",
       "when": "Names like nas.home or corp.example only exist on another server.",
       "example": "Send everything under corp.example to 10.0.0.53 so work names resolve at home over the VPN.",
-      "caution": "That server sees those questions; private reverse lookups never leave your network by default.",
+      "caution": "That server sees those questions; private reverse lookups never leave your network by default. If that server only knows this domain (it refuses other questions and hands sub-domains to other servers), tick the stub zone box.",
       "diagram": "route",
       "docs": "routing-conditional-forwarding"
     },

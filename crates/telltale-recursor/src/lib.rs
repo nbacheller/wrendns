@@ -19,6 +19,9 @@
 //!   server names, and 96 queries per client question.
 //! - **Caches:** zone cuts with their server addresses and server-name addresses (bounded,
 //!   TTL-capped); final answers go to the server's answer cache like any upstream's.
+//! - **Stub zones** (DNS-022): names at or under a stub zone start at its configured servers
+//!   instead of the root (BIND's `static-stub`, Unbound's `stub-zone`), so an internal zone's
+//!   own delegations are followed; names outside it are resolved from the root as usual.
 //!
 //! DNSSEC: with DO set, signatures, DS sets, and NSEC/NSEC3 proofs are passed through, so the
 //! validator above (DNS-011) checks the chain from the root's trust anchor.
@@ -103,6 +106,17 @@ pub struct Settings {
     pub prime: bool,
     /// Ask the next server too when one is slower than usual (on by default).
     pub hedge: bool,
+    /// REQ: DNS-022 — zones that start at their own servers instead of the root.
+    pub stubs: Vec<Stub>,
+}
+
+/// REQ: DNS-022 — a stub zone: questions at or under `zone` are asked of `servers`
+/// (iteratively, RD=0), and the referrals they give are followed. The servers are used as
+/// configured, whatever the public delegation says (split horizon).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stub {
+    pub zone: NameBuf,
+    pub servers: Vec<IpAddr>,
 }
 
 impl Default for Settings {
@@ -116,6 +130,7 @@ impl Default for Settings {
             server_timeout: Duration::from_millis(1200),
             prime: true,
             hedge: true,
+            stubs: Vec::new(),
         }
     }
 }
@@ -274,6 +289,42 @@ impl Recursor {
         self.caches.zones()
     }
 
+    /// REQ: DNS-022 — the first stub zone, if any (health checks ask for its SOA rather than
+    /// the root's NS, which authoritative-only servers refuse).
+    pub fn stub_zone(&self) -> Option<&NameBuf> {
+        self.settings.stubs.first().map(|s| &s.zone)
+    }
+
+    /// REQ: UPS-006, DNS-022 — a stub zone's liveness, for health checks: whether one of its
+    /// servers answers the zone's SOA question at all. Any RCODE counts: an authoritative
+    /// server that refuses the apex (it serves only zones below it) is still up. `None`
+    /// without a stub zone.
+    pub async fn probe_stub(&self) -> Option<bool> {
+        let s = self.settings.stubs.first()?;
+        for (ip, _, _) in self.caches.order(&s.servers).into_iter().take(MAX_TRIES) {
+            let addr = SocketAddr::new(ip, self.settings.port);
+            let t0 = Instant::now();
+            let timeout = self.settings.server_timeout;
+            let r = net::ask(addr, &s.zone, rtype::SOA, false, false, timeout).await;
+            self.caches
+                .record(ip, r.is_ok().then(|| t0.elapsed()), timeout);
+            if r.is_ok() {
+                return Some(true);
+            }
+        }
+        Some(false)
+    }
+
+    /// REQ: DNS-022 — the deepest stub zone at or above `name` (strictly above with
+    /// `parent_only`: a zone's DS lives in its parent).
+    fn stub_for(&self, name: &NameBuf, parent_only: bool) -> Option<&Stub> {
+        self.settings
+            .stubs
+            .iter()
+            .filter(|s| name.is_subdomain_of(&s.zone) && !(parent_only && *name == s.zone))
+            .max_by_key(|s| s.zone.label_count())
+    }
+
     /// Answers the client `query` (wire format: one question, maybe OPT): the full response,
     /// with the query's ID and question, RA set.
     pub async fn answer(&self, query: &[u8]) -> Result<Vec<u8>, Error> {
@@ -288,7 +339,11 @@ impl Recursor {
         let opt_at = end + 4;
         let dnssec_ok = header.arcount > 0 && query.get(opt_at + 7).is_some_and(|b| b & 0x80 != 0);
         let mut work = Work::default();
-        self.prime(&mut work).await;
+        // REQ: DNS-022 — a stub zone's names never need the root (a network with no route to
+        // it doesn't wait on priming).
+        if self.stub_for(&name, false).is_none() {
+            self.prime(&mut work).await;
+        }
         let r = self.lookup(name, qtype, dnssec_ok, &mut work, 0).await?;
         msg::encode(query, r.rcode, &r.answer, &r.authority).ok_or(Error::Question)
     }
@@ -301,7 +356,9 @@ impl Recursor {
         dnssec_ok: bool,
     ) -> Result<Resolved, Error> {
         let mut work = Work::default();
-        self.prime(&mut work).await;
+        if self.stub_for(&name, false).is_none() {
+            self.prime(&mut work).await;
+        }
         self.lookup(name, qtype, dnssec_ok, &mut work, 0).await
     }
 
@@ -439,7 +496,8 @@ impl Recursor {
     }
 
     /// Where to start for `name`: the deepest cached zone cut with addresses (resolving its
-    /// server names when it has none), else the root.
+    /// server names when it has none), else the stub zone containing it (DNS-022), else the
+    /// root.
     async fn start(
         &self,
         name: &NameBuf,
@@ -447,10 +505,18 @@ impl Recursor {
         work: &mut Work,
         depth: u8,
     ) -> Result<(NameBuf, Vec<IpAddr>), Error> {
+        let stub = self.stub_for(name, parent_only);
         let mut at = *name;
         let mut skip = parent_only;
         loop {
             match self.caches.closest(&at, skip) {
+                // REQ: DNS-022 — a cut at or above the stub zone is the outside view of it:
+                // only the stub's servers (and the cuts they referred to) count.
+                Some((zone, _))
+                    if stub.is_some_and(|s| zone.label_count() <= s.zone.label_count()) =>
+                {
+                    break;
+                }
                 Some((zone, d)) if !d.addrs.is_empty() => return Ok((zone, self.usable(&d.addrs))),
                 Some((zone, d)) => {
                     let addrs = self.delegation(&zone, &d.ns, &[], work, depth).await;
@@ -467,6 +533,10 @@ impl Recursor {
                 }
                 None => break,
             }
+        }
+        // The configured addresses as given (IPv6 too): the operator chose them.
+        if let Some(s) = stub {
+            return Ok((s.zone, s.servers.clone()));
         }
         Ok((NameBuf::default(), self.settings.roots.clone()))
     }

@@ -726,6 +726,48 @@ impl Upstream {
         &self.conns
     }
 
+    /// REQ: UPS-006 — one active health check. A stub upstream (DNS-022) is up when one of
+    /// its servers answers at all (authoritative servers may refuse even the apex they
+    /// delegate from); any other asks [`Self::health_question`] as a client would.
+    pub async fn health_check(&self) {
+        if let Transport::Recursive(r) = &self.transport {
+            let t0 = Instant::now();
+            if let Some(up) = r.probe_stub().await {
+                let (outcome, latency) = if up {
+                    (Outcome::Ok, t0.elapsed())
+                } else {
+                    (Outcome::Timeout, t0.elapsed().max(self.attempt_timeout()))
+                };
+                self.health.record_outcome(outcome, latency, Instant::now());
+                return;
+            }
+        }
+        let _ = self
+            .exchange(&self.health_question(), self.attempt_timeout())
+            .await;
+    }
+
+    /// REQ: UPS-006, DNS-022 — what a health check asks: a stub zone's SOA (its servers are
+    /// authoritative only and refuse anything else), else the root's NS records.
+    pub fn health_question(&self) -> Question {
+        let stub = match &self.transport {
+            Transport::Recursive(r) => r.stub_zone().copied(),
+            _ => None,
+        };
+        Question {
+            name: stub.unwrap_or_default(),
+            qtype: if stub.is_some() {
+                telltale_proto::rtype::SOA
+            } else {
+                telltale_proto::rtype::NS
+            },
+            qclass: telltale_proto::class::IN,
+            dnssec_ok: false,
+            checking_disabled: false,
+            client_subnet: 0,
+        }
+    }
+
     /// Per-attempt timeout: min(configured, 3 × EWMA + 50 ms, 1 s) per `spec/04` §4.
     pub fn attempt_timeout(&self) -> Duration {
         // REQ: DNS-012 — a cold recursion walks several servers: give it the time it needs

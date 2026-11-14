@@ -314,6 +314,20 @@ fn build_upstreams<'c>(
                 Some(Arc::clone(bs))
             }
         };
+        // REQ: DNS-022 — a `recursive://` upstream's stub zone.
+        let stubs = match &u.recursive.stub_zone {
+            None => Vec::new(),
+            Some(z) => match NameBuf::from_presentation(z) {
+                Ok(zone) => vec![telltale_recursor::Stub {
+                    zone,
+                    servers: u.recursive.stub_servers.clone(),
+                }],
+                Err(e) => {
+                    errors.push(format!("upstream `{}`: stub zone `{z}`: {e}", u.name));
+                    continue;
+                }
+            },
+        };
         let (stamp_tls_name, dnscrypt) = stamp_options(stamp.as_ref());
         // REQ: UPS-003 (T9.17) — a DoH/DoT/DoQ stamp's certificate hashes are enforced.
         up_tls.tbs_hashes = stamp_hashes(stamp.as_ref());
@@ -350,6 +364,7 @@ fn build_upstreams<'c>(
             recursive: telltale_recursor::Settings {
                 qname_minimization: u.recursive.qname_minimization,
                 case_randomization: u.recursive.case_randomization,
+                stubs,
                 ..telltale_recursor::Settings::default()
             }
             .with_ipv6(u.recursive.ipv6),

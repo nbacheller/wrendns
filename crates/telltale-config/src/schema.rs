@@ -570,6 +570,15 @@ pub struct RecursiveConfig {
     pub case_randomization: bool,
     /// Ask servers over IPv6 too (needs an IPv6 route to the Internet).
     pub ipv6: bool,
+    /// REQ: DNS-022 — a stub zone (BIND's `static-stub`): names at or under it are asked of
+    /// `stub_servers` instead of the root servers, and the delegations those servers give are
+    /// followed. Send the zone here with a `[[route]]`. Its health check asks for the zone's
+    /// SOA, which authoritative-only servers answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stub_zone: Option<SafeString>,
+    /// REQ: DNS-022 — the stub zone's servers (IP addresses, port 53), asked iteratively.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stub_servers: Vec<IpAddr>,
 }
 
 impl Default for RecursiveConfig {
@@ -578,6 +587,8 @@ impl Default for RecursiveConfig {
             qname_minimization: true,
             case_randomization: false,
             ipv6: false,
+            stub_zone: None,
+            stub_servers: Vec::new(),
         }
     }
 }

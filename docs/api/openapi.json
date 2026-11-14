@@ -12390,6 +12390,7 @@
         "required": [
           "domain",
           "servers",
+          "stub",
           "source"
         ],
         "properties": {
@@ -12402,11 +12403,15 @@
             "items": {
               "type": "string"
             },
-            "description": "The servers (upstream URLs), in order."
+            "description": "The servers (upstream URLs), in order; a stub zone's are IP addresses."
           },
           "source": {
             "type": "string",
             "description": "`file` (read-only here) or `api`."
+          },
+          "stub": {
+            "type": "boolean",
+            "description": "REQ: DNS-022 — a stub zone: the servers are asked iteratively and their delegations\nfollowed."
           }
         }
       },
@@ -12422,10 +12427,14 @@
             "items": {
               "type": "string"
             },
-            "description": "Addresses (plain DNS) or `udp://`, `tcp://`, `tls://`, `https://` URLs, tried in order.",
+            "description": "Addresses (plain DNS) or `udp://`, `tcp://`, `tls://`, `https://` URLs, tried in order.\nFor a stub zone: the zone's own servers, as IP addresses (port 53).",
             "example": [
               "10.0.0.53"
             ]
+          },
+          "stub": {
+            "type": "boolean",
+            "description": "REQ: DNS-022 — a stub zone (BIND's `static-stub`): the servers are authoritative only,\nso they're asked iteratively and the delegations they give to other servers are\nfollowed, instead of forwarding with recursion desired. Default `false`."
           }
         },
         "additionalProperties": false
@@ -13950,6 +13959,7 @@
               "required": [
                 "domain",
                 "servers",
+                "stub",
                 "source"
               ],
               "properties": {
@@ -13962,11 +13972,15 @@
                   "items": {
                     "type": "string"
                   },
-                  "description": "The servers (upstream URLs), in order."
+                  "description": "The servers (upstream URLs), in order; a stub zone's are IP addresses."
                 },
                 "source": {
                   "type": "string",
                   "description": "`file` (read-only here) or `api`."
+                },
+                "stub": {
+                  "type": "boolean",
+                  "description": "REQ: DNS-022 — a stub zone: the servers are asked iteratively and their delegations\nfollowed."
                 }
               }
             }

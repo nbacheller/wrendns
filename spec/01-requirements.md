@@ -28,6 +28,7 @@ Detailed behavior lives in the referenced spec section. If this table and a sect
 | DNS-019 | P0 | Refuse ANY queries (RFC 8482 minimal response), refuse zone transfers (AXFR, IXFR) without forwarding, and drop malformed packets cheaply. |
 | DNS-020 | P1 | PROXY protocol v2 on TCP/DoT/DoH listeners, to preserve client IPs behind load balancers. |
 | DNS-021 | P2 | NSID (RFC 5001), off by default: a query that asks for it gets the answering node's name, so a client can tell which node or pod answered behind a shared address (owner request 2026-10-09, from Technitium #1932). |
+| DNS-022 | P1 | **Stub zones** (BIND `static-stub`, Unbound `stub-zone`): a domain whose own servers are authoritative only is resolved iteratively starting at those servers instead of the root, following the delegations they give, with a health check they answer (the zone's SOA); set from the config, the API (`stub: true` on a forward), MCP, and the UI (community request 2026-11-14). |
 
 ## Upstreams (UPS) — see `04`
 | ID | Pri | Requirement |

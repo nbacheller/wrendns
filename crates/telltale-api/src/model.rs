@@ -1212,8 +1212,14 @@ pub struct LocalName {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ForwardInput {
     /// Addresses (plain DNS) or `udp://`, `tcp://`, `tls://`, `https://` URLs, tried in order.
+    /// For a stub zone: the zone's own servers, as IP addresses (port 53).
     #[schema(example = json!(["10.0.0.53"]))]
     pub servers: Vec<String>,
+    /// REQ: DNS-022 — a stub zone (BIND's `static-stub`): the servers are authoritative only,
+    /// so they're asked iteratively and the delegations they give to other servers are
+    /// followed, instead of forwarding with recursion desired. Default `false`.
+    #[serde(default)]
+    pub stub: bool,
 }
 
 /// REQ: DNS-006 (T6.13) — one node's cache counters.
@@ -1582,8 +1588,11 @@ pub struct RuleInfo {
 pub struct ForwardInfo {
     #[schema(example = "corp.example")]
     pub domain: String,
-    /// The servers (upstream URLs), in order.
+    /// The servers (upstream URLs), in order; a stub zone's are IP addresses.
     pub servers: Vec<String>,
+    /// REQ: DNS-022 — a stub zone: the servers are asked iteratively and their delegations
+    /// followed.
+    pub stub: bool,
     /// `file` (read-only here) or `api`.
     pub source: String,
 }

@@ -30,7 +30,7 @@ fn ms(d: Duration) -> u64 {
 }
 
 /// REQ: API-002 (T9.12) — builds the upstream as the router would (bootstrap, proxy, TLS,
-/// stamps), and asks it `. NS`.
+/// stamps), and asks it what health checks ask (`. NS`, or a stub zone's SOA).
 pub(crate) async fn upstream(
     cfg: &Config,
     body: serde_json::Value,
@@ -60,14 +60,8 @@ pub(crate) async fn upstream(
             ..CheckResult::default()
         });
     };
-    let probe = telltale_upstream::Question {
-        name: telltale_proto::NameBuf::default(),
-        qtype: telltale_proto::rtype::NS,
-        qclass: telltale_proto::class::IN,
-        dnssec_ok: false,
-        checking_disabled: false,
-        client_subnet: 0,
-    };
+    // REQ: DNS-022 — the question health checks ask (a stub zone's SOA, else the root's NS).
+    let probe = up.health_question();
     let started = Instant::now();
     let r = up.exchange(&probe, PROBE_TIMEOUT).await;
     let elapsed_ms = ms(started.elapsed());

@@ -3697,6 +3697,15 @@ fn record_values(
         .collect())
 }
 
+/// A forward as a change shows it: the domain, its servers, and (REQ: DNS-022) `stub` when set.
+fn forward_json(name: &str, f: &crate::managed::Forward) -> serde_json::Value {
+    let mut v = serde_json::json!({ "domain": name, "servers": f.servers });
+    if f.stub {
+        v["stub"] = true.into();
+    }
+    v
+}
+
 /// Parses a forward body into stored form.
 fn forward_of(v: &serde_json::Value, name: &str) -> Result<crate::managed::Forward, Problem> {
     let input: telltale_api::model::ForwardInput =
@@ -3713,7 +3722,22 @@ fn forward_of(v: &serde_json::Value, name: &str) -> Result<crate::managed::Forwa
             format!("`{name}`: give at least one server"),
         ));
     }
-    Ok(crate::managed::Forward { servers })
+    // REQ: DNS-022 — a stub zone's servers are asked directly, by address.
+    if input.stub
+        && let Some(bad) = servers
+            .iter()
+            .find(|s| crate::managed::stub_addr(s).is_none())
+    {
+        return Err(Problem::new(
+            Code::InvalidConfig,
+            format!("`{name}`: `{bad}` isn't an IP address"),
+        )
+        .hint("A stub zone's servers are the zone's own, by IP address (port 53), e.g. [\"10.0.0.53\"]."));
+    }
+    Ok(crate::managed::Forward {
+        servers,
+        stub: input.stub,
+    })
 }
 
 /// AGT-002 impact of a local-name or forward change: recent queries for the name (or names
@@ -3886,8 +3910,8 @@ fn plan_managed(
                 }
             };
             (
-                before.map(|b| serde_json::json!({ "domain": name, "servers": b.servers })),
-                after.map(|a| serde_json::json!({ "domain": name, "servers": a.servers })),
+                before.map(|b| forward_json(&name, &b)),
+                after.map(|a| forward_json(&name, &a)),
             )
         }
         ManagedKind::Rule => {
@@ -3924,7 +3948,12 @@ fn plan_managed(
         (_, None) => None,
         (ManagedKind::Record, Some(a)) => Some(a["records"].to_string()),
         (ManagedKind::Forward, Some(a)) => {
-            Some(serde_json::json!({ "servers": a["servers"] }).to_string())
+            let mut b = serde_json::json!({ "servers": a["servers"] });
+            // REQ: DNS-022 — the stored entry keeps its stub flag.
+            if a["stub"] == true {
+                b["stub"] = true.into();
+            }
+            Some(b.to_string())
         }
         (_, Some(a)) => Some(a.to_string()),
     };
@@ -4631,27 +4660,38 @@ impl ApiBackend {
     pub(crate) fn list_forwards(&self) -> Vec<ForwardInfo> {
         let api = self.managed_names_of(crate::managed::FORWARD);
         let cfg = self.src.config.load();
-        let url_of = |name: &str| {
+        // A member's servers: its URL, or (REQ: DNS-022) a stub zone's addresses.
+        let servers_of = |name: &str| {
             cfg.upstream
                 .iter()
                 .find(|u| u.name.as_str() == name)
-                .map(|u| u.url.to_string())
+                .map(|u| {
+                    if u.recursive.stub_zone.is_some() {
+                        let a = &u.recursive.stub_servers;
+                        (a.iter().map(ToString::to_string).collect(), true)
+                    } else {
+                        (vec![u.url.to_string()], false)
+                    }
+                })
         };
         let mut out = Vec::new();
         for r in &cfg.route {
             if !r.match_group.is_empty() || !r.match_qtype.is_empty() {
                 continue; // per-group or per-type routes aren't "send this domain" routes
             }
-            let servers: Vec<String> = cfg
+            let members: Vec<(Vec<String>, bool)> = cfg
                 .upstream_group
                 .iter()
                 .find(|g| g.name == r.upstream_group)
-                .map(|g| g.members.iter().filter_map(|m| url_of(m)).collect())
+                .map(|g| g.members.iter().filter_map(|m| servers_of(m)).collect())
                 .unwrap_or_default();
+            let stub = !members.is_empty() && members.iter().all(|(_, s)| *s);
+            let servers: Vec<String> = members.into_iter().flat_map(|(v, _)| v).collect();
             for d in &r.match_suffix {
                 out.push(ForwardInfo {
                     domain: d.to_ascii_lowercase(),
                     servers: servers.clone(),
+                    stub,
                     source: if api.iter().any(|a| a.eq_ignore_ascii_case(d)) {
                         "api".into()
                     } else {
@@ -4938,19 +4978,40 @@ fn keep_in_git(
                         .collect()
                 })
                 .unwrap_or_default();
-            let mut t: Vec<(&str, serde_json::Value)> = servers
-                .iter()
-                .enumerate()
-                .map(|(i, url)| {
-                    (
+            let stub = body
+                .get("stub")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let (mut t, members): (Vec<(&str, serde_json::Value)>, Vec<String>) = if stub {
+                // REQ: DNS-022 — one recursive upstream that starts at the zone's servers.
+                let up = crate::managed::stub_upstream_name(&group);
+                let addrs: Vec<String> = servers
+                    .iter()
+                    .filter_map(|s| crate::managed::stub_addr(s).map(|a| a.to_string()))
+                    .collect();
+                (
+                    vec![(
                         "upstream",
-                        serde_json::json!({ "name": format!("{group}#{}", i + 1), "url": url }),
-                    )
-                })
-                .collect();
-            let members: Vec<String> = (1..=servers.len())
-                .map(|i| format!("{group}#{i}"))
-                .collect();
+                        serde_json::json!({ "name": up, "url": "recursive://",
+                            "recursive": { "stub_zone": name, "stub_servers": addrs } }),
+                    )],
+                    vec![up],
+                )
+            } else {
+                (
+                    servers
+                        .iter()
+                        .enumerate()
+                        .map(|(i, url)| {
+                            (
+                                "upstream",
+                                serde_json::json!({ "name": format!("{group}#{}", i + 1), "url": url }),
+                            )
+                        })
+                        .collect(),
+                    (1..=servers.len()).map(|i| format!("{group}#{i}")).collect(),
+                )
+            };
             t.push((
                 "upstream_group",
                 serde_json::json!({ "name": group, "members": members, "strategy": "failover" }),
@@ -5264,6 +5325,42 @@ mod keep_in_git_tests {
         assert_eq!(
             parsed["upstream"][0]["url"].as_str(),
             Some("udp://10.0.0.53")
+        );
+        // REQ: DNS-022 — a stub forward is one recursive upstream with the stub fields.
+        let stub = keep_in_git(
+            ManagedKind::Forward,
+            "corp.example",
+            Some(&serde_json::json!({ "servers": ["10.0.0.53"], "stub": true })),
+            None,
+        );
+        let parsed: toml::Table = toml::from_str(&stub).unwrap();
+        let up = &parsed["upstream"][0];
+        assert_eq!(up["url"].as_str(), Some("recursive://"));
+        assert_eq!(up["recursive"]["stub_zone"].as_str(), Some("corp.example"));
+        assert_eq!(
+            parsed["upstream_group"][0]["members"][0].as_str(),
+            Some("forward:corp.example#stub")
+        );
+        // ...and the stored entry and the change it shows keep the flag.
+        let f = forward_of(
+            &serde_json::json!({ "servers": ["10.0.0.53"], "stub": true }),
+            "corp.example",
+        )
+        .unwrap();
+        assert!(f.stub);
+        assert_eq!(forward_json("corp.example", &f)["stub"], true);
+        let plain = forward_of(
+            &serde_json::json!({ "servers": ["10.0.0.53"] }),
+            "corp.example",
+        )
+        .unwrap();
+        assert!(forward_json("corp.example", &plain).get("stub").is_none());
+        assert!(
+            forward_of(
+                &serde_json::json!({ "servers": ["tls://10.0.0.53"], "stub": true }),
+                "corp.example"
+            )
+            .is_err()
         );
         let gone = keep_in_git(ManagedKind::List, "ads", None, None);
         assert!(gone.starts_with("# Remove the [[list]] `ads`"), "{gone}");

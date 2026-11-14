@@ -372,3 +372,45 @@ upstreams = "vpn"
         "{text}"
     );
 }
+
+/// REQ: DNS-022 — a stub upstream's health check asks its zone's SOA (its servers are
+/// authoritative only); other upstreams keep asking the root's NS.
+#[test]
+fn dns_022_stub_upstream_health_question() {
+    let r = router(
+        r#"[[upstream]]
+name = "plain"
+url = "udp://127.0.0.1:9"
+[[upstream]]
+name = "corp"
+url = "recursive://"
+[upstream.recursive]
+stub_zone = "Corp.Example"
+stub_servers = ["127.0.0.1"]
+[[upstream_group]]
+name = "default"
+members = ["plain"]
+[[upstream_group]]
+name = "corp"
+members = ["corp"]
+[[route]]
+match_suffix = ["corp.example"]
+upstream_group = "corp"
+"#,
+    )
+    .unwrap();
+    let ask = |i: usize| {
+        let q = r.upstreams()[i].health_question();
+        (q.name, q.qtype)
+    };
+    assert_eq!(ask(0), (NameBuf::default(), rtype::NS));
+    assert_eq!(
+        ask(1),
+        (
+            NameBuf::from_presentation("corp.example").unwrap(),
+            rtype::SOA
+        )
+    );
+    let s = r.select(&q("www.corp.example", rtype::A), &[] as &[&str]);
+    assert_eq!(s.unwrap().group.name, "corp");
+}

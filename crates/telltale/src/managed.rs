@@ -115,6 +115,10 @@ pub(crate) struct RecordValue {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Forward {
     pub(crate) servers: Vec<String>,
+    /// REQ: DNS-022 — a stub zone: the servers are the zone's own (authoritative only), asked
+    /// iteratively, and the delegations they give are followed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) stub: bool,
 }
 
 /// Everything stored through the API.
@@ -260,6 +264,37 @@ pub(crate) fn forward_group(domain: &str) -> String {
     format!("forward:{domain}")
 }
 
+/// REQ: DNS-022 — the one upstream a stub zone's servers become.
+pub(crate) fn stub_upstream_name(group: &str) -> String {
+    format!("{group}#stub")
+}
+
+/// REQ: DNS-022 — a stub zone's server: an IP address (port 53), written bare or as
+/// `udp://` plus the address, as the forwarding form writes servers.
+pub(crate) fn stub_addr(s: &str) -> Option<std::net::IpAddr> {
+    s.trim()
+        .strip_prefix("udp://")
+        .unwrap_or(s.trim())
+        .parse()
+        .ok()
+}
+
+/// REQ: DNS-022 — a stub zone as an upstream: `recursive://`, starting at `servers` for
+/// `domain` instead of the root.
+fn stub_upstream(domain: &str, group: &str, servers: &[String]) -> Result<Upstream, String> {
+    let mut addrs = Vec::new();
+    for s in servers {
+        addrs.push(stub_addr(s).ok_or_else(|| {
+            format!("invalid server `{s}` (a stub zone's servers are IP addresses)")
+        })?);
+    }
+    let mut u = new_upstream(safe(&stub_upstream_name(group))?, safe("recursive://")?)
+        .ok_or("invalid upstream")?;
+    u.recursive.stub_zone = Some(safe(domain)?);
+    u.recursive.stub_servers = addrs;
+    Ok(u)
+}
+
 /// A server as an upstream URL: a bare address means plain DNS (`udp://`).
 pub(crate) fn server_url(s: &str) -> String {
     if s.contains("://") {
@@ -347,20 +382,7 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
             continue;
         }
         let group = forward_group(domain);
-        let mut members = Vec::new();
-        for (i, s) in f.servers.iter().enumerate() {
-            let name = format!("{group}#{}", i + 1);
-            match (safe(&name), safe(&server_url(s))) {
-                (Ok(n), Ok(url)) => match new_upstream(n.clone(), url) {
-                    Some(u) => {
-                        members.push(n);
-                        cfg.upstream.push(u);
-                    }
-                    None => errs.push(format!("forward `{domain}`: invalid server `{s}`")),
-                },
-                _ => errs.push(format!("forward `{domain}`: invalid server `{s}`")),
-            }
-        }
+        let members = forward_upstreams(&mut cfg, domain, &group, f, &mut errs);
         match (safe(&group), safe(domain)) {
             (Ok(g), Ok(d)) => {
                 cfg.upstream_group.push(UpstreamGroup {
@@ -388,6 +410,42 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     let (_, report) = telltale_policy::LocalData::from_config(&cfg);
     errs.extend(report.errors);
     if errs.is_empty() { Ok(cfg) } else { Err(errs) }
+}
+
+/// Adds the upstreams a forwarded domain becomes to `cfg` and returns their names: one per
+/// server, or (REQ: DNS-022) one `recursive://` upstream for a stub zone.
+fn forward_upstreams(
+    cfg: &mut Config,
+    domain: &str,
+    group: &str,
+    f: &Forward,
+    errs: &mut Vec<String>,
+) -> Vec<SafeString> {
+    let mut members = Vec::new();
+    if f.stub {
+        match stub_upstream(domain, group, &f.servers) {
+            Ok(u) => {
+                members.push(u.name.clone());
+                cfg.upstream.push(u);
+            }
+            Err(e) => errs.push(format!("forward `{domain}`: {e}")),
+        }
+        return members;
+    }
+    for (i, s) in f.servers.iter().enumerate() {
+        let name = format!("{group}#{}", i + 1);
+        match (safe(&name), safe(&server_url(s))) {
+            (Ok(n), Ok(url)) => match new_upstream(n.clone(), url) {
+                Some(u) => {
+                    members.push(n);
+                    cfg.upstream.push(u);
+                }
+                None => errs.push(format!("forward `{domain}`: invalid server `{s}`")),
+            },
+            _ => errs.push(format!("forward `{domain}`: invalid server `{s}`")),
+        }
+    }
+    members
 }
 
 /// An upstream with every optional field at its default.
@@ -593,6 +651,7 @@ mod tests {
                 "corp.example".into(),
                 Forward {
                     servers: vec!["10.0.0.53".into(), "tls://10.0.0.54".into()],
+                    stub: false,
                 },
             )],
             ..Entries::default()
@@ -639,11 +698,55 @@ mod tests {
                 "corp.example".into(),
                 Forward {
                     servers: vec!["ftp://x".into()],
+                    stub: false,
                 },
             )],
             ..Entries::default()
         };
         assert!(merge(&base(), &bad_server).is_err());
+    }
+
+    /// REQ: DNS-022 — a stub forward becomes one `recursive://` upstream that starts at the
+    /// zone's servers; a server that isn't an address is refused.
+    #[test]
+    fn dns_022_stub_forward_merges() {
+        let e = Entries {
+            forwards: vec![(
+                "corp.example".into(),
+                Forward {
+                    servers: vec!["10.0.0.53".into(), "udp://10.0.0.54".into()],
+                    stub: true,
+                },
+            )],
+            ..Entries::default()
+        };
+        let cfg = merge(&base(), &e).unwrap();
+        let u = cfg.upstream.last().unwrap();
+        assert_eq!(u.name.as_str(), "forward:corp.example#stub");
+        assert_eq!(u.url.as_str(), "recursive://");
+        assert_eq!(u.recursive.stub_zone.as_deref(), Some("corp.example"));
+        assert_eq!(
+            u.recursive.stub_servers,
+            [
+                "10.0.0.53".parse::<std::net::IpAddr>().unwrap(),
+                "10.0.0.54".parse().unwrap()
+            ]
+        );
+        let g = cfg.upstream_group.last().unwrap();
+        assert_eq!(g.members, std::slice::from_ref(&u.name));
+        assert_eq!(cfg.route.last().unwrap().upstream_group, g.name);
+        let bad = Entries {
+            forwards: vec![(
+                "corp.example".into(),
+                Forward {
+                    servers: vec!["tls://10.0.0.53".into()],
+                    stub: true,
+                },
+            )],
+            ..Entries::default()
+        };
+        let errs = merge(&base(), &bad).unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("IP addresses")), "{errs:?}");
     }
 
     /// REQ: API-002 (T7.5, ADR-069) — API upstreams, groups, and lists add, override, or hide

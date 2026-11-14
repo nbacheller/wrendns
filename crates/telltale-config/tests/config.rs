@@ -1208,3 +1208,53 @@ fn clu_014_drill_section() {
     let shared = telltale_config::shared::shared_part(&Config::default());
     assert!(shared.get("drill").is_none(), "defaults aren't sent");
 }
+
+/// REQ: DNS-022 — a stub zone on a `recursive://` upstream needs its name and its servers,
+/// and isn't valid on another kind of upstream.
+#[test]
+fn dns_022_stub_zone_validates() {
+    let ok = load_str(
+        r#"
+[[upstream]]
+name = "corp"
+url = "recursive://"
+[upstream.recursive]
+stub_zone = "corp.example"
+stub_servers = ["10.0.0.53", "10.0.0.54"]
+"#,
+    )
+    .unwrap();
+    let r = &ok.config.upstream[0].recursive;
+    assert_eq!(r.stub_zone.as_deref(), Some("corp.example"));
+    assert_eq!(r.stub_servers.len(), 2);
+
+    let errs = load_str(
+        r#"
+[[upstream]]
+name = "no-servers"
+url = "recursive://"
+[upstream.recursive]
+stub_zone = "corp.example"
+[[upstream]]
+name = "no-zone"
+url = "recursive://"
+[upstream.recursive]
+stub_servers = ["10.0.0.53"]
+[[upstream]]
+name = "not-recursive"
+url = "udp://10.0.0.53"
+[upstream.recursive]
+stub_zone = "corp.example"
+stub_servers = ["10.0.0.53"]
+"#,
+    )
+    .unwrap_err();
+    let p = paths(&errs);
+    for want in [
+        "upstream[0].recursive.stub_servers",
+        "upstream[1].recursive.stub_zone",
+        "upstream[2].recursive",
+    ] {
+        assert!(p.contains(&want), "{want} missing from {p:?}");
+    }
+}

@@ -1057,11 +1057,12 @@ pub fn write_tools() -> Vec<WriteTool> {
         },
         WriteTool {
             name: "plan_forward_domain",
-            description: "Plans a change (nothing changes until apply_plan). Sends every question under a domain to other DNS servers (a work network, your router), e.g. corp.example → 10.0.0.53. Servers are IPs (plain DNS) or tls://, https:// addresses. Needs the config:write:forwards scope.",
+            description: "Plans a change (nothing changes until apply_plan). Sends every question under a domain to other DNS servers (a work network, your router), e.g. corp.example → 10.0.0.53. Servers are IPs (plain DNS) or tls://, https:// addresses. With stub=true the servers are the zone's own authoritative servers (IPs): they're asked iteratively and the delegations they give to other servers are followed (a BIND stub zone). Needs the config:write:forwards scope.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "domain": {"type": "string", "description": "The domain, e.g. corp.example."},
                 "servers": {"type": "array", "items": {"type": "string"}, "description": "The servers, tried in order."},
+                "stub": {"type": "boolean", "description": "A stub zone: the servers are authoritative only (IPs), asked iteratively, delegations followed. Default false."},
                 "reason": reason_schema()
             }, "required": ["domain", "servers", "reason"], "additionalProperties": false})
             },
@@ -1073,11 +1074,17 @@ pub fn write_tools() -> Vec<WriteTool> {
                 if servers.is_empty() {
                     return Err("`servers` is required (at least one)".into());
                 }
+                // REQ: DNS-022
+                let stub = a.get("stub").and_then(Value::as_bool).unwrap_or(false);
+                let how = if stub { " (stub zone)" } else { "" };
                 Ok(Write {
                     method: "PUT",
                     path: format!("/api/v1/forwards/{}", enc(&domain)),
-                    body: Some(json!({"servers": servers})),
-                    summary: format!("Send questions under {domain} to {}", servers.join(", ")),
+                    body: Some(json!({"servers": servers, "stub": stub})),
+                    summary: format!(
+                        "Send questions under {domain} to {}{how}",
+                        servers.join(", ")
+                    ),
                     merge: None,
                 })
             },

@@ -22,6 +22,7 @@
     <li><a href="#encrypt-upstreams">Encrypt lookups to your upstreams</a></li>
     <li><a href="#devices">Offer encrypted DNS to your devices</a></li>
     <li><a href="#routes">Send a domain to another server</a></li>
+    <li><a href="#stub">When the server only knows that domain (stub zones)</a></li>
     <li><a href="#recursive">Resolve without a forwarder</a></li>
     <li><a href="#dnssec">Check DNSSEC signatures</a></li>
     <li><a href="#failures">When an upstream fails</a></li>
@@ -251,6 +252,54 @@ upstream_group = "lan"</code></pre>
       <p>Servers are addresses (plain DNS) or <code>udp://</code>, <code>tcp://</code>, <code>tls://</code>, or <code>https://</code> URLs, tried in order. Domains routed in the config files are read-only here (409). Agents use the MCP tool <code>plan_forward_domain</code> with the <code>config:write:forwards</code> scope.</p>
     </div>
   </div>
+</section>
+
+<section id="stub">
+  <h2>When the server only knows that domain (stub zones)</h2>
+  <p>Sending a domain asks the server to look names up for you. A domain's own <b>authoritative</b> servers won't: they answer only for their domain, refuse other questions, and hand sub-domains to other servers instead of answering them. Forwarded to, they look broken (they're benched, and names in a handed-off sub-domain come back empty). Make the domain a <b>stub zone</b> instead, as BIND does: TelltaleDNS looks names under it up itself, starting at those servers and following their hand-offs.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Ways to add a stub zone">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">Config file</button>
+      <button role="tab" type="button">API</button>
+    </div>
+    <div class="panel" id="stub-ui"><h3>Web UI</h3>
+      <ol class="guide">
+        <li>Open <b>Names on my network</b> and choose <b>Send a domain to another server</b>.</li>
+        <li>Enter the <b>Domain</b> and the servers' <b>IP addresses</b>, and tick <b>These servers only know this domain, and hand some sub-domains to other servers</b>.</li>
+        <li><b>Save</b>. The list shows the domain as a <i>stub zone</i>.</li>
+      </ol>
+    </div>
+    <div class="panel" id="stub-file"><h3>Config file</h3>
+<pre><code>[[upstream]]
+name = "corp-stub"
+url = "recursive://"
+[upstream.recursive]
+stub_zone = "corp.example"
+stub_servers = ["10.0.0.53", "10.0.0.54"]   # IP addresses, port 53
+
+[[upstream_group]]
+name = "corp"
+members = ["corp-stub"]
+
+[[route]]
+match_suffix = ["corp.example"]
+upstream_group = "corp"
+dnssec_nta = true</code></pre>
+    </div>
+    <div class="panel" id="stub-api"><h3>API</h3>
+<pre><code>PUT /api/v1/forwards/corp.example?dryRun=true
+{"servers": ["10.0.0.53", "10.0.0.54"], "stub": true}</code></pre>
+      <p>Agents: <code>plan_forward_domain</code> with <code>stub: true</code>.</p>
+    </div>
+  </div>
+  <ul>
+    <li><b>Your servers win</b> over what the public DNS says about the domain, so the inside view is what devices get.</li>
+    <li><b>Hand-offs are followed:</b> a sub-domain the servers delegate is asked of its own servers, with the same safety checks as <a href="#recursive">resolving without a forwarder</a>.</li>
+    <li><b>Names outside the domain</b> that an answer points to (an alias to a cloud service, say) are looked up from the root servers. The root never sees the domain's own names.</li>
+    <li><b>Health checks</b> only ask whether those servers answer at all (any answer counts, even a refusal), so they aren't benched for refusing questions about other domains.</li>
+    <li>The servers are used as you list them (BIND's <code>static-stub</code>): list every one you want asked.</li>
+  </ul>
 </section>
 
 <section id="recursive">

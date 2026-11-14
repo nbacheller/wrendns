@@ -26,6 +26,8 @@ struct Zone {
     poison: bool,
     /// Always refers back to the root (lame).
     lame: bool,
+    /// Answers REFUSED to everything (an authoritative server asked outside its zones).
+    refuse: bool,
     /// Before every answer, sends a forged one first: the question in lowercase and the
     /// address 6.6.6.6 (an off-path spoofer who guessed the ID and port, but not the case).
     spoof: bool,
@@ -74,7 +76,10 @@ fn respond(z: &Zone, query: &[u8]) -> Vec<u8> {
     let (mut na, mut nn, mut nd) = (0u16, 0u16, 0u16);
     let mut aa = true;
     let mut rc = rcode::NOERROR;
-    if z.lame {
+    if z.refuse {
+        aa = false;
+        rc = rcode::REFUSED;
+    } else if z.lame {
         aa = false;
         rr(&mut ns, "", rtype::NS, 3600, &wire("a.root-servers.net"));
         nn += 1;
@@ -590,4 +595,138 @@ async fn dns_012_hedged_queries() {
         hedged + Duration::from_millis(60) < plain,
         "hedged {hedged:?} vs not hedged {plain:?}"
     );
+}
+
+/// The internal view of `corp.example.com` on .8 (the public example.com server, .4, knows
+/// nothing of it), delegating `sub.corp.example.com` to .9.
+fn corp(z: &mut Vec<(u8, Zone)>) {
+    z.push((
+        8,
+        Zone {
+            origin: "corp.example.com",
+            records: vec![
+                ("www.corp.example.com", rtype::A, a([10, 1, 0, 1])),
+                (
+                    "alias.corp.example.com",
+                    rtype::CNAME,
+                    wire("www.other.net"),
+                ),
+            ],
+            cuts: vec![(
+                "sub.corp.example.com",
+                "ns.sub.corp.example.com",
+                Some([127, 0, 0, 9]),
+            )],
+            ..Zone::default()
+        },
+    ));
+    z.push((
+        9,
+        Zone {
+            origin: "sub.corp.example.com",
+            records: vec![("host.sub.corp.example.com", rtype::A, a([10, 1, 1, 1]))],
+            ..Zone::default()
+        },
+    ));
+}
+
+fn corp_stub() -> Vec<telltale_recursor::Stub> {
+    vec![telltale_recursor::Stub {
+        zone: name("corp.example.com"),
+        servers: vec![IpAddr::from([127, 0, 0, 8])],
+    }]
+}
+
+/// REQ: DNS-022 — a stub zone starts at its own servers and follows the delegations they
+/// give, even with the public example.com cut cached: neither the root nor the public
+/// server sees its names, and its NXDOMAIN is the internal view's.
+#[tokio::test]
+async fn dns_022_stub_zone_follows_its_own_delegations() {
+    let (mut s, log) = tree(corp).await;
+    s.stubs = corp_stub();
+    let r = Recursor::new(s);
+    assert_eq!(r.stub_zone(), Some(&name("corp.example.com")));
+    r.resolve(name("www.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    log.lock().unwrap().clear();
+    for (n, want) in [
+        ("www.corp.example.com", [10, 1, 0, 1]),
+        ("host.sub.corp.example.com", [10, 1, 1, 1]),
+    ] {
+        let res = r.resolve(name(n), rtype::A, false).await.unwrap();
+        assert_eq!(addrs(&res), vec![IpAddr::from(want)], "{n}");
+    }
+    let res = r
+        .resolve(name("nope.corp.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(res.rcode, rcode::NXDOMAIN);
+    let seen = log.lock().unwrap().clone();
+    assert!(
+        seen.iter().all(|(ip, _)| *ip == 8 || *ip == 9),
+        "only the stub's servers: {seen:?}"
+    );
+    assert!(
+        seen.iter().any(|(ip, _)| *ip == 9),
+        "the delegation was followed: {seen:?}"
+    );
+}
+
+/// REQ: DNS-022 — a stub zone's names don't prime the root, and a CNAME out of the zone is
+/// chased from the root like any other name.
+#[tokio::test]
+async fn dns_022_stub_zone_cname_leaves_the_zone() {
+    let (mut s, log) = tree(corp).await;
+    s.stubs = corp_stub();
+    s.prime = true;
+    let r = Recursor::new(s);
+    r.resolve(name("www.corp.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert!(
+        log.lock().unwrap().iter().all(|(ip, _)| *ip == 8),
+        "no priming for a stub name: {:?}",
+        log.lock().unwrap()
+    );
+    let res = r
+        .resolve(name("alias.corp.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    let types: Vec<u16> = res.answer.iter().map(|x| x.rtype).collect();
+    assert_eq!(types, vec![rtype::CNAME, rtype::A]);
+    assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 2])]);
+    let seen = log.lock().unwrap().clone();
+    assert!(
+        seen.iter()
+            .all(|(ip, n)| *ip == 8 || !n.to_ascii_lowercase().contains("corp")),
+        "the zone's names stayed with its servers: {seen:?}"
+    );
+}
+
+/// REQ: UPS-006, DNS-022 — a stub's health probe: a server that refuses the zone's apex is up
+/// (it answered), one that never answers is down, and without a stub there's nothing to probe.
+#[tokio::test]
+async fn dns_022_stub_probe_counts_any_answer() {
+    let (mut s, _) = tree(|z| {
+        z.push((
+            11,
+            Zone {
+                origin: "corp.example.com",
+                refuse: true,
+                ..Zone::default()
+            },
+        ));
+    })
+    .await;
+    s.stubs = vec![telltale_recursor::Stub {
+        zone: name("corp.example.com"),
+        servers: vec![IpAddr::from([127, 0, 0, 11])],
+    }];
+    assert_eq!(Recursor::new(s.clone()).probe_stub().await, Some(true));
+    // Nothing listens on .12.
+    s.stubs[0].servers = vec![IpAddr::from([127, 0, 0, 12])];
+    assert_eq!(Recursor::new(s.clone()).probe_stub().await, Some(false));
+    s.stubs.clear();
+    assert_eq!(Recursor::new(s).probe_stub().await, None);
 }

@@ -540,6 +540,7 @@ members = ["recursive"]
 # qname_minimization = true    # each server sees only as much of the name as it needs (RFC 9156)
 # case_randomization = false   # 0x20: random letter case, checked in answers (spoofing defense)
 # ipv6 = false                 # also ask servers over IPv6 (needs an IPv6 route)
+# stub_zone / stub_servers     # start one zone at its own servers: see Stub zones
 ```
 - **Private by default:** with QNAME minimization the root servers see only `com`, the `com` servers only `example.com`, and only `example.com`'s own servers see `www.example.com`. If a server mishandles the shortened question, the full one is sent (relaxed mode).
 - **Safe:** a random port and ID per query; records are only accepted from servers responsible for them, and server addresses ("glue") only from the zone that delegates to them. With `case_randomization` (off by default), each query asks for a random mix of upper and lower case, and only an answer that echoes it exactly is accepted: it adds about one bit of entropy per letter to the 32 bits of ID and port an off-path spoofer must guess, so it is worth turning on for a recursive resolver. An answer with the case changed is ignored like any other stray packet while the real one is awaited; only a server that never echoes the case is remembered (after one timeout) and asked without it.
@@ -728,7 +729,7 @@ default_ttl = 300
 - CNAMEs are followed within local data; if the target is elsewhere, the client follows it.
 - Hosts files skip `0.0.0.0`, `::`, and loopback entries (those are blocklists or this machine, not network hosts).
 - `telltale config check` validates record values and reads the hosts files.
-- **In the web UI:** **Names on my network** lists every local name grouped by domain. Operators can add, edit, and remove names (A, AAAA, and CNAME in Simple; every type in Advanced), run **Set up my home domain** (home.arpa by default) for a first device, and **Send a domain to another server** (conditional forwarding). Each change is previewed in a sentence and a diagram before it's saved, and every name has a **Test** link to Explain. Names from the config files are shown read-only. Through the API: `GET /api/v1/records`, `PUT`/`DELETE /api/v1/records/{name}` with `{"records": [{"type": "A", "value": "192.168.1.10"}]}`, and `GET /api/v1/forwards`, `PUT`/`DELETE /api/v1/forwards/{domain}` with `{"servers": ["10.0.0.53"]}`; all take `?dryRun=true`, `If-Match`, and `Idempotency-Key` like devices.
+- **In the web UI:** **Names on my network** lists every local name grouped by domain. Operators can add, edit, and remove names (A, AAAA, and CNAME in Simple; every type in Advanced), run **Set up my home domain** (home.arpa by default) for a first device, and **Send a domain to another server** (conditional forwarding). Each change is previewed in a sentence and a diagram before it's saved, and every name has a **Test** link to Explain. Names from the config files are shown read-only. Through the API: `GET /api/v1/records`, `PUT`/`DELETE /api/v1/records/{name}` with `{"records": [{"type": "A", "value": "192.168.1.10"}]}`, and `GET /api/v1/forwards`, `PUT`/`DELETE /api/v1/forwards/{domain}` with `{"servers": ["10.0.0.53"]}` (add `"stub": true` for a [stub zone](#stub-zones-the-zones-own-servers)); all take `?dryRun=true`, `If-Match`, and `Idempotency-Key` like devices.
 - **Moving from another DNS server:** `telltale import zone exported.zone > records.toml` converts a zone file (Technitium's Zones → Export Zone, BIND, PowerDNS) into `[[record]]` entries for your config. The header lists anything with no local equivalent (SOA and NS aren't needed: TelltaleDNS answers these names itself). Names under the zone that you don't import still resolve normally, so a split-horizon domain keeps working: internal names answer locally, everything else publicly.
 
 ### Local zones
@@ -1480,6 +1481,50 @@ match_suffix = ["home.arpa", "168.192.in-addr.arpa"]   # local names and reverse
 upstream_group = "lan"
 ```
 The longest matching suffix wins; routes can also match `match_qtype = ["PTR"]`.
+
+### Stub zones (the zone's own servers)
+Forwarding asks a server to look the name up for you (recursion desired). A zone's own
+**authoritative** servers won't: they answer only for their zones, refuse everything else,
+and hand delegated sub-domains to other servers with a referral that a forwarder can't
+follow. For those, make the domain a **stub zone** (BIND's `static-stub`, Unbound's
+`stub-zone`): TelltaleDNS resolves names under it itself, starting at the zone's servers
+instead of the root, and follows their delegations.
+```toml
+[[upstream]]
+name = "corp-stub"
+url = "recursive://"
+[upstream.recursive]
+stub_zone = "corp.example"
+stub_servers = ["10.0.0.53", "10.0.0.54"]   # IP addresses, port 53
+
+[[upstream_group]]
+name = "corp"
+members = ["corp-stub"]
+
+[[route]]
+match_suffix = ["corp.example"]
+upstream_group = "corp"
+dnssec_nta = true             # internal zones are usually unsigned
+```
+- **The configured servers win**, whatever the public delegation for the zone says, so an
+  internal view (split horizon) is what clients get. They're asked without recursion, the
+  fastest first, and a slow one is hedged.
+- **Delegations are followed:** a sub-domain the servers delegate (`branch.corp.example` to
+  `10.1.0.53`) is asked of its own servers, with the same bailiwick and glue checks as
+  `recursive://`.
+- **Names outside the zone** that an answer leads to (a CNAME to a cloud service, a server
+  name in another domain) are resolved from the root servers, like `recursive://`. The root
+  never sees the stub zone's own names.
+- **Health checks** ask the stub's servers for the zone's SOA rather than the root's NS
+  (which authoritative servers refuse, so a plain forward to them gets benched), and any
+  answer counts as up, even REFUSED from servers that host only zones below it. A name
+  under a delegated server that fails is a failed lookup, like with `recursive://`.
+- From the UI: **Names on my network → Send a domain to another server**, and tick **These
+  servers only know this domain**. Through the API:
+  `PUT /api/v1/forwards/corp.example` with `{"servers": ["10.0.0.53"], "stub": true}`
+  (agents: `plan_forward_domain` with `stub: true`).
+- Unlike BIND's `type stub`, the zone's NS set isn't fetched from the servers: they're used
+  as listed (`static-stub`). List every server you want asked.
 
 ## A warm cache after restarts
 With `[cache] persist = true`, TelltaleDNS writes its cache to `<data_dir>/cache.bin` when it

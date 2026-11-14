@@ -2885,6 +2885,22 @@
           "description": "RFC 9156: each server sees only as much of the name as it needs.",
           "type": "boolean",
           "default": true
+        },
+        "stub_servers": {
+          "description": "REQ: DNS-022 — the stub zone's servers (IP addresses, port 53), asked iteratively.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "ip"
+          }
+        },
+        "stub_zone": {
+          "description": "REQ: DNS-022 — a stub zone (BIND's `static-stub`): names at or under it are asked of\n`stub_servers` instead of the root servers, and the delegations those servers give are\nfollowed. Send the zone here with a `[[route]]`. Its health check asks for the zone's\nSOA, which authoritative-only servers answer.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         }
       },
       "additionalProperties": false

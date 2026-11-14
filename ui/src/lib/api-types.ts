@@ -4669,20 +4669,32 @@ export interface components {
         ForwardInfo: {
             /** @example corp.example */
             domain: string;
-            /** @description The servers (upstream URLs), in order. */
+            /** @description The servers (upstream URLs), in order; a stub zone's are IP addresses. */
             servers: string[];
             /** @description `file` (read-only here) or `api`. */
             source: string;
+            /**
+             * @description REQ: DNS-022 — a stub zone: the servers are asked iteratively and their delegations
+             *     followed.
+             */
+            stub: boolean;
         };
         /** @description The servers a domain is sent to (`PUT /api/v1/forwards/{domain}`). */
         ForwardInput: {
             /**
              * @description Addresses (plain DNS) or `udp://`, `tcp://`, `tls://`, `https://` URLs, tried in order.
+             *     For a stub zone: the zone's own servers, as IP addresses (port 53).
              * @example [
              *       "10.0.0.53"
              *     ]
              */
             servers: string[];
+            /**
+             * @description REQ: DNS-022 — a stub zone (BIND's `static-stub`): the servers are authoritative only,
+             *     so they're asked iteratively and the delegations they give to other servers are
+             *     followed, instead of forwarding with recursion desired. Default `false`.
+             */
+            stub?: boolean;
         };
         /** @description A client group. */
         GroupInfo: {
@@ -5271,10 +5283,15 @@ export interface components {
             items: {
                 /** @example corp.example */
                 domain: string;
-                /** @description The servers (upstream URLs), in order. */
+                /** @description The servers (upstream URLs), in order; a stub zone's are IP addresses. */
                 servers: string[];
                 /** @description `file` (read-only here) or `api`. */
                 source: string;
+                /**
+                 * @description REQ: DNS-022 — a stub zone: the servers are asked iteratively and their delegations
+                 *     followed.
+                 */
+                stub: boolean;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];

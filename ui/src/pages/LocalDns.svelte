@@ -115,9 +115,15 @@
   }
 
   // ---- "Send a domain to another server"
-  let fw = $state<{ domain: string; servers: string } | null>(null);
+  // REQ: DNS-022 — `stub`: the servers are the domain's own (authoritative only); their
+  // hand-offs to other servers for sub-domains are followed.
+  let fw = $state<{ domain: string; servers: string; stub: boolean } | null>(null);
   const fwSentence = $derived(
-    fw ? `Every name under ${fw.domain.trim() || '…'} is asked of ${fw.servers.trim() || '…'} instead of the public DNS servers; your local names still answer first.` : '',
+    fw
+      ? fw.stub
+        ? `Every name under ${fw.domain.trim() || '…'} is looked up starting at ${fw.servers.trim() || '…'}, following any sub-domains they hand to other servers, instead of the public DNS servers; your local names still answer first.`
+        : `Every name under ${fw.domain.trim() || '…'} is asked of ${fw.servers.trim() || '…'} instead of the public DNS servers; your local names still answer first.`
+      : '',
   );
   async function saveForward(ev: SubmitEvent) {
     ev.preventDefault();
@@ -126,7 +132,7 @@
     formError = '';
     try {
       const servers = fw.servers.split(/[\s,]+/).filter(Boolean);
-      await api.putForward(fw.domain.trim().toLowerCase(), { servers });
+      await api.putForward(fw.domain.trim().toLowerCase(), { servers, stub: fw.stub });
       done = `Saved. Names under ${fw.domain.trim()} now go to ${servers.join(', ')}.`;
       load();
     } catch (e) {
@@ -156,7 +162,7 @@
     <div class="row actions">
       <button class="primary" onclick={openWizard}>Set up my home domain</button>
       <button onclick={openAdd}>Add a name</button>
-      <button onclick={() => ((fw = { domain: '', servers: '' }), (formError = done = ''))}>Send a domain to another server</button>
+      <button onclick={() => ((fw = { domain: '', servers: '', stub: false }), (formError = done = ''))}>Send a domain to another server</button>
     </div>
   {/if}
 
@@ -238,7 +244,7 @@
             {#each forwards as f (f.domain)}
               <tr>
                 <td class="mono">{f.domain}</td>
-                <td class="mono small">{f.servers.join(', ')}</td>
+                <td class="mono small">{f.servers.join(', ')}{#if f.stub}<span class="muted"> (stub zone)</span>{/if}</td>
                 <td class="small">{f.source === 'api' ? 'the UI / API' : 'config file'}</td>
                 <td class="num">
                   {#if f.source === 'api' && canEdit}
@@ -306,6 +312,13 @@
       <label>Domain <input name="domain" bind:value={fw.domain} placeholder="corp.example" required /></label>
       <label>Server address <input name="servers" bind:value={fw.servers} placeholder="10.0.0.53" required /></label>
       <p class="muted small">Several servers: separate them with spaces (tried in order). Encrypted: <code>tls://10.0.0.53</code>.</p>
+      <label
+        ><input type="checkbox" name="stub" bind:checked={fw.stub} /> These servers only know this domain, and hand some sub-domains to other servers</label
+      >
+      <p class="muted small">
+        A <em>stub zone</em>: the servers are asked directly (by IP address) and their hand-offs are followed, as BIND's stub zones do.
+        Use it when the servers refuse other questions.
+      </p>
       {#if fw.domain.trim() && fw.servers.trim()}
         <ChangePreview highlight="route" device="Any device" name={`anything.${fw.domain.trim()}`} sentence={fwSentence} />
       {/if}

@@ -1300,6 +1300,25 @@ fn listeners(cfg: &Config, r: &mut Report<'_>) {
 }
 
 /// REQ: UPS-003 (T9.9) — relays carry DNSCrypt only.
+/// REQ: DNS-022 — a stub zone needs both its name and its servers.
+fn stub_zone(u: &crate::schema::Upstream, p: &str, r: &mut Report<'_>) {
+    match (&u.recursive.stub_zone, u.recursive.stub_servers.is_empty()) {
+        (Some(z), _) if z.is_empty() || z.len() > 253 || z.contains(' ') => r.err(
+            format!("{p}.recursive.stub_zone"),
+            format!("invalid domain `{z}`"),
+        ),
+        (Some(_), true) => r.err(
+            format!("{p}.recursive.stub_servers"),
+            "give the stub zone's servers, e.g. [\"10.0.0.53\"]",
+        ),
+        (None, false) => r.err(
+            format!("{p}.recursive.stub_zone"),
+            "name the zone `stub_servers` serve, e.g. \"corp.example\"",
+        ),
+        _ => {}
+    }
+}
+
 fn relay(u: &crate::schema::Upstream, scheme: &str, p: &str, r: &mut Report<'_>) {
     let Some(relay) = &u.relay else { return };
     let relay = relay.as_str();
@@ -1387,6 +1406,7 @@ fn upstreams<'c>(cfg: &'c Config, r: &mut Report<'_>) -> HashSet<&'c str> {
                         "write it as `recursive://` (it starts at the root servers)",
                     );
                 }
+                stub_zone(u, &p, r);
             }
             Some(s) => r.err(
                 format!("{p}.url"),

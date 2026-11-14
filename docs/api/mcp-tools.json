@@ -1281,7 +1281,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Plans a change (nothing changes until apply_plan). Sends every question under a domain to other DNS servers (a work network, your router), e.g. corp.example → 10.0.0.53. Servers are IPs (plain DNS) or tls://, https:// addresses. Needs the config:write:forwards scope.",
+    "description": "Plans a change (nothing changes until apply_plan). Sends every question under a domain to other DNS servers (a work network, your router), e.g. corp.example → 10.0.0.53. Servers are IPs (plain DNS) or tls://, https:// addresses. With stub=true the servers are the zone's own authoritative servers (IPs): they're asked iteratively and the delegations they give to other servers are followed (a BIND stub zone). Needs the config:write:forwards scope.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1303,6 +1303,10 @@
         "simulate": {
           "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
           "type": "string"
+        },
+        "stub": {
+          "description": "A stub zone: the servers are authoritative only (IPs), asked iteratively, delegations followed. Default false.",
+          "type": "boolean"
         }
       },
       "required": [

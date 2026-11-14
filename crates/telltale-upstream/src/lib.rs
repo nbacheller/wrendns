@@ -50,19 +50,12 @@ pub const DEFAULT_BUDGET: Duration = Duration::from_secs(2);
 /// Interval for active health checks (`spec/04` §5).
 pub const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Periodically probes upstreams that haven't been used recently (root NS query), so a
-/// recovered or idle upstream's health stays current. Runs until the task is aborted.
+/// Periodically probes upstreams that haven't been used recently ([`Upstream::health_check`]:
+/// the root's NS, or whether a stub zone's servers answer), so a recovered or idle upstream's
+/// health stays current. Runs until the task is aborted.
 pub async fn active_health_checks(upstreams: Vec<Arc<Upstream>>, interval: Duration) {
     let mut tick = tokio::time::interval(interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let probe = Question {
-        name: telltale_proto::NameBuf::default(),
-        qtype: telltale_proto::rtype::NS,
-        qclass: telltale_proto::class::IN,
-        dnssec_ok: false,
-        checking_disabled: false,
-        client_subnet: 0,
-    };
     loop {
         tick.tick().await;
         let now = Instant::now();
@@ -73,9 +66,7 @@ pub async fn active_health_checks(upstreams: Vec<Arc<Upstream>>, interval: Durat
                 .is_none_or(|t| now.duration_since(t) >= interval);
             if idle {
                 let up = Arc::clone(up);
-                tokio::spawn(async move {
-                    let _ = up.exchange(&probe, up.attempt_timeout()).await;
-                });
+                tokio::spawn(async move { up.health_check().await });
             }
         }
     }
