@@ -7,8 +7,22 @@ use super::format::{BLOCK_HEADER, HEADER_LEN};
 use super::*;
 
 const HOUR_US: u64 = 3_600_000_000;
-/// 2026-10-03 00:00 UTC, in hours.
-const BASE_HOUR: u64 = 20_729 * 24;
+/// 2026-10-03 00:00 UTC, in hours: a fixed date, only for the test of the on-disk path format.
+const FIXED_HOUR: u64 = 20_729 * 24;
+
+/// The base hour of the tests that write through the store: midnight UTC two to three days ago,
+/// fixed for the process. The writer enforces its retention against the real clock, so a fixed
+/// date was deleted from under these tests once it was 30 days old (a second writer opened on
+/// 2026-10-03 rows found no segments from 2026-11-02, with no change to the code).
+fn base_hour() -> u64 {
+    static BASE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *BASE.get_or_init(|| {
+        let now_hour = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() / 3_600);
+        (now_hour / 24 - 2) * 24
+    })
+}
 
 fn wire(name: &str) -> Vec<u8> {
     let mut w = Vec::new();
@@ -75,7 +89,7 @@ fn clu_007_rotate_after_closes_parts_on_a_timer() {
     let mut b = Builder::spawn(s).unwrap();
     for i in 0..3u64 {
         b.push(
-            &ev(BASE_HOUR * HOUR_US + i, 1, Status::Forwarded, 100),
+            &ev(base_hour() * HOUR_US + i, 1, Status::Forwarded, 100),
             &wire("a.example"),
         );
     }
@@ -91,7 +105,7 @@ fn populate(dir: &Path, privacy: u8, hours: u64, n: u64) {
     let mut b = Builder::spawn(settings(dir, privacy)).unwrap();
     for h in 0..hours {
         for i in 0..n {
-            let ts = (BASE_HOUR + h) * HOUR_US + i * (HOUR_US / n);
+            let ts = (base_hour() + h) * HOUR_US + i * (HOUR_US / n);
             let status = if i % 10 == 0 {
                 Status::Blocked
             } else {
@@ -138,7 +152,10 @@ fn obs_003_written_rows_come_back_newest_first_with_every_field() {
     let r = &page.rows[0];
     let i = 19_999u64;
     assert_eq!(r.name, format!("www.site{}.example", i % 1000));
-    assert_eq!(r.ts_us, (BASE_HOUR + 1) * HOUR_US + i * (HOUR_US / 20_000));
+    assert_eq!(
+        r.ts_us,
+        (base_hour() + 1) * HOUR_US + i * (HOUR_US / 20_000)
+    );
     assert_eq!((r.node, r.client_ip, r.client_ref), (7, ip(20), 20));
     assert_eq!(
         (r.qtype, r.qclass, r.rcode, r.status),
@@ -229,8 +246,8 @@ fn obs_003_filters_match_exactly_what_a_scan_would() {
         },
         &|r| r.qtype == 28 && r.rcode == Some(3) && r.t_total_us >= 4990,
     );
-    let from = BASE_HOUR * HOUR_US + HOUR_US / 2;
-    let to = (BASE_HOUR + 1) * HOUR_US + HOUR_US / 4;
+    let from = base_hour() * HOUR_US + HOUR_US / 2;
+    let to = (base_hour() + 1) * HOUR_US + HOUR_US / 4;
     check(
         Filter {
             from_us: from,
@@ -262,7 +279,7 @@ fn agt_012_estimate_bounds_the_matches() {
     let all_rows = estimate(tmp.path(), &Filter::default()).unwrap();
     assert_eq!((all_rows.segments, all_rows.rows), (2, 40_000));
     let one_hour = Filter {
-        from_us: (BASE_HOUR + 1) * HOUR_US,
+        from_us: (base_hour() + 1) * HOUR_US,
         ..Filter::default()
     };
     let e = estimate(tmp.path(), &one_hour).unwrap();
@@ -296,7 +313,7 @@ fn obs_003_rare_names_skip_blocks_by_bloom() {
             format!("n{}.example", i % 500)
         };
         b.push(
-            &ev(BASE_HOUR * HOUR_US + i, 1, Status::Cached, 5),
+            &ev(base_hour() * HOUR_US + i, 1, Status::Cached, 5),
             &wire(&name),
         );
     }
@@ -370,7 +387,7 @@ fn obs_003_privacy_levels() {
     let tmp = tempfile::tempdir().unwrap();
     let mut b = Builder::spawn(settings(tmp.path(), 3)).unwrap();
     b.push(
-        &ev(BASE_HOUR * HOUR_US, 1, Status::Cached, 5),
+        &ev(base_hour() * HOUR_US, 1, Status::Cached, 5),
         &wire("a.example"),
     );
     drop(b);
@@ -421,7 +438,7 @@ fn obs_003_retention_by_age_and_size() {
     populate(tmp.path(), 0, 5, 2000);
     assert_eq!(list_segments(tmp.path()).unwrap().len(), 5);
     // Age: keep the last 2 days' worth relative to "now" = 3 days after the first hour.
-    let now = BASE_HOUR + 3 * 24;
+    let now = base_hour() + 3 * 24;
     assert_eq!(
         retention::enforce(tmp.path(), now, 2, u64::MAX, None).unwrap(),
         5
@@ -442,14 +459,14 @@ fn obs_003_retention_by_age_and_size() {
     };
     let budget = sizes[3] + sizes[4];
     assert_eq!(
-        retention::enforce(tmp.path(), BASE_HOUR, 30, budget, None).unwrap(),
+        retention::enforce(tmp.path(), base_hour(), 30, budget, None).unwrap(),
         3
     );
     let mut left = list_segments(tmp.path()).unwrap();
     left.sort();
     assert_eq!(
         left.iter()
-            .map(|(id, _)| id.hour - BASE_HOUR)
+            .map(|(id, _)| id.hour - base_hour())
             .collect::<Vec<_>>(),
         [3, 4]
     );
@@ -457,7 +474,7 @@ fn obs_003_retention_by_age_and_size() {
 
 #[test]
 fn obs_003_segment_paths_round_trip() {
-    for hour in [0u64, BASE_HOUR, BASE_HOUR + 23, 400_000, 1_000_000] {
+    for hour in [0u64, base_hour(), base_hour() + 23, 400_000, 1_000_000] {
         let p = segment_path(Path::new("q"), hour, 3, 2);
         let s = p.to_string_lossy().replace('\\', "/");
         let parts: Vec<&str> = s.split('/').collect();
@@ -476,7 +493,7 @@ fn obs_003_segment_paths_round_trip() {
             })
         );
     }
-    assert!(segment_path(Path::new("q"), BASE_HOUR, 7, 0).ends_with("2026/10/03/00-7-0.seg"));
+    assert!(segment_path(Path::new("q"), FIXED_HOUR, 7, 0).ends_with("2026/10/03/00-7-0.seg"));
 }
 
 /// Parallel waves return exactly what one thread does, in order, across pages.
@@ -542,7 +559,7 @@ fn nfr_007_store_write_latency_and_segment_count() {
     for h in 0..3u64 {
         for i in 0..50u64 {
             b.push(
-                &ev((BASE_HOUR + h) * HOUR_US + i, 1, Status::Forwarded, 100),
+                &ev((base_hour() + h) * HOUR_US + i, 1, Status::Forwarded, 100),
                 &wire("a.example"),
             );
         }
