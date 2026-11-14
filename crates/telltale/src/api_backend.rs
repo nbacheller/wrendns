@@ -4521,7 +4521,13 @@ impl ApiBackend {
             &self.src.pipeline.workloads,
         );
         (
-            clients.client(id).map(|c| c.name.to_string()),
+            // REQ: CLU-002 (T8.2, T8.3) — an unnamed device by the name its router, mDNS, or a
+            // peer knows, as the query log names it (`device_name` checks the configured name
+            // first).
+            clients
+                .client(id)
+                .map(|c| c.name.to_string())
+                .or_else(|| device_name(&self.src, mapped(ip))),
             clients
                 .group_names(id)
                 .iter()
@@ -5534,5 +5540,47 @@ mod ratelimit_tests {
             parsed["exclusions"]["names"].as_array().map(Vec::len),
             Some(1)
         );
+    }
+}
+
+#[cfg(test)]
+mod top_client_name_tests {
+    use super::*;
+
+    fn lease(ip: [u8; 4], name: &str) -> crate::devices::Lease {
+        crate::devices::Lease {
+            mac: String::new(),
+            ip: std::net::Ipv4Addr::from(ip),
+            hostname: Some(name.into()),
+            expires: 0,
+        }
+    }
+
+    /// REQ: CLU-002 (T8.2) — Top clients names an unnamed device the way the query log does:
+    /// by this node's router leases, then the names the peers know; an address nobody knows
+    /// stays unnamed, and other top lists carry no client names.
+    #[test]
+    fn clu_002_top_clients_name_unnamed_devices() {
+        let src = Arc::new(crate::http::tests::sources());
+        let nas = lease([192, 168, 1, 20], "nas");
+        src.pipeline
+            .router_leases
+            .store(Arc::new([(nas.ip, nas)].into_iter().collect()));
+        let printer = lease([192, 168, 1, 30], "printer");
+        let mut peers = crate::devices::Names::default();
+        peers.routers.insert(printer.ip, printer);
+        src.pipeline.peer_names.store(Arc::new(peers));
+        let api = ApiBackend { src };
+        let name = |kind, key| api.client_labels(kind, key).0;
+        assert_eq!(
+            name(TopKind::Clients, "192.168.1.20").as_deref(),
+            Some("nas")
+        );
+        assert_eq!(
+            name(TopKind::Clients, "192.168.1.30").as_deref(),
+            Some("printer")
+        );
+        assert_eq!(name(TopKind::Clients, "192.168.1.40"), None);
+        assert_eq!(name(TopKind::Domains, "example.com"), None);
     }
 }
