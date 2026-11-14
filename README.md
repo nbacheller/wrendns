@@ -53,6 +53,7 @@ Kubernetes (Helm), a native systemd install, clustering, and moving from Pi-hole
 
 | Read this | If you want |
 |---|---|
+| [FAQ](https://paimonsoror.github.io/telltaledns/faq.html) | Quick answers to what people ask most: replacing other setups, root-server resolving, blocking categories, per-device encrypted DNS, clusters |
 | [`EXECUTIVE-SUMMARY.md`](EXECUTIVE-SUMMARY.md) | What TelltaleDNS is built around, and the projects that inspired it |
 | [`docs/analysis.md`](docs/analysis.md) | Design notes: what we learned from Pi-hole and Technitium |
 | [`spec/`](spec/00-overview.md) | The build specification (requirements, architecture, ADRs, roadmap) |

@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FAQ — TelltaleDNS</title>
+<meta name="description" content="Answers to what people ask most about TelltaleDNS: replacing Pi-hole or Unbound, resolving from the root servers, blocking categories, per-device encrypted DNS, high availability, and running on Kubernetes.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="faq">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Questions people ask</p>
+  <h1>FAQ</h1>
+  <p class="lede">Short answers, each with a link to the details. Missing yours? <a href="https://github.com/paimonsoror/telltaledns/issues">Open an issue</a> and it may end up here.</p>
+  <ul class="toc">
+    <li><a href="#fit">Is it right for me?</a></li>
+    <li><a href="#resolving">Resolving names</a></li>
+    <li><a href="#blocking">Blocking</a></li>
+    <li><a href="#devices">Devices and encrypted DNS</a></li>
+    <li><a href="#clusters">Clusters and availability</a></li>
+    <li><a href="#monitoring">Monitoring</a></li>
+  </ul>
+</section>
+
+<section id="fit">
+  <h2>Is it right for me?</h2>
+  <dl class="faq">
+    <dt id="q-replace">Is it a replacement for Pi-hole or AdGuard Home with Unbound?</dt>
+    <dd>
+      <p>Yes, it can replace that combination. It filters with blocklists and per-device groups, and it can also resolve names itself from the root servers, so there is no second program to run.</p>
+      <p>Two things to know. There is no DHCP server (<a href="#q-dhcp">below</a>), and the importers cover Pi-hole (<code>telltale import pihole</code>) and Technitium but not AdGuard Home, so you would add those lists again. Lists written in AdGuard syntax work as they are. <a href="guide-upgrades.html">Upgrades, backups, and moving in</a> walks through it.</p>
+    </dd>
+
+    <dt id="q-alongside">Can I run it next to my existing DNS server instead of replacing it?</dt>
+    <dd>
+      <p>Yes. Point your devices at TelltaleDNS and add your current server as an upstream, or send only some domains to it (conditional forwarding), or point your current server's forwarder at TelltaleDNS. When you want to move zones across, zone files import. See <a href="guide-encrypted.html">Encrypted DNS and upstreams</a>.</p>
+    </dd>
+
+    <dt id="q-why">What is it good at?</dt>
+    <dd>
+      <p>Three things it was built around:</p>
+      <ul>
+        <li><b>Explaining.</b> The query log says why each question was answered or blocked, which list and rule did it, and which upstream answered.</li>
+        <li><b>Trying before you commit.</b> You can run a new list or rule against yesterday's real traffic and see what it would have blocked before you save it. See <a href="guide-changes.html">Change things safely</a>.</li>
+        <li><b>Seeing.</b> Per-device and per-group statistics, service-level objectives, and Prometheus metrics. See the <a href="tour.html">tour of the web UI</a>.</li>
+      </ul>
+    </dd>
+
+    <dt id="q-dhcp">Does it include a DHCP server?</dt>
+    <dd>
+      <p>No, on purpose. DHCP stays on your router or another server. TelltaleDNS reads device names from your router's lease list (UniFi and OPNsense) and from mDNS, so devices still show up by name. See <a href="#q-naming">how devices get their names</a>.</p>
+    </dd>
+
+    <dt id="q-firewall">Is it a firewall or a network monitor?</dt>
+    <dd>
+      <p>No. It sees DNS lookups and only those: which devices ask for which names, and what happened to each question. It needs nothing installed on the devices, and it sits comfortably next to a firewall or an endpoint monitor, which watch different things.</p>
+    </dd>
+
+    <dt id="q-maintained">Who builds it, and will it be maintained?</dt>
+    <dd>
+      <p>One maintainer builds it and runs it at home. It is free and open source, under either the Apache 2.0 or the MIT license, and the aim is community-driven development as it grows. Issues, pull requests, and ideas are welcome, and everyone who contributes is credited in the <a href="https://github.com/paimonsoror/telltaledns#contributors">README</a>.</p>
+      <p>It is developed with Claude Code, and every commit it worked on carries a <code>Co-Authored-By: Claude</code> line. The README says so under <a href="https://github.com/paimonsoror/telltaledns#built-with-claude">Built with Claude</a>.</p>
+    </dd>
+  </dl>
+</section>
+
+<section id="resolving">
+  <h2>Resolving names</h2>
+  <dl class="faq">
+    <dt id="q-root">Can it resolve from the root servers instead of Quad9, Cloudflare, or another public resolver?</dt>
+    <dd>
+      <p>Yes. Use a <code>recursive://</code> upstream:</p>
+<pre><code>[[upstream]]
+name = "recursive"
+url = "recursive://"
+
+[[upstream_group]]
+name = "default"
+members = ["recursive"]</code></pre>
+      <p>No public resolver then sees your lookups. Each server is asked only as much of the name as it needs (so the root servers see <code>com</code>, not the whole name), answers can be checked with DNSSEC, and delegations are remembered, so only the first lookup in a new zone takes a few round trips.</p>
+      <p>The trade-off: the authoritative servers see your address, and your ISP still sees the traffic. You can mix it with a forwarder as a fallback in a failover group. Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#recursive-resolution-no-forwarder">recursive resolution</a>.</p>
+    </dd>
+
+    <dt id="q-stub">My domain's servers are authoritative-only (BIND with recursion off, NSD, Knot). How do I send the domain to them?</dt>
+    <dd>
+      <p>Use a stub zone. In <b>Names on my network → Send a domain to another server</b>, tick <b>These servers only know this domain</b> (or set <code>stub_zone</code> and <code>stub_servers</code> on a <code>recursive://</code> upstream). Names under the domain then start at those servers, without asking them to recurse, and delegations to sub-domains are followed. Health checks ask the zone's SOA instead of <code>. NS</code>, which servers like these refuse. Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#stub-zones-the-zones-own-servers">stub zones</a>.</p>
+    </dd>
+
+    <dt id="q-zones">Can it serve my own names and zones?</dt>
+    <dd>
+      <p>Yes, at two levels. <b>Local records</b> answer single names (A, AAAA, CNAME, PTR, TXT, MX, SRV, with wildcards), and PTR records for your A and AAAA records are made for you. <b>Local zones</b> make TelltaleDNS the authority for a whole domain, from an RFC 1035 zone file or written inline, and a zone can be limited to some groups for split-horizon DNS. Manage them in the web UI or the API, or import a zone export with <code>telltale import zone</code>.</p>
+      <p>It is built for home and office zones, not as a public authoritative server: there are no zone transfers or secondary zones. Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#local-records">local records and zones</a>.</p>
+    </dd>
+
+    <dt id="q-ptr">How do reverse (PTR) lookups of my LAN addresses work?</dt>
+    <dd>
+      <p>By default, reverse lookups for private addresses answer NXDOMAIN, so your LAN layout never goes to a public resolver. To resolve them, add records yourself, or send your reverse zone to the server that knows your devices, such as your router:</p>
+<pre><code>[[upstream]]
+name = "home-router"
+url = "udp://192.168.1.1"
+
+[[upstream_group]]
+name = "lan"
+members = ["home-router"]
+
+[[route]]
+match_suffix = ["home.arpa", "168.192.in-addr.arpa"]
+upstream_group = "lan"</code></pre>
+      <p>The same thing is a few clicks in <b>Send a domain to another server</b>.</p>
+    </dd>
+
+    <dt id="q-scripts">Can a script add DNS records, for example when a container starts?</dt>
+    <dd>
+      <p>Yes. The API takes a record per name:</p>
+<pre><code>curl -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"records": [{"type": "A", "value": "192.168.1.10"}]}' \
+  http://dns.lan:8053/api/v1/records/nas.home.arpa</code></pre>
+      <p>Add <code>?dryRun=true</code> to preview a change. Tokens are made in the web UI (<a href="guide-users.html">Users and sign-in</a>). If your configuration comes from Git, changes go through Git instead and the API refuses them.</p>
+    </dd>
+  </dl>
+</section>
+
+<section id="blocking">
+  <h2>Blocking</h2>
+  <dl class="faq">
+    <dt id="q-adblock">Does it block ads and security threats?</dt>
+    <dd>
+      <p>Yes. Setup offers several starting blocklists, and you can add your own by URL in hosts, plain-domain, wildcard, AdBlock/AdGuard DNS, or Pi-hole regex format. Lists apply per group, and every block says which list and rule caused it. See <a href="guide-blocking.html">Block, allow, and explain</a>.</p>
+    </dd>
+
+    <dt id="q-categories">Can I block whole categories, such as adult content?</dt>
+    <dd>
+      <p>Not with a single switch, and that is by design: TelltaleDNS never looks at page content, which keeps it fast. Categories come from the people who maintain category blocklists. You can get the same result for just the devices that need it:</p>
+      <ul>
+        <li>Add a category blocklist by URL and give it only to that group.</li>
+        <li>Send that group to a family-filtering upstream (the presets include several).</li>
+        <li>Turn on safe search for the group, and block specific services such as TikTok or Roblox with one setting.</li>
+      </ul>
+      <p>A group with no list setting uses <em>every</em> list, so give your other groups an explicit list of the ones they should use.</p>
+    </dd>
+  </dl>
+</section>
+
+<section id="devices">
+  <h2>Devices and encrypted DNS</h2>
+  <dl class="faq">
+    <dt id="q-perdevice">Can each device use DoH or DoT with its own identity?</dt>
+    <dd>
+      <p>Yes. Every encrypted listener (DoT, DoH, DoH over HTTP/3, and DoQ) takes a client ID: use <code>https://dns.example.com/dns-query/kids-tablet</code>, or the name <code>kids-tablet.dns.example.com</code> with a wildcard certificate. Match it in the configuration with <code>[[client]] match = ["id:kids-tablet"]</code>, and the device lands in a group with its own lists, schedule, safe search, and upstream. The ID follows the device, even on mobile data.</p>
+      <p>The ID names a device; it is not a password. Who may ask at all is decided by the sender's address (<code>[access] allowed_networks</code>). If you host it on the internet for phones, put it behind a VPN such as WireGuard or Tailscale (Tailscale's range is allowed by default) or open that setting deliberately. Details: <a href="guide-encrypted.html">Encrypted DNS and upstreams</a>.</p>
+      <p>This is one of the newer areas, so reports from real setups are especially welcome.</p>
+    </dd>
+
+    <dt id="q-naming">How does it name my devices?</dt>
+    <dd>
+      <p>In order: names you give them, then your router's DHCP leases (UniFi and OPNsense, read through their APIs every few minutes), then the names devices announce over mDNS. <b>Clients → Discovered</b> lists everything found. See <a href="guide-devices.html">Groups, devices, and VLANs</a>.</p>
+      <p>Two things it doesn't do yet: look up a device's reverse (PTR) record to name it, and accept dynamic DNS updates (RFC 2136) from a DHCP server. Lease and mDNS names label devices in the interface and the query log; they are not served as DNS answers. If you need either, an issue describing your setup helps.</p>
+    </dd>
+
+    <dt id="q-masked">Every query shows the same client address. What's wrong?</dt>
+    <dd>
+      <p>Something between your devices and TelltaleDNS rewrites the sender, and the web UI shows a "Client IPs appear masked" banner naming the address. The usual causes and fixes:</p>
+      <ul>
+        <li><b>A router that forwards DNS:</b> hand out TelltaleDNS's address in DHCP instead. If it has to forward, enable the router's EDNS MAC option (dnsmasq <code>add-mac</code>) and list it in <code>[clients] trust_edns_mac_from</code>.</li>
+        <li><b>Kubernetes with <code>externalTrafficPolicy: Cluster</code>:</b> use <code>Local</code> (the chart's default) or <code>hostNetwork: true</code>.</li>
+        <li><b>Docker with a proxy or bridge:</b> use <code>network_mode: host</code>.</li>
+      </ul>
+      <p>Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#seeing-real-client-ips">seeing real client IPs</a>.</p>
+    </dd>
+  </dl>
+</section>
+
+<section id="clusters">
+  <h2>Clusters and availability</h2>
+  <dl class="faq">
+    <dt id="q-ha">Does it support high availability, and does the configuration sync?</dt>
+    <dd>
+      <p>Yes. Nodes form a cluster with one primary. Its configuration and blocklists reach every node within seconds over an encrypted, mutually authenticated link, every node answers DNS, and every node's dashboard and query log show the whole cluster. Nodes can be different platforms: a Kubernetes node with a Raspberry Pi, two Pis, or several pods. See <a href="guide-cluster.html">Build a cluster</a>.</p>
+    </dd>
+
+    <dt id="q-activeactive">Is it active-active? Does it need an external database?</dt>
+    <dd>
+      <p>No external database. Each node keeps its own small embedded store, so there is nothing shared to keep consistent. Answering DNS is active-active: every node, including extra resolver pods, answers queries with the same configuration. Configuration changes go through one primary and are signed and copied to the others.</p>
+    </dd>
+
+    <dt id="q-primarydown">What happens if the primary, or my Kubernetes cluster, goes down?</dt>
+    <dd>
+      <p>DNS keeps working. Every other node keeps answering from the last configuration it received, even after a restart. What pauses is changing the configuration. Promote another eligible node from the Cluster page or with <code>telltale cluster promote</code>, or use automatic failover with a third voter such as a small witness node.</p>
+      <p>If the configuration comes from Git, a node that isn't Git-managed can only be promoted as an <em>emergency</em> primary, which keeps the cluster on its last version until a Git-managed node is back. Manual promotion is the predictable choice there.</p>
+    </dd>
+
+    <dt id="q-pigit">Can a Raspberry Pi be the primary, with the configuration coming from Git?</dt>
+    <dd>
+      <p>Yes. Any eligible node that has the same <code>[cluster.git]</code> section can take over and keep following the repository, so the Pi can follow your repository directly while Argo CD or Flux keeps managing the Kubernetes side. Join the Pi with a token made for eligible nodes. Details under "Where configuration comes from" in the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#clusters">cluster documentation</a>.</p>
+    </dd>
+
+    <dt id="q-k8sdns">Isn't DNS in Kubernetes risky when Kubernetes needs DNS itself?</dt>
+    <dd>
+      <p>The chart is built around that. TelltaleDNS's own pods keep asking CoreDNS for the cluster's names, so they never depend on their own Service, and you can leave CoreDNS as the second server for your pods, so lookups still work if the TelltaleDNS Service has no ready pods. You can also keep a node outside the cluster, such as a Pi, as a replica, so the rest of the network has DNS even while the cluster is down. See <a href="guide-kubernetes.html">Run on Kubernetes</a>.</p>
+    </dd>
+  </dl>
+</section>
+
+<section id="monitoring">
+  <h2>Monitoring</h2>
+  <dl class="faq">
+    <dt id="q-prometheus">Does it have Prometheus metrics, and can I use Grafana?</dt>
+    <dd>
+      <p>Yes. <code>/metrics</code> is served on port 9153 by default, limited to your allowed networks. It covers queries per transport, the cache, upstream latency and health, blocks per list and group, and where the time goes inside each answer. The Helm chart has an optional ServiceMonitor, alert rules, and a Grafana dashboard, and metrics can be pushed to an OpenTelemetry collector instead. See <a href="guide-monitoring.html">Monitoring and alerts</a>.</p>
+    </dd>
+
+    <dt id="q-breaker">Why do upstream health labels say "open", "closed", and "half_open"?</dt>
+    <dd>
+      <p>They come from the circuit-breaker pattern, named after an electrical circuit: <b>closed</b> means current flows, so requests go through and the upstream is healthy. After enough failures the breaker trips <b>open</b> and the upstream is benched for a while. <b>Half-open</b> lets a trial query through to see whether it has recovered. The same names appear in the API and in the <code>telltale_upstream_breaker_state</code> metric. Plainer labels for the web UI are <a href="https://github.com/paimonsoror/telltaledns/issues/9">planned</a>.</p>
+    </dd>
+  </dl>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>
