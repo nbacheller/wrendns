@@ -74,7 +74,7 @@ Kubernetes (Helm), a native systemd install, clustering, and moving from Pi-hole
 12. [Clustering and HA](spec/12-clustering-and-ha.md)
 13. [Agent API and MCP](spec/13-agent-api-and-mcp.md)
 
-## Contributors ✨
+## Contributors
 Thank you to everyone who helps make TelltaleDNS better, whether by reporting what they found running it for real, writing code, or improving the docs:
 
 <!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
