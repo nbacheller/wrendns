@@ -49,8 +49,19 @@ match = ["10.0.0.5"]
 groups = ["kids"]
 "#;
 
-/// 2026-10-08 12:00 UTC.
-const T0_S: u64 = 1_791_460_800;
+/// The base time of every test here: 12:00 UTC, one to two days ago, fixed for the process.
+/// It follows the clock because the query log drops segments older than its retention (30
+/// days here): a fixed date (2026-10-08) was inside it when written and gone from 2026-11-07,
+/// which failed these tests with no change to the code.
+fn t0_s() -> u64 {
+    static T0: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *T0.get_or_init(|| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        (now / 86_400 - 2) * 86_400 + 12 * 3_600
+    })
+}
 
 struct Lab {
     tmp: tempfile::TempDir,
@@ -146,8 +157,8 @@ impl Lab {
             sources,
             dirs: vec![self.qlog()],
             window: Window {
-                from_us: (T0_S - 86_400) * 1_000_000,
-                to_us: (T0_S + 1) * 1_000_000,
+                from_us: (t0_s() - 86_400) * 1_000_000,
+                to_us: (t0_s() + 1) * 1_000_000,
                 max_rows: 2_000_000,
                 max_secs: 20,
             },
@@ -228,8 +239,8 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 fn obs_024_a_block_rule_reports_what_it_would_have_blocked() {
     let _s = serial();
     let lab = Lab::new("");
-    lab.log("tracker.example", 7, 40, T0_S, false);
-    lab.log("other.example", 8, 10, T0_S - 100, false);
+    lab.log("tracker.example", 7, 40, t0_s(), false);
+    lab.log("other.example", 8, 10, t0_s() - 100, false);
 
     for (extra, by) in [
         (
@@ -264,7 +275,7 @@ fn obs_024_a_block_rule_reports_what_it_would_have_blocked() {
 fn obs_024_an_allow_rule_reports_what_it_would_have_let_through() {
     let _s = serial();
     let lab = Lab::new("");
-    lab.log("ads.example", 7, 5, T0_S, true);
+    lab.log("ads.example", 7, 5, t0_s(), true);
     let t = lab.simulate(
         lab.candidate("[[list]]\nname = \"ok\"\nkind = \"allow\"\nrules = [\"ads.example\"]\n"),
     );
@@ -280,9 +291,9 @@ fn obs_024_an_allow_rule_reports_what_it_would_have_let_through() {
 fn obs_024_route_changes_and_no_op_changes() {
     let _s = serial();
     let lab = Lab::new("");
-    lab.log("www.example", 7, 12, T0_S, false);
-    lab.log("ads.example", 7, 3, T0_S - 50, true);
-    lab.log("www.example", 5, 4, T0_S - 80, false);
+    lab.log("www.example", 7, 12, t0_s(), false);
+    lab.log("ads.example", 7, 3, t0_s() - 50, true);
+    lab.log("www.example", 5, 4, t0_s() - 80, false);
     let routed = lab.simulate(
         lab.candidate("[[route]]\nmatch_group = [\"default\"]\nupstream_group = \"lan\"\n"),
     );
@@ -321,8 +332,8 @@ fn obs_024_route_changes_and_no_op_changes() {
 fn obs_024_only_changed_lists_are_compiled() {
     let _s = serial();
     let lab = Lab::new("");
-    lab.log("ads.example", 7, 6, T0_S, true);
-    lab.log("more.example", 7, 4, T0_S - 30, false);
+    lab.log("ads.example", 7, 6, t0_s(), true);
+    lab.log("more.example", 7, 4, t0_s() - 30, false);
     let before = lab.serving.snapshot().unwrap().manifest.clone();
 
     let added =
@@ -381,8 +392,8 @@ fn obs_024_only_changed_lists_are_compiled() {
 fn obs_024_bounds() {
     let _s = serial();
     let lab = Lab::new("");
-    lab.log("old.example", 7, 4000, T0_S - 2000, false);
-    lab.log("new.example", 7, 1000, T0_S, false);
+    lab.log("old.example", 7, 4000, t0_s() - 2000, false);
+    lab.log("new.example", 7, 1000, t0_s(), false);
     let block_new =
         lab.candidate("[[rule]]\nid = \"r\"\naction = \"block\"\ndomain = \"new.example\"\n");
 
@@ -424,7 +435,7 @@ fn obs_024_bounds() {
                 u8::try_from(i / 250).unwrap(),
                 u8::try_from(i % 250).unwrap(),
             ];
-            b.push(&event((T0_S - i) * 1_000_000, ip, false), wire.as_wire());
+            b.push(&event((t0_s() - i) * 1_000_000, ip, false), wire.as_wire());
         }
     }
     // Every row changes (a block for the name), so every device gets its label.
@@ -445,13 +456,13 @@ fn obs_024_bounds() {
         started.elapsed()
     );
 
-    let w = window(&lab.current.simulate, Some("8d"), None, T0_S).unwrap_err();
+    let w = window(&lab.current.simulate, Some("8d"), None, t0_s()).unwrap_err();
     assert_eq!(w.code, Code::SimulationWindow);
     assert_eq!(w.status, 422);
-    assert!(window(&lab.current.simulate, Some("soon"), None, T0_S).is_err());
-    let w = window(&lab.current.simulate, None, Some(T0_S), T0_S + 99).unwrap();
-    assert_eq!(w.to_us, T0_S * 1_000_000);
-    assert_eq!(w.from_us, (T0_S - 86_400) * 1_000_000);
+    assert!(window(&lab.current.simulate, Some("soon"), None, t0_s()).is_err());
+    let w = window(&lab.current.simulate, None, Some(t0_s()), t0_s() + 99).unwrap();
+    assert_eq!(w.to_us, t0_s() * 1_000_000);
+    assert_eq!(w.from_us, (t0_s() - 86_400) * 1_000_000);
 }
 
 // REQ: OBS-024 — AC (4): privacy level 1 can't replay names; a change to devices only still
@@ -460,8 +471,8 @@ fn obs_024_bounds() {
 fn obs_024_privacy_level_1() {
     let _s = serial();
     let mut lab = Lab::new("[telemetry.qlog]\nprivacy_level = 1\n");
-    lab.log("www.example", 5, 9, T0_S, false);
-    lab.log("www.example", 7, 2, T0_S - 30, false);
+    lab.log("www.example", 5, 9, t0_s(), false);
+    lab.log("www.example", 7, 2, t0_s() - 30, false);
     let list = lab.candidate(
         "[telemetry.qlog]\nprivacy_level = 1\n[[list]]\nname = \"n\"\nrules = [\"x.example\"]\n",
     );
@@ -506,7 +517,7 @@ fn obs_024_deterministic_and_mergeable() {
             name,
             10 + i,
             7,
-            T0_S - u64::from(i) * 10,
+            t0_s() - u64::from(i) * 10,
             *name == "ads.example",
         );
     }
@@ -537,7 +548,7 @@ fn obs_024_deterministic_and_mergeable() {
         let wire = NameBuf::from_presentation("a.example").unwrap();
         for i in 0..5 {
             b.push(
-                &event((T0_S - 500 - i) * 1_000_000, [10, 0, 0, 20], false),
+                &event((t0_s() - 500 - i) * 1_000_000, [10, 0, 0, 20], false),
                 wire.as_wire(),
             );
         }
