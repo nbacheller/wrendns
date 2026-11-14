@@ -1299,7 +1299,6 @@ fn listeners(cfg: &Config, r: &mut Report<'_>) {
     }
 }
 
-/// REQ: UPS-003 (T9.9) — relays carry DNSCrypt only.
 /// REQ: DNS-022 — a stub zone needs both its name and its servers.
 fn stub_zone(u: &crate::schema::Upstream, p: &str, r: &mut Report<'_>) {
     match (&u.recursive.stub_zone, u.recursive.stub_servers.is_empty()) {
@@ -1319,6 +1318,7 @@ fn stub_zone(u: &crate::schema::Upstream, p: &str, r: &mut Report<'_>) {
     }
 }
 
+/// REQ: UPS-003 (T9.9) — relays carry DNSCrypt only.
 fn relay(u: &crate::schema::Upstream, scheme: &str, p: &str, r: &mut Report<'_>) {
     let Some(relay) = &u.relay else { return };
     let relay = relay.as_str();
