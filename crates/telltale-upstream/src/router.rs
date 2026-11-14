@@ -291,6 +291,9 @@ fn build_upstreams<'c>(
         };
         let bootstrap = match (&ep.host, u.bootstrap.is_empty()) {
             (Host::Ip(_), _) => None,
+            // REQ: UPS-012 — `recursive://` names no host to resolve (its placeholder host
+            // isn't one), so it needs no bootstrap even when resolv.conf lists only ourselves.
+            _ if ep.protocol == Protocol::Recursive => None,
             // The proxy resolves the name (REQ: UPS-010).
             (Host::Name(_), true) if proxy.is_some() => None,
             (Host::Name(_), false) => Some(Arc::new(Bootstrap::new(
