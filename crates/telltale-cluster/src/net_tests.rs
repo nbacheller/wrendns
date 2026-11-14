@@ -21,6 +21,17 @@ async fn wait_for(mut f: impl FnMut() -> bool) {
     panic!("condition not met in time");
 }
 
+/// [`wait_for`] for a test with several waits: the panic says which one timed out.
+async fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
+    for _ in 0..200 {
+        if f() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("not met in time: {what}");
+}
+
 // REQ: CLU-009 — resolver pods join with the shared bootstrap secret: they trust the CA only
 // after the primary proves it knows the secret, join as ephemeral members, and leave the
 // registry once they're gone for the TTL.
@@ -1317,5 +1328,105 @@ async fn clu_003_users_and_tokens_are_not_served_to_pods() {
     let err = pod.fetch(&[users_ref], &store).await.unwrap_err();
     assert!(err.contains("403"), "{err}");
     let _ = pod_stop_tx.send(true);
+    let _ = stop_tx.send(true);
+}
+
+// REQ: CLU-001 (ADR-051; GitHub issue #4) — a replica that couldn't reach the primary and
+// settled on a peer goes back to the primary once it answers. The primary advertises a URL
+// that nothing answers on (like an in-cluster Service name seen from outside Kubernetes), and
+// a peer replica is another candidate. The stream to that peer used to be kept for good, and
+// the primary's URLs were never tried again.
+#[tokio::test(flavor = "multi_thread")]
+async fn clu_001_a_replica_on_a_peer_goes_back_to_the_primary() {
+    replica_with_a_dead_primary_url(false).await;
+}
+
+// The same cluster with the primary up from the start: the dead URL is skipped and the
+// replica reaches the primary at once. It keeps the test above honest: when that one fails,
+// it's the return to the primary that doesn't happen, not the set-up.
+#[tokio::test(flavor = "multi_thread")]
+async fn clu_001_a_replica_skips_a_dead_primary_url() {
+    replica_with_a_dead_primary_url(true).await;
+}
+
+/// One replica, one peer replica, and a primary whose first advertised URL is dead. With
+/// `primary_first` the primary is up before the replica starts; otherwise it comes up after
+/// the replica has settled on the peer.
+async fn replica_with_a_dead_primary_url(primary_first: bool) {
+    let (pdir, adir, bdir) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let (p_addr, b_addr, dead) = (free_port().await, free_port().await, free_port().await);
+    let (p_url, b_url) = (format!("https://{p_addr}"), format!("https://{b_addr}"));
+    let primary = Identity::init(
+        pdir.path(),
+        "home",
+        vec![format!("https://{dead}"), p_url.clone()],
+        "k8s",
+    )
+    .unwrap();
+    let token = primary
+        .create_token_for(
+            600,
+            Some(vec![p_url.clone()]),
+            crate::node::TokenGrants {
+                eligible: true,
+                witness: false,
+            },
+        )
+        .unwrap();
+    let join_node = |dir: &std::path::Path, site: &str, eligible: bool, advertise: Vec<String>| {
+        let key = pki::new_node_key().unwrap();
+        let req = JoinRequest {
+            witness: false,
+            ephemeral: false,
+            secret: token.secret.clone(),
+            csr_pem: key.csr_pem.clone(),
+            advertise: advertise.clone(),
+            site: site.into(),
+            eligible,
+            version: "0.1.0".into(),
+        };
+        let resp = primary.accept_join(&req, None).unwrap();
+        Identity::save_joined(dir, &key.key_pem, &resp, site, eligible, advertise).unwrap()
+    };
+    let peer = join_node(bdir.path(), "pi", true, vec![b_url]);
+    let replica = join_node(adir.path(), "lxc", false, vec![]);
+    // What replication gives a replica: the registry, with the peer in it.
+    replica.save_registry(&primary.registry()).unwrap();
+    let (primary_id, peer_id) = (primary.meta.node_id.clone(), peer.meta.node_id.clone());
+
+    let (peer, replica) = (Cluster::new(peer, "0.1.0"), Cluster::new(replica, "0.1.0"));
+    let (stop_tx, stop) = watch::channel(false);
+    tokio::spawn(serve(Arc::clone(&peer), b_addr, stop.clone()));
+    let mut primary = Some(primary);
+    let mut start_primary = || {
+        let c = Cluster::new(primary.take().unwrap(), "0.1.0");
+        tokio::spawn(serve(Arc::clone(&c), p_addr, stop.clone()));
+        c
+    };
+    let _primary = primary_first.then(&mut start_primary);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::spawn(dial(Arc::clone(&replica), stop.clone()));
+    let connected_to = |id: String| {
+        let r = Arc::clone(&replica);
+        move || r.members().iter().any(|m| m.node_id == id && m.connected)
+    };
+    if primary_first {
+        wait_until("the replica reaches the primary", connected_to(primary_id)).await;
+    } else {
+        // Nothing but the peer answers: the replica settles on it.
+        wait_until("the replica attaches to the peer", connected_to(peer_id)).await;
+        // The primary comes up. The replica must find its way back, not stay on the peer.
+        let _primary = start_primary();
+        wait_until(
+            "the replica goes back to the primary",
+            connected_to(primary_id),
+        )
+        .await;
+    }
+    assert_eq!(replica.connected_primary(), Some(p_url));
     let _ = stop_tx.send(true);
 }
