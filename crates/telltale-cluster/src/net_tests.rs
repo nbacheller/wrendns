@@ -1430,3 +1430,86 @@ async fn replica_with_a_dead_primary_url(primary_first: bool) {
     assert_eq!(replica.connected_primary(), Some(p_url));
     let _ = stop_tx.send(true);
 }
+
+// REQ: CLU-001 (ADR-051; GitHub issue #4) — the URLs a replica looks at for the primary leave out
+// the nodes it knows are not primary. A joining URL can belong to an old primary that is a
+// replica now: moving to it would only leave the replica to move again.
+#[test]
+fn clu_001_primary_urls_leave_out_nodes_known_not_to_be_primary() {
+    let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (old, new) = (
+        "https://127.0.0.1:1".to_owned(),
+        "https://127.0.0.1:2".to_owned(),
+    );
+    let primary = Identity::init(pdir.path(), "home", vec![old.clone()], "k8s").unwrap();
+    let token = primary
+        .create_token_for(
+            60,
+            None,
+            crate::node::TokenGrants {
+                eligible: false,
+                witness: false,
+            },
+        )
+        .unwrap();
+    let key = pki::new_node_key().unwrap();
+    let req = JoinRequest {
+        witness: false,
+        ephemeral: false,
+        secret: token.secret.clone(),
+        csr_pem: key.csr_pem.clone(),
+        advertise: vec![],
+        site: "pi".into(),
+        eligible: false,
+        version: "0.1.0".into(),
+    };
+    let resp = primary.accept_join(&req, None).unwrap();
+    let replica =
+        Identity::save_joined(rdir.path(), &key.key_pem, &resp, "pi", false, vec![]).unwrap();
+    assert_eq!(replica.meta.primary_urls, [old.as_str()]);
+    let replica = Cluster::new(replica, "0.1.0");
+    let hello = |node: &str, url: &str, primary: bool, epoch: u64| Frame {
+        body: Some(Body::Hello(Hello {
+            protocol: PROTOCOL,
+            cluster_id: replica.identity.meta.cluster_id.clone(),
+            node_id: node.into(),
+            version: "0.1.0".into(),
+            site: "k8s".into(),
+            eligible: true,
+            advertise: vec![url.into()],
+            epoch,
+            applied_seq: 0,
+            primary,
+            config_source: String::new(),
+            source_commit: String::new(),
+        })),
+    };
+    // Nothing is known yet: the URL it joined with.
+    assert_eq!(replica.primary_urls(), [old.as_str()]);
+    // The old primary says it isn't one any more: its URL is left out.
+    let mut peer = None;
+    replica
+        .on_frame(
+            &mut peer,
+            hello("old", &old, false, 2),
+            "outbound",
+            &EchoSlot::default(),
+        )
+        .unwrap();
+    assert!(
+        replica.primary_urls().is_empty(),
+        "{:?}",
+        replica.primary_urls()
+    );
+    // The new primary says so: its URL is the one to look at.
+    let mut peer = None;
+    replica
+        .on_frame(
+            &mut peer,
+            hello("new", &new, true, 3),
+            "outbound",
+            &EchoSlot::default(),
+        )
+        .unwrap();
+    assert_eq!(replica.primary_urls(), [new]);
+}

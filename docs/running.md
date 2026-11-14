@@ -1663,6 +1663,13 @@ dashboard and query log show the whole cluster**. Changes made in any node's UI 
 the primary. DNS never depends on the cluster: a node answers the same whether its peers are
 up or not.
 
+**Finding the primary.** A node dials the addresses it joined with and the ones the primary
+advertises; if none answers, it attaches to another eligible node, so it still gets the
+cluster's state. While it is attached to a node that isn't the primary, it looks for the
+primary again every 2 to 30 seconds (jittered, backing off) and moves back as soon as it
+answers, with `cluster: the primary answers again` in the log. It never moves to an address
+of a node it knows is not the primary.
+
 **One view of the whole cluster.** Open any node's UI and the dashboard, top lists, latency,
 groups, query log, and live query stream cover every node:
 - The node you're on asks its peers over the cluster link and merges what they send:

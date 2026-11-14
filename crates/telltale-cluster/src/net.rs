@@ -32,7 +32,7 @@ use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, ServerConfig, S
 use rustls_pki_types::pem::PemObject;
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 use tracing::{debug, info, warn};
 
 use crate::node::{Identity, JoinRequest, JoinResponse, Role};
@@ -47,6 +47,19 @@ use crate::wire::{
 pub const HEARTBEAT: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// REQ: CLU-001 (ADR-051, GitHub issue #4) — how soon a replica whose stream is to another
+/// replica first looks for the primary again, and the longest it waits between looks (each
+/// wait is jittered and doubles). Tests look sooner.
+#[cfg(not(test))]
+const REPROBE_MIN: Duration = Duration::from_secs(2);
+#[cfg(not(test))]
+const REPROBE_MAX: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const REPROBE_MIN: Duration = Duration::from_millis(100);
+#[cfg(test)]
+const REPROBE_MAX: Duration = Duration::from_millis(400);
+/// A look at the primary that takes longer than this counts as no answer.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 fn provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
@@ -1189,6 +1202,40 @@ impl Cluster {
             }
         }
         out
+    }
+
+    /// REQ: CLU-001 (ADR-051, GitHub issue #4) — where the primary is believed to be: the
+    /// advertise URLs of the nodes that said they're primary (highest epoch first), then the URLs
+    /// from joining. This node's own URLs are left out, and so are the URLs of nodes known not to
+    /// be primary: a joining URL can belong to an old primary that is a replica now, and a node
+    /// that moved to it would have to move again.
+    pub fn primary_urls(&self) -> Vec<String> {
+        let own = &self.identity.meta.advertise;
+        let mut members = self.members();
+        let replicas: Vec<String> = members
+            .iter()
+            .filter(|m| !m.primary)
+            .flat_map(|m| m.advertise.iter().cloned())
+            .collect();
+        let mut out: Vec<String> = Vec::new();
+        let mut push = |u: &String| {
+            if !own.contains(u) && !replicas.contains(u) && !out.contains(u) {
+                out.push(u.clone());
+            }
+        };
+        members.sort_by_key(|m| std::cmp::Reverse((m.primary, m.epoch)));
+        for m in members.iter().filter(|m| m.primary) {
+            m.advertise.iter().for_each(&mut push);
+        }
+        if !self.is_primary() {
+            self.identity.meta.primary_urls.iter().for_each(&mut push);
+        }
+        out
+    }
+
+    /// Whether a stream to the node that's primary is open right now.
+    pub fn connected_to_primary(&self) -> bool {
+        self.members().iter().any(|m| m.primary && m.connected)
     }
 
     /// The URL to fetch blobs from: the current primary's, else the connected stream's.
@@ -2460,7 +2507,7 @@ pub async fn mesh(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
                 for url in &n.advertise {
                     tokio::select! {
                         _ = stop.changed() => break,
-                        r = stream_once(Arc::clone(&c), url, Arc::clone(&cfg), false) => {
+                        r = stream_once(Arc::clone(&c), url, Arc::clone(&cfg), false, Arc::new(Notify::new())) => {
                             if let Err(e) = r {
                                 debug!(%url, "voter stream: {e}");
                             }
@@ -2498,18 +2545,51 @@ pub async fn dial(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
             }
         }
         // The candidates change: a promotion names a new primary, the registry grows.
+        let mut moved = false;
         for url in cluster.candidate_urls() {
             let started = tokio::time::Instant::now();
-            tokio::select! {
-                _ = stop.changed() => return,
-                r = stream_once(Arc::clone(&cluster), &url, Arc::clone(&cfg), true) => match r {
-                    Ok(()) => debug!(%url, "cluster stream closed"),
-                    Err(e) => debug!(%url, "cluster stream: {e}"),
-                },
+            // REQ: CLU-001 (GitHub issue #4) — a stream to a node that isn't the primary (the
+            // primary's URLs failed, a replica answered) is not the end of the search: while
+            // it's open, look for the primary now and then, and move back when it answers.
+            let switch = Arc::new(Notify::new());
+            let stream = stream_once(
+                Arc::clone(&cluster),
+                &url,
+                Arc::clone(&cfg),
+                true,
+                Arc::clone(&switch),
+            );
+            tokio::pin!(stream);
+            let back = primary_is_back(&cluster, &cfg, &url);
+            tokio::pin!(back);
+            let mut asked = false;
+            let r = loop {
+                tokio::select! {
+                    _ = stop.changed() => return,
+                    r = &mut stream => break r,
+                    () = &mut back, if !asked => {
+                        asked = true;
+                        switch.notify_one();
+                    }
+                }
+            };
+            match r {
+                Ok(()) => debug!(%url, "cluster stream closed"),
+                Err(e) => debug!(%url, "cluster stream: {e}"),
+            }
+            if asked {
+                info!(%url, "cluster: the primary answers again; leaving this node to move back to it");
+                moved = true;
+                break;
             }
             if started.elapsed() > Duration::from_secs(60) {
                 backoff = Duration::from_secs(1); // it was up for a while
             }
+        }
+        if moved {
+            // Not a failure: try the candidates again at once, the primary's URLs first.
+            backoff = Duration::from_secs(1);
+            continue;
         }
         // Full jitter: wait a random share of the backoff.
         let wait = backoff
@@ -2523,11 +2603,41 @@ pub async fn dial(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
     }
 }
 
+/// REQ: CLU-001 (GitHub issue #4) — resolves when the primary answers while this node's stream is
+/// to another node (a replica it fell back to when the primary's URLs didn't answer). It never
+/// resolves while the stream is to the primary, or on the primary itself. It looks on a jittered
+/// interval that doubles up to [`REPROBE_MAX`], at the primary's URLs only (not the stream's
+/// own): a completed TLS connection, which the cluster's certificate authority must have
+/// vouched for, is enough to try the primary again.
+async fn primary_is_back(cluster: &Cluster, cfg: &Arc<ClientConfig>, current: &str) {
+    let mut wait = REPROBE_MIN;
+    loop {
+        let jitter = 0.5 + f64::from(rand::random::<u16>()) / f64::from(u16::MAX) / 2.0;
+        tokio::time::sleep(wait.mul_f64(jitter)).await;
+        wait = (wait * 2).min(REPROBE_MAX);
+        if cluster.is_primary() || cluster.connected_to_primary() {
+            continue;
+        }
+        for url in cluster.primary_urls() {
+            if url == current {
+                continue;
+            }
+            let probe = tokio::time::timeout(PROBE_TIMEOUT, tls_connect(&url, Arc::clone(cfg)));
+            if matches!(probe.await, Ok(Ok(_))) {
+                return;
+            }
+        }
+    }
+}
+
+/// One stream to `url`, until it closes. `switch` ends it from outside (the caller found a
+/// better node to be attached to); the clean-up below still runs.
 async fn stream_once(
     cluster: Arc<Cluster>,
     url: &str,
     cfg: Arc<ClientConfig>,
     main: bool,
+    switch: Arc<Notify>,
 ) -> Result<(), String> {
     let tls = tls_connect(url, cfg).await?;
     let server_id = tls
@@ -2570,7 +2680,10 @@ async fn stream_once(
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(url.to_owned());
     }
-    let result = read_frames(&cluster, r.into_body(), server_id, "outbound", &echo).await;
+    let result = tokio::select! {
+        done = read_frames(&cluster, r.into_body(), server_id, "outbound", &echo) => done,
+        () = switch.notified() => Ok(()),
+    };
     writer.abort();
     cluster
         .connected
