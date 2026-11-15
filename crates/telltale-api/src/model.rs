@@ -285,7 +285,9 @@ pub struct Summary {
     pub forwarded: u64,
     pub nxdomain: u64,
     pub servfail: u64,
-    /// Distinct clients seen this hour.
+    /// Distinct clients seen in the hours the range overlaps (REQ: OBS-004): this hour's list,
+    /// the previous hour's, and each stored hour's busiest 100, so ranges past the last two
+    /// hours undercount on networks with more than 100 devices an hour.
     pub active_clients: u64,
     /// Latency percentiles this hour, by answer path (`cache`, `upstream`, ...).
     pub latency: Vec<LatencyRow>,
@@ -380,6 +382,12 @@ pub struct TopParams {
     /// `cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`
     /// (this node). Federated reads list nodes that didn't answer in `missingNodes`.
     pub scope: Option<String>,
+    /// A window instead of one hour (REQ: OBS-004): a relative offset such as `-24h`, or RFC
+    /// 3339. Every hour the window overlaps counts whole: the stored hours (400 days) plus the
+    /// current one. Not with `hour`, `client`, or `group`.
+    pub from: Option<String>,
+    /// The window's end (default: now). Only with `from`.
+    pub to: Option<String>,
 }
 
 /// One ranked item. Counts come from a Space-Saving sketch: the true count lies in

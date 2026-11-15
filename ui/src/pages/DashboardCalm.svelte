@@ -160,7 +160,7 @@
     <div class="cell" data-testid="stat-blocked"><Stat label="Blocked" value={pct(s?.blockedPercent)} delta={change(s?.blockedPercent, d.previous?.blockedPercent)} sub={`${short(s?.blocked)} queries`} /></div>
     <div class="cell" data-testid="stat-cache"><Stat label="Cache hits" value={pct(s?.cacheHitPercent)} delta={change(s?.cacheHitPercent, d.previous?.cacheHitPercent)} good="up" sub={cacheSub} /></div>
     <div class="cell" data-testid="stat-upstream"><Stat label="Upstream p90" value={ms(d.upstreamP90?.p90Ms)} sub={d.cacheP50 ? `cache p50 ${ms(d.cacheP50.p50Ms)}` : 'this hour'} delta={change(d.upstreamP90?.p90Ms, d.prevP90?.p90Ms)} good="down" /></div>
-    <div class="cell" data-testid="stat-clients"><Stat label="Active clients" value={num(s?.activeClients)} sub="this hour" /></div>
+    <div class="cell" data-testid="stat-clients"><Stat label="Active clients" value={num(s?.activeClients)} sub={d.rangeLabel} /></div>
   </div>
   <p class="fine muted small">{short(s?.nxdomain)} NXDOMAIN · {short(s?.servfail)} SERVFAIL in the last {d.range.label}</p>
 
@@ -282,14 +282,14 @@
       <section>
         {#if l.title === 'Top domains'}
           <div class="sh">
-            <h2>{l.title} <span class="muted small">this hour</span><HelpButton id="internal-names" /></h2>
+            <h2>{l.title} <span class="muted small">{d.topLabel}</span><HelpButton id="internal-names" /></h2>
             <div class="seg" role="group" aria-label="Top domains on the internet or internal">
               <button type="button" aria-pressed={d.domainsView === 'internet'} onclick={() => (d.domainsView = 'internet')}>Internet</button>
               <button type="button" aria-pressed={d.domainsView === 'internal'} onclick={() => (d.domainsView = 'internal')} data-testid="domains-internal-tab">Internal</button>
             </div>
           </div>
         {:else}
-          <div class="sh"><h2>{l.title} <span class="muted small">this hour</span></h2></div>
+          <div class="sh"><h2>{l.title} <span class="muted small">{d.topLabel}</span></h2></div>
         {/if}
         <TopList items={l.items} kind={l.kind} link={l.link} groupColor={d.groupColor} onchanged={() => void d.load()} />
         {#if d.advanced && l.kind === 'clients' && types.length}

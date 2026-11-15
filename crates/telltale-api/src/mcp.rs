@@ -133,13 +133,15 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "top_items",
-            description: "Read-only. The heaviest items in the current or previous hour: most queried domains, most blocked domains, names answered NXDOMAIN, most active clients, or most queried internal names (the Kubernetes cluster domain and reverse lookups of private addresses, which the domains and NXDOMAIN lists leave out). For clients, also the last hour whatever the clock hour (hour=rolling: 60-65 minutes, exact counts). Optionally for one client (domains only) or one client group.",
+            description: "Read-only. The heaviest items in the current or previous hour, or over a window of hours (`from`, such as -24h or -7d): most queried domains, most blocked domains, names answered NXDOMAIN, most active clients, or most queried internal names (the Kubernetes cluster domain and reverse lookups of private addresses, which the domains and NXDOMAIN lists leave out). For clients, also the last hour whatever the clock hour (hour=rolling: 60-65 minutes, exact counts). Optionally for one client (domains only) or one client group (current, previous, or rolling hour only).",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "kind": {"type": "string", "enum": ["domains", "blocked", "nxdomain", "clients", "internal"], "description": "Which list."},
                 "hour": {"type": "string", "enum": ["current", "previous", "rolling"], "description": "Which hour (default current). `rolling` is the last hour (60-65 minutes) whatever the clock hour, for kind=clients only."},
                 "client": {"type": "string", "description": "A client IP: its top domains (kind=domains only)."},
                 "group": {"type": "string", "description": "A client group's top items."},
+                "from": {"type": "string", "description": "A window instead of one hour: relative (-24h, -7d) or RFC 3339. Every hour it overlaps counts whole. Not with hour, client, or group."},
+                "to": {"type": "string", "description": "The window's end (default now). Only with from."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Items (default 10)."},
                 "scope": scope_schema()
             }, "required": ["kind"], "additionalProperties": false})
@@ -161,6 +163,8 @@ pub fn tools() -> Vec<Tool> {
                             ("hour", "hour"),
                             ("client", "client"),
                             ("group", "group"),
+                            ("from", "from"),
+                            ("to", "to"),
                             ("limit", "limit"),
                             ("scope", "scope"),
                         ],

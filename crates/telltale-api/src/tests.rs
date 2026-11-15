@@ -147,6 +147,19 @@ impl Backend for Fake {
             error_bound: 0,
         }])
     }
+    fn top_range(&self, kind: TopKind, from_s: u64, to_s: u64, limit: usize) -> Vec<TopItem> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(format!("top_range {kind:?} {from_s} {to_s} {limit}"));
+        vec![TopItem {
+            groups: Vec::new(),
+            key: "10.0.0.1".into(),
+            name: None,
+            count: 9,
+            error_bound: 0,
+        }]
+    }
     fn latency(&self, by: LatencyBy, _: Hour) -> Vec<LatencyRow> {
         vec![LatencyRow {
             key: format!("{by:?}"),
@@ -1199,6 +1212,53 @@ async fn api_005_top_clients_over_the_rolling_hour() {
             .iter()
             .any(|s| s == "top Clients Previous 10 None")
     );
+}
+
+/// REQ: OBS-004 (ADR-160) — `from` (and `to`) read a top list over a window, and the summary's
+/// active clients count the window's devices; `from` doesn't mix with one hour, one client, or
+/// one group.
+#[tokio::test]
+async fn obs_004_top_lists_take_a_window() {
+    let (app, fake) = app();
+    let (status, _, v) = get(&app, "/api/v1/stats/top?kind=clients&from=-24h").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v["items"][0]["count"], 9);
+    let (status, _, _) = get(
+        &app,
+        "/api/v1/stats/top?kind=blocked&from=-7d&to=-1d&limit=5",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, v) = get(&app, "/api/v1/stats/summary?from=-48h&to=-24h").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v["activeClients"], 1);
+    let seen = fake.seen.lock().unwrap().clone();
+    for want in [
+        format!("top_range Clients {} {} 10", NOW - 86_400, NOW + 1),
+        format!("top_range Blocked {} {} 5", NOW - 7 * 86_400, NOW - 86_400),
+        format!(
+            "top_range Clients {} {} 1000",
+            NOW - 2 * 86_400,
+            NOW - 86_400
+        ),
+    ] {
+        assert!(seen.contains(&want), "{want} not in {seen:?}");
+    }
+    for bad in [
+        "/api/v1/stats/top?kind=clients&to=-1h",
+        "/api/v1/stats/top?kind=clients&from=-1h&hour=previous",
+        "/api/v1/stats/top?kind=clients&from=-1h&group=iot",
+        "/api/v1/stats/top?kind=domains&from=-1h&client=10.0.0.1",
+        "/api/v1/stats/top?kind=clients&from=-1h&to=-2h",
+        "/api/v1/stats/top?kind=clients&from=yesterday",
+    ] {
+        let (status, _, v) = get(&app, bad).await;
+        assert_eq!(
+            (status, v["code"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("invalid_parameter")),
+            "{bad}"
+        );
+    }
 }
 
 #[tokio::test]

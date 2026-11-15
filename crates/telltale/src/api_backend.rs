@@ -1146,6 +1146,76 @@ impl Backend for ApiBackend {
         Ok(self.top_items(kind, tops))
     }
 
+    // REQ: OBS-004 (ADR-160) — a top list over a window: the stored hours (`hour_top`) plus
+    // the current hour (and the previous one until it's stored) from memory, summed per key.
+    // Hour granularity: every hour the window overlaps counts whole.
+    fn top_range(&self, kind: TopKind, from_s: u64, to_s: u64, limit: usize) -> Vec<TopItem> {
+        use telltale_telemetry::agg::{HourSel, TopKind as Mem};
+        let (stored_kind, mem_kind) = match kind {
+            TopKind::Domains => ("domains", Mem::Domains),
+            TopKind::Blocked => ("blocked", Mem::Blocked),
+            TopKind::Nxdomain => ("nxdomain", Mem::Nxdomain),
+            TopKind::Clients => ("clients", Mem::Clients),
+            TopKind::Internal => ("internal", Mem::Internal),
+        };
+        let db = self.src.rollups.as_ref();
+        let (current, previous) = {
+            let agg = self.src.pipeline.telemetry.aggregates();
+            (agg.current_hour_start(), agg.previous_hour_start())
+        };
+        let prev_live =
+            previous.filter(|h| db.is_none_or(|d| !d.has_hour_tops(*h).unwrap_or(false)));
+        let first = from_s - from_s % 3600;
+        let in_window = |h: u64| h >= first && h < to_s;
+        let stored_to = to_s.min(prev_live.unwrap_or(current));
+        // Space-Saving's lists are kept per hour: read more than asked, so the summed
+        // heaviest are among them.
+        let n = (limit * 2).max(20);
+        let mut by = std::collections::HashMap::<String, (u64, u64)>::new();
+        if let Some(d) = db {
+            match d.top_range(first, stored_to, stored_kind, n) {
+                Ok((rows, _)) => {
+                    for r in rows {
+                        let e = by.entry(r.key).or_default();
+                        e.0 += r.count;
+                        e.1 += r.error;
+                    }
+                }
+                Err(e) => tracing::warn!("rollups: {e}"),
+            }
+        }
+        let agg = self.src.pipeline.telemetry.aggregates();
+        for (sel, start) in [
+            (HourSel::Current, Some(current)),
+            (HourSel::Previous, prev_live),
+        ] {
+            if !start.is_some_and(in_window) {
+                continue;
+            }
+            for t in agg.top_names(mem_kind, sel, n) {
+                let e = by.entry(t.key).or_default();
+                e.0 += t.count;
+                e.1 += t.error;
+            }
+        }
+        drop(agg);
+        let mut v: Vec<(String, (u64, u64))> = by.into_iter().collect();
+        v.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(&b.0)));
+        v.truncate(limit);
+        v.into_iter()
+            .map(|(key, (count, error_bound))| {
+                let (name, groups) = self.client_labels(kind, &key);
+                TopItem {
+                    key,
+                    name,
+                    groups,
+                    count,
+                    error_bound,
+                }
+            })
+            .collect()
+    }
+
     fn top(&self, kind: TopKind, h: Hour, limit: usize, client: Option<IpAddr>) -> Vec<TopItem> {
         let agg = self.src.pipeline.telemetry.aggregates();
         let plain = |v: Vec<telltale_telemetry::topk::Top<String>>| {
@@ -5749,5 +5819,96 @@ mod top_client_name_tests {
         );
         assert_eq!(name(TopKind::Clients, "192.168.1.40"), None);
         assert_eq!(name(TopKind::Domains, "example.com"), None);
+    }
+}
+
+#[cfg(test)]
+mod top_range_tests {
+    use super::*;
+    use telltale_store::rollup::{Rollups, TopRow};
+    use telltale_telemetry::event::{Name, Record};
+
+    fn query(ts_s: u64, ip: [u8; 4]) -> Record {
+        Record::Query(
+            telltale_telemetry::QueryEvent {
+                ts_us: ts_s * 1_000_000,
+                client_ip: std::net::Ipv4Addr::from(ip).to_ipv6_mapped().octets(),
+                client_ref: 0,
+                group: 0,
+                qtype: 1,
+                qclass: 1,
+                rcode: Some(0),
+                status: telltale_telemetry::Status::Forwarded,
+                proto: telltale_telemetry::Proto::Udp,
+                flags: 0x8180,
+                rule: None,
+                upstream: 0,
+                attempts: 0,
+                t_total_us: 100,
+                t_upstream_us: 0,
+                resp_size: 64,
+                answers: 1,
+            },
+            Name::from_wire(b"\x07example\x03com\x00"),
+        )
+    }
+
+    fn row(key: &str, count: u64) -> TopRow {
+        TopRow {
+            key: key.into(),
+            count,
+            error: 0,
+        }
+    }
+
+    /// REQ: OBS-004 (ADR-160) — a top list over a window sums the stored hours it overlaps and
+    /// the current hour from memory, per key; an hour the window only touches counts whole,
+    /// and a window that ends before this hour leaves memory out. Active clients (the
+    /// summary's) is the same list's length.
+    #[test]
+    fn obs_004_top_lists_over_a_window_sum_stored_and_live_hours() {
+        let mut s = crate::http::tests::sources();
+        let db = Arc::new(Rollups::in_memory().unwrap());
+        s.rollups = Some(Arc::clone(&db));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let cur = now - now % 3600;
+        let (h0, h1) = (cur - 7200, cur - 3600);
+        db.put_hour_extras(
+            h0,
+            &[("clients", vec![row("10.0.0.1", 5), row("10.0.0.3", 4)])],
+            &[],
+        )
+        .unwrap();
+        db.put_hour_extras(h1, &[("clients", vec![row("10.0.0.3", 2)])], &[])
+            .unwrap();
+        {
+            let mut agg = s.pipeline.telemetry.aggregates();
+            for ip in [[10, 0, 0, 1], [10, 0, 0, 1], [10, 0, 0, 1], [10, 0, 0, 2]] {
+                agg.record(&query(cur + 1, ip));
+            }
+        }
+        let api = ApiBackend { src: Arc::new(s) };
+        let list = |from, to| -> Vec<(String, u64)> {
+            api.top_range(TopKind::Clients, from, to, 10)
+                .into_iter()
+                .map(|t| (t.key, t.count))
+                .collect()
+        };
+        let pairs = |v: &[(&str, u64)]| -> Vec<(String, u64)> {
+            v.iter().map(|(k, c)| ((*k).to_owned(), *c)).collect()
+        };
+        assert_eq!(
+            list(h0 + 600, now + 1),
+            pairs(&[("10.0.0.1", 8), ("10.0.0.3", 6), ("10.0.0.2", 1)])
+        );
+        assert_eq!(
+            list(h1 + 5, now + 1),
+            pairs(&[("10.0.0.1", 3), ("10.0.0.3", 2), ("10.0.0.2", 1)])
+        );
+        assert_eq!(list(h0, h1), pairs(&[("10.0.0.1", 5), ("10.0.0.3", 4)]));
+        assert_eq!(api.top_range(TopKind::Clients, h0, now + 1, 2).len(), 2);
     }
 }

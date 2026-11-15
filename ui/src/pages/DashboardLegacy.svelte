@@ -5,7 +5,7 @@
   import { api, type S } from '../lib/api';
   import { href } from '../lib/router.svelte';
   import { poll } from '../lib/poll';
-  import { ms, num, pct, short } from '../lib/format';
+  import { clock, ms, num, pct, short } from '../lib/format';
   import Kpi from '../lib/components/Kpi.svelte';
   import Chart from '../lib/components/Chart.svelte';
   import Tip from '../lib/components/Tip.svelte';
@@ -119,20 +119,29 @@
   // REQ: OBS-037 — Top domains as names on the internet or internal names (cluster, private
   // reverse lookups), which have their own list.
   let domainsView = $state<'internet' | 'internal'>('internet');
+  // REQ: OBS-004 (ADR-160) — the top lists and active clients follow the time range, by whole
+  // hours: a range under a day says from which hour; a group's lists cover this hour only.
+  let nowS = $state(Math.floor(Date.now() / 1000));
+  const rangeLabel = $derived(
+    range.secs < 86400 ? `since ${clock(Math.floor((nowS - range.secs) / 3600) * 3600)}` : `last ${range.label}`,
+  );
+  const topLabel = $derived(group ? 'this hour' : rangeLabel);
 
   async function load() {
     const r = range;
     try {
       const g = group || undefined;
       const sc = scope || undefined;
+      const tf = g ? undefined : r.from;
+      nowS = Math.floor(Date.now() / 1000);
       // REQ: OBS-033 — the window's change markers, once for every chart (refetched each minute).
       void changes.load(r.from, sc);
       const [s, ts, d, b, c, u, st, lp, gs, cl, sl] = await Promise.all([
         api.summary(r.summary, undefined, sc),
         api.timeseries({ from: r.from, step: r.step, scope: sc }),
-        api.top(domainsView === 'internal' ? 'internal' : 'domains', 10, undefined, g, sc),
-        api.top('blocked', 10, undefined, g, sc),
-        api.top('clients', 10, undefined, g, sc),
+        api.top(domainsView === 'internal' ? 'internal' : 'domains', 10, undefined, g, sc, undefined, tf),
+        api.top('blocked', 10, undefined, g, sc, undefined, tf),
+        api.top('clients', 10, undefined, g, sc, undefined, tf),
         api.upstreams(),
         api.latency('stage', sc),
         api.latency('path', sc),
@@ -346,7 +355,7 @@
     <Kpi label="Blocked" value={pct(summary?.blockedPercent)} sub={`${short(summary?.blocked)} queries`} tone="bad" delta={change(summary?.blockedPercent, previous?.blockedPercent)} spark={sparkBlocked} sparkColor="--s-blocked" ring={summary?.blockedPercent} />
     <Kpi label="Cache hits" value={pct(summary?.cacheHitPercent)} sub={cacheSub} tone="ok" delta={change(summary?.cacheHitPercent, previous?.cacheHitPercent)} good="up" spark={sparkCached} sparkColor="--s-cached" ring={summary?.cacheHitPercent} />
     <Kpi label="Upstream p90" value={ms(upstreamP90?.p90Ms)} sub={cacheP50 ? `cache p50 ${ms(cacheP50.p50Ms)}` : 'this hour'} delta={change(upstreamP90?.p90Ms, prevP90?.p90Ms)} good="down" />
-    <Kpi label="Active clients" value={num(summary?.activeClients)} sub="this hour" delta={change(summary?.activeClients, previous?.activeClients)} />
+    <Kpi label="Active clients" value={num(summary?.activeClients)} sub={rangeLabel} delta={change(summary?.activeClients, previous?.activeClients)} />
     <Kpi label="NXDOMAIN / SERVFAIL" value={`${short(summary?.nxdomain)} / ${short(summary?.servfail)}`} sub={`last ${range.label}`} delta={change(summary?.servfail, previous?.servfail)} good="down" spark={sparkFailures} sparkColor="--s-blocked" />
   </div>
 
@@ -440,14 +449,14 @@
       <section class="card">
         {#if t.title === 'Top domains'}
           <div class="card-head">
-            <h2>{t.title} <span class="muted small">(this hour)</span><HelpButton id="internal-names" /></h2>
+            <h2>{t.title} <span class="muted small">({topLabel})</span><HelpButton id="internal-names" /></h2>
             <div class="seg" role="group" aria-label="Top domains on the internet or internal">
               <button type="button" aria-pressed={domainsView === 'internet'} onclick={() => { domainsView = 'internet'; void load(); }}>Internet</button>
               <button type="button" aria-pressed={domainsView === 'internal'} onclick={() => { domainsView = 'internal'; void load(); }} data-testid="domains-internal-tab">Internal</button>
             </div>
           </div>
         {:else}
-          <h2>{t.title} <span class="muted small">(this hour)</span></h2>
+          <h2>{t.title} <span class="muted small">({topLabel})</span></h2>
         {/if}
         {#if t.title === 'Top clients' && t.items.some((i) => i.byStatus)}
           <p class="legend small muted" data-testid="clients-legend">

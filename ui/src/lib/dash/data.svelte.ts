@@ -4,6 +4,7 @@
 import { api, type S } from '../api';
 import { poll } from '../poll';
 import { currentMode } from '../mode.svelte';
+import { clock } from '../format';
 import { changes } from '../annotations.svelte';
 import type { RawSeries } from './smooth';
 
@@ -107,6 +108,14 @@ export class DashData {
 
   groupColor = (n: string) => this.groups.find((g) => g.name === n)?.color ?? 'var(--muted)';
 
+  /** REQ: OBS-004 (ADR-160) — the top lists and active clients follow the range, by whole hours: a
+   *  range under a day says from which hour; a group's lists cover this hour only. */
+  nowS = $state(Math.floor(Date.now() / 1000));
+  rangeLabel = $derived(
+    this.range.secs < 86400 ? `since ${clock(Math.floor((this.nowS - this.range.secs) / 3600) * 3600)}` : `last ${this.range.label}`,
+  );
+  topLabel = $derived(this.group ? 'this hour' : this.rangeLabel);
+
   times = $derived(this.buckets.map((b) => b.startUnixSeconds));
   stepSecs = $derived(STEP_SECS[this.range.step]);
 
@@ -187,6 +196,8 @@ export class DashData {
     const r = this.range;
     const g = this.group || undefined;
     const sc = this.scope || undefined;
+    const tf = g ? undefined : r.from;
+    this.nowS = Math.floor(Date.now() / 1000);
     const adv = this.advanced;
     // REQ: OBS-033 — the window's change markers, once for every chart (refetched each minute).
     void changes.load(r.from, sc);
@@ -211,9 +222,9 @@ export class DashData {
         api.summary(r.from, undefined, sc),
         api.timeseries({ from: r.from, step: r.step, scope: sc }),
         // Deeper than the ten shown: pods' search-suffix variants of one name merge into one row.
-        api.top(this.domainsView === 'internal' ? 'internal' : 'domains', 25, undefined, g, sc),
-        api.top('blocked', 25, undefined, g, sc),
-        api.top('clients', 10, undefined, g, sc),
+        api.top(this.domainsView === 'internal' ? 'internal' : 'domains', 25, undefined, g, sc, undefined, tf),
+        api.top('blocked', 25, undefined, g, sc, undefined, tf),
+        api.top('clients', 10, undefined, g, sc, undefined, tf),
         api.upstreams(),
         api.groups(),
         api.cluster().catch(() => null),

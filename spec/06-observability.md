@@ -42,7 +42,7 @@ Upstream transactions additionally emit `UpstreamEvent { ts, upstream_id, latenc
   6. Fans out to exporters (§5) and live-tail subscribers (§6), each through its own bounded queue (a drop on a slow consumer is counted per consumer).
 
 ## 3. Rollups
-- Minute rollups are flushed to SQLite `rollup_minute` (kept 7 days), then aggregated into `rollup_hour` (kept 400 days) and `rollup_day` (kept forever; tiny). Top-K and serialized HDR histograms are stored per hour.
+- Minute rollups are flushed to SQLite `rollup_minute` (kept 7 days), then aggregated into `rollup_hour` (kept 400 days) and `rollup_day` (kept forever; tiny). Top-K and serialized HDR histograms are stored per hour. `GET /stats/top?from=` sums the stored hours' top-K a window overlaps with the hours still in memory (ADR-160); the summary's active clients count that list's devices.
 - All dashboard queries beyond 15 minutes read rollups, never raw logs. So "last 30 days" charts render in < 100 ms on a Pi.
 - REQ: OBS-029 (ADR-129) — the heatmap reads the same: the network's slots from the hour buckets (400 days) or the minute buckets (7 days, summed into 15-minute slots), a device's or a name's hours from `hour_top` (`clients`, `domains`, `blocked`) and memory's current lists. `GET /api/v1/stats/heatmap` (`starts`/`values` arrays, `covered` for a key; federated, `Read::HeatmapKey`), MCP `activity_heatmap`. A 7-day minute read and its sum take under 150 ms on the build VM.
 

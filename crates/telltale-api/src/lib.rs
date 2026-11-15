@@ -148,6 +148,12 @@ pub trait Backend: Send + Sync + 'static {
     }
     /// Heaviest items, heaviest first; `client` narrows `domains` to one client.
     fn top(&self, kind: TopKind, hour: Hour, limit: usize, client: Option<IpAddr>) -> Vec<TopItem>;
+    /// REQ: OBS-004 (ADR-160) — heaviest items over the hours `[from_s, to_s)` overlaps: the
+    /// stored hours plus the ones still in memory, summed per key.
+    fn top_range(&self, kind: TopKind, from_s: u64, to_s: u64, limit: usize) -> Vec<TopItem> {
+        let _ = (kind, from_s, to_s, limit);
+        Vec::new()
+    }
     /// Top items among one group's queries (ADR-050).
     fn top_in_group(
         &self,
@@ -1365,8 +1371,9 @@ async fn cluster(State(b): State<Shared>) -> Result<Json<ClusterView>, Problem> 
 /// Totals over a time range.
 ///
 /// Queries, blocked (count and percent), cache hits, forwarded, NXDOMAIN and SERVFAIL counts
-/// over the range (per-minute data up to 48 hours back, hourly rollups beyond), plus this
-/// hour's active clients and latency percentiles by answer path. Example:
+/// over the range (per-minute data up to 48 hours back, hourly rollups beyond), the devices
+/// seen in the hours the range overlaps (active clients), and this hour's latency
+/// percentiles by answer path. Example:
 /// `GET /api/v1/stats/summary?from=-24h` or `?from=-30d`.
 #[utoipa::path(get, path = "/api/v1/stats/summary", tag = "stats", params(SummaryParams),
     responses((status = 200, body = Summary, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it.")))]
@@ -1413,7 +1420,8 @@ async fn stats_summary(
     let bk = Arc::clone(&b);
     let (clients, latency) = blocking(move || {
         Ok((
-            bk.top(TopKind::Clients, Hour::Current, 1000, None).len() as u64,
+            // REQ: OBS-004 (ADR-160) — devices seen in the range's hours.
+            bk.top_range(TopKind::Clients, from, to, 1000).len() as u64,
             bk.latency(LatencyBy::Path, Hour::Current),
         ))
     })
@@ -1544,6 +1552,8 @@ async fn queries_stream(
 /// With `kind=clients&hour=rolling`, the clients of the last hour (60–65 minutes, whole
 /// 5-minute slots) rather than of the clock hour, with exact counts (`errorBound` 0); with
 /// `group`, the clients whose settings come from that group.
+/// With `from=-24h`, the hours the window overlaps, summed per key (stored hours and the
+/// current one).
 #[utoipa::path(get, path = "/api/v1/stats/top", tag = "stats", params(TopParams),
     responses((status = 200, body = Items<TopItem>, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it.")))]
 async fn stats_top(
@@ -1572,6 +1582,30 @@ async fn stats_top(
             ));
         }
     }
+    // REQ: OBS-004 (ADR-160) — a window of hours.
+    if p.to.is_some() && p.from.is_none() {
+        return Err(Problem::invalid("`to` needs `from`"));
+    }
+    let window = match p.from.as_deref() {
+        None => None,
+        Some(f) => {
+            if p.hour.is_some() || client.is_some() || p.group.is_some() {
+                return Err(Problem::invalid(
+                    "`from` doesn't combine with `hour`, `client`, or `group`",
+                )
+                .hint(
+                    "Group and per-device lists are kept for the current and previous hour only.",
+                ));
+            }
+            let now = b.now_unix_seconds();
+            let from = time_param(Some(f), 0, now, "from")?;
+            let to = time_param(p.to.as_deref(), now + 1, now, "to")?;
+            if from >= to {
+                return Err(Problem::invalid("`from` must be before `to`"));
+            }
+            Some((from, to))
+        }
+    };
     // REQ: API-005 (ADR-158) — the rolling hour is kept for clients only. `group` works with
     // it, so a group-restricted agent (AGT-004 adds its group) can read it too.
     let hour = p.hour.unwrap_or_default();
@@ -1583,10 +1617,11 @@ async fn stats_top(
     }
     let bk = Arc::clone(&b);
     let (kind, group) = (p.kind, p.group);
-    let items = blocking(move || match (hour.hour(), group) {
-        (None, g) => bk.top_clients_rolling(limit, g.as_deref()),
-        (Some(h), Some(g)) => bk.top_in_group(kind, h, limit, &g),
-        (Some(h), None) => Ok(bk.top(kind, h, limit, client)),
+    let items = blocking(move || match (window, hour.hour(), group) {
+        (Some((from, to)), _, _) => Ok(bk.top_range(kind, from, to, limit)),
+        (None, None, g) => bk.top_clients_rolling(limit, g.as_deref()),
+        (None, Some(h), Some(g)) => bk.top_in_group(kind, h, limit, &g),
+        (None, Some(h), None) => Ok(bk.top(kind, h, limit, client)),
     })
     .await?;
     Ok(Json(Items {

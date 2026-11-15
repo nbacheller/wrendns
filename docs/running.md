@@ -2356,6 +2356,13 @@ primary kept can't be pinned there.
   and day. That includes traffic by group, which is stored by group name, so renaming or
   reordering groups doesn't mislabel history. Minutes saved before this release have no group
   breakdown.
+- The top lists (Top domains, Top blocked, Top clients) and **Active clients** follow the time
+  range, by whole hours: each hour's busiest 100 are saved in `rollups.db` (400 days), and the
+  hours the range overlaps are added up, with this hour from memory. So **15 min** and **1 h**
+  show the hours they touch ("since 14:00"). Stored hours keep their busiest 100 only, so over
+  long ranges a name or device that was never in an hour's top 100 is missing, and Active
+  clients undercounts on networks with more than 100 devices an hour. With **Top lists for**
+  set to a group, the lists cover this hour only (groups' lists aren't saved).
 - The current and previous hour's top lists and latency are rebuilt at start from the query
   log, in the background within seconds. This needs the query log on, kept locally, at
   privacy level 0. Otherwise they start empty, and completed hours still come from the

@@ -132,8 +132,9 @@ export const api = {
     get<S['Summary']>('/stats/summary', { from, to, scope }),
   timeseries: (q: { from?: string; step?: S['Step']; scope?: string }) =>
     get<S['Items_TimeBucket']>('/stats/timeseries', q),
-  top: (kind: S['TopKind'], limit = 10, client?: string, group?: string, scope?: string, hour?: S['TopHour']) =>
-    get<S['Items_TopItem']>('/stats/top', { kind, limit, client, group, scope, hour }),
+  // REQ: OBS-004 — `from` reads a window of hours instead of one (not with client or group).
+  top: (kind: S['TopKind'], limit = 10, client?: string, group?: string, scope?: string, hour?: S['TopHour'], from?: string) =>
+    get<S['Items_TopItem']>('/stats/top', { kind, limit, client, group, scope, hour, from }),
   latency: (by: S['LatencyBy'], scope?: string) => get<S['Items_LatencyRow']>('/stats/latency', { by, scope }),
   // REQ: OBS-016 — the service-level objectives and their error budgets.
   slo: (scope?: string) => get<S['SloStatus']>('/stats/slo', { scope }),

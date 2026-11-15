@@ -1291,6 +1291,16 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-160 — Top lists and active clients follow the dashboard's time range, by whole hours (Proposed)
+**Context:** OBS-004 (community request 2026-11-15). The dashboard's range picker (15 min to 30 days) changes the charts and totals, but Top domains, Top blocked, Top clients, and the Active clients tile always showed the current clock hour, so they emptied every time the hour turned and never matched the range above them. Each closed hour's top lists are already stored in `hour_top` for 400 days.
+**Decision:**
+- `GET /stats/top` takes `from` (and `to`), parsed like the summary's. The window is every hour it overlaps, counted whole: the stored hours from `hour_top` (`top_range`) plus the current hour (and the previous one until it's stored) from memory, summed per key, counts and error bounds alike, reading twice the limit (at least 20) from each source, as the SLO attribution lists do (ADR-127). Hour granularity is said in the UI ("since 14:00") rather than hidden.
+- `from` doesn't combine with `hour`, `client` (per-device domains live in memory only), or `group` (groups' lists aren't stored): 400 with a hint. The dashboard sends `from` unless a group is picked, and then says "this hour".
+- `Summary.activeClients` is the length of the same list over the summary's range (limit 1000), so the tile and its change follow the range. Stored hours hold their busiest 100 clients, so past the last two hours it undercounts on networks with more than 100 devices an hour (documented).
+- Federated: a `TopRange` read; each node sums its own hours and the lists merge by key (OBS-012). A peer one version behind doesn't know the read and is listed in `missingNodes`.
+- MCP `top_items` takes `from` and `to`.
+**Consequences:** One SQL aggregate over at most 720 hours × 100 rows per list and dashboard poll (three lists, plus two for the summary and its comparison). The meaning of `activeClients` changes from "this hour" to "the range's hours"; a client that wants this hour asks with `from=-1s`. Names that never reached an hour's top 100 don't add up across hours.
+
 ## ADR-159 — Top clients split by status: a payload on the Space-Saving entry (Proposed)
 **Context:** OBS-004 (community request 2026-11-15). The dashboard's Top clients bar shows how many queries a device made, not what happened to them: a TV in second place could be mostly blocked telemetry or mostly cache hits, and finding out means a query-log search per device. The status chart already colours blocked, cached, and forwarded queries for the whole network.
 **Decision:**
