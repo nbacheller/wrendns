@@ -1,0 +1,13 @@
+# REQ: NFR-005 — CodeQL's configuration (used by .github/workflows/codeql.yml).
+#
+# Test code isn't shipped, and its fixed passwords, tokens, and timestamps are exactly what the
+# credential queries flag (62 of the first 82 alerts). It is ignored by path; production code is
+# scanned in full. Test modules that sit inside a source file are moved to `*_tests.rs` files, as
+# `net_tests.rs` already is, so this list covers them.
+name: telltaledns CodeQL
+paths-ignore:
+  - "**/tests/**"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+  - "**/testdata/**"
+  - "ui/tests/**"
