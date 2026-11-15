@@ -97,7 +97,8 @@ test('dashboard shows traffic and top blocked names', async () => {
 test('obs_026 traffic map', async () => {
   await page.goto('/#/traffic');
   await expect(page.getByRole('heading', { name: /^Traffic map/ })).toBeVisible();
-  const tile = (label: string) => page.getByRole('link', { name: new RegExp(`^${label.replace(/\./g, '\\.')}, `) });
+  const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const tile = (label: string) => page.getByRole('link', { name: new RegExp(`^${escapeRe(label)}, `) });
   await page.getByRole('button', { name: 'Names', exact: true }).click();
   await expect(tile('ads.e2e.test, blocked')).toBeVisible({ timeout: 10_000 });
   await expect(tile('nas.e2e.test, allowed')).toBeVisible();
