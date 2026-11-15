@@ -4,6 +4,6 @@
   "type": "module",
   "description": "REQ: AGT-006 — TelltaleDNS's MCP server against the official MCP TypeScript SDK client.",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.17.0"
+    "@modelcontextprotocol/sdk": "^1.32.2"
   }
 }
