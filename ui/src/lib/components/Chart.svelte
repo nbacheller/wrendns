@@ -99,6 +99,22 @@
     return getComputedStyle(document.documentElement).getPropertyValue(c).trim() || '#888';
   }
 
+  // The legend's values change on hover ("total" becomes a time, the range's sums one bucket's
+  // counts). Its items wrap, so on a narrow card a shorter or longer value moved items to
+  // another line and pushed the plot up or down under the cursor. Each value keeps room for
+  // its longest text instead (`ch` wide, tabular digits): the time's longest form, the
+  // series' total; one that's longer still (another `format`) makes room once.
+  let legendChars: number[] = [];
+  function holdLegend(u: uPlot, init = false) {
+    u.root.querySelectorAll<HTMLElement>('.u-legend .u-value').forEach((v, i) => {
+      const want = Math.max(legendChars[i] ?? 0, v.textContent?.length ?? 0);
+      if (init || want > (legendChars[i] ?? 0)) {
+        legendChars[i] = want;
+        v.style.minWidth = `${want}ch`;
+      }
+    });
+  }
+
   const mq = window.matchMedia('(prefers-color-scheme: dark)');
   const onTheme = () => themeTick++;
   mq.addEventListener('change', onTheme);
@@ -128,13 +144,22 @@
       ys = series.map((s) => s.values.map((v, i) => (acc[i] += v ?? 0)));
       order = order.reverse();
     }
+    // A two-digit hour is the time's longest form in either clock; one spare `ch` for AM/PM's
+    // wide letters.
+    const late = new Date();
+    late.setHours(22, 22, 22, 0);
+    // In legend order (after the stacked reverse).
+    legendChars = [
+      Math.max('total'.length, clock(Math.floor(late.getTime() / 1000), true).length + 1),
+      ...order.map((i) => format(series[i].values.reduce((a, v) => a + (v ?? 0), 0)).length),
+    ];
     const opts: uPlot.Options = {
       width,
       height,
       padding: [8, 8, 0, 0],
       cursor: { points: { show: false } },
       // Placing the markers reads them: untracked, so new markers don't rebuild the plot.
-      hooks: { draw: [(u: uPlot) => untrack(() => place(u))] },
+      hooks: { draw: [(u: uPlot) => untrack(() => place(u))], setLegend: [(u: uPlot) => holdLegend(u)] },
       legend: {
         show: true,
         live: true,
@@ -185,6 +210,7 @@
       ],
     };
     plot = new uPlot(opts, [times, ...order.map((i) => ys[i])], el);
+    holdLegend(plot, true);
   }
 
   $effect(() => {
@@ -408,6 +434,11 @@
     order: -1;
     margin: 0 0 6px;
     text-align: left;
+  }
+  /* The legend's values keep their width on hover (`holdLegend`): `ch` counts the text only. */
+  .chart :global(.u-legend .u-value) {
+    box-sizing: content-box;
+    font-variant-numeric: tabular-nums;
   }
   .chart :global(.u-legend .u-marker) {
     width: 9px;

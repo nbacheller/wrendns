@@ -327,6 +327,34 @@ test('obs_015 health icon, its reasons, and the phone dot', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
 });
 
+// T6.8 — a chart's legend sits above the plot and wraps; its values change on hover ("total"
+// becomes a time, the range's sums one bucket's counts). Each keeps its width, so on a narrow
+// screen the legend doesn't rewrap and move the plot under the cursor.
+test('chart legend keeps its place while hovering', async () => {
+  await page.goto('/#/');
+  const card = page.locator('section.card.chart', { hasText: 'Queries by status' });
+  const over = card.locator('.u-over');
+  const layout = () =>
+    card.evaluate((c) => {
+      const top = c.getBoundingClientRect().top;
+      const items = [...c.querySelectorAll('.u-legend tr')].map((t) => Math.round(t.getBoundingClientRect().width));
+      return `${items.join(',')} plot at ${Math.round(c.querySelector('.u-over')!.getBoundingClientRect().top - top)}`;
+    });
+  for (const width of [340, 360, 390, 420]) {
+    await page.setViewportSize({ width, height: 844 });
+    await over.scrollIntoViewIfNeeded();
+    await page.mouse.move(0, 0);
+    const rest = await layout();
+    const box = (await over.boundingBox())!;
+    for (const f of [0.1, 0.5, 0.9]) {
+      await page.mouse.move(box.x + box.width * f, box.y + box.height / 2);
+      expect(await layout(), `${width}px wide, hovering at ${f}`).toBe(rest);
+    }
+  }
+  await page.mouse.move(0, 0);
+  await page.setViewportSize({ width: 1280, height: 800 });
+});
+
 // REQ: OBS-016 — the dashboard's Service level card (Advanced view only): the server's
 // objectives (a few local answers make them "on track"), then a stubbed outage that burns the
 // availability budget fast.
