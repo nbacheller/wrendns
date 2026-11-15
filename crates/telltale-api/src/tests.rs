@@ -622,8 +622,6 @@ async fn obs_014_acknowledging_anomalies_over_http() {
     assert_eq!((s, v["level"].as_str()), (StatusCode::OK, Some("healthy")));
 }
 
-// REQ: OBS-016 — the objectives over HTTP: worked out from the last 6 hours' minutes and the
-// window's hours of the (federated) time buckets.
 // REQ: OBS-009 (T7.14, regression 2026-11-15) — a list's hits are the cluster's (the backend's
 // `list_hits`), not the API node's own: on a cluster whose replicas answer the queries, the
 // primary serving the UI showed 0 for every list.
@@ -638,6 +636,8 @@ async fn obs_009_list_hits_are_the_clusters() {
     assert_eq!(v["items"][1]["hits"], 0, "no node used it");
 }
 
+// REQ: OBS-016 — the objectives over HTTP: worked out from the last 6 hours' minutes and the
+// window's hours of the (federated) time buckets.
 #[tokio::test]
 async fn obs_016_slo_over_http() {
     let (app, fake) = app();

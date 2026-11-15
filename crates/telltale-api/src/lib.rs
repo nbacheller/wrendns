@@ -225,10 +225,12 @@ pub trait Backend: Send + Sync + 'static {
         limit: usize,
     ) -> Result<QueryPage, Problem>;
     fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem>;
+    /// Configured lists; `GET /api/v1/lists` fills each one's `hits` from
+    /// [`Backend::list_hits`].
     fn lists(&self) -> Vec<ListInfo>;
-    /// REQ: OBS-009 (T7.14) — queries each list decided since start, by list name: this
-    /// node's, and in a cluster every node's added up (the nodes serving DNS needn't be the
-    /// one serving the API). [`Backend::lists`] has this node's alone.
+    /// REQ: OBS-009 (T7.14) — queries each list blocked or allowed since start, by list name:
+    /// this node's, and in a cluster every node's added up (the nodes serving DNS needn't be
+    /// the one serving the API).
     fn list_hits(&self) -> std::collections::BTreeMap<String, u64> {
         self.lists().into_iter().map(|l| (l.name, l.hits)).collect()
     }
