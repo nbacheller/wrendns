@@ -13,6 +13,7 @@
   import Topology, { type Node } from '../lib/components/Topology.svelte';
   import MaintenanceForm from '../lib/components/MaintenanceForm.svelte';
   import DrillForm from '../lib/components/DrillForm.svelte';
+  import NodeRemoveForm from '../lib/components/NodeRemoveForm.svelte';
   import DrillPanel from '../lib/components/DrillPanel.svelte';
   import RolloutPanel from '../lib/components/RolloutPanel.svelte';
   import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
@@ -101,6 +102,16 @@
     } finally {
       maintBusy = false;
     }
+  }
+  // REQ: CLU-001 (ADR-155) — an admin removes a node from the cluster (never this node or the
+  // primary): the confirmation form in its row, then the result's notes above the page.
+  let removeFor = $state<string | null>(null);
+  let removeNote = $state<S['NodeRemoval'] | null>(null);
+  const canRemove = (n: Node) => can('admin') && !n.thisNode && !n.role.includes('primary');
+  async function removed(r: S['NodeRemoval']) {
+    removeFor = null;
+    removeNote = r;
+    await load();
   }
   // REQ: CLU-014 (ADR-151) — a failover drill per node: the form, and the tab with reports. A
   // drilled node is in maintenance with the drill's reason.
@@ -267,6 +278,12 @@
     </div>
   {/if}
   {#if maintNote}<p class="notice small" data-testid="maintenance-note">{maintNote}</p>{/if}
+  {#if removeNote}
+    <div class="notice small" role="status" data-testid="node-remove-note">
+      <strong>{removeNote.site} ({shortId(removeNote.nodeId)}) was removed from the cluster.</strong>
+      {#each removeNote.notes as note, i (i)}<div>{note}</div>{/each}
+    </div>
+  {/if}
   {#if drillNote}<p class="notice small" data-testid="drill-note">{drillNote} <a href="#/cluster?tab=drills">Drills</a></p>{/if}
   <ErrorNote error={maintError} />
 
@@ -448,15 +465,22 @@ telltale cluster join tt_join_…</pre>
                         {duration(n.maintenance.secondsLeft)} left · {n.maintenance.reason}
                       </div>
                     {/if}
-                    {#if can('operator') && !n.witness}
+                    {#if (can('operator') && !n.witness) || canRemove(n)}
                       <div class="small">
-                        {#if n.maintenance}
-                          <button class="link small" onclick={() => endMaintenance(apiNode(n))} disabled={maintBusy} data-testid="maintenance-end">End maintenance</button>
-                        {:else if maintFor !== n.nodeId}
-                          <button class="link small" onclick={() => (maintFor = n.nodeId)} data-testid="maintenance-open">Maintenance…</button>
+                        {#if can('operator') && !n.witness}
+                          {#if n.maintenance}
+                            <button class="link small" onclick={() => endMaintenance(apiNode(n))} disabled={maintBusy} data-testid="maintenance-end">End maintenance</button>
+                          {:else if maintFor !== n.nodeId}
+                            <button class="link small" onclick={() => (maintFor = n.nodeId)} data-testid="maintenance-open">Maintenance…</button>
+                          {/if}
+                          {#if !n.maintenance && drillFor !== n.nodeId && (view?.nodes.length ?? 0) > 1}
+                            · <button class="link small" onclick={() => (drillFor = n.nodeId)} data-testid="drill-open-form">Drill…</button>
+                          {/if}
                         {/if}
-                        {#if !n.maintenance && drillFor !== n.nodeId && (view?.nodes.length ?? 0) > 1}
-                          · <button class="link small" onclick={() => (drillFor = n.nodeId)} data-testid="drill-open-form">Drill…</button>
+                        <!-- REQ: CLU-001 (ADR-155) — an admin removes a stale or retired node. -->
+                        {#if canRemove(n) && removeFor !== n.nodeId}
+                          {#if can('operator') && !n.witness}·{/if}
+                          <button class="link small" onclick={() => (removeFor = n.nodeId)} data-testid="node-remove-open">Remove…</button>
                         {/if}
                       </div>
                     {/if}
@@ -501,6 +525,20 @@ telltale cluster join tt_join_…</pre>
                         canHandover={canHandover(n)}
                         onclose={() => (maintFor = null)}
                         ondone={(r) => changed(r.note)}
+                      />
+                    </td>
+                  </tr>
+                {/if}
+                {#if removeFor === n.nodeId}
+                  <tr class="maint-row">
+                    <td colspan="6">
+                      <NodeRemoveForm
+                        nodeId={n.nodeId}
+                        site={n.site}
+                        up={n.up}
+                        failoverActive={!!view?.failover?.active}
+                        onclose={() => (removeFor = null)}
+                        ondone={removed}
                       />
                     </td>
                   </tr>

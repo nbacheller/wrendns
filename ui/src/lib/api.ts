@@ -209,6 +209,11 @@ export const api = {
   cluster: () => get<S['ClusterView']>('/cluster'),
   promoteCluster: (emergency = false, password = '', totp = '') =>
     post<S['ClusterView']>('/cluster/promote', { emergency, password, ...(totp ? { totp } : {}) }),
+  // REQ: CLU-001 (ADR-155) — remove a node from the cluster (admin); a node that is up needs `force`.
+  removeNode: (id: string, o: { dryRun?: boolean; force?: boolean } = {}) =>
+    call<S['NodeRemoval']>('DELETE', `/cluster/nodes/${encodeURIComponent(id)}`, {
+      query: { dryRun: o.dryRun || undefined, force: o.force || undefined },
+    }),
   // REQ: OPS-010 — maintenance on a node (`local` or a node ID): not ready, still answering.
   startMaintenance: (node: string, body: S['MaintenanceRequest']) =>
     post<S['MaintenanceResult']>(`/nodes/${encodeURIComponent(node)}/maintenance`, body),

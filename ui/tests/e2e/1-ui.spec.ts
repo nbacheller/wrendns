@@ -2940,6 +2940,130 @@ test('clu_014 drill', async () => {
   for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1);
 });
 
+// REQ: CLU-001 (ADR-155, issue #5) — a node is removed from the Cluster page (a stubbed cluster
+// of five): no Remove on the primary or this node; a down node is checked (the notes the
+// primary gives, the voters left) and removed without force; a node that is up needs the box
+// ticked, and the request then carries force; a node the page shows down but the primary says
+// is up (409 node_is_up) gets the box too.
+test('clu_001 a stale node can be removed from the Cluster page', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const member = (nodeId: string, site: string, o: Record<string, unknown> = {}) => ({
+    nodeId, site, ephemeral: false, witness: false, protocol: 4, role: 'replica', thisNode: false, eligible: true, version: '0.7.0',
+    up: true, connected: true, link: 'inbound', lastSeenSecondsAgo: 1, rttMs: 3, configSeq: 9, configLag: 0, ready: true,
+    qps: 10, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, ...o,
+  });
+  const gone = { up: false, connected: false, ready: false, link: 'none', lastSeenSecondsAgo: 86_400 };
+  let nodes = [
+    member('id-k8s', 'k8s', { role: 'primary' }),
+    member('id-pi', 'home-pi', { thisNode: true, link: 'self', rttMs: null }),
+    member('id-old', 'old-pi', gone),
+    member('id-nas', 'nas-box'),
+    member('id-lab', 'lab-box', gone),
+  ];
+  // What the primary knows: the node ID, its site, whether it is up, and the voters left.
+  const truth: Record<string, { site: string; up: boolean; after: number }> = {
+    'id-old': { site: 'old-pi', up: false, after: 4 },
+    'id-nas': { site: 'nas-box', up: true, after: 2 },
+    'id-lab': { site: 'lab-box', up: true, after: 2 },
+  };
+  const key =
+    'It was an eligible node, so it holds a copy of the cluster key. If it is lost or cannot be trusted, rotate the cluster CA (telltale cluster rotate-ca).';
+  const problem = (status: number, code: string, detail: string) => ({
+    type: `https://telltaledns.dev/problems/${code}`, title: code, status, code, detail, hint: 'Stop it first, or tick the box.',
+  });
+  const calls: string[] = [];
+  const isRemoval = (url: URL) => url.pathname.startsWith('/api/v1/cluster/nodes/');
+  const onRemoval = (route: Route) => {
+    const req = route.request();
+    const u = new URL(req.url());
+    const id = decodeURIComponent(u.pathname.split('/').pop() ?? '');
+    calls.push(`${req.method()} ${id}${u.search}`);
+    const t = truth[id];
+    if (!t || req.method() !== 'DELETE') return route.fulfill({ status: 404, json: problem(404, 'node_unknown', `no cluster member has the ID ${id}`) });
+    if (t.up && u.searchParams.get('force') !== 'true') return route.fulfill({ status: 409, json: problem(409, 'node_is_up', `${id} is up`) });
+    const dry = u.searchParams.get('dryRun') === 'true';
+    if (!dry) nodes = nodes.filter((n) => n.nodeId !== id);
+    return route.fulfill({
+      json: {
+        nodeId: id, site: t.site, up: t.up, eligible: true, witness: false, ephemeral: false, heldClusterKey: true,
+        votersAfter: t.after, automaticFailoverAfter: t.after >= 3, removed: !dry,
+        notes: t.after >= 3 ? [key] : [key, 'Automatic failover needs three voters, so it turns into manual.'],
+      },
+    });
+  };
+  const isCluster = (url: URL) => url.pathname === '/api/v1/cluster';
+  const onCluster = (route: Route) =>
+    route.fulfill({
+      json: {
+        enabled: true, clusterId: 'c1', name: 'home', thisNode: 'id-pi', newestConfigSeq: 9, healthy: true, checks: [],
+        events: [], conflicts: [], authority: 'primary', nodes,
+        failover: { mode: 'auto', active: true, voters: 5, reachableVoters: 3, leaseHeld: false, votedEpoch: 0 },
+      },
+    });
+  await page.route(isCluster, onCluster);
+  await page.route('**/api/v1/cluster/rollout', (route) =>
+    route.fulfill({ json: { fromPrimary: true, canaries: [], bakeSecs: 300, stable: '0.7.0', stage: 'none', nodes: [] } }),
+  );
+  await page.route('**/api/v1/cluster/versions', (route) => route.fulfill({ json: { items: [], history: 20 } }));
+  await page.route(isRemoval, onRemoval);
+  try {
+    await page.goto('/#/cluster');
+    const row = (site: string) => page.getByTestId('cluster-node').filter({ hasText: site });
+    const form = page.getByTestId('node-remove-form');
+    const confirm = form.getByTestId('node-remove-confirm');
+    await expect(row('lab-box')).toBeVisible();
+    // Never on the primary, and never on the node serving this page.
+    await expect(row('k8s').getByTestId('node-remove-open')).toHaveCount(0);
+    await expect(row('home-pi').getByTestId('node-remove-open')).toHaveCount(0);
+
+    // A node that is down: the dry run's notes first, no box, removed without force.
+    await row('old-pi').getByTestId('node-remove-open').click();
+    await expect(form).toContainText('Remove old-pi from the cluster?');
+    await expect(form.getByTestId('node-remove-id')).toHaveText('id-old');
+    const preview = form.getByTestId('node-remove-preview');
+    await expect(preview).toContainText('4 voters left; automatic failover stays on.');
+    await expect(preview).toContainText('holds a copy of the cluster key');
+    await expect(form.getByTestId('node-remove-force')).toHaveCount(0);
+    await expect(confirm).toBeEnabled();
+    await confirm.click();
+    await expect(page.getByTestId('node-remove-note')).toContainText('old-pi (id-old) was removed from the cluster.');
+    await expect(page.getByTestId('node-remove-note')).toContainText('rotate the cluster CA');
+    await expect(form).toHaveCount(0);
+    await expect(row('old-pi')).toHaveCount(0);
+    expect(calls).toEqual(['DELETE id-old?dryRun=true', 'DELETE id-old']);
+
+    // A node that is up: the box must be ticked, and the request carries force.
+    calls.length = 0;
+    await row('nas-box').getByTestId('node-remove-open').click();
+    await expect(form.getByTestId('node-remove-preview')).toContainText('2 voters left; automatic failover turns into manual.');
+    await expect(form.getByTestId('node-remove-preview')).toContainText('needs three voters');
+    await expect(confirm).toBeDisabled();
+    await form.getByTestId('node-remove-force').check();
+    await expect(confirm).toBeEnabled();
+    await confirm.click();
+    await expect(page.getByTestId('node-remove-note')).toContainText('nas-box (id-nas) was removed from the cluster.');
+    await expect(row('nas-box')).toHaveCount(0);
+    expect(calls).toEqual(['DELETE id-nas?dryRun=true&force=true', 'DELETE id-nas?force=true']);
+
+    // Shown down, but the primary says up (409 node_is_up): the box appears, Cancel changes nothing.
+    calls.length = 0;
+    await row('lab-box').getByTestId('node-remove-open').click();
+    await expect(form.getByTestId('node-remove-force')).toBeVisible();
+    await expect(form.getByTestId('node-remove-preview')).toContainText('2 voters left');
+    await expect(confirm).toBeDisabled();
+    await form.getByRole('button', { name: 'Cancel' }).click();
+    await expect(form).toHaveCount(0);
+    await expect(row('lab-box')).toBeVisible();
+    expect(calls).toEqual(['DELETE id-lab?dryRun=true', 'DELETE id-lab?dryRun=true&force=true']);
+  } finally {
+    await page.unroute(isRemoval, onRemoval);
+    await page.unroute('**/api/v1/cluster/rollout');
+    await page.unroute('**/api/v1/cluster/versions');
+    await page.unroute(isCluster, onCluster);
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1);
+  }
+});
+
 // REQ: OBS-037 — internal names: reverse lookups of private addresses count under Top domains
 // → Internal, not Internet.
 test('obs_037 internal names', async () => {
