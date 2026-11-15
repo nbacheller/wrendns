@@ -124,7 +124,7 @@ path = "telltale/shared.toml"
         <li>A commit is used only if it validates and descends from the one in use; anything else is refused, and the cluster stays on the last good commit.</li>
         <li>If the repository is unreachable, every node keeps serving the last commit. DNS never waits for Git.</li>
       </ul>
-      <p><b>Option 2: only Git-managed nodes may publish.</b> On the primary: <code>telltale cluster set-authority gitops</code> (or <code>telltale cluster init --config-authority gitops</code>), then restart. Only nodes with <code>[cluster] config_source = "gitops"</code> may publish the cluster's configuration. Any other node can only take over as an <i>emergency</i> primary, which keeps the last version until a Git-managed node is back.</p>
+      <p><b>Option 2: only Git-managed nodes may publish.</b> On the primary: <code>telltale cluster set-authority gitops</code> (or <code>telltale cluster init --config-authority gitops</code>), then restart. Only nodes with <code>[cluster] config_source = "gitops"</code> may publish the cluster's configuration. Any other node can only take over as an <i>emergency</i> primary, which keeps the last version until a Git-managed node is back. When one is back it takes the role again by itself after about a minute: with automatic failover it asks the emergency primary to hand over and is elected, with manual failover it promotes itself.</p>
       <div class="callout warn"><p>In both cases the UI and API stop changing shared settings: they answer <b>409 <code>gitops_managed</code></b>, and every change goes through your repository.</p></div>
     </div>
   </div>

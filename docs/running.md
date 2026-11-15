@@ -1887,7 +1887,11 @@ telltale cluster set-failover auto
   set-failover manual` on the primary switches back. With fewer than three voters, `auto` acts
   as `manual`, and the Cluster page says so.
 - **Under a Git config authority,** an elected node that isn't Git-managed becomes an emergency
-  primary: it keeps the cluster coordinated on the last version.
+  primary: it keeps the cluster coordinated on the last version. While a Git-managed node is
+  up, the other nodes leave the election to it (they still vote), so the emergency primary
+  exists only while no Git-managed node can be primary. When one is back, it takes the role
+  back through the election: it asks the emergency primary to hand over (see *Where
+  configuration comes from*, below).
 
 **Configuration from a Git repository.** The cluster can take its shared settings
 (upstreams, lists, groups, devices, records…) from one file in a Git repository. The primary
@@ -1939,10 +1943,27 @@ path = "telltale/shared.toml"             # the shared settings, in TelltaleDNS'
   - another node can only be promoted as an *emergency* primary, which keeps the cluster
     coordinated on the last version and publishes nothing new until a Git-managed node is back.
     When one is back, it takes over by itself after a minute (an eligible, Git-managed node
-    that sees the emergency primary up), and the emergency primary steps down. You can also
-    promote it right away from its Cluster page or with `telltale cluster promote`.
+    that sees the emergency primary up), and the emergency primary steps down. With
+    `failover = manual` you can also promote it right away from its Cluster page or with
+    `telltale cluster promote`.
 
   The default is `api`: the primary's own file and UI.
+
+- **Taking over with automatic failover.** With `failover = auto` a role can't be set by hand
+  (the votes decide, and a promoted node would hold no lease, so it couldn't publish). The
+  Git-managed node takes over through the election instead: after seeing the emergency primary
+  up for a minute, it asks that node to hand over. The emergency primary stops renewing its
+  lease, keeps answering DNS, and the Git-managed node is elected within the usual 15 to 25
+  seconds (configuration changes wait for that, DNS doesn't). Nodes that aren't Git-managed
+  don't stand in that election. If the Git-managed node can't win (for example it hasn't
+  received the cluster key yet), the emergency primary keeps the role after a minute and is
+  asked again later; the Cluster page's event list shows `takeover` and `handover` events.
+  Only an eligible, Git-managed node that is up can ask.
+- **Which failover mode?** With the `gitops` authority only a Git-managed node can publish, so
+  `manual` failover is enough for many clusters: replicas keep serving the last version while
+  that node is away, and you promote an emergency primary only if you need the cluster
+  coordinated for a long outage (certificate renewal waits for a primary). `auto` does that
+  without anyone present, and the Git-managed node takes the role back by itself.
 
 Run these as the user telltale runs as (`sudo -u telltale` for native installs,
 `docker compose exec telltale` for Compose), then restart telltale.

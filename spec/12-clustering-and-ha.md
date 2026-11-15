@@ -63,6 +63,9 @@ telltale cluster join vgl_join_… --advertise https://telltale-ctl.k8s.lan:8443
 3. When an old primary returns and discovers a higher epoch, any local changes with its stale epoch that the new primary never saw become **orphaned changes**. They are *not* applied. They are kept and shown in the UI under "Conflicts" with a one-click "re-apply on current primary" (each change is a semantic op, so re-applying is usually clean). This is the honest trade-off for availability in a 2-node setup.
 4. Snapshots with a lower epoch than a replica's applied epoch are rejected.
 
+### Under a GitOps authority (ADR-048, ADR-154)
+Only a Git-managed node publishes. An elected node that isn't Git-managed is an **emergency primary**: it coordinates on the last version and publishes nothing new. While an eligible, Git-managed node is up, the other nodes don't stand in elections (they still vote), for at most 60 s with no primary up. When a Git-managed node sees an emergency primary up for a minute, it takes the role back: with `manual` failover by promoting itself, with `auto` by asking the emergency primary to hand over (it stops renewing its lease, as in maintenance, ADR-118) and winning the election, so the lease rules above hold for the takeover too.
+
 ### What fails over, and what doesn't
 | Function | Primary down |
 |---|---|

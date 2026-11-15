@@ -267,6 +267,11 @@ jobs:
       # OPS-010 (T13.4): a node in maintenance isn't elected; the primary hands over.
       - name: Cluster automatic failover (primary, replica, witness)
         run: bash deploy/cluster/failover-e2e.sh target/bench-fast/telltale
+      # REQ: CLU-005 (ADR-154, GitHub issue #3) — the GitOps authority with automatic failover:
+      # a node that isn't Git-managed becomes the emergency primary, and when the Git-managed
+      # node returns it asks for the handover and is elected, with DNS answered throughout.
+      - name: Cluster GitOps takeover (emergency primary, automatic failover)
+        run: bash deploy/cluster/gitops-failover-e2e.sh target/bench-fast/telltale
       # REQ: CLU-001 (T5.4c AC) — rotate the cluster CA under DNS load, every phase gated on
       # every member; replication and reconnection afterwards.
       - name: Cluster CA rotation
