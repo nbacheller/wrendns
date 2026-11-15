@@ -41,6 +41,15 @@ pub(crate) fn start(
     info!(cluster = %id.meta.cluster_name, node = %id.meta.node_id, primary = id.is_primary(), "cluster member");
     let cluster = Cluster::new(id, VERSION);
     cluster.set_ephemeral(cfg.cluster.ephemeral);
+    // REQ: CLU-005 (ADR-154, GitHub issue #3) — how this node's configuration is managed goes out in
+    // its first Hello, which peers keep until the stream reconnects: set it before anything
+    // connects, not when replication starts (a Hello that said `file` made a Git-managed node look
+    // like any other, so an emergency primary refused its ask to hand over).
+    cluster.set_config_source(if crate::replication::gitops_capable(cfg) {
+        "gitops"
+    } else {
+        "file"
+    });
     // REQ: CLU-009 — the shared bootstrap secret works as a join token here (Helm). It's
     // re-read at every join, so a rotated Secret applies without a restart.
     if let Some(path) = &cfg.cluster.bootstrap_secret_file {
@@ -1751,6 +1760,29 @@ mod tests {
                 "{why}"
             );
         }
+    }
+
+    /// REQ: CLU-005 (ADR-154, GitHub issue #3) — how a node's configuration is managed is set
+    /// before its cluster connects, so its first Hello says `gitops` (a Hello that said `file`
+    /// made an emergency primary refuse the node's ask to hand over, on a slow start).
+    #[tokio::test]
+    async fn clu_005_the_config_source_is_set_before_the_cluster_connects() {
+        let dir = tempfile::tempdir().unwrap();
+        Identity::init(
+            dir.path(),
+            "home",
+            vec!["https://127.0.0.1:1".into()],
+            "k8s",
+        )
+        .unwrap();
+        let mut cfg = telltale_config::Config::default();
+        cfg.node.data_dir = telltale_config::SafeString::new(dir.path().to_string_lossy()).unwrap();
+        let (_tx, stop) = watch::channel(false);
+        let plain = start(&cfg, &stop).unwrap();
+        assert_eq!(plain.config_source(), "file");
+        cfg.cluster.config_source = telltale_config::SafeString::from("gitops");
+        let git = start(&cfg, &stop).unwrap();
+        assert_eq!(git.config_source(), "gitops");
     }
 
     #[test]
