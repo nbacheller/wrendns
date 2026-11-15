@@ -443,6 +443,9 @@ impl DnsCrypt {
         timeout: Duration,
     ) -> Result<Vec<u8>, ExchangeError> {
         let half: [u8; 12] = rand::random();
+        // DNSCrypt v2: a query's 24-byte nonce is the client's random 12 bytes followed by 12 zero
+        // bytes; the server's half comes back in the response. The zeros are the protocol's, not a
+        // fixed secret (CodeQL rust/hard-coded-cryptographic-value is a false positive here).
         let mut nonce = [0u8; 24];
         nonce[..12].copy_from_slice(&half);
         let sealed = b
@@ -661,6 +664,7 @@ pub mod server {
             }
             let pk: [u8; 32] = packet[8..40].try_into().ok()?;
             let half: [u8; 12] = packet[40..52].try_into().ok()?;
+            // The query nonce: the client's 12 bytes, then 12 zero bytes (DNSCrypt v2).
             let mut nonce = [0u8; 24];
             nonce[..12].copy_from_slice(&half);
             let b = Box2::new(self.construction, &pk, &self.secret);
@@ -670,6 +674,7 @@ pub mod server {
 
         /// Encrypts a response for that client.
         pub fn seal(&self, resp: &[u8], pk: &[u8; 32], half: &[u8; 12]) -> Option<Vec<u8>> {
+            // The response nonce: the client's half, then a fresh random server half (DNSCrypt v2).
             let mut nonce = [0u8; 24];
             nonce[..12].copy_from_slice(half);
             nonce[12..].copy_from_slice(&rand::random::<[u8; 12]>());
