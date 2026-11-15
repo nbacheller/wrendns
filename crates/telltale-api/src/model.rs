@@ -2850,6 +2850,35 @@ pub struct PromotePlan {
     pub impact: String,
 }
 
+/// What removing a node from the cluster did, or with `dryRun` would do
+/// (`DELETE /api/v1/cluster/nodes/{id}`, CLU-001, ADR-155).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[allow(clippy::struct_excessive_bools)] // independent facts about the node
+#[serde(rename_all = "camelCase")]
+pub struct NodeRemoval {
+    pub node_id: String,
+    pub site: String,
+    /// It was connected or heard from within the last few heartbeats.
+    pub up: bool,
+    /// It could vote and be primary, so it holds a copy of the cluster key.
+    pub eligible: bool,
+    /// It only voted.
+    pub witness: bool,
+    /// It was a Kubernetes resolver pod.
+    pub ephemeral: bool,
+    /// Rotate the cluster CA if this node is lost or can't be trusted: removal stops the
+    /// cluster accepting it, but it keeps its copy of the key.
+    pub held_cluster_key: bool,
+    /// Voters (eligible nodes and witnesses) left.
+    pub voters_after: u32,
+    /// Whether automatic failover still runs (it needs three voters).
+    pub automatic_failover_after: bool,
+    /// False for `dryRun`: nothing changed.
+    pub removed: bool,
+    /// What to do or expect next, one sentence each.
+    pub notes: Vec<String>,
+}
+
 /// One node in [`ClusterView`].
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 #[allow(clippy::struct_excessive_bools)] // independent flags of one record

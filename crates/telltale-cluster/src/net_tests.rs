@@ -1706,3 +1706,204 @@ fn clu_005_a_git_node_handover_ends_with_the_step_down() {
     c.set_maintenance(None, false);
     assert!(!c.stepping_down());
 }
+
+// REQ: CLU-001 (ADR-155, GitHub issue #5) — removing a node: the primary drops it from the
+// registry (it stops voting) and adds it to the removed list, a node that is up needs `force`,
+// the primary can't be removed, a dry run changes nothing, and a removed node's stream is
+// refused even though its certificate is still valid.
+#[test]
+#[allow(clippy::too_many_lines)] // one story: the refusals, the dry run, the removal, the refusal after
+fn clu_001_removing_a_node_drops_it_and_refuses_it() {
+    use crate::removal::RemoveError;
+    let dir = tempfile::tempdir().unwrap();
+    let id = Identity::init(
+        dir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    let c = Cluster::new(id, "0.1.0");
+    let join = |eligible: bool, ephemeral: bool, site: &str| {
+        let key = pki::new_node_key().unwrap();
+        let grants = crate::node::TokenGrants {
+            eligible,
+            witness: false,
+        };
+        let token = c.identity.create_token_for(60, None, grants).unwrap();
+        c.identity
+            .accept_join(
+                &JoinRequest {
+                    witness: false,
+                    ephemeral,
+                    secret: token.secret,
+                    csr_pem: key.csr_pem,
+                    advertise: vec![],
+                    site: site.into(),
+                    eligible,
+                    version: "0.1.0".into(),
+                },
+                None,
+            )
+            .unwrap()
+            .node_id
+    };
+    let (stale, live, pod) = (
+        join(true, false, "pi"),
+        join(true, false, "lxc"),
+        join(false, true, "k8s"),
+    );
+    let hello = |node_id: &str| Frame {
+        body: Some(Body::Hello(Hello {
+            protocol: PROTOCOL,
+            cluster_id: c.identity.meta.cluster_id.clone(),
+            node_id: node_id.to_owned(),
+            version: "0.1.0".into(),
+            site: "x".into(),
+            eligible: false,
+            advertise: vec![],
+            epoch: 0,
+            applied_seq: 0,
+            primary: false,
+            config_source: String::new(),
+            source_commit: String::new(),
+        })),
+    };
+    let echo = EchoSlot::default();
+    let registry_ids = || -> Vec<String> {
+        c.identity
+            .registry()
+            .into_iter()
+            .map(|n| n.node_id)
+            .collect()
+    };
+    let me = c.identity.meta.node_id.clone();
+
+    // Refusals: no such member, and the primary itself.
+    assert_eq!(
+        c.remove_member("nobody", false, false, "t"),
+        Err(RemoveError::Unknown)
+    );
+    assert_eq!(
+        c.remove_member(&me, true, false, "t"),
+        Err(RemoveError::IsSelf)
+    );
+
+    // A node that is up needs `force`: its Hello made it up.
+    let mut peer = Some(live.clone());
+    c.on_frame(&mut peer, hello(&live), "inbound", &echo)
+        .unwrap();
+    assert_eq!(
+        c.remove_member(&live, false, false, "t"),
+        Err(RemoveError::Up)
+    );
+    assert!(registry_ids().contains(&live), "refused: still listed");
+
+    // A dry run says what would happen and changes nothing.
+    let plan = c.remove_member(&stale, false, true, "t").unwrap();
+    assert!(!plan.removed && plan.eligible && plan.held_cluster_key && !plan.up);
+    assert_eq!(
+        plan.voters_after, 2,
+        "the primary and the other eligible node"
+    );
+    assert!(
+        plan.notes
+            .iter()
+            .any(|n| n.contains("rotate the cluster CA")),
+        "{:?}",
+        plan.notes
+    );
+    assert!(registry_ids().contains(&stale) && !c.is_removed(&stale));
+
+    // The stale record goes: out of the registry, onto the removed list, with an event.
+    let done = c.remove_member(&stale, false, false, "alice").unwrap();
+    assert!(done.removed && !done.up);
+    assert!(!registry_ids().contains(&stale));
+    assert!(c.is_removed(&stale) && c.identity.removed() == [stale.clone()]);
+    assert!(
+        c.events()
+            .iter()
+            .any(|e| e.kind == "removed" && e.node == stale && e.detail.contains("alice")),
+        "{:?}",
+        c.events()
+    );
+    assert_eq!(
+        c.remove_member(&stale, false, false, "t"),
+        Err(RemoveError::Unknown),
+        "gone"
+    );
+
+    // Its certificate is still valid, but its stream is refused (a Hello, and a stream that
+    // was open before the removal).
+    let mut peer = Some(stale.clone());
+    let err = c
+        .on_frame(&mut peer, hello(&stale), "inbound", &echo)
+        .unwrap_err();
+    assert!(err.contains("removed"), "{err}");
+    let mut open = Some(stale.clone());
+    let hb = Frame {
+        body: Some(Body::Heartbeat(Heartbeat {
+            ts_ms: 1,
+            ..Heartbeat::default()
+        })),
+    };
+    assert!(c.on_frame(&mut open, hb, "inbound", &echo).is_err());
+    assert!(
+        !c.members().iter().any(|m| m.node_id == stale),
+        "it isn't listed as a member"
+    );
+
+    // A node that is up goes with `force`, and the answer says so.
+    let forced = c.remove_member(&live, true, false, "alice").unwrap();
+    assert!(forced.up && forced.removed);
+    assert!(
+        forced.notes.iter().any(|n| n.contains("It was up")),
+        "{:?}",
+        forced.notes
+    );
+    assert!(c.is_removed(&live));
+
+    // An ephemeral member (a pod) can be removed too, and doesn't mention the key.
+    let p = c.remove_member(&pod, false, false, "t").unwrap();
+    assert!(p.ephemeral && !p.held_cluster_key);
+
+    // The removed list is what a replica adopts from the manifest: an empty list (an older
+    // primary) leaves it alone.
+    let dir2 = tempfile::tempdir().unwrap();
+    let id2 = Identity::init(
+        dir2.path(),
+        "other",
+        vec!["https://127.0.0.1:2".into()],
+        "k8s",
+    )
+    .unwrap();
+    let r = Cluster::new(id2, "0.1.0");
+    r.adopt_removed(&c.identity.removed());
+    assert!(r.is_removed(&stale) && r.is_removed(&live));
+    r.adopt_removed(&[]);
+    assert!(r.is_removed(&stale), "an empty list changes nothing");
+}
+
+// REQ: CLU-001 (ADR-155) — the removed list is capped: the oldest entries go first.
+#[test]
+fn clu_001_the_removed_list_keeps_the_newest() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = Identity::init(
+        dir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    for i in 0..(crate::node::MAX_REMOVED + 5) {
+        id.add_removed(&format!("n{i}")).unwrap();
+    }
+    id.add_removed("n7").unwrap();
+    let list = id.removed();
+    assert_eq!(list.len(), crate::node::MAX_REMOVED);
+    assert_eq!(list.first().map(String::as_str), Some("n5"));
+    assert_eq!(
+        list.last().cloned(),
+        Some(format!("n{}", crate::node::MAX_REMOVED + 4))
+    );
+}

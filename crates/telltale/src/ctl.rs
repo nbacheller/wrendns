@@ -98,6 +98,20 @@ pub(crate) enum CtlCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// REQ: CLU-001 (ADR-155) — remove a node from the cluster: out of the member list (it stops
+    /// voting and being listed) and onto the list of removed nodes, so no node accepts it again.
+    /// For a stale record (a node that rejoined under a new ID) or a node being retired. The
+    /// primary can't be removed; a node that is up needs `--force`.
+    RemoveNode {
+        /// The node's ID, as the Cluster page and `telltale cluster status` list it.
+        node: String,
+        /// Remove it although it is up: its connection is closed and it is refused afterwards.
+        #[arg(long)]
+        force: bool,
+        /// Check and say what would happen, without removing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Flush the cache (everything, or one name).
     Flush {
         #[arg(long)]
@@ -696,6 +710,23 @@ pub(crate) async fn run(
             .await?,
             Some(Box::new(action_text)),
         ),
+        // REQ: CLU-001 (ADR-155)
+        CtlCommand::RemoveNode {
+            node,
+            force,
+            dry_run,
+        } => (
+            api.call(
+                http::Method::DELETE,
+                &format!(
+                    "cluster/nodes/{}?force={force}&dryRun={dry_run}",
+                    path_segment(&node)
+                ),
+                None,
+            )
+            .await?,
+            Some(Box::new(removal_text)),
+        ),
         // REQ: OPS-010
         CtlCommand::Maintenance(MaintenanceCmd::Start {
             for_secs,
@@ -1267,6 +1298,38 @@ fn versions_text(v: &Value) -> String {
 }
 
 /// REQ: CLU-013 — what a rollout or pin action did.
+/// REQ: CLU-001 (ADR-155) — what removing a node did, or would do.
+fn removal_text(v: &Value) -> String {
+    let done = v["removed"] == Value::Bool(true);
+    let site = s(v, "site");
+    let mut out = format!(
+        "{} {}{}: {} voter(s) left, automatic failover {}\n",
+        if done {
+            "removed"
+        } else {
+            "dry run: would remove"
+        },
+        s(v, "nodeId"),
+        if site.is_empty() {
+            String::new()
+        } else {
+            format!(" (site {site})")
+        },
+        v["votersAfter"],
+        if v["automaticFailoverAfter"] == Value::Bool(true) {
+            "still on"
+        } else {
+            "off"
+        },
+    );
+    if let Some(notes) = v["notes"].as_array() {
+        for n in notes.iter().filter_map(Value::as_str) {
+            let _ = writeln!(out, "note: {n}");
+        }
+    }
+    out
+}
+
 fn action_text(v: &Value) -> String {
     let mut out = format!(
         "{}{}

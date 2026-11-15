@@ -81,6 +81,11 @@ pub enum Code {
     /// REQ: CLU-014 — a drill's targets, length, or reason are unusable (an unknown group, no
     /// device seen, more than 300 seconds).
     DrillTargets,
+    /// REQ: CLU-001 (ADR-155) — the node to remove is the primary (it keeps the member list and
+    /// can't remove itself).
+    NodeIsPrimary,
+    /// REQ: CLU-001 (ADR-155) — the node to remove is up: pass `force` to cut it off anyway.
+    NodeIsUp,
 }
 
 impl Code {
@@ -119,6 +124,8 @@ impl Code {
             Self::DrillRefused => "https://telltaledns.dev/problems/drill_refused",
             Self::DrillActive => "https://telltaledns.dev/problems/drill_active",
             Self::DrillTargets => "https://telltaledns.dev/problems/drill_targets",
+            Self::NodeIsPrimary => "https://telltaledns.dev/problems/node_is_primary",
+            Self::NodeIsUp => "https://telltaledns.dev/problems/node_is_up",
         }
     }
 
@@ -157,6 +164,8 @@ impl Code {
             Self::DrillRefused => "Drill refused",
             Self::DrillActive => "A drill is already running",
             Self::DrillTargets => "Invalid drill request",
+            Self::NodeIsPrimary => "The node is the primary",
+            Self::NodeIsUp => "The node is up",
         }
     }
 
@@ -176,7 +185,9 @@ impl Code {
             | Self::VersionBlobsMissing
             | Self::KubernetesDisabled
             | Self::DrillRefused
-            | Self::DrillActive => StatusCode::CONFLICT,
+            | Self::DrillActive
+            | Self::NodeIsPrimary
+            | Self::NodeIsUp => StatusCode::CONFLICT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::VersionConflict => StatusCode::PRECONDITION_FAILED,
             Self::InvalidConfig

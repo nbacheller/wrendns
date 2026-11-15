@@ -10,6 +10,11 @@ use serde::{Deserialize, Serialize};
 use crate::pki::{self, Ca};
 use crate::token::{self, Token};
 
+/// REQ: CLU-001 (ADR-155) — how many removed nodes the cluster remembers. A node certificate
+/// lasts 90 days ([`pki::NODE_CERT_DAYS`]), so a list this long outlives every certificate it
+/// names unless the cluster removes more than a few nodes a week.
+pub const MAX_REMOVED: usize = 512;
+
 /// `cluster.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Meta {
@@ -273,6 +278,37 @@ impl Identity {
     pub fn save_registry(&self, nodes: &[NodeRecord]) -> Result<(), String> {
         let b = serde_json::to_vec_pretty(nodes).map_err(|e| e.to_string())?;
         write(&self.dir.join("nodes.json"), &b, false).map_err(|e| e.to_string())
+    }
+
+    /// REQ: CLU-001 (ADR-155, GitHub issue #5) — the IDs of nodes removed from the cluster, oldest
+    /// first. Their certificates are still valid until they expire, but no node accepts a stream
+    /// from them. The primary adds to the list ([`Self::add_removed`]); every other node keeps
+    /// what the manifest carries ([`Self::save_removed`]).
+    pub fn removed(&self) -> Vec<String> {
+        std::fs::read(self.dir.join("removed.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    /// Replaces the list of removed nodes (what the primary's manifest carries).
+    pub fn save_removed(&self, ids: &[String]) -> Result<(), String> {
+        let b = serde_json::to_vec_pretty(ids).map_err(|e| e.to_string())?;
+        write(&self.dir.join("removed.json"), &b, false).map_err(|e| e.to_string())
+    }
+
+    /// Adds `node_id` to the removed nodes (the oldest entries go once there are
+    /// [`MAX_REMOVED`]).
+    pub fn add_removed(&self, node_id: &str) -> Result<(), String> {
+        let mut ids = self.removed();
+        if ids.iter().any(|n| n == node_id) {
+            return Ok(());
+        }
+        ids.push(node_id.to_owned());
+        if ids.len() > MAX_REMOVED {
+            ids.drain(..ids.len() - MAX_REMOVED);
+        }
+        self.save_removed(&ids)
     }
 
     /// Stores the CA key received from the primary (eligible nodes, ADR-051), after checking it

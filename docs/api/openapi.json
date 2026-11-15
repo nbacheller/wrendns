@@ -2473,6 +2473,87 @@
         }
       }
     },
+    "/api/v1/cluster/nodes/{id}": {
+      "delete": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Remove a node from the cluster.",
+        "description": "The primary drops the node from the member list (so it stops counting as a voter, and the\nCluster page and the `TelltaleDNSClusterPeerDown` alert stop listing it) and adds its ID to\nthe list of removed nodes that travels with every version: no node accepts a connection from\nit again, even while its certificate is valid. The node's own data isn't touched. A node that\nis up is removed only with `force=true`; the answer then says it was up. The primary can't\nbe removed, and neither can a node by site or pod name: use the ID the Cluster page shows.\n\nIf the node was eligible it holds a copy of the cluster key (`heldClusterKey`): removal\nstops the cluster accepting its certificate, but if the node is lost or can't be trusted,\nrotate the CA too (`telltale cluster rotate-ca`). Removing a voter can leave fewer than three,\nwhich turns automatic failover into manual (`automaticFailoverAfter`, and a note).\n\nA replica sends the request to the primary. It changes no configuration, so a GitOps-managed\ncluster takes it too. `?dryRun=true` runs every check and says what would happen. Admin\n(agents: `cluster:admin`); audit-logged as `cluster.node.remove`.",
+        "operationId": "remove_node",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The node's ID, as the Cluster page lists it.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Check and report without removing anything.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "description": "Remove the node although it is up: its connection is closed and it is refused afterwards.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The node was removed (or, with dryRun, what would be).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeRemoval"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No member has that ID (`node_unknown`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The node is the primary (`node_is_primary`), or it is up and `force` wasn't given (`node_is_up`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not in a cluster, or the primary is unreachable or has no lease (`unavailable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/cluster/pin": {
       "delete": {
         "tags": [
@@ -10837,7 +10918,9 @@
           "kubernetes_disabled",
           "drill_refused",
           "drill_active",
-          "drill_targets"
+          "drill_targets",
+          "node_is_primary",
+          "node_is_up"
         ]
       },
       "ConfigChange": {
@@ -16714,6 +16797,72 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "NodeRemoval": {
+        "type": "object",
+        "description": "What removing a node from the cluster did, or with `dryRun` would do\n(`DELETE /api/v1/cluster/nodes/{id}`, CLU-001, ADR-155).",
+        "required": [
+          "nodeId",
+          "site",
+          "up",
+          "eligible",
+          "witness",
+          "ephemeral",
+          "heldClusterKey",
+          "votersAfter",
+          "automaticFailoverAfter",
+          "removed",
+          "notes"
+        ],
+        "properties": {
+          "automaticFailoverAfter": {
+            "type": "boolean",
+            "description": "Whether automatic failover still runs (it needs three voters)."
+          },
+          "eligible": {
+            "type": "boolean",
+            "description": "It could vote and be primary, so it holds a copy of the cluster key."
+          },
+          "ephemeral": {
+            "type": "boolean",
+            "description": "It was a Kubernetes resolver pod."
+          },
+          "heldClusterKey": {
+            "type": "boolean",
+            "description": "Rotate the cluster CA if this node is lost or can't be trusted: removal stops the\ncluster accepting it, but it keeps its copy of the key."
+          },
+          "nodeId": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What to do or expect next, one sentence each."
+          },
+          "removed": {
+            "type": "boolean",
+            "description": "False for `dryRun`: nothing changed."
+          },
+          "site": {
+            "type": "string"
+          },
+          "up": {
+            "type": "boolean",
+            "description": "It was connected or heard from within the last few heartbeats."
+          },
+          "votersAfter": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Voters (eligible nodes and witnesses) left.",
+            "minimum": 0
+          },
+          "witness": {
+            "type": "boolean",
+            "description": "It only voted."
           }
         }
       },

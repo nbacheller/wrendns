@@ -11,6 +11,7 @@ pub mod failover;
 pub mod net;
 pub mod node;
 pub mod pki;
+pub mod removal;
 pub mod renew;
 pub mod rotation;
 pub mod sync;

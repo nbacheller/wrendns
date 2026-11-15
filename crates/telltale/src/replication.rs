@@ -454,6 +454,8 @@ async fn apply(
     if !m.nodes.is_empty() {
         let _ = cluster.identity.save_registry(&m.nodes);
     }
+    // REQ: CLU-001 (ADR-155, GitHub issue #5) — and the nodes removed from the cluster.
+    cluster.adopt_removed(&m.removed);
     if !m.authority.is_empty() {
         let _ = cluster.identity.save_authority(&m.authority);
     }
@@ -852,6 +854,8 @@ struct Gathered {
     config_hash: String,
     filter_version: Option<u64>,
     nodes: Vec<node::NodeRecord>,
+    /// REQ: CLU-001 (ADR-155) — the nodes removed from the cluster.
+    removed: Vec<String>,
     authority: String,
     failover: String,
     source: Option<telltale_cluster::sync::SourceInfo>,
@@ -1091,6 +1095,7 @@ impl Primary {
         let config_hash = hash(&shared);
         let filter_version = filter.as_ref().map(|(f, _)| f.version);
         let nodes = self.cluster.identity.registry();
+        let removed = self.cluster.identity.removed();
         let meta = self.cluster.identity.reload().meta;
         let (mut authority, failover) = (meta.config_authority, meta.failover);
         // REQ: CLU-003 (ADR-049) — a Git source makes the cluster GitOps-managed, and every
@@ -1111,17 +1116,34 @@ impl Primary {
         } else {
             crate::privacy::current_hex(data_dir(&cfg))
         };
-        let meta_hash = hash(
-            &serde_json::to_vec(&(
-                &nodes,
-                &authority,
-                &failover,
-                &source,
-                &ca_bundle,
-                &privacy_key,
-            ))
-            .unwrap_or_default(),
-        );
+        // REQ: CLU-001 (ADR-155) — the removed nodes are part of it too, but only once there are
+        // any, so a cluster that never removed a node keeps the hash it had.
+        let meta_hash = if removed.is_empty() {
+            hash(
+                &serde_json::to_vec(&(
+                    &nodes,
+                    &authority,
+                    &failover,
+                    &source,
+                    &ca_bundle,
+                    &privacy_key,
+                ))
+                .unwrap_or_default(),
+            )
+        } else {
+            hash(
+                &serde_json::to_vec(&(
+                    &nodes,
+                    &authority,
+                    &failover,
+                    &source,
+                    &ca_bundle,
+                    &privacy_key,
+                    &removed,
+                ))
+                .unwrap_or_default(),
+            )
+        };
         // REQ: CLU-003 (T9.1, ADR-045) — users and tokens travel too (an emergency primary
         // keeps the last authoritative ones).
         let identities: Option<Vec<u8>> = if self.emergency {
@@ -1153,6 +1175,7 @@ impl Primary {
             config_hash,
             filter_version,
             nodes,
+            removed,
             authority,
             failover,
             source,
@@ -1215,6 +1238,7 @@ impl Primary {
             config,
             filter: g.filter.as_ref().map(|(f, _)| f.clone()),
             nodes: g.nodes.clone(),
+            removed: g.removed.clone(),
             authority: g.authority.clone(),
             base: epoch_base,
             emergency: self.emergency,

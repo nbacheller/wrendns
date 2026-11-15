@@ -37,6 +37,7 @@ mod managed;
 mod masking;
 mod mcp_stdio;
 mod mdns;
+mod node_removal;
 mod otlp;
 mod pihole;
 mod pipeline;

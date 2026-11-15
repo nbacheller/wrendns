@@ -313,6 +313,38 @@ impl Backend for Fake {
     fn promote(&self, _: PromoteRequest, _: String) -> Result<ClusterView, Problem> {
         panic!("a dry run must not promote")
     }
+    // REQ: CLU-001 (ADR-155) — `stale` can be removed, `up` only with force, `primary` never.
+    fn remove_node(
+        &self,
+        w: crate::NodeRemoveWrite,
+    ) -> BoxFuture<Result<crate::model::NodeRemoval, Problem>> {
+        self.seen.lock().unwrap().push(format!(
+            "remove {} force={} dry={} by={}",
+            w.node, w.force, w.dry_run, w.by
+        ));
+        let r = match w.node.as_str() {
+            "primary" => Err(Problem::new(
+                crate::problem::Code::NodeIsPrimary,
+                "it is the primary",
+            )),
+            "up" if !w.force => Err(Problem::new(crate::problem::Code::NodeIsUp, "it is up")),
+            "stale" | "up" => Ok(crate::model::NodeRemoval {
+                node_id: w.node.clone(),
+                site: "pi".into(),
+                up: w.node == "up",
+                eligible: true,
+                witness: false,
+                ephemeral: false,
+                held_cluster_key: true,
+                voters_after: 2,
+                automatic_failover_after: false,
+                removed: !w.dry_run,
+                notes: vec!["rotate the cluster CA".into()],
+            }),
+            other => Err(crate::cluster_nodes_api::unknown(other)),
+        };
+        Box::pin(async move { r })
+    }
     fn promote_plan(&self, req: &PromoteRequest) -> Result<crate::model::PromotePlan, Problem> {
         Ok(crate::model::PromotePlan {
             applied: false,
@@ -850,6 +882,74 @@ async fn agt_002_promote_dry_run() {
     assert_eq!(v["emergency"], true);
 }
 
+// REQ: CLU-001 (ADR-155, GitHub issue #5) — removing a node: admin only, `force` and `dryRun`
+// reach the backend with the actor, and the refusals carry stable codes.
+#[tokio::test]
+async fn clu_001_removing_a_node_over_the_api() {
+    let (app, fake) = app();
+    let del = |path: &str| {
+        Request::delete(path)
+            .header("authorization", format!("Bearer {}", app.bearer))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, del("/api/v1/cluster/nodes/stale")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["nodeId"], "stale");
+    assert_eq!(v["removed"], true);
+    assert_eq!(v["heldClusterKey"], true);
+    assert_eq!(v["votersAfter"], 2);
+    assert_eq!(v["automaticFailoverAfter"], false);
+    let (s, _, v) = send(&app, del("/api/v1/cluster/nodes/stale?dryRun=true")).await;
+    assert_eq!(
+        (s, &v["removed"]),
+        (StatusCode::OK, &serde_json::json!(false))
+    );
+    // Up needs force.
+    let (s, _, v) = send(&app, del("/api/v1/cluster/nodes/up")).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["type"].as_str().unwrap().ends_with("node_is_up"), "{v}");
+    let (s, _, v) = send(&app, del("/api/v1/cluster/nodes/up?force=true")).await;
+    assert_eq!((s, &v["up"]), (StatusCode::OK, &serde_json::json!(true)));
+    // The primary, and a node nobody knows.
+    let (s, _, v) = send(&app, del("/api/v1/cluster/nodes/primary")).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(
+        v["type"].as_str().unwrap().ends_with("node_is_primary"),
+        "{v}"
+    );
+    let (s, _, v) = send(&app, del("/api/v1/cluster/nodes/nobody")).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    let seen = fake.seen.lock().unwrap().join("\n");
+    assert!(
+        seen.contains("remove stale force=false dry=false by="),
+        "{seen}"
+    );
+    assert!(seen.contains("remove stale force=false dry=true"), "{seen}");
+    assert!(seen.contains("remove up force=true dry=false"), "{seen}");
+    // A viewer can't.
+    let viewer = app
+        .auth
+        .create_user(
+            "kid",
+            "another long password",
+            auth::Role::Viewer,
+            false,
+            NOW,
+        )
+        .unwrap();
+    let (cookie, csrf) = app.session_for(&viewer);
+    let req = with_session(
+        &cookie,
+        &csrf,
+        "DELETE",
+        "/api/v1/cluster/nodes/stale",
+        serde_json::Value::Null,
+    );
+    let (s, _, v) = send(&app, req).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+}
+
 // REQ: AGT-006 — MCP over HTTP: initialize, list tools, call one; a tool needing a scope the
 // agent lacks reports an error, not data (the REST checks apply inside).
 #[tokio::test]
@@ -1135,7 +1235,8 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 105 with OBS-035's /auth/display, /displays and /displays/{id}.
     // 108 with FLT-017's /kubernetes/workloads, /kubernetes/status and /kubernetes/map/{key}.
     // 112 with CLU-014's /nodes/{id}/drill, /drills, /drills/{id} and /clients/affinity.
-    assert_eq!(paths.len(), 112);
+    // 113 with CLU-001's /cluster/nodes/{id}.
+    assert_eq!(paths.len(), 113);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

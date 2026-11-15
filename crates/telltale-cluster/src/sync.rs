@@ -47,6 +47,10 @@ pub struct ClusterManifest {
     /// The member registry (ADR-051): every node, its site, eligibility, and URLs.
     #[serde(default)]
     pub nodes: Vec<crate::node::NodeRecord>,
+    /// REQ: CLU-001 (ADR-155) — the nodes removed from the cluster: no node accepts a stream
+    /// from them. Absent from older primaries (their nodes keep the list they have).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<String>,
     /// The cluster's config authority (ADR-048): `api` or `gitops`.
     #[serde(default)]
     pub authority: String,

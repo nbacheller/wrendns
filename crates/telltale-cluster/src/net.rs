@@ -1083,6 +1083,122 @@ impl Cluster {
         Ok(())
     }
 
+    /// REQ: CLU-001 (ADR-155, GitHub issue #5) — whether `node` was removed from the cluster:
+    /// its certificate may still be valid, but no stream from it is accepted.
+    pub fn is_removed(&self, node: &str) -> bool {
+        self.identity.removed().iter().any(|n| n == node)
+    }
+
+    /// REQ: CLU-001 (ADR-155) — adopts the removed nodes a manifest carries (an empty list, from
+    /// a primary that predates removal, leaves the one this node has): their streams end at the
+    /// next frame, and they stop being listed here.
+    pub fn adopt_removed(&self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        if let Err(e) = self.identity.save_removed(ids) {
+            warn!("cluster: can't store the removed nodes: {e}");
+            return;
+        }
+        {
+            let mut members = self.members.lock().unwrap_or_else(PoisonError::into_inner);
+            for id in ids {
+                members.remove(id);
+            }
+        }
+        let mut outbox = self.outbox.lock().unwrap_or_else(PoisonError::into_inner);
+        for id in ids {
+            outbox.remove(id);
+        }
+    }
+
+    /// REQ: CLU-001 (ADR-155, GitHub issue #5) — removes `node` from the cluster (primary only):
+    /// out of the member registry (so it no longer votes, and the Cluster page stops listing it),
+    /// and onto the removed list that travels with every manifest, so no node accepts a stream
+    /// from it again, even while its certificate is still valid. A node that is up is removed
+    /// only with `force` (its stream is closed at its next frame). With `dry_run` nothing
+    /// changes and the answer says what would.
+    pub fn remove_member(
+        &self,
+        node: &str,
+        force: bool,
+        dry_run: bool,
+        by: &str,
+    ) -> Result<crate::removal::Removal, crate::removal::RemoveError> {
+        use crate::removal::{Removal, RemoveError};
+        if !self.is_primary() {
+            return Err(RemoveError::NotPrimary);
+        }
+        if node == self.identity.meta.node_id {
+            return Err(RemoveError::IsSelf);
+        }
+        let mut nodes = self.identity.registry();
+        let Some(rec) = nodes.iter().find(|n| n.node_id == node).cloned() else {
+            return Err(RemoveError::Unknown);
+        };
+        let now = now_ms();
+        let up = self
+            .members()
+            .iter()
+            .any(|m| m.node_id == node && (m.connected || m.up(now)));
+        if up && !force {
+            return Err(RemoveError::Up);
+        }
+        let voters_after = nodes
+            .iter()
+            .filter(|n| n.node_id != node && n.voter())
+            .count();
+        let auto_was_on = crate::failover::active(&self.identity.reload());
+        let auto_after = auto_was_on && voters_after >= 3;
+        let answer = Removal {
+            node_id: rec.node_id.clone(),
+            site: rec.site.clone(),
+            up,
+            eligible: rec.eligible,
+            witness: rec.witness,
+            ephemeral: rec.ephemeral,
+            held_cluster_key: rec.eligible,
+            voters_after,
+            automatic_failover_after: auto_after,
+            removed: !dry_run,
+            notes: crate::removal::notes(
+                rec.eligible,
+                up,
+                (auto_was_on && !auto_after).then_some(voters_after),
+            ),
+        };
+        if dry_run {
+            return Ok(answer);
+        }
+        // The removed list first: a crash between the two writes leaves a refused node that is
+        // still listed, and removing it again finishes the job.
+        self.identity
+            .add_removed(node)
+            .map_err(RemoveError::Store)?;
+        nodes.retain(|n| n.node_id != node);
+        self.identity
+            .save_registry(&nodes)
+            .map_err(RemoveError::Store)?;
+        self.members
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(node);
+        self.outbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(node);
+        self.event(
+            "removed",
+            node,
+            format!(
+                "removed from the cluster by {by}{}",
+                if up { " while it was up" } else { "" }
+            ),
+        );
+        info!(node, by, up, "cluster: member removed");
+        Ok(answer)
+    }
+
     /// REQ: CLU-009 — on shutdown, an ephemeral member asks the primary to drop it now (see
     /// [`Self::remove_ephemeral`], which refuses members that aren't ephemeral). Bounded by
     /// `timeout`.
@@ -1810,6 +1926,11 @@ impl Cluster {
         via: &'static str,
         echo: &EchoSlot,
     ) -> Result<(), String> {
+        // REQ: CLU-001 (ADR-155, GitHub issue #5) — a removed node's certificate is still valid
+        // until it expires: its streams end here, at the first frame after the removal.
+        if peer.as_deref().is_some_and(|p| self.is_removed(p)) {
+            return Err("this node was removed from the cluster".into());
+        }
         let mut members = self.members.lock().unwrap_or_else(PoisonError::into_inner);
         match f.body {
             Some(Body::Hello(h)) => {
@@ -1822,6 +1943,9 @@ impl Cluster {
                 }
                 if h.cluster_id != self.identity.meta.cluster_id {
                     return Err("peer is in another cluster".into());
+                }
+                if self.is_removed(&h.node_id) {
+                    return Err("this node was removed from the cluster".into());
                 }
                 if let Some(p) = peer.as_ref()
                     && *p != h.node_id
@@ -2337,6 +2461,14 @@ async fn handle(
                     "a cluster certificate is required".into(),
                 );
             };
+            // REQ: CLU-001 (ADR-155) — a removed node's certificate is still valid, but it is
+            // told why it's refused.
+            if cluster.is_removed(&id) {
+                return reply(
+                    StatusCode::FORBIDDEN,
+                    "this node was removed from the cluster".into(),
+                );
+            }
             let (tx, body) = Channel::<Bytes>::new(16);
             let c = Arc::clone(&cluster);
             let echo = EchoSlot::default();
@@ -2369,10 +2501,17 @@ async fn handle(
 
 /// Serves blob `hash` to `peer` (a cluster certificate's node ID).
 async fn serve_blob(cluster: &Cluster, peer: Option<&str>, hash: &str) -> Response<HttpBody> {
-    if peer.is_none() {
+    let Some(who) = peer else {
         return reply(
             StatusCode::UNAUTHORIZED,
             "a cluster certificate is required".into(),
+        );
+    };
+    // REQ: CLU-001 (ADR-155) — a removed node gets nothing, though its certificate is valid.
+    if cluster.is_removed(who) {
+        return reply(
+            StatusCode::FORBIDDEN,
+            "this node was removed from the cluster".into(),
         );
     }
     // REQ: CLU-003 (T10.7, ADR-143) — users and tokens go only to members the registry

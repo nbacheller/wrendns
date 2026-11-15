@@ -317,6 +317,14 @@ pub(crate) fn rpc_handler(
                 }
                 return crate::rollout::surface::handle(src, local, cluster, peer, body).await;
             }
+            if kind == crate::node_removal::KIND {
+                // REQ: CLU-001 (ADR-155) — a replica's request to remove a member (a user acted
+                // there). An ephemeral member serves no UI: nothing comes through it.
+                if ephemeral {
+                    return Err("an ephemeral member can't remove cluster members".into());
+                }
+                return crate::node_removal::handle(src, cluster, peer, body).await;
+            }
             if kind == crate::devices::KIND {
                 // REQ: CLU-002 (ADR-125) — the device names this node's routers and mDNS know.
                 return crate::devices::own(&src.pipeline);
@@ -1895,6 +1903,19 @@ impl Backend for Federated {
             primary,
             crate::rollout::surface::Call::Command(w),
         ))
+    }
+    // REQ: CLU-001 (ADR-155, GitHub issue #5) — the primary keeps the member list: a replica
+    // sends the request there.
+    fn remove_node(
+        &self,
+        w: telltale_api::NodeRemoveWrite,
+    ) -> BoxFuture<Result<telltale_api::model::NodeRemoval, Problem>> {
+        let cluster = Arc::clone(&self.cluster);
+        if cluster.is_primary() {
+            return Box::pin(crate::node_removal::remove(cluster, w));
+        }
+        let primary = cluster.reachable_primary();
+        Box::pin(crate::node_removal::send(cluster, primary, w))
     }
     // REQ: OBS-010 (T9.6) — alerts are evaluated here (the primary) or nowhere: this node's.
     fn alerts_status(&self) -> telltale_api::model::AlertsStatus {

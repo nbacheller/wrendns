@@ -308,6 +308,12 @@ fn delete_need(p: &str) -> Option<Need> {
     if p == "/api/v1/cluster/pin" {
         return Some(Need::Scope("cluster:admin"));
     }
+    // REQ: CLU-001 (ADR-155) — removing a node changes who is in the cluster.
+    if p.strip_prefix("/api/v1/cluster/nodes/")
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+    {
+        return Some(Need::Scope("cluster:admin"));
+    }
     // REQ: CLU-014 — ending a drill early.
     if drill_path(p) {
         return Some(Need::Scope("ops:drill"));
@@ -561,6 +567,10 @@ mod tests {
         );
         assert_eq!(
             required(&Method::POST, "/api/v1/cluster/promote"),
+            Scope("cluster:admin")
+        );
+        assert_eq!(
+            required(&Method::DELETE, "/api/v1/cluster/nodes/3f9c2a1b7d0e4c55"),
             Scope("cluster:admin")
         );
         assert_eq!(required(&g, "/api/v1/auth/me"), Any);

@@ -1118,6 +1118,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cluster/nodes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove a node from the cluster.
+         * @description The primary drops the node from the member list (so it stops counting as a voter, and the
+         *     Cluster page and the `TelltaleDNSClusterPeerDown` alert stop listing it) and adds its ID to
+         *     the list of removed nodes that travels with every version: no node accepts a connection from
+         *     it again, even while its certificate is valid. The node's own data isn't touched. A node that
+         *     is up is removed only with `force=true`; the answer then says it was up. The primary can't
+         *     be removed, and neither can a node by site or pod name: use the ID the Cluster page shows.
+         *
+         *     If the node was eligible it holds a copy of the cluster key (`heldClusterKey`): removal
+         *     stops the cluster accepting its certificate, but if the node is lost or can't be trusted,
+         *     rotate the CA too (`telltale cluster rotate-ca`). Removing a voter can leave fewer than three,
+         *     which turns automatic failover into manual (`automaticFailoverAfter`, and a note).
+         *
+         *     A replica sends the request to the primary. It changes no configuration, so a GitOps-managed
+         *     cluster takes it too. `?dryRun=true` runs every check and says what would happen. Admin
+         *     (agents: `cluster:admin`); audit-logged as `cluster.node.remove`.
+         */
+        delete: operations["remove_node"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/cluster/pin": {
         parameters: {
             query?: never;
@@ -4059,7 +4093,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -6381,6 +6415,38 @@ export interface components {
             upstreamFailures: number;
             /** Format: int64 */
             upstreamQueries: number;
+        };
+        /**
+         * @description What removing a node from the cluster did, or with `dryRun` would do
+         *     (`DELETE /api/v1/cluster/nodes/{id}`, CLU-001, ADR-155).
+         */
+        NodeRemoval: {
+            /** @description Whether automatic failover still runs (it needs three voters). */
+            automaticFailoverAfter: boolean;
+            /** @description It could vote and be primary, so it holds a copy of the cluster key. */
+            eligible: boolean;
+            /** @description It was a Kubernetes resolver pod. */
+            ephemeral: boolean;
+            /**
+             * @description Rotate the cluster CA if this node is lost or can't be trusted: removal stops the
+             *     cluster accepting it, but it keeps its copy of the key.
+             */
+            heldClusterKey: boolean;
+            nodeId: string;
+            /** @description What to do or expect next, one sentence each. */
+            notes: string[];
+            /** @description False for `dryRun`: nothing changed. */
+            removed: boolean;
+            site: string;
+            /** @description It was connected or heard from within the last few heartbeats. */
+            up: boolean;
+            /**
+             * Format: int32
+             * @description Voters (eligible nodes and witnesses) left.
+             */
+            votersAfter: number;
+            /** @description It only voted. */
+            witness: boolean;
         };
         /**
          * @description One node's ratios over time, for the sparklines (at most 240 points: buckets summed into
@@ -9640,6 +9706,61 @@ export interface operations {
             };
             /** @description Invalid request: problem+json says which parameter and how to fix it. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    remove_node: {
+        parameters: {
+            query?: {
+                /** @description Check and report without removing anything. */
+                dryRun?: boolean;
+                /** @description Remove the node although it is up: its connection is closed and it is refused afterwards. */
+                force?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The node's ID, as the Cluster page lists it. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The node was removed (or, with dryRun, what would be). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeRemoval"];
+                };
+            };
+            /** @description No member has that ID (`node_unknown`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The node is the primary (`node_is_primary`), or it is up and `force` wasn't given (`node_is_up`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not in a cluster, or the primary is unreachable or has no lease (`unavailable`). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

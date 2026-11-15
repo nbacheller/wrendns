@@ -271,6 +271,9 @@ fn now_ms() -> u64 {
 
 /// Days a certificate must have left before the check fails.
 const CERT_WARN_DAYS: u64 = 14;
+/// REQ: CLU-001 (ADR-155) — how long this node runs before the Cluster view lists the registry's
+/// members that haven't connected since: the others are still reconnecting before that.
+const REGISTRY_ONLY_AFTER_S: u64 = 90;
 /// Lag tolerated before `in_sync` fails (a sync normally takes well under a second).
 const LAG_WARN_SECS: u64 = 30;
 
@@ -502,6 +505,28 @@ pub(crate) fn view(
                 .in_maintenance(now)
                 .map(|w| crate::maintenance::api_window(w, now, None)),
         });
+    }
+    // REQ: CLU-001 (ADR-155, GitHub issue #5) — members the registry keeps that haven't connected
+    // since this process started (a machine that's gone, or one rejoined under a new ID) are
+    // listed as down, so they can be seen and removed; they still count as voters. Not in the
+    // first minutes after a start, while the members are still reconnecting, and never for
+    // ephemeral members (they expire by themselves).
+    if local.uptime_s >= REGISTRY_ONLY_AFTER_S {
+        for r in registry.iter().filter(|r| {
+            !r.ephemeral && r.node_id != me.node_id && !peers.iter().any(|p| p.node_id == r.node_id)
+        }) {
+            nodes.push(ClusterNode {
+                node_id: r.node_id.clone(),
+                site: r.site.clone(),
+                witness: r.witness,
+                eligible: r.eligible,
+                role: "replica".into(),
+                link: "none".into(),
+                protocol: 0,
+                last_seen_seconds_ago: (now / 1000).saturating_sub(r.joined),
+                ..ClusterNode::default()
+            });
+        }
     }
     query_shares(&mut nodes);
     let sync = c.sync_status();
