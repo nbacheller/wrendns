@@ -1680,7 +1680,11 @@ advertises; if none answers, it attaches to another eligible node, so it still g
 cluster's state. While it is attached to a node that isn't the primary, it looks for the
 primary again every 2 to 30 seconds (jittered, backing off) and moves back as soon as it
 answers, with `cluster: the primary answers again` in the log. It never moves to an address
-of a node it knows is not the primary.
+of a node it knows is not the primary. Only the node's own link counts: the primary also opens
+links to eligible nodes, and one of those doesn't stop the search. Configuration and blocklist
+files always come from the primary (another replica has none to give), over the node's own
+link when that's to the primary, else from the primary's addresses directly. Each time the
+link comes up the log says where: `cluster: linked to a peer` with its URL and node ID.
 
 **One view of the whole cluster.** Open any node's UI and the dashboard, top lists, latency,
 groups, query log, and live query stream cover every node:
