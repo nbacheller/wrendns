@@ -545,7 +545,7 @@ async fn dns_012_hedged_queries() {
     // as .4, so the "slow" lookup went to the copy first and never waited (arm, 2026-10-08/09).
     let other = Arc::new(AtomicU64::new(20));
     let (slow2, other2) = (Arc::clone(&slow), Arc::clone(&other));
-    let (s, _) = tree(move |zones| {
+    let (s, log) = tree(move |zones| {
         // example.com has two servers: .4 (made slow later) and .10, a copy.
         let com = &mut zones[1].1;
         com.cuts
@@ -558,9 +558,10 @@ async fn dns_012_hedged_queries() {
     .await;
     let mut s = s;
     s.server_timeout = Duration::from_millis(1200);
-    // One slow lookup with a fresh recursor that has learned both servers.
+    // One slow lookup with a fresh recursor: how long it took, and whether .4, the slow one, was
+    // asked first (the only run that says anything about hedging).
     let measure = |hedge: bool| {
-        let (s, slow) = (s.clone(), Arc::clone(&slow));
+        let (s, slow, log) = (s.clone(), Arc::clone(&slow), Arc::clone(&log));
         async move {
             // The fake server answers one query at a time: let a slow one finish first.
             tokio::time::sleep(Duration::from_millis(800)).await;
@@ -578,13 +579,35 @@ async fn dns_012_hedged_queries() {
                     .unwrap();
             }
             slow.store(700, Ordering::Relaxed);
+            let mark = log.lock().unwrap().len();
             let t0 = std::time::Instant::now();
             let res = r
                 .resolve(name("www.example.com"), rtype::A, false)
                 .await
                 .unwrap();
+            let took = t0.elapsed();
             assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 1])]);
-            t0.elapsed()
+            let first = log.lock().unwrap()[mark..]
+                .iter()
+                .find(|(ip, _)| *ip == 4 || *ip == 10)
+                .map(|(ip, _)| *ip);
+            (took, first == Some(4))
+        }
+    };
+    // A server the recursor has never asked sorts as a small random RTT, so each gets tried: now
+    // and then (more on a busy runner, where .4's own RTT is a few ms) the copy sorts ahead of .4
+    // at the last lookup and nothing waits for the slow server (arm, 2026-11: "not hedged:
+    // 21ms"). That run says nothing about hedging, so it is measured again.
+    let slow_first = |hedge: bool| {
+        let measure = &measure;
+        async move {
+            for _ in 0..10 {
+                let (took, asked_slow_first) = measure(hedge).await;
+                if asked_slow_first {
+                    return took;
+                }
+            }
+            panic!("the slow server was never asked first in 10 tries");
         }
     };
     // The hedge goes after 150 ms (answered ~20 ms later); without it, the slow server's
@@ -592,8 +615,8 @@ async fn dns_012_hedged_queries() {
     // parallel) doesn't decide.
     let (mut hedged, mut plain) = (Duration::MAX, Duration::MAX);
     for _ in 0..3 {
-        hedged = hedged.min(measure(true).await);
-        plain = plain.min(measure(false).await);
+        hedged = hedged.min(slow_first(true).await);
+        plain = plain.min(slow_first(false).await);
     }
     assert!(plain >= Duration::from_millis(240), "not hedged: {plain:?}");
     assert!(
