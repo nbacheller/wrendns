@@ -1291,6 +1291,16 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-159 — Top clients split by status: a payload on the Space-Saving entry (Proposed)
+**Context:** OBS-004 (community request 2026-11-15). The dashboard's Top clients bar shows how many queries a device made, not what happened to them: a TV in second place could be mostly blocked telemetry or mostly cache hits, and finding out means a query-log search per device. The status chart already colours blocked, cached, and forwarded queries for the whole network.
+**Decision:**
+- `SpaceSaving<K, T = ()>` carries a payload per entry. `offer_with` updates it; an entry that replaces the minimum starts a fresh `T::default()`, so the payload covers the `count - error` occurrences since the key entered the list. Every other list keeps `T = ()` (zero-sized, no change in memory or work).
+- The hour's client list and each group's client list carry `ClientStatus { blocked, cached, forwarded }` (three `u64`; 24 KB per hour for 1,000 clients). Cached takes in `stale` and `refreshed`, as the dashboard's status chart does. Other statuses aren't counted: they're the rest of `count`.
+- `TopItem.byStatus` (`kind=clients`, with or without `group`); absent for other kinds. Federated reads add the splits per key; a peer one version behind sends none, and its queries stay in `count` only.
+- Each closed hour's split is stored in `hour_top` as three more kinds, `clients_blocked`, `clients_cached`, and `clients_forwarded`, keyed like `clients` (its 100 kept clients; zero counts skipped; none at privacy level 2 and above, like `clients`), so a read over stored hours can add them per client. Today's top-list reads use the current or previous hour from memory; the stored rows are for range reads.
+- The dashboard draws a top client's bar as segments in the status colours (`--s-blocked`, `--s-cached`, `--s-forwarded`, `--s-other` for the rest), with a legend and the numbers on hover.
+**Consequences:** Up to 300 more `hour_top` rows an hour, usually far fewer (most clients have no blocked queries). One more field update on the aggregator thread per query (no hot-path change: workers only emit events). The hours rebuilt from the query log at start (privacy level 0) get the split too, since the replay goes through the same path. Grey can include the Space-Saving error bound, which on networks under 1,000 devices is zero.
+
 ## ADR-158 — The Clients page's list is the last hour, not the clock hour (Proposed)
 **Context:** The Clients page's first tab, **Seen this hour**, read `/stats/top?kind=clients`, whose Space-Saving list starts again on the clock hour. A minute past the hour it held a minute of clients, and the label didn't say so: the owner found "seen this hour" meaningless and asked for "last hour" (2026-11-15). "Last hour" over the clock-hour list would have been wrong in the same way.
 **Decision:**

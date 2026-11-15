@@ -398,6 +398,22 @@ pub struct TopItem {
     /// device's groups, else its network's group, else the default; ADR-050).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
+    /// For clients: how its queries were answered (REQ: OBS-004). Counts cover the queries
+    /// since the client entered the list, `count - errorBound` of them; the rest of `count`
+    /// is other statuses (local, special, refused, …) and that error bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by_status: Option<ClientStatusCounts>,
+}
+
+/// A top-list client's queries by how they were answered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, ToSchema, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientStatusCounts {
+    pub blocked: u64,
+    /// From the cache, including stale and refreshed answers.
+    pub cached: u64,
+    /// Answered by an upstream.
+    pub forwarded: u64,
 }
 
 /// What `GET /stats/latency` groups by.

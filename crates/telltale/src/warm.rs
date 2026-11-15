@@ -126,6 +126,7 @@ mod tests {
                 count: 1,
                 error_bound: 0,
                 groups: Vec::new(),
+                by_status: None,
             })
             .collect()
     }

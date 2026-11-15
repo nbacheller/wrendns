@@ -2362,6 +2362,15 @@ primary kept can't be pinned there.
   rollups.
 - Prometheus counters restart from zero, as Prometheus expects.
 
+**Top clients' colours.** Each device's bar in the dashboard's **Top clients** is split the way
+the status chart is: red for blocked, green for answered from the cache (stale and refreshed
+answers included), blue for forwarded to an upstream, and grey for the rest (local records,
+special names, refused queries). Hover over a bar for the numbers. They come from the same
+hourly top list as the bar's length, so a device that only just made the list (common on networks
+with more than 1,000 devices) shows the queries before it joined in grey. A node on an older
+version sends no split: in a cluster view its queries count in the grey. Each hour's split is
+saved with its top lists in `rollups.db`.
+
 An HTTP listener (default `0.0.0.0:9153`, set with `[telemetry.metrics] listen`) serves:
 
 | Path | Use |

@@ -276,6 +276,25 @@
 
   const totalUpstream = $derived(upstreams.reduce((a, u) => a + u.requests, 0));
   const maxTop = (items: S['TopItem'][]) => Math.max(1, ...items.map((i) => i.count));
+  // REQ: OBS-004 — a top client's bar split by how its queries were answered, in the status
+  // chart's colours; "other" is the rest of its count (local, special, refused, …, and the
+  // sketch's error bound).
+  const clientSplit = (i: S['TopItem']) => {
+    const s = i.byStatus;
+    if (!s) return [];
+    const other = Math.max(0, i.count - s.blocked - s.cached - s.forwarded);
+    return [
+      { label: 'blocked', n: s.blocked },
+      { label: 'cached', n: s.cached },
+      { label: 'forwarded', n: s.forwarded },
+      { label: 'other', n: other },
+    ];
+  };
+  const splitText = (i: S['TopItem']) =>
+    clientSplit(i)
+      .filter((p) => p.n > 0)
+      .map((p) => `${num(p.n)} ${p.label}`)
+      .join(' · ');
 </script>
 
 <div class="page">
@@ -430,6 +449,11 @@
         {:else}
           <h2>{t.title} <span class="muted small">(this hour)</span></h2>
         {/if}
+        {#if t.title === 'Top clients' && t.items.some((i) => i.byStatus)}
+          <p class="legend small muted" data-testid="clients-legend">
+            {#each ['blocked', 'cached', 'forwarded', 'other'] as k (k)}<span><i style:background={`var(${colors[k]})`}></i>{k}</span>{/each}
+          </p>
+        {/if}
         {#if t.items.length === 0}
           <p class="empty">Nothing yet.</p>
         {:else}
@@ -447,7 +471,17 @@
                   <span class="spacer"></span>
                   <span class="num small">{num(i.count)}</span>
                 </div>
-                <div class="bar"><span style:width={`${(i.count / maxTop(t.items)) * 100}%`}></span></div>
+                {#if t.title === 'Top clients' && i.byStatus}
+                  <div class="bar" title={splitText(i)} role="img" aria-label={splitText(i)} data-testid="client-split">
+                    <span class="stack" style:width={`${(i.count / maxTop(t.items)) * 100}%`}>
+                      {#each clientSplit(i) as p (p.label)}
+                        {#if p.n > 0}<span style:flex-grow={p.n} style:background={`var(${colors[p.label]})`}></span>{/if}
+                      {/each}
+                    </span>
+                  </div>
+                {:else}
+                  <div class="bar"><span style:width={`${(i.count / maxTop(t.items)) * 100}%`}></span></div>
+                {/if}
               </li>
             {/each}
           </ol>
@@ -507,6 +541,33 @@
     height: 100%;
     border-radius: 999px;
     background: var(--accent);
+  }
+  /* REQ: OBS-004 — a top client's bar, split by status. */
+  .bar .stack {
+    display: flex;
+    background: none;
+    overflow: hidden;
+  }
+  .bar .stack > span {
+    flex: 0 1 0;
+    min-width: 0;
+    border-radius: 0;
+  }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin: -4px 0 8px;
+  }
+  .legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .legend i {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
   }
   .num {
     font-variant-numeric: tabular-nums;

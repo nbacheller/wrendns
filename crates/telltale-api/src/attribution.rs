@@ -505,6 +505,7 @@ mod tests {
             count,
             error_bound: error,
             groups: Vec::new(),
+            by_status: None,
         }
     }
 

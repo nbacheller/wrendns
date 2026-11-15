@@ -543,6 +543,27 @@ pub struct Percentiles {
     pub max: u64,
 }
 
+/// REQ: OBS-004 — how a top-list client's queries were answered, since it entered the list
+/// (`count - error` of them; the statuses that are none of these make up the rest). Cached
+/// takes in stale and refreshed answers, like the dashboard's status chart.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClientStatus {
+    pub blocked: u64,
+    pub cached: u64,
+    pub forwarded: u64,
+}
+
+impl ClientStatus {
+    fn add(&mut self, s: Status) {
+        match s {
+            Status::Blocked => self.blocked += 1,
+            Status::Cached | Status::Stale | Status::Refreshed => self.cached += 1,
+            Status::Forwarded => self.forwarded += 1,
+            _ => {}
+        }
+    }
+}
+
 /// Client → (last seen, its heaviest domains).
 type ClientDomains = HashMap<[u8; 16], (u64, SpaceSaving<Box<[u8]>>)>;
 
@@ -556,7 +577,7 @@ struct Hour {
     nxdomain: SpaceSaving<Box<[u8]>>,
     /// REQ: OBS-037 — internal names, kept apart from `domains` and `nxdomain`.
     internal: SpaceSaving<Box<[u8]>>,
-    clients: SpaceSaving<[u8; 16]>,
+    clients: SpaceSaving<[u8; 16], ClientStatus>,
     /// Client → (last seen, its domains).
     per_client: ClientDomains,
     total: Vec<Hist>,
@@ -620,7 +641,7 @@ impl BadTop {
 struct GroupTops {
     domains: SpaceSaving<Box<[u8]>>,
     blocked: SpaceSaving<Box<[u8]>>,
-    clients: SpaceSaving<[u8; 16]>,
+    clients: SpaceSaving<[u8; 16], ClientStatus>,
     /// REQ: OBS-037 — the group's internal names.
     internal: SpaceSaving<Box<[u8]>>,
 }
@@ -692,7 +713,7 @@ impl Hour {
             blocked: SpaceSaving::new(TOP_CAPACITY),
             nxdomain: SpaceSaving::new(TOP_CAPACITY),
             internal: SpaceSaving::new(TOP_CAPACITY),
-            clients: SpaceSaving::new(TOP_CAPACITY),
+            clients: SpaceSaving::with_payload(TOP_CAPACITY),
             per_client: HashMap::new(),
             total: vec![Hist::default(); Path::ALL.len() * Proto::ALL.len()],
             qtype: vec![Hist::default(); N_QTYPE],
@@ -750,7 +771,8 @@ impl Hour {
             }
             self.per_client_domain(e.client_ip, wire, seq);
         }
-        self.clients.offer(&e.client_ip, |ip| *ip);
+        self.clients
+            .offer_with(&e.client_ip, |ip| *ip, |c| c.add(e.status));
         self.group_add(e, wire, internal);
         if e.status.answered() {
             let us = u64::from(e.t_total_us);
@@ -778,7 +800,7 @@ impl Hour {
             Box::new(GroupTops {
                 domains: SpaceSaving::new(GROUP_TOP_CAPACITY),
                 blocked: SpaceSaving::new(GROUP_TOP_CAPACITY),
-                clients: SpaceSaving::new(GROUP_TOP_CAPACITY),
+                clients: SpaceSaving::with_payload(GROUP_TOP_CAPACITY),
                 internal: SpaceSaving::new(GROUP_TOP_CAPACITY),
             })
         });
@@ -792,7 +814,8 @@ impl Hour {
                 t.blocked.offer(wire, boxed);
             }
         }
-        t.clients.offer(&e.client_ip, |ip| *ip);
+        t.clients
+            .offer_with(&e.client_ip, |ip| *ip, |c| c.add(e.status));
     }
 
     fn per_client_domain(&mut self, client: [u8; 16], wire: &[u8], seq: u64) {
@@ -1163,6 +1186,39 @@ impl Aggregates {
                 })
                 .collect(),
         }
+    }
+
+    /// REQ: OBS-004 — the heaviest clients, heaviest first, each with how its queries were
+    /// answered; with `group`, among that group's queries (ADR-050).
+    pub fn top_clients(
+        &self,
+        sel: HourSel,
+        group: Option<u16>,
+        n: usize,
+    ) -> Vec<(Top<String>, ClientStatus)> {
+        let Some(h) = self.hour(sel) else {
+            return Vec::new();
+        };
+        let list = match group {
+            None => &h.clients,
+            Some(g) => match h.per_group.get(usize::from(g)).and_then(|t| t.as_deref()) {
+                Some(t) => &t.clients,
+                None => return Vec::new(),
+            },
+        };
+        list.top_with(n)
+            .into_iter()
+            .map(|(x, s)| {
+                (
+                    Top {
+                        key: client_text(x.key),
+                        count: x.count,
+                        error: x.error,
+                    },
+                    s,
+                )
+            })
+            .collect()
     }
 
     /// REQ: OBS-027 — the selected hour's heaviest bad-answer names (presentation form) or

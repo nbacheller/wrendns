@@ -202,7 +202,39 @@ fn hour_tops(agg: &telltale_telemetry::Aggregates, privacy: u8) -> Tops {
         (name, rows)
     })
     .chain(bad_tops(agg, HourSel::Previous, privacy))
+    .chain(client_status_tops(agg, privacy))
     .collect()
+}
+
+/// REQ: OBS-004 (ADR-159) — the stored clients' split by status, as three lists
+/// (`clients_blocked`, `clients_cached`, `clients_forwarded`) keyed like `clients`, so a read
+/// over stored hours can sum them per client. Zero counts aren't stored; nothing at privacy
+/// level 2 and above (no client list).
+fn client_status_tops(
+    agg: &telltale_telemetry::Aggregates,
+    privacy: u8,
+) -> Vec<(&'static str, Vec<TopRow>)> {
+    if privacy >= 2 {
+        return Vec::new();
+    }
+    let top = agg.top_clients(HourSel::Previous, None, TOP_KEPT);
+    let list = |kind: &'static str, pick: fn(&telltale_telemetry::agg::ClientStatus) -> u64| {
+        let rows = top
+            .iter()
+            .filter(|(_, s)| pick(s) > 0)
+            .map(|(t, s)| TopRow {
+                key: t.key.clone(),
+                count: pick(s),
+                error: 0,
+            })
+            .collect();
+        (kind, rows)
+    };
+    vec![
+        list("clients_blocked", |s| s.blocked),
+        list("clients_cached", |s| s.cached),
+        list("clients_forwarded", |s| s.forwarded),
+    ]
 }
 
 /// REQ: OBS-027 (ADR-127) — the bad-answer lists of an hour, as the privacy level lets them be
@@ -390,6 +422,9 @@ mod tests {
         let full = hour_tops(&closed_hour(0), 0);
         assert_eq!(keys(&full, "blocked"), Some(vec![plain.as_str()]));
         assert_eq!(keys(&full, "clients"), Some(vec!["192.168.1.5"]));
+        // REQ: OBS-004 (ADR-159) — and its split: one blocked query, nothing else stored.
+        assert_eq!(keys(&full, "clients_blocked"), Some(vec!["192.168.1.5"]));
+        assert_eq!(keys(&full, "clients_cached"), Some(vec![]));
 
         let level1 = hour_tops(&closed_hour(1), 1);
         assert_eq!(keys(&level1, "domains"), Some(vec![hashed.as_str()]));
@@ -400,6 +435,7 @@ mod tests {
             let hidden = hour_tops(&closed_hour(level), level);
             assert_eq!(keys(&hidden, "blocked"), Some(vec![hashed.as_str()]));
             assert_eq!(keys(&hidden, "clients"), None, "level {level}");
+            assert_eq!(keys(&hidden, "clients_blocked"), None, "level {level}");
         }
     }
 }

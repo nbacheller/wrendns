@@ -403,6 +403,7 @@ impl ApiBackend {
                     count,
                     error_bound,
                     groups: Vec::new(),
+                    by_status: None,
                 })
                 .collect();
             v.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.key.cmp(&b.key)));
@@ -1129,31 +1130,34 @@ impl Backend for ApiBackend {
             TopKind::Clients => telltale_telemetry::agg::TopKind::Clients,
             TopKind::Internal => telltale_telemetry::agg::TopKind::Internal,
         };
-        let tops =
-            self.src
-                .pipeline
-                .telemetry
-                .aggregates()
-                .top_names_in_group(k, hour(h), gi, limit);
-        Ok(tops
-            .into_iter()
-            .map(|t| {
-                let (name, groups) = self.client_labels(kind, &t.key);
-                TopItem {
-                    name,
-                    groups,
-                    key: t.key,
-                    count: t.count,
-                    error_bound: t.error,
-                }
-            })
-            .collect())
+        let agg = self.src.pipeline.telemetry.aggregates();
+        let tops = if kind == TopKind::Clients {
+            agg.top_clients(hour(h), Some(gi), limit)
+                .into_iter()
+                .map(|(t, s)| (t, Some(s)))
+                .collect()
+        } else {
+            agg.top_names_in_group(k, hour(h), gi, limit)
+                .into_iter()
+                .map(|t| (t, None))
+                .collect::<Vec<_>>()
+        };
+        drop(agg);
+        Ok(self.top_items(kind, tops))
     }
 
     fn top(&self, kind: TopKind, h: Hour, limit: usize, client: Option<IpAddr>) -> Vec<TopItem> {
         let agg = self.src.pipeline.telemetry.aggregates();
+        let plain = |v: Vec<telltale_telemetry::topk::Top<String>>| {
+            v.into_iter().map(|t| (t, None)).collect::<Vec<_>>()
+        };
         let tops = match (kind, client) {
-            (TopKind::Domains, Some(ip)) => agg.top_client_domains(mapped(ip), limit),
+            (TopKind::Domains, Some(ip)) => plain(agg.top_client_domains(mapped(ip), limit)),
+            (TopKind::Clients, _) => agg
+                .top_clients(hour(h), None, limit)
+                .into_iter()
+                .map(|(t, s)| (t, Some(s)))
+                .collect(),
             (k, _) => {
                 let k = match k {
                     TopKind::Domains => telltale_telemetry::agg::TopKind::Domains,
@@ -1162,22 +1166,11 @@ impl Backend for ApiBackend {
                     TopKind::Clients => telltale_telemetry::agg::TopKind::Clients,
                     TopKind::Internal => telltale_telemetry::agg::TopKind::Internal,
                 };
-                agg.top_names(k, hour(h), limit)
+                plain(agg.top_names(k, hour(h), limit))
             }
         };
         drop(agg);
-        tops.into_iter()
-            .map(|t| {
-                let (name, groups) = self.client_labels(kind, &t.key);
-                TopItem {
-                    key: t.key,
-                    name,
-                    groups,
-                    count: t.count,
-                    error_bound: t.error,
-                }
-            })
-            .collect()
+        self.top_items(kind, tops)
     }
 
     // REQ: API-005 (ADR-158) — the clients of the last hour, labelled like `top`. The counts
@@ -4570,6 +4563,35 @@ fn plan_override(
 }
 
 impl ApiBackend {
+    /// Top-list entries for the API: client names and groups (`client_labels`), and the
+    /// clients' split by status (REQ: OBS-004).
+    fn top_items(
+        &self,
+        kind: TopKind,
+        tops: Vec<(
+            telltale_telemetry::topk::Top<String>,
+            Option<telltale_telemetry::agg::ClientStatus>,
+        )>,
+    ) -> Vec<TopItem> {
+        tops.into_iter()
+            .map(|(t, s)| {
+                let (name, groups) = self.client_labels(kind, &t.key);
+                TopItem {
+                    key: t.key,
+                    name,
+                    groups,
+                    count: t.count,
+                    error_bound: t.error,
+                    by_status: s.map(|s| telltale_api::model::ClientStatusCounts {
+                        blocked: s.blocked,
+                        cached: s.cached,
+                        forwarded: s.forwarded,
+                    }),
+                }
+            })
+            .collect()
+    }
+
     /// For a client row of a top list: its device name and the groups that apply to it now.
     fn client_labels(&self, kind: TopKind, key: &str) -> (Option<String>, Vec<String>) {
         let Some(ip) = (kind == TopKind::Clients)

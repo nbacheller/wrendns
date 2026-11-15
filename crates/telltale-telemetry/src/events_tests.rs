@@ -470,6 +470,45 @@ fn obs_009_analytics_follow_the_privacy_level() {
     }
 }
 
+/// REQ: OBS-004 — Top clients says how each client's queries were answered: blocked, cached
+/// (stale and refreshed included), and forwarded; other statuses are left out. The group's
+/// list carries the same split.
+#[test]
+fn obs_004_top_clients_split_by_status() {
+    let hub = Hub::new(1 << 16);
+    let mut drainer = hub.drainer();
+    let t0 = 1_700_000_000_000_000;
+    let (tv, phone) = (ipv4(10, 0, 0, 7), ipv4(10, 0, 0, 8));
+    let name = wire("example.com");
+    let mut n = 0;
+    for (client, status, times) in [
+        (tv, Status::Blocked, 5),
+        (tv, Status::Cached, 2),
+        (tv, Status::Stale, 1),
+        (tv, Status::Refreshed, 1),
+        (tv, Status::Forwarded, 3),
+        (tv, Status::Local, 2),
+        (phone, Status::Forwarded, 1),
+    ] {
+        for _ in 0..times {
+            hub.emit_query(&query(t0 + n, client, status, 1), &name);
+            n += 1;
+        }
+    }
+    assert_eq!(hub.drain_once(&mut drainer), 15);
+    let agg = hub.aggregates();
+    let split = |x: &crate::agg::ClientStatus| (x.blocked, x.cached, x.forwarded);
+    let top = agg.top_clients(HourSel::Current, None, 5);
+    assert_eq!(top.len(), 2);
+    assert_eq!((top[0].0.key.as_str(), top[0].0.count), ("10.0.0.7", 14));
+    assert_eq!(split(&top[0].1), (5, 4, 3));
+    assert_eq!(split(&top[1].1), (0, 0, 1));
+    let in_group = agg.top_clients(HourSel::Current, Some(0), 5);
+    assert_eq!(split(&in_group[0].1), (5, 4, 3));
+    assert_eq!(agg.top_clients(HourSel::Current, Some(9), 5).len(), 0);
+    assert_eq!(agg.top_clients(HourSel::Previous, None, 5).len(), 0);
+}
+
 /// REQ: OBS-017 (T11.6, ADR-110) — a trace ID carries the query's start time and a keyed hash
 /// of its query-log fields: the same query gives the same ID, any field (or the key) another;
 /// it round-trips through hex, and nothing else parses as one.

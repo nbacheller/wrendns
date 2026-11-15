@@ -3729,6 +3729,21 @@ export interface components {
             missingNodes?: string[];
             reason?: string | null;
         };
+        /** @description A top-list client's queries by how they were answered. */
+        ClientStatusCounts: {
+            /** Format: int64 */
+            blocked: number;
+            /**
+             * Format: int64
+             * @description From the cache, including stale and refreshed answers.
+             */
+            cached: number;
+            /**
+             * Format: int64
+             * @description Answered by an upstream.
+             */
+            forwarded: number;
+        };
         /** @description One health check with a plain-language fix when it fails. */
         ClusterCheck: {
             /** @description What to do about it (failing checks only). */
@@ -5818,6 +5833,7 @@ export interface components {
         /** @description A list wrapper used by every collection endpoint. */
         Items_TopItem: {
             items: {
+                byStatus?: components["schemas"]["ClientStatusCounts"] | null;
                 /** Format: int64 */
                 count: number;
                 /** Format: int64 */
@@ -7567,6 +7583,7 @@ export interface components {
          *     `[count - errorBound, count]`.
          */
         TopItem: {
+            byStatus?: components["schemas"]["ClientStatusCounts"] | null;
             /** Format: int64 */
             count: number;
             /** Format: int64 */

@@ -9968,6 +9968,34 @@
           }
         }
       },
+      "ClientStatusCounts": {
+        "type": "object",
+        "description": "A top-list client's queries by how they were answered.",
+        "required": [
+          "blocked",
+          "cached",
+          "forwarded"
+        ],
+        "properties": {
+          "blocked": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cached": {
+            "type": "integer",
+            "format": "int64",
+            "description": "From the cache, including stale and refreshed answers.",
+            "minimum": 0
+          },
+          "forwarded": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Answered by an upstream.",
+            "minimum": 0
+          }
+        }
+      },
       "ClusterCheck": {
         "type": "object",
         "description": "One health check with a plain-language fix when it fails.",
@@ -15321,6 +15349,17 @@
                 "errorBound"
               ],
               "properties": {
+                "byStatus": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ClientStatusCounts",
+                      "description": "For clients: how its queries were answered (REQ: OBS-004). Counts cover the queries\nsince the client entered the list, `count - errorBound` of them; the rest of `count`\nis other statuses (local, special, refused, …) and that error bound."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "count": {
                   "type": "integer",
                   "format": "int64",
@@ -19509,6 +19548,17 @@
           "errorBound"
         ],
         "properties": {
+          "byStatus": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClientStatusCounts",
+                "description": "For clients: how its queries were answered (REQ: OBS-004). Counts cover the queries\nsince the client entered the list, `count - errorBound` of them; the rest of `count`\nis other statuses (local, special, refused, …) and that error bound."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "count": {
             "type": "integer",
             "format": "int64",

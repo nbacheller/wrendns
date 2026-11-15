@@ -9,7 +9,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::model::{LatencyRow, QueryPage, QueryRow, ScanStats, TimeBucket, TopItem};
+use crate::model::{
+    ClientStatusCounts, LatencyRow, QueryPage, QueryRow, ScanStats, TimeBucket, TopItem,
+};
 
 /// Sums buckets with the same start.
 pub fn merge_timeseries(parts: Vec<Vec<TimeBucket>>) -> Vec<TimeBucket> {
@@ -145,6 +147,15 @@ pub fn merge_top(parts: Vec<Vec<TopItem>>, limit: usize) -> Vec<TopItem> {
                 if t.groups.is_empty() {
                     t.groups = item.groups;
                 }
+                // A peer on an older build sends no split: its queries count in `count` only.
+                t.by_status = match (t.by_status, item.by_status) {
+                    (Some(a), Some(b)) => Some(ClientStatusCounts {
+                        blocked: a.blocked + b.blocked,
+                        cached: a.cached + b.cached,
+                        forwarded: a.forwarded + b.forwarded,
+                    }),
+                    (a, b) => a.or(b),
+                };
             }
             None => {
                 by_key.insert(item.key.clone(), item);
@@ -450,6 +461,7 @@ mod tests {
             count: c,
             error_bound: e,
             groups: Vec::new(),
+            by_status: None,
         };
         let m = merge_top(
             vec![
@@ -464,6 +476,43 @@ mod tests {
             ("b.test", 13, 2)
         );
         assert_eq!((m[1].key.as_str(), m[1].count), ("a.test", 10));
+    }
+
+    // REQ: OBS-012 — clients' status splits add up across nodes; a node that sends none (an
+    // older build) leaves the others' split as it is.
+    #[test]
+    fn obs_012_top_clients_merge_status_splits() {
+        let item = |c, s: Option<(u64, u64, u64)>| TopItem {
+            key: "10.0.0.7".into(),
+            name: None,
+            count: c,
+            error_bound: 0,
+            groups: Vec::new(),
+            by_status: s.map(|(blocked, cached, forwarded)| ClientStatusCounts {
+                blocked,
+                cached,
+                forwarded,
+            }),
+        };
+        let m = merge_top(
+            vec![
+                vec![item(10, Some((4, 3, 2)))],
+                vec![item(5, Some((1, 1, 3)))],
+                vec![item(7, None)],
+            ],
+            5,
+        );
+        assert_eq!(m[0].count, 22);
+        assert_eq!(
+            m[0].by_status,
+            Some(ClientStatusCounts {
+                blocked: 5,
+                cached: 4,
+                forwarded: 5
+            })
+        );
+        let only_old = merge_top(vec![vec![item(7, None)], vec![item(2, None)]], 5);
+        assert_eq!(only_old[0].by_status, None);
     }
 
     #[test]

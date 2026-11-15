@@ -854,6 +854,12 @@ async fn flt_017_a_deployment_is_one_device() {
         top.iter()
             .all(|t| t.name.as_deref() == Some("media/deploy/jellyfin"))
     );
+    // REQ: OBS-004 (ADR-159) — and its queries split by status: every tenth is blocked.
+    let split = top.iter().fold((0, 0, 0), |(b, c, f), t| {
+        let s = t.by_status.unwrap_or_default();
+        (b + s.blocked, c + s.cached, f + s.forwarded)
+    });
+    assert_eq!(split, (100, 0, 900), "{top:?}");
     // One anomaly baseline (beside the laptop's), one new device.
     assert_eq!(
         anomalies.counters().1,
