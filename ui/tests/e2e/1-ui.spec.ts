@@ -207,6 +207,33 @@ test('live view streams new queries', async () => {
   await page.getByLabel('Live').uncheck();
 });
 
+// REQ: OBS-008 — Live starts empty: a page of the query log that was still loading when Live was
+// switched on doesn't land in it afterwards (it did, on a slow machine: old rows in a live view).
+test('obs_008 a late query-log answer does not fill the live view', async () => {
+  await page.goto('/#/rules');
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  // Only the page loads (`/queries?...`), not the stream (`/queries/stream`). One RegExp object:
+  // `unroute` finds the route by identity.
+  const pageLoads = /\/api\/v1\/queries\?/;
+  await page.route(pageLoads, async (route) => {
+    await gate;
+    await route.continue();
+  });
+  try {
+    await page.goto('/#/queries?status=blocked');
+    await page.getByLabel('Live').check();
+    await expect(page.locator('.live-toggle .badge')).toHaveText('streaming');
+    release(); // the older answer arrives now: blocked queries from earlier tests are in it
+    await page.waitForTimeout(1000);
+    await expect(page.locator('table.log tbody tr')).toHaveCount(0);
+  } finally {
+    release();
+    await page.unroute(pageLoads);
+    await page.getByLabel('Live').uncheck();
+  }
+});
+
 test('explain page', async () => {
   await page.goto('/#/explain?name=nas.e2e.test&client=127.0.0.1');
   await expect(page.locator('.explain')).toContainText('local');
@@ -886,7 +913,8 @@ test('flt_005 quick rule: allow for 1 hour from the query log', async () => {
   await expect(table).toContainText(/in (59m|1h)/);
 
   // The query log attributes the decision to the rule.
-  // (The allowed query is logged once its upstream attempt ends, a few seconds later here.)
+  // (The allowed query is logged once its upstream attempt ends, a few seconds later here, and
+  // longer on a starved runner: 20 s wasn't enough with every core busy.)
   await page.goto('/#/queries?name=ads.e2e.test&match=exact');
   await expect
     .poll(
@@ -894,7 +922,7 @@ test('flt_005 quick rule: allow for 1 hour from the query log', async () => {
         await page.reload();
         return page.locator('table.log tbody').innerText();
       },
-      { timeout: 20_000, intervals: [1000] },
+      { timeout: 60_000, intervals: [1000] },
     )
     .toContain('quick allow');
 
@@ -1056,7 +1084,8 @@ test('dns_006 cache page', async () => {
   await node.getByText('Settings', { exact: true }).click();
   await expect(node.getByTestId('cache-settings')).toContainText('Serve stale');
   const top = page.getByTestId('cache-top');
-  await page.getByRole('button', { name: 'Refresh' }).click();
+  // `exact`: a timeline marker's label ("2 lists refreshed: ...") matches "Refresh" as a substring.
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(top).toContainText('top.cache.e2e.test');
   await expect(page.getByTestId('cache-makeup')).toContainText(/[1-9]\d* answers?/);
   // The most-hit entry first; sorting by size and expiry also lists it.
@@ -1317,7 +1346,8 @@ test('agt_012 analyze page', async () => {
   for (let i = problems.length - 1; i >= 0; i--) if (problems[i].includes('status of 400')) problems.splice(i, 1);
   // An example chip fills the box and runs it.
   await page.getByRole('button', { name: 'Queries per hour, with latency' }).click();
-  await expect(result.locator('thead')).toContainText('p95(latency)');
+  // The query reads the log and groups it: seconds on a busy machine.
+  await expect(result.locator('thead')).toContainText('p95(latency)', { timeout: 30_000 });
 });
 
 // REQ: T8.3, API-010 (T8.6) — a device found over mDNS shows under Discovered and its name is

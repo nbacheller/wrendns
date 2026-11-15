@@ -6,7 +6,10 @@ export default defineConfig({
   testDir: 'tests/e2e',
   fullyParallel: false,
   workers: 1,
-  retries: process.env.CI ? 1 : 0,
+  // No retries: the file is one `serial` group sharing one server, so a retry reruns the group
+  // against what the first attempt left behind (an allowed `ads.e2e.test`, a longer query log)
+  // and fails in `obs_026` or `obs_024` instead, hiding the real failure. Re-run the job instead.
+  retries: 0,
   // Shared CI runners stall for seconds at a time (page loads, Argon2 sign-ins); 5 s flaked.
   expect: { timeout: process.env.CI ? 15_000 : 5_000 },
   // `github` turns failures into annotations (readable without the job log).

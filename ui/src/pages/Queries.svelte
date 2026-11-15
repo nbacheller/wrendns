@@ -82,19 +82,24 @@
     return o;
   }
 
+  // REQ: OBS-008 — only the newest load lands: a page still loading when the search changes, or
+  // when Live is switched on, must not put its (older) rows into what's showing now.
+  let loadSeq = 0;
   async function load(more = false) {
+    const seq = ++loadSeq;
     loading = true;
     try {
       const page = await api.queries({ ...query(), limit: PAGE, cursor: more ? cursor : undefined });
+      if (seq !== loadSeq) return;
       rows = more ? [...rows, ...page.items] : page.items;
       cursor = page.nextCursor ?? undefined;
       scanned = page.scanned;
       missing = page.missingNodes ?? [];
       error = null;
     } catch (e) {
-      error = e;
+      if (seq === loadSeq) error = e;
     } finally {
-      loading = false;
+      if (seq === loadSeq) loading = false;
     }
   }
 
@@ -117,6 +122,8 @@
       void load(false);
       return;
     }
+    loadSeq++; // a load still in flight is stale now
+    loading = false;
     rows = [];
     cursor = undefined;
     scanned = null;
