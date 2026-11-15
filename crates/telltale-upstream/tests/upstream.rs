@@ -29,6 +29,11 @@ enum Fake {
     Blackhole,
     /// Answers over UDP with TC=1 and properly over TCP on the same port.
     Truncating,
+    /// Answers A 192.0.2.1 at once, except names whose first label is `slow`, which it
+    /// answers after `delay` (a name it has to resolve itself, under a cached-answer EWMA).
+    SlowName {
+        delay: Duration,
+    },
 }
 
 fn answer(req: &[u8], rc: u16, tag: u8, tc: bool) -> Option<Vec<u8>> {
@@ -95,6 +100,12 @@ async fn fake(kind: Fake) -> SocketAddr {
                     Fake::ServFail => answer(&req, rcode::SERVFAIL, 0, false),
                     Fake::Blackhole => None,
                     Fake::Truncating => answer(&req, rcode::NOERROR, 0, true),
+                    Fake::SlowName { delay } => {
+                        if req.get(12..17) == Some(b"\x04slow".as_slice()) {
+                            tokio::time::sleep(delay).await;
+                        }
+                        answer(&req, rcode::NOERROR, 1, false)
+                    }
                 };
                 if let Some(r) = resp {
                     let _ = sock.send_to(&r, peer).await;
@@ -318,6 +329,85 @@ async fn ups_006_all_dead_still_attempts_and_reports() {
     assert!(
         err.to_string().contains("attempt") || err.to_string().contains("budget"),
         "{err}"
+    );
+}
+
+/// An upstream with the configured timeout most deployments have (the 2 s default).
+fn patient_upstream(id: u16, addr: SocketAddr) -> Arc<Upstream> {
+    let ep = Endpoint::parse(&format!("udp://{addr}")).unwrap();
+    Arc::new(Upstream::new(id, format!("u{id}"), ep, Duration::from_secs(2), 1).unwrap())
+}
+
+/// Brings each member's EWMA down to the fast, cached answers most queries get.
+async fn warm(g: &Group) {
+    for m in g.members() {
+        let one = Group::new("warm", vec![Arc::clone(m)], Strategy::Failover);
+        for i in 0..30 {
+            one.resolve(question(&format!("w{i}.example")), Duration::from_secs(2))
+                .await
+                .unwrap();
+        }
+        assert!(
+            m.attempt_timeout() < Duration::from_millis(300),
+            "{:?}",
+            m.attempt_timeout()
+        );
+    }
+}
+
+/// REQ: UPS-006 (ADR-158, issue #35) — a group of one: a name the upstream needs 300 ms for
+/// is answered, not cut off at the adaptive 3 × EWMA + 50 ms and turned into SERVFAIL.
+#[tokio::test]
+async fn ups_006_single_member_waits_for_a_slow_answer() {
+    let up = patient_upstream(
+        1,
+        fake(Fake::SlowName {
+            delay: Duration::from_millis(300),
+        })
+        .await,
+    );
+    let g = Group::new("one", vec![up], Strategy::Failover);
+    // The adaptive timeout is now below the slow answer (`warm` checks).
+    warm(&g).await;
+    let a = g
+        .resolve(question("slow.example"), Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(summarize(&a.bytes).unwrap().rcode, rcode::NOERROR);
+    assert_eq!(answer_tag(&a.bytes), 1);
+    assert_eq!(a.attempts, 1, "answered by its one attempt, not a retry");
+    // The query's budget still bounds it.
+    let t = Instant::now();
+    let err = g
+        .resolve(question("slow.example"), Duration::from_millis(150))
+        .await
+        .unwrap_err();
+    assert!(
+        t.elapsed() < Duration::from_millis(280),
+        "{err}: {:?}",
+        t.elapsed()
+    );
+}
+
+/// REQ: UPS-006 (ADR-158) — with several members, the earlier ones keep the adaptive timeout
+/// (hedging moves on from them) and the last healthy one waits for the slow answer.
+#[tokio::test]
+async fn ups_006_last_healthy_member_waits_for_a_slow_answer() {
+    let slow = Fake::SlowName {
+        delay: Duration::from_millis(300),
+    };
+    let a = patient_upstream(1, fake(slow).await);
+    let b = patient_upstream(2, fake(slow).await);
+    let g = Group::new("two", vec![a, b], Strategy::Failover);
+    warm(&g).await;
+    let ans = g
+        .resolve(question("slow.example"), Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(summarize(&ans.bytes).unwrap().rcode, rcode::NOERROR);
+    assert_eq!(
+        ans.upstream_id, 2,
+        "the first member was cut off at its adaptive timeout"
     );
 }
 

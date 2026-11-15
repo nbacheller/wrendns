@@ -790,6 +790,20 @@ impl Upstream {
         self.timeout.min(adaptive).min(Duration::from_secs(1))
     }
 
+    /// REQ: UPS-006 (ADR-158) — the timeout of an attempt; `patient` for the last healthy
+    /// member a query tries. The adaptive bound in [`Self::attempt_timeout`] exists to give up
+    /// on one member and try another; with none left to try, it would only turn a slow answer
+    /// (a name the upstream had to resolve itself, often several hundred milliseconds) into
+    /// SERVFAIL. So that attempt waits up to the configured timeout; the query's budget still
+    /// bounds it.
+    pub fn timeout_for(&self, patient: bool) -> Duration {
+        if patient {
+            self.attempt_timeout().max(self.timeout)
+        } else {
+            self.attempt_timeout()
+        }
+    }
+
     /// How long to wait before hedging to the next upstream (ADR-013): about 3 × EWMA,
     /// bounded to [20 ms, attempt timeout]; 100 ms until there is data.
     pub fn hedge_delay(&self) -> Duration {
