@@ -843,8 +843,11 @@ impl Cluster {
     ///
     /// Bounded in time ([`bounded_deference`]): a node that has left the election to a
     /// Git-managed node for [`DEFER_MAX_MS`] with no primary up stands anyway, since that node
-    /// may be up but unable to win.
-    pub fn defers_to_git_node(&self, id: &Identity) -> bool {
+    /// may be up but unable to win. `lease_held`: a lease this node granted to a primary still
+    /// runs, which is what "a primary is up" means here. A member's `primary` flag isn't used: it
+    /// comes from its Hello and stays as it was when the stream opened, true or false, after
+    /// the node is elected or fenced.
+    pub fn defers_to_git_node(&self, id: &Identity, lease_held: bool) -> bool {
         let now = now_ms();
         let registry = id.registry();
         let members = self.members();
@@ -864,7 +867,7 @@ impl Cluster {
                     )
                 }),
         );
-        let primary_up = self.is_primary() || members.iter().any(|m| m.primary && m.up(now));
+        let primary_up = self.is_primary() || lease_held;
         bounded_deference(wants, primary_up, &self.defer_since_ms, now)
     }
 
@@ -944,14 +947,20 @@ impl Cluster {
     pub(crate) fn set_lease_ok(&self, ok: bool) {
         let was = self.lease_ok.swap(ok, std::sync::atomic::Ordering::AcqRel);
         if was && !ok && self.is_primary() && self.stepping_down() {
-            // REQ: OPS-010 — expected: the lease ran out on purpose.
+            // REQ: OPS-010, CLU-005 (ADR-154) — expected: the lease ran out on purpose, for
+            // maintenance or because a Git-managed node asked this emergency primary to hand over.
+            let why = if self.in_maintenance() {
+                "maintenance"
+            } else {
+                "a Git-managed node's request"
+            };
             info!(
-                "cluster: handing over for maintenance: publishing stopped; another node is elected within seconds"
+                "cluster: handing over for {why}: publishing stopped; another node is elected within seconds"
             );
             self.event(
                 "lease_released",
                 &self.identity.meta.node_id.clone(),
-                "handing over for maintenance",
+                format!("handing over for {why}"),
             );
         } else if was && !ok && self.is_primary() {
             warn!(

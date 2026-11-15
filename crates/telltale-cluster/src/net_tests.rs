@@ -1660,7 +1660,7 @@ fn clu_005_a_node_defers_to_an_eligible_git_managed_voter_that_is_up() {
         c.on_frame(&mut peer, hello(n, source), "inbound", &echo)
             .unwrap();
     }
-    let defers = || c.defers_to_git_node(&c.identity.reload());
+    let defers = || c.defers_to_git_node(&c.identity.reload(), false);
     // Configuration from the API: no Git-managed primary can exist, nothing is held back.
     assert!(!defers());
     c.identity.save_authority("gitops").unwrap();
@@ -1668,6 +1668,91 @@ fn clu_005_a_node_defers_to_an_eligible_git_managed_voter_that_is_up() {
     // A Git-managed node leaves the election to no one.
     c.set_config_source("gitops");
     assert!(!defers());
+}
+
+// REQ: CLU-005 (ADR-154, GitHub issue #3) — a replica's view of "a primary is up" is the lease it
+// granted, not a member's Hello flag (stale when a node is elected on a stream that was open):
+// while the lease runs it defers however long that lasts, and its clock for "no primary up" starts
+// only when the lease has run out.
+#[test]
+fn clu_005_deference_follows_the_lease_not_a_members_hello_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = Identity::init(
+        dir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    let c = Cluster::new(id, "0.1.0");
+    // A Git-managed eligible node is up (its Hello says so); the primary role isn't on any
+    // member's flag, as for an emergency primary that was elected on an open stream.
+    let key = pki::new_node_key().unwrap();
+    let token = c
+        .identity
+        .create_token_for(
+            60,
+            None,
+            crate::node::TokenGrants {
+                eligible: true,
+                witness: false,
+            },
+        )
+        .unwrap();
+    let git = c
+        .identity
+        .accept_join(
+            &JoinRequest {
+                witness: false,
+                ephemeral: false,
+                secret: token.secret,
+                csr_pem: key.csr_pem,
+                advertise: vec![],
+                site: "k8s".into(),
+                eligible: true,
+                version: "0.1.0".into(),
+            },
+            None,
+        )
+        .unwrap()
+        .node_id;
+    let mut peer = Some(git.clone());
+    c.on_frame(
+        &mut peer,
+        Frame {
+            body: Some(Body::Hello(Hello {
+                protocol: PROTOCOL,
+                cluster_id: c.identity.meta.cluster_id.clone(),
+                node_id: git,
+                version: "0.1.0".into(),
+                site: "k8s".into(),
+                eligible: false,
+                advertise: vec![],
+                epoch: 0,
+                applied_seq: 0,
+                primary: false,
+                config_source: "gitops".into(),
+                source_commit: String::new(),
+            })),
+        },
+        "inbound",
+        &EchoSlot::default(),
+    )
+    .unwrap();
+    c.identity.save_authority("gitops").unwrap();
+    c.set_role(Role::Replica, 3).unwrap();
+    let id = c.identity.reload();
+    // With a lease running it defers, for as long as that lasts (the clock never starts).
+    c.defer_since_ms.store(1, Ordering::Release);
+    assert!(c.defers_to_git_node(&id, true));
+    assert_eq!(c.defer_since_ms.load(Ordering::Acquire), 0, "reset");
+    // With none it defers for the bound, then stands.
+    assert!(c.defers_to_git_node(&id, false));
+    c.defer_since_ms
+        .store(now_ms() - DEFER_MAX_MS - 1_000, Ordering::Release);
+    assert!(!c.defers_to_git_node(&id, false), "the bound is over");
+    // A lease again (a new primary) starts it over.
+    assert!(c.defers_to_git_node(&id, true));
 }
 
 // REQ: CLU-005 (ADR-154) — a handover a Git-managed node asked for runs once, ends with the

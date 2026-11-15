@@ -247,7 +247,12 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
     // handing over stops renewing, unless no one took over within the give-up time.
     // REQ: CLU-005 (ADR-154) — and under the GitOps authority a node that isn't Git-managed
     // leaves the election to one that is, while one is up (it votes either way).
-    el.standing = !cluster.in_maintenance() && !cluster.defers_to_git_node(id);
+    // "A primary is up" is the election's own evidence, the lease this node granted that is still
+    // running: a member's `primary` flag comes from its Hello, and stays stale when a node is
+    // elected on a stream that was already open (CI hit it: the deference clock ran out while an
+    // emergency primary held the lease, and a node that isn't Git-managed won the handover).
+    let lease_held = el.ballot.lease_held_by_other(&el.id, now);
+    el.standing = !cluster.in_maintenance() && !cluster.defers_to_git_node(id, lease_held);
     if el.leading().is_some() {
         cluster.give_up_handover(crate::net::wall_ms());
     }
