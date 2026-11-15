@@ -72,9 +72,11 @@ updates:
     open-pull-requests-limit: 3
     commit-message:
       prefix: "build(ci)"
+    # Minor and patch updates share one pull request; a major update of an action is its own, so
+    # a change that can break the workflows is reviewed (and bisected) alone.
     groups:
       actions:
-        patterns: ["*"]
+        update-types: [minor, patch]
     ignore:
       # The ref after the @ is the Rust version to install (the workflows pin it, with
       # rust-toolchain.toml), not the action's own version.
