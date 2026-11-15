@@ -6956,7 +6956,7 @@
           "stats"
         ],
         "summary": "Top domains, blocked domains, NXDOMAIN names, or clients.",
-        "description": "Ranked by a Space-Saving sketch per hour: `count` is an upper bound and `errorBound` how\nfar it may be over. Example: `GET /api/v1/stats/top?kind=blocked&limit=10`. With\n`kind=domains&client=192.168.1.20`, one client's top domains (recently active clients only).",
+        "description": "Ranked by a Space-Saving sketch per hour: `count` is an upper bound and `errorBound` how\nfar it may be over. Example: `GET /api/v1/stats/top?kind=blocked&limit=10`. With\n`kind=domains&client=192.168.1.20`, one client's top domains (recently active clients only).\nWith `kind=clients&hour=rolling`, the clients of the last hour (60–65 minutes, whole\n5-minute slots) rather than of the clock hour, with exact counts (`errorBound` 0); with\n`group`, the clients whose settings come from that group.",
         "operationId": "stats_top",
         "parameters": [
           {
@@ -6981,10 +6981,10 @@
           {
             "name": "hour",
             "in": "query",
-            "description": "Default: `current`.",
+            "description": "`current` (default), `previous`, or `rolling` (the last hour, 60–65 minutes;\n`kind=clients` only).",
             "required": false,
             "schema": {
-              "$ref": "#/components/schemas/Hour"
+              "$ref": "#/components/schemas/TopHour"
             }
           },
           {
@@ -19489,6 +19489,15 @@
         "enum": [
           "user",
           "agent"
+        ]
+      },
+      "TopHour": {
+        "type": "string",
+        "description": "Which window a top list reads: an hour, or (clients only) the last 60 minutes.",
+        "enum": [
+          "current",
+          "previous",
+          "rolling"
         ]
       },
       "TopItem": {

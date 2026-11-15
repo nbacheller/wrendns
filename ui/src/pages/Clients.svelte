@@ -1,6 +1,6 @@
 <script lang="ts">
-  // REQ: API-005, API-010 — configured devices and the clients seen this hour; name a device
-  // from either list.
+  // REQ: API-005, API-010 — configured devices and the clients seen in the last hour (60–65
+  // minutes up to now, not the clock hour: ADR-158); name a device from either list.
   import { api, type S } from '../lib/api';
   import { href, navigate, route } from '../lib/router.svelte';
   import { ago, num } from '../lib/format';
@@ -25,6 +25,9 @@
     default: 'default: no network group matches',
   };
   let seen = $state<S['TopItem'][]>([]);
+  // REQ: CLU-002 (ADR-158) — nodes that didn't answer (an older node doesn't know the
+  // last-hour read): their clients aren't in the list, so say so.
+  let seenMissing = $state<string[]>([]);
   // REQ: T8.2, T8.3 (T8.6) — devices found by the routers' DHCP or mDNS.
   let found = $state<S['DhcpLease'][]>([]);
   const sourceText: Record<string, string> = { router: 'router', mdns: 'mDNS' };
@@ -35,10 +38,11 @@
   const canEdit = $derived(session.user?.role === 'admin' || session.user?.role === 'operator');
 
   function load() {
-    Promise.all([api.clients(), api.top('clients', 100), api.groups()])
+    Promise.all([api.clients(), api.top('clients', 100, undefined, undefined, undefined, 'rolling'), api.groups()])
       .then(([c, t, g]) => {
         configured = c.items;
         seen = t.items;
+        seenMissing = t.missingNodes ?? [];
         groups = g.items;
       })
       .catch((e) => (error = e));
@@ -86,7 +90,7 @@
 
   // REQ: API-005 (ADR-121) — one table per tab, each with its size.
   const tabs = $derived<TabItem[]>([
-    { id: 'seen', label: 'Seen this hour', count: seen.length },
+    { id: 'seen', label: 'Last hour', count: seen.length },
     { id: 'devices', label: 'Devices', count: configured.length },
     ...(workloads.items.length ? [{ id: 'workloads', label: 'Workloads', count: workloads.items.length }] : []),
     { id: 'discovered', label: 'Discovered', count: found.length },
@@ -137,9 +141,12 @@
   <TabPanel active={tab}>
   {#if tab === 'seen'}
     <section class="card">
-      <h2>Seen this hour</h2>
+      <h2>Seen in the last hour</h2>
+      {#if seenMissing.length}
+        <p class="small muted" data-testid="seen-missing">Without {seenMissing.join(', ')}: they didn’t answer, so their clients aren’t listed.</p>
+      {/if}
       {#if seen.length === 0}
-        <p class="empty">No queries this hour.</p>
+        <p class="empty">No queries in the last hour.</p>
       {:else}
         <div class="table-wrap">
           <table>

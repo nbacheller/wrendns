@@ -1180,6 +1180,54 @@ impl Backend for ApiBackend {
             .collect()
     }
 
+    // REQ: API-005 (ADR-158) — the clients of the last hour, labelled like `top`. The counts
+    // are read under the aggregator's lock; ranking and labels come after it's released.
+    fn top_clients_rolling(
+        &self,
+        limit: usize,
+        group: Option<&str>,
+    ) -> Result<Vec<TopItem>, Problem> {
+        if let Some(g) = group {
+            self.group_index(g)?;
+        }
+        let now = self.now_unix_seconds();
+        let counts = self
+            .src
+            .pipeline
+            .telemetry
+            .aggregates()
+            .last_hour_counts(now);
+        let item = |(ip, count): ([u8; 16], u64)| {
+            let key = telltale_telemetry::agg::client_text(ip);
+            let (name, groups) = self.client_labels(TopKind::Clients, &key);
+            TopItem {
+                key,
+                name,
+                groups,
+                count,
+                error_bound: 0,
+            }
+        };
+        Ok(match group {
+            // Ranked first, so only the kept ones are labelled.
+            None => telltale_telemetry::last_hour::rank(counts, limit)
+                .into_iter()
+                .map(item)
+                .collect(),
+            // A client's group needs its labels, so every client is labelled, then ranked.
+            Some(g) => {
+                let mut v: Vec<TopItem> = counts
+                    .into_iter()
+                    .map(item)
+                    .filter(|t| t.groups.first().is_some_and(|f| f == g))
+                    .collect();
+                v.sort_unstable_by(|a, b| b.count.cmp(&a.count).then(a.key.cmp(&b.key)));
+                v.truncate(limit);
+                v
+            }
+        })
+    }
+
     fn latency(&self, by: LatencyBy, h: Hour) -> Vec<LatencyRow> {
         let sel = hour(h);
         let agg = self.src.pipeline.telemetry.aggregates();

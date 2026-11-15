@@ -50,6 +50,11 @@ enum Read {
         limit: usize,
         group: String,
     },
+    /// REQ: API-005 (ADR-158) — the clients of the last hour (older peers don't know it).
+    TopClientsRolling {
+        limit: usize,
+        group: Option<String>,
+    },
     Latency {
         by: LatencyBy,
         hour: Hour,
@@ -185,6 +190,10 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
             limit,
             group,
         } => serde_json::to_vec(&b.top_in_group(kind, hour, limit, &group).map_err(text)?),
+        Read::TopClientsRolling { limit, group } => serde_json::to_vec(
+            &b.top_clients_rolling(limit, group.as_deref())
+                .map_err(text)?,
+        ),
         Read::Latency { by, hour } => serde_json::to_vec(&b.latency(by, hour)),
         Read::LatencyHist { by, hour } => serde_json::to_vec(&b.latency_hists(by, hour)),
         Read::NewDevices { since_s } => serde_json::to_vec(&b.new_devices(since_s)),
@@ -1315,6 +1324,27 @@ impl Backend for Federated {
         parts.push(own);
         Ok(federation::merge_top(parts, limit))
     }
+    // REQ: API-005 (ADR-158) — exact counts that add up per client. Each node sends every
+    // client it has (not just its top `limit`), so a client low on one node's list isn't
+    // undercounted; the merged list is cut to `limit` afterwards.
+    fn top_clients_rolling(
+        &self,
+        limit: usize,
+        group: Option<&str>,
+    ) -> Result<Vec<TopItem>, Problem> {
+        let all = telltale_telemetry::last_hour::MAX_CLIENTS;
+        let own = if self.with_me() {
+            self.local.top_clients_rolling(all, group)?
+        } else {
+            Vec::new()
+        };
+        let mut parts: Vec<Vec<TopItem>> = self.everyone(|| Read::TopClientsRolling {
+            limit: all,
+            group: group.map(str::to_owned),
+        });
+        parts.push(own);
+        Ok(federation::merge_top(parts, limit))
+    }
     // REQ: CLU-002 (T9.2) — exact: the nodes' histograms merged; a peer on an older build
     // answers percentiles, blended approximately as before.
     fn latency(&self, by: LatencyBy, hour: Hour) -> Vec<LatencyRow> {
@@ -2440,6 +2470,21 @@ mod anomaly_tests {
             serde_json::from_slice(&serde_json::to_vec(&Read::Anomalies { since_s: 5 }).unwrap())
                 .unwrap();
         assert!(matches!(r, Read::Anomalies { since_s: 5 }));
+        // REQ: API-005 (ADR-158) — the last-hour read carries its group; peers send every
+        // client so the merged counts stay exact.
+        let r: Read = serde_json::from_slice(
+            &serde_json::to_vec(&Read::TopClientsRolling {
+                limit: 7,
+                group: Some("kids".into()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            r,
+            Read::TopClientsRolling { limit: 7, group: Some(ref g) } if g == "kids"
+        ));
+        assert!(!changes_state(&r));
         assert!(!changes_state(&Read::Anomalies { since_s: 5 }));
         assert!(!changes_state(&Read::Health));
     }

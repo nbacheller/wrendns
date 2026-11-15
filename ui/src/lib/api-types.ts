@@ -2493,6 +2493,9 @@ export interface paths {
          * @description Ranked by a Space-Saving sketch per hour: `count` is an upper bound and `errorBound` how
          *     far it may be over. Example: `GET /api/v1/stats/top?kind=blocked&limit=10`. With
          *     `kind=domains&client=192.168.1.20`, one client's top domains (recently active clients only).
+         *     With `kind=clients&hour=rolling`, the clients of the last hour (60–65 minutes, whole
+         *     5-minute slots) rather than of the clock hour, with exact counts (`errorBound` 0); with
+         *     `group`, the clients whose settings come from that group.
          */
         get: operations["stats_top"];
         put?: never;
@@ -7554,6 +7557,11 @@ export interface components {
          * @enum {string}
          */
         TokenKind: "user" | "agent";
+        /**
+         * @description Which window a top list reads: an hour, or (clients only) the last 60 minutes.
+         * @enum {string}
+         */
+        TopHour: "current" | "previous" | "rolling";
         /**
          * @description One ranked item. Counts come from a Space-Saving sketch: the true count lies in
          *     `[count - errorBound, count]`.
@@ -12860,8 +12868,11 @@ export interface operations {
                 kind: components["schemas"]["TopKind"];
                 /** @description Items to return (1–100, default 10). */
                 limit?: number;
-                /** @description Default: `current`. */
-                hour?: components["schemas"]["Hour"];
+                /**
+                 * @description `current` (default), `previous`, or `rolling` (the last hour, 60–65 minutes;
+                 *     `kind=clients` only).
+                 */
+                hour?: components["schemas"]["TopHour"];
                 /** @description Only this client's domains (an IP address; `kind=domains` only). */
                 client?: string;
                 /** @description Only this group's queries (a group name; not with `client`, not for `nxdomain`). */

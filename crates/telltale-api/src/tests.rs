@@ -129,6 +129,23 @@ impl Backend for Fake {
             error_bound: 0,
         }]
     }
+    fn top_clients_rolling(
+        &self,
+        limit: usize,
+        group: Option<&str>,
+    ) -> Result<Vec<TopItem>, Problem> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(format!("top_clients_rolling {limit} {group:?}"));
+        Ok(vec![TopItem {
+            groups: Vec::new(),
+            key: "10.0.0.9".into(),
+            name: None,
+            count: 3,
+            error_bound: 0,
+        }])
+    }
     fn latency(&self, by: LatencyBy, _: Hour) -> Vec<LatencyRow> {
         vec![LatencyRow {
             key: format!("{by:?}"),
@@ -1134,6 +1151,52 @@ async fn api_001_errors_are_problem_json_with_codes_and_hints() {
         status,
         StatusCode::BAD_REQUEST,
         "unknown enum values are rejected"
+    );
+}
+
+// REQ: API-005 (ADR-158) — `hour=rolling` reads the last 60 minutes, for clients only.
+#[tokio::test]
+async fn api_005_top_clients_over_the_rolling_hour() {
+    let (app, fake) = app();
+    let (status, _, v) = get(&app, "/api/v1/stats/top?kind=clients&hour=rolling&limit=50").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v["items"][0]["key"], "10.0.0.9");
+    assert_eq!(v["items"][0]["errorBound"], 0);
+    assert!(
+        fake.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s == "top_clients_rolling 50 None")
+    );
+    // With a group (as AGT-004 forces for a group-restricted agent), narrowed to it.
+    let (status, _, _) = get(
+        &app,
+        "/api/v1/stats/top?kind=clients&hour=rolling&group=kids",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        fake.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s == "top_clients_rolling 10 Some(\"kids\")")
+    );
+    let (status, _, v) = get(&app, "/api/v1/stats/top?kind=domains&hour=rolling").await;
+    assert_eq!(
+        (status, v["code"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_parameter"))
+    );
+    // The clock hours still read the hourly lists.
+    let (status, _, _) = get(&app, "/api/v1/stats/top?kind=clients&hour=previous").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        fake.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s == "top Clients Previous 10 None")
     );
 }
 

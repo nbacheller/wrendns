@@ -1264,6 +1264,8 @@ mdns = true
 - Changing it needs a restart.
 
 ### Naming devices in the UI
+The Clients page's **Last hour** tab lists every address that asked in the last hour, busiest first, with every node's queries added up. It moves with the clock in 5-minute steps rather than starting again on the hour, so at 10:02 it still shows what asked at 9:30; it always covers the full hour (60 to 65 minutes back). Its counts are exact. A node that doesn't answer (one still on an older version during an upgrade) is named above the list, as its clients aren't in it. (The API: `GET /api/v1/stats/top?kind=clients&hour=rolling`, optionally with `group`.)
+
 Click a device's address anywhere (the dashboard's top clients, the query log, the live view, Clients) and choose **Name this device…** or **Add to group…**. The name shows everywhere at once, including on past queries: names are looked up when data is read, never written into the query log, so renaming relabels history and forgetting a device brings the address back.
 
 Devices named this way are stored in `state.db` (next to users and the audit log) and merged with `[[client]]` entries from the config files. The files win: a device defined in a file is read-only in the UI, and the UI can't reuse its name. If a stored device stops being valid (say its group was removed from the file), TelltaleDNS logs why and runs with the file config alone until it's fixed. Operators and admins can name devices; viewers see the names.
@@ -2402,7 +2404,7 @@ Counters are kept per thread and summed on scrape, so recording never slows a qu
 
 ### Traffic map
 **Monitor → Traffic map** answers "what is the network reaching right now?" in one picture, which suits a wall screen:
-- Each tile is a service, a site, or a name, sized by how often it was looked up this hour (or the last). Blue tiles were answered, red ones were blocked; a stronger colour means busier.
+- Each tile is a service, a site, or a name, sized by how often it was looked up this hour (or the previous clock hour). Blue tiles were answered, red ones were blocked; a stronger colour means busier.
 - **Services** folds names into the services of the [blocked-services](#blocked-services) catalog (all of YouTube's names make one YouTube tile) and shows other names by site. **Sites** folds each name into its base domain (`rr3.googlevideo.com` → `googlevideo.com`). **Names** shows them as devices asked.
 - It refreshes every 5 seconds. The five tiles that grew most since the previous refresh get an amber ring and a `+N`.
 - Point at a tile for the names behind it; select it to open them in the query log.
@@ -2735,7 +2737,7 @@ nxdomain_percent = 50          # ...that are at least this share of the device's
 The engine runs on the telemetry thread, never on the query path, keeps a few KiB per device (at most `max_clients`, 1024 by default), and saves its baselines to `<data_dir>/anomaly.json` hourly and on shutdown, so restarts don't restart the learning period. It's off when `[telemetry.qlog] privacy_level` is 1 or above (names and devices are hidden). Replaying the same queries always gives the same findings (fixed arithmetic on event timestamps, no machine learning).
 
 ### A device's rhythm
-**Clients → Seen this hour → Rhythm** shows how regularly a device asks for each domain it talks to most (the ones the engine tracks, up to 16): one row per domain, one column per gap between two queries, on a log scale from under a second to two hours and longer, darker where more of the gaps fall.
+**Clients → Last hour → Rhythm** shows how regularly a device asks for each domain it talks to most (the ones the engine tracks, up to 16): one row per domain, one column per gap between two queries, on a log scale from under a second to two hours and longer, darker where more of the gaps fall.
 - A timer is one dark, outlined cell with its period in words: a time-sync loop every 2.5 s, a phone-home every 5 min. A person browsing is a smear across many columns.
 - **Recent** (the default) weighs the last couple of hours (each hour's close halves what was there and adds that hour); **This hour** shows only this hour. **Table** lists the counts.
 - **usual** marks a rhythm the device already had while it was being learned; **new rhythm** one that has been regular for 4 hours or more and wasn't (the beacon detector reports it on the Anomalies page, where a beacon finding shows its own strip as it was when reported).
@@ -2743,7 +2745,7 @@ The engine runs on the telemetry thread, never on the query path, keeps a few Ki
 - It's measured, not judged: what alerts is still the beacon detector (30 s to an hour, low jitter, 4 hours). `GET /api/v1/clients/<ip>/rhythm` returns the bins and the words; the MCP tool `get_client_profile` includes the period and share per domain, and `find_anomalies` a beacon's bins. It needs the anomaly engine, so privacy level 0.
 
 ### A device's day
-**Clients → Seen this hour → Day** (or **See the day** on an anomaly finding, or **Day timeline** on a device's heatmap) shows one device over a window (6 hours to 7 days) as swimlanes, from the query log:
+**Clients → Last hour → Day** (or **See the day** on an anomaly finding, or **Day timeline** on a device's heatmap) shows one device over a window (6 hours to 7 days) as swimlanes, from the query log:
 - One lane per domain it talks to (the 30 busiest; the rest in **other**), one cell per bin (5 minutes over a day), darker for more queries. A red underline marks blocked answers, an amber tick answers slower than the latency objective. A **new** tag marks where a domain was first contacted.
 - Under the lanes, the device's p99 answer time per bin; above them, dots for first contacts (hollow), anomaly findings (amber), blocked bursts (red, 10 or more blocked in a bin), and a diamond when the device's [identity](#what-is-this-device) changed (it now looks like a different product or class: "now looks like Roku player (was unknown)"), and grey ticks for changes. Select a dot for the page behind it, a lane's name for that device's queries to it.
 - Point at a cell for its numbers. **Table** sums the bins into at most 24 columns. Nothing older than the query log keeps can be shown: that part is grey. If a read stops early, the drawer says so.
@@ -2894,7 +2896,7 @@ listen = "0.0.0.0:8053"
 | `GET /api/v1/analytics/anomalies?acknowledged=false` | device anomalies from every node, each with its `id` and who acknowledged it; `POST /api/v1/analytics/anomalies/acknowledge` (or `/unacknowledge`) with `{"ids": [...], "note": "..."}` marks them seen ([Acknowledging](#acknowledging-findings)) |
 | `GET /api/v1/stats/summary?from=-24h` | queries, blocked %, cache hit %, NXDOMAIN/SERVFAIL, active clients, latency by path |
 | `GET /api/v1/stats/timeseries?step=minute&from=-1h` | counts per second or minute by status, type, and response code |
-| `GET /api/v1/stats/top?kind=blocked&limit=10` | top `domains`, `blocked`, `nxdomain`, or `clients` (add `client=IP` for one device's domains) |
+| `GET /api/v1/stats/top?kind=blocked&limit=10` | top `domains`, `blocked`, `nxdomain`, or `clients` (add `client=IP` for one device's domains; `hour=previous` for the last complete hour, and for clients `hour=rolling` for the last hour whatever the clock hour) |
 | `GET /api/v1/stats/latency?by=upstream` | percentiles by `path`, `qtype`, `upstream`, or `stage` |
 | `GET /api/v1/queries?name=ads&status=blocked&from=-1h` | the query log, newest first (filters: `name` + `match`, `client`, `status`, `qtype`, `rcode`, `upstream`, `minLatencyMs`, `from`, `to`) |
 | `GET /api/v1/audit?action=user.`, `GET /api/v1/audit/verify` | the audit log, newest first, and a check of its hash chain (admins) |

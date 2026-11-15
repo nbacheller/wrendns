@@ -792,7 +792,7 @@ test('flt_005 network groups: cards, chart, and query-log filter', async () => {
   expect((await page.request.get('/api/v1/queries?group=nope')).status()).toBe(400);
   // The clients list shows the group each client gets from its network.
   await page.goto('/#/clients');
-  const seen = page.locator('section.card', { hasText: 'Seen this hour' });
+  const seen = page.locator('section.card', { hasText: 'Seen in the last hour' });
   await expect(seen.locator('tbody tr', { hasText: '127.0.0.1' }).locator('.group-chip')).toHaveText('lab');
 });
 

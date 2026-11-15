@@ -210,7 +210,7 @@
       <span class="pill-field bare">
         <select bind:value={hour} aria-label="Hour">
           <option value="current">this hour</option>
-          <option value="previous">last hour</option>
+          <option value="previous">previous hour</option>
         </select>
       </span>
     </div>
@@ -281,7 +281,7 @@
       <span>Bigger and stronger colour = more queries</span>
       <span><i class="sw ring"></i>Growing fastest right now</span>
       <span>
-        The busiest {LIMIT} names and {LIMIT} blocked names {hour === 'current' ? 'this hour' : 'last hour'}, every node;
+        The busiest {LIMIT} names and {LIMIT} blocked names {hour === 'current' ? 'this hour' : 'in the previous clock hour'}, every node;
         counts are approximate{#if refreshed}. Updated {refreshed.toLocaleTimeString()}{/if}.
       </span>
     </div>

@@ -337,6 +337,31 @@ pub enum Hour {
     Previous,
 }
 
+/// Which window a top list reads: an hour, or (clients only) the last 60 minutes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TopHour {
+    /// The hour in progress.
+    #[default]
+    Current,
+    /// The last complete hour.
+    Previous,
+    /// REQ: API-005 (ADR-158) — the last hour whatever the clock hour: 60–65 minutes up to
+    /// now, in whole 5-minute slots. `kind=clients` only; counts are exact.
+    Rolling,
+}
+
+impl TopHour {
+    /// The clock hour this reads, `None` for `rolling`.
+    pub fn hour(self) -> Option<Hour> {
+        match self {
+            Self::Current => Some(Hour::Current),
+            Self::Previous => Some(Hour::Previous),
+            Self::Rolling => None,
+        }
+    }
+}
+
 /// Query parameters for `GET /stats/top`.
 #[derive(Debug, Clone, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -345,8 +370,9 @@ pub struct TopParams {
     pub kind: TopKind,
     /// Items to return (1–100, default 10).
     pub limit: Option<usize>,
-    /// Default: `current`.
-    pub hour: Option<Hour>,
+    /// `current` (default), `previous`, or `rolling` (the last hour, 60–65 minutes;
+    /// `kind=clients` only).
+    pub hour: Option<TopHour>,
     /// Only this client's domains (an IP address; `kind=domains` only).
     pub client: Option<String>,
     /// Only this group's queries (a group name; not with `client`, not for `nxdomain`).

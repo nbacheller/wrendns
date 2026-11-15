@@ -1028,3 +1028,41 @@ fn obs_037_internal_names_have_their_own_list() {
         2
     );
 }
+
+// REQ: API-005 (ADR-158) — live queries and the restart replay both reach the last-hour
+// list: queries before the clock hour still count, replayed ones only within the window, and
+// a replayed query never sets the window back.
+#[test]
+fn api_005_record_and_replay_fill_the_last_hour() {
+    let (a, b, c) = (ipv4(10, 0, 0, 1), ipv4(10, 0, 0, 2), ipv4(10, 0, 0, 3));
+    let hour_s = 1_800_003_600; // a clock hour
+    let mut agg = Aggregates::new();
+    // Replayed after a restart at hour + 1 min: 30 minutes before, and 2 hours before.
+    let started_s = hour_s + 60;
+    agg.replay_hours(
+        started_s,
+        &query((hour_s - 1800) * 1_000_000, a, Status::Cached, 1),
+        &decoded("a.example"),
+    );
+    agg.replay_hours(
+        started_s,
+        &query((hour_s - 7200) * 1_000_000, c, Status::Cached, 1),
+        &decoded("c.example"),
+    );
+    // Live, after the restart.
+    for _ in 0..3 {
+        agg.record(&Record::Query(
+            query((hour_s + 120) * 1_000_000, b, Status::Cached, 1),
+            decoded("b.example"),
+        ));
+    }
+    let counts = crate::last_hour::rank(agg.last_hour_counts(hour_s + 180), 10);
+    assert_eq!(counts, vec![(b, 3), (a, 1)]);
+    // The clock-hour list only has the live ones.
+    let hourly: Vec<String> = agg
+        .top_names(TopKind::Clients, HourSel::Current, 10)
+        .into_iter()
+        .map(|t| t.key)
+        .collect();
+    assert_eq!(hourly, ["10.0.0.2"]);
+}

@@ -30,7 +30,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. The heaviest items in the current or previous hour: most queried domains, most blocked domains, names answered NXDOMAIN, most active clients, or most queried internal names (the Kubernetes cluster domain and reverse lookups of private addresses, which the domains and NXDOMAIN lists leave out). Optionally for one client (domains only) or one client group.",
+    "description": "Read-only. The heaviest items in the current or previous hour: most queried domains, most blocked domains, names answered NXDOMAIN, most active clients, or most queried internal names (the Kubernetes cluster domain and reverse lookups of private addresses, which the domains and NXDOMAIN lists leave out). For clients, also the last hour whatever the clock hour (hour=rolling: 60-65 minutes, exact counts). Optionally for one client (domains only) or one client group.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -43,10 +43,11 @@
           "type": "string"
         },
         "hour": {
-          "description": "Which hour (default current).",
+          "description": "Which hour (default current). `rolling` is the last hour (60-65 minutes) whatever the clock hour, for kind=clients only.",
           "enum": [
             "current",
-            "previous"
+            "previous",
+            "rolling"
           ],
           "type": "string"
         },

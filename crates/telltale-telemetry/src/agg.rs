@@ -839,6 +839,8 @@ pub struct Aggregates {
     pub exported: Exported,
     /// Per-client counts in 10-minute windows (OPS-003).
     recent: RecentClients,
+    /// REQ: API-005 (ADR-158) — per-client counts over the last hour, in 5-minute slots.
+    last_hour: crate::last_hour::LastHour,
     /// REQ: OBS-016 (T11.1) — answers slower than this (µs) count as `slow` in the time
     /// buckets: the latency objective's threshold (`[slo] latency_ms`).
     pub slo_latency_us: u64,
@@ -886,6 +888,7 @@ impl Aggregates {
             latest_s: 0,
             exported: Exported::default(),
             recent: RecentClients::default(),
+            last_hour: crate::last_hour::LastHour::default(),
             slo_latency_us: DEFAULT_SLO_LATENCY_US,
             latency_hist: true,
             internal: crate::internal::InternalNames::default(),
@@ -1007,6 +1010,7 @@ impl Aggregates {
             Record::Query(e, name) => {
                 self.exported.add_query(e);
                 self.recent.add(e.client_ip, ts_s);
+                self.last_hour.add(e.client_ip, ts_s);
                 self.count_workload(e, ts_s);
                 // REQ: CLU-014 — one hash update; the window only while a drill runs.
                 self.seen.add(e.client_ip, ts_s);
@@ -1042,14 +1046,19 @@ impl Aggregates {
     /// the query log) into the current or previous hour's top lists and latency histograms, by
     /// its own timestamp, in any order. The time windows aren't touched (the rollups hold those
     /// minutes), nor are the Prometheus counters or the masked-client windows (they count this
-    /// process). Queries older than the previous hour are ignored.
+    /// process). Queries older than the previous hour are ignored. Queries in the last hour also
+    /// count in the clients' last-hour list (ADR-158).
     pub fn replay_hours(&mut self, now_s: u64, e: &QueryEvent, name: &Name) {
         let now_hour = now_s / 3600;
         if now_hour > self.current.index {
             let done = std::mem::replace(&mut self.current, Hour::new(now_hour));
             self.previous = (done.index + 1 == now_hour).then_some(done);
         }
-        let hour = e.ts_us / 1_000_000 / 3600;
+        let ts_s = e.ts_us / 1_000_000;
+        if ts_s <= now_s && ts_s + crate::last_hour::WINDOW_S > now_s {
+            self.last_hour.add_replayed(e.client_ip, ts_s);
+        }
+        let hour = ts_s / 3600;
         self.seq += 1;
         let slow_us = self.slo_latency_us;
         // A name the query log keeps hashed (privacy 1+) can't be told apart: it counts as a
@@ -1250,6 +1259,13 @@ impl Aggregates {
     /// Who sent the queries in the latest 10-minute window (REQ: OPS-003).
     pub fn recent_clients(&self, now_s: u64) -> Option<ClientWindow> {
         self.recent.latest(now_s)
+    }
+
+    /// REQ: API-005 (ADR-158) — every client's exact query count over the last hour (the
+    /// 60–65 minutes up to `now_s`), unsorted: rank them with [`crate::last_hour::rank`] once
+    /// the lock is released.
+    pub fn last_hour_counts(&self, now_s: u64) -> Vec<([u8; 16], u64)> {
+        self.last_hour.counts(now_s)
     }
 
     /// Start (Unix seconds) of the last complete hour kept in memory, if any.
