@@ -1,0 +1,83 @@
+# REQ: NFR-005 — dependency updates arrive as pull requests that CI checks like any other change
+# (clippy, the test suites, cargo-deny, the UI suite). One pull request a week per ecosystem for
+# minor and patch updates, grouped so a week of them is one review; a major update is its own
+# pull request. Security updates ignore the schedule and the limit (Dependabot's own setting).
+#
+# Dependabot titles can't carry a requirement ID (AGENTS.md rule 2): merge with a squash and put
+# the tag in the commit message, for example `build(deps): bump vite from 8.3.2 to 8.3.8 [NFR-005]`.
+version: 2
+updates:
+  # The Rust workspace (Cargo.lock at the root).
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      rust-minor-patch:
+        update-types: [minor, patch]
+
+  # The fuzz targets are their own workspace.
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      fuzz-minor-patch:
+        update-types: [minor, patch]
+
+  # The web UI (build and test tooling; the UI ships as static files).
+  - package-ecosystem: npm
+    directory: /ui
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      ui-minor-patch:
+        update-types: [minor, patch]
+
+  # The MCP end-to-end test's client (test tooling only).
+  - package-ecosystem: npm
+    directory: /deploy/mcp-e2e
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      mcp-e2e-minor-patch:
+        update-types: [minor, patch]
+
+  # The workflows' actions.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "build(ci)"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # The image's base images.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "build(image)"
