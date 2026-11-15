@@ -44,10 +44,12 @@ pub fn check_phc(hash: &str) -> Result<(), crate::problem::Problem> {
 }
 
 /// A valid hash nobody's password matches, verified for unknown usernames so a failed login
-/// takes the same time whether or not the user exists.
+/// takes the same time whether or not the user exists. Its password is random and discarded
+/// (not a literal: nothing can match it, and the `CodeQL` query `rust/hard-coded-cryptographic-value`
+/// has nothing to flag).
 pub fn dummy_verify(password: &str) {
     static DUMMY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    let h = DUMMY.get_or_init(|| hash_password("telltale-dummy-password").unwrap_or_default());
+    let h = DUMMY.get_or_init(|| hash_password(&random_secret()).unwrap_or_default());
     let _ = verify_password(password, h);
 }
 
@@ -164,60 +166,5 @@ pub fn recovery_hash(code: &str) -> Vec<u8> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn api_003_password_hashes_verify_and_use_spec_parameters() {
-        let h = hash_password("correct horse battery").unwrap();
-        assert!(h.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"), "{h}");
-        assert!(verify_password("correct horse battery", &h));
-        assert!(!verify_password("correct horse batterY", &h));
-        assert!(!verify_password("x", "not a hash"));
-        assert_ne!(
-            hash_password("same").unwrap(),
-            hash_password("same").unwrap(),
-            "salted"
-        );
-    }
-
-    #[test]
-    fn api_003_secrets_and_encodings() {
-        assert_eq!(random_secret().len(), 43);
-        assert_eq!(random_id().len(), 16);
-        assert!(ct_eq(&secret_hash("a"), &secret_hash("a")));
-        assert!(!ct_eq(&secret_hash("a"), &secret_hash("b")));
-        // RFC 4648 test vectors.
-        assert_eq!(base32(b"foobar"), "MZXW6YTBOI");
-        assert_eq!(base32(b"f"), "MY");
-        let url = otpauth_url("TelltaleDNS", "ana maria", b"12345678901234567890");
-        assert_eq!(
-            url,
-            "otpauth://totp/TelltaleDNS:ana%20maria?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=TelltaleDNS&algorithm=SHA1&digits=6&period=30"
-        );
-    }
-
-    #[test]
-    fn api_003_totp_matches_rfc6238_and_allows_one_step_of_skew() {
-        // RFC 6238 appendix B, SHA-1, 8 digits: 94287082 at T=59 → the 6-digit code is 287082.
-        let secret = b"12345678901234567890";
-        assert_eq!(totp_step(secret, "287082", 59), Some(1));
-        assert_eq!(totp_step(secret, "287082", 89), Some(1), "one step late");
-        assert_eq!(totp_step(secret, "287082", 200), None, "too late");
-        assert_eq!(totp_step(secret, "28708", 59), None);
-        assert_eq!(totp_step(secret, "abcdef", 59), None);
-    }
-
-    #[test]
-    fn api_003_recovery_codes_are_single_format_and_normalized() {
-        let (codes, hashes) = recovery_codes();
-        assert_eq!((codes.len(), hashes.len()), (10, 10));
-        assert!(
-            codes
-                .iter()
-                .all(|c| c.len() == 11 && c.as_bytes()[5] == b'-')
-        );
-        let typed = codes[0].to_ascii_uppercase().replace('-', " ");
-        assert_eq!(recovery_hash(&typed), hashes[0]);
-    }
-}
+#[path = "crypto_tests.rs"]
+mod tests;
