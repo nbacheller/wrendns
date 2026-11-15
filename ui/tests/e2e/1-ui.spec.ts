@@ -1,7 +1,7 @@
 // REQ: API-003, API-005 — the UI end to end against a real server: first-run setup, the
 // dashboard, the query log and "Why?", explain, tokens, users and roles, sign-out/in, and a
 // phone-width layout, and the masked-client-IP banner. Any CSP violation or page error fails the suite.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Route } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { query } from './dns';
@@ -397,6 +397,45 @@ test('ops_010 maintenance from the Cluster page', async () => {
   await page.getByTestId('maintenance-end-banner').click();
   await expect(banner).toHaveCount(0);
   expect((await page.request.get('/readyz')).status()).toBe(200);
+});
+
+// REQ: API-005, OBS-011 (GitHub issue #9) — the Upstreams page says Healthy, Benched, and
+// Probing, not the circuit breaker's closed, open, and half_open; the breaker's own word is the
+// tooltip (and stays in the API and the metrics).
+test('api_005 upstream health reads in plain words', async () => {
+  const upstream = (id: number, name: string, breaker: string) => ({
+    breaker,
+    endpoint: `tls://192.0.2.${id}`,
+    failures: 0,
+    failuresByKind: {},
+    groups: ['default'],
+    id,
+    latencyEwmaMs: 5,
+    name,
+    requests: 10,
+  });
+  const isUpstreams = (url: URL) => url.pathname === '/api/v1/upstreams';
+  const stub = (route: Route) =>
+    route.fulfill({
+      json: {
+        items: [upstream(1, 'up-ok', 'closed'), upstream(2, 'up-benched', 'open'), upstream(3, 'up-probe', 'half_open')],
+      },
+    });
+  await page.route(isUpstreams, stub);
+  try {
+    await page.goto('/#/upstreams');
+    const word = (name: string, text: string) => page.getByRole('row', { name: new RegExp(name) }).getByText(text, { exact: true });
+    await expect(word('up-ok', 'Healthy')).toBeVisible();
+    await expect(word('up-benched', 'Benched')).toBeVisible();
+    await expect(word('up-probe', 'Probing')).toBeVisible();
+    // The pattern's own word is one hover away, for anyone who knows it.
+    await expect(word('up-benched', 'Benched')).toHaveAttribute('title', 'circuit breaker: open');
+    await expect(word('up-probe', 'Probing')).toHaveAttribute('title', 'circuit breaker: half_open');
+    // Nobody has to decode closed, open, or half_open.
+    await expect(page.locator('main')).not.toContainText('half_open');
+  } finally {
+    await page.unroute(isUpstreams, stub);
+  }
 });
 
 // REQ: OBS-019 — the Upstreams page's Answer quality: second opinions off on the e2e server

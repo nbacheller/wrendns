@@ -782,7 +782,7 @@
             <option value="maintenance.entered,maintenance.left">maintenance</option>
             <option value="blocking.paused,blocking.resumed">pauses</option>
             <option value="cache.flushed">cache flushes</option>
-            <option value="upstream.breaker">upstream breakers</option>
+            <option value="upstream.breaker">upstreams benched or recovered</option>
           </select>
         </label>
         <input class="small" type="search" placeholder="Filter" bind:value={changeText} aria-label="Filter changes" />
@@ -810,7 +810,7 @@
         </div>
       {/if}
       {#if changeList?.missingNodes?.length}<p class="muted small">Not answering: {changeList.missingNodes.join(', ')}.</p>{/if}
-      <p class="muted small">The last 200 configuration versions, builds, restarts, list refreshes, rollouts, maintenance, pauses, cache flushes, breakers, and notes, from every node. Each node keeps 90 days.</p>
+      <p class="muted small">The last 200 configuration versions, builds, restarts, list refreshes, rollouts, maintenance, pauses, cache flushes, upstreams benched or recovered, and notes, from every node. Each node keeps 90 days.</p>
     </section>
     {#if info}
       <!-- REQ: OPS-004 (ADR-046) -->

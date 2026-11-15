@@ -4,7 +4,7 @@
   import { ms, num, pct } from '../lib/format';
   import { poll } from '../lib/poll';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
-  import StatusBadge from '../lib/components/StatusBadge.svelte';
+  import BreakerBadge from '../lib/components/BreakerBadge.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import ShareBar from '../lib/components/ShareBar.svelte';
   import { currentMode } from '../lib/mode.svelte';
@@ -121,7 +121,7 @@
             <tr>
               <td><strong>{u.name}</strong>{#if advanced}<div class="muted small mono">{u.endpoint}</div>{/if}</td>
               <td>{u.groups.join(', ')}</td>
-              <td><StatusBadge value={u.breaker} /></td>
+              <td><BreakerBadge value={u.breaker} /></td>
               <td class="num">{num(u.requests)}<ShareBar value={totalRequests ? (u.requests / totalRequests) * 100 : 0} color="--s-forwarded" label="share of all upstream requests" /></td>
               <td class="num">{num(u.failures)} <span class="muted small">({pct(u.requests ? (u.failures / u.requests) * 100 : 0)})</span><ShareBar value={u.requests ? (u.failures / u.requests) * 100 : 0} color="--s-blocked" label="failure rate" />
                 {#if u.failures > 0}<div class="muted small">{breakdown(u)}</div>{/if}</td>
@@ -135,8 +135,9 @@
     </div>
   </section>
   <p class="muted small">
-    Health: <strong>closed</strong> = healthy, <strong>open</strong> = benched after failures,
-    <strong>half_open</strong> = being probed. Percentiles cover this hour.
+    Health: <strong>Healthy</strong> = answering, <strong>Benched</strong> = stopped asking it after
+    failures, <strong>Probing</strong> = a trial query is checking whether it has recovered.
+    Percentiles cover this hour. Hover a badge for the circuit breaker's own word.
   </p>
   <!-- REQ: OBS-030 (ADR-130) — one upstream's answer times as a shape over time. -->
   {#if upstreams.length}

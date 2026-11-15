@@ -172,7 +172,7 @@ url = "https://ntfy.sh/my-home-dns"
 
 [[alerts.rule]]
 name = "Upstream down"
-when = "upstream_down"                   # an upstream's circuit breaker is open
+when = "upstream_down"                   # an upstream is benched (its circuit breaker is open)
 for_secs = 60                            # only if it lasts a minute
 to = ["phone"]</code></pre>
       <p class="muted">Check it with <code>telltale config check</code>, then apply it as in <a href="guide-settings.html#style-file">Config file only</a>.</p>

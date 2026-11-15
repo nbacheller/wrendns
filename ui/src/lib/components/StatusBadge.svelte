@@ -1,6 +1,11 @@
 <script lang="ts">
-  // Query status / list state / breaker state → a colored badge.
-  let { value }: { value: string | null | undefined } = $props();
+  // Query status / list state / breaker state → a colored badge. `label` is the text shown when it
+  // should read differently from the value (BreakerBadge); `title` is the tooltip.
+  let {
+    value,
+    label,
+    title,
+  }: { value: string | null | undefined; label?: string; title?: string } = $props();
 
   const tones: Record<string, string> = {
     blocked: 'bad',
@@ -26,4 +31,4 @@
   const tone = $derived(value ? (tones[value] ?? '') : '');
 </script>
 
-<span class="badge {tone}">{value ?? '–'}</span>
+<span class="badge {tone}" {title}>{label ?? value ?? '–'}</span>

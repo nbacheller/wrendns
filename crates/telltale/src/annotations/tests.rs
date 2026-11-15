@@ -281,7 +281,18 @@ fn obs_033_breakers_are_rate_limited() {
     assert_eq!(states(&a).len(), 3, "each upstream on its own");
     assert_eq!(
         all(&a)[0].summary,
-        "upstream cloudflare's breaker opened: its answers are failing, other upstreams answer"
+        "upstream cloudflare was benched: its answers are failing, other upstreams answer"
+    );
+    // REQ: OBS-033 (GitHub issue #9) — and it says so in the web UI's words when it recovers.
+    assert!(
+        all(&a)
+            .iter()
+            .any(|x| x.summary == "upstream quad9 is answering again"),
+        "{:?}",
+        all(&a)
+            .iter()
+            .map(|x| x.summary.clone())
+            .collect::<Vec<_>>()
     );
     let _ = std::fs::remove_dir_all(&d);
 }

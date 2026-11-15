@@ -10,7 +10,7 @@
   import Tip from '../lib/components/Tip.svelte';
   import Donut from '../lib/components/Donut.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
-  import StatusBadge from '../lib/components/StatusBadge.svelte';
+  import BreakerBadge from '../lib/components/BreakerBadge.svelte';
   import ClientChip from '../lib/components/ClientChip.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import SloCard from '../lib/components/SloCard.svelte';
@@ -396,7 +396,7 @@
             <li>
               <div class="row">
                 <strong>{u.name}</strong>
-                <StatusBadge value={u.breaker} />
+                <BreakerBadge value={u.breaker} />
                 <span class="spacer"></span>
                 <span class="muted small">{pct(totalUpstream ? (u.requests / totalUpstream) * 100 : 0, 0)} · {ms(u.latencyEwmaMs)}</span>
               </div>

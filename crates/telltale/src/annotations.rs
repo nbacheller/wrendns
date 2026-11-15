@@ -387,20 +387,20 @@ impl Annotations {
             }
         };
         if write {
+            // REQ: OBS-033 (GitHub issue #9) — worded as the web UI words an upstream's health
+            // (benched, answering again), not as the circuit breaker's own open and closed.
             let what = if state == "open" {
-                "opened: its answers are failing, other upstreams answer"
+                format!(
+                    "upstream {upstream} was benched: its answers are failing, other upstreams answer"
+                )
             } else {
-                "closed: answering again"
+                format!("upstream {upstream} is answering again")
             };
             self.record(Annotation {
                 upstream: Some(upstream.to_owned()),
                 state: Some(state.to_owned()),
                 href: Some("#/upstreams".into()),
-                ..marker(
-                    "upstream.breaker",
-                    at_ms,
-                    format!("upstream {upstream}'s breaker {what}"),
-                )
+                ..marker("upstream.breaker", at_ms, what)
             });
         }
     }

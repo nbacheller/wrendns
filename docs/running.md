@@ -2340,7 +2340,7 @@ Main metrics:
 | `telltale_upstream_requests_total{upstream,outcome}` | attempts per upstream, `outcome` = `success` or `failure` (timeouts, errors, SERVFAIL/REFUSED) |
 | `telltale_upstream_failures_total{upstream,kind}` | the failures by kind: `timeout`, `network` (connection, TLS, socket), `bad_response` (mismatched or malformed), `unresolved` (the upstream's hostname), `servfail`, `refused`, `other_rcode` |
 | `telltale_upstream_duration_seconds{upstream,protocol}` | exchange-time histogram per upstream (p50/p95/p99 in Grafana) |
-| `telltale_upstream_breaker_state`, `telltale_upstream_latency_ewma_seconds` | circuit breaker (0 closed, 1 half-open, 2 open); smoothed latency |
+| `telltale_upstream_breaker_state`, `telltale_upstream_latency_ewma_seconds` | circuit breaker (0 closed = healthy, 1 half-open = probing, 2 open = benched; the web UI says Healthy, Probing, Benched); smoothed latency |
 | `telltale_upstream_connections_opened_total{upstream,outcome}`, `telltale_upstream_connect_seconds_total{upstream}` | connections opened to TCP, DoT, and DoH upstreams (`ok` or `failed`), and the time spent opening them: their ratio is the mean connect time, TCP and TLS together. Many opens per minute mean the pool keeps closing them (see below) |
 | `telltale_upstream_tls_handshakes_total{upstream,kind}` | TLS handshakes, `full` or `resumed` (from a stored session, a round trip shorter) |
 | `telltale_upstream_connections_closed_total{upstream,reason}`, `telltale_upstream_connections{upstream}` | pooled TCP and DoT connections ended: `idle` (unused for `idle_timeout_ms`), `server` (closed or reset by the upstream), `write_failed`, `unanswered` (queries waited 3 s with nothing at all coming back: a connection dropped silently along the way; its queries retry at once on a new one), `unused`; and how many are open |
@@ -2414,7 +2414,7 @@ Every time chart (the dashboard's, the Cache page's) draws a thin line for each 
 | Lists refreshed | a list download changed the rules: which lists, and how many blocked names were gained or lost (a refresh that changed nothing writes none) |
 | Rollout | a [staged rollout](#rolling-a-change-out-in-stages) reached its canaries, was promoted, failed and was pinned back, aborted, pinned, or unpinned (the primary's) |
 | Maintenance, pauses, cache flushes | [maintenance](#taking-a-node-down-for-maintenance) entered or left; blocking paused or resumed; the cache flushed (the node asked, naming the nodes it applied to) |
-| Upstream breaker | an upstream's circuit breaker opened or closed (at most one per upstream every 5 minutes) |
+| Upstream benched or recovered | an upstream was benched (its circuit breaker opened) or is answering again (at most one per upstream every 5 minutes) |
 | Note | what an operator or an agent wrote (below) |
 
 - **Hover** a marker (or tab to it) for what happened, when, who, and on which nodes; select it to open where it happened (Settings, Cluster, Lists, Upstreams). One change applied on several nodes is one marker naming them. Where more than 40 would crowd a chart, close ones share a marker with a count (`×3`).
@@ -2726,7 +2726,7 @@ url = "https://ntfy.sh/my-home-dns"
 
 [[alerts.rule]]
 name = "Upstream down"
-when = "upstream_down"                   # an upstream's circuit breaker is open
+when = "upstream_down"                   # an upstream is benched (its circuit breaker is open)
 for_secs = 60                            # only if it lasts a minute
 to = ["phone"]
 
@@ -2740,7 +2740,7 @@ Rules watch:
 
 | `when` | Alerts when | One alert per |
 |---|---|---|
-| `upstream_down` | an upstream's circuit breaker is open | upstream |
+| `upstream_down` | an upstream is benched (its circuit breaker is open) | upstream |
 | `node_down` | a cluster node isn't connected | node |
 | `list_failing` | a list fails to update | list |
 | `list_stale` | a URL list's content hasn't changed in `stale_after_days` (default 30; see [Lists that stopped changing](#lists-that-stopped-changing)) | list |
@@ -2794,7 +2794,7 @@ Open `http://<server>:8053/` in a browser. On first start it asks for the setup 
 | Dashboard | queries, blocked %, cache hits, upstream latency, active clients; the [service level](#service-level-objectives) (each objective's last 30 days, error budget left, and burn rates); queries over time by status (15 min to 48 h); where time goes; top domains, blocked names, and clients with their groups (click through to the query log); upstream share and health. In a cluster, **Showing** switches between every node together, one node, or one site's nodes (remembered in your browser) |
 | Query log | search by name (contains, exact, subdomains, wildcard, regex), client, status, type, response code, slowness, and time; each row shows how long it took and how much of that was the upstream; **Why?** explains the decision. Filters live in the URL, so a search can be bookmarked or shared. **Live** streams new matching queries as they happen (the newest 500 stay on screen) |
 | Explain | why any name is or isn't blocked for any device |
-| Clients, Groups, Lists, Upstreams | devices seen and configured; groups and their lists; list download state and size; upstream health (circuit breaker), traffic, failures by kind (timeouts, connection errors, SERVFAIL, ...), and latency |
+| Clients, Groups, Lists, Upstreams | devices seen and configured; groups and their lists; list download state and size; upstream health (Healthy, Benched, or Probing: the circuit breaker's closed, open, and half-open), traffic, failures by kind (timeouts, connection errors, SERVFAIL, ...), and latency |
 | Settings | your password and two-factor sign-in, API tokens, users and the audit log (admins), system information, and the cache ([Cache tools](#cache-tools)) |
 
 Every chart has a **Table** view. The UI follows the system's light or dark theme (or pick one in the header) and works on phones. Upstreams, lists, and groups can be added and changed on their pages ([Changing the configuration in the UI](#changing-the-configuration-in-the-ui)).
@@ -2937,7 +2937,7 @@ For agents that start their tools as a subprocess, use the stdio transport. It r
 | `get_client_profile` | a device: identity, groups, recent and slow queries |
 | `latency_breakdown` | percentiles by stage, upstream, client, or query type |
 | `health` | healthy, degraded, or severe, and why (start here when something seems wrong) |
-| `upstream_health` | upstream health, breakers, latency |
+| `upstream_health` | upstream health (healthy, benched, probing), latency |
 | `list_effectiveness` | list sizes, updates, errors, hits, unique names, and overlap |
 | `find_anomalies` | device anomalies from every node with evidence (including NXDOMAIN storms and DGA-like names), optionally only the unacknowledged ones |
 | `acknowledge_anomalies` | marks findings as seen on every node, or takes it back with `undo` (needs `ops:anomalies`; changes at once, audited) |

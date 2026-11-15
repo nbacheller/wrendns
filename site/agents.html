@@ -110,7 +110,7 @@
     <p class="call"><span>get_client_profile</span> client="living-room-tv", window="-6h"</p>
     <p class="result">p95 latency 840 ms (usually about 30) · 92% of its uncached questions go to <code>quad9-doh</code></p>
     <p class="call"><span>upstream_health</span></p>
-    <p class="result"><code>quad9-doh</code>: circuit breaker opening and closing since 19:40 · <code>cloudflare-dot</code>: healthy, p95 18 ms</p>
+    <p class="result"><code>quad9-doh</code>: benched and recovering over and over since 19:40 · <code>cloudflare-dot</code>: healthy, p95 18 ms</p>
     <p class="call"><span>plan_update_upstreams</span> kind="upstream_group", name="default", strategy="fastest", reason="quad9 degraded"</p>
     <p class="result">Plan <code>pl_7f3c</code>: upstream group <code>default</code>, strategy <code>failover → fastest</code> · affects about 41,000 questions a day · waiting for approval</p>
     <p class="msg agent">Quad9's DoH endpoint has been flapping since 19:40, and the TV sends almost everything there. I've proposed switching the default group to the fastest healthy upstream. It's waiting for you under <b>Agent changes</b>.</p>
@@ -162,7 +162,7 @@
           <tr><th scope="row"><code>simulate_change</code></th><td>what a change would have done to the logged queries: newly blocked, newly allowed, rerouted, by name and device</td></tr>
           <tr><th scope="row"><code>get_client_profile</code></th><td>a device: identity, groups, recent and slow queries</td></tr>
           <tr><th scope="row"><code>latency_breakdown</code></th><td>percentiles by stage, upstream, client, or type</td></tr>
-          <tr><th scope="row"><code>upstream_health</code></th><td>health, circuit breakers, latency per upstream</td></tr>
+          <tr><th scope="row"><code>upstream_health</code></th><td>health (healthy, benched, probing), latency per upstream</td></tr>
           <tr><th scope="row"><code>list_effectiveness</code></th><td>list hits, unique names, overlap</td></tr>
           <tr><th scope="row"><code>find_anomalies</code></th><td>rate spikes, beaconing, NXDOMAIN storms, DGA-like names, from every node, optionally only the unacknowledged ones</td></tr>
           <tr><th scope="row"><code>new_domains</code></th><td>first-seen domains per device</td></tr>
