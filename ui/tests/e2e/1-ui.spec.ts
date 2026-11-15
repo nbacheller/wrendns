@@ -342,14 +342,18 @@ test('chart legend keeps its place while hovering', async () => {
     });
   for (const width of [340, 360, 390, 420]) {
     await page.setViewportSize({ width, height: 844 });
-    await over.scrollIntoViewIfNeeded();
-    await page.mouse.move(0, 0);
-    const rest = await layout();
-    const box = (await over.boundingBox())!;
-    for (const f of [0.1, 0.5, 0.9]) {
-      await page.mouse.move(box.x + box.width * f, box.y + box.height / 2);
-      expect(await layout(), `${width}px wide, hovering at ${f}`).toBe(rest);
-    }
+    // A new width (and every refresh) rebuilds the chart: measure once it has settled, and
+    // again if a rebuild lands mid-check.
+    await expect(async () => {
+      await over.scrollIntoViewIfNeeded();
+      await page.mouse.move(0, 0);
+      const rest = await layout();
+      const box = (await over.boundingBox())!;
+      for (const f of [0.1, 0.5, 0.9]) {
+        await page.mouse.move(box.x + box.width * f, box.y + box.height / 2);
+        expect(await layout(), `${width}px wide, hovering at ${f}`).toBe(rest);
+      }
+    }).toPass({ timeout: 15_000 });
   }
   await page.mouse.move(0, 0);
   await page.setViewportSize({ width: 1280, height: 800 });
