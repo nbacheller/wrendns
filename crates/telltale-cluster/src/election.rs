@@ -751,4 +751,51 @@ mod tests {
         assert_eq!(a.phase, Phase::Follower);
         assert!(b.writable(90_000));
     }
+
+    // REQ: CLU-005 (ADR-154, GitHub issue #3) — an emergency primary hands over to a Git-managed
+    // node: the other eligible voter (not Git-managed) holds back, so the Git-managed node is the
+    // only one that stands. It is elected within the lease window, never while the old primary
+    // can still write, the voter that held back still voted for it and never asked, and the old
+    // primary steps down.
+    #[test]
+    fn clu_005_a_git_node_is_elected_when_the_emergency_primary_hands_over() {
+        let mut nodes = elect_a(&["a", "b", "c"]);
+        let (a, rest) = nodes.split_first_mut().unwrap();
+        let (b, c) = rest.split_at_mut(1);
+        let (b, c) = (&mut b[0], &mut c[0]);
+        // a is the emergency primary, b the Git-managed node, c another node that isn't.
+        a.stepping_down = true;
+        a.standing = false;
+        c.standing = false;
+        let (mut elected, mut stepped_down) = (None, false);
+        for t in (30_000..=90_000).step_by(250) {
+            let outs = a.tick(t, 0);
+            let (ev, _) = exchange(a, outs, &mut [&mut *b, &mut *c], t);
+            assert!(!ev.iter().any(|o| matches!(o, Out::Elected { .. })));
+            let outs = c.tick(t, 0);
+            assert!(
+                outs.iter().all(|o| !matches!(o, Out::Send { .. })),
+                "c asked for votes at {t} ms while holding back: {outs:?}"
+            );
+            let outs = b.tick(t, 0);
+            let (ev, theirs) = exchange(b, outs, &mut [&mut *a, &mut *c], t);
+            if ev.contains(&Out::Elected { epoch: 2 }) {
+                elected = Some(t);
+            }
+            stepped_down |= theirs
+                .iter()
+                .any(|(who, o)| who == "a" && *o == Out::StepDown { epoch: 1 });
+            assert!(!(a.writable(t) && b.writable(t)), "two writers at {t} ms");
+        }
+        let at = elected.expect("the Git-managed node was elected");
+        assert!(
+            at <= 25_000 + LEASE_MS + ROUND_MS,
+            "elected at {at} ms, after the lease window"
+        );
+        assert!(stepped_down, "the emergency primary stepped down");
+        assert_eq!(a.phase, Phase::Follower);
+        assert_eq!(c.phase, Phase::Follower, "c never stood");
+        assert_eq!(c.ballot.candidate, "b", "c voted for the Git-managed node");
+        assert!(b.writable(90_000));
+    }
 }

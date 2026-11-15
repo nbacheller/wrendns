@@ -65,6 +65,44 @@ fn provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
+/// REQ: CLU-005 (ADR-154) — the decision behind [`Cluster::defers_to_git_node`], on plain
+/// facts: `others` is `(is Git-managed, is up, is an eligible voter)` for every other member.
+fn defers_to_git(
+    authority: &str,
+    own_source: &str,
+    others: impl IntoIterator<Item = (bool, bool, bool)>,
+) -> bool {
+    authority == "gitops"
+        && own_source != "gitops"
+        && others
+            .into_iter()
+            .any(|(git, up, eligible)| git && up && eligible)
+}
+
+/// REQ: CLU-005 (ADR-154) — how long a node leaves the election to a Git-managed node while no
+/// primary is up; after that it stands anyway, as it did before ADR-154 (an emergency primary
+/// is better than none).
+const DEFER_MAX_MS: u64 = 60_000;
+
+/// REQ: CLU-005 (ADR-154) — bounds the deference in time. `wants`: it would defer; `primary_up`:
+/// a primary (this node included) is up, so no election is wanted anyway; `since`: when it began
+/// deferring with no primary up (0: it didn't), kept between calls. Defers while a primary is
+/// up (that is the handover window), and with none up for at most [`DEFER_MAX_MS`].
+fn bounded_deference(wants: bool, primary_up: bool, since: &AtomicU64, now: u64) -> bool {
+    if !wants || primary_up {
+        since.store(0, Ordering::Release);
+        return wants;
+    }
+    let first = match since.load(Ordering::Acquire) {
+        0 => {
+            since.store(now, Ordering::Release);
+            now
+        }
+        t => t,
+    };
+    now.saturating_sub(first) < DEFER_MAX_MS
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -635,6 +673,9 @@ pub struct Cluster {
     host_history: Mutex<HashMap<String, VecDeque<crate::wire::HostStats>>>,
     /// REQ: OPS-010 — when this primary started handing over (Unix ms; 0: it isn't).
     handover_since_ms: AtomicU64,
+    /// REQ: CLU-005 (ADR-154) — since when this node has left the election to a Git-managed node
+    /// with no primary up (Unix ms; 0: it isn't). See [`bounded_deference`].
+    defer_since_ms: AtomicU64,
 }
 
 /// What this node has applied from the primary (replica) or published (primary).
@@ -696,6 +737,7 @@ impl Cluster {
             bootstrap: std::sync::OnceLock::new(),
             started_ms: now_ms(),
             handover_since_ms: AtomicU64::new(0),
+            defer_since_ms: AtomicU64::new(0),
         })
     }
 
@@ -763,6 +805,67 @@ impl Cluster {
             "no other node was elected within 60 s; this node stays the primary (promote another node first)",
         );
         true
+    }
+
+    /// REQ: CLU-005 (ADR-154, GitHub issue #3) — a Git-managed node asked this emergency primary
+    /// to hand over: it stops renewing its lease, so the election (in which nodes that aren't
+    /// Git-managed hold back) picks the node that can publish. Not a maintenance window: the
+    /// node stays in service. Returns whether a handover started (false when one is running).
+    pub fn start_handover(&self, by: &str) -> bool {
+        if self
+            .handover_since_ms
+            .compare_exchange(0, now_ms(), Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        self.event(
+            "handover",
+            &self.identity.meta.node_id.clone(),
+            format!("{by} (Git-managed) asked this emergency primary to hand over: it stops renewing its lease so that node is elected"),
+        );
+        true
+    }
+
+    /// REQ: CLU-005 (ADR-154) — ends a handover that wasn't a maintenance window's: this node
+    /// stepped down, so a later election must not find it still refusing to renew.
+    pub(crate) fn end_handover(&self) {
+        if !self.in_maintenance() {
+            self.handover_since_ms.store(0, Ordering::Release);
+        }
+    }
+
+    /// REQ: CLU-005 (ADR-154) — whether this node leaves the election to a Git-managed one:
+    /// the cluster's configuration comes from Git, this node isn't Git-managed, and an eligible
+    /// node that is Git-managed is up. Only a Git-managed primary can publish, so an election it
+    /// can win shouldn't be won by an emergency primary. With no such node up, nothing changes:
+    /// an emergency primary is still elected.
+    ///
+    /// Bounded in time ([`bounded_deference`]): a node that has left the election to a
+    /// Git-managed node for [`DEFER_MAX_MS`] with no primary up stands anyway, since that node
+    /// may be up but unable to win.
+    pub fn defers_to_git_node(&self, id: &Identity) -> bool {
+        let now = now_ms();
+        let registry = id.registry();
+        let members = self.members();
+        let wants = defers_to_git(
+            &id.meta.config_authority,
+            &self.config_source(),
+            members
+                .iter()
+                .filter(|m| m.node_id != id.meta.node_id)
+                .map(|m| {
+                    (
+                        m.config_source == "gitops",
+                        m.up(now),
+                        registry
+                            .iter()
+                            .any(|n| n.node_id == m.node_id && n.eligible && !n.witness),
+                    )
+                }),
+        );
+        let primary_up = self.is_primary() || members.iter().any(|m| m.primary && m.up(now));
+        bounded_deference(wants, primary_up, &self.defer_since_ms, now)
     }
 
     /// The key-share frame for `peer`, when this node is the primary, holds the key, and the

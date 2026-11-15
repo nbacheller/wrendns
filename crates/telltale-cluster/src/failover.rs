@@ -25,6 +25,9 @@ use crate::node::{Identity, Role};
 
 /// The vote RPC.
 pub const KIND: &str = "elect.ask";
+/// REQ: CLU-005 (ADR-154, GitHub issue #3) — a Git-managed node asks an emergency primary to
+/// hand over (automatic failover under the `GitOps` authority).
+pub const HANDOVER_KIND: &str = "elect.handover";
 /// How often the election advances.
 const TICK: Duration = Duration::from_millis(250);
 /// How long a vote request may take.
@@ -115,6 +118,68 @@ pub fn answer(cluster: &Cluster, peer: &str, body: &[u8]) -> Result<Vec<u8>, Str
     serde_json::to_vec(&reply).map_err(|e| e.to_string())
 }
 
+/// REQ: CLU-005 (ADR-154, GitHub issue #3) — why an emergency primary refuses to hand over, on
+/// plain facts (`None`: it agrees). `role` is this node's; `peer_can_take_over` is whether the
+/// asker is an eligible voter, Git-managed, and up.
+fn handover_refusal(
+    auto: bool,
+    gitops: bool,
+    role: Role,
+    peer_can_take_over: bool,
+) -> Option<&'static str> {
+    if !auto {
+        Some("automatic failover is off: promote the node instead")
+    } else if !gitops {
+        Some("the configuration doesn't come from Git: nothing needs taking over")
+    } else if role != Role::Emergency {
+        Some("this node isn't an emergency primary")
+    } else if !peer_can_take_over {
+        Some(
+            "only an eligible, Git-managed node that is up can ask an emergency primary to hand over",
+        )
+    } else {
+        None
+    }
+}
+
+/// REQ: CLU-005 (ADR-154, GitHub issue #3) — `peer`, a Git-managed eligible node, asks this
+/// emergency primary to hand over. The primary stops renewing its lease; the nodes that aren't
+/// Git-managed hold back ([`Cluster::defers_to_git_node`]), so the election picks `peer`. If no
+/// one takes over within the give-up time the primary keeps its role (ADR-118). The peer ID
+/// comes from the stream's certificate; its Git-managed claim is its Hello's, which only a
+/// registry-eligible node (one that already holds the cluster key) could abuse.
+pub fn answer_handover(cluster: &Cluster, peer: &str) -> Result<Vec<u8>, String> {
+    let id = cluster.identity.reload();
+    let now = crate::net::wall_ms();
+    let eligible = id
+        .registry()
+        .iter()
+        .any(|n| n.node_id == peer && n.eligible && !n.witness);
+    let git_and_up = cluster
+        .members()
+        .iter()
+        .any(|m| m.node_id == peer && m.config_source == "gitops" && m.up(now));
+    if let Some(why) = handover_refusal(
+        active(&id),
+        id.meta.config_authority == "gitops",
+        cluster.role().0,
+        eligible && git_and_up,
+    ) {
+        return Err(why.to_owned());
+    }
+    cluster.start_handover(peer);
+    Ok(b"handing over".to_vec())
+}
+
+/// REQ: CLU-005 (ADR-154, GitHub issue #3) — asks the emergency primary `primary` to hand over
+/// to this (Git-managed) node.
+pub async fn ask_handover(cluster: &Cluster, primary: &str) -> Result<(), String> {
+    cluster
+        .call(primary, HANDOVER_KIND, Vec::new(), ASK_DEADLINE)
+        .await
+        .map(|_| ())
+}
+
 /// The election loop: until `stop`, keeps this node's role in step with the votes.
 pub async fn run(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
     let (tx, mut rx) = mpsc::channel::<(String, Reply)>(64);
@@ -180,7 +245,9 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
     el.applied = (local.epoch, local.applied_seq);
     // REQ: OPS-010 (ADR-118) — in maintenance this node votes but doesn't stand; a primary
     // handing over stops renewing, unless no one took over within the give-up time.
-    el.standing = !cluster.in_maintenance();
+    // REQ: CLU-005 (ADR-154) — and under the GitOps authority a node that isn't Git-managed
+    // leaves the election to one that is, while one is up (it votes either way).
+    el.standing = !cluster.in_maintenance() && !cluster.defers_to_git_node(id);
     if el.leading().is_some() {
         cluster.give_up_handover(crate::net::wall_ms());
     }
@@ -248,12 +315,19 @@ fn dispatch(
                 cluster.event(
                     "stepped_down",
                     &id.meta.node_id,
-                    if cluster.stepping_down() {
+                    if cluster.stepping_down() && cluster.in_maintenance() {
                         format!("handed over for maintenance: a newer epoch than {epoch} exists")
+                    } else if cluster.stepping_down() {
+                        format!(
+                            "handed over to a Git-managed node: a newer epoch than {epoch} exists"
+                        )
                     } else {
                         format!("a newer epoch than {epoch} exists")
                     },
                 );
+                // A handover asked for by a Git-managed node ends with the step-down, so a later
+                // election doesn't find this node still refusing to renew.
+                cluster.end_handover();
             }
             Out::Persist => {}
         }
@@ -300,4 +374,36 @@ pub struct FailoverView {
     pub lease_ms_left: u64,
     pub ballot_epoch: u64,
     pub ballot_for: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// REQ: CLU-005 (ADR-154, GitHub issue #3) — an emergency primary hands over only under
+    /// automatic failover and the `GitOps` authority, only when it is an emergency primary, and
+    /// only to an eligible, Git-managed node that is up; every refusal says why.
+    #[test]
+    fn clu_005_an_emergency_primary_hands_over_only_to_a_node_that_can_publish() {
+        let emergency = Role::Emergency;
+        assert_eq!(handover_refusal(true, true, emergency, true), None);
+        let refusals = [
+            handover_refusal(false, true, emergency, true),
+            handover_refusal(true, false, emergency, true),
+            handover_refusal(true, true, Role::Primary, true),
+            handover_refusal(true, true, emergency, false),
+        ];
+        assert!(handover_refusal(true, true, Role::Replica, true).is_some());
+        for (i, r) in refusals.iter().enumerate() {
+            assert!(r.is_some(), "case {i} was agreed to");
+            for (j, other) in refusals.iter().enumerate() {
+                assert!(
+                    i == j || r != other,
+                    "cases {i} and {j} give the same reason"
+                );
+            }
+        }
+        // The reasons name the way out where there is one.
+        assert!(refusals[0].is_some_and(|r| r.contains("promote")));
+    }
 }

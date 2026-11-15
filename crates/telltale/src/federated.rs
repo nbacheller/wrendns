@@ -272,6 +272,15 @@ pub(crate) fn rpc_handler(
                 .await
                 .map_err(|e| format!("vote worker failed: {e}"))?;
             }
+            if kind == telltale_cluster::failover::HANDOVER_KIND {
+                // REQ: CLU-005 (ADR-154) — a Git-managed node asks this emergency primary to hand
+                // over; refused unless the asker is an eligible, Git-managed node that is up.
+                return tokio::task::spawn_blocking(move || {
+                    telltale_cluster::failover::answer_handover(&cluster, &peer)
+                })
+                .await
+                .map_err(|e| format!("handover worker failed: {e}"))?;
+            }
             if kind == telltale_cluster::renew::KIND {
                 // REQ: CLU-001 — a peer renewing its node certificate (T5.4c).
                 return tokio::task::spawn_blocking(move || {

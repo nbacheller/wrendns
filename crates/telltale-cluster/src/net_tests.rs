@@ -1513,3 +1513,196 @@ fn clu_001_primary_urls_leave_out_nodes_known_not_to_be_primary() {
         .unwrap();
     assert_eq!(replica.primary_urls(), [new]);
 }
+
+/// REQ: CLU-005 (ADR-154, GitHub issue #3) — a node that isn't Git-managed leaves the election
+/// to one that is, only under the `GitOps` authority and only while an eligible Git-managed node
+/// is up.
+#[test]
+fn clu_005_only_a_node_that_isnt_git_managed_defers_to_one_that_is() {
+    // (is Git-managed, is up, is an eligible voter)
+    let git_up = [(true, true, true)];
+    assert!(defers_to_git("gitops", "", git_up));
+    assert!(defers_to_git("gitops", "api", git_up));
+    // A Git-managed node never defers to another.
+    assert!(!defers_to_git("gitops", "gitops", git_up));
+    // Outside the GitOps authority nothing changes.
+    assert!(!defers_to_git("", "", git_up));
+    assert!(!defers_to_git("api", "", git_up));
+    // No Git-managed node that could win: down, a witness or not eligible, or not Git-managed.
+    assert!(!defers_to_git("gitops", "", [(true, false, true)]));
+    assert!(!defers_to_git("gitops", "", [(true, true, false)]));
+    assert!(!defers_to_git("gitops", "", [(false, true, true)]));
+    assert!(!defers_to_git("gitops", "", []));
+    // One usable node among others is enough.
+    assert!(defers_to_git(
+        "gitops",
+        "",
+        [(false, true, true), (true, false, true), (true, true, true)]
+    ));
+}
+
+/// REQ: CLU-005 (ADR-154) — the deference is bounded: a primary being up (the handover window)
+/// always defers, but with no primary up it ends after [`DEFER_MAX_MS`], so an emergency primary
+/// is still elected when the Git-managed node is up but can't win; and it starts over after.
+#[test]
+fn clu_005_deference_with_no_primary_is_bounded_in_time() {
+    let since = AtomicU64::new(0);
+    let t0 = 1_000_000;
+    // Not wanting to defer: no, and nothing is remembered.
+    assert!(!bounded_deference(false, false, &since, t0));
+    assert_eq!(since.load(Ordering::Acquire), 0);
+    // A primary is up: it defers for as long as that holds, and nothing is timed.
+    assert!(bounded_deference(true, true, &since, t0));
+    assert!(bounded_deference(
+        true,
+        true,
+        &since,
+        t0 + 10 * DEFER_MAX_MS
+    ));
+    assert_eq!(since.load(Ordering::Acquire), 0);
+    // No primary: it defers for the bound, then stands.
+    assert!(bounded_deference(true, false, &since, t0));
+    assert!(bounded_deference(
+        true,
+        false,
+        &since,
+        t0 + DEFER_MAX_MS - 1
+    ));
+    assert!(!bounded_deference(true, false, &since, t0 + DEFER_MAX_MS));
+    assert!(!bounded_deference(
+        true,
+        false,
+        &since,
+        t0 + 5 * DEFER_MAX_MS
+    ));
+    // A primary appears and goes away again: the clock starts over.
+    assert!(bounded_deference(true, true, &since, t0 + 6 * DEFER_MAX_MS));
+    assert!(bounded_deference(
+        true,
+        false,
+        &since,
+        t0 + 7 * DEFER_MAX_MS
+    ));
+    assert!(bounded_deference(
+        true,
+        false,
+        &since,
+        t0 + 7 * DEFER_MAX_MS + DEFER_MAX_MS - 1
+    ));
+    // The Git-managed node going down ends the wish: it stands at once, and the clock is reset.
+    assert!(!bounded_deference(
+        false,
+        false,
+        &since,
+        t0 + 7 * DEFER_MAX_MS + 1
+    ));
+    assert_eq!(since.load(Ordering::Acquire), 0);
+}
+
+// REQ: CLU-005 (ADR-154, GitHub issue #3) — the wiring behind the hold-back: under the GitOps
+// authority a node that isn't Git-managed defers to an eligible voter that is (and is up), not
+// to a pod that claims it, and a Git-managed node never defers.
+#[test]
+fn clu_005_a_node_defers_to_an_eligible_git_managed_voter_that_is_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = Identity::init(
+        dir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    let c = Cluster::new(id, "0.1.0");
+    let join = |eligible: bool, ephemeral: bool, site: &str| {
+        let key = pki::new_node_key().unwrap();
+        let grants = crate::node::TokenGrants {
+            eligible,
+            witness: false,
+        };
+        let token = c.identity.create_token_for(60, None, grants).unwrap();
+        c.identity
+            .accept_join(
+                &JoinRequest {
+                    witness: false,
+                    ephemeral,
+                    secret: token.secret,
+                    csr_pem: key.csr_pem,
+                    advertise: vec![],
+                    site: site.into(),
+                    eligible,
+                    version: "0.1.0".into(),
+                },
+                None,
+            )
+            .unwrap()
+            .node_id
+    };
+    let (pod, git) = (join(false, true, "k8s"), join(true, false, "k8s"));
+    let hello = |node_id: &str, source: &str| Frame {
+        body: Some(Body::Hello(Hello {
+            protocol: PROTOCOL,
+            cluster_id: c.identity.meta.cluster_id.clone(),
+            node_id: node_id.to_owned(),
+            version: "0.1.0".into(),
+            site: "k8s".into(),
+            eligible: false,
+            advertise: vec![],
+            epoch: 0,
+            applied_seq: 0,
+            primary: false,
+            config_source: source.into(),
+            source_commit: String::new(),
+        })),
+    };
+    let echo = EchoSlot::default();
+    for (n, source) in [(&pod, "gitops"), (&git, "gitops")] {
+        let mut peer = Some(n.clone());
+        c.on_frame(&mut peer, hello(n, source), "inbound", &echo)
+            .unwrap();
+    }
+    let defers = || c.defers_to_git_node(&c.identity.reload());
+    // Configuration from the API: no Git-managed primary can exist, nothing is held back.
+    assert!(!defers());
+    c.identity.save_authority("gitops").unwrap();
+    assert!(defers(), "an eligible Git-managed voter is up");
+    // A Git-managed node leaves the election to no one.
+    c.set_config_source("gitops");
+    assert!(!defers());
+}
+
+// REQ: CLU-005 (ADR-154) — a handover a Git-managed node asked for runs once, ends with the
+// step-down, and leaves a maintenance handover alone (its window ends it).
+#[test]
+fn clu_005_a_git_node_handover_ends_with_the_step_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = Identity::init(
+        dir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    let c = Cluster::new(id, "0.1.0");
+    assert!(!c.stepping_down());
+    assert!(c.start_handover("git-node"));
+    assert!(c.stepping_down());
+    assert!(!c.start_handover("another"), "one handover at a time");
+    c.end_handover();
+    assert!(!c.stepping_down());
+    // In maintenance with a handover, the step-down doesn't end it: the window does.
+    let now = now_ms();
+    c.set_maintenance(
+        Some(MaintenanceWindow {
+            until_ms: now + 600_000,
+            since_ms: now,
+            reason: "test".into(),
+            by: "test".into(),
+        }),
+        true,
+    );
+    assert!(c.stepping_down());
+    c.end_handover();
+    assert!(c.stepping_down());
+    c.set_maintenance(None, false);
+    assert!(!c.stepping_down());
+}

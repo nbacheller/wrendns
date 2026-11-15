@@ -816,7 +816,36 @@ fn takeover_due(c: &Cluster, gitops_source: bool) -> Option<String> {
         .iter()
         .find(|m| m.primary && m.up(now))
         .map(|m| m.node_id.clone())?;
-    (up == applied.primary && promote_plan(c, true, false).is_ok()).then_some(up)
+    (up == applied.primary && takeover_possible(c)).then_some(up)
+}
+
+/// REQ: CLU-005 (ADR-154, GitHub issue #3) — whether this node could take over now. Under
+/// automatic failover the takeover is a handover and an election (the voters' leases decide who
+/// is primary, so [`promote_plan`] refuses by design), which needs only a node that can stand;
+/// otherwise [`promote_plan`] decides.
+fn takeover_possible(c: &Cluster) -> bool {
+    let id = c.identity.reload();
+    if telltale_cluster::failover::active(&id) {
+        return can_stand_to_take_over(
+            c.role().0,
+            id.meta.eligible,
+            id.meta.witness,
+            id.holds_ca(),
+        );
+    }
+    promote_plan(c, true, false).is_ok()
+}
+
+/// REQ: CLU-005 (ADR-154) — a node can take over by election when it isn't the primary and can
+/// stand: eligible, not a witness, and holding the cluster key (a winner must be able to sign).
+fn can_stand_to_take_over(
+    role: telltale_cluster::node::Role,
+    eligible: bool,
+    witness: bool,
+    holds_ca: bool,
+) -> bool {
+    use telltale_cluster::node::Role;
+    !matches!(role, Role::Primary | Role::Emergency) && eligible && !witness && holds_ca
 }
 
 /// Takes over from an emergency primary once [`takeover_due`] has held for
@@ -826,10 +855,16 @@ async fn takeover(c: Arc<Cluster>, gitops_source: bool, mut stop: watch::Receive
         return;
     }
     let mut since: Option<std::time::Instant> = None;
+    // After asking for a handover, wait for it to work (the lease, an election, and the 60 s
+    // give-up) before asking again.
+    let mut quiet_until: Option<std::time::Instant> = None;
     loop {
         tokio::select! {
             _ = stop.changed() => return,
             () = tokio::time::sleep(Duration::from_secs(10)) => {}
+        }
+        if quiet_until.is_some_and(|t| std::time::Instant::now() < t) {
+            continue;
         }
         let c2 = Arc::clone(&c);
         let due = tokio::task::spawn_blocking(move || takeover_due(&c2, true))
@@ -844,6 +879,25 @@ async fn takeover(c: Arc<Cluster>, gitops_source: bool, mut stop: watch::Receive
             continue;
         }
         since = None;
+        // REQ: CLU-005 (ADR-154, GitHub issue #3) — under automatic failover a role can't be set
+        // by hand (the voters' leases decide), so ask the emergency primary to hand over: it stops
+        // renewing its lease, the nodes that aren't Git-managed hold back, and this node is
+        // elected. The election, not this loop, makes it the primary.
+        if telltale_cluster::failover::active(&c.identity.reload()) {
+            match telltale_cluster::failover::ask_handover(&c, &from).await {
+                Ok(()) => {
+                    warn!(from = %from, "cluster: asked the emergency primary to hand over (ADR-154)");
+                    c.event(
+                        "takeover",
+                        &c.identity.meta.node_id,
+                        format!("asked the emergency primary {from} to hand over: it stops renewing its lease so this node is elected"),
+                    );
+                    quiet_until = Some(std::time::Instant::now() + 2 * TAKEOVER_AFTER);
+                }
+                Err(e) => warn!("cluster: the emergency primary refused to hand over: {e}"),
+            }
+            continue;
+        }
         let c2 = Arc::clone(&c);
         match tokio::task::spawn_blocking(move || promote(&c2, true, false)).await {
             Ok(Ok(epoch)) => {
@@ -1651,6 +1705,27 @@ mod tests {
         assert_eq!(takeover_due(&p, true), None, "the primary itself");
         assert_eq!(takeover_due(&p, false), None, "not Git-managed");
         assert!(applied_manifest(&p).is_none());
+    }
+
+    /// REQ: CLU-005 (ADR-154, GitHub issue #3) — under automatic failover a node can take over
+    /// from an emergency primary when it can stand in the election: not the primary, eligible,
+    /// not a witness, and holding the cluster key (a winner has to sign certificates).
+    #[test]
+    fn clu_005_a_node_takes_over_by_election_only_if_it_can_win_one() {
+        use telltale_cluster::node::Role;
+        assert!(can_stand_to_take_over(Role::Replica, true, false, true));
+        for (role, eligible, witness, key, why) in [
+            (Role::Primary, true, false, true, "the primary"),
+            (Role::Emergency, true, false, true, "the emergency primary"),
+            (Role::Replica, false, false, true, "not eligible"),
+            (Role::Replica, true, true, true, "a witness"),
+            (Role::Replica, true, false, false, "no cluster key"),
+        ] {
+            assert!(
+                !can_stand_to_take_over(role, eligible, witness, key),
+                "{why}"
+            );
+        }
     }
 
     #[test]
