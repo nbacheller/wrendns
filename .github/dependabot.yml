@@ -45,6 +45,10 @@ updates:
     groups:
       ui-minor-patch:
         update-types: [minor, patch]
+    ignore:
+      # TypeScript 7 doesn't install with the rest of the UI's toolchain yet (npm ci fails): wait.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   # The MCP end-to-end test's client (test tooling only).
   - package-ecosystem: npm
@@ -71,6 +75,10 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    ignore:
+      # The ref after the @ is the Rust version to install (the workflows pin it, with
+      # rust-toolchain.toml), not the action's own version.
+      - dependency-name: "dtolnay/rust-toolchain"
 
   # The image's base images.
   - package-ecosystem: docker
