@@ -45,6 +45,20 @@ NOTE (mode: scaled): the {{ if eq .Values.service.api.type "LoadBalancer" }}api{
   resolver pods, so it would lose the IP. For one address, set service.dns.alsoServe.api
   (and .cluster) instead, and leave those Services on ClusterIP.
 {{- end }}
+{{- /* REQ: OPS-003 (GitHub issue #2) — alsoServe on a DNS Service that also selects resolver pods. */}}
+{{- if and (eq .Values.service.dns.externalTrafficPolicy "Local") (gt (int .Values.resolvers.replicas) 0) (or .Values.service.dns.alsoServe.api .Values.service.dns.alsoServe.cluster) }}
+
+WARNING (mode: scaled): service.dns.alsoServe puts the {{ if .Values.service.dns.alsoServe.api }}api{{ end }}{{ if and .Values.service.dns.alsoServe.api .Values.service.dns.alsoServe.cluster }} and {{ end }}{{ if .Values.service.dns.alsoServe.cluster }}cluster{{ end }} port on the DNS Service,
+  which also selects the resolver pods, and only the controller listens on it. With
+  externalTrafficPolicy Local, a load balancer announces the Service's IP from a node that has a
+  ready pod of that Service and delivers only to the pods on that node. If that node runs only a
+  resolver pod, DNS on port 53 keeps working and that port goes nowhere, and which node
+  announces can change after any restart. This only matters when the pods run on more than one
+  node. Either keep the controller on every node that can announce the address, or give the
+  port its own LoadBalancer Service and address (service.api.type or cluster.service.type:
+  LoadBalancer, each with its own IP), or run no resolver pods (resolvers.replicas: 0).
+  See "Scaling in Kubernetes" in docs/running.md.
+{{- end }}
 {{- end }}
 {{- if .Values.kubernetes.enabled }}
 

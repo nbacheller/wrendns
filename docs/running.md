@@ -309,9 +309,21 @@ the chart's schema rejects a mistyped value with its path.
   pods. In `mode: scaled` the DNS Service also selects the resolver pods, so it loses the IP
   and DNS stops on that address. Instead set `service.dns.alsoServe.api: true` (and
   `.cluster: true` for a node outside Kubernetes). The DNS Service then carries those ports
-  too, and only the controller has them, so only it gets that traffic. Keep `service.api` on
-  `ClusterIP` (it still serves the ingress). The install notes warn when an `api` or cluster
-  Service is a LoadBalancer in scaled mode.
+  too, but only the controller listens on them. Keep `service.api` on `ClusterIP` (it still
+  serves the ingress). The install notes warn when an `api` or cluster Service is a
+  LoadBalancer in scaled mode.
+  - **With pods on more than one node, take care.** With `externalTrafficPolicy: Local`, the
+    load balancer announces the IP from a node that has a ready pod of that Service, and that
+    node delivers only to its own pods. If it's a node that runs only a resolver pod, DNS on
+    port 53 keeps working but the UI and cluster ports go nowhere, and which node announces can
+    change after any restart. A node outside Kubernetes that joined through that address then
+    can't reach the controller.
+  - **Safe setups:** a single-node cluster; the controller on every node that can announce
+    the address (`affinity`); a LoadBalancer Service with its own address for the port
+    (`cluster.service.type: LoadBalancer` for the cluster port, with the nodes' `--url` pointing
+    at it, and `service.api.type: LoadBalancer` or an ingress for the UI); or no resolver pods
+    (`resolvers.replicas: 0`). The install notes warn when `alsoServe` is combined with
+    `externalTrafficPolicy: Local` and resolver pods.
 - **Pods that shut down leave the cluster.** On SIGTERM (scaled in, replaced by a rollout,
   or deleted) a resolver pod tells the controller it's leaving, and it's dropped from the
   Cluster page at once (event **Left**). A pod that dies without shutting down (a crash, an

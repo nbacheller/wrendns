@@ -207,6 +207,9 @@ jobs:
       # REQ: CLU-008 (T6.11) — the alert rules fire on bad values and stay quiet on good ones.
       - name: Alert rules (promtool test rules)
         run: bash deploy/helm/alerts-test.sh
+      # REQ: OPS-003 (GitHub issue #2) — the install notes warn about alsoServe next to resolver pods.
+      - name: Install notes warn about alsoServe
+        run: bash deploy/helm/notes-test.sh
       # REQ: OBS-016 — the standalone SLO rules file is rendered from the chart.
       - name: Standalone SLO rules are current
         run: |
