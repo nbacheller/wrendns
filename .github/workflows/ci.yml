@@ -212,9 +212,11 @@ jobs:
         run: bash deploy/helm/notes-test.sh
       # REQ: OBS-016 — the standalone SLO rules file is rendered from the chart.
       - name: Standalone SLO rules are current
+        # Its own virtualenv: chart-testing-action 2.9 leaves one active that has no pip.
         run: |
-          python3 -m pip install --quiet pyyaml
-          bash deploy/prometheus/build.sh --check
+          /usr/bin/python3 -m venv "$RUNNER_TEMP/slo-venv"
+          "$RUNNER_TEMP/slo-venv/bin/pip" install --quiet pyyaml
+          PATH="$RUNNER_TEMP/slo-venv/bin:$PATH" bash deploy/prometheus/build.sh --check
       - name: Install kind
         if: matrix.tool == 'kind'
         uses: helm/kind-action@v1
