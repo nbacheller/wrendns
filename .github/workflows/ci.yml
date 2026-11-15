@@ -7,6 +7,11 @@ on:
   # The release workflow starts CI for the commit it pushes to main (T9.26).
   workflow_dispatch:
 
+# Least privilege: every job reads the repository and nothing more (the repository's default is
+# read-only already; CodeQL's actions/missing-workflow-permissions asks for it to be explicit).
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings

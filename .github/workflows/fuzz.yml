@@ -9,6 +9,10 @@ on:
         description: Seconds per target
         default: "1800"
 
+# Least privilege: the job reads the repository and uploads its crash artifacts (which needs no token scope).
+permissions:
+  contents: read
+
 jobs:
   fuzz:
     runs-on: ubuntu-latest

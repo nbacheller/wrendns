@@ -5,6 +5,10 @@ on:
     - cron: "41 4 * * *"
   workflow_dispatch:
 
+# Least privilege: jobs read the repository; the coverage job below adds what it needs.
+permissions:
+  contents: read
+
 jobs:
   # REQ: UPS-004 / T1.6 AC — every preset endpoint resolves example.com.
   presets-online:
