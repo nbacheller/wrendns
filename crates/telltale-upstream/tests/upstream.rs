@@ -332,10 +332,9 @@ async fn ups_006_all_dead_still_attempts_and_reports() {
     );
 }
 
-/// An upstream with the configured timeout most deployments have (the 2 s default).
-fn patient_upstream(id: u16, addr: SocketAddr) -> Arc<Upstream> {
-    let ep = Endpoint::parse(&format!("udp://{addr}")).unwrap();
-    Arc::new(Upstream::new(id, format!("u{id}"), ep, Duration::from_secs(2), 1).unwrap())
+/// An upstream with the default `timeout_ms` (400 ms).
+fn upstream_default(id: u16, addr: SocketAddr) -> Arc<Upstream> {
+    upstream(id, addr, 1)
 }
 
 /// Brings each member's EWMA down to the fast, cached answers most queries get.
@@ -348,21 +347,22 @@ async fn warm(g: &Group) {
                 .unwrap();
         }
         assert!(
-            m.attempt_timeout() < Duration::from_millis(300),
+            m.attempt_timeout() < Duration::from_millis(600),
             "{:?}",
             m.attempt_timeout()
         );
     }
 }
 
-/// REQ: UPS-006 (ADR-158, issue #35) — a group of one: a name the upstream needs 300 ms for
-/// is answered, not cut off at the adaptive 3 × EWMA + 50 ms and turned into SERVFAIL.
+/// REQ: UPS-006 (ADR-158, issue #35) — a group of one: a name the upstream needs 600 ms for
+/// is answered, not cut off at the adaptive 3 × EWMA + 50 ms (or the default 400 ms `timeout_ms`)
+/// and turned into SERVFAIL.
 #[tokio::test]
 async fn ups_006_single_member_waits_for_a_slow_answer() {
-    let up = patient_upstream(
+    let up = upstream_default(
         1,
         fake(Fake::SlowName {
-            delay: Duration::from_millis(300),
+            delay: Duration::from_millis(600),
         })
         .await,
     );
@@ -394,10 +394,10 @@ async fn ups_006_single_member_waits_for_a_slow_answer() {
 #[tokio::test]
 async fn ups_006_last_healthy_member_waits_for_a_slow_answer() {
     let slow = Fake::SlowName {
-        delay: Duration::from_millis(300),
+        delay: Duration::from_millis(600),
     };
-    let a = patient_upstream(1, fake(slow).await);
-    let b = patient_upstream(2, fake(slow).await);
+    let a = upstream_default(1, fake(slow).await);
+    let b = upstream_default(2, fake(slow).await);
     let g = Group::new("two", vec![a, b], Strategy::Failover);
     warm(&g).await;
     let ans = g

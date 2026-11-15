@@ -793,12 +793,13 @@ impl Upstream {
     /// REQ: UPS-006 (ADR-158) — the timeout of an attempt; `patient` for the last healthy
     /// member a query tries. The adaptive bound in [`Self::attempt_timeout`] exists to give up
     /// on one member and try another; with none left to try, it would only turn a slow answer
-    /// (a name the upstream had to resolve itself, often several hundred milliseconds) into
-    /// SERVFAIL. So that attempt waits up to the configured timeout; the query's budget still
-    /// bounds it.
+    /// (a name the upstream had to resolve itself, often several hundred milliseconds to over a
+    /// second) into SERVFAIL. So that attempt may use the query's whole budget, like a
+    /// recursive upstream's; the caller bounds it by what's left. `timeout_ms` (400 ms by
+    /// default) still bounds the attempts that have a member to hand over to.
     pub fn timeout_for(&self, patient: bool) -> Duration {
         if patient {
-            self.attempt_timeout().max(self.timeout)
+            self.attempt_timeout().max(crate::DEFAULT_BUDGET)
         } else {
             self.attempt_timeout()
         }
