@@ -1291,7 +1291,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
-## ADR-153 — Stub zones: a recursive upstream with per-zone hints, a health check its servers answer (Proposed)
+## ADR-153 — Stub zones: a recursive upstream with per-zone hints, a health check its servers answer (Accepted)
 **Context:** DNS-022 (community request 2026-11-14). Conditional forwarding (DNS-017) asks the configured servers with RD=1 and returns their reply as is. A zone's own authoritative-only servers (BIND with `recursion no`, NSD, Knot, PowerDNS, internal AD-integrated or departmental masters) answer only their zones: for a delegated sub-domain they return a referral, which reaches the client as an empty NOERROR, and they REFUSE the active health check's `. NS`, so the upstream is benched and `upstream_down` flaps while every real lookup works. BIND solves this with stub zones; Unbound with `stub-zone`. The iterative resolver (ADR-074) already follows referrals with bailiwick and glue rules but always starts at the root, and the spec's `health_check_name` (spec/04 §5) was never built.
 **Decision:**
 - A stub zone is a `recursive://` upstream with `[upstream.recursive] stub_zone` and `stub_servers` (IP addresses, port 53). It sits in a group and is reached through a `[[route]]` like any upstream, so groups, strategies, breakers, views, the cache, and the API's forward model need nothing new.
