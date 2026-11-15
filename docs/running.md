@@ -1814,6 +1814,28 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
   **Conflicts** on that node's Cluster page, with the settings they touched, so you can make them
   again on the current primary.
 
+**Removing a node.** A node that is gone for good stays in the member list as a down node: it
+counts as a voter in automatic failover and keeps `TelltaleDNSClusterPeerDown` firing. This
+happens when you rebuild a machine and join it again, because it comes back under a new node
+ID. The Cluster page lists such a record as a down node (a record that hasn't connected since
+the node you're looking at started appears after about a minute and a half). Remove it:
+- **How:** **Remove** on the node's row of the Cluster page (admin), `telltale ctl remove-node
+  <node-id>`, or `DELETE /api/v1/cluster/nodes/<node-id>`. Use the node ID the Cluster page
+  shows, not the site name. Add `--dry-run` (`?dryRun=true`) to see what would happen first. It
+  works from any node (a replica sends it to the primary) and under a Git config authority,
+  since the member list isn't configuration.
+- **A node that is up** is refused unless you add `--force` (`?force=true`; the page asks you to
+  confirm). Its connection is closed, and every node refuses it from then on, even though its
+  certificate is still valid for up to 90 days. Stop it and clear its cluster directory before
+  it joins again with a new token.
+- **The primary can't be removed.** Promote another node first.
+- **Voters:** a removed node stops voting. Automatic failover needs three voters, so removing
+  one of three turns it into manual until another eligible node or a witness joins; the answer
+  says so.
+- **The cluster key:** an eligible node holds a copy of it. Removing the node stops the cluster
+  accepting it, but if the machine is lost or can't be trusted, also run `telltale cluster
+  rotate-ca`. For a record whose machine is gone, there is nothing more to do.
+
 **Upgrading a cluster.** Upgrade one node at a time, **replicas first, then the primary**.
 DNS keeps answering throughout if your clients have two DNS servers (each node is one).
 - Versions one cluster protocol apart work together (N and N−1, either way round), so a
