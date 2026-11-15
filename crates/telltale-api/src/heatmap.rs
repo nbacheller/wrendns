@@ -124,6 +124,22 @@ fn grain_secs(g: &str) -> Option<u64> {
     }
 }
 
+/// REQ: OBS-029 — the slots `[from, to)` covers once aligned to `slot`: the first slot's start
+/// and how many. Aligning both ends adds a partial slot, so the longest window a grain allows
+/// (`-7d` of minutes: 10,081 slots, the window check's hour of slack more) would pass
+/// `MAX_SLOTS`; the oldest slots are dropped instead, so the answer ends now and its `from`
+/// says where it starts.
+fn span(from: u64, to: u64, slot: u64) -> (u64, usize) {
+    let from_s = from - from % slot;
+    let n = (to - from_s).div_ceil(slot);
+    let max = MAX_SLOTS as u64;
+    if n > max {
+        (from_s + (n - max) * slot, MAX_SLOTS)
+    } else {
+        (from_s, usize::try_from(n).unwrap_or(MAX_SLOTS))
+    }
+}
+
 /// Sums `(start, value)` pairs into the slots of `[from_s, from_s + n × slot)`.
 pub fn slots(
     points: impl IntoIterator<Item = (u64, u64)>,
@@ -244,13 +260,7 @@ pub(crate) async fn stats_heatmap(
             "a {grain} heatmap covers at most {max_days} days"
         )));
     }
-    let from_s = from - from % slot;
-    let n = usize::try_from((to - from_s).div_ceil(slot)).unwrap_or(usize::MAX);
-    if n > MAX_SLOTS {
-        return Err(window_problem(format!(
-            "{n} slots is more than {MAX_SLOTS}"
-        )));
-    }
+    let (from_s, n) = span(from, to, slot);
     let starts: Vec<u64> = (0..n as u64).map(|i| from_s + i * slot).collect();
     let mut out = Heatmap {
         from: crate::time::format_us(from_s.saturating_mul(1_000_000)),
@@ -306,6 +316,26 @@ pub(crate) async fn stats_heatmap(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // REQ: OBS-029 — `-7d` of minutes (to = now + 1, from unaligned) spans 10,081 slots once
+    // aligned; the answer keeps the newest 10,080, still reaching the current minute.
+    #[test]
+    fn obs_029_seven_days_of_minutes_fit_the_cap() {
+        let now = 1_791_072_000 + 37;
+        let (from_s, n) = span(now - 7 * 86_400, now + 1, 60);
+        assert_eq!(n, MAX_SLOTS);
+        assert_eq!(from_s % 60, 0);
+        assert!(
+            from_s + 60 * n as u64 > now,
+            "the current minute is in the answer"
+        );
+        // Aligned already: no trimming needed, no slot lost.
+        let (from_s, n) = span(1_791_072_000, 1_791_072_000 + 7 * 86_400, 60);
+        assert_eq!((from_s, n), (1_791_072_000, MAX_SLOTS));
+        // Coarser grains are untouched: 7 days of 15 minutes plus the partial slot.
+        let (_, n) = span(now - 7 * 86_400, now + 1, 900);
+        assert_eq!(n, 673);
+    }
 
     // REQ: OBS-029 — points sum into their slots; points outside are dropped.
     #[test]

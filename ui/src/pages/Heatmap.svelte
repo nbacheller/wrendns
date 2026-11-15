@@ -30,12 +30,16 @@
   let error = $state<unknown>(null);
   let showTable = $state(false);
   let width = $state(0);
+  // The card's width, for the grain: the grid's own width drops to 0 while it's hidden (no data,
+  // e.g. after an error), which would flip the grain to hours, reload, show the grid, flip it
+  // back and loop. The card is always shown.
+  let cardWidth = $state(0);
   let canvas = $state<HTMLCanvasElement | undefined>();
   let focus = $state<[number, number] | null>(null);
   let tip = $state<{ x: number; y: number; text: string } | null>(null);
 
   // Finer grains only where the data has them: the network, within 7 days; phones get hours.
-  const effectiveGrain = $derived(kind !== 'network' || win.days > 7 || width < 480 ? 'hour' : grain);
+  const effectiveGrain = $derived(kind !== 'network' || win.days > 7 || (cardWidth > 0 && cardWidth < 480) ? 'hour' : grain);
 
   async function load() {
     if (kind !== 'network' && !key) {
@@ -284,7 +288,7 @@
 
   <ErrorNote {error} />
 
-  <section class="card" data-testid="heatmap">
+  <section class="card" data-testid="heatmap" bind:clientWidth={cardWidth}>
     <div class="card-head">
       <h2>
         {#if kind === 'network'}The whole network{:else if key}{key}{:else}Pick a {kind === 'client' ? 'device' : 'name'}{/if}
@@ -297,9 +301,9 @@
       <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>{showTable ? 'Grid' : 'Table'}</button>
     </div>
     {#if data?.missingNodes?.length}<p class="small muted">Without {data.missingNodes.join(', ')}: they didn't answer.</p>{/if}
-    {#if !data}
+    {#if !data && !error}
       <p class="empty">{kind === 'network' || key ? 'Loading…' : 'Enter one above.'}</p>
-    {:else if showTable}
+    {:else if data && showTable}
       <div class="table-wrap table-view">
         <table class="compact" data-testid="heatmap-table">
           <thead><tr><th>Day</th>{#each Array.from({ length: 24 }, (_, h) => h) as h (h)}<th class="num">{String(h).padStart(2, '0')}</th>{/each}</tr></thead>
