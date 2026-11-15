@@ -489,6 +489,22 @@ pub(crate) fn rule_labels(
     (Some(list), Some(kind.to_owned()))
 }
 
+/// REQ: OBS-009 (T7.14) — blocks by (group, list ID) summed per list name (`names` by ID, from
+/// the active snapshot). Keys that aren't list IDs (quick rules, schedules, answer addresses,
+/// no rule) and IDs the snapshot doesn't name are left out.
+fn hits_by_list(
+    blocked: &std::collections::HashMap<(u16, u16), u64>,
+    names: &[String],
+) -> std::collections::BTreeMap<String, u64> {
+    let mut hits = std::collections::BTreeMap::new();
+    for ((_, list), n) in blocked {
+        if let Some(name) = names.get(usize::from(*list)) {
+            *hits.entry(name.clone()).or_insert(0) += n;
+        }
+    }
+    hits
+}
+
 /// REQ: OBS-023 (T12.3, ADR-112) — days since an enabled URL list's content last changed, when
 /// longer than its limit (the list's `stale_after_days`, else `[filter]`'s; 0 = never). Files
 /// and inline rules change when you change them: never stale.
@@ -1470,11 +1486,9 @@ impl Backend for ApiBackend {
                 .as_ref()
                 .map(|c| c.manifest.clone())
         });
-        // REQ: OBS-009 (T7.14) — hits per list ID on this node since it started.
-        let mut hits: std::collections::HashMap<u16, u64> = std::collections::HashMap::new();
-        for ((_, list), n) in &self.src.pipeline.telemetry.aggregates().exported.blocked {
-            *hits.entry(*list).or_insert(0) += n;
-        }
+        // REQ: OBS-009 (T7.14) — hits per list on this node since it started (the API adds
+        // the other nodes' through `list_hits`).
+        let hits = self.list_hits();
         cfg.list
             .iter()
             .map(|l| {
@@ -1489,10 +1503,7 @@ impl Backend for ApiBackend {
                 let entries = per.map_or(0, |s| s.entries);
                 let unique = per.map_or(0, |s| s.unique);
                 let regex_skipped = per.map_or(0, |s| s.regex_skipped);
-                let list_hits = id
-                    .and_then(|i| u16::try_from(i).ok())
-                    .and_then(|i| hits.get(&i).copied())
-                    .unwrap_or(0);
+                let list_hits = hits.get(&*l.name).copied().unwrap_or(0);
                 let mut overlap: Vec<telltale_api::model::ListShare> = match (&compiled, id) {
                     (Some(m), Some(i)) => {
                         let i = u16::try_from(i).unwrap_or(u16::MAX);
@@ -1550,6 +1561,25 @@ impl Backend for ApiBackend {
                 }
             })
             .collect()
+    }
+
+    // REQ: OBS-009 (T7.14) — this node's blocks by list name. Events carry the active
+    // snapshot's list IDs, so its manifest names them: a replica that only receives the
+    // snapshot (no compiled manifest of its own) still counts its hits.
+    fn list_hits(&self) -> std::collections::BTreeMap<String, u64> {
+        let names: Vec<String> = self
+            .src
+            .pipeline
+            .filter
+            .load()
+            .as_ref()
+            .and_then(|f| f.matcher.snapshot().cloned())
+            .map(|s| s.manifest.lists.iter().map(|l| l.name.clone()).collect())
+            .unwrap_or_default();
+        hits_by_list(
+            &self.src.pipeline.telemetry.aggregates().exported.blocked,
+            &names,
+        )
     }
 
     fn groups(&self) -> Vec<GroupInfo> {
@@ -5471,6 +5501,30 @@ mod stale_tests {
         let mut off = list(true, None);
         off.enabled = false;
         assert_eq!(stale_days(&filter, &off, days(400)), None);
+    }
+
+    /// REQ: OBS-009 (T7.14) — a list's hits add up over groups, by the active snapshot's names;
+    /// quick rules, schedules, answer-address blocks, and unnamed IDs aren't any list's.
+    #[test]
+    fn obs_009_hits_by_list_name() {
+        use telltale_telemetry::export::{LIST_ANSWER_IP, LIST_NONE, LIST_QUICK, LIST_SCHEDULE};
+        let names = vec!["ads".to_owned(), "trackers".to_owned()];
+        let blocked = std::collections::HashMap::from([
+            ((0, 0), 5),
+            ((1, 0), 2),
+            ((0, 1), 3),
+            ((0, 7), 100),
+            ((0, LIST_QUICK), 11),
+            ((0, LIST_SCHEDULE), 12),
+            ((0, LIST_ANSWER_IP), 13),
+            ((0, LIST_NONE), 14),
+        ]);
+        let hits = hits_by_list(&blocked, &names);
+        assert_eq!(
+            hits.into_iter().collect::<Vec<_>>(),
+            vec![("ads".to_owned(), 7), ("trackers".to_owned(), 3)]
+        );
+        assert!(hits_by_list(&blocked, &[]).is_empty(), "no snapshot yet");
     }
 }
 

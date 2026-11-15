@@ -694,7 +694,8 @@ pub struct ListInfo {
     /// REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot
     /// leaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.
     pub regex_skipped: u64,
-    /// Queries it blocked (or allowed, for an allow list) on this node since it started.
+    /// Queries it blocked (or allowed, for an allow list) since each node started; in a
+    /// cluster, every node's added up.
     pub hits: u64,
     /// Lists it shares names with, most shared first.
     pub overlap: Vec<ListShare>,

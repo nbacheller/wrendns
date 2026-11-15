@@ -4358,7 +4358,7 @@
           "config"
         ],
         "summary": "Filter lists and their download state.",
-        "description": "Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,\n`pending`) and last error, size, and how many names it contributes to the active snapshot.",
+        "description": "Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,\n`pending`) and last error, size, and how many names it contributes to the active snapshot.\n`hits` adds up every node's in a cluster.",
         "operationId": "lists",
         "responses": {
           "200": {
@@ -14368,7 +14368,7 @@
                 "hits": {
                   "type": "integer",
                   "format": "int64",
-                  "description": "Queries it blocked (or allowed, for an allow list) on this node since it started.",
+                  "description": "Queries it blocked (or allowed, for an allow list) since each node started; in a\ncluster, every node's added up.",
                   "minimum": 0
                 },
                 "kind": {
@@ -15869,7 +15869,7 @@
           "hits": {
             "type": "integer",
             "format": "int64",
-            "description": "Queries it blocked (or allowed, for an allow list) on this node since it started.",
+            "description": "Queries it blocked (or allowed, for an allow list) since each node started; in a\ncluster, every node's added up.",
             "minimum": 0
           },
           "kind": {

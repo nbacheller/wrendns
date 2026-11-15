@@ -244,7 +244,30 @@ impl Backend for Fake {
         })
     }
     fn lists(&self) -> Vec<ListInfo> {
-        Vec::new()
+        // This node's own hits: 1 (the cluster's, from `list_hits`, are what the API shows).
+        let list = |name: &str| ListInfo {
+            name: name.into(),
+            kind: "block".into(),
+            enabled: true,
+            mode: "enforce".into(),
+            source: "inline".into(),
+            state: "ok".into(),
+            error: None,
+            bytes: 0,
+            lines: 1,
+            entries: 1,
+            unique: 1,
+            regex_skipped: 0,
+            hits: 1,
+            overlap: Vec::new(),
+            last_checked_unix_seconds: None,
+            last_changed_unix_seconds: None,
+            stale_days: None,
+        };
+        vec![list("ads"), list("quiet")]
+    }
+    fn list_hits(&self) -> BTreeMap<String, u64> {
+        BTreeMap::from([("ads".to_owned(), 42)])
     }
     fn groups(&self) -> Vec<GroupInfo> {
         Vec::new()
@@ -601,6 +624,20 @@ async fn obs_014_acknowledging_anomalies_over_http() {
 
 // REQ: OBS-016 — the objectives over HTTP: worked out from the last 6 hours' minutes and the
 // window's hours of the (federated) time buckets.
+// REQ: OBS-009 (T7.14, regression 2026-11-15) — a list's hits are the cluster's (the backend's
+// `list_hits`), not the API node's own: on a cluster whose replicas answer the queries, the
+// primary serving the UI showed 0 for every list.
+#[tokio::test]
+async fn obs_009_list_hits_are_the_clusters() {
+    let (app, _) = app();
+    let (s, _, v) = get(&app, "/api/v1/lists").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["items"][0]["name"], "ads");
+    assert_eq!(v["items"][0]["hits"], 42);
+    assert_eq!(v["items"][1]["name"], "quiet");
+    assert_eq!(v["items"][1]["hits"], 0, "no node used it");
+}
+
 #[tokio::test]
 async fn obs_016_slo_over_http() {
     let (app, fake) = app();
