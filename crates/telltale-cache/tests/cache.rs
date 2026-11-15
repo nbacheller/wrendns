@@ -638,6 +638,33 @@ fn dns_006_top_entries_and_makeup() {
     assert_eq!(cache.stats().hits, hits_before, "looking isn't a hit");
 }
 
+/// REQ: DNS-006 — `top` bounds what it allocates whatever limit it is given: the API clamps to 200,
+/// but the function is public, so an absurd limit must neither overflow (`limit + 1`) nor reserve
+/// that much memory (`CodeQL` `rust/uncontrolled-allocation-size`).
+#[test]
+fn dns_006_top_bounds_its_limit() {
+    use telltale_cache::TopBy;
+    let cache = Cache::new(CachePolicy::default());
+    let t0 = Instant::now();
+    for name in ["a.example", "b.example", "c.example"] {
+        let m = query_bytes(name, rtype::A, None, 1);
+        let q = parse_query(&m).unwrap();
+        cache
+            .insert(&key(&q), &q, &upstream_a(&q, &[300]), t0)
+            .unwrap();
+    }
+    for limit in [
+        usize::MAX,
+        usize::MAX - 1,
+        1 << 40,
+        telltale_cache::MAX_TOP + 1,
+    ] {
+        let (top, makeup) = cache.top(TopBy::Hits, limit, t0);
+        assert_eq!(top.len(), 3, "limit {limit}");
+        assert_eq!(makeup.positive, 3, "limit {limit}");
+    }
+}
+
 /// REQ: DNS-006 (T6.15) — what a full scan costs: run with
 /// `cargo test --release -p telltale-cache --test cache dns_006_top_cost -- --ignored --nocapture`.
 #[test]

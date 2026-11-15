@@ -108,6 +108,9 @@ impl Ord for Ranked {
 use crate::entry::Entry;
 use crate::s3fifo::S3Fifo;
 
+/// The most entries [`Cache::top`] ranks, whatever limit it is asked for (REQ: DNS-006).
+pub const MAX_TOP: usize = 10_000;
+
 /// What [`Cache::inspect`] and [`Cache::top`] report for one entry.
 fn entry_info(k: &CacheKey, e: &Entry, now: Instant) -> EntryInfo {
     let flags = e.wire().get(3).copied().unwrap_or(0);
@@ -507,6 +510,9 @@ impl Cache {
     /// the list. Never counts as a hit.
     pub fn top(&self, by: TopBy, limit: usize, now: Instant) -> (Vec<TopEntry>, Makeup) {
         use std::collections::BinaryHeap;
+        // The ranking heap is sized from the limit: the API allows 200, but this is public, so it
+        // doesn't trust the caller (CodeQL rust/uncontrolled-allocation-size).
+        let limit = limit.min(MAX_TOP);
         let mut makeup = Makeup::default();
         let mut heap: BinaryHeap<std::cmp::Reverse<Ranked>> = BinaryHeap::with_capacity(limit + 1);
         let mut seq = 0u64;
