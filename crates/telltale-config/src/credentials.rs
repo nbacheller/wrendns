@@ -131,6 +131,9 @@ pub const NOT_CREDENTIALS: &[(&str, &str)] = &[
 ];
 
 /// Fields that say where an entry's credential goes (ADR-167 §4). The scheme is part of `url`.
+/// REQ: API-014 (review of T23.2, ADR-167 note 21) — also what proves the other end is that
+/// place (`tls_insecure_skip_verify`, `spki_pins`: turning verification off sends the credential
+/// to whoever is on the path) and how it is sent (an alert destination's `type`).
 pub const DESTINATION_FIELDS: &[&str] = &[
     "url",
     "proxy",
@@ -138,6 +141,9 @@ pub const DESTINATION_FIELDS: &[&str] = &[
     "tls_server_name",
     "tls_ca",
     "bootstrap",
+    "tls_insecure_skip_verify",
+    "spki_pins",
+    "type",
 ];
 
 /// REQ: API-014 (ADR-167 §4, T23.2) — the file paths an API entry may set (`kind` as the API
@@ -608,11 +614,11 @@ pub fn has_marker(kind: &str, body: &Value) -> bool {
     !markers(kind, &mut probe).is_empty()
 }
 
-/// A destination field as compared: absent, null, empty, and `[]` are the same; a URL without its
-/// password.
+/// A destination field as compared: absent, null, empty, `[]` and `false` are the same; a URL
+/// without its password.
 fn destination(v: Option<&Value>) -> Value {
     match v {
-        None | Some(Value::Null) => Value::Null,
+        None | Some(Value::Null | Value::Bool(false)) => Value::Null,
         Some(Value::String(s)) if s.is_empty() => Value::Null,
         Some(Value::Array(a)) if a.is_empty() => Value::Null,
         Some(Value::String(s)) => Value::String(url_shown(s)),
@@ -997,6 +1003,22 @@ client_secret = "cl13nt"
             destination_change(&a, &json!({"url": "https://me:pw@doh.example/q"})),
             Some("tls_server_name")
         );
+        // Turning verification off, or changing the pins, is a destination change; absent and
+        // `false` are the same.
+        let mut skip = a.clone();
+        skip["tls_insecure_skip_verify"] = json!(true);
+        assert_eq!(
+            destination_change(&a, &skip),
+            Some("tls_insecure_skip_verify")
+        );
+        skip["tls_insecure_skip_verify"] = json!(false);
+        assert_eq!(destination_change(&a, &skip), None);
+        let mut pins = a.clone();
+        pins["spki_pins"] = json!(["sha256/abc"]);
+        assert_eq!(destination_change(&a, &pins), Some("spki_pins"));
+        let mail = json!({"type": "email", "url": "smtp://mail.example"});
+        let hook = json!({"type": "webhook", "url": "smtp://mail.example"});
+        assert_eq!(destination_change(&mail, &hook), Some("type"));
         // Which file or secret: absent and empty are the same.
         let d = json!({"type": "ntfy", "url": "https://ntfy.sh/t", "token_file": "/run/secrets/t"});
         assert_eq!(

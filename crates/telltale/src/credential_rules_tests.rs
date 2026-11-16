@@ -244,6 +244,27 @@ async fn api_014_operator_cannot_redirect_credential() {
     same["weight"] = json!(7);
     let (s, v) = call(&h, &op, "PUT", "/api/v1/upstreams/nextdns", Some(&same)).await;
     assert_eq!(s, StatusCode::OK, "{v}");
+    // Turning certificate checks off (or changing the pins) sends the header to whoever is on
+    // the path: a destination change too (review of T23.2).
+    for (field, value) in [
+        ("tls_insecure_skip_verify", json!(true)),
+        (
+            "spki_pins",
+            json!(["sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="]),
+        ),
+    ] {
+        // Typed again (markers with a new destination are a 422 first).
+        let mut weaker = json!({
+            "url": "https://me:typedpw@doh.example/dns-query",
+            "tls_server_name": "doh.example",
+            "headers": {"Authorization": "Bearer typed"},
+            "proxy": "socks5://p:typed@10.0.0.1:1080"
+        });
+        weaker[field] = value;
+        let (s, v) = call(&h, &op, "PUT", "/api/v1/upstreams/nextdns", Some(&weaker)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{field}: {v}");
+        assert!(v["detail"].as_str().unwrap().contains(field), "{v}");
+    }
     // An alert destination with a token file.
     ntfy(&h, &token_file).await;
     let (s, v) = call(
@@ -648,6 +669,11 @@ async fn api_014_admin_redirect_audited_and_alerted() {
     assert_eq!(seen.len(), 1, "{seen:?}");
     assert!(seen[0].1.contains("upstream nextdns"), "{seen:?}");
     assert!(!seen[0].1.contains("typedpw"), "{seen:?}");
+    // Only where it goes: a URL's path can hold a secret, and the alert fans out.
+    assert!(
+        seen[0].1.ends_with("url is now https://doh2.example"),
+        "{seen:?}"
+    );
     // An edit that keeps the destination isn't a redirect.
     let mut same = moved.clone();
     same["weight"] = json!(4);

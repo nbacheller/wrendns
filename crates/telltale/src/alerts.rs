@@ -930,8 +930,11 @@ pub(crate) fn recent_redirects(sources: &crate::http::Sources, now: u64) -> Vec<
         .map(|e| {
             let d: serde_json::Value = serde_json::from_str(&e.detail).unwrap_or_default();
             let field = d["field"].as_str().unwrap_or("url");
+            // REQ: API-014 (review of T23.2) — only where it goes: a URL's scheme and host. Its
+            // path can hold a secret (a Slack or webhook URL), and the alert reaches every
+            // destination of the rule; the audit record has the rest.
             let to = match &d["to"] {
-                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::String(s) => url_origin(s),
                 serde_json::Value::Null => "nothing".to_owned(),
                 other => other.to_string(),
             };
@@ -946,6 +949,17 @@ pub(crate) fn recent_redirects(sources: &crate::http::Sources, now: u64) -> Vec<
             )
         })
         .collect()
+}
+
+/// `scheme://host[:port]` of a URL, without its user information or path; anything else as is.
+fn url_origin(s: &str) -> String {
+    let Some(i) = s.find("://") else {
+        return s.to_owned();
+    };
+    let rest = &s[i + 3..];
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    format!("{}://{host}", &s[..i])
 }
 
 /// REQ: OPS-010 — which nodes are in maintenance now (from heartbeats, or this node's own

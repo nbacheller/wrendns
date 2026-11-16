@@ -2061,7 +2061,8 @@ async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
 /// Credentials never come back (API-014): upstream `headers` and `args`, and the password in a
 /// URL (`https://me:<redacted>@host/`) read `<redacted>`, and `redacted` lists where. Sending
 /// `<redacted>` back in a `PUT` keeps the stored value while the entry's destination (`url`,
-/// `proxy`, `tls_server_name`, `tls_ca`, `bootstrap`) is unchanged; with a new destination the
+/// `proxy`, `host`, `tls_server_name`, `tls_ca`, `bootstrap`, `tls_insecure_skip_verify`,
+/// `spki_pins`, a destination's `type`) is unchanged; with a new destination the
 /// credential has to be entered again (422 `credential_reentry_required`).
 #[utoipa::path(get, path = "/api/v1/config/entries", tag = "config",
     params(EntriesQuery),

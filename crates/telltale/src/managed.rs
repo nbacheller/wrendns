@@ -337,6 +337,14 @@ fn apply_one_of(cfg: &mut Config, e: &Entries) {
 /// `file` plus the entries (names the files already use are skipped), if the result validates
 /// (including record values); otherwise `Err` with the reasons.
 pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
+    merge_on(file, file, e)
+}
+
+/// [`merge`] over `file`, which may be a cluster version built on this node's own files `own`
+/// (a promoted primary's, ADR-051): `own` decides which stored paths are the files' and the path
+/// rules (REQ: API-014, review of T23.2), so a path an older primary published as the API's is
+/// judged, not taken for the files'.
+pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     let mut cfg = file.clone();
     // ADR-069 — upstreams, upstream groups, lists, and groups made through the API override
     // or hide the files' entries of the same name (before forwards add their own).
@@ -352,7 +360,7 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     apply_one_of(&mut cfg, e);
     // REQ: API-014 (T23.2, ADR-167 §4) — a stored path the rules refuse isn't read
     // (`effective` logs why; the entries list it in `credentialIssues`).
-    crate::credential_rules::confine(&mut cfg, file, e);
+    crate::credential_rules::confine(&mut cfg, own, e);
     for c in &e.clients {
         if !cfg.client.iter().any(|f| f.name == c.name) {
             cfg.client.push(c.clone());
@@ -492,6 +500,12 @@ pub(crate) fn merge_clients(
 /// The effective config: `file` plus what the API stored. Opens `state.db` briefly; any
 /// problem falls back to `file`.
 pub(crate) fn effective(file: &Config) -> Config {
+    effective_on(file, file)
+}
+
+/// [`effective`] over `file`, a cluster version built on this node's own files `own` (see
+/// [`merge_on`]).
+pub(crate) fn effective_on(file: &Config, own: &Config) -> Config {
     let path = state_path(file);
     if !path.exists() {
         return file.clone();
@@ -504,10 +518,10 @@ pub(crate) fn effective(file: &Config) -> Config {
         }
     };
     let e = entries(&state);
-    for i in crate::credential_rules::issues(file, &e) {
+    for i in crate::credential_rules::issues(own, &e) {
         warn!(kind = i.kind, name = %i.name, field = i.field, "a path set through the UI or API: {}", i.reason);
     }
-    match merge(file, &e) {
+    match merge_on(file, own, &e) {
         Ok(c) => c,
         Err(errs) => {
             for e in &errs {
