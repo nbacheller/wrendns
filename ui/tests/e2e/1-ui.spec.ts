@@ -327,6 +327,32 @@ test('obs_015 health icon, its reasons, and the phone dot', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
 });
 
+// REQ: FLT-004 — the Lists page names the nodes whose hits are left out; when the primary is one of
+// them, it says the download state isn't confirmed from the primary (it names the primary by its pod).
+test('flt_004 lists page names the unread nodes, and says so when the primary is one', async () => {
+  let missing = ['node-b'];
+  let nodes: unknown[] = [];
+  await page.route('**/api/v1/lists', async (route) => {
+    const r = await route.fetch();
+    await route.fulfill({ response: r, json: { ...(await r.json()), missingNodes: missing } });
+  });
+  await page.route('**/api/v1/cluster', async (route) => {
+    const r = await route.fetch();
+    await route.fulfill({ response: r, json: { ...(await r.json()), nodes } });
+  });
+  const unread = page.getByTestId('lists-unread');
+  await page.goto('/#/lists');
+  await expect(unread).toContainText('Hits leave out: node-b.');
+  await expect(unread).not.toContainText('confirmed from the primary');
+  missing = ['home-pi-0'];
+  nodes = [{ role: 'primary', nodeId: 'id-ctl', site: 'home', pod: 'home-pi-0' }];
+  await page.reload();
+  await expect(unread).toContainText('Not read: home-pi-0.');
+  await expect(unread).toContainText("isn't confirmed from the primary");
+  await page.unroute('**/api/v1/lists');
+  await page.unroute('**/api/v1/cluster');
+});
+
 // REQ: OBS-004 (ADR-159, ADR-160) — a top client's bar is split by how its queries were answered
 // (a device a peer on an older build reported has none), and the top lists follow the range: they
 // ask for it and say which hours they cover, except for one group's lists, which are this hour's.
@@ -1563,7 +1589,9 @@ test('flt_004 update lists now', async () => {
   const lists = (await (await page.request.get('/api/v1/lists')).json()).items as { name: string; refreshing: boolean; lastSuccessUnixSeconds?: number }[];
   const block = lists.find((l) => l.name === 'e2e-block')!;
   expect(block.refreshing).toBe(false);
-  expect(block.lastSuccessUnixSeconds).toBeGreaterThan(0);
+  // REQ: FLT-004 — an inline list has no download to confirm, so it has no "last confirmed" time
+  // (735491a, merged from upstream; the e2e lists are all inline).
+  expect(block.lastSuccessUnixSeconds).toBeUndefined();
 
   const csrf = (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
   const post = (path: string, data: object) => page.request.post(path, { headers: { 'x-csrf-token': csrf }, data });

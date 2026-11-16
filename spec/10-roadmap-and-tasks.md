@@ -711,7 +711,7 @@ What a home running a Pi-hole pair behind a keepalived VIP needs to switch to Te
 - [ ] **T24.8 IPv6 device names.** *(DNS-023)* AAAA and `ip6.arpa` PTR for devices the gateway reports with IPv6 addresses.
 - [ ] **T24.9 Client names by hostname.** *(API-010)* Rules and groups that match a client by the name a router gave it, not only by IP or MAC.
 - [ ] **T24.10 Pi-hole API compatibility: decide.** A Proposed ADR on whether to answer a subset of Pi-hole's API for tools that only speak it, or point them at the MCP and REST APIs.
-- [ ] **T24.11 Shared missing-set race.** *(CLU-003, OBS-009)* `Federated::missing` is one shared mutex, so two `GET /lists` requests at the same time can overwrite each other's `missingNodes`. Give each request its own missing set (or compute it per call) so a replica's answer names only the nodes its own reads missed.
+- [ ] **T24.11 Shared missing-set race.** *(CLU-003, OBS-009)* `Federated::missing` is one shared mutex, so two `GET /lists` requests at the same time can overwrite each other's `missingNodes`. Give each request its own missing set (or compute it per call) so a replica's answer names only the nodes its own reads missed. Also: `GET /lists` on a replica makes two serial reads (`Read::Lists` then `Read::ListHits`), up to 2 s each, so one request can take about 4 s; run both in one round.
 
 ## M23 — Secrets and integrations in the UI (owner request 2026-11-16)
 

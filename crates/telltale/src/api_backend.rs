@@ -1706,7 +1706,7 @@ impl Backend for ApiBackend {
                     hits: decided.get(&*l.name).copied().unwrap_or(0),
                     overlap,
                     last_checked_unix_seconds: meta.and_then(|m| m.last_attempt),
-                    // Inline lists have no download to confirm (735491a).
+                    // Inline lists have no download to confirm (REQ: FLT-004, issue #59).
                     last_success_unix_seconds: meta
                         .filter(|m| !m.is_inline())
                         .and_then(|m| m.last_success),

@@ -187,7 +187,6 @@ fn changes_state(r: &Read) -> bool {
     )
 }
 
-/// Answers a peer's read from this node's own data.
 /// REQ: FLT-004, CLU-003 — a replica's list view: the primary's lists and download state
 /// (`theirs`, in its order), with this node's own hits (`mine`; 0 for a list it hasn't
 /// compiled yet). The API then replaces the hits with every node's added up (OBS-009).
@@ -198,6 +197,7 @@ fn merge_lists(mine: &[ListInfo], mut theirs: Vec<ListInfo>) -> Vec<ListInfo> {
     theirs
 }
 
+/// Answers a peer's read from this node's own data.
 fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
     let text = |p: Problem| p.detail;
     match r {
@@ -852,7 +852,9 @@ impl Federated {
             .members()
             .into_iter()
             .filter(|m| !m.connected && self.in_scope(&m.node_id))
-            .map(|m| if m.site.is_empty() { m.node_id } else { m.site })
+            // The same label `label_of` gives a peer whose call fails, so one node is named once
+            // (REQ: FLT-004; a Kubernetes pod is named by its pod, not its shared site).
+            .map(|m| self.label_of(&m.node_id))
             .collect();
         let calls: Vec<(String, Vec<u8>)> = reads
             .into_iter()

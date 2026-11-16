@@ -199,27 +199,39 @@ fn missing_nodes(v: &Value) -> Vec<String> {
 }
 
 /// REQ: FLT-004 — whether the primary is among the unanswering nodes. The downloads are the
-/// primary's, so only its silence stops `--wait`; a primary that can't be named counts as silent.
-fn primary_missing(missing: &[String], primary: Option<&str>) -> bool {
+/// primary's, so only its silence stops `--wait`. `names` are the primary's names as
+/// `missingNodes` may spell them (see `primary_names`); no known name counts as silent.
+fn primary_missing(missing: &[String], names: &[String]) -> bool {
     if missing.is_empty() {
         return false;
     }
-    match primary {
-        Some(p) => missing.iter().any(|m| m == p),
-        None => true,
-    }
+    names.is_empty() || names.iter().any(|n| missing.contains(n))
 }
 
-/// The primary's site from `GET /cluster`, the name `missingNodes` uses for it (`None` when the
-/// cluster can't be read).
-async fn primary_site(api: &Api) -> Option<String> {
-    let c = api.get("cluster").await.ok()?;
-    c["nodes"]
-        .as_array()?
-        .iter()
-        .find(|n| n["role"].as_str() == Some("primary"))
-        .and_then(|n| n["site"].as_str())
-        .map(str::to_owned)
+/// REQ: FLT-004 — the names `missingNodes` may use for the primary, from `GET /cluster`: its
+/// pod, site and node ID, the non-empty ones (the API names it by the first it has, as
+/// `label_of` does). Empty when the cluster can't be read or has no primary.
+fn primary_names(cluster: &Value) -> Vec<String> {
+    cluster["nodes"]
+        .as_array()
+        .and_then(|nodes| nodes.iter().find(|n| n["role"].as_str() == Some("primary")))
+        .map(|n| {
+            ["pod", "site", "nodeId"]
+                .iter()
+                .filter_map(|k| n[*k].as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Reads the primary's names (see `primary_names`); empty when the cluster can't be read.
+async fn read_primary_names(api: &Api) -> Vec<String> {
+    api.get("cluster")
+        .await
+        .map(|c| primary_names(&c))
+        .unwrap_or_default()
 }
 
 /// REQ: FLT-004 — `telltale ctl lists`.
@@ -1089,15 +1101,22 @@ pub(crate) async fn run(
                     })
                     .unwrap_or_default();
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+                let mut primary = read_primary_names(&api).await;
+                let mut polls: u32 = 0;
                 let lists = loop {
                     let v = api.get("lists").await?;
                     // A replica whose primary didn't answer shows its own view: it can't tell
                     // whether the downloads ended. A peer that misses only its hits doesn't stop
-                    // the wait (REQ: FLT-004).
+                    // the wait (REQ: FLT-004). The primary's names are read once and again only
+                    // when unknown or every 10 polls (a failover moves them).
                     let missing = missing_nodes(&v);
-                    if !missing.is_empty()
-                        && primary_missing(&missing, primary_site(&api).await.as_deref())
-                    {
+                    if !missing.is_empty() {
+                        polls += 1;
+                        if primary.is_empty() || polls.is_multiple_of(10) {
+                            primary = read_primary_names(&api).await;
+                        }
+                    }
+                    if !missing.is_empty() && primary_missing(&missing, &primary) {
                         return Err(format!(
                             "{}can't follow the downloads: {} didn't answer; check again with `telltale ctl lists`",
                             refresh_text(&r),
@@ -1582,13 +1601,37 @@ mod tests {
     fn flt_004_wait_follows_the_primary_not_a_replica_that_misses_its_hits() {
         let replica = vec!["node-b".to_owned()];
         let primary = vec!["home-pi".to_owned()];
-        assert!(!primary_missing(&replica, Some("home-pi")));
-        assert!(primary_missing(&primary, Some("home-pi")));
-        assert!(primary_missing(&replica, None));
-        assert!(!primary_missing(&[], None));
+        let home_pi = vec!["home-pi".to_owned()];
+        assert!(!primary_missing(&replica, &home_pi));
+        assert!(primary_missing(&primary, &home_pi));
+        assert!(primary_missing(&replica, &[]));
+        assert!(!primary_missing(&[], &[]));
         let v = json!({ "missingNodes": ["node-b"], "items": [] });
         assert_eq!(missing_nodes(&v), replica);
         assert_eq!(missing_nodes(&json!({ "items": [] })), Vec::<String>::new());
+    }
+
+    /// REQ: FLT-004 — the primary is named as `missingNodes` names it: by its pod on Kubernetes
+    /// (pods share a site, so a replica pod at that site isn't the primary), and by node ID
+    /// when its site is empty (an empty name would never match).
+    #[test]
+    fn flt_004_wait_names_the_primary_as_missing_nodes_does() {
+        let k8s = json!({ "nodes": [
+            { "role": "primary", "nodeId": "n-0", "site": "home", "pod": "tt-0" },
+            { "role": "resolver", "nodeId": "n-1", "site": "home", "pod": "tt-1" },
+        ] });
+        let names = primary_names(&k8s);
+        assert!(primary_missing(&["tt-0".to_owned()], &names));
+        assert!(!primary_missing(&["tt-1".to_owned()], &names));
+        let no_site = json!({ "nodes": [
+            { "role": "primary", "nodeId": "n-0", "site": "", "pod": null },
+        ] });
+        let names = primary_names(&no_site);
+        assert!(primary_missing(&["n-0".to_owned()], &names));
+        assert!(!primary_missing(&["node-b".to_owned()], &names));
+        // A cluster that can't be read names no primary, so a missing node stops the wait.
+        assert_eq!(primary_names(&json!({})), Vec::<String>::new());
+        assert!(primary_missing(&["node-b".to_owned()], &[]));
     }
 
     /// REQ: API-008 — paths, queries, IDs, and tables.

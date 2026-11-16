@@ -27,8 +27,18 @@
   ];
 
   let lists = $state<S['ListInfo'][]>([]);
-  // REQ: FLT-004 — on a replica, the primary when it didn't answer (the state shown is then this node's).
+  // REQ: FLT-004 — on a replica, the nodes whose hits are left out (the primary's among them when
+  // it didn't answer its reads).
   let unread = $state<string[]>([]);
+  // The names `missingNodes` may use for the primary: its pod, site and node ID (from GET /cluster,
+  // as `ctl lists refresh --wait` reads them).
+  let primaryNames = $state<string[]>([]);
+  // The primary is unread, so the download state shown isn't confirmed from it (REQ: FLT-004).
+  const primaryUnread = $derived(unread.some((u) => primaryNames.includes(u)));
+  function primaryNamesOf(c: S['ClusterView']): string[] {
+    const p = c.nodes.find((n) => n.role === 'primary');
+    return p ? [p.pod, p.site, p.nodeId].filter((s): s is string => !!s) : [];
+  }
   let info = $state<S['SystemInfo'] | null>(null);
   // REQ: OBS-018 — what shadow lists would have blocked, and likely over-blocking.
   let shadow = $state<S['ShadowListStats'][]>([]);
@@ -40,14 +50,16 @@
   $effect(() =>
     poll(async () => {
       try {
-        const [l, i, sh, ob] = await Promise.all([
+        const [l, i, sh, ob, cl] = await Promise.all([
           api.lists(),
           api.info(),
           api.shadowLists().catch(() => ({ items: [] as S['ShadowListStats'][] })),
           api.overblocking(20).catch(() => ({ items: [] as S['OverblockSuspect'][] })),
+          api.cluster().catch(() => null),
         ]);
         lists = l.items;
         unread = l.missingNodes ?? [];
+        if (cl) primaryNames = primaryNamesOf(cl);
         info = i;
         shadow = sh.items;
         suspects = ob.items;
@@ -140,7 +152,11 @@
   <ErrorNote {error} />
   <ErrorNote error={refreshError} />
   {#if unread.length}
-    <div class="notice warn" role="status" data-testid="lists-unread">Not read: {unread.join(', ')}. The download state shown is this node's own until the primary answers.</div>
+    {#if primaryUnread}
+      <div class="notice warn" role="status" data-testid="lists-unread">Not read: {unread.join(', ')}. The download state shown isn't confirmed from the primary until it answers.</div>
+    {:else}
+      <div class="notice warn" role="status" data-testid="lists-unread">Hits leave out: {unread.join(', ')}.</div>
+    {/if}
   {/if}
   {#if refresh || lastUpdated || lists.some((l) => l.enabled)}
     <p class="small muted refresh-status" data-testid="lists-refresh-status" aria-live="polite">
