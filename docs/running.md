@@ -1564,7 +1564,7 @@ $ dig +nsid example.com @10.50.5.112
 - Off by default: any client allowed to query sees the name. In a cluster, `[dns]` is shared, so one setting turns it on everywhere, and each node answers with its own name.
 
 ## Special names
-Handled before anything else (each can be turned off under `[special]`):
+Handled before anything else. Each can be turned off under `[special]`, except `*.invalid` and `resolver.arpa`, which are always answered here:
 
 | Name | Answer | Why |
 |---|---|---|
@@ -1588,7 +1588,7 @@ ddr_name = "dns.example.com"        # optional: advertise encrypted DNS (below)
 
 **iCloud Private Relay.** Apple's documented way for a network to opt out: when these two names don't resolve, devices tell their user that Private Relay is off for this network and use the network's DNS. Set `block_icloud_private_relay = false` to let Private Relay work; Apple devices with it on then bypass TelltaleDNS, as any relay or VPN does. Explain and the query log show these answers as `special`.
 
-**Discovery of Designated Resolvers (DDR, RFC 9462).** With `ddr_name` set to the host name in your encrypted listeners' certificate, a device that asks `_dns.resolver.arpa` for SVCB (Windows 11, iOS 16 and macOS 13 and later, among others) learns this node's DoT, DoH, DoH3, and DoQ listeners: one record per listener, with its port, its DoH path (`/dns-query{?dns}` unless the listener sets `path`), and its address when the listener binds one (not `0.0.0.0`, `::`, or loopback). Devices upgrade to encrypted DNS only when the certificate also lists the IP address they reach TelltaleDNS on (an IP SAN), so include it when you issue the certificate. Behind Docker or Kubernetes port mappings, the advertised ports are the listeners' own. Without `ddr_name`, or on a node with no encrypted listener, `_dns.resolver.arpa` gets no data. `[special]` is shared in a cluster; each node advertises its own listeners.
+**Discovery of Designated Resolvers (DDR, RFC 9462).** With `ddr_name` set to the host name in your encrypted listeners' certificate, a device that asks `_dns.resolver.arpa` for SVCB (Windows 11, iOS 16 and macOS 13 and later, among others) learns this node's DoT, DoH, DoH3, and DoQ listeners: one record per listener, with its port, its DoH path (`/dns-query{?dns}` unless the listener sets `path`), and its address when the listener binds a specific one (not `0.0.0.0` or `::`). Listeners bound to loopback and listeners with `proxy_protocol = true` are left out: other devices can't use them directly, and a device told about a resolver it can't reach may lose DNS altogether. Devices upgrade to encrypted DNS only when the certificate also lists the IP address they reach TelltaleDNS on (an IP SAN), so include it when you issue the certificate. Behind Docker or Kubernetes port mappings, the advertised ports are the listeners' own. Without `ddr_name`, or on a node with no encrypted listener, `_dns.resolver.arpa` gets no data. `[special]` is shared in a cluster; each node advertises its own listeners.
 
 ## Routing (conditional forwarding)
 ```toml

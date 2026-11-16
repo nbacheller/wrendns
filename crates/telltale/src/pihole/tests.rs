@@ -427,6 +427,14 @@ fn dns_019_pihole_special_names() {
         "BLOCK_ICLOUD_PR=true\n",
     );
     assert!(!im.toml.contains("[special]"));
+    // These default to on: anything but an explicit `false` keeps the block.
+    let im = v5(
+        "PIHOLE_DNS_1=9.9.9.9\n",
+        "BLOCK_ICLOUD_PR=yes\nMOZILLA_CANARY=FALSE \n",
+    );
+    let cfg = load(&im.toml);
+    assert!(cfg.special.block_icloud_private_relay);
+    assert!(!cfg.special.block_firefox_canary);
 }
 
 #[test]

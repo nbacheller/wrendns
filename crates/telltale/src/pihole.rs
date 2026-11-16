@@ -442,8 +442,12 @@ fn v5_settings(src: &Source) -> Settings {
         dhcp_active: on("DHCP_ACTIVE"),
         blocking_mode: ftl.get("BLOCKINGMODE").cloned(),
         domain_needed: on("DNS_FQDN_REQUIRED"),
-        icloud_relay: ftl.get("BLOCK_ICLOUD_PR").map(|v| v == "true"),
-        mozilla_canary: ftl.get("MOZILLA_CANARY").map(|v| v == "true"),
+        icloud_relay: ftl
+            .get("BLOCK_ICLOUD_PR")
+            .map(|v| !v.trim().eq_ignore_ascii_case("false")),
+        mozilla_canary: ftl
+            .get("MOZILLA_CANARY")
+            .map(|v| !v.trim().eq_ignore_ascii_case("false")),
         ..Settings::default()
     };
     // PIHOLE_DNS_1, _2, ... in order.

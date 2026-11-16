@@ -114,6 +114,11 @@ pub fn is_ddr_query(q: &Query<'_>) -> bool {
 /// SVCB record (RDATA) per DoT, DoH, DoH3, and DoQ listener of this node, in listener order
 /// (priority 1, 2, ...), targeting `[special] ddr_name`. Empty without a name or encrypted
 /// listeners. Built off the query path, when the policy is.
+///
+/// Left out: listeners bound to loopback (no other device can reach them) and listeners
+/// with `proxy_protocol = true` (they expect a PROXY v2 header first, so a device that
+/// connects directly fails the handshake). Advertising nothing leaves a device on plain DNS;
+/// advertising an unreachable resolver can leave it with none.
 pub fn ddr_records(cfg: &Config) -> Vec<Box<[u8]>> {
     let Some(target) = cfg
         .special
@@ -125,7 +130,11 @@ pub fn ddr_records(cfg: &Config) -> Vec<Box<[u8]>> {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for l in cfg.listen.iter().filter(|l| l.proto.needs_tls()) {
+    let reachable = cfg
+        .listen
+        .iter()
+        .filter(|l| l.proto.needs_tls() && !l.proxy_protocol && !l.addr.ip().is_loopback());
+    for l in reachable {
         let Ok(priority) = u16::try_from(out.len() + 1) else {
             break;
         };
@@ -144,9 +153,9 @@ pub fn ddr_records(cfg: &Config) -> Vec<Box<[u8]>> {
         alpn_value.extend_from_slice(alpn);
         svc_param(&mut r, 1, &alpn_value);
         svc_param(&mut r, 3, &l.addr.port().to_be_bytes());
-        // A hint only for an address clients can reach: not `0.0.0.0`, `::`, or loopback.
+        // A hint only for a specific address: not `0.0.0.0` or `::` (loopback is left out above).
         let ip = l.addr.ip();
-        if !ip.is_unspecified() && !ip.is_loopback() {
+        if !ip.is_unspecified() {
             match ip {
                 IpAddr::V4(v4) => svc_param(&mut r, 4, &v4.octets()),
                 IpAddr::V6(v6) => svc_param(&mut r, 6, &v6.octets()),
@@ -330,8 +339,8 @@ mod tests {
             .config
     }
 
-    /// REQ: DNS-019 (ADR-168) — DDR records: one SVCB per encrypted listener, in order, with
-    /// its ALPN, port, a hint for a specific address, and the DoH path template.
+    /// REQ: DNS-019 (ADR-168) — DDR records: one SVCB per reachable encrypted listener, in
+    /// order, with its ALPN, port, a hint for a specific address, and the DoH path template.
     #[test]
     fn dns_019_ddr_records_encode_the_listeners() {
         let tls = "tls = { cert = \"/c.pem\", key = \"/k.pem\" }";
@@ -354,6 +363,35 @@ mod tests {
         doh.extend_from_slice(b"\x00\x04\x00\x04\xc0\xa8\x01\x02");
         doh.extend_from_slice(b"\x00\x07\x00\x08/q{?dns}");
         assert_eq!(&*r[1], doh.as_slice());
+
+        // DoH3 with the default path and an IPv6 hint, DoQ; loopback and PROXY-protocol
+        // listeners are left out (other devices can't use them directly).
+        let cfg = ddr_config(&format!(
+            "[[listen]]\nproto = \"dot\"\naddr = \"127.0.0.1:853\"\n{tls}\n\
+             [[listen]]\nproto = \"doh\"\naddr = \"[::1]:443\"\n{tls}\n\
+             [[listen]]\nproto = \"dot\"\naddr = \"0.0.0.0:8853\"\nproxy_protocol = true\n{tls}\n\
+             [[listen]]\nproto = \"doh3\"\naddr = \"[fd00::2]:443\"\n{tls}\n\
+             [[listen]]\nproto = \"doq\"\naddr = \"[::]:853\"\n{tls}\n\
+             [special]\nddr_name = \"dns.example.com\"\n"
+        ));
+        let r = ddr_records(&cfg);
+        assert_eq!(
+            r.len(),
+            2,
+            "loopback and proxy-protocol listeners aren't advertised"
+        );
+        let mut doh3 = vec![0, 1];
+        doh3.extend_from_slice(target);
+        doh3.extend_from_slice(b"\x00\x01\x00\x03\x02h3\x00\x03\x00\x02\x01\xbb");
+        doh3.extend_from_slice(b"\x00\x06\x00\x10\xfd\x00");
+        doh3.extend_from_slice(&[0; 13]);
+        doh3.push(2);
+        doh3.extend_from_slice(b"\x00\x07\x00\x10/dns-query{?dns}");
+        assert_eq!(&*r[0], doh3.as_slice());
+        let mut doq = vec![0, 2];
+        doq.extend_from_slice(target);
+        doq.extend_from_slice(b"\x00\x01\x00\x04\x03doq\x00\x03\x00\x02\x03\x55");
+        assert_eq!(&*r[1], doq.as_slice());
 
         // No name: nothing to advertise.
         let cfg = ddr_config(&format!(

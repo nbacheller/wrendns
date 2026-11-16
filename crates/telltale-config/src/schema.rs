@@ -2026,8 +2026,9 @@ pub struct SpecialConfig {
     pub single_label_nxdomain: bool,
     /// The name the certificates of this node's DoT, DoH, and DoQ listeners carry (such as
     /// `dns.example.com`). Set, `_dns.resolver.arpa` SVCB answers advertise those listeners
-    /// for Discovery of Designated Resolvers (RFC 9462); unset, `resolver.arpa` queries get
-    /// no data. `resolver.arpa` is never forwarded (ADR-168).
+    /// for Discovery of Designated Resolvers (RFC 9462), except listeners bound to loopback or
+    /// with `proxy_protocol` on; unset, `resolver.arpa` queries get no data. `resolver.arpa`
+    /// is never forwarded (ADR-168).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ddr_name: Option<SafeString>,
 }
