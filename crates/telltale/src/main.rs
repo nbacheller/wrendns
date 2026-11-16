@@ -57,6 +57,7 @@ mod ship;
 mod simulate;
 mod sinks;
 mod smtp;
+mod support_log;
 mod tail;
 mod technitium;
 mod traces;
@@ -1232,6 +1233,7 @@ fn run_self_update(channel: selfupdate::Channel, check: bool, restart: bool) -> 
 }
 
 fn init_logging() {
+    use tracing_subscriber::Layer as _;
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
     let level = std::env::var("TELLTALE_LOG")
@@ -1249,13 +1251,17 @@ fn init_logging() {
     let targets = tracing_subscriber::filter::Targets::new()
         .with_default(level)
         .with_target("hickory_net::dnssec", library);
-    tracing_subscriber::fmt()
-        .with_max_level(level)
+    // The console follows `TELLTALE_LOG`. REQ: OPS-011 (ADR-156) — the support package's own log
+    // keeps INFO and above whatever it says, from the first line on.
+    let console = tracing_subscriber::fmt::layer()
         .with_target(false)
         .with_ansi(io::IsTerminal::is_terminal(&io::stderr()))
         .with_writer(io::stderr)
-        .finish()
-        .with(targets)
+        .with_filter(targets);
+    let support = support_log::layer().with_filter(support_log::filter(library));
+    tracing_subscriber::registry()
+        .with(console)
+        .with(support)
         .init();
 }
 
@@ -1298,6 +1304,11 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
             None
         }
     };
+    // REQ: OPS-011 (ADR-156) — the support package's log files, under the data directory (only
+    // with the lock: two processes would write over each other). From here on, lines reach them.
+    if lock.is_some() {
+        support_log::global().attach(data_dir, cfg.support.persist_logs);
+    }
     // REQ: OBS-002 (T9.13) — restart counts, kept in the data directory (only with the lock:
     // two processes would count each other).
     let runs = if lock.is_some() {
@@ -1333,6 +1344,8 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
     }
     served?;
     info!("stopped");
+    // REQ: OPS-011 — the last lines (why it stopped) reach the log files before the process exits.
+    support_log::global().flush();
     Ok(ExitCode::SUCCESS)
 }
 

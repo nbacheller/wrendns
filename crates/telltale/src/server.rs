@@ -617,6 +617,10 @@ fn restart_only_changes(old: &Config, new: &Config) -> Vec<&'static str> {
     if old.telemetry != new.telemetry {
         v.push("[telemetry]");
     }
+    // REQ: OPS-011 — the log files are opened once, at start.
+    if old.support != new.support {
+        v.push("[support]");
+    }
     if old.node != new.node {
         v.push("[node]");
     }

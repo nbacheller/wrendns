@@ -70,6 +70,9 @@ pub struct Config {
     pub exclusions: ExclusionsConfig,
     /// REQ: OBS-024 (T13.1) — change simulation over the query log.
     pub simulate: SimulateConfig,
+    /// REQ: OPS-011 (ADR-156) — the support package's settings. Node-local: it names this node's
+    /// own disk.
+    pub support: SupportConfig,
     /// REQ: OBS-025 (T13.3) — what kind of device each address is, guessed from its MAC
     /// vendor, the names it announces, and the domains it talks to.
     pub identify: IdentifyConfig,
@@ -144,6 +147,7 @@ impl Default for Config {
             ratelimit: RateLimitConfig::default(),
             exclusions: ExclusionsConfig::default(),
             simulate: SimulateConfig::default(),
+            support: SupportConfig::default(),
             identify: IdentifyConfig::default(),
             kubernetes: KubernetesConfig::default(),
             drill: DrillConfig::default(),
@@ -1891,6 +1895,26 @@ impl Default for SimulateConfig {
             max_rows: 2_000_000,
             default_window: SafeString::from("24h"),
         }
+    }
+}
+
+/// REQ: OPS-011 (ADR-156) — the support package (`telltale support-package`, System page). No
+/// platform lets the process read its own stderr back, so it keeps a small log of its own: the
+/// last 2,000 lines (INFO and up) in memory, and, unless turned off here, two rotating files of
+/// about 1 MiB each under `<data_dir>/logs/`, so lines from before a restart reach the package.
+/// The files are not redacted (they hold client addresses; mode 0640): the package redacts when
+/// it is made. Node-local.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct SupportConfig {
+    /// Keep the log files. Off: only the in-memory lines, which a restart loses. About 21 KB a
+    /// day at INFO on a quiet node; nothing is written if the data directory is read-only.
+    pub persist_logs: bool,
+}
+
+impl Default for SupportConfig {
+    fn default() -> Self {
+        Self { persist_logs: true }
     }
 }
 
