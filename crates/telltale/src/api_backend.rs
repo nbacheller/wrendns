@@ -1309,6 +1309,8 @@ impl Backend for ApiBackend {
                 groups,
                 count,
                 error_bound: 0,
+                // The rolling hour keeps one count per client, no split by status.
+                by_status: None,
             }
         };
         Ok(match group {

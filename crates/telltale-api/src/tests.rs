@@ -145,6 +145,7 @@ impl Backend for Fake {
             name: None,
             count: 3,
             error_bound: 0,
+            by_status: None,
         }])
     }
     fn top_range(&self, kind: TopKind, from_s: u64, to_s: u64, limit: usize) -> Vec<TopItem> {
@@ -158,6 +159,7 @@ impl Backend for Fake {
             name: None,
             count: 9,
             error_bound: 0,
+            by_status: None,
         }]
     }
     fn latency(&self, by: LatencyBy, _: Hour) -> Vec<LatencyRow> {
