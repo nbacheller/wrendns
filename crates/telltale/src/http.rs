@@ -706,6 +706,7 @@ pub(crate) fn render(src: &Sources) -> String {
     crate::drill::render(src, &mut w);
     render_slo(&mut w, &src.config.load().slo);
     render_probes(&mut w, &src.probes);
+    crate::watchdog::render(&mut w);
     render_filter_index(src, &mut w);
     render_listeners(&mut w, src);
     w.family("telltale_local_records", "gauge", "Local records loaded.")

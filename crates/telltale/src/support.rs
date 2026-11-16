@@ -296,6 +296,25 @@ fn add_files(pkg: &mut Package, cfg_json: &Value, c: Collected, detailed: bool) 
     add_logs(pkg, detailed);
 }
 
+/// REQ: OPS-012 (ADR-163) — the newest watchdog dump, if the node wrote one. At `strict` its
+/// log lines are left out: the package's own log is warnings and errors only there.
+fn add_watchdog(pkg: &mut Package, data_dir: &std::path::Path, detailed: bool) {
+    let dir = data_dir.join("watchdog");
+    let mut names = crate::watchdog::dump_names(&dir);
+    names.sort();
+    let Some(newest) = names.pop() else {
+        return;
+    };
+    let Ok(text) = std::fs::read_to_string(dir.join(newest)) else {
+        return;
+    };
+    let text = match text.find("\n== log") {
+        Some(at) if !detailed => format!("{}\n== log: left out at the strict level\n", &text[..at]),
+        _ => text,
+    };
+    pkg.add_text("watchdog/latest-dump.txt", "watchdog", &text, true);
+}
+
 /// The package: collect, redact, archive. A `dry_run` stops at the manifest.
 pub(crate) fn build(
     b: &ApiBackend,
@@ -335,6 +354,11 @@ pub(crate) fn build(
     let mut pkg = Package::new(opts, &known)
         .map_err(|e| Problem::internal(format!("the package couldn't start: {e}")))?;
     add_files(&mut pkg, &cfg_json, collected, detailed);
+    add_watchdog(
+        &mut pkg,
+        std::path::Path::new(cfg.node.data_dir.as_str()),
+        detailed,
+    );
 
     // Its name: the node's, as a pseudonym unless the package shows real values.
     let node_name = cfg.node.name.as_str();
@@ -483,6 +507,11 @@ pub(crate) fn offline(
     } else {
         add_log_lines(&mut pkg, &lines, detailed);
     }
+    add_watchdog(
+        &mut pkg,
+        std::path::Path::new(cfg.node.data_dir.as_str()),
+        detailed,
+    );
     pkg.note("Offline package: made from the configuration files and the log files, without asking a running node. It has no live state.");
     let node_name = cfg.node.name.as_str();
     let who = if level == Level::Off {

@@ -80,8 +80,16 @@ fn ops_011_files_rotate_and_the_last_run_reaches_the_next_one() {
             tracing::info!("run one, line {i:03} with some padding to fill the file up");
         }
     });
-    first.flush();
     let logs = dir.path().join("logs");
+    // `flush` waits at most two seconds for the writer; a test machine that is busy with other
+    // tests can need longer, so ask again until the rotation has happened.
+    for _ in 0..100 {
+        first.flush();
+        if logs.join(format!("{FILE}.1")).exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
     let current = std::fs::metadata(logs.join(FILE)).unwrap().len();
     let older = std::fs::metadata(logs.join(format!("{FILE}.1")))
         .unwrap()

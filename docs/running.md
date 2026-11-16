@@ -224,7 +224,7 @@ The file is zstd-compressed tar with a manifest of BLAKE3 checksums, written own
 - If you restore into a different data directory, the restored config still names the old one: restore says so, and you set `data_dir` (or add a small file that does).
 
 ## Support package
-When something goes wrong, the most useful thing to attach to an issue is a **support package**: one `.tar.gz` with what a maintainer needs to see, and nothing that identifies you. It holds build and platform facts; your settings without secrets; the cluster view and its timeline; health checks and listener checks; upstream state; list names and counts (no domains); a snapshot of the metrics; aggregate statistics; and this node's recent log. Nothing is uploaded: you make it, look it over, and attach it yourself.
+When something goes wrong, the most useful thing to attach to an issue is a **support package**: one `.tar.gz` with what a maintainer needs to see, and nothing that identifies you. It holds build and platform facts; your settings without secrets; the cluster view and its timeline; health checks and listener checks; upstream state; list names and counts (no domains); a snapshot of the metrics; aggregate statistics; this node's recent log; and the newest [watchdog dump](#when-a-node-stops-answering-the-watchdog), if the node wrote one (without its log lines at the `strict` level). Nothing is uploaded: you make it, look it over, and attach it yourself.
 
 **Making one**
 - In the web UI: **Settings → System → Support package** (admins). **Preview what it holds** lists every file with its size and what would be replaced; **Make the package** downloads it.
@@ -258,6 +258,31 @@ In every level **secrets are removed**: passwords and hashes, API and session to
 **The log.** No platform lets a process read its own stderr back (a systemd unit has no journal access, a container's log is outside it, the Helm chart's root file system is read-only), so TelltaleDNS keeps its own small log: the last 2,000 lines at INFO and above in memory from the first line it logs, whatever `TELLTALE_LOG` says, and two rotating files of about 1 MiB under `<data_dir>/logs/` (directory `0750`, files `0640`), so lines from before a restart reach the package. About 21 KB a day on a quiet node. The files are **not** redacted (they hold client addresses): the package redacts when it is made. `[support] persist_logs = false` keeps only the in-memory lines (read at start); a read-only data directory does the same on its own and the manifest says so. Writing the log never blocks DNS: a full queue drops the line and counts it.
 
 **Who can, and the record.** Admins only. Each package is recorded in the audit log as `support.package` (the level and counts, never the content) and each map download as `support.package.map`. One package at a time per node (a second request gets 409).
+
+## When a node stops answering (the watchdog)
+Rarely, a process can hang with its service still `active`: DNS, the web UI, the metrics and the cluster port all go quiet and nothing exits, so nothing restarts it. A **watchdog** looks for that. A thread of its own, outside the runtime that serves everything, makes two checks every 5 seconds: the runtime can run a task, and this node's own first UDP listener answers a question (`probe.telltale.invalid`, the name the listener checks use; it is answered without asking an upstream and kept out of the query log and analytics). When a check hasn't passed for `stall_secs` (60 by default), the node is called stuck. The watchdog then writes a **dump** and, by default, ends the process with exit status 70 so its supervisor starts it again: systemd (`Restart=on-failure`, which the unit has), Docker or Podman Compose (`restart: unless-stopped`), or Kubernetes (a container restarts). A node started by hand in a terminal just exits.
+
+```toml
+[watchdog]                  # restart-only; each node has its own
+enabled = true
+stall_secs = 60             # 20 to 600
+action = "restart"          # "dump": write the dump and keep running
+max_restarts_per_hour = 6   # past it, only the dump is written; 0 never restarts
+```
+
+It watches only whether the node answers. A node that is slow, or busy for a few seconds, still passes; one that is stuck never does. A restart is limited to `max_restarts_per_hour` (counted from `<data_dir>/watchdog/restarts`), so a false alarm can't become an endless loop.
+
+**The dump** is `<data_dir>/watchdog/hang-<UTC time>.txt` (directory `0750`, files `0640`, the newest five kept). It says which check failed and for how long, the build, the uptime, memory and load, every thread (its name, state, what the kernel has it waiting on, its CPU time), **each thread's stack as raw addresses**, the executable's mappings, and the last 200 lines of the log (see Support package). It holds no client data and no settings. A support package includes the newest dump. The log says at start when the previous run ended by the watchdog, and `telltale_watchdog_last_action_timestamp_seconds` holds the time.
+
+**Reading the stacks.** The release binary is stripped, so the dump has addresses, not names. Every release and edge build publishes the matching debug file next to the binary, `telltale-<arch>-linux.debug.zst` (`x86_64`, `aarch64`, or `armv7`), covered by the signed `SHA256SUMS`. Take the one from the same release or edge build as `telltale --version` shows, then:
+
+```sh
+zstd -d telltale-x86_64-linux.debug.zst -o telltale.debug
+addr2line -e telltale.debug -f -C -i 0x4a1b2c3 0x4a1b2d4      # function and file:line for each address
+```
+The addresses are the ones in the dump, as they are in a static (non-relocated) binary; if the mappings show the binary loaded at a base other than `00400000`, subtract that base first. The first frame of each thread is the call it is stuck in, and the next ones are who called it. A thread that shows "no answer" couldn't run the handler at all, which means it is stuck inside the kernel. Attach the dump (or the support package) to an issue.
+
+**Metrics:** `telltale_watchdog_enabled`, `telltale_watchdog_check_age_seconds{check="runtime"|"listener"}` (seconds since each check last passed: near `stall_secs` means the node is about to be called stuck), and `telltale_watchdog_last_action_timestamp_seconds`.
 
 ## Kubernetes (Helm)
 The chart is published with every release as an OCI artifact (k8s 1.26+, amd64 and arm64).

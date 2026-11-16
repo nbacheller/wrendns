@@ -220,6 +220,12 @@ upstream_group = "lan"</code></pre>
       <p>In the web UI it's <b>Settings → System → Support package</b>. From a shell it's <code>telltale support-package</code>, or <code>telltale support-package --offline</code> when the node won't start. The page lists every file and what was replaced before you make it. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#support-package">Details</a>.</p>
     </dd>
 
+    <dt id="q-hang">What if the service says it's running but nothing answers?</dt>
+    <dd>
+      <p>A built-in <b>watchdog</b> looks for exactly that. Every 5 seconds a thread of its own checks that the node can still run a task and that its own listener answers a probe question. If neither has worked for a minute, it writes a <b>dump</b> (which check failed, every thread and what it waits on, where each one is stuck, and the last log lines) under <code>&lt;data_dir&gt;/watchdog/</code> and ends the process, so systemd, Docker, or Kubernetes starts it again. That's a restart of a few seconds instead of an outage until someone notices.</p>
+      <p>The dump holds no client data. Every release publishes the matching debug file, so the stacks in it can be turned into function names. Attach the dump, or a support package (which includes it), to an issue. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#when-a-node-stops-answering-the-watchdog">Details</a>.</p>
+    </dd>
+
     <dt id="q-breaker">Why do upstream health labels say "open", "closed", and "half_open"?</dt>
     <dd>
       <p>They come from the circuit-breaker pattern, named after an electrical circuit: <b>closed</b> means current flows, so requests go through and the upstream is healthy. After enough failures the breaker trips <b>open</b> and the upstream is benched for a while. <b>Half-open</b> lets a trial query through to see whether it has recovered. The same names appear in the API and in the <code>telltale_upstream_breaker_state</code> metric. Plainer labels for the web UI are <a href="https://github.com/paimonsoror/telltaledns/issues/9">planned</a>.</p>

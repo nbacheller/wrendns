@@ -67,6 +67,7 @@ mod updates;
 mod upstream_checks;
 mod vqlog;
 mod warm;
+mod watchdog;
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};

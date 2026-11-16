@@ -80,6 +80,10 @@ dhat = { version = "0.3.3", optional = true }
 
 [features]
 dhat-heap = ["dep:dhat"]
+# REQ: OPS-012 (ADR-163) — a test hook, never in a release build: `TT_WEDGE_AFTER_SECS=n` blocks
+# every runtime worker n seconds after start, so the watchdog can be tried on a real process
+# (`deploy/watchdog/e2e.sh`).
+wedge-test = []
 
 [dev-dependencies]
 # REQ: NFR-002 — the whole-pipeline allocation test (`pipeline.rs`).

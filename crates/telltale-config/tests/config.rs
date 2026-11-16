@@ -543,6 +543,43 @@ expires = "tomorrow"
     }
 }
 
+/// REQ: OPS-012 (ADR-163) — the watchdog is on by default (60 s, restart, six an hour), and its
+/// limits are checked at their paths.
+#[test]
+fn ops_012_watchdog_settings_and_limits() {
+    let d = load_str("").unwrap().config.watchdog;
+    assert!(d.enabled);
+    assert_eq!(d.stall_secs, 60);
+    assert_eq!(d.action, telltale_config::WatchdogAction::Restart);
+    assert_eq!(d.max_restarts_per_hour, 6);
+
+    let set = load_str(
+        "[watchdog]\nenabled = false\nstall_secs = 120\naction = \"dump\"\nmax_restarts_per_hour = 0\n",
+    )
+    .unwrap()
+    .config
+    .watchdog;
+    assert!(!set.enabled);
+    assert_eq!(set.stall_secs, 120);
+    assert_eq!(set.action, telltale_config::WatchdogAction::Dump);
+    assert_eq!(set.max_restarts_per_hour, 0);
+
+    for (toml, path) in [
+        ("[watchdog]\nstall_secs = 19\n", "watchdog.stall_secs"),
+        ("[watchdog]\nstall_secs = 601\n", "watchdog.stall_secs"),
+        (
+            "[watchdog]\nmax_restarts_per_hour = 61\n",
+            "watchdog.max_restarts_per_hour",
+        ),
+    ] {
+        let errs = load_str(toml).unwrap_err();
+        assert!(paths(&errs).contains(&path), "{toml}: {:?}", paths(&errs));
+    }
+    assert!(load_str("[watchdog]\naction = \"explode\"\n").is_err());
+    // Node-local: a replica keeps its own, and the cluster's shared settings don't carry it.
+    assert!(telltale_config::shared::NODE_LOCAL.contains(&"watchdog"));
+}
+
 /// REQ: FLT-012 (T7.9) — a group can only block services that exist, and `svc-` list names
 /// are kept for them.
 #[test]

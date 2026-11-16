@@ -48,7 +48,7 @@ pub(crate) struct Target {
 }
 
 /// The listener's address as a client reaches it: a wildcard bind is asked on loopback.
-fn reachable(addr: SocketAddr) -> SocketAddr {
+pub(crate) fn reachable(addr: SocketAddr) -> SocketAddr {
     let ip = match addr.ip() {
         IpAddr::V4(v4) if v4.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
         IpAddr::V6(v6) if v6.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),

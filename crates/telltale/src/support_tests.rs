@@ -281,3 +281,69 @@ fn ops_011_a_slow_collector_is_left_behind_and_the_rest_carry_on() {
         Some("timed out after 5 s")
     );
 }
+
+#[test]
+fn ops_012_the_newest_watchdog_dump_is_in_the_package_and_its_log_waits_for_standard() {
+    let _s = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let toml = format!(
+        "[node]\nname = \"home-pi\"\ndata_dir = \"{}\"\n",
+        dir.path().display()
+    );
+    let wd = dir.path().join("watchdog");
+    crate::watchdog::write_dump(&wd, 1_800_000_000, "old dump\n== log, last 0 lines\n").unwrap();
+    let report = crate::watchdog::Report {
+        time: "2026-11-16T13:37:00.000Z".to_owned(),
+        reason: vec!["runtime: the runtime did not run a task for 61 s (limit 60 s)".to_owned()],
+        threads: vec![crate::watchdog::ThreadRow {
+            tid: 7,
+            name: "telltale-rt".to_owned(),
+            state: 'S',
+            wchan: "futex_wait_queue".to_owned(),
+            syscall: "202".to_owned(),
+            utime: 1,
+            stime: 1,
+        }],
+        log: vec!["2026-11-16T13:36:00.000Z  INFO client 192.168.1.20 asked".to_owned()],
+        ..crate::watchdog::Report::default()
+    };
+    crate::watchdog::write_dump(&wd, 1_800_000_600, &crate::watchdog::render_report(&report))
+        .unwrap();
+    let b = backend(&toml);
+
+    let strict = build(&b, &req("strict", 0, false), false).unwrap();
+    let text = read_tar_gz(&strict.archive)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.path == "watchdog/latest-dump.txt")
+        .map(|e| String::from_utf8_lossy(&e.data).into_owned())
+        .expect("the dump is in a strict package");
+    assert!(text.contains("did not run a task for 61 s"), "{text}");
+    assert!(text.contains("telltale-rt"), "{text}");
+    assert!(!text.contains("old dump"), "only the newest: {text}");
+    assert!(
+        !text.contains("192.168.1.20") && !text.contains("asked"),
+        "no log at strict: {text}"
+    );
+    assert!(text.contains("left out at the strict level"), "{text}");
+
+    let standard = build(&b, &req("standard", 0, false), false).unwrap();
+    let text = read_tar_gz(&standard.archive)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.path == "watchdog/latest-dump.txt")
+        .map(|e| String::from_utf8_lossy(&e.data).into_owned())
+        .unwrap();
+    assert!(
+        text.contains("asked"),
+        "standard keeps the log lines: {text}"
+    );
+    assert!(
+        !text.contains("192.168.1.20"),
+        "redacted like the log: {text}"
+    );
+
+    // A node that never wrote one has no such file.
+    let plain = build(&backend(TOML), &req("strict", 0, false), false).unwrap();
+    assert!(!paths(&plain).iter().any(|p| p.starts_with("watchdog/")));
+}

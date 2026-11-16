@@ -247,7 +247,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --profile bench-fast -p telltale
+      # `wedge-test` is the watchdog e2e's hook (OPS-012): inert without TELLTALE_WEDGE_AFTER_SECS.
+      - run: cargo build --profile bench-fast -p telltale --features wedge-test
       - name: Compose bundle
         run: |
           sh .github/scripts/apt-install.sh dnsutils minisign
@@ -284,6 +285,10 @@ jobs:
       # through a replica and is audited with the entry node.
       - name: Cluster node removal
         run: bash deploy/cluster/remove-e2e.sh target/bench-fast/telltale
+      # REQ: OPS-012 (ADR-163, GitHub issue #7) — a node whose runtime is stuck writes its dump and
+      # exits with status 70 for its supervisor; the next run says why and reports the watchdog.
+      - name: Watchdog (a stuck runtime is dumped and restarted)
+        run: bash deploy/watchdog/e2e.sh target/bench-fast/telltale
       # REQ: CLU-001 (T5.4c AC) — rotate the cluster CA under DNS load, every phase gated on
       # every member; replication and reconnection afterwards.
       - name: Cluster CA rotation

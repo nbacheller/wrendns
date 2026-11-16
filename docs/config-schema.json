@@ -486,6 +486,16 @@
         "$ref": "#/$defs/UpstreamGroup"
       }
     },
+    "watchdog": {
+      "description": "REQ: OPS-012 (ADR-163) — the watchdog: a node that stops answering writes a dump and\nrestarts. Node-local: it watches this process.",
+      "$ref": "#/$defs/WatchdogConfig",
+      "default": {
+        "action": "restart",
+        "enabled": true,
+        "max_restarts_per_hour": 6,
+        "stall_secs": 60
+      }
+    },
     "zone": {
       "description": "REQ: DNS-018 (T7.22) — authoritative zones, optionally per group (split horizon).",
       "type": "array",
@@ -4180,6 +4190,52 @@
           "const": "admin"
         }
       ]
+    },
+    "WatchdogAction": {
+      "description": "REQ: OPS-012 — what the watchdog does with a stuck node.",
+      "oneOf": [
+        {
+          "description": "Write the dump, then exit for the supervisor to restart the node.",
+          "type": "string",
+          "const": "restart"
+        },
+        {
+          "description": "Write the dump and keep running.",
+          "type": "string",
+          "const": "dump"
+        }
+      ]
+    },
+    "WatchdogConfig": {
+      "description": "REQ: OPS-012 (ADR-163, GitHub issue #7) — the watchdog. A thread outside the runtime checks\nevery 5 s that the runtime runs a task and that this node's own UDP listener answers; when\nneither has passed for `stall_secs` it writes a dump under `<data_dir>/watchdog/` and, with\n`action = \"restart\"`, exits (status 70) so the supervisor (systemd, Compose, Kubernetes)\nstarts the node again. Restart-only. Node-local.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "`restart` (the default) writes the dump and exits for the supervisor to restart the\nnode; `dump` writes the dump and keeps running.",
+          "$ref": "#/$defs/WatchdogAction",
+          "default": "restart"
+        },
+        "enabled": {
+          "description": "Watch this node. Off: nothing checks, nothing is written.",
+          "type": "boolean",
+          "default": true
+        },
+        "max_restarts_per_hour": {
+          "description": "At most this many watchdog restarts in an hour (0 to 60); past it the node only writes\nthe dump, so a false alarm can't become an endless loop. 0: never restart.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 6,
+          "minimum": 0
+        },
+        "stall_secs": {
+          "description": "Seconds a check may go without passing before the node counts as stuck (20 to 600). A\nbusy node still passes within a few seconds; a stuck one never does.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 60,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
     },
     "YoutubeRestrict": {
       "description": "REQ: FLT-011 (T7.11) — YouTube Restricted Mode for a group with safe search.",

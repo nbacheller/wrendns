@@ -22,6 +22,7 @@ pub const NODE_LOCAL: &[&str] = &[
     "telemetry",
     "cache",
     "support",
+    "watchdog",
 ];
 
 /// Shared lists whose entries can say `node_only = true` (CLU-006): such an entry stays on

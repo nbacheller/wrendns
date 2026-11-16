@@ -73,6 +73,9 @@ pub struct Config {
     /// REQ: OPS-011 (ADR-156) — the support package's settings. Node-local: it names this node's
     /// own disk.
     pub support: SupportConfig,
+    /// REQ: OPS-012 (ADR-163) — the watchdog: a node that stops answering writes a dump and
+    /// restarts. Node-local: it watches this process.
+    pub watchdog: WatchdogConfig,
     /// REQ: OBS-025 (T13.3) — what kind of device each address is, guessed from its MAC
     /// vendor, the names it announces, and the domains it talks to.
     pub identify: IdentifyConfig,
@@ -148,6 +151,7 @@ impl Default for Config {
             exclusions: ExclusionsConfig::default(),
             simulate: SimulateConfig::default(),
             support: SupportConfig::default(),
+            watchdog: WatchdogConfig::default(),
             identify: IdentifyConfig::default(),
             kubernetes: KubernetesConfig::default(),
             drill: DrillConfig::default(),
@@ -1916,6 +1920,49 @@ impl Default for SupportConfig {
     fn default() -> Self {
         Self { persist_logs: true }
     }
+}
+
+/// REQ: OPS-012 (ADR-163, GitHub issue #7) — the watchdog. A thread outside the runtime checks
+/// every 5 s that the runtime runs a task and that this node's own UDP listener answers; when
+/// neither has passed for `stall_secs` it writes a dump under `<data_dir>/watchdog/` and, with
+/// `action = "restart"`, exits (status 70) so the supervisor (systemd, Compose, Kubernetes)
+/// starts the node again. Restart-only. Node-local.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct WatchdogConfig {
+    /// Watch this node. Off: nothing checks, nothing is written.
+    pub enabled: bool,
+    /// Seconds a check may go without passing before the node counts as stuck (20 to 600). A
+    /// busy node still passes within a few seconds; a stuck one never does.
+    pub stall_secs: u32,
+    /// `restart` (the default) writes the dump and exits for the supervisor to restart the
+    /// node; `dump` writes the dump and keeps running.
+    pub action: WatchdogAction,
+    /// At most this many watchdog restarts in an hour (0 to 60); past it the node only writes
+    /// the dump, so a false alarm can't become an endless loop. 0: never restart.
+    pub max_restarts_per_hour: u32,
+}
+
+impl Default for WatchdogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            stall_secs: 60,
+            action: WatchdogAction::Restart,
+            max_restarts_per_hour: 6,
+        }
+    }
+}
+
+/// REQ: OPS-012 — what the watchdog does with a stuck node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchdogAction {
+    /// Write the dump, then exit for the supervisor to restart the node.
+    #[default]
+    Restart,
+    /// Write the dump and keep running.
+    Dump,
 }
 
 /// REQ: OBS-024 — a simulation window (`90m`, `24h`, `7d`; `m`, `h`, `d`) in seconds.
