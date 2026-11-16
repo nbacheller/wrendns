@@ -1147,6 +1147,53 @@ test('flt_005 quick rule: allow for 1 hour from the query log', async () => {
   expect(await query('ads.e2e.test')).toBe(0);
 });
 
+// REQ: FLT-005 (T20.1, ADR-162, GitHub issue #57) — Edit a quick rule in place: the form starts
+// from the rule, the end time stays unless a new duration is picked, the rule keeps its ID and
+// its start, DNS follows at once (the old domain is no longer allowed, and there is no second
+// rule), and the confirmation stays on the page after the row is redrawn.
+test('flt_005 edit a quick rule in place', async () => {
+  const r = page.request;
+  const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const h = { 'x-csrf-token': csrf };
+  const put = await r.put('/api/v1/rules/e2e-edit', {
+    headers: h,
+    data: { action: 'allow', domain: 'ads.e2e.test', forMinutes: 120, note: 'first' },
+  });
+  expect(put.status()).toBe(200);
+  expect(await query('ads.e2e.test').catch(() => -1)).not.toBe(0); // allowed by the rule
+  const before = (await (await r.get('/api/v1/rules')).json()).items[0];
+  expect(before.id).toBe('e2e-edit');
+  await page.waitForTimeout(1100); // a refreshed start would differ by a second
+
+  await page.goto('/#/rules');
+  await page.getByTestId('rules-table').getByRole('button', { name: 'Edit' }).click();
+  const form = page.getByTestId('quick-rule-edit-form');
+  await expect(form.getByRole('textbox', { name: 'Domain' })).toHaveValue('ads.e2e.test');
+  await expect(form.getByRole('textbox', { name: 'Note' })).toHaveValue('first');
+  await expect(form.getByRole('combobox', { name: 'Duration' })).toHaveValue('keep');
+  await form.getByRole('textbox', { name: 'Domain' }).fill('other.e2e.test');
+  await form.getByRole('textbox', { name: 'Note' }).fill('second');
+  await form.getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByTestId('rule-edited')).toContainText('Rule updated.');
+  await expect(page.getByTestId('rule-edited')).toContainText('other.e2e.test'); // the new domain, not the old
+  await expect(page.getByTestId('rule-edit-row')).toHaveCount(0);
+
+  const after = (await (await r.get('/api/v1/rules')).json()).items;
+  expect(after).toHaveLength(1);
+  expect(after[0]).toMatchObject({ id: 'e2e-edit', domain: 'other.e2e.test', note: 'second' });
+  expect(after[0].created).toBe(before.created);
+  expect(after[0].createdBy).toBe(before.createdBy);
+  expect(after[0].expires).toBe(before.expires);
+  expect(await query('ads.e2e.test')).toBe(0); // the list blocks it again: the old rule is gone
+
+  // Cancel leaves the rule alone.
+  await page.getByTestId('rules-table').getByRole('button', { name: 'Edit' }).click();
+  await page.getByTestId('quick-rule-edit-form').getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByTestId('rule-edit-row')).toHaveCount(0);
+  await page.getByTestId('rules-table').getByRole('button', { name: 'Remove' }).click();
+  await expect(page.locator('main')).toContainText('No quick rules');
+});
+
 // REQ: FLT-005 (ADR-067) — an expiring rule stops applying at its expiry without a restart,
 // the sweep removes it within seconds, and the audit log records `rule.expire`.
 test('flt_005 quick rules expire on their own and are audited', async () => {

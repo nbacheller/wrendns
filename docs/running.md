@@ -1358,7 +1358,9 @@ A quick rule allows or blocks a site, and everything under it, for one device, a
 
 **Making one:**
 - In the **query log**, press **Why?** on a query and use **Make a quick rule**. The site, the device, and its group are filled in.
-- On the **Quick rules** page (Filtering & DNS), which also lists what's in effect with a countdown, who made each rule, and a Remove button.
+- On the **Quick rules** page (Filtering & DNS), which also lists what's in effect with a countdown, who made each rule, and Edit and Remove buttons.
+
+**Changing one:** press **Edit** on the rule. The form opens filled in, with the same preview as for a new rule, and **Save changes** replaces the rule under the same ID, so it applies on the next query. The rule keeps who made it and when (the audit log records who changed it, with the rule before and after). The end time stays as it was (**Keep the current end**) unless you pick a new duration, which counts from now. There is no Edit for rules in a config file (change the file), or for a rule made through the API for several devices or groups (use `PUT /api/v1/rules/{id}`).
 
 **How they decide:**
 - Quick rules decide **before any list**, on the next query. The lists aren't recompiled.

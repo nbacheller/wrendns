@@ -3698,11 +3698,14 @@ pub(crate) fn spawn_rule_sweep(
 }
 
 /// REQ: FLT-005 (T6.12, ADR-067) — a rule body as stored: validated shape, the expiry as an
-/// absolute time (from `expires` or `forMinutes`), and who made it and when.
+/// absolute time (from `expires` or `forMinutes`), and who made it and when. REQ: FLT-005
+/// (T20.1, ADR-162) — a rule that replaces one with the same ID (an edit) keeps who made it and
+/// when (`before`); the editor is in the audit entry, which holds the rule before and after.
 fn rule_of(
     v: &serde_json::Value,
     id: &str,
     by: &str,
+    before: Option<&telltale_config::RuleConfig>,
 ) -> Result<telltale_config::RuleConfig, Problem> {
     use telltale_config::{RuleAction, RuleConfig, SafeString};
     let input: telltale_api::model::RuleInput =
@@ -3766,11 +3769,17 @@ fn rule_of(
             .filter(|n| !n.is_empty())
             .map(|n| safe("note", n))
             .transpose()?,
-        created_by: Some(safe("createdBy", by)?),
-        created: Some(safe(
-            "created",
-            &format_us(u64::try_from(now).unwrap_or(0) * 1_000_000),
-        )?),
+        created_by: match before.and_then(|b| b.created_by.clone()) {
+            Some(kept) => Some(kept),
+            None => Some(safe("createdBy", by)?),
+        },
+        created: match before.and_then(|b| b.created.clone()) {
+            Some(kept) => Some(kept),
+            None => Some(safe(
+                "created",
+                &format_us(u64::try_from(now).unwrap_or(0) * 1_000_000),
+            )?),
+        },
     })
 }
 
@@ -4110,7 +4119,7 @@ fn plan_managed(
             let after = match &w.body {
                 None => None,
                 Some(v) => {
-                    let r = rule_of(v, &name, &w.by)?;
+                    let r = rule_of(v, &name, &w.by, before.as_ref())?;
                     entries.rules.push(r.clone());
                     Some(r)
                 }
@@ -5994,5 +6003,71 @@ mod top_range_tests {
         );
         assert_eq!(list(h0, h1), pairs(&[("10.0.0.1", 5), ("10.0.0.3", 4)]));
         assert_eq!(api.top_range(TopKind::Clients, h0, now + 1, 2).len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod rule_edit_tests {
+    use super::*;
+
+    fn maker(r: &telltale_config::RuleConfig) -> Option<&str> {
+        r.created_by
+            .as_ref()
+            .map(telltale_config::SafeString::as_str)
+    }
+
+    /// REQ: FLT-005 (T20.1, ADR-162) — an edit replaces the rule but keeps who made it and when;
+    /// a new rule is made by the writer, now.
+    #[test]
+    fn flt_005_editing_a_rule_keeps_its_maker_and_creation_time() {
+        let made = rule_of(
+            &serde_json::json!({ "action": "allow", "domain": "Game.Example.com", "devices": ["phone"] }),
+            "r-1",
+            "alice",
+            None,
+        )
+        .unwrap();
+        assert_eq!(maker(&made), Some("alice"));
+        assert_eq!(made.domain.as_str(), "game.example.com");
+        let first_created = made.created.clone();
+        assert!(first_created.is_some());
+
+        let mut earlier = made.clone();
+        earlier.created = Some(telltale_config::SafeString::new("2026-10-05T10:00:00Z").unwrap());
+        let edited = rule_of(
+            &serde_json::json!({
+                "action": "block", "domain": "game.example.com", "groups": ["kids"], "note": "later"
+            }),
+            "r-1",
+            "bob",
+            Some(&earlier),
+        )
+        .unwrap();
+        assert_eq!(maker(&edited), Some("alice"), "the editor isn't the maker");
+        assert_eq!(
+            edited
+                .created
+                .as_ref()
+                .map(telltale_config::SafeString::as_str),
+            Some("2026-10-05T10:00:00Z"),
+            "and the rule keeps its creation time"
+        );
+        assert_eq!(edited.action, telltale_config::RuleAction::Block);
+        assert!(edited.devices.is_empty(), "the body is the whole rule");
+        assert_eq!(edited.groups.len(), 1);
+
+        // A stored rule with no maker (older data) takes the writer and now.
+        let mut anonymous = made;
+        anonymous.created_by = None;
+        anonymous.created = None;
+        let taken = rule_of(
+            &serde_json::json!({ "action": "allow", "domain": "game.example.com" }),
+            "r-1",
+            "bob",
+            Some(&anonymous),
+        )
+        .unwrap();
+        assert_eq!(maker(&taken), Some("bob"));
+        assert!(taken.created.is_some());
     }
 }

@@ -2,7 +2,12 @@
   // REQ: FLT-005 (T6.12, ADR-067) — make a quick rule: allow or block a domain for a device,
   // a group, or everyone, for a while or for good. Used in the query log's "Why?" drawer
   // (prefilled from the query) and on the Quick rules page.
+  // REQ: FLT-005 (T20.1, ADR-162) — with `rule`, it edits that rule in place: the form starts
+  // from the rule, saves under its ID (the rule keeps who made it and when), and the end time
+  // stays as it was unless a new duration is picked. Pass a snapshot, not the live row: a list
+  // that reloads must not reset what the person is typing.
   import { api, type S } from '../api';
+  import { endsAt } from '../format';
   import ErrorNote from './ErrorNote.svelte';
   import SimulationCard from './SimulationCard.svelte';
 
@@ -10,8 +15,20 @@
     domain = '',
     device = '',
     group = '',
+    rule,
     onsaved,
-  }: { domain?: string; device?: string; group?: string; onsaved?: () => void } = $props();
+    oncancel,
+  }: {
+    domain?: string;
+    device?: string;
+    group?: string;
+    rule?: S['RuleInfo'];
+    onsaved?: (message: string) => void;
+    oncancel?: () => void;
+  } = $props();
+
+  // One datalist per form: the page can hold the new-rule form and an edit form together.
+  const listId = `quick-devices-${Math.random().toString(36).slice(2, 8)}`;
 
   let action = $state<'allow' | 'block'>('allow');
   let name = $state('');
@@ -27,6 +44,16 @@
   let devices = $state<S['ClientInfo'][]>([]);
 
   $effect(() => {
+    if (rule) {
+      action = rule.action === 'block' ? 'block' : 'allow';
+      name = rule.domain;
+      who = rule.devices[0] ?? '';
+      whichGroup = rule.groups[0] ?? '';
+      scope = rule.devices.length ? 'device' : rule.groups.length ? 'group' : 'everyone';
+      note = rule.note ?? '';
+      duration = rule.expires && (rule.expiresInSeconds ?? 0) > 0 ? 'keep' : 'always';
+      return;
+    }
     name = domain;
     who = device;
     whichGroup = group;
@@ -45,6 +72,12 @@
     { v: '1440', l: '1 day' },
     { v: 'always', l: 'Until I remove it' },
   ];
+  /** An edit can keep the end time the rule has (a new duration counts from now). */
+  const options = $derived(
+    rule?.expires && (rule.expiresInSeconds ?? 0) > 0
+      ? [{ v: 'keep', l: `Keep the current end (${endsAt(rule.expires)})` }, ...durations]
+      : durations,
+  );
 
   /** Minutes until local midnight (at least 1). */
   function untilMidnight(): number {
@@ -55,12 +88,14 @@
   }
 
   function ruleBody(): S['RuleInput'] {
-    const forMinutes = duration === 'always' ? undefined : duration === 'today' ? untilMidnight() : Number(duration);
+    const open = duration === 'always' || duration === 'keep';
+    const forMinutes = open ? undefined : duration === 'today' ? untilMidnight() : Number(duration);
     return {
       action,
       domain: name.trim(),
       devices: scope === 'device' ? [who.trim()] : [],
       groups: scope === 'group' ? [whichGroup] : [],
+      expires: duration === 'keep' ? rule?.expires : undefined,
       forMinutes,
       note: note.trim() || undefined,
     };
@@ -68,7 +103,8 @@
 
   /** REQ: OBS-024 — the rule as a dry run, replayed over the query log (nothing is saved). */
   async function simulateRule(): Promise<S['Simulation'] | null | undefined> {
-    const c = await api.putRule(`r-sim-${Date.now().toString(36)}`, ruleBody(), true, 'true');
+    // An edit is simulated under its own ID, so it replaces the rule instead of joining it.
+    const c = await api.putRule(rule?.id ?? `r-sim-${Date.now().toString(36)}`, ruleBody(), true, 'true');
     return c.simulation;
   }
 
@@ -78,11 +114,11 @@
     error = null;
     saved = '';
     const body = ruleBody();
-    const id = `r-${Date.now().toString(36)}`;
+    const id = rule?.id ?? `r-${Date.now().toString(36)}`;
     try {
       const c = await api.putRule(id, body);
       saved = c.impact ?? 'Saved.';
-      onsaved?.();
+      onsaved?.(saved);
     } catch (err) {
       error = err;
     } finally {
@@ -91,7 +127,7 @@
   }
 </script>
 
-<form class="quick" onsubmit={save} data-testid="quick-rule-form">
+<form class="quick" onsubmit={save} data-testid={rule ? 'quick-rule-edit-form' : 'quick-rule-form'}>
   <div class="row">
     <span class="seg" role="group" aria-label="Action">
       <button type="button" aria-pressed={action === 'allow'} onclick={() => (action = 'allow')}>Allow</button>
@@ -108,8 +144,8 @@
       </select>
     </label>
     {#if scope === 'device'}
-      <input aria-label="Device" list="quick-devices" placeholder="device name or IP" bind:value={who} required />
-      <datalist id="quick-devices">{#each devices as d (d.name)}<option value={d.name}></option>{/each}</datalist>
+      <input aria-label="Device" list={listId} placeholder="device name or IP" bind:value={who} required />
+      <datalist id={listId}>{#each devices as d (d.name)}<option value={d.name}></option>{/each}</datalist>
     {:else if scope === 'group'}
       <select aria-label="Group" bind:value={whichGroup} required>
         {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
@@ -117,19 +153,21 @@
     {/if}
     <label class="small">for
       <select aria-label="Duration" bind:value={duration}>
-        {#each durations as d (d.v)}<option value={d.v}>{d.l}</option>{/each}
+        {#each options as d (d.v)}<option value={d.v}>{d.l}</option>{/each}
       </select>
     </label>
   </div>
   <div class="row">
     <input class="grow" aria-label="Note" placeholder="Note (optional), e.g. Mom's game" bind:value={note} />
-    <button class="primary" disabled={saving || !name.trim()}>{saving ? 'Saving…' : 'Save rule'}</button>
+    <button class="primary" disabled={saving || !name.trim()}>{saving ? 'Saving…' : rule ? 'Save changes' : 'Save rule'}</button>
+    {#if rule}<button type="button" class="link" onclick={oncancel}>Cancel</button>{/if}
   </div>
   <p class="muted small">
-    Includes subdomains. Decides before any list. Devices may keep an old answer for a few minutes.
+    Includes subdomains. Decides before any list. Devices may keep an old answer for a few minutes.{#if rule} Saving keeps who made the
+    rule and when.{/if}
   </p>
   <ErrorNote {error} />
-  {#if saved}<div class="notice ok small" data-testid="quick-rule-saved">{saved}</div>{/if}
+  {#if saved && !rule}<div class="notice ok small" data-testid="quick-rule-saved">{saved}</div>{/if}
   {#if name.trim() && (scope !== 'device' || who.trim())}<SimulationCard run={simulateRule} />{/if}
 </form>
 

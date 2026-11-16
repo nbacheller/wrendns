@@ -71,3 +71,11 @@ export function logTime(rfc3339: string): string {
 export function logDate(rfc3339: string): string {
   return new Date(rfc3339).toLocaleDateString();
 }
+
+/** A rule's end time: "21:30", or "Tue 21:30" when it isn't today; empty without one. */
+export function endsAt(rfc3339: string | null | undefined): string {
+  if (!rfc3339) return '';
+  const d = new Date(rfc3339);
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { weekday: 'short' })} ${time}`;
+}

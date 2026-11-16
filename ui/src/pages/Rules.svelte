@@ -1,10 +1,11 @@
 <script lang="ts">
   // REQ: FLT-005 (T6.12, ADR-067) — quick rules: what's in effect (with a countdown), who made
   // it and why, removing one, and making a new one.
+  // REQ: FLT-005 (T20.1, ADR-162) — editing one in place, under its ID.
   import { api, type S } from '../lib/api';
   import { can } from '../lib/session.svelte';
   import { poll } from '../lib/poll';
-  import { duration, logDate } from '../lib/format';
+  import { duration, endsAt, logDate } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import QuickRuleForm from '../lib/components/QuickRuleForm.svelte';
@@ -12,6 +13,10 @@
   let rules = $state<S['RuleInfo'][]>([]);
   let error = $state<unknown>(null);
   let removing = $state('');
+  /** The rule being edited: a copy taken when Edit was pressed, so the list's reloads don't reset the form. */
+  let editing = $state<S['RuleInfo'] | null>(null);
+  /** What the last edit did. It sits on the page, not in the row: the row is redrawn when the list reloads. */
+  let edited = $state('');
   const writable = $derived(can('operator'));
 
   async function load() {
@@ -26,6 +31,7 @@
 
   async function remove(id: string) {
     removing = id;
+    edited = '';
     try {
       await api.deleteRule(id);
       await load();
@@ -35,12 +41,17 @@
       removing = '';
     }
   }
-  /** "21:30", or "Tue 21:30" when it isn't today. */
-  function ends(rfc3339: string | null | undefined): string {
-    if (!rfc3339) return '';
-    const d = new Date(rfc3339);
-    const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { weekday: 'short' })} ${time}`;
+  /** The form holds one device or one group (or everyone), so a rule with more is changed through the API. */
+  const fitsForm = (r: S['RuleInfo']) => r.devices.length + r.groups.length <= 1;
+  function edit(r: S['RuleInfo']) {
+    edited = '';
+    editing = $state.snapshot(r);
+  }
+  async function afterEdit(message: string) {
+    editing = null;
+    // The message names the saved rule (its domain may have changed), so it isn't named again here.
+    edited = `Rule updated. ${message}`;
+    await load();
   }
   const whom = (r: S['RuleInfo']) =>
     r.devices.length ? r.devices.join(', ') : r.groups.length ? `group ${r.groups.join(', ')}` : 'everyone';
@@ -55,11 +66,12 @@
     list: a device's rule beats its group's, which beats everyone's.
   </p>
   <ErrorNote {error} />
+  {#if edited}<div class="notice ok small" role="status" data-testid="rule-edited">{edited}</div>{/if}
 
   {#if writable}
     <section class="card">
       <h2>New rule</h2>
-      <QuickRuleForm onsaved={load} />
+      <QuickRuleForm onsaved={() => load()} />
     </section>
   {/if}
 
@@ -82,18 +94,30 @@
                 </td>
                 <td>{whom(r)}</td>
                 <td class="small">
-                  {#if r.expiresInSeconds == null}never{:else if r.expiresInSeconds === 0}expired{:else}in {duration(r.expiresInSeconds)}<div class="muted">at {ends(r.expires)}</div>{/if}
+                  {#if r.expiresInSeconds == null}never{:else if r.expiresInSeconds === 0}expired{:else}in {duration(r.expiresInSeconds)}<div class="muted">at {endsAt(r.expires)}</div>{/if}
                 </td>
                 <td class="small">{r.note ?? ''}</td>
                 <td class="small muted">{r.createdBy ?? (r.source === 'file' ? 'config file' : '')}{#if r.created}<div>{logDate(r.created)}</div>{/if}</td>
                 <td>
                   {#if r.source === 'api' && writable}
+                    {#if fitsForm(r) && r.expiresInSeconds !== 0}
+                      <button class="link" disabled={editing?.id === r.id} onclick={() => edit(r)}>Edit</button>
+                    {/if}
                     <button class="link" disabled={removing === r.id} onclick={() => remove(r.id)}>Remove</button>
+                    {#if !fitsForm(r)}<div class="muted small">Several devices or groups: change it through the API.</div>{/if}
                   {:else if r.source === 'file'}
                     <span class="muted small">in the config file</span>
                   {/if}
                 </td>
               </tr>
+              {#if editing?.id === r.id}
+                <tr data-testid="rule-edit-row">
+                  <td colspan="6">
+                    <h3>Edit rule</h3>
+                    <QuickRuleForm rule={editing} onsaved={afterEdit} oncancel={() => (editing = null)} />
+                  </td>
+                </tr>
+              {/if}
             {/each}
           </tbody>
         </table>
