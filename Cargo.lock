@@ -3700,6 +3700,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "telltale-support"
+version = "0.7.0"
+dependencies = [
+ "blake3",
+ "miniz_oxide",
+ "regex-automata",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "telltale-config",
+]
+
+[[package]]
 name = "telltale-telemetry"
 version = "0.7.0"
 dependencies = [

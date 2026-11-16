@@ -21,6 +21,7 @@ telltale-filter = { path = "../crates/telltale-filter" }
 regex-syntax = "0.8"
 telltale-store = { path = "../crates/telltale-store" }
 telltale-telemetry = { path = "../crates/telltale-telemetry" }
+telltale-support = { path = "../crates/telltale-support" }
 
 [[bin]]
 name = "parse_query"
@@ -60,6 +61,13 @@ bench = false
 [[bin]]
 name = "qlog_segment"
 path = "fuzz_targets/qlog_segment.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "support_redact"
+path = "fuzz_targets/support_redact.rs"
 test = false
 doc = false
 bench = false
