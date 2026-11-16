@@ -1636,6 +1636,10 @@ impl Backend for ApiBackend {
                 .as_ref()
                 .map(|c| c.manifest.clone())
         });
+        // REQ: OBS-009 — this node's own hits by list name. `GET /api/v1/lists` replaces them with
+        // the cluster's (`list_hits`); a caller that reads this directly, like the support
+        // package, still gets this node's.
+        let decided = self.src.shadow.decided();
         cfg.list
             .iter()
             .map(|l| {
@@ -1699,8 +1703,7 @@ impl Backend for ApiBackend {
                     entries,
                     unique,
                     regex_skipped,
-                    // REQ: OBS-009 — the API fills it in from `list_hits` (every node's).
-                    hits: 0,
+                    hits: decided.get(&*l.name).copied().unwrap_or(0),
                     overlap,
                     last_checked_unix_seconds: meta.and_then(|m| m.last_attempt),
                     last_changed_unix_seconds: meta.and_then(|m| m.last_changed),
