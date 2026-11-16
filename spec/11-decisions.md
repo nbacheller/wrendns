@@ -1291,6 +1291,16 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-165 — UniFi: name offline clients from the console's client history and configured clients (Proposed)
+**Context:** T8.2, ADR-080 ("not done: UniFi's offline known clients"). `stat/sta` lists only connected clients, so a device that has since left (a phone off Wi-Fi, a laptop asleep) loses its name: its queries in the log and the top lists show a bare address, though UniFi still has its alias.
+**Decision (proposed):**
+- After `stat/sta`, each UniFi poll also reads the v2 client history (`/v2/api/site/{site}/clients/history?withinHours=0`, Network 7+, every client the console remembers with its `last_ip`; it answers to an API key) and the configured clients (`/api/s/{site}/rest/user`: aliases and fixed addresses), with the same API key or login cookie.
+- Both are best effort: a console that can't answer either (an older Network application has no v2 API) still gives its connected clients, and the failure is logged at debug only, so the router isn't marked as failing.
+- A known client is used only if it has a name (an unnamed one adds nothing a bare address doesn't). Merged by MAC: a connected client keeps its address and takes a known name only when it has none. An offline client gets its last address, else its fixed one (only while `use_fixedip` is on: UniFi keeps `fixed_ip` after a reservation is turned off), and only if no connected client holds it; between offline clients claiming one address, the most recently seen wins.
+**Consequences:**
+- Offline devices keep their UniFi names in the UI and the query log. Two more read-only requests per poll (every `interval_secs`, 300 by default); a site with thousands of remembered clients makes a larger answer, still within the 16 MiB cap.
+- A stale last address can name a device UniFi doesn't see now (a guest that left, its address since leased to something unnamed TelltaleDNS can't tell apart). Names configured in TelltaleDNS and its own DHCP leases still win.
+
 ## ADR-164 — Debug files for every build: link once with line tables, publish the split-off symbols beside the stripped binary (Accepted)
 **Context:** GitHub issue #7. The release binary is stripped (`strip = true`), so a stack taken from a hung node (a `gdb` or `eu-stack` capture, or the watchdog's dump, ADR-163) is a list of addresses nobody can read. The owner promised the reporter "debug symbols with 0.7.0" (2026-11-14). Two things limit the options: the image must stay under 15 MiB compressed per architecture (NFR-001), and the binaries are built reproducibly with `cargo auditable` (NFR-005), whose dependency data (`.dep-v0`) must survive.
 **Decision (proposed):**
@@ -2364,7 +2374,7 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - `[[router]]` entries are polled read-only (`interval_secs`, 300; 15 s after a failure). UniFi: `stat/sta` (connected clients) with an API key (`X-API-KEY`), or a local user's login (UniFi OS `/api/auth/login` and `/proxy/network/...`, falling back to the classic `/api/login`); the UniFi alias wins over the host name. OPNsense: the lease search of Dnsmasq, then Kea, then ISC, with the API key and secret (basic auth).
 - The result replaces that router's part of a lease view next to the DHCP server's; device names fall back to configured clients, then DHCP leases, then router leases. `GET /api/v1/dhcp/leases` lists both with a `source`.
 - Self-signed consoles: `tls_ca` (the console's certificate), or `tls_insecure_skip_verify` with a configuration warning. Secrets come from files.
-- Not done: OPNsense static mappings without a lease, UniFi's offline known clients (`rest/user`), pfSense, OpenWrt.
+- Not done: OPNsense static mappings without a lease, pfSense, OpenWrt. (UniFi's offline known clients: ADR-165.)
 
 **Consequences:**
 - Device names appear on networks where the router runs DHCP, with no change on the router beyond a read-only account or key.
