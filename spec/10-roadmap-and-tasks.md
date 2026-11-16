@@ -703,7 +703,7 @@ The owner held 0.7.0 for this (2026-11-16): the reply on #7 promised "debug symb
 - [x] **T21.3 Stacks in the dump.** *(OPS-012, NFR-003; ADR-163)* Each thread reports its own return addresses when the watchdog signals it (`telltale-net::stacks`, the only `unsafe`, no new crate).
   - *AC:* (1) a blocked thread's stack holds its own function; (2) a thread that can't answer is listed as not answering within the 5 s wait; (3) a second capture works; (4) the dump's addresses resolve with the debug file (the e2e on a debug build).
   - *Done 2026-11-16:* `telltale-net::stacks` (SIGUSR2 and `_Unwind_Backtrace` declared by FFI, no new crate); two tests; the real-process e2e resolves the blocked workers to the wedge's function with `addr2line` on a debug build.
-  - *Open:* **untested on arm64 and armv7**: both build and link in CI (and the stripped binaries run in the QEMU smoke test), but the build VM can't run ARM, so whether the unwinder crosses the signal frame there is unproven. The capture is bounded (5 s) and a thread that doesn't answer is listed, so the worst case is a dump with fewer frames.
+  - *Open:* **untested on armv7**: it builds and links in CI and the stripped binary runs in the QEMU smoke test, but nothing has taken a stack on a 32-bit ARM machine. The capture is bounded (5 s) and a thread that doesn't answer is listed, so the worst case is a dump with fewer frames. On **arm64** the CI test job (a real aarch64 runner) runs the two stack tests and passes them: a blocked thread's stack holds its own function there too (checked 2026-11-16 on `73ba8f2`).
 
 ## M20 — Quick rule Edit (GitHub issue #57)
 
