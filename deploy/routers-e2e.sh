@@ -29,7 +29,7 @@ API=http://127.0.0.1:26992
 field() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)"; }
 
 cat > "$E/fake.py" <<'EOF'
-import base64, http.server, json, sys, threading
+import base64, http.server, json, sys, threading, time
 class UniFi(http.server.BaseHTTPRequestHandler):
     def reply(self, code, obj, headers=()):
         body = json.dumps(obj).encode()
@@ -53,9 +53,14 @@ class UniFi(http.server.BaseHTTPRequestHandler):
                 {"mac": "02:00:00:00:00:01", "ip": "127.0.0.1", "hostname": "laptop-77", "name": "Desk laptop"},
                 {"mac": "02:00:00:00:00:02", "ip": "192.168.1.31", "hostname": "roku"}]})
         elif self.path.startswith("/proxy/network/v2/api/site/default/clients/history?") and "TOKEN=abc123" in (self.headers.get("cookie") or ""):
+            # What the console was asked for (its window), for the check below.
+            open(sys.argv[1] + "/history.path", "w").write(self.path)
+            now = int(time.time())
             self.reply(200, [
-                {"mac": "02:00:00:00:00:04", "last_ip": "192.168.1.50", "name": "Old iPad", "last_seen": 1700000000},
-                {"mac": "02:00:00:00:00:05", "last_ip": "192.168.1.31", "hostname": "stale", "last_seen": 1600000000}])
+                {"mac": "02:00:00:00:00:04", "last_ip": "192.168.1.50", "name": "Old iPad", "last_seen": now - 3600},
+                {"mac": "02:00:00:00:00:05", "last_ip": "192.168.1.31", "hostname": "stale", "last_seen": now - 7200},
+                # Outside the default 30 days: the console may still send it, TelltaleDNS doesn't use it.
+                {"mac": "02:00:00:00:00:07", "last_ip": "192.168.1.52", "name": "Long gone laptop", "last_seen": now - 90 * 86400}])
         elif self.path == "/proxy/network/api/s/default/rest/user" and "TOKEN=abc123" in (self.headers.get("cookie") or ""):
             self.reply(200, {"meta": {"rc": "ok"}, "data": [
                 {"mac": "02:00:00:00:00:06", "use_fixedip": True, "fixed_ip": "192.168.1.51", "name": "Garage camera"}]})
@@ -78,7 +83,7 @@ s2 = http.server.ThreadingHTTPServer(("127.0.0.1", 26982), OPN)
 threading.Thread(target=s1.serve_forever, daemon=True).start()
 s2.serve_forever()
 EOF
-python3 "$E/fake.py" & H=$!
+python3 "$E/fake.py" "$E" & H=$!
 for _ in $(seq 50); do curl -s -o /dev/null http://127.0.0.1:26982/ && break; sleep 0.1; done
 echo -n s3cret > "$E/unifi-pass"
 echo -n key1 > "$E/opn-key"
@@ -132,9 +137,12 @@ assert items["127.0.0.1"]["hostname"] == "Desk laptop" and items["127.0.0.1"]["s
 assert items["192.168.1.31"]["hostname"] == "roku", "an offline client must not take the address of a connected one"
 assert items["192.168.1.50"]["hostname"] == "Old iPad", "offline clients from the v2 history"
 assert items["192.168.1.51"]["hostname"] == "Garage camera", "known clients from rest/user"
+assert "192.168.1.52" not in items, "a client last seen 90 days ago is outside offline_days (30)"
 assert items["192.168.1.40"]["hostname"] == "printer", "Kea leases from OPNsense"
 print(f"leases: {len(items)} from the routers")
 ' || fail "leases API"
+# REQ: T8.2 (ADR-166) — the console is asked only for the window (30 days = 720 hours).
+grep -q "withinHours=720" "$E/history.path" || fail "the history request didn't carry the window: $(cat "$E/history.path")"
 
 # A device named from the router in the query log.
 dig +short -p 25992 @127.0.0.1 nas.routers.test >/dev/null

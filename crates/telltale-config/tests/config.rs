@@ -1386,3 +1386,25 @@ note = "hourly reverse-DNS sweep"
         assert!(err.contains(why), "{why}: {err}");
     }
 }
+
+/// REQ: T8.2, CLU-003 (ADR-166) — `offline_days`: 30 unless set, 0 turns offline names off,
+/// more than a year is refused, and the default is not written back, so a node on an older
+/// build (the section refuses fields it doesn't know) still reads the shared configuration.
+#[test]
+fn t8_2_router_offline_days() {
+    const UNIFI: &str = "[[router]]\nname = \"udm\"\ntype = \"unifi\"\nurl = \"https://192.168.1.1\"\napi_key_file = \"/k\"\n";
+    let default = load_str(UNIFI).unwrap();
+    assert_eq!(default.config.router[0].offline_days, 30);
+    let written = serde_json::to_value(&default.config.router[0]).unwrap();
+    assert!(written.get("offline_days").is_none(), "{written}");
+
+    let off = load_str(&format!("{UNIFI}offline_days = 0\n")).unwrap();
+    assert_eq!(off.config.router[0].offline_days, 0);
+    let written = serde_json::to_value(&off.config.router[0]).unwrap();
+    assert_eq!(written["offline_days"], 0);
+
+    let year = load_str(&format!("{UNIFI}offline_days = 365\n")).unwrap();
+    assert_eq!(year.config.router[0].offline_days, 365);
+    let errs = load_str(&format!("{UNIFI}offline_days = 366\n")).unwrap_err();
+    assert_eq!(paths(&errs), ["router[0].offline_days"]);
+}

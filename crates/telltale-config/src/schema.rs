@@ -1268,10 +1268,29 @@ pub struct RouterConfig {
     /// Seconds between reads.
     #[serde(default = "default_router_interval")]
     pub interval_secs: u32,
+    /// UniFi: also name the clients that are offline now, if UniFi saw them within this many
+    /// days (their queries then show a name, not a bare address); at most 1,024 of them, most
+    /// recently seen first. 0: only the connected clients.
+    #[serde(
+        default = "default_router_offline_days",
+        skip_serializing_if = "is_default_offline_days"
+    )]
+    pub offline_days: u32,
 }
 
 const fn default_router_interval() -> u32 {
     300
+}
+
+const fn default_router_offline_days() -> u32 {
+    30
+}
+
+// REQ: T8.2, CLU-003 — not written while it is the default, so a node that doesn't know the
+// field (a rolling upgrade; the section refuses unknown fields) still reads the shared config.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` takes a reference
+const fn is_default_offline_days(d: &u32) -> bool {
+    *d == default_router_offline_days()
 }
 
 /// A router integration's kind.

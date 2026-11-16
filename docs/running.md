@@ -1295,6 +1295,7 @@ api_key_file = "/etc/telltale/unifi-key"   # UniFi Network 9+ (Settings → Cont
 # username = "telltale"                # or a local read-only user...
 # password_file = "/etc/telltale/unifi-pass"
 # site = "default"
+# offline_days = 30                    # also name clients that are offline now, if UniFi saw them this recently (0: only connected ones)
 tls_ca = "/etc/telltale/udm.pem"       # the console's own certificate (self-signed)
 tls_server_name = "unifi.local"        # the name in it (UniFi consoles name themselves unifi.local)
 
@@ -1305,7 +1306,7 @@ url = "https://opnsense.lan"
 api_key_file = "/etc/telltale/opn-key"     # System → Access → Users → API keys
 api_secret_file = "/etc/telltale/opn-secret"
 ```
-- UniFi: the connected clients, plus the offline clients UniFi still knows (its client history and configured clients), named by the alias you gave them in UniFi, else their host name. An offline client is listed only when it has a name, at its last or fixed address, and never over a connected client's address; a console without the client history (Network before 7) gives the configured clients. OPNsense: the DHCP leases (Dnsmasq, Kea, or ISC, whichever is running).
+- UniFi: the connected clients, plus the offline clients UniFi still knows (its client history and configured clients), named by the alias you gave them in UniFi, else their host name. An offline client is one UniFi saw within `offline_days` (30 by default; 0 for only the connected clients; at most 365), and at most the 1,024 most recently seen are kept. It is listed only when it has a name, at its last or fixed address, and never over a connected client's address. It names the device in the query log, but it doesn't count as seen for device identification. A console without the client history (Network before 7) gives the configured clients. OPNsense: the DHCP leases (Dnsmasq, Kea, or ISC, whichever is running).
 - A self-signed console: save its certificate (`openssl s_client -connect 192.168.1.1:443 </dev/null | openssl x509 > udm.pem`) as `tls_ca`. Its certificate names `unifi.local`, not the address you reach it at, so set `tls_server_name` to the name in it (`openssl x509 -in udm.pem -noout -ext subjectAltName` shows it): the console is then verified, and only that certificate is trusted. `tls_insecure_skip_verify = true` also works, but then anything on your network could pose as the console and receive the API key.
 - Read every `interval_secs` (300); a router that doesn't answer is asked again after 15 seconds and keeps its last list meanwhile.
 - Names you give devices in TelltaleDNS win; then the routers'. `GET /api/v1/dhcp/leases` lists them (`source = router`).

@@ -83,7 +83,7 @@ pub(crate) async fn run(
                     let m: Leases = names
                         .iter()
                         .map(|(ip, (name, _))| {
-                            (*ip, Lease { mac: String::new(), ip: *ip, hostname: Some(name.clone()), expires: 0 })
+                            (*ip, Lease { mac: String::new(), ip: *ip, hostname: Some(name.clone()), expires: 0, offline: false })
                         })
                         .collect();
                     view.store(Arc::new(m));

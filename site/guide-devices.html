@@ -169,7 +169,7 @@ url = "https://opnsense.lan"
 api_key_file = "/etc/telltale/opn-key"     # System → Access → Users → API keys
 api_secret_file = "/etc/telltale/opn-secret"</code></pre>
   <ul>
-    <li><b>UniFi</b> gives the connected clients and the offline ones it still knows (at their last address), named by their UniFi alias, else their host name. <b>OPNsense</b> gives its DHCP leases (Dnsmasq, Kea, or ISC).</li>
+    <li><b>UniFi</b> gives the connected clients and the offline ones it saw in the last 30 days (<code>offline_days</code>; 0 for connected ones only), at their last address, named by their UniFi alias, else their host name. <b>OPNsense</b> gives its DHCP leases (Dnsmasq, Kea, or ISC).</li>
     <li><b>A self-signed UniFi console:</b> save its certificate as <code>tls_ca</code> (<code>openssl s_client -connect 192.168.1.1:443 &lt;/dev/null | openssl x509 &gt; udm.pem</code>). It names <code>unifi.local</code>, not the address you reach it at, so set <code>tls_server_name</code> to that name. The console is then verified, and only that certificate is trusted.</li>
     <li>Credentials stay in files. Routers are read every <code>interval_secs</code> (300). Changes to <code>[[router]]</code> need a restart.</li>
   </ul>
