@@ -354,6 +354,11 @@ pub trait Backend: Send + Sync + 'static {
     fn qlog_privacy_level(&self) -> u8 {
         0
     }
+    /// REQ: OBS-029 (ADR-129) — the network's queries (or blocked queries) per slot, from the
+    /// time buckets (every node's, summed; each node sums its own).
+    fn heatmap_network(&self, q: &heatmap::NetworkQuery) -> Vec<u64> {
+        q.slots_of(&self.timeseries(q.step(), q.from_s, q.to_s))
+    }
     /// REQ: OBS-029 (ADR-129) — a device's or a name's hours from the hourly top lists (every
     /// node's, summed); `privacy_level` when the privacy level hides them.
     fn heatmap_key(&self, q: &heatmap::KeyQuery) -> Result<heatmap::KeyPart, Problem> {

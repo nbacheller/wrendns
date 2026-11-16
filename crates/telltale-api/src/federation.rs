@@ -13,6 +13,35 @@ use crate::model::{
     ClientStatusCounts, LatencyRow, QueryPage, QueryRow, ScanStats, TimeBucket, TopItem,
 };
 
+/// The most buckets one peer is asked for at once. A bucket is about 0.5–2 KB of JSON, so a
+/// chunk stays well under the cluster channel's 1 MiB answer.
+pub const TIMESERIES_CHUNK: u64 = 240;
+
+/// REQ: CLU-002 (regression 2026-11-16) — `[from_s, to_s)` split into consecutive windows of
+/// at most [`TIMESERIES_CHUNK`] buckets of `step`, each asked of a peer on its own: a busy
+/// node's 24 hours of minutes is over the cluster channel's 1 MiB frame, and a peer whose
+/// answer is too large is dropped as "didn't answer". Ranges are half-open, so the windows
+/// partition the buckets: none is counted twice.
+#[must_use]
+pub fn timeseries_chunks(step: crate::model::Step, from_s: u64, to_s: u64) -> Vec<(u64, u64)> {
+    use crate::model::Step;
+    let width = match step {
+        Step::Second => 1,
+        Step::Minute => 60,
+        Step::Hour => 3600,
+        Step::Day => 86_400,
+    };
+    let span = width * TIMESERIES_CHUNK;
+    let mut out = Vec::new();
+    let mut at = from_s;
+    while at < to_s {
+        let end = to_s.min(at.saturating_add(span));
+        out.push((at, end));
+        at = end;
+    }
+    out
+}
+
 /// Sums buckets with the same start.
 pub fn merge_timeseries(parts: Vec<Vec<TimeBucket>>) -> Vec<TimeBucket> {
     let mut by_start: BTreeMap<u64, TimeBucket> = BTreeMap::new();
@@ -364,6 +393,28 @@ mod tests {
             ]
         );
         assert!(merge_list_hits(Vec::new()).is_empty());
+    }
+
+    // REQ: CLU-002 (regression 2026-11-16) — 48 hours of minutes go to a peer as 12 windows of
+    // 4 hours, end to end; a short window is one; an empty one none.
+    #[test]
+    fn clu_002_timeseries_windows_partition_the_range() {
+        use crate::model::Step;
+        let from = 1_791_072_030;
+        let w = timeseries_chunks(Step::Minute, from, from + 48 * 3600);
+        assert_eq!(w.len(), 12);
+        assert_eq!(w[0], (from, from + 4 * 3600));
+        assert!(w.windows(2).all(|p| p[0].1 == p[1].0));
+        assert_eq!(w.last().map(|x| x.1), Some(from + 48 * 3600));
+        assert_eq!(
+            timeseries_chunks(Step::Minute, from, from + 3600),
+            [(from, from + 3600)]
+        );
+        assert_eq!(
+            timeseries_chunks(Step::Hour, from, from + 400 * 86_400).len(),
+            40
+        );
+        assert_eq!(timeseries_chunks(Step::Second, from, from), []);
     }
 
     // REQ: OBS-018 — two nodes' shadow counts add up by list, top names by name, the earliest

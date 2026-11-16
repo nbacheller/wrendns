@@ -41,6 +41,58 @@ pub struct HeatmapParams {
     pub scope: Option<String>,
 }
 
+/// What each node is asked for the network: its own queries (or blocked queries) per slot of
+/// `[from_s, to_s)`, `from_s` on a slot boundary. Each node sums its own minutes into slots:
+/// a week of minute buckets is several megabytes, over the cluster channel's 1 MiB frame.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkQuery {
+    pub from_s: u64,
+    pub to_s: u64,
+    /// Seconds per slot.
+    pub slot: u64,
+    pub blocked: bool,
+}
+
+impl NetworkQuery {
+    /// How many slots the answer has.
+    #[must_use]
+    pub fn slot_count(&self) -> usize {
+        usize::try_from(
+            self.to_s
+                .saturating_sub(self.from_s)
+                .div_ceil(self.slot.max(1)),
+        )
+        .unwrap_or(0)
+    }
+    /// The time buckets the slots are summed from: hours for hour slots, minutes otherwise.
+    #[must_use]
+    pub fn step(&self) -> Step {
+        if self.slot >= 3600 {
+            Step::Hour
+        } else {
+            Step::Minute
+        }
+    }
+    /// One node's slots from its time buckets.
+    #[must_use]
+    pub fn slots_of(&self, buckets: &[crate::model::TimeBucket]) -> Vec<u64> {
+        network_values(
+            buckets,
+            self.blocked,
+            self.from_s,
+            self.slot,
+            self.slot_count(),
+        )
+    }
+}
+
+/// Adds one node's slots into the sum.
+pub fn add_slots(sum: &mut [u64], part: &[u64]) {
+    for (s, p) in sum.iter_mut().zip(part) {
+        *s += p;
+    }
+}
+
 /// What each node is asked for a device or a name (hour slots of `[from_s, to_s)`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyQuery {
@@ -273,14 +325,15 @@ pub(crate) async fn stats_heatmap(
     };
     match kind.as_str() {
         "network" => {
-            let step = if slot == 3600 {
-                Step::Hour
-            } else {
-                Step::Minute
+            let q = NetworkQuery {
+                from_s,
+                to_s: to,
+                slot,
+                blocked,
             };
             let bk = Arc::clone(&b);
-            let buckets = blocking(move || Ok(bk.timeseries(step, from_s, to))).await?;
-            out.values = network_values(&buckets, blocked, from_s, slot, n);
+            out.values = blocking(move || Ok(bk.heatmap_network(&q))).await?;
+            out.values.resize(n, 0);
         }
         "client" | "name" => {
             let key = check_key(&kind, p.key.as_deref(), slot, blocked)?;
@@ -386,6 +439,47 @@ mod tests {
             let minute_sum: u64 = minutes[d * 1440..(d + 1) * 1440].iter().map(|m| m.1).sum();
             assert_eq!(cell_sum, minute_sum, "day {d}");
         }
+    }
+
+    // REQ: OBS-029, CLU-002 (regression 2026-11-16) — a peer's part of a week's 15-minute grid
+    // is its slots, not its minutes: a week of a busy node's minute buckets is over the
+    // cluster channel's 1 MiB frame (the peer was dropped as "didn't answer"); its slots are a
+    // few kilobytes, and sum to the same counts.
+    #[test]
+    fn obs_029_a_peers_network_part_is_its_slots() {
+        let day0 = 1_791_072_000;
+        let keys = |ks: &[&str]| -> std::collections::BTreeMap<String, u32> {
+            ks.iter().map(|k| ((*k).to_owned(), 3)).collect()
+        };
+        let minutes: Vec<crate::model::TimeBucket> = (0..7 * 1440)
+            .map(|m| crate::model::TimeBucket {
+                start_unix_seconds: day0 + m * 60,
+                total: 30,
+                by_status: keys(&["blocked", "cached", "forwarded", "local"]),
+                by_qtype: keys(&["A", "AAAA", "HTTPS", "PTR", "SRV", "TXT"]),
+                by_rcode: keys(&["NOERROR", "NXDOMAIN", "SERVFAIL"]),
+                by_group: keys(&["default", "kids"]),
+                ..crate::model::TimeBucket::default()
+            })
+            .collect();
+        assert!(serde_json::to_vec(&minutes).unwrap().len() > 1 << 20);
+        let q = NetworkQuery {
+            from_s: day0,
+            to_s: day0 + 7 * 86_400,
+            slot: 900,
+            blocked: false,
+        };
+        assert_eq!(q.step(), Step::Minute);
+        assert_eq!(q.slot_count(), 7 * 96);
+        let part = q.slots_of(&minutes);
+        assert!(serde_json::to_vec(&part).unwrap().len() < 16_384);
+        assert!(part.iter().all(|v| *v == 15 * 30));
+        let blocked = NetworkQuery { blocked: true, ..q }.slots_of(&minutes);
+        assert!(blocked.iter().all(|v| *v == 15 * 3));
+        let mut sum = vec![0; q.slot_count()];
+        add_slots(&mut sum, &part);
+        add_slots(&mut sum, &part);
+        assert_eq!(sum[0], 2 * 15 * 30);
     }
 
     // REQ: OBS-029 — nodes add up; an hour is covered only when every node had the key.
