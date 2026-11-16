@@ -285,6 +285,8 @@ pub(crate) fn one_line(s: &str) -> String {
 
 /// Pi-hole's settings, from `pihole.toml` (v6) or `setupVars.conf` + friends (v5).
 #[derive(Debug, Default)]
+// One field per Pi-hole switch, as Pi-hole names them; an enum set would only obscure them.
+#[allow(clippy::struct_excessive_bools)]
 struct Settings {
     upstreams: Vec<String>,
     hosts: Vec<String>,
@@ -293,6 +295,11 @@ struct Settings {
     rev_servers: Vec<String>,
     dnssec: bool,
     rate_limit: Option<(u32, u32)>,
+    /// REQ: DNS-019 (ADR-168) — `domain-needed`: never forward bare names.
+    domain_needed: bool,
+    /// REQ: DNS-019 (ADR-168) — iCloud Private Relay and Firefox canary handling, when set.
+    icloud_relay: Option<bool>,
+    mozilla_canary: Option<bool>,
     blocking_mode: Option<String>,
     blocking_off: bool,
     dhcp_hosts: Vec<String>,
@@ -314,6 +321,9 @@ const V6_MAPPED: &[&str] = &[
     "dns.blocking.active",
     "dhcp.hosts",
     "dhcp.active",
+    "dns.domainNeeded",
+    "dns.specialDomains.iCloudPrivateRelay",
+    "dns.specialDomains.mozillaCanary",
 ];
 
 fn strings(v: Option<&toml::Value>) -> Vec<String> {
@@ -347,6 +357,9 @@ fn v6_settings(text: &str) -> Result<Settings, String> {
         blocking_off: get("dns.blocking.active").and_then(toml::Value::as_bool) == Some(false),
         dhcp_hosts: strings(get("dhcp.hosts")),
         dhcp_active: get("dhcp.active").and_then(toml::Value::as_bool) == Some(true),
+        domain_needed: get("dns.domainNeeded").and_then(toml::Value::as_bool) == Some(true),
+        icloud_relay: get("dns.specialDomains.iCloudPrivateRelay").and_then(toml::Value::as_bool),
+        mozilla_canary: get("dns.specialDomains.mozillaCanary").and_then(toml::Value::as_bool),
         ..Settings::default()
     };
     let num = |p: &str| {
@@ -405,6 +418,9 @@ const V5_MAPPED: &[&str] = &[
     "DHCP_ACTIVE",
     "RATE_LIMIT",
     "BLOCKINGMODE",
+    "DNS_FQDN_REQUIRED",
+    "BLOCK_ICLOUD_PR",
+    "MOZILLA_CANARY",
     // The old install's own plumbing.
     "PIHOLE_INTERFACE",
     "IPV4_ADDRESS",
@@ -425,6 +441,13 @@ fn v5_settings(src: &Source) -> Settings {
         blocking_off: setup.get("BLOCKING_ENABLED").is_some_and(|v| v == "false"),
         dhcp_active: on("DHCP_ACTIVE"),
         blocking_mode: ftl.get("BLOCKINGMODE").cloned(),
+        domain_needed: on("DNS_FQDN_REQUIRED"),
+        icloud_relay: ftl
+            .get("BLOCK_ICLOUD_PR")
+            .map(|v| !v.trim().eq_ignore_ascii_case("false")),
+        mozilla_canary: ftl
+            .get("MOZILLA_CANARY")
+            .map(|v| !v.trim().eq_ignore_ascii_case("false")),
         ..Settings::default()
     };
     // PIHOLE_DNS_1, _2, ... in order.
@@ -1218,6 +1241,21 @@ impl<'a> Builder<'a> {
                     "\n[ratelimit]\nqueries = {count}\nwindow_secs = {interval}"
                 );
             }
+        }
+        // REQ: DNS-019 (ADR-168) — special names, only where Pi-hole differs from our defaults
+        // (both block the iCloud and Firefox names by default; domain-needed is off in both).
+        let mut special = String::new();
+        if self.s.domain_needed {
+            special.push_str("single_label_nxdomain = true\n");
+        }
+        if self.s.icloud_relay == Some(false) {
+            special.push_str("block_icloud_private_relay = false\n");
+        }
+        if self.s.mozilla_canary == Some(false) {
+            special.push_str("block_firefox_canary = false\n");
+        }
+        if !special.is_empty() {
+            let _ = write!(head, "\n[special]\n{special}");
         }
         if !self.s.unmapped.is_empty() {
             let keys: Vec<String> = self.s.unmapped.iter().map(|k| one_line(k)).collect();

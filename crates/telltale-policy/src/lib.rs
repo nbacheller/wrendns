@@ -23,7 +23,7 @@ pub use clients::{
 pub use local::{LoadReport, LocalData, device_label, reverse_name};
 pub use quick::{QuickMatch, QuickRule, QuickRules, RuleScope, quick_ref};
 pub use ratelimit::RateLimiter;
-pub use special::{Special, classify};
+pub use special::{Special, classify, ddr_records, is_ddr_query};
 pub use workloads::{GroupOrigin, Interval, Pod, Workload, WorkloadTable, Workloads};
 
 /// True if `ip` may use the resolver (`spec/08` §6: refuse everyone outside these networks).

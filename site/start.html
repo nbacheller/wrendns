@@ -289,7 +289,7 @@ strategy = "fastest"</code></pre>
   <h2>Bring your setup with you</h2>
   <ol class="guide">
     <li>In Pi-hole, open <b>Settings → Teleporter</b> and click <b>Export</b> (v6 gives a <code>.zip</code>, v5 a <code>.tar.gz</code>).</li>
-    <li>Run <code>telltale import pihole pi-hole_teleporter.zip -o pihole.toml</code>. It carries over your upstreams, conditional forwarding, local DNS and CNAME records, adlists, allowed and denied domains (exact and regex), groups, clients, and DHCP reservations as named devices.</li>
+    <li>Run <code>telltale import pihole pi-hole_teleporter.zip -o pihole.toml</code>. It carries over your upstreams, conditional forwarding, local DNS and CNAME records, adlists, allowed and denied domains (exact and regex), groups, clients, DHCP reservations as named devices, and the "never forward non-FQDN queries" and iCloud Private Relay settings.</li>
     <li>Read the notes at the top of <code>pihole.toml</code>: they list everything that has no equivalent (for example clients matched by host name, or the DHCP server). Then add the file to your configuration.</li>
   </ol>
   <p class="muted">Query history and passwords aren't imported. Keep Pi-hole running until TelltaleDNS answers the way you expect, then point your router at TelltaleDNS.</p>

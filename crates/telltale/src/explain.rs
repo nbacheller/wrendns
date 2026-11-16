@@ -323,6 +323,11 @@ pub(crate) fn explain(
     if special == Some(Special::PrivatePtr) && !selection.as_ref().is_some_and(|s| s.routed) {
         e.outcome = Outcome::Special;
         e.summary = "private reverse lookup with no [[route]] for it: NXDOMAIN without forwarding (RFC 6303)".into();
+    } else if special == Some(Special::SingleLabel) && !selection.as_ref().is_some_and(|s| s.routed)
+    {
+        // REQ: DNS-019 (ADR-168)
+        e.outcome = Outcome::Special;
+        e.summary = "single-label name with no local answer and no [[route]] for it: NXDOMAIN without forwarding ([special] single_label_nxdomain)".into();
     } else if let Some(sel) = selection {
         e.route = Some(RouteInfo {
             group: sel.group.name.clone(),
@@ -543,6 +548,18 @@ pub(crate) fn answered_early(
         Some(Special::Refused) => "special-use query: REFUSED without forwarding",
         Some(Special::Nxdomain) => "special-use name: NXDOMAIN without forwarding",
         Some(Special::Localhost) => "localhost: answered with loopback addresses",
+        // REQ: DNS-019 (ADR-168)
+        Some(Special::PrivateRelay) => {
+            "iCloud Private Relay name: NXDOMAIN without forwarding, so Apple devices keep using this resolver ([special] block_icloud_private_relay)"
+        }
+        Some(Special::ResolverArpa)
+            if telltale_policy::is_ddr_query(q) && !policy.ddr.is_empty() =>
+        {
+            "designated resolver discovery (RFC 9462): answered with this node's encrypted listeners ([special] ddr_name)"
+        }
+        Some(Special::ResolverArpa) => {
+            "resolver.arpa is answered here and never forwarded: no data (RFC 9462)"
+        }
         _ => {
             // Local records are authoritative.
             let mut out = [0u8; 4096];

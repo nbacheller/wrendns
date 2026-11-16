@@ -2016,6 +2016,21 @@ pub struct SpecialConfig {
     pub private_ptr_nxdomain: bool,
     /// CHAOS-class `version.bind`, `id.server`, ... → REFUSED.
     pub refuse_chaos: bool,
+    /// `mask.icloud.com` and `mask-h2.icloud.com` → NXDOMAIN, so Apple devices turn iCloud
+    /// Private Relay off on this network and their queries keep coming here, filtered
+    /// (ADR-168; Pi-hole's `iCloudPrivateRelay`).
+    pub block_icloud_private_relay: bool,
+    /// Single-label names (`nas`, no dot) asked for A, AAAA, or HTTPS that no local record,
+    /// zone, or device name answers → NXDOMAIN instead of forwarding them, unless a
+    /// `[[route]]` matches them (ADR-168; Pi-hole and dnsmasq `domain-needed`).
+    pub single_label_nxdomain: bool,
+    /// The name the certificates of this node's DoT, DoH, and DoQ listeners carry (such as
+    /// `dns.example.com`). Set, `_dns.resolver.arpa` SVCB answers advertise those listeners
+    /// for Discovery of Designated Resolvers (RFC 9462), except listeners bound to loopback or
+    /// with `proxy_protocol` on; unset, `resolver.arpa` queries get no data. `resolver.arpa`
+    /// is never forwarded (ADR-168).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ddr_name: Option<SafeString>,
 }
 
 impl Default for SpecialConfig {
@@ -2025,6 +2040,9 @@ impl Default for SpecialConfig {
             localhost: true,
             private_ptr_nxdomain: true,
             refuse_chaos: true,
+            block_icloud_private_relay: true,
+            single_label_nxdomain: false,
+            ddr_name: None,
         }
     }
 }
