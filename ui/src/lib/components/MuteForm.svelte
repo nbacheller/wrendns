@@ -4,7 +4,6 @@
   // matches nothing, a MAC address) shows here before anything is saved.
   import { api, type S } from '../api';
   import ErrorNote from './ErrorNote.svelte';
-  import KeepInGit from './KeepInGit.svelte';
 
   let {
     finding,
@@ -15,7 +14,8 @@
     finding: S['AnomalyFinding'];
     /** Findings of this kind for this device in the period shown, this one included. */
     similar?: number;
-    onsaved?: () => void;
+    /** Called with the change once it is saved; the page shows the confirmation (this form closes). */
+    onsaved?: (change: S['ConfigChange']) => void;
     oncancel?: () => void;
   } = $props();
 
@@ -48,7 +48,6 @@
 
   let saving = $state(false);
   let error = $state<unknown>(null);
-  let saved = $state<S['ConfigChange'] | null>(null);
   let preview = $state<S['ConfigChange'] | null>(null);
   let previewError = $state<unknown>(null);
 
@@ -99,8 +98,7 @@
     saving = true;
     error = null;
     try {
-      saved = await api.putEntry('anomaly-mutes', name, body());
-      onsaved?.();
+      onsaved?.(await api.putEntry('anomaly-mutes', name, body()));
     } catch (err) {
       error = err;
     } finally {
@@ -149,13 +147,9 @@
   {/if}
   <ErrorNote error={previewError} />
   <ErrorNote {error} />
-  {#if saved}
-    <div class="notice ok small" data-testid="mute-saved">Muted. {saved.impact ?? ''}</div>
-    {#if saved.keepInGit}<KeepInGit toml={saved.keepInGit} />{/if}
-  {/if}
   <div class="row">
-    <button class="primary" disabled={saving || !!previewError || !preview || !!saved} data-testid="mute-save">{saving ? 'Saving…' : 'Mute'}</button>
-    <button type="button" class="link" onclick={() => oncancel?.()}>{saved ? 'Close' : 'Cancel'}</button>
+    <button class="primary" disabled={saving || !!previewError || !preview} data-testid="mute-save">{saving ? 'Saving…' : 'Mute'}</button>
+    <button type="button" class="link" onclick={() => oncancel?.()}>Cancel</button>
   </div>
 </form>
 

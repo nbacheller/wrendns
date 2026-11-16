@@ -717,6 +717,8 @@ test('obs_038 mute a kind of finding for a device', async () => {
   await expect(page.getByTestId('mute-saved')).toBeVisible();
   // It no longer counts: the finding and the badge are gone, and the page says so.
   await expect(page.getByText('1 muted finding is hidden')).toBeVisible();
+  // The confirmation outlives the finding it was about (it sits on the page, not in the card).
+  await expect(page.getByTestId('mute-saved')).toBeVisible();
   await expect(badge).toHaveCount(0);
   const row = page.getByTestId('mute-row');
   await expect(row).toContainText('192.168.1.30');

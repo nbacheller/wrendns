@@ -13,6 +13,7 @@
   import HelpButton from '../lib/components/HelpButton.svelte';
   import RhythmStrip from '../lib/components/RhythmStrip.svelte';
   import MuteForm from '../lib/components/MuteForm.svelte';
+  import KeepInGit from '../lib/components/KeepInGit.svelte';
 
   let all = $state<S['AnomalyFinding'][]>([]);
   let showAcked = $state(false);
@@ -28,6 +29,8 @@
   type MuteDef = { devices?: string[]; groups?: string[]; kinds?: string[]; expires?: string; note?: string };
   let mutes = $state<S['ConfigEntry'][]>([]);
   let muteFor = $state<string | null>(null);
+  // What the last mute did: kept on the page, because the finding it muted leaves the list.
+  let muted = $state<S['ConfigChange'] | null>(null);
   const muteDef = (e: S['ConfigEntry']) => (e.definition ?? {}) as unknown as MuteDef;
   const noteOf = (name: string) => {
     const e = mutes.find((m) => m.name === name);
@@ -127,6 +130,13 @@
   </div>
   <ErrorNote {error} />
   <ErrorNote error={actionError} />
+  {#if muted}
+    <div class="notice ok small" data-testid="mute-saved">
+      Muted. {muted.impact ?? ''}
+      <button class="link small" onclick={() => (muted = null)}>Dismiss</button>
+    </div>
+    {#if muted.keepInGit}<KeepInGit toml={muted.keepInGit} />{/if}
+  {/if}
   <p class="muted small">
     Each device is compared with its own usual behavior, learned over its first week. Findings only inform you; to act,
     open the device's queries or move it to a stricter group. Acknowledge a finding once you've looked at it: it stops
@@ -210,7 +220,9 @@
           finding={f}
           similar={all.filter((x) => x.client === f.client && x.kind === f.kind && !x.mutedBy).length}
           oncancel={() => (muteFor = null)}
-          onsaved={() => {
+          onsaved={(change) => {
+            muted = change;
+            muteFor = null;
             reloadTick++;
             window.dispatchEvent(new Event('telltale:anomalies-changed'));
           }}
