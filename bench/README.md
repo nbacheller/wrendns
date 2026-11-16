@@ -118,7 +118,7 @@ Don't bench inside Docker Desktop (or a container on its VM). There every `bind(
 binds), and the server binds a fresh socket
 for each UDP upstream query (a random source port, RFC 5452). Cache misses then top out near 100
 a second: `miss-heavy` loses queries, warmup can't fill the cache, and cold names come back
-SERVFAIL, whatever the server does. Cache hits and locally answered names (blocked, device names)
+late or SERVFAIL, whatever the server does. Cache hits and locally answered names (blocked, device names)
 are unaffected. The harness measures one bind at start (`host.bind_ms`) and warns above 1 ms.
 
 Not yet: `resperf` ramp for max qps at < 1% loss, cgroup `memory.peak`, `flamethrower` for DoT/DoH,

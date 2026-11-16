@@ -190,7 +190,7 @@ fn changes_state(r: &Read) -> bool {
 /// Answers a peer's read from this node's own data.
 /// REQ: FLT-004, CLU-003 — a replica's list view: the primary's lists and download state
 /// (`theirs`, in its order), with this node's own hits (`mine`; 0 for a list it hasn't
-/// compiled yet).
+/// compiled yet). The API then replaces the hits with every node's added up (OBS-009).
 fn merge_lists(mine: &[ListInfo], mut theirs: Vec<ListInfo>) -> Vec<ListInfo> {
     for l in &mut theirs {
         l.hits = mine.iter().find(|m| m.name == l.name).map_or(0, |m| m.hits);
@@ -1616,6 +1616,7 @@ impl Backend for Federated {
     // to answer, this node's own view.
     // When the primary doesn't answer, it is named in `missingNodes` (so the UI and
     // `ctl lists refresh --wait` know the download state shown is this node's own).
+    // `GET /lists` swaps in the cluster's hits too (OBS-009).
     fn lists(&self) -> Vec<ListInfo> {
         let mine = self.local.lists();
         let primary = self

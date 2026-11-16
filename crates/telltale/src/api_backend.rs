@@ -1706,7 +1706,10 @@ impl Backend for ApiBackend {
                     hits: decided.get(&*l.name).copied().unwrap_or(0),
                     overlap,
                     last_checked_unix_seconds: meta.and_then(|m| m.last_attempt),
-                    last_success_unix_seconds: meta.and_then(|m| m.last_success),
+                    // Inline lists have no download to confirm (735491a).
+                    last_success_unix_seconds: meta
+                        .filter(|m| !m.is_inline())
+                        .and_then(|m| m.last_success),
                     last_changed_unix_seconds: meta.and_then(|m| m.last_changed),
                     // REQ: FLT-004 — a refresh asked for, or a download, in progress.
                     refreshing: l.enabled

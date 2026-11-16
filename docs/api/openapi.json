@@ -4525,7 +4525,7 @@
           "config"
         ],
         "summary": "Filter lists and their download state.",
-        "description": "Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,\n`pending`) and last error, size, and how many names it contributes to the active snapshot;\nwhen it was last checked, last confirmed current, and last changed, and whether a refresh is\nqueued or downloading it now (`refreshing`). On a cluster replica the download state is the\nprimary's (it downloads and compiles the lists every node serves); hits are this node's.\nWhen the primary doesn't answer, `missingNodes` names it and the state is this node's own.",
+        "description": "Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,\n`pending`) and last error, size, and how many names it contributes to the active snapshot;\nwhen it was last checked, last confirmed current, and last changed, and whether a refresh is\nqueued or downloading it now (`refreshing`). `hits` adds up every node's in a cluster. On a\ncluster replica the download state is the primary's (it downloads and compiles the lists\nevery node serves). `missingNodes` names the nodes whose hits are left out and, when the\nprimary doesn't answer, the primary (the download state shown is then this node's own).",
         "operationId": "lists",
         "responses": {
           "200": {
@@ -14860,7 +14860,7 @@
                 "hits": {
                   "type": "integer",
                   "format": "int64",
-                  "description": "Queries it blocked (or allowed, for an allow list) on this node since it started.",
+                  "description": "Queries it blocked (or allowed, for an allow list) since each node started; in a\ncluster, every node's added up.",
                   "minimum": 0
                 },
                 "kind": {
@@ -16512,7 +16512,7 @@
           "hits": {
             "type": "integer",
             "format": "int64",
-            "description": "Queries it blocked (or allowed, for an allow list) on this node since it started.",
+            "description": "Queries it blocked (or allowed, for an allow list) since each node started; in a\ncluster, every node's added up.",
             "minimum": 0
           },
           "kind": {

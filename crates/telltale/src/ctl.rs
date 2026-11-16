@@ -185,6 +185,43 @@ pub(crate) enum CtlCommand {
     },
 }
 
+/// REQ: FLT-004 — the nodes `GET /lists` names as unanswering (`missingNodes`).
+fn missing_nodes(v: &Value) -> Vec<String> {
+    v["missingNodes"]
+        .as_array()
+        .map(|m| {
+            m.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// REQ: FLT-004 — whether the primary is among the unanswering nodes. The downloads are the
+/// primary's, so only its silence stops `--wait`; a primary that can't be named counts as silent.
+fn primary_missing(missing: &[String], primary: Option<&str>) -> bool {
+    if missing.is_empty() {
+        return false;
+    }
+    match primary {
+        Some(p) => missing.iter().any(|m| m == p),
+        None => true,
+    }
+}
+
+/// The primary's site from `GET /cluster`, the name `missingNodes` uses for it (`None` when the
+/// cluster can't be read).
+async fn primary_site(api: &Api) -> Option<String> {
+    let c = api.get("cluster").await.ok()?;
+    c["nodes"]
+        .as_array()?
+        .iter()
+        .find(|n| n["role"].as_str() == Some("primary"))
+        .and_then(|n| n["site"].as_str())
+        .map(str::to_owned)
+}
+
 /// REQ: FLT-004 — `telltale ctl lists`.
 #[derive(Debug, Subcommand)]
 pub(crate) enum ListsCmd {
@@ -1055,13 +1092,16 @@ pub(crate) async fn run(
                 let lists = loop {
                     let v = api.get("lists").await?;
                     // A replica whose primary didn't answer shows its own view: it can't tell
-                    // whether the downloads ended.
-                    if let Some(m) = v["missingNodes"].as_array().filter(|m| !m.is_empty()) {
-                        let m: Vec<&str> = m.iter().filter_map(Value::as_str).collect();
+                    // whether the downloads ended. A peer that misses only its hits doesn't stop
+                    // the wait (REQ: FLT-004).
+                    let missing = missing_nodes(&v);
+                    if !missing.is_empty()
+                        && primary_missing(&missing, primary_site(&api).await.as_deref())
+                    {
                         return Err(format!(
                             "{}can't follow the downloads: {} didn't answer; check again with `telltale ctl lists`",
                             refresh_text(&r),
-                            m.join(", ")
+                            missing.join(", ")
                         ));
                     }
                     let busy = items(&v).iter().any(|l| {
@@ -1535,6 +1575,21 @@ async fn named(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ: FLT-004 — `--wait` follows the primary's downloads: a replica missing its hits
+    /// doesn't stop it, the primary missing does, and an unnamed primary does.
+    #[test]
+    fn flt_004_wait_follows_the_primary_not_a_replica_that_misses_its_hits() {
+        let replica = vec!["node-b".to_owned()];
+        let primary = vec!["home-pi".to_owned()];
+        assert!(!primary_missing(&replica, Some("home-pi")));
+        assert!(primary_missing(&primary, Some("home-pi")));
+        assert!(primary_missing(&replica, None));
+        assert!(!primary_missing(&[], None));
+        let v = json!({ "missingNodes": ["node-b"], "items": [] });
+        assert_eq!(missing_nodes(&v), replica);
+        assert_eq!(missing_nodes(&json!({ "items": [] })), Vec::<String>::new());
+    }
 
     /// REQ: API-008 — paths, queries, IDs, and tables.
     #[test]

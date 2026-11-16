@@ -1806,9 +1806,10 @@ export interface paths {
          * @description Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,
          *     `pending`) and last error, size, and how many names it contributes to the active snapshot;
          *     when it was last checked, last confirmed current, and last changed, and whether a refresh is
-         *     queued or downloading it now (`refreshing`). On a cluster replica the download state is the
-         *     primary's (it downloads and compiles the lists every node serves); hits are this node's.
-         *     When the primary doesn't answer, `missingNodes` names it and the state is this node's own.
+         *     queued or downloading it now (`refreshing`). `hits` adds up every node's in a cluster. On a
+         *     cluster replica the download state is the primary's (it downloads and compiles the lists
+         *     every node serves). `missingNodes` names the nodes whose hits are left out and, when the
+         *     primary doesn't answer, the primary (the download state shown is then this node's own).
          */
         get: operations["lists"];
         put?: never;
@@ -5652,7 +5653,8 @@ export interface components {
                 error?: string | null;
                 /**
                  * Format: int64
-                 * @description Queries it blocked (or allowed, for an allow list) on this node since it started.
+                 * @description Queries it blocked (or allowed, for an allow list) since each node started; in a
+                 *     cluster, every node's added up.
                  */
                 hits: number;
                 /** @description `block` or `allow`. */
@@ -6308,7 +6310,8 @@ export interface components {
             error?: string | null;
             /**
              * Format: int64
-             * @description Queries it blocked (or allowed, for an allow list) on this node since it started.
+             * @description Queries it blocked (or allowed, for an allow list) since each node started; in a
+             *     cluster, every node's added up.
              */
             hits: number;
             /** @description `block` or `allow`. */

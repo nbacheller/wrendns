@@ -71,7 +71,7 @@
   // The oldest enabled list's last confirmation, so one fresh list can't hide a stale one. A
   // list never downloaded makes it null.
   const lastUpdated = $derived.by(() => {
-    const on = lists.filter((l) => l.enabled);
+    const on = lists.filter((l) => l.enabled && l.source !== 'inline');
     if (on.length === 0 || on.some((l) => !l.lastSuccessUnixSeconds)) return null;
     return Math.min(...on.map((l) => l.lastSuccessUnixSeconds ?? 0));
   });
