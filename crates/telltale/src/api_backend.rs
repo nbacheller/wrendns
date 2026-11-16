@@ -1172,6 +1172,10 @@ impl Backend for ApiBackend {
         // heaviest are among them.
         let n = (limit * 2).max(20);
         let mut by = std::collections::HashMap::<String, (u64, u64)>::new();
+        // REQ: OBS-004 (ADR-159, ADR-160) — a client's queries by status over the same hours: the
+        // stored `clients_*` lists (hours closed since the split was kept) plus the hours in memory.
+        // An hour stored before that has no split, and its queries stay in `count` only.
+        let mut split = std::collections::HashMap::<String, [u64; 3]>::new();
         if let Some(d) = db {
             match d.top_range(first, stored_to, stored_kind, n) {
                 Ok((rows, _)) => {
@@ -1183,6 +1187,22 @@ impl Backend for ApiBackend {
                 }
                 Err(e) => tracing::warn!("rollups: {e}"),
             }
+            if kind == TopKind::Clients {
+                for (i, list) in ["clients_blocked", "clients_cached", "clients_forwarded"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    // Each stored list holds a hour's busiest 100: ask for every key it kept.
+                    match d.top_range(first, stored_to, list, 1000) {
+                        Ok((rows, _)) => {
+                            for r in rows {
+                                split.entry(r.key).or_default()[i] += r.count;
+                            }
+                        }
+                        Err(e) => tracing::warn!("rollups: {e}"),
+                    }
+                }
+            }
         }
         let agg = self.src.pipeline.telemetry.aggregates();
         for (sel, start) in [
@@ -1190,6 +1210,18 @@ impl Backend for ApiBackend {
             (HourSel::Previous, prev_live),
         ] {
             if !start.is_some_and(in_window) {
+                continue;
+            }
+            if kind == TopKind::Clients {
+                for (t, s) in agg.top_clients(sel, None, n) {
+                    let x = split.entry(t.key.clone()).or_default();
+                    x[0] += s.blocked;
+                    x[1] += s.cached;
+                    x[2] += s.forwarded;
+                    let e = by.entry(t.key).or_default();
+                    e.0 += t.count;
+                    e.1 += t.error;
+                }
                 continue;
             }
             for t in agg.top_names(mem_kind, sel, n) {
@@ -1205,12 +1237,20 @@ impl Backend for ApiBackend {
         v.into_iter()
             .map(|(key, (count, error_bound))| {
                 let (name, groups) = self.client_labels(kind, &key);
+                let by_status = split
+                    .get(&key)
+                    .map(|s| telltale_api::model::ClientStatusCounts {
+                        blocked: s[0],
+                        cached: s[1],
+                        forwarded: s[2],
+                    });
                 TopItem {
                     key,
                     name,
                     groups,
                     count,
                     error_bound,
+                    by_status,
                 }
             })
             .collect()
