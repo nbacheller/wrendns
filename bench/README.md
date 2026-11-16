@@ -32,9 +32,30 @@ Requires `dnsperf` (DNS-OARC, `apt install dnsperf`) and Python 3.10+ (standard 
 | `miss-heavy` | ready | unique names, each sent once at a fixed 2000 qps (upstream path latency) |
 | `blocked` | needs lists | names sampled from `bench/lists/*.txt` (plain or hosts format) |
 | `realistic-home` | needs lists | home mix: Zipf cache-hot names, blocked names, and unique misses |
+| `device-names` | ready | Zipf s=1.0 over `dev-0.home.arpa` … `dev-{N-1}.home.arpa`: 90% A, 10% their PTRs under `77.10.in-addr.arpa`; N from `--devices` (default 1000) |
 
 `bench/lists/` holds the fixed blocklist snapshot (HaGeZi Pro + OISD big + StevenBlack). It's a
 downloaded artifact, not in git.
+
+## Feature off vs on: device names in DNS (DNS-023)
+`--devices N` turns on device names in DNS (`spec/03`, T22.1) for the run: the generated server config gets `[local] device_domain = "home.arpa"` and N named devices with one address each (`dev-{i}` at `10.77.{i // 250}.{i % 250 + 1}`, at most 64,000), so the device-name table holds N A records and N PTRs. The table is built off the query path (at start, then every 10 s), so before measuring the harness waits until the last device's A and PTR answer (60 s at most) and records `devices_ready_s` in `server`. `params.devices` records N (0 = off).
+
+`--no-device-domain` writes the same N named devices but leaves `device_domain` unset, so the feature is off and nothing else changes: a home that uses device names has its devices named either way, so that is the fair "before" (a plain run would also leave out the bigger client table).
+
+```sh
+# What the table costs everything else: the same smoke corpora, off then on, same clients.
+bench/run.sh smoke --devices 1000 --no-device-domain --out bench/results/devices-off
+bench/run.sh smoke --devices 1000 --out bench/results/devices-on
+python3 bench/bench.py compare bench/results/devices-off/*-smoke.json bench/results/devices-on/*-smoke.json
+
+# Answering the device names themselves: the device-names corpus, off (they go upstream) then on.
+bench/run.sh smoke --corpus device-names --devices 1000 --no-device-domain --out bench/results/names-off
+bench/run.sh smoke --corpus device-names --devices 1000 --out bench/results/names-on
+```
+
+The `device-names` corpus uses the same N as `--devices` (without it, its default 1000, so the off and on runs send the same file; the SHA-256 in the results shows it). Off, the A queries go to the stub upstream once and then come from the cache, and the PTRs get the private-reverse NXDOMAIN (RFC 6303, `[special]`); on, both are authoritative answers from the table. The wait checks the answers themselves (the last device's address, and its name back from the PTR), not only NOERROR, so it can't pass on upstream answers. Compare runs with the same N only: `compare` matches by corpus name, warns when a corpus's SHA-256 differs between the two files, and notes when `devices`, `device_domain` or `extra` differ. One pair on a shared machine is noise; alternate off and on for a few rounds, as T21.1 did. With `--target`, `--devices` only sizes the corpus (the external server's configuration is its own).
+
+`--extra` appends any TOML to the generated config (`\n` between lines), as in `memprobe.py`, for other features: `--extra '[telemetry.qlog]\nenabled = false'`. It goes last, after the generated `[[client]]` and `[[rule]]` tables, so start it with a table header: bare keys would land in the last of those. With `--devices`, a `[local]` table in it is refused (TOML allows one); use `--no-device-domain` and put `device_domain = "home.arpa"` in your own `[local]` (the harness still waits for the table then).
 
 ## Swap under load (T2.7)
 `bench.py swap` checks that a filter recompile doesn't disturb queries. It starts the server with the lists in `bench/lists/*.txt` plus a small `swap.txt`, then runs the `realistic-home` corpus at a fixed rate (`--rate`, default 20k qps) in pairs of windows: a quiet one, and one where a recompile is triggered `--at` seconds in. The order alternates each round to cancel drift. `--trigger list` (default) rewrites `swap.txt` and sends `SIGUSR1`; `--trigger reload` adds an inline list and sends `SIGHUP`. It fails if the median p99 over rounds rises more than `--max-regression` (10%), or on any lost query, SERVFAIL, or server exit. The server log is saved as `swap-server.log` in `--out`. `--compile-threads` overrides `[filter] compile_threads`.
@@ -79,8 +100,9 @@ python3 bench/bench.py sustain --rate 100000 --duration 60
 The load generator needs spare cores beyond the server's workers; run it on the homelab, not the Pi.
 
 ## Results JSON (schema 1)
-Top level: `mode`, `started`, `git` (rev, dirty), `host` (cpu, cores, arch, kernel), `tools`,
-`params`, `server` (version, workers, `ready_ms`, `idle_rss_kib`, `peak_rss_kib`), `runs[]`, and
+Top level: `mode`, `started`, `git` (rev, dirty), `host` (cpu, cores, arch, kernel, `bind_ms`), `tools`,
+`params` (including `devices`, `device_domain` and `extra`), `server` (version, workers, `ready_ms`, `idle_rss_kib`,
+`peak_rss_kib`, `devices_ready_s`), `runs[]`, and
 `summary` (per-corpus medians). Each run has `qps`, `sent/completed/lost`, `loss_pct`, `rcodes`,
 `latency_us` (avg/min/max/stddev/p50/p90/p99/p999, from dnsperf's latency histogram, upper bucket
 edge), server `rss_kib`/`peak_rss_kib`/`cpu_pct`, and `at_load.{25,50,75}`.
@@ -90,6 +112,14 @@ Running dnsperf on the same machine as the server shares CPUs and caches. Those 
 for comparing commits on one machine. Release gates (`00 §5`) need the load generator on separate
 hardware, as in the `09` hardware matrix. Only numbers from this harness may be quoted in the
 README or the site (`09` §3).
+
+Don't bench inside Docker Desktop (or a container on its VM). There every `bind()` takes about
+10 ms, one at a time (measured on its WSL 2 kernel; probably its port forwarding, which watches
+binds), and the server binds a fresh socket
+for each UDP upstream query (a random source port, RFC 5452). Cache misses then top out near 100
+a second: `miss-heavy` loses queries, warmup can't fill the cache, and cold names come back
+SERVFAIL, whatever the server does. Cache hits and locally answered names (blocked, device names)
+are unaffected. The harness measures one bind at start (`host.bind_ms`) and warns above 1 ms.
 
 Not yet: `resperf` ramp for max qps at < 1% loss, cgroup `memory.peak`, `flamethrower` for DoT/DoH,
 the `compare/` stack (Pi-hole, Technitium), and the Pi 4 runner.
