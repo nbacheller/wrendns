@@ -1463,8 +1463,14 @@ async fn reload(
     }
     // REQ: OPS-014 (ADR-167 §2–3) — new key settings are read at the next use; a reference to a
     // secret this node doesn't store is a warning (DNS never depends on the store).
+    // The check may load the store (SQLite, a key file): a blocking task, not this worker.
     sources.secrets.configure(&new);
-    crate::secrets::credential::warn_missing(&new, &sources.secrets);
+    {
+        let (store, cfg) = (Arc::clone(&sources.secrets), new.clone());
+        drop(tokio::task::spawn_blocking(move || {
+            crate::secrets::credential::warn_missing(&cfg, &store);
+        }));
+    }
     // REQ: AGT-009 — the agent kill switch follows the (cluster-shared) configuration.
     if let Some(a) = sources.auth.get() {
         a.agents()

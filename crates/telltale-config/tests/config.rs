@@ -1574,5 +1574,23 @@ members = ["doh"]
 "#,
     )
     .unwrap_err();
-    assert_eq!(paths(&errs), ["upstream[0]"]);
+    assert_eq!(paths(&errs), ["upstream[0].headers.Authorization"]);
+    // A URL's password too, wherever a credential path has one (what `config check --print`
+    // shows for it).
+    let errs = load_str(
+        r#"
+[[alerts.destination]]
+name = "hook"
+type = "webhook"
+url = "https://u:<redacted>@hooks.example/x"
+[cluster.git]
+repo = "https://git:<redacted>@git.example/cfg.git"
+path = "telltale/shared.toml"
+"#,
+    )
+    .unwrap_err();
+    let p = paths(&errs);
+    for want in ["alerts.destination[0].url", "cluster.git.repo"] {
+        assert!(p.contains(&want), "{want} not in {p:?}");
+    }
 }

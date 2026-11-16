@@ -26,7 +26,7 @@ The key is 32 random bytes, written `ttsk1:` followed by 43 base64url characters
 
 1. **`TELLTALE_SECRETS_KEY`**, an environment variable. On Kubernetes, use `valueFrom.secretKeyRef`, never a literal `value:` in the manifest.
 2. **`[node] secrets_key_file`** (or `TELLTALE_NODE_SECRETS_KEY_FILE`): a file, typically a mounted Kubernetes Secret or Docker secret. The Helm chart's `secretsKey.existingSecret` sets this up on the controller only.
-3. **`<data_dir>/secrets.key`**, created on a full member's first start while no secret is stored: mode 0600, written whole, never replaced. A key file other users can read, or one they can change, is warned about at start (group read is fine: Kubernetes `fsGroup` mounts need it).
+3. **`<data_dir>/secrets.key`**, created on a full member's first start while no secret is stored: mode 0600, written whole, never replaced. A key file other users can read, one they can change, or one owned by another user (root aside) is warned about at start (group read is fine: Kubernetes `fsGroup` mounts need it).
 
 Prefer 2 for anything beyond a single box: the key then lives apart from the data it protects, and a copied volume holds only ciphertext. Keep a copy of the key somewhere safe (a password manager); without it the stored secrets can't be recovered.
 
@@ -40,9 +40,9 @@ Prefer 2 for anything beyond a single box: the key then lives apart from the dat
 telltale secrets rotate-key -c /etc/telltale/telltale.toml
 ```
 
-It writes the new key to `secrets.key.new`, re-encrypts every stored secret under it in one transaction, truncates the write-ahead log (so no ciphertext under the old key is left in `state.db` or its WAL), and renames the new key over `secrets.key`. If it's interrupted, the next start finishes it (the re-encryption had committed) or drops the unused new key (it hadn't). It refuses while the node runs.
+It writes the new key to `secrets.key.new`, re-encrypts every stored secret under it in one transaction, truncates the write-ahead log (so no ciphertext under the old key is left in `state.db` or its WAL), and renames the new key over `secrets.key`. If it's interrupted, the next start finishes it (the re-encryption had committed) or drops the unused new key (it hadn't). It refuses while the node runs, and when the data directory's lock can't be taken at all (whether the node runs is then unknown).
 
-**A key from the environment or a file:** put the new key in `TELLTALE_SECRETS_KEY` (or the file), put the old one in `TELLTALE_SECRETS_PREVIOUS_KEY` (or `[node] secrets_previous_key_file`), and restart. The node re-encrypts every secret under the new key at start, in one transaction, and logs that the previous key can be removed. Then remove it.
+**A key from the environment or a file:** put the new key in `TELLTALE_SECRETS_KEY` (or the file), put the old one in `TELLTALE_SECRETS_PREVIOUS_KEY` (or `[node] secrets_previous_key_file`), and restart. The node re-encrypts every secret under the new key at start, in one transaction, and logs that the previous key can be removed. Then remove it, and the setting (a `secrets_previous_key_file` that no longer exists is only a warning).
 
 ## Status
 
@@ -50,13 +50,13 @@ It writes the new key to `secrets.key.new`, re-encrypts every stored secret unde
 telltale secrets status -c /etc/telltale/telltale.toml
 ```
 
-shows the store's state, the key's source and `key_id`, each stored secret (without its value) and whether this node can read it, and every credential field of the configuration with its source and whether it's readable here (files are opened, not read). It exits 1 while the store is locked, and never makes a key. The metric `telltale_secrets{state}` counts the stored secrets that are `readable`, `unreadable` (encrypted with a key this node doesn't have) or `corrupt`.
+shows the store's state, the key's source and `key_id`, each stored secret (without its value) and whether this node can read it, and every credential field of the configuration with its source and whether it's readable here (files are opened, not read). It exits 1 while the store is locked. It changes nothing, so it's safe beside a running node or a `rotate-key`: it never makes a key or a database, never finishes or drops a leftover `secrets.key.new` (it says one is there), and never re-encrypts (secrets under the previous key are counted as readable, and the next start re-encrypts them). The metric `telltale_secrets{state}` counts the stored secrets that are `readable`, `unreadable` (encrypted with a key this node doesn't have) or `corrupt`.
 
 ## Recovery
 
 The store is **locked** when the configured key can't be read or isn't a key, when `secrets.key` is missing while secrets are stored, or when no stored secret decrypts with the key. While it's locked:
 
-- secret writes are refused (503 `secrets_locked`), and so is an `Idempotency-Key` write that sets a credential;
+- secret writes are refused (503 `secrets_locked`), and so is an `Idempotency-Key` write that sets a credential while the key itself can't be read (a key that's there but opens none of the stored secrets still keys the retry records);
 - integrations that name a stored secret report "not configured: secret `<name>` can't be read on this node (...)";
 - health is **degraded** with `secrets_locked`, and the log says why;
 - DNS, `/readyz`, file-based credentials and everything else keep working;

@@ -523,7 +523,8 @@ enum AuthCommand {
 enum SecretsCommand {
     /// The store (ready, locked, or ephemeral), its key's source and ID (never the key), each
     /// stored secret without its value, and every credential field with its source and whether
-    /// this node can read it. Exits 1 when the store is locked. Never makes a key.
+    /// this node can read it. Exits 1 when the store is locked. Changes nothing (no key made, no
+    /// rotation finished, nothing re-encrypted), so it's safe beside a running server.
     Status,
     /// Replace the data-directory key (`secrets.key`): every stored secret is re-encrypted under a
     /// new one. Stop TelltaleDNS first. A key from `TELLTALE_SECRETS_KEY` or

@@ -218,6 +218,14 @@ pub fn carry_file_credentials(
 ) -> Result<(), &'static StoredField> {
     for s in set_by_file(kind, file) {
         let keys: Vec<&str> = s.inline.into_iter().chain([s.file, s.reference]).collect();
+        // An explicit `null` or `""` for a key the files set drops it: refused, not carried over
+        // with a 200 that says the change applied.
+        if keys
+            .iter()
+            .any(|k| set(file, k) && body.get(*k).is_some() && !set(body, k))
+        {
+            return Err(s);
+        }
         let sent: Vec<&str> = keys.iter().copied().filter(|k| set(body, k)).collect();
         if sent.is_empty() {
             if let Some(m) = body.as_object_mut() {
@@ -355,11 +363,18 @@ mod tests {
             serde_json::json!({"token_ref": "t"}),
             serde_json::json!({"token_file": "/run/secrets/other"}),
             serde_json::json!({"token_file": "/run/secrets/t", "token_ref": "t"}),
+            // Dropped explicitly.
+            serde_json::json!({"token_file": null}),
+            serde_json::json!({"token_file": ""}),
         ] {
             let mut b = bad.clone();
             let e = carry_file_credentials("alert_destination", &file, &mut b).unwrap_err();
             assert_eq!(e.field, "token", "{bad}");
         }
+        // A `null` for a key the files don't set is no drop.
+        let mut n = serde_json::json!({"token_ref": null, "token": ""});
+        carry_file_credentials("alert_destination", &file, &mut n).unwrap();
+        assert_eq!(n["token_file"], "/run/secrets/t");
         // A field the files don't set is the API's to set.
         let mut pw = serde_json::json!({"password_ref": "smtp"});
         carry_file_credentials("alert_destination", &file, &mut pw).unwrap();

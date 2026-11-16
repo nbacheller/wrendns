@@ -156,9 +156,14 @@ pub const DISPLAY_SCOPE: &str = "display";
 /// Stored for OIDC users: no password matches it (they sign in at their provider).
 pub const NO_PASSWORD: &str = "!oidc";
 
-/// `PRAGMA wal_checkpoint(TRUNCATE)` (a no-op on a database in memory).
-fn checkpoint_truncate(conn: &Connection) -> rusqlite::Result<()> {
-    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+/// `PRAGMA wal_checkpoint(TRUNCATE)` (a no-op on a database in memory). `false` when another
+/// connection kept it from finishing within the busy timeout (`busy` = 1): pages of the WAL may
+/// then survive until a later checkpoint (REQ: OPS-014, ADR-167 §3).
+fn checkpoint_truncate(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .map(|busy| busy == 0)
 }
 
 pub mod acks;
@@ -316,8 +321,9 @@ impl State {
 
     /// REQ: API-014 (ADR-167 §4) — copies the WAL into the database and truncates it, so pages
     /// overwritten by `secure_delete` don't survive there (after the idempotency purge; the
-    /// secrets store's rotation and deletes use it too).
-    pub fn checkpoint(&self) -> Result<()> {
+    /// secrets store's rotation and deletes use it too). `false`: another connection kept it from
+    /// finishing.
+    pub fn checkpoint(&self) -> Result<bool> {
         self.with(checkpoint_truncate)
     }
 

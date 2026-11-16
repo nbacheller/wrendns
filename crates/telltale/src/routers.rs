@@ -327,8 +327,9 @@ pub(crate) fn opnsense_leases(v: &Value) -> Seen {
 
 /// How a UniFi request authenticates.
 enum UnifiAuth {
-    Key(String),
-    Cookie(String),
+    /// REQ: OPS-014 — wiped when the poll ends (ADR-167 note 37).
+    Key(zeroize::Zeroizing<String>),
+    Cookie(zeroize::Zeroizing<String>),
 }
 
 impl UnifiAuth {
@@ -409,7 +410,7 @@ async fn poll_unifi(
         let api = format!("{base}/proxy/network/api/s/{site}");
         return read_unifi(
             client,
-            &UnifiAuth::Key(key.expose().to_owned()),
+            &UnifiAuth::Key(zeroize::Zeroizing::new(key.expose().to_owned())),
             &api,
             &c.name,
         )
@@ -442,7 +443,13 @@ async fn poll_unifi(
             ));
         }
         let api = format!("{base}{prefix}/api/s/{site}");
-        return read_unifi(client, &UnifiAuth::Cookie(cookies(&headers)), &api, &c.name).await;
+        return read_unifi(
+            client,
+            &UnifiAuth::Cookie(zeroize::Zeroizing::new(cookies(&headers))),
+            &api,
+            &c.name,
+        )
+        .await;
     }
     Err(format!(
         "{base}: neither a UniFi OS console nor a Network application"

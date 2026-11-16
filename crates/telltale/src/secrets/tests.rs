@@ -276,6 +276,28 @@ fn ops_014_row_swap_fails_aad() {
             kind: "pem".into(),
             ..a.clone()
         },
+        // The boundary between kind and name moved (`text`+`a` read as `tex`+`ta`): the same
+        // bytes without the lengths.
+        telltale_store::state::SecretRow {
+            kind: "tex".into(),
+            name: "ta".into(),
+            ..a.clone()
+        },
+        telltale_store::state::SecretRow {
+            kind: "te".into(),
+            name: "xta".into(),
+            ..a.clone()
+        },
+        telltale_store::state::SecretRow {
+            kind: String::new(),
+            name: "texta".into(),
+            ..a.clone()
+        },
+        telltale_store::state::SecretRow {
+            kind: "texta".into(),
+            name: String::new(),
+            ..a.clone()
+        },
         telltale_store::state::SecretRow {
             stamp: telltale_store::state::Stamp {
                 epoch: a.stamp.epoch,
@@ -319,6 +341,159 @@ fn ops_014_row_swap_fails_aad() {
         (st.count(RowHealth::Readable), st.count(RowHealth::Corrupt)),
         (1, 1)
     );
+    // Moved in the table to a name the boundary shift makes (`tex`/`ta`): corrupt, not `a`'s.
+    state
+        .put_secret_row(
+            &telltale_store::state::SecretRow {
+                kind: "tex".into(),
+                name: "ta".into(),
+                ..a.clone()
+            },
+            1,
+        )
+        .unwrap();
+    let shifted = store(&c, &none);
+    assert_eq!(shifted.get("ta").unwrap_err(), store::Unavailable::Corrupt);
+    assert_eq!(read(&shifted, "a"), "value-a");
+}
+
+/// REQ: OPS-014, CLU-004 — a reload that changes the key settings while a load holds the store
+/// (the upkeep's retry, a read) finishes: `configure` never waits on the store, and the next use
+/// reads the new settings. Before, the two took their locks in opposite orders and hung.
+#[test]
+fn ops_014_reconfigure_during_load_no_deadlock() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = cfg_in(tmp.path());
+    let mut b = cfg_in(tmp.path());
+    b.node.secrets_key_file =
+        telltale_config::SafeString::new(tmp.path().join("nope.key").to_str().unwrap()).unwrap();
+    let s = Arc::new(store(&a, &env(&[])));
+    let (done, wait) = std::sync::mpsc::channel();
+    let loader = Arc::clone(&s);
+    let d1 = done.clone();
+    std::thread::spawn(move || {
+        for _ in 0..300 {
+            loader.load_now();
+            let _ = loader.status();
+        }
+        let _ = d1.send(());
+    });
+    let conf = Arc::clone(&s);
+    std::thread::spawn(move || {
+        for i in 0..300 {
+            conf.configure(if i % 2 == 0 { &b } else { &a });
+        }
+        let _ = done.send(());
+    });
+    for _ in 0..2 {
+        wait.recv_timeout(std::time::Duration::from_secs(60))
+            .expect("configure and a load deadlocked");
+    }
+    // The last settings win at the next use: a missing key file locks, the data key doesn't.
+    let mut locked = cfg_in(tmp.path());
+    locked.node.secrets_key_file =
+        telltale_config::SafeString::new(tmp.path().join("nope.key").to_str().unwrap()).unwrap();
+    s.configure(&locked);
+    assert!(s.keys().is_err());
+    assert_eq!(s.status().state, StoreState::Locked);
+    s.configure(&cfg_in(tmp.path()));
+    assert!(s.keys().is_ok());
+    assert_eq!(s.status().state, StoreState::Ready);
+}
+
+/// REQ: OPS-014 — `telltale secrets status` writes nothing: a pending `secrets.key.new` stays
+/// (it may be a `rotate-key` running now) and is reported, rows under the previous key are
+/// counted as readable but not re-encrypted, and a node with nothing stored gets no database.
+#[test]
+fn ops_014_status_is_read_only() {
+    // Nothing stored yet: no database, no key made.
+    let empty = tempfile::tempdir().unwrap();
+    let mut out = Vec::new();
+    let _ = cli::status(&cfg_in(empty.path()), env(&[]), &mut out).unwrap();
+    assert!(!empty.path().join("state.db").exists());
+    assert!(!empty.path().join(KEY_FILE).exists());
+
+    let tmp = tempfile::tempdir().unwrap();
+    let c = cfg_in(tmp.path());
+    let none = env(&[]);
+    let s = store(&c, &none);
+    put(&s, "git", "v");
+    drop(s);
+    rotate_key(&c, &none, Until::NewKeyWritten).unwrap();
+    let new_file = tmp.path().join(NEW_KEY_FILE);
+    let mut out = Vec::new();
+    assert!(cli::status(&c, Arc::clone(&none), &mut out).unwrap());
+    let text = String::from_utf8(out).unwrap();
+    assert!(new_file.exists(), "a status read left it: {text}");
+    assert!(text.contains("secrets.key.new"), "{text}");
+
+    // The previous key: counted, not re-encrypted.
+    let k1 = NodeKey::generate().unwrap();
+    let k2 = NodeKey::generate().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let c2 = cfg_in(other.path());
+    let s = store(&c2, &env(&[(KEY_VAR, k1.as_str())]));
+    put(&s, "one", "v1");
+    drop(s);
+    let both = env(&[(KEY_VAR, k2.as_str()), (PREVIOUS_KEY_VAR, k1.as_str())]);
+    let mut out = Vec::new();
+    assert!(cli::status(&c2, both, &mut out).unwrap());
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains("1 stored secret(s) under it"), "{text}");
+    assert!(text.contains("1 readable"), "{text}");
+    let row = State::open(&other.path().join("state.db"))
+        .unwrap()
+        .secret_row("one")
+        .unwrap()
+        .unwrap();
+    assert_eq!(hex(&row.key_id), key_id(&k1), "not re-encrypted");
+}
+
+/// REQ: OPS-014 (ADR-167 §3) — a previous-key file removed after the rotation, with the setting
+/// left, is a warning, not a locked store.
+#[test]
+fn ops_014_missing_previous_key_file_warns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut c = cfg_in(tmp.path());
+    let s = store(&c, &env(&[]));
+    put(&s, "x", "v");
+    drop(s);
+    c.node.secrets_previous_key_file =
+        telltale_config::SafeString::new(tmp.path().join("old.key").to_str().unwrap()).unwrap();
+    let s = store(&c, &env(&[]));
+    let k = s.keys().unwrap();
+    assert!(k.previous.is_none());
+    assert!(
+        k.warnings.iter().any(|w| w.contains("old.key")),
+        "{:?}",
+        k.warnings
+    );
+    assert_eq!(s.status().state, StoreState::Ready);
+    assert_eq!(read(&s, "x"), "v");
+}
+
+/// REQ: OPS-014 (ADR-167 §3) — the replica's self-heal clears rows only when a new key fixes the
+/// lock: not when `secrets.key` is there but can't be read (here a directory), where it would drop
+/// them and stay locked.
+#[test]
+fn ops_014_heal_not_for_unreadable_key_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let c = cfg_in(tmp.path());
+    let none = env(&[]);
+    let s = store(&c, &none);
+    put(&s, "unifi", "k");
+    drop(s);
+    let state = State::open(&tmp.path().join("state.db")).unwrap();
+    let mut row = state.secret_row("unifi").unwrap().unwrap();
+    row.origin = "cluster".into();
+    state.put_secret_row(&row, 1).unwrap();
+    std::fs::remove_file(tmp.path().join(KEY_FILE)).unwrap();
+    std::fs::create_dir(tmp.path().join(KEY_FILE)).unwrap();
+    let replica = store(&c, &none);
+    assert_eq!(replica.status_loaded().state, StoreState::Locked);
+    let err = replica.heal_as_replica().unwrap_err();
+    assert!(err.contains("doesn't fix"), "{err}");
+    assert_eq!(state.secret_row_count().unwrap(), 1, "rows kept");
 }
 
 /// REQ: OPS-014 (AC6) — with the previous key given, rows under it are re-encrypted under the

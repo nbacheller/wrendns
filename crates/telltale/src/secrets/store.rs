@@ -18,6 +18,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -196,6 +197,8 @@ pub(crate) struct Status {
     pub(crate) previous_key_id: Option<String>,
     /// The data directory isn't kept across restarts (`TELLTALE_DATA_EPHEMERAL`).
     pub(crate) data_ephemeral: bool,
+    /// Live rows still under the previous key (a status read; the next start re-encrypts them).
+    pub(crate) under_previous: usize,
     /// Every row, tombstones included, by name.
     pub(crate) secrets: Vec<SecretInfo>,
 }
@@ -227,15 +230,28 @@ struct Inner {
     rows: BTreeMap<String, Cached>,
     /// The last reason logged, so a lasting one is logged once.
     logged: Option<String>,
+    /// The lock is one the replica's self-heal may clear: the data-directory key is missing, or
+    /// none of the rows decrypts. Not a key or database that can't be read (ADR-167 note 39).
+    healable: bool,
+    /// Live rows still under the previous key (a status read: re-encrypted at the next start).
+    under_previous: usize,
 }
 
 /// The node's secrets store. Cheap to make: nothing is read until first use.
+///
+/// Lock order: `inner` may be held while `paths` is taken, never the other way round
+/// ([`SecretStore::configure`] takes only `paths`, and marks the store `stale`).
 pub(crate) struct SecretStore {
     paths: Mutex<KeyPaths>,
+    /// The key settings changed: the next use loads again.
+    stale: AtomicBool,
     var: EnvFn,
     /// Make the data-directory key when the table is empty (the server; `secrets status` never
     /// makes one).
     create: bool,
+    /// `secrets status`: nothing is written (no rotation finished or dropped, nothing
+    /// re-encrypted, no database created); rows the previous key opens count as readable.
+    read_only: bool,
     data_ephemeral: bool,
     inner: Mutex<Inner>,
 }
@@ -255,14 +271,19 @@ fn lock(m: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The associated data: `"telltale-secret\x01" ‖ key_id ‖ kind ‖ name ‖ be64(epoch) ‖
-/// be64(seq)` (ADR-167 §3).
+/// The associated data: `"telltale-secret\x01" ‖ key_id ‖ be16(len kind) ‖ kind ‖
+/// be16(len name) ‖ name ‖ be64(epoch) ‖ be64(seq)` (ADR-167 §3 and note 39: the lengths keep
+/// the row `(text, x)` from reading as `(tex, tx)`).
 fn aad(key_id: &[u8], kind: &str, name: &str, stamp: Stamp) -> Vec<u8> {
-    let mut a = Vec::with_capacity(AAD_PREFIX.len() + 8 + kind.len() + name.len() + 16);
+    let mut a = Vec::with_capacity(AAD_PREFIX.len() + 8 + 4 + kind.len() + name.len() + 16);
     a.extend_from_slice(AAD_PREFIX);
     a.extend_from_slice(key_id);
-    a.extend_from_slice(kind.as_bytes());
-    a.extend_from_slice(name.as_bytes());
+    for part in [kind, name] {
+        // Kinds are short words and names at most 63 bytes; a longer one never decrypts.
+        let len = u16::try_from(part.len()).unwrap_or(u16::MAX);
+        a.extend_from_slice(&len.to_be_bytes());
+        a.extend_from_slice(part.as_bytes());
+    }
     a.extend_from_slice(&stamp.epoch.to_be_bytes());
     a.extend_from_slice(&stamp.seq.to_be_bytes());
     a
@@ -323,6 +344,10 @@ pub(crate) fn open(key: &NodeKey, row: &SecretRow) -> Result<SecretValue, RowHea
     if row.key_id != key.key_id() {
         return Err(RowHealth::Unreadable);
     }
+    // REQ: NFR-005 — only the kinds a value is sealed as (a row given another one was moved).
+    if !matches!(row.kind.as_str(), "text" | "pem") {
+        return Err(RowHealth::Corrupt);
+    }
     let nonce: [u8; aead::NONCE_LEN] = row
         .nonce
         .as_slice()
@@ -342,13 +367,19 @@ pub(crate) fn open(key: &NodeKey, row: &SecretRow) -> Result<SecretValue, RowHea
     SecretValue::from_bytes(&buf).ok_or(RowHealth::Corrupt)
 }
 
-/// How a row stands under `keys`.
-fn health_of(keys: &Keys, row: &SecretRow) -> RowHealth {
+/// How a row stands under `keys` (`previous`: a row the previous key opens counts as readable,
+/// since the next start re-encrypts it).
+fn health_of(keys: &Keys, row: &SecretRow, previous: bool) -> RowHealth {
     if row.deleted {
         return RowHealth::Readable;
     }
     match open(&keys.current, row) {
         Ok(_) => RowHealth::Readable,
+        Err(RowHealth::Unreadable) if previous => {
+            keys.previous.as_ref().map_or(RowHealth::Unreadable, |p| {
+                open(p, row).map_or_else(|h| h, |_| RowHealth::Readable)
+            })
+        }
         Err(h) => h,
     }
 }
@@ -393,6 +424,15 @@ impl SecretStore {
         Self::with_env(cfg, var, true, ephemeral_dir)
     }
 
+    /// REQ: OPS-014 — `telltale secrets status`'s store: it writes nothing (ADR-167 note 39), so
+    /// it may run beside the server or a `rotate-key`.
+    pub(crate) fn read_only(cfg: &telltale_config::Config, var: EnvFn) -> Self {
+        Self {
+            read_only: true,
+            ..Self::with_env(cfg, var, false, false)
+        }
+    }
+
     /// A store reading `var` for its keys. `create`: make the data-directory key on an empty
     /// table. `data_ephemeral`: the data directory isn't kept across restarts.
     pub(crate) fn with_env(
@@ -403,20 +443,30 @@ impl SecretStore {
     ) -> Self {
         Self {
             paths: Mutex::new(KeyPaths::of(cfg)),
+            stale: AtomicBool::new(false),
             var,
             create,
+            read_only: false,
             data_ephemeral,
             inner: Mutex::new(Inner::default()),
         }
     }
 
-    /// After a reload: new key settings are read at the next use.
+    /// After a reload: new key settings are read at the next use. Takes only `paths` (a load
+    /// holds `inner`, then takes `paths`: holding `paths` while taking `inner` here deadlocked
+    /// against it), so it never waits for a load either.
     pub(crate) fn configure(&self, cfg: &telltale_config::Config) {
         let new = KeyPaths::of(cfg);
-        let mut p = self.paths.lock().unwrap_or_else(PoisonError::into_inner);
-        if *p != new {
-            *p = new;
-            lock(&self.inner).loaded_at = None;
+        let changed = {
+            let mut p = self.paths.lock().unwrap_or_else(PoisonError::into_inner);
+            let changed = *p != new;
+            if changed {
+                *p = new;
+            }
+            changed
+        };
+        if changed {
+            self.stale.store(true, Ordering::Release);
         }
     }
 
@@ -430,12 +480,14 @@ impl SecretStore {
     /// The store, loaded (again, after a failure older than [`RETRY_AFTER`]).
     fn ready(&self) -> MutexGuard<'_, Inner> {
         let mut g = lock(&self.inner);
-        let again = match g.loaded_at {
-            None => true,
-            Some(at) => {
-                (g.locked.is_some() || g.key_error.is_some()) && at.elapsed() >= RETRY_AFTER
-            }
-        };
+        let stale = self.stale.swap(false, Ordering::AcqRel);
+        let again = stale
+            || match g.loaded_at {
+                None => true,
+                Some(at) => {
+                    (g.locked.is_some() || g.key_error.is_some()) && at.elapsed() >= RETRY_AFTER
+                }
+            };
         if again {
             self.load_into(&mut g);
         }
@@ -445,6 +497,7 @@ impl SecretStore {
     /// Loads (or reloads) the store now, whatever happened before (`secrets status`, tests).
     pub(crate) fn load_now(&self) {
         let mut g = lock(&self.inner);
+        self.stale.store(false, Ordering::Release);
         self.load_into(&mut g);
     }
 
@@ -456,9 +509,13 @@ impl SecretStore {
         g.loaded_at = Some(Instant::now());
         g.locked = None;
         g.key_error = None;
+        g.healable = false;
+        g.under_previous = 0;
         let var = |k: &str| (self.var)(k);
-        if paths.ephemeral {
-            // Resolver pods: no table, no key made; a configured key still keys idempotency.
+        let db = paths.data_dir.join("state.db");
+        // Resolver pods: no table, no key made; a configured key still keys idempotency. A status
+        // read of a node that has stored nothing yet creates no database.
+        if paths.ephemeral || (self.read_only && g.state.is_none() && !db.exists()) {
             g.rows.clear();
             match super::load(&paths, &var, false) {
                 Ok(k) => g.keys = Some(Arc::new(k)),
@@ -470,7 +527,6 @@ impl SecretStore {
             return;
         }
         if g.state.is_none() {
-            let db = paths.data_dir.join("state.db");
             match std::fs::create_dir_all(&paths.data_dir)
                 .map_err(|e| e.to_string())
                 .and_then(|()| State::open(&db).map_err(|e| e.to_string()))
@@ -496,7 +552,8 @@ impl SecretStore {
                 return;
             }
         };
-        if paths.uses_data_key(&var)
+        if !self.read_only
+            && paths.uses_data_key(&var)
             && let Some(note) = recover_rotation(&paths.data_dir, &rows)
         {
             tracing::warn!("secrets key: {note}");
@@ -505,10 +562,10 @@ impl SecretStore {
             Ok(k) => Arc::new(k),
             Err(e) => {
                 let live = rows.iter().filter(|r| !r.deleted).count();
-                let why = if !rows.is_empty()
-                    && paths.uses_data_key(&var)
-                    && !paths.data_key().exists()
-                {
+                let missing =
+                    !rows.is_empty() && paths.uses_data_key(&var) && !paths.data_key().exists();
+                g.healable = missing;
+                let why = if missing {
                     format!(
                         "{} is missing and {live} stored secret(s) were encrypted with it: no new key is made (put the key back; docs/secrets.md)",
                         paths.data_key().display()
@@ -545,12 +602,20 @@ impl SecretStore {
             );
         }
         if let Some(prev) = &keys.previous {
-            reencrypt(&state, &keys.current, prev, &mut rows);
+            if !self.read_only {
+                reencrypt(&state, &keys.current, prev, &mut rows);
+            }
+            let pid = prev.key_id();
+            g.under_previous = rows
+                .iter()
+                .filter(|r| !r.deleted && r.key_id == pid)
+                .count();
         }
+        let read_only = self.read_only;
         g.rows = rows
             .into_iter()
             .map(|r| {
-                let health = health_of(&keys, &r);
+                let health = health_of(&keys, &r, read_only);
                 (r.name.clone(), Cached { row: r, health })
             })
             .collect();
@@ -566,6 +631,7 @@ impl SecretStore {
                 "none of the {live} stored secret(s) decrypts with this node's key (key_id {}): the key was replaced; put the right one back, or give the old one as the previous key (docs/secrets.md)",
                 hex(&keys.current.key_id())
             );
+            g.healable = true;
             Self::set_locked(g, why);
             return;
         }
@@ -616,6 +682,7 @@ impl SecretStore {
                 .and_then(|k| k.previous.as_ref())
                 .map(|p| hex(&p.key_id())),
             data_ephemeral: self.data_ephemeral,
+            under_previous: g.under_previous,
             secrets: g
                 .rows
                 .values()
@@ -797,9 +864,12 @@ impl SecretStore {
             updated_by: by.to_owned(),
             ..old.row
         };
-        state
+        let clean = state
             .put_secret_row(&row, now)
             .map_err(|e| StoreError::Db(e.to_string()))?;
+        if !clean {
+            warn_wal("a deleted secret's ciphertext");
+        }
         let info = info_of(&row, RowHealth::Readable);
         g.rows.insert(
             row.name.clone(),
@@ -822,9 +892,20 @@ impl SecretStore {
     pub(crate) fn heal_as_replica(&self) -> Result<usize, String> {
         let paths = self.paths();
         let var = |k: &str| (self.var)(k);
+        if self.read_only {
+            return Err("a status read changes nothing".to_owned());
+        }
         let mut g = self.ready();
         if g.locked.is_none() {
             return Err("the store isn't locked".to_owned());
+        }
+        // A key file or database that can't be read is fixed, not replaced: a new key couldn't
+        // be made beside the existing file, and the rows would be gone for nothing.
+        if !g.healable {
+            return Err(format!(
+                "locked for a reason a new key doesn't fix: {}",
+                g.locked.as_deref().unwrap_or("no key")
+            ));
         }
         if paths.ephemeral || !paths.uses_data_key(&var) {
             return Err("only a data-directory key is replaced".to_owned());
@@ -905,6 +986,14 @@ pub(crate) fn head_of<'a>(rows: impl Iterator<Item = &'a SecretRow>) -> (Stamp, 
     (top, *h.finalize().as_bytes())
 }
 
+/// REQ: OPS-014 (ADR-167 §3) — the WAL couldn't be truncated (another connection was reading
+/// for longer than the busy timeout): `what` may stay in `state.db-wal` until a later checkpoint.
+pub(crate) fn warn_wal(what: &str) {
+    tracing::warn!(
+        "secrets store: the write-ahead log couldn't be truncated (another connection was busy): {what} may stay in state.db-wal until the next checkpoint"
+    );
+}
+
 /// REQ: OPS-014 (ADR-167 §3) — rows under the previous key, re-encrypted under the current one
 /// (same stamp, new nonce) in one transaction, then the WAL truncated. `rows` is updated in place.
 fn reencrypt(state: &State, current: &NodeKey, previous: &NodeKey, rows: &mut [SecretRow]) {
@@ -931,7 +1020,10 @@ fn reencrypt(state: &State, current: &NodeKey, previous: &NodeKey, rows: &mut [S
         return;
     }
     match state.replace_secret_rows(&redone) {
-        Ok(()) => {
+        Ok(clean) => {
+            if !clean {
+                warn_wal("ciphertext under the previous key");
+            }
             tracing::info!(
                 count = redone.len(),
                 from = %hex(&pid),

@@ -2005,16 +2005,6 @@ fn secret_references(cfg: &Config, r: &mut Report<'_>) {
             {
                 r.err(format!("{at}.{}", f.reference), NAME);
             }
-            if let Some(i) = f.inline
-                && v.get(i).and_then(serde_json::Value::as_str) == Some(MARKER)
-            {
-                r.err(
-                    format!("{at}.{i}"),
-                    format!(
-                        "`{MARKER}` is what a redacted copy shows, not a value: set the credential itself"
-                    ),
-                );
-            }
         }
     };
     for (i, v) in each(&cfg.router).iter().enumerate() {
@@ -2046,20 +2036,13 @@ fn secret_references(cfg: &Config, r: &mut Report<'_>) {
             r.err(format!("telemetry.otlp.header_refs.{h}"), NAME);
         }
     }
-    if o.headers.values().any(|v| v.as_str() == MARKER) {
-        r.err(
-            "telemetry.otlp.headers",
-            format!("`{MARKER}` is what a redacted copy shows, not a value"),
-        );
-    }
-    for (i, u) in cfg.upstream.iter().enumerate() {
-        if u.headers.values().any(|v| v.as_str() == MARKER)
-            || u.args.iter().any(|a| a.as_str() == MARKER)
-        {
+    // Every credential path (`credentials::PATHS`): values, headers, arguments and URL passwords.
+    if let Ok(v) = serde_json::to_value(cfg) {
+        for p in crate::credentials::marker_paths(&v) {
             r.err(
-                format!("upstream[{i}]"),
+                p,
                 format!(
-                    "`{MARKER}` is what a redacted copy shows, not a value: set the header or argument itself"
+                    "`{MARKER}` is what a redacted copy shows, not a value: set the credential itself"
                 ),
             );
         }

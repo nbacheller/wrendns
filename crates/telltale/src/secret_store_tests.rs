@@ -91,10 +91,16 @@ async fn ops_014_configured_key_unreadable_locks_store() {
             .any(|r| r["code"] == "secrets_locked"),
         "{health}"
     );
-    // DNS answers, and readiness didn't move.
-    let p = crate::pipeline::tests_support::pipeline_from(&cfg);
+    // DNS answers through this node's own pipeline (the one its listeners use, beside the locked
+    // store), and readiness didn't move.
+    let (local, _) = telltale_policy::LocalData::from_config(&cfg);
+    h.src.pipeline.reload(
+        Arc::new(telltale_upstream::Router::from_config(&cfg).unwrap_or_default()),
+        crate::pipeline::Policy::from_config(&cfg, local),
+    );
+    assert_eq!(h.src.secrets.status().state, StoreState::Locked);
     assert!(crate::pipeline::tests_support::answer(
-        &p,
+        &h.src.pipeline,
         "nas.home",
         "192.168.1.30"
     ));

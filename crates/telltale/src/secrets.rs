@@ -182,7 +182,7 @@ fn read_key_file(
     );
     #[cfg(unix)]
     if let Ok(meta) = std::fs::metadata(path) {
-        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         let mode = meta.permissions().mode();
         if mode & 0o027 != 0 {
             warnings.push(format!(
@@ -191,8 +191,28 @@ fn read_key_file(
                 mode & 0o777
             ));
         }
+        // REQ: OPS-014 (ADR-167 §3, note 39) — owned by another user. The process's uid is read
+        // from `/proc/self` (no `libc`); root is exempt (it can read the file anyway, and
+        // kubelet's Secret mounts are root's).
+        if let Some(me) = process_uid()
+            && meta.uid() != me
+            && meta.uid() != 0
+        {
+            warnings.push(format!(
+                "{}: the secrets key is owned by another user (uid {}, this process runs as {me}); make it this user's",
+                path.display(),
+                meta.uid()
+            ));
+        }
     }
     NodeKey::parse(&text, source)
+}
+
+/// The process's uid, from the owner of `/proc/self` (Linux; `None` elsewhere).
+#[cfg(unix)]
+fn process_uid() -> Option<u32> {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata("/proc/self").ok().map(|m| m.uid())
 }
 
 /// Writes `text` to a new file `path` (`O_CREAT|O_EXCL`, 0600) and syncs it.
@@ -321,11 +341,21 @@ pub(crate) fn load(
         Some(NodeKey::parse(&text, KeySource::Env)?)
     } else if !paths.previous_file.is_empty() {
         let p = PathBuf::from(&paths.previous_file);
-        Some(read_key_file(
-            &p,
-            KeySource::File(p.clone()),
-            &mut warnings,
-        )?)
+        if p.exists() {
+            Some(read_key_file(
+                &p,
+                KeySource::File(p.clone()),
+                &mut warnings,
+            )?)
+        } else {
+            // REQ: OPS-014 (ADR-167 note 39) — removed after a rotation, as the docs say, with
+            // the setting left: not a reason to lock (§3 locks for sources 1 and 2 only).
+            warnings.push(format!(
+                "{}: the previous secrets key ([node] secrets_previous_key_file) is gone; going on without one (remove the setting)",
+                p.display()
+            ));
+            None
+        }
     } else {
         None
     };

@@ -606,6 +606,28 @@ fn markers(kind: &str, body: &mut Value) -> Vec<(String, Part)> {
     out
 }
 
+/// REQ: API-014, OPS-014 — the concrete paths in a whole configuration (as JSON) of every
+/// credential that reads [`MARKER`]: a value, or a URL's password. A redacted copy
+/// (`config check --print`) shows these; files that hold one are refused at load.
+#[must_use]
+pub fn marker_paths(config: &Value) -> Vec<String> {
+    let mut probe = config.clone();
+    let mut out = Vec::new();
+    for c in PATHS {
+        visit(&mut probe, &segments(c.path), "", &mut |p, leaf| {
+            let hit = match (c.part, &*leaf) {
+                (Part::Whole, Value::String(s)) => s == MARKER,
+                (Part::UrlPassword, Value::String(s)) => url_has_marker(s),
+                _ => false,
+            };
+            if hit {
+                out.push(p.to_owned());
+            }
+        });
+    }
+    out
+}
+
 /// REQ: API-014 — whether an entry body sends [`MARKER`] back anywhere (checks refuse it: they
 /// never resolve markers).
 #[must_use]

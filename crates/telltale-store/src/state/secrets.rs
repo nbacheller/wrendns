@@ -192,7 +192,9 @@ impl State {
 
     /// Stores a row (a value or a tombstone) by name, replacing what was there. A tombstone also
     /// prunes old ones, and the WAL is truncated so the deleted value's pages don't linger there.
-    pub fn put_secret_row(&self, s: &SecretRow, now: u64) -> Result<()> {
+    /// Returns whether the WAL is clean (`false`: another connection kept the truncation from
+    /// finishing; the caller says so).
+    pub fn put_secret_row(&self, s: &SecretRow, now: u64) -> Result<bool> {
         self.with(|c| {
             let tx = c.unchecked_transaction()?;
             upsert(&tx, s)?;
@@ -201,16 +203,16 @@ impl State {
             }
             tx.commit()?;
             if s.deleted {
-                checkpoint_truncate(c)?;
+                return checkpoint_truncate(c);
             }
-            Ok(())
+            Ok(true)
         })
     }
 
     /// REQ: OPS-014 (ADR-167 §3) — re-encryption (a rotation): every row given replaces its own
     /// in one transaction, then the WAL is truncated, so no ciphertext under the old key is left
-    /// in the file (`secure_delete`) or the WAL.
-    pub fn replace_secret_rows(&self, rows: &[SecretRow]) -> Result<()> {
+    /// in the file (`secure_delete`) or the WAL. Returns whether the truncation finished.
+    pub fn replace_secret_rows(&self, rows: &[SecretRow]) -> Result<bool> {
         self.with(|c| {
             let tx = c.unchecked_transaction()?;
             for s in rows {
@@ -222,11 +224,12 @@ impl State {
     }
 
     /// REQ: OPS-014 (ADR-167 §3, the replica's self-heal) — drops every row; the caller has
-    /// checked they are all the cluster's (a replica fetches them again).
+    /// checked they are all the cluster's (a replica fetches them again). Returns how many went.
     pub fn clear_secret_rows(&self) -> Result<usize> {
         self.with(|c| {
             let n = c.execute("DELETE FROM secrets", [])?;
-            checkpoint_truncate(c)?;
+            // Rows a new key can't open anyway: a WAL left behind holds nothing readable.
+            let _ = checkpoint_truncate(c)?;
             Ok(n)
         })
     }
@@ -268,7 +271,7 @@ mod tests {
         gone.key_id.clear();
         gone.nonce.clear();
         gone.ciphertext.clear();
-        s.put_secret_row(&gone, 100).unwrap();
+        assert!(s.put_secret_row(&gone, 100).unwrap(), "WAL clean");
         let row = s.secret_row("x").unwrap().unwrap();
         assert!(row.deleted && row.ciphertext.is_empty() && row.key_id.is_empty());
         let c = s.next_secret_stamp(0).unwrap();

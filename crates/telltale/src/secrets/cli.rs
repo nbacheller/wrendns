@@ -18,8 +18,12 @@ use super::{KeyPaths, KeySource, NEW_KEY_FILE, NodeKey, hex, sync_dir, write_new
 /// `telltale secrets status`: the store's state, its key (source and ID, never the key), each
 /// stored secret without its value, and every credential field with its source and whether this
 /// node can read it.
+///
+/// REQ: OPS-014 — it writes nothing (no interrupted rotation finished or dropped, nothing
+/// re-encrypted, no database or key made), so running it beside the server or a `rotate-key`
+/// can't race them; what the next start would do is reported instead.
 pub(crate) fn status(cfg: &Config, var: EnvFn, out: &mut dyn Write) -> std::io::Result<bool> {
-    let store = SecretStore::with_env(cfg, var, false, false);
+    let store = SecretStore::read_only(cfg, var);
     store.load_now();
     let s = store.status();
     match &s.reason {
@@ -33,7 +37,16 @@ pub(crate) fn status(cfg: &Config, var: EnvFn, out: &mut dyn Write) -> std::io::
     if let Some(p) = &s.previous_key_id {
         writeln!(
             out,
-            "previous key: key_id {p} (rows under it are re-encrypted at start)"
+            "previous key: key_id {p} ({} stored secret(s) under it, re-encrypted at the next start)",
+            s.under_previous
+        )?;
+    }
+    let paths = KeyPaths::of(cfg);
+    if !paths.ephemeral && paths.data_dir.join(NEW_KEY_FILE).exists() {
+        writeln!(
+            out,
+            "note: {} is left from an unfinished rotation (or one running now); the next start finishes or drops it",
+            paths.data_dir.join(NEW_KEY_FILE).display()
         )?;
     }
     let tombstones = s.secrets.iter().filter(|x| x.deleted).count();
@@ -133,15 +146,21 @@ pub(crate) fn rotate_key(cfg: &Config, var: &EnvFn, until: Until) -> Result<Rota
         ));
     }
     // Offline only: the server keeps the ciphertext in memory and would write under the old key.
+    // A lock that can't be taken at all is refused too: whether the server runs is unknown.
     let _lock = match crate::datadir::lock(&paths.data_dir, std::time::Duration::ZERO) {
-        Ok(l) => Some(l),
+        Ok(l) => l,
         Err(crate::datadir::LockError::Held(holder)) => {
             return Err(format!(
                 "TelltaleDNS is running on {} ({holder}); stop it first",
                 paths.data_dir.display()
             ));
         }
-        Err(crate::datadir::LockError::Io(_)) => None,
+        Err(crate::datadir::LockError::Io(e)) => {
+            return Err(format!(
+                "{}: the data directory's lock can't be taken ({e}), so whether TelltaleDNS is running is unknown; nothing was changed",
+                paths.data_dir.display()
+            ));
+        }
     };
     let db = paths.data_dir.join("state.db");
     let state = State::open(&db).map_err(|e| format!("{}: {e}", db.display()))?;
@@ -171,9 +190,14 @@ pub(crate) fn rotate_key(cfg: &Config, var: &EnvFn, until: Until) -> Result<Rota
                 ..r.clone()
             });
         }
-        state
+        let clean = state
             .replace_secret_rows(&redone)
             .map_err(|e| e.to_string())?;
+        if !clean {
+            eprintln!(
+                "note: the write-ahead log couldn't be truncated (another connection was busy): ciphertext under the old key may stay in state.db-wal until the next checkpoint"
+            );
+        }
     }
     let done = Rotated {
         from: hex(&old.key_id()),
