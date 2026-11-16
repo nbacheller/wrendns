@@ -1291,7 +1291,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
-## ADR-162 — Editing a quick rule: replace it in place under its ID; the rule keeps its maker and its start (Proposed)
+## ADR-162 — Editing a quick rule: replace it in place under its ID; the rule keeps its maker and its start (Accepted)
 **Context:** GitHub issue #57 (a user's request). The Quick rules page lists each rule with **Remove** only, and the form only creates, under a new ID. Changing a rule's domain, scope, end or note meant removing it and making another, which leaves a gap with no rule in effect and loses who made it and when. `PUT /api/v1/rules/{id}` already creates or replaces, but it stamped the writer and the time on every write.
 **Decision (proposed):**
 - **No new operation.** Edit is `PUT /api/v1/rules/{id}` with the rule's own ID (dry run, `If-Match`, `Idempotency-Key`, audited as `rule.put` with the rule before and after, so the editor is the audit entry's actor). Rules from the config files stay read-only (409).
@@ -1300,6 +1300,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - **No Edit** for a rule from a config file, an expired one (the sweep removes it within seconds), or one made through the API for several devices or groups, or devices and groups together (the form holds one scope, so saving would drop the rest silently). The row says to use the API.
 **Alternatives rejected:** remove then make a new rule from the page (a gap with no rule, and the maker and the start are lost); refreshing `created` on an edit (it would hide who started the rule); `updated` and `updatedBy` fields (a new key in the shared configuration, which an older replica refuses, CLU-010, and the audit log already has the editor); a separate `PATCH` (replace is the contract today); a multi-select scope in the form (a larger change, left open).
 **Consequences:** no configuration schema change and no mixed-version issue; one behaviour change for API clients, that a replace no longer refreshes `created`; the page has two forms when one is being edited, so the form's test IDs differ (`quick-rule-form` for a new rule, `quick-rule-edit-form` for an edit).
+**Accepted 2026-11-16:** the owner answered "push it, accept ADR-162" after seeing the behaviour change (a replace no longer refreshes `created`) and the cases without an Edit.
 **Verification:** a unit test that an edit keeps the maker and the start and that older data takes the writer; the e2e test `flt_005 edit a quick rule in place` (the form from the rule, the end kept, the old domain no longer allowed, one rule, the maker and start unchanged, the notice, Cancel).
 
 ## ADR-161 — Muting anomaly findings: a shared entry per standing rule, matched when the finding is created, recorded but not counted (Accepted)
