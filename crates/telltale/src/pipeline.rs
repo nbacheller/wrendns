@@ -78,6 +78,8 @@ pub(crate) struct Policy {
     pub(crate) shadow_lists: Vec<Box<str>>,
     /// REQ: DNS-021 (T12.4) — this node's name for the NSID option (`[dns] nsid`).
     pub(crate) nsid: Option<Box<[u8]>>,
+    /// REQ: DNS-023 (T22.1) — device names in DNS (`[local] device_domain`); `None`: off.
+    pub(crate) device_dns: Option<crate::device_dns::Settings>,
 }
 
 /// REQ: DNS-018 (T7.22) — one authoritative zone.
@@ -121,6 +123,7 @@ impl Policy {
                 .nsid
                 .then(|| crate::http::node_name(cfg).into_bytes().into_boxed_slice())
                 .filter(|n| !n.is_empty() && n.len() <= 255),
+            device_dns: crate::device_dns::Settings::from_config(cfg),
         }
     }
 
@@ -575,6 +578,11 @@ pub(crate) struct Pipeline {
     pub(crate) router_leases: Arc<arc_swap::ArcSwap<crate::devices::Leases>>,
     /// REQ: T8.3 — the names devices announce over mDNS, by address.
     pub(crate) mdns_names: Arc<arc_swap::ArcSwap<crate::devices::Leases>>,
+    /// REQ: API-013 (T22.2) — the networks (LANs, VLANs) the routers reported.
+    pub(crate) router_networks: Arc<arc_swap::ArcSwap<Vec<crate::routers::Network>>>,
+    /// REQ: DNS-023 (T22.1) — the device names answered in DNS, built off the query path by
+    /// `device_dns::run`; empty while `[local] device_domain` is unset.
+    pub(crate) device_names: arc_swap::ArcSwap<crate::device_dns::DeviceNames>,
     /// REQ: CLU-002 (ADR-125) — the names other nodes' routers and mDNS know (after this
     /// node's own).
     pub(crate) peer_names: arc_swap::ArcSwap<crate::devices::Names>,
@@ -665,6 +673,8 @@ impl Pipeline {
             dnstap: std::sync::OnceLock::new(),
             router_leases: Arc::default(),
             mdns_names: Arc::default(),
+            router_networks: Arc::default(),
+            device_names: arc_swap::ArcSwap::default(),
             peer_names: arc_swap::ArcSwap::default(),
             filter_pin: ArcSwapOption::empty(),
             flights: Singleflight::new(),
@@ -765,6 +775,7 @@ impl Pipeline {
         let dynamic = self.state.load();
         let filter = self.filter.load();
         let schedules = self.schedules.load();
+        let devices = self.device_names.load();
         let st = crate::explain::State {
             dynamic: &dynamic,
             filter: filter.as_deref(),
@@ -772,6 +783,7 @@ impl Pipeline {
             workloads: &self.workloads,
             pause: &self.pause,
             schedules: &schedules,
+            devices: Some(&devices.data),
         };
         crate::explain::explain(&st, req, source)
     }
@@ -1023,21 +1035,47 @@ impl Pipeline {
         {
             return Some(len);
         }
-        if policy.zones.is_empty() {
-            return None;
+        // REQ: DNS-023 (T22.1) — device names: after configured records and a zone's own
+        // records, before a zone's NXDOMAIN. With the feature off this is one branch; on, one
+        // lock-free load.
+        if policy.device_dns.is_none() {
+            if policy.zones.is_empty() {
+                return None;
+            }
+            return self.zone_answer(q, policy.clients.group_names(ident), out, None);
         }
-        self.zone_answer(q, policy.clients.group_names(ident), out)
+        let devices = self.device_names.load();
+        if policy.zones.is_empty() {
+            return devices
+                .data
+                .answer(q, out, response_edns(q, self.settings.edns_payload, None));
+        }
+        self.zone_answer(
+            q,
+            policy.clients.group_names(ident),
+            out,
+            Some(&devices.data),
+        )
     }
 
     /// REQ: DNS-018 (T7.22) — the answer from the most specific zone this client sees: its
     /// records, no data for the apex and empty non-terminals, else NXDOMAIN (authoritative,
     /// with an SOA).
-    fn zone_answer(&self, q: &Query<'_>, groups: &[Box<str>], out: &mut [u8]) -> Option<usize> {
+    fn zone_answer(
+        &self,
+        q: &Query<'_>,
+        groups: &[Box<str>],
+        out: &mut [u8],
+        devices: Option<&LocalData>,
+    ) -> Option<usize> {
         let st = self.state.load();
-        let z = st.policy.zones.iter().find(|z| {
+        let Some(z) = st.policy.zones.iter().find(|z| {
             q.qname.is_subdomain_of(&z.apex)
                 && (z.groups.is_empty() || z.groups.iter().any(|g| groups.contains(g)))
-        })?;
+        }) else {
+            // REQ: DNS-023 — no zone covers it: the device names may.
+            return devices?.answer(q, out, response_edns(q, self.settings.edns_payload, None));
+        };
         let edns = response_edns(q, self.settings.edns_payload, None);
         // REQ: DNS-018 (T9.18) — the apex's SOA and NS.
         if q.qname == z.apex && matches!(q.qtype, rtype::SOA | rtype::NS) {
@@ -1053,6 +1091,12 @@ impl Pipeline {
             return b.finish(edns).ok();
         }
         if let Some(len) = z.data.answer(q, out, edns) {
+            return Some(len);
+        }
+        // REQ: DNS-023 — a device name inside a zone (the zone's own records won above).
+        if let Some(len) = devices
+            .and_then(|d| d.answer(q, out, response_edns(q, self.settings.edns_payload, None)))
+        {
             return Some(len);
         }
         let exists = q.qname == z.apex || z.data.has_below(&q.qname);
@@ -3595,6 +3639,105 @@ groups = ["kids"]
             "the zone's SOA in the authority"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// REQ: DNS-023 (T22.1) — device names answer A and PTR, authoritatively; a configured
+    /// record and a zone's own record win; inside a zone a device name answers before the
+    /// zone's NXDOMAIN; with the feature off the table is ignored.
+    #[test]
+    fn dns_023_device_names_in_dns() {
+        let cfg_toml = format!(
+            "{UPSTREAM}[local]\ndevice_domain = \"home.arpa\"\n[[record]]\nname = \"nas.home.arpa\"\ntype = \"A\"\nvalue = \"192.0.2.200\"\n[[zone]]\nname = \"lab.example\"\n[[zone.record]]\nname = \"web.lab.example\"\ntype = \"A\"\nvalue = \"10.9.9.9\"\n"
+        );
+        let cfg: telltale_config::Config = telltale_config::Loader::new()
+            .toml_str("t.toml", &cfg_toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, _) = LocalData::from_config(&cfg);
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy {
+                zones: Arc::new(crate::server::load_zones(&cfg).unwrap()),
+                ..Policy::from_config(&cfg, local)
+            },
+        );
+        install_filter(
+            &p,
+            "||nothing.example^\n",
+            telltale_filter::matcher::Lookup::Indexed,
+        );
+        p.device_names.store(Arc::new(crate::device_dns::build(
+            &[
+                (
+                    "kitchen-tablet.home.arpa".to_owned(),
+                    Ipv4Addr::new(192, 0, 2, 21),
+                ),
+                ("nas.home.arpa".to_owned(), Ipv4Addr::new(192, 0, 2, 5)),
+                ("web.lab.example".to_owned(), Ipv4Addr::new(10, 1, 1, 1)),
+                ("printer.lab.example".to_owned(), Ipv4Addr::new(10, 1, 1, 2)),
+            ],
+            60,
+        )));
+        let r = ask_from(&p, "10.0.0.5", "kitchen-tablet.home.arpa", rtype::A);
+        let s = summarize(&r).unwrap();
+        assert!(
+            s.header.flags.aa() && s.rcode == rcode::NOERROR && contains(&r, &[192, 0, 2, 21]),
+            "a device name"
+        );
+        let ptr = ask_from(&p, "10.0.0.5", "21.2.0.192.in-addr.arpa", rtype::PTR);
+        let name = NameBuf::from_presentation("kitchen-tablet.home.arpa").unwrap();
+        assert!(contains(&ptr, name.as_wire()), "its PTR");
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "nas.home.arpa", rtype::A),
+                &[192, 0, 2, 200]
+            ),
+            "a configured record wins"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "web.lab.example", rtype::A),
+                &[10, 9, 9, 9]
+            ),
+            "a zone's own record wins"
+        );
+        let printer = ask_from(&p, "10.0.0.5", "printer.lab.example", rtype::A);
+        assert!(
+            summarize(&printer).unwrap().rcode == rcode::NOERROR
+                && contains(&printer, &[10, 1, 1, 2]),
+            "a device name inside a zone, before its NXDOMAIN"
+        );
+        let nx = summarize(&ask_from(&p, "10.0.0.5", "nope.lab.example", rtype::A)).unwrap();
+        assert_eq!(
+            nx.rcode,
+            rcode::NXDOMAIN,
+            "the zone still says no for the rest"
+        );
+        // Off: the same table is ignored.
+        let off = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy::open(),
+        );
+        install_filter(
+            &off,
+            "||nothing.example^\n",
+            telltale_filter::matcher::Lookup::Indexed,
+        );
+        off.device_names.store(Arc::new(crate::device_dns::build(
+            &[(
+                "kitchen-tablet.home.arpa".to_owned(),
+                Ipv4Addr::new(192, 0, 2, 21),
+            )],
+            60,
+        )));
+        let r = ask_from(&off, "10.0.0.5", "kitchen-tablet.home.arpa", rtype::A);
+        assert!(!contains(&r, &[192, 0, 2, 21]), "off: not answered");
     }
 
     /// REQ: DNS-016 (T7.21) — DNS64: a name without AAAA gets AAAA made from its A records

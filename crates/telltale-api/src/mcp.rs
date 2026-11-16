@@ -256,6 +256,18 @@ pub fn tools() -> Vec<Tool> {
                 Ok(vec![("devices".into(), "/api/v1/clients".into())])
             },
         },
+        // REQ: API-013 (T22.2)
+        Tool {
+            name: "list_networks",
+            description: "Read-only. The network inventory: the LANs and VLANs the routers report (subnet, VLAN, gateway, DHCP pool, domain), and client groups' networks no router reported, each with the group that covers it, its host addresses, the known devices in it, how full it is, and how many devices sit outside the DHCP pool; then every device found by the routers, Home Assistant, and mDNS (MAC, IP, the name the router or Home Assistant gave it, which [[router]] named it, its name in TelltaleDNS, and with [local] device_domain the name it answers as in DNS). Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![
+                    ("networks".into(), "/api/v1/networks".into()),
+                    ("devices".into(), "/api/v1/dhcp/leases".into()),
+                ])
+            },
+        },
         // REQ: FLT-017 (T15.1)
         Tool {
             name: "list_workloads",

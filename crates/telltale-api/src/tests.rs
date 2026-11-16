@@ -1560,7 +1560,8 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 113 with CLU-001's /cluster/nodes/{id}.
     // 114 with OBS-038's /anomaly-mutes/{name}; 116 with OPS-011's /system/support-package and
     // /system/support-package/{id}/map.
-    assert_eq!(paths.len(), 116);
+    // 117 with API-013's /networks.
+    assert_eq!(paths.len(), 117);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

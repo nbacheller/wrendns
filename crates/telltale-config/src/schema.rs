@@ -49,7 +49,8 @@ pub struct Config {
     pub anomaly_mute: Vec<AnomalyMuteConfig>,
     /// REQ: OBS-010 (T7.12) — alert rules and where they go.
     pub alerts: AlertsConfig,
-    /// REQ: T8.2 — routers whose DHCP names devices (UniFi, OPNsense).
+    /// REQ: T8.2 — routers whose DHCP names devices (UniFi, OPNsense), and (API-012, T22.3)
+    /// Home Assistant's device registry.
     pub router: Vec<RouterConfig>,
     /// Known devices and how to recognize them (FLT-006).
     pub client: Vec<ClientConfig>,
@@ -713,6 +714,17 @@ pub struct LocalConfig {
     pub auto_ptr: bool,
     /// TTL for local records without their own.
     pub default_ttl: u32,
+    /// REQ: DNS-023 (T22.1) — answer A and PTR records for the devices TelltaleDNS knows by
+    /// name (named devices with one address, routers' DHCP clients, Home Assistant, and with
+    /// `device_mdns` the names devices announce) as `<name>.<device_domain>`, such as
+    /// `kitchen-tablet.home.arpa`. Off when unset. Records in `[[record]]`, hosts files, and
+    /// zones win over these.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_domain: Option<SafeString>,
+    /// TTL of those answers, in seconds (they follow DHCP, so keep it short).
+    pub device_ttl: u32,
+    /// Also answer for names devices announce over mDNS (`[clients] mdns`).
+    pub device_mdns: bool,
 }
 
 impl Default for LocalConfig {
@@ -721,6 +733,9 @@ impl Default for LocalConfig {
             hosts_files: Vec::new(),
             auto_ptr: true,
             default_ttl: 300,
+            device_domain: None,
+            device_ttl: 60,
+            device_mdns: false,
         }
     }
 }
@@ -1227,22 +1242,25 @@ const fn default_zone_negative_ttl() -> u32 {
     300
 }
 
-/// REQ: T8.2 — a router whose DHCP clients name devices.
+/// REQ: T8.2 — a router whose DHCP clients name devices; or (API-012, T22.3) a Home Assistant
+/// whose device registry names them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RouterConfig {
     /// Unique name (logs, the leases' source).
     pub name: SafeString,
-    /// `unifi` (UniFi OS consoles and the Network application) or `opnsense`.
+    /// `unifi` (UniFi OS consoles and the Network application), `opnsense`, or
+    /// `home_assistant`.
     #[serde(rename = "type")]
     pub kind: RouterKind,
     /// The console or controller: `https://192.168.1.1` (UniFi OS), `https://controller:8443`
-    /// (Network application), `https://opnsense.lan`.
+    /// (Network application), `https://opnsense.lan`, `http://homeassistant.local:8123`.
     pub url: SafeString,
     /// UniFi: the site (default `default`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site: Option<SafeString>,
-    /// UniFi: an API key (UniFi Network 9+), or OPNsense: the API key. A file holding it.
+    /// UniFi: an API key (UniFi Network 9+); OPNsense: the API key; Home Assistant: a
+    /// long-lived access token. A file holding it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_file: Option<SafeString>,
     /// OPNsense: the API secret (a file).
@@ -1280,6 +1298,9 @@ const fn default_router_interval() -> u32 {
 pub enum RouterKind {
     Unifi,
     Opnsense,
+    /// REQ: API-012 (T22.3) — Home Assistant: device names from its device registry, matched
+    /// by MAC address; read-only.
+    HomeAssistant,
 }
 
 /// REQ: OBS-010 (T7.12, `spec/06` §8) — alerts: rules checked on the primary (or a standalone

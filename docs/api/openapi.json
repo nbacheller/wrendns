@@ -3342,7 +3342,7 @@
           "config"
         ],
         "summary": "Devices found on the network (API-010; T8.2, T8.3).",
-        "description": "The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense), then the\nnames devices announce over mDNS (`[clients] mdns`), each with the name the device has in\nTelltaleDNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name\nbecause these are the router's DHCP leases.",
+        "description": "The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense, and the\ndevices Home Assistant names), then the names devices announce over mDNS (`[clients] mdns`),\neach with the name the device has in TelltaleDNS and, with `[local] device_domain`, the\nname it answers as in DNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name\nbecause these are the router's DHCP leases.",
         "operationId": "dhcp_leases",
         "responses": {
           "200": {
@@ -4712,6 +4712,28 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/networks": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Networks on your network: subnets, VLANs, and how full they are (API-013; T22.2).",
+        "description": "The LANs and VLANs your routers report (`[[router]]`, UniFi: subnet, VLAN, DHCP pool,\ndomain), then any client group's `networks` that no router reported. Each with the group\nthat covers it and how many known devices are in it (the routers' DHCP clients, Home\nAssistant's devices, and mDNS names), so you can see which networks are filling up. Read\non this node (the one that reads the routers).",
+        "operationId": "networks",
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_NetworkInfo"
                 }
               }
             }
@@ -11720,6 +11742,13 @@
             ],
             "description": "The device's name in TelltaleDNS (a named client, else the host name)."
           },
+          "dnsName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: DNS-023 (T22.1) — the name it answers as in DNS (`kitchen-tablet.home.arpa`),\nwith `[local] device_domain` set."
+          },
           "expiresUnixSeconds": {
             "type": "integer",
             "format": "int64",
@@ -11738,6 +11767,13 @@
           },
           "mac": {
             "type": "string"
+          },
+          "router": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: API-012 (T22.3) — the `[[router]]` whose answer named it (`udm`,\n`home-assistant`); absent for mDNS."
           },
           "source": {
             "type": "string",
@@ -14333,6 +14369,13 @@
                   ],
                   "description": "The device's name in TelltaleDNS (a named client, else the host name)."
                 },
+                "dnsName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: DNS-023 (T22.1) — the name it answers as in DNS (`kitchen-tablet.home.arpa`),\nwith `[local] device_domain` set."
+                },
                 "expiresUnixSeconds": {
                   "type": "integer",
                   "format": "int64",
@@ -14351,6 +14394,13 @@
                 },
                 "mac": {
                   "type": "string"
+                },
+                "router": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: API-012 (T22.3) — the `[[router]]` whose answer named it (`udm`,\n`home-assistant`); absent for mDNS."
                 },
                 "source": {
                   "type": "string",
@@ -14823,6 +14873,131 @@
                 "source": {
                   "type": "string",
                   "description": "`file` (read-only here) or `api`."
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
+      "Items_NetworkInfo": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "REQ: API-013 (T22.2) — a network: a LAN or VLAN a router reported, or a client group's\nnetwork that no router reported, with how many known devices are in it.",
+              "required": [
+                "name",
+                "subnet",
+                "source",
+                "addresses",
+                "devices",
+                "usedPercent",
+                "outsidePool"
+              ],
+              "properties": {
+                "addresses": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Host addresses in it (without the network and broadcast addresses).",
+                  "minimum": 0
+                },
+                "devices": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Devices known in it: the routers' DHCP clients, Home Assistant's devices, and mDNS\nnames.",
+                  "minimum": 0
+                },
+                "dhcpEnd": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "dhcpStart": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The DHCP pool, when the router serves DHCP on it."
+                },
+                "domain": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The domain the router hands out on it."
+                },
+                "gateway": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "group": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The client group whose networks hold it (most specific), if any."
+                },
+                "name": {
+                  "type": "string",
+                  "example": "IoT"
+                },
+                "outsidePool": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Of `devices`, those outside the DHCP pool (fixed addresses and reservations).",
+                  "minimum": 0
+                },
+                "purpose": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The router's own word for it (UniFi: `corporate`, `guest`)."
+                },
+                "router": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The `[[router]]` that reported it."
+                },
+                "source": {
+                  "type": "string",
+                  "description": "`router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry)."
+                },
+                "subnet": {
+                  "type": "string",
+                  "description": "The network in CIDR form.",
+                  "example": "192.168.20.0/24"
+                },
+                "usedPercent": {
+                  "type": "number",
+                  "format": "double",
+                  "description": "`devices` as a share of `addresses`, 0–100."
+                },
+                "vlan": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "minimum": 0
                 }
               }
             }
@@ -16810,6 +16985,112 @@
           "glob",
           "regex"
         ]
+      },
+      "NetworkInfo": {
+        "type": "object",
+        "description": "REQ: API-013 (T22.2) — a network: a LAN or VLAN a router reported, or a client group's\nnetwork that no router reported, with how many known devices are in it.",
+        "required": [
+          "name",
+          "subnet",
+          "source",
+          "addresses",
+          "devices",
+          "usedPercent",
+          "outsidePool"
+        ],
+        "properties": {
+          "addresses": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Host addresses in it (without the network and broadcast addresses).",
+            "minimum": 0
+          },
+          "devices": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Devices known in it: the routers' DHCP clients, Home Assistant's devices, and mDNS\nnames.",
+            "minimum": 0
+          },
+          "dhcpEnd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dhcpStart": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The DHCP pool, when the router serves DHCP on it."
+          },
+          "domain": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The domain the router hands out on it."
+          },
+          "gateway": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The client group whose networks hold it (most specific), if any."
+          },
+          "name": {
+            "type": "string",
+            "example": "IoT"
+          },
+          "outsidePool": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Of `devices`, those outside the DHCP pool (fixed addresses and reservations).",
+            "minimum": 0
+          },
+          "purpose": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The router's own word for it (UniFi: `corporate`, `guest`)."
+          },
+          "router": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `[[router]]` that reported it."
+          },
+          "source": {
+            "type": "string",
+            "description": "`router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry)."
+          },
+          "subnet": {
+            "type": "string",
+            "description": "The network in CIDR form.",
+            "example": "192.168.20.0/24"
+          },
+          "usedPercent": {
+            "type": "number",
+            "format": "double",
+            "description": "`devices` as a share of `addresses`, 0–100."
+          },
+          "vlan": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          }
+        }
       },
       "NewDisplay": {
         "type": "object",

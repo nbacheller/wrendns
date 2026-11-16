@@ -1807,6 +1807,58 @@ pub struct DhcpLease {
     /// `router` (read from a `[[router]]`) or `mdns` (the name the device announces,
     /// `[clients] mdns`; no MAC).
     pub source: String,
+    /// REQ: API-012 (T22.3) — the `[[router]]` whose answer named it (`udm`,
+    /// `home-assistant`); absent for mDNS.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub router: Option<String>,
+    /// REQ: DNS-023 (T22.1) — the name it answers as in DNS (`kitchen-tablet.home.arpa`),
+    /// with `[local] device_domain` set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dns_name: Option<String>,
+}
+
+/// REQ: API-013 (T22.2) — a network: a LAN or VLAN a router reported, or a client group's
+/// network that no router reported, with how many known devices are in it.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkInfo {
+    #[schema(example = "IoT")]
+    pub name: String,
+    /// The network in CIDR form.
+    #[schema(example = "192.168.20.0/24")]
+    pub subnet: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vlan: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
+    /// The DHCP pool, when the router serves DHCP on it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dhcp_start: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dhcp_end: Option<String>,
+    /// The domain the router hands out on it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    /// The router's own word for it (UniFi: `corporate`, `guest`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+    /// `router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry).
+    pub source: String,
+    /// The `[[router]]` that reported it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub router: Option<String>,
+    /// The client group whose networks hold it (most specific), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Host addresses in it (without the network and broadcast addresses).
+    pub addresses: u64,
+    /// Devices known in it: the routers' DHCP clients, Home Assistant's devices, and mDNS
+    /// names.
+    pub devices: u64,
+    /// `devices` as a share of `addresses`, 0–100.
+    pub used_percent: f64,
+    /// Of `devices`, those outside the DHCP pool (fixed addresses and reservations).
+    pub outside_pool: u64,
 }
 
 /// Names a list shares with another (OBS-009).

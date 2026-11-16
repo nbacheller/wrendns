@@ -137,6 +137,8 @@ pub(crate) struct State<'a> {
     pub(crate) pause: &'a Pause,
     /// REQ: FLT-010 — which schedules are on right now.
     pub(crate) schedules: &'a ScheduleNow,
+    /// REQ: DNS-023 — the device names answered in DNS (`None`: off).
+    pub(crate) devices: Option<&'a telltale_policy::LocalData>,
 }
 
 /// Explains `req` against `st`, reading list sources through `source(list name)`.
@@ -222,7 +224,13 @@ pub(crate) fn explain(
         ));
     }
 
-    let special = match answered_early(policy, &q, req.client, clients.group_names(ident)) {
+    let special = match answered_early(
+        policy,
+        &q,
+        req.client,
+        clients.group_names(ident),
+        st.devices,
+    ) {
         Ok(special) => special,
         Err((outcome, summary)) => {
             e.outcome = outcome;
@@ -509,6 +517,7 @@ pub(crate) fn answered_early(
     q: &telltale_proto::Query<'_>,
     client: IpAddr,
     groups: &[Box<str>],
+    devices: Option<&telltale_policy::LocalData>,
 ) -> Result<Option<Special>, (Outcome, String)> {
     if !telltale_policy::is_allowed(&policy.allowed, client) {
         return Err((
@@ -542,16 +551,39 @@ pub(crate) fn answered_early(
             }
             // REQ: DNS-018 — an authoritative zone this client's groups see answers before
             // any filtering (the pipeline's `zone_answer`).
-            if let Some(z) = policy.zones.iter().find(|z| {
+            let zone = policy.zones.iter().find(|z| {
                 q.qname.is_subdomain_of(&z.apex)
                     && (z.groups.is_empty() || z.groups.iter().any(|g| groups.contains(g)))
-            }) {
+            });
+            // REQ: DNS-023 — a device name answers after a zone's own records, before its
+            // NXDOMAIN (the pipeline's `local_answer`).
+            let device = || {
+                policy
+                    .device_dns
+                    .as_ref()
+                    .and(devices)
+                    .is_some_and(|d| d.answer(q, &mut [0u8; 4096], None).is_some())
+            };
+            if let Some(z) = zone {
+                if z.data.answer(q, &mut out, None).is_none() && device() {
+                    return Err((
+                        Outcome::Local,
+                        "answered from the devices TelltaleDNS knows by name ([local] device_domain)".into(),
+                    ));
+                }
                 return Err((
                     Outcome::Local,
                     format!(
                         "answered from the authoritative zone {} (local data, never filtered)",
                         z.apex.display()
                     ),
+                ));
+            }
+            if device() {
+                return Err((
+                    Outcome::Local,
+                    "answered from the devices TelltaleDNS knows by name ([local] device_domain)"
+                        .into(),
                 ));
             }
             return Ok(special);

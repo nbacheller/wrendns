@@ -20,7 +20,7 @@ pub use clients::{
     AnswerFilter, BlockPolicy, Client, ClientTable, Group, IdSource, Identity, Neighbors, Pause,
     Rewrite, RewriteTarget,
 };
-pub use local::{LoadReport, LocalData, reverse_name};
+pub use local::{LoadReport, LocalData, device_label, reverse_name};
 pub use quick::{QuickMatch, QuickRule, QuickRules, RuleScope, quick_ref};
 pub use ratelimit::RateLimiter;
 pub use special::{Special, classify};

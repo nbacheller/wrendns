@@ -1100,8 +1100,15 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     tokio::spawn(crate::routers::run(
         cfg.router.clone(),
         Arc::clone(&pipeline.router_leases),
+        Arc::clone(&pipeline.router_networks),
         http_stopped.clone(),
         cfg.cluster.ephemeral,
+    ));
+    // REQ: DNS-023 (T22.1) — device names answered in DNS (`[local] device_domain`), rebuilt
+    // off the query path; follows reloads.
+    tokio::spawn(crate::device_dns::run(
+        Arc::clone(&pipeline),
+        http_stopped.clone(),
     ));
     // REQ: T8.3 — device names from mDNS announcements (read at startup).
     if cfg.clients.mdns {

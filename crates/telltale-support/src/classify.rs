@@ -139,6 +139,7 @@ const TABLE: &[(&str, Class)] = &[
     ("listen[].tls.cert", Scan),
     ("listen[].tls.key", Scan),
     ("local.hosts_files[]", Scan),
+    ("local.device_domain", Scan),
     ("node.data_dir", Scan),
     ("node.name", Name(C::Node)),
     ("probe.targets[]", Scan),

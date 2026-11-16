@@ -2400,6 +2400,9 @@ impl Backend for ApiBackend {
 
     // REQ: OPS-008 (T7.19) — this node's DHCP leases.
     fn dhcp_leases(&self) -> Vec<telltale_api::model::DhcpLease> {
+        // REQ: DNS-023 (T22.1) — the name each address answers as.
+        let dns = self.src.pipeline.device_names.load();
+        let dns_name = |ip: &std::net::Ipv4Addr| dns.by_ip.get(ip).cloned();
         // REQ: T8.2 — the routers' DHCP clients.
         let mut v: Vec<telltale_api::model::DhcpLease> = self
             .src
@@ -2414,6 +2417,8 @@ impl Backend for ApiBackend {
                 client_name: device_name(&self.src, l.ip.to_ipv6_mapped().octets()),
                 expires_unix_seconds: l.expires,
                 source: "router".to_owned(),
+                router: l.router.clone(),
+                dns_name: dns_name(&l.ip),
             })
             .collect();
         // REQ: T8.3, T8.6 — and the names devices announce over mDNS (routers win).
@@ -2429,10 +2434,108 @@ impl Backend for ApiBackend {
                 client_name: device_name(&self.src, l.ip.to_ipv6_mapped().octets()),
                 expires_unix_seconds: 0,
                 source: "mdns".to_owned(),
+                router: None,
+                dns_name: dns_name(&l.ip),
             });
         }
         v.sort_by_key(|l| l.ip.parse::<std::net::Ipv4Addr>().map_or(0, u32::from));
         v
+    }
+
+    // REQ: API-013 (T22.2) — the routers' networks, then the groups' networks no router
+    // reported, each with its group and how many known devices are in it.
+    fn networks(&self) -> Vec<telltale_api::model::NetworkInfo> {
+        use std::net::{IpAddr, Ipv4Addr};
+        let state = self.src.pipeline.current();
+        let clients = &state.policy.clients;
+        let routers = self.src.pipeline.router_leases.load();
+        let mdns = self.src.pipeline.mdns_names.load();
+        let known: Vec<Ipv4Addr> = {
+            let mut a: Vec<Ipv4Addr> = routers.keys().chain(mdns.keys()).copied().collect();
+            a.sort_unstable();
+            a.dedup();
+            a
+        };
+        let host_count = |prefix: u8| -> u64 {
+            match prefix {
+                32 => 1,
+                31 => 2,
+                p if p < 32 => (1u64 << (32 - u32::from(p))) - 2,
+                _ => 0,
+            }
+        };
+        let mask = crate::routers::prefix_mask;
+        let inside = crate::routers::in_network;
+        let group_of = |net: Ipv4Addr, prefix: u8| -> Option<String> {
+            // The first host address stands for the network.
+            let probe = if prefix >= 31 {
+                net
+            } else {
+                Ipv4Addr::from(u32::from(net) | 1)
+            };
+            let g = clients.network_group(IpAddr::V4(probe))?;
+            clients
+                .groups()
+                .get(usize::from(g))
+                .map(|g| g.name.to_string())
+        };
+        let mut out: Vec<telltale_api::model::NetworkInfo> = Vec::new();
+        let mut info = |name: String,
+                        net: Ipv4Addr,
+                        prefix: u8,
+                        source: &str,
+                        r: Option<&crate::routers::Network>| {
+            let in_net: Vec<Ipv4Addr> = known
+                .iter()
+                .copied()
+                .filter(|ip| inside(net, prefix, *ip))
+                .collect();
+            let devices = u64::try_from(in_net.len()).unwrap_or(u64::MAX);
+            let pool = r.and_then(|r| Some((r.dhcp_start?, r.dhcp_stop?)));
+            let outside_pool = pool.map_or(0, |(a, b)| {
+                u64::try_from(in_net.iter().filter(|ip| **ip < a || **ip > b).count())
+                    .unwrap_or(u64::MAX)
+            });
+            let addresses = host_count(prefix);
+            #[allow(clippy::cast_precision_loss)]
+            let used_percent = if addresses == 0 {
+                0.0
+            } else {
+                (devices as f64 * 1000.0 / addresses as f64).round() / 10.0
+            };
+            out.push(telltale_api::model::NetworkInfo {
+                name,
+                subnet: format!("{net}/{prefix}"),
+                vlan: r.and_then(|r| r.vlan),
+                gateway: r.and_then(|r| r.gateway).map(|g| g.to_string()),
+                dhcp_start: r.and_then(|r| r.dhcp_start).map(|a| a.to_string()),
+                dhcp_end: r.and_then(|r| r.dhcp_stop).map(|a| a.to_string()),
+                domain: r.and_then(|r| r.domain.clone()),
+                purpose: r.and_then(|r| r.purpose.clone()),
+                source: source.to_owned(),
+                router: r.map(|r| r.router.clone()),
+                group: group_of(net, prefix),
+                addresses,
+                devices,
+                used_percent,
+                outside_pool,
+            });
+        };
+        let nets = self.src.pipeline.router_networks.load();
+        for n in nets.iter() {
+            info(n.name.clone(), n.subnet, n.prefix, "router", Some(n));
+        }
+        for g in clients.groups() {
+            for c in &g.networks {
+                let IpAddr::V4(a) = c.addr else { continue };
+                let net = Ipv4Addr::from(u32::from(a) & mask(c.prefix));
+                if nets.iter().any(|n| n.subnet == net && n.prefix == c.prefix) {
+                    continue;
+                }
+                info(g.name.to_string(), net, c.prefix, "group", None);
+            }
+        }
+        out
     }
 
     // REQ: OBS-010 (T9.6) — what the alert task last saw and sent.
@@ -5883,6 +5986,7 @@ mod top_client_name_tests {
             ip: std::net::Ipv4Addr::from(ip),
             hostname: Some(name.into()),
             expires: 0,
+            router: None,
         }
     }
 

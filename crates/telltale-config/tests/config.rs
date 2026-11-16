@@ -1159,6 +1159,57 @@ fn t8_2_routers_are_validated() {
     );
 }
 
+/// REQ: API-012 (T22.3) — `type = "home_assistant"`: a token file, and none of the other kinds'
+/// settings.
+#[test]
+fn api_012_home_assistant_router_is_validated() {
+    const HA: &str = "[[router]]\nname = \"ha\"\ntype = \"home_assistant\"\nurl = \"http://192.0.2.20:8123\"\n";
+    let ok = load_str(&format!("{HA}api_key_file = \"/run/secrets/ha-token\"\n")).unwrap();
+    assert_eq!(
+        ok.config.router[0].kind,
+        telltale_config::RouterKind::HomeAssistant
+    );
+    assert_eq!(paths(&load_str(HA).unwrap_err()), ["router[0]"]);
+    for extra in [
+        "username = \"u\"\n",
+        "password_file = \"/p\"\n",
+        "api_secret_file = \"/s\"\n",
+        "site = \"default\"\n",
+    ] {
+        let errs = load_str(&format!("{HA}api_key_file = \"/t\"\n{extra}")).unwrap_err();
+        assert_eq!(paths(&errs), ["router[0]"], "{extra}");
+    }
+}
+
+/// REQ: DNS-023 (T22.1) — `[local] device_domain`: a domain name, not `local`; a sane TTL;
+/// a warning when `device_mdns` has no listener.
+#[test]
+fn dns_023_device_domain_is_validated() {
+    let ok = load_str("[local]\ndevice_domain = \"home.arpa\"\n").unwrap();
+    assert_eq!(
+        ok.config
+            .local
+            .device_domain
+            .as_ref()
+            .map(telltale_config::SafeString::as_str),
+        Some("home.arpa")
+    );
+    assert_eq!(ok.config.local.device_ttl, 60);
+    assert!(load_str("[local]\ndevice_domain = \"lan.\"\n").is_ok());
+    for bad in ["local", "LOCAL", "bad name", "-x.home.arpa", "", "a..b"] {
+        let errs = load_str(&format!("[local]\ndevice_domain = \"{bad}\"\n")).unwrap_err();
+        assert_eq!(paths(&errs), ["local.device_domain"], "{bad}");
+    }
+    let errs = load_str("[local]\ndevice_ttl = 0\n").unwrap_err();
+    assert_eq!(paths(&errs), ["local.device_ttl"]);
+    let w = load_str("[local]\ndevice_domain = \"home.arpa\"\ndevice_mdns = true\n").unwrap();
+    assert!(
+        w.warnings.iter().any(|x| x.contains("device_mdns")),
+        "{:?}",
+        w.warnings
+    );
+}
+
 // REQ: FLT-017 (T15.1) — `[kubernetes]`: map rules name known groups and kinds; the section is
 // shared but left out of the shared part while at its defaults (older replicas).
 #[test]

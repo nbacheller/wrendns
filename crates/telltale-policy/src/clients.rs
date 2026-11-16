@@ -547,6 +547,24 @@ impl ClientTable {
         self.clients.get(usize::from(id.client?))
     }
 
+    /// REQ: DNS-023 (T22.1) — the configured device matched by exactly this address (not a
+    /// CIDR, which names a set of devices). Off the query path.
+    pub fn by_exact_ip(&self, ip: IpAddr) -> Option<&Client> {
+        self.clients.get(usize::from(*self.by_ip.get(&ip)?))
+    }
+
+    /// REQ: DNS-023 (T22.1) — the configured device matched by this MAC address.
+    pub fn by_exact_mac(&self, mac: [u8; 6]) -> Option<&Client> {
+        self.clients.get(usize::from(*self.by_mac.get(&mac)?))
+    }
+
+    /// REQ: DNS-023 (T22.1) — every configured device matched by an exact address, with it.
+    pub fn exact_ips(&self) -> impl Iterator<Item = (IpAddr, &Client)> {
+        self.by_ip
+            .iter()
+            .filter_map(|(ip, i)| Some((*ip, self.clients.get(usize::from(*i))?)))
+    }
+
     /// REQ: FLT-017 — a group's index by name.
     pub fn group_id(&self, name: &str) -> Option<u16> {
         self.group_index.get(name).copied()

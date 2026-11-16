@@ -18,6 +18,7 @@ mod checks;
 mod cluster;
 mod ctl;
 mod datadir;
+mod device_dns;
 mod devices;
 mod dnstap;
 mod drill;

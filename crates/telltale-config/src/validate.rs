@@ -65,6 +65,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     upstream_check(cfg, &mut r);
     sinks(cfg, &mut r);
     routers(cfg, &mut r);
+    device_names(cfg, &mut r);
     rewrites(cfg, &mut r);
     zones(cfg, &mut r);
     otlp(cfg, &mut r);
@@ -235,6 +236,43 @@ fn rewrites(cfg: &Config, r: &mut Report<'_>) {
     }
 }
 
+// REQ: DNS-023 (T22.1) — device names in DNS: a domain name of at least one label, not mDNS's
+// own `local`, and a TTL a DHCP change can outlive.
+fn device_names(cfg: &Config, r: &mut Report<'_>) {
+    let l = &cfg.local;
+    if let Some(d) = &l.device_domain {
+        let d = d.trim_end_matches('.');
+        let ok = !d.is_empty()
+            && d.len() <= 200
+            && d.split('.').all(|label| {
+                !label.is_empty()
+                    && label.len() <= 63
+                    && !label.starts_with('-')
+                    && !label.ends_with('-')
+                    && label
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            });
+        if !ok {
+            r.err(
+                "local.device_domain",
+                "a domain name, e.g. home.arpa (RFC 8375) or lan",
+            );
+        } else if d.eq_ignore_ascii_case("local") {
+            r.err(
+                "local.device_domain",
+                "`local` belongs to mDNS (RFC 6762); use home.arpa",
+            );
+        }
+    }
+    if !(1..=86_400).contains(&l.device_ttl) {
+        r.err("local.device_ttl", "1 to 86400 seconds");
+    }
+    if l.device_mdns && !cfg.clients.mdns {
+        r.warn("local.device_mdns: no effect without [clients] mdns = true");
+    }
+}
+
 // REQ: T8.2 — router integrations: unique names, http(s) URLs, the credentials each kind needs.
 fn routers(cfg: &Config, r: &mut Report<'_>) {
     let mut names = HashSet::new();
@@ -261,6 +299,26 @@ fn routers(cfg: &Config, r: &mut Report<'_>) {
             crate::RouterKind::Opnsense => {
                 if x.api_key_file.is_none() || x.api_secret_file.is_none() {
                     r.err(p.clone(), "OPNsense needs api_key_file and api_secret_file");
+                }
+            }
+            // REQ: API-012 (T22.3) — a long-lived access token, and nothing UniFi- or
+            // OPNsense-only.
+            crate::RouterKind::HomeAssistant => {
+                if x.api_key_file.is_none() {
+                    r.err(
+                        p.clone(),
+                        "Home Assistant needs api_key_file (a file holding a long-lived access token)",
+                    );
+                }
+                if x.username.is_some()
+                    || x.password_file.is_some()
+                    || x.api_secret_file.is_some()
+                    || x.site.is_some()
+                {
+                    r.err(
+                        p.clone(),
+                        "Home Assistant takes api_key_file only (not username, password_file, api_secret_file, or site)",
+                    );
                 }
             }
         }

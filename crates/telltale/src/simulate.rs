@@ -646,11 +646,13 @@ impl Decider {
             };
             notes.insert("identity_from_event".to_owned());
         }
+        // Device names (DNS-023) follow the routers, not the configuration being simulated.
         let special = match crate::explain::answered_early(
             &self.policy,
             &q,
             row.ip,
             clients.group_names(ident),
+            None,
         ) {
             Ok(s) => s,
             Err((outcome, _)) => {

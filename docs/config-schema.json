@@ -287,6 +287,8 @@
       "default": {
         "auto_ptr": true,
         "default_ttl": 300,
+        "device_mdns": false,
+        "device_ttl": 60,
         "hosts_files": []
       }
     },
@@ -345,7 +347,7 @@
       }
     },
     "router": {
-      "description": "REQ: T8.2 — routers whose DHCP names devices (UniFi, OPNsense).",
+      "description": "REQ: T8.2 — routers whose DHCP names devices (UniFi, OPNsense), and (API-012, T22.3)\nHome Assistant's device registry.",
       "type": "array",
       "default": [],
       "items": {
@@ -2482,6 +2484,26 @@
           "default": 300,
           "minimum": 0
         },
+        "device_domain": {
+          "description": "REQ: DNS-023 (T22.1) — answer A and PTR records for the devices TelltaleDNS knows by\nname (named devices with one address, routers' DHCP clients, Home Assistant, and with\n`device_mdns` the names devices announce) as `<name>.<device_domain>`, such as\n`kitchen-tablet.home.arpa`. Off when unset. Records in `[[record]]`, hosts files, and\nzones win over these.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "device_mdns": {
+          "description": "Also answer for names devices announce over mDNS (`[clients] mdns`).",
+          "type": "boolean",
+          "default": false
+        },
+        "device_ttl": {
+          "description": "TTL of those answers, in seconds (they follow DHCP, so keep it short).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 60,
+          "minimum": 0
+        },
         "hosts_files": {
           "description": "Hosts files (`IP name [alias...]` per line) to import as A/AAAA records.",
           "type": "array",
@@ -3168,11 +3190,11 @@
       ]
     },
     "RouterConfig": {
-      "description": "REQ: T8.2 — a router whose DHCP clients name devices.",
+      "description": "REQ: T8.2 — a router whose DHCP clients name devices; or (API-012, T22.3) a Home Assistant\nwhose device registry names them.",
       "type": "object",
       "properties": {
         "api_key_file": {
-          "description": "UniFi: an API key (UniFi Network 9+), or OPNsense: the API key. A file holding it.",
+          "description": "UniFi: an API key (UniFi Network 9+); OPNsense: the API key; Home Assistant: a\nlong-lived access token. A file holding it.",
           "type": [
             "string",
             "null"
@@ -3235,11 +3257,11 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "type": {
-          "description": "`unifi` (UniFi OS consoles and the Network application) or `opnsense`.",
+          "description": "`unifi` (UniFi OS consoles and the Network application), `opnsense`, or\n`home_assistant`.",
           "$ref": "#/$defs/RouterKind"
         },
         "url": {
-          "description": "The console or controller: `https://192.168.1.1` (UniFi OS), `https://controller:8443`\n(Network application), `https://opnsense.lan`.",
+          "description": "The console or controller: `https://192.168.1.1` (UniFi OS), `https://controller:8443`\n(Network application), `https://opnsense.lan`, `http://homeassistant.local:8123`.",
           "type": "string",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
@@ -3261,10 +3283,19 @@
     },
     "RouterKind": {
       "description": "A router integration's kind.",
-      "type": "string",
-      "enum": [
-        "unifi",
-        "opnsense"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "unifi",
+            "opnsense"
+          ]
+        },
+        {
+          "description": "REQ: API-012 (T22.3) — Home Assistant: device names from its device registry, matched\nby MAC address; read-only.",
+          "type": "string",
+          "const": "home_assistant"
+        }
       ]
     },
     "RuleAction": {

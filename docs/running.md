@@ -805,6 +805,20 @@ default_ttl = 300
 - **In the web UI:** **Names on my network** lists every local name grouped by domain. Operators can add, edit, and remove names (A, AAAA, and CNAME in Simple; every type in Advanced), run **Set up my home domain** (home.arpa by default) for a first device, and **Send a domain to another server** (conditional forwarding). Each change is previewed in a sentence and a diagram before it's saved, and every name has a **Test** link to Explain. Names from the config files are shown read-only. Through the API: `GET /api/v1/records`, `PUT`/`DELETE /api/v1/records/{name}` with `{"records": [{"type": "A", "value": "192.168.1.10"}]}`, and `GET /api/v1/forwards`, `PUT`/`DELETE /api/v1/forwards/{domain}` with `{"servers": ["10.0.0.53"]}` (add `"stub": true` for a [stub zone](#stub-zones-the-zones-own-servers)); all take `?dryRun=true`, `If-Match`, and `Idempotency-Key` like devices.
 - **Moving from another DNS server:** `telltale import zone exported.zone > records.toml` converts a zone file (Technitium's Zones → Export Zone, BIND, PowerDNS) into `[[record]]` entries for your config. The header lists anything with no local equivalent (SOA and NS aren't needed: TelltaleDNS answers these names itself). Names under the zone that you don't import still resolve normally, so a split-horizon domain keeps working: internal names answer locally, everything else publicly.
 
+### Device names in DNS
+Your router hands out the addresses; TelltaleDNS can answer for the names, so `ping kitchen-tablet.home.arpa` works and reverse lookups name your devices, without running DHCP:
+```toml
+[local]
+device_domain = "home.arpa"   # off when unset (RFC 8375's domain for homes; `lan` works too)
+device_ttl = 60               # seconds; names follow DHCP, so keep it short
+device_mdns = false           # also the names devices announce over mDNS ([clients] mdns)
+```
+- Every device TelltaleDNS knows by name gets an A record and a PTR: devices you named (by one address, or by MAC at whatever address the router gives it), your routers' DHCP clients and reservations, and Home Assistant's devices. In a cluster, every node answers the names any node's routers know.
+- Names become one label: `Kitchen Tablet` → `kitchen-tablet.home.arpa`, `Alex's iPhone` → `alexs-iphone.home.arpa`. When two devices end up with the same label (two phones called *android*), one keeps it: a device you named, then a router's or Home Assistant's name, then an mDNS name, then the lower address. The log counts these collisions; name one of the devices to settle it.
+- Your own records win: a `[[record]]`, a hosts-file entry, or a zone's own record for the same name answers instead. Inside a [zone](#local-zones), a device name answers before the zone's NXDOMAIN.
+- Names appear within about 10 seconds of a router read. `GET /api/v1/dhcp/leases` shows each device's `dnsName`, and **Explain** says when a device name answered.
+- `local` isn't accepted as the domain: it belongs to mDNS. No device gets the names `wpad` or `isatap` (a device that calls itself that could redirect other computers' proxy or tunnel settings), or `localhost`.
+
 ### Local zones
 A zone makes TelltaleDNS the authority for a whole domain: names in it are answered from it, and names it doesn't have get NXDOMAIN (instead of going to the upstreams, as names not in `[[record]]` do).
 ```toml
@@ -1305,12 +1319,30 @@ url = "https://opnsense.lan"
 api_key_file = "/etc/telltale/opn-key"     # System → Access → Users → API keys
 api_secret_file = "/etc/telltale/opn-secret"
 ```
-- UniFi: the connected clients, named by the alias you gave them in UniFi, else their host name. OPNsense: the DHCP leases (Dnsmasq, Kea, or ISC, whichever is running).
+- UniFi: the connected clients, named by the alias you gave them in UniFi, else their host name; devices with a fixed IP (a DHCP reservation) keep their name while they're offline; and the networks (see [Networks your routers report](#networks-your-routers-report)). OPNsense: the DHCP leases (Dnsmasq, Kea, or ISC, whichever is running).
+- A UniFi key or user that can read the client list but not the reservations or networks still names connected devices; the log says once which reads it skipped.
 - A self-signed console: save its certificate (`openssl s_client -connect 192.168.1.1:443 </dev/null | openssl x509 > udm.pem`) as `tls_ca`. Its certificate names `unifi.local`, not the address you reach it at, so set `tls_server_name` to the name in it (`openssl x509 -in udm.pem -noout -ext subjectAltName` shows it): the console is then verified, and only that certificate is trusted. `tls_insecure_skip_verify = true` also works, but then anything on your network could pose as the console and receive the API key.
 - Read every `interval_secs` (300); a router that doesn't answer is asked again after 15 seconds and keeps its last list meanwhile.
 - Names you give devices in TelltaleDNS win; then the routers'. `GET /api/v1/dhcp/leases` lists them (`source = router`).
 - Credentials stay in files, out of the configuration. Changes to `[[router]]` need a restart.
 - In a cluster, only one node needs to read the router (or hear mDNS). Every node asks the others for the device names they know, once a minute, so a resolver pod without the router's key names devices the same way the primary does.
+
+### Names from Home Assistant
+Home Assistant knows your IoT devices by the names you gave them ("Porch light", "Living room TV"). TelltaleDNS can read those names, read-only, and use them for the same devices on the network:
+```toml
+[[router]]
+name = "home-assistant"
+type = "home_assistant"
+url = "http://192.0.2.20:8123"
+api_key_file = "/etc/telltale/ha-token"   # Profile → Security → Long-lived access tokens
+```
+- Home Assistant knows devices by **MAC address** (Shelly, ESPHome, Sonos, Chromecast, TVs; Zigbee, Z-Wave, and Thread devices never use DNS, so they don't matter here). The address comes from your other `[[router]]` entries, else from Home Assistant's own `device_tracker` entities (its UniFi, Fritz!Box, or nmap integrations). A device whose MAC has no address anywhere is skipped.
+- **Which name wins** for one address: a name you gave the device in Home Assistant, then the routers' names (in the order of your `[[router]]` entries), then the name a Home Assistant integration gave it (often the model, like *Shelly Plus 1PM*). Names you give devices in TelltaleDNS win over all of them.
+- TelltaleDNS reads the registry with one request to `/api/template` (Home Assistant renders a fixed, read-only template), so the token must belong to an **administrator**. Use a dedicated Home Assistant user for it, and keep the token in a file.
+- `GET /api/v1/dhcp/leases` shows which `[[router]]` named each device (`router`). Read every `interval_secs` like the routers.
+
+### Networks your routers report
+`GET /api/v1/networks` (and the MCP tool `list_networks`) lists the LANs and VLANs your UniFi console reports (name, subnet, VLAN, gateway, DHCP pool, domain), then any group's `networks` no router reported. For each: the group that covers it, its host addresses, the known devices in it (from the routers, Home Assistant, and mDNS), the share used, and how many devices sit outside the DHCP pool (reservations and fixed addresses). Agent tokens need `config:read`.
 
 ### Names devices announce (mDNS)
 Phones, speakers, printers, and NAS boxes announce themselves on the local network (`Kitchen-HomePod.local`). TelltaleDNS can listen and use those names for devices you haven't named:

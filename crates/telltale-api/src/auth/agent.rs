@@ -199,7 +199,10 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/alerts"
             | "/api/v1/forwards"
             | "/api/v1/rules"
-            | "/api/v1/config/entries" => {
+            | "/api/v1/config/entries"
+            // REQ: API-013 (T22.2) — the device inventory and the networks it sits in.
+            | "/api/v1/dhcp/leases"
+            | "/api/v1/networks" => {
                 return Need::Scope("config:read");
             }
             // REQ: OBS-034 — a device's names bin by bin reads like its query log.

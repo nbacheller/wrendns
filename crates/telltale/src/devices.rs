@@ -17,6 +17,10 @@ pub(crate) struct Lease {
     pub(crate) hostname: Option<String>,
     /// Unix seconds (0 when unknown).
     pub(crate) expires: u64,
+    /// REQ: API-012 (T22.3) — the `[[router]]` whose answer named it (absent for mDNS and from
+    /// older peers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) router: Option<String>,
 }
 
 /// Devices by address.
@@ -119,6 +123,7 @@ mod tests {
             ip: Ipv4Addr::from(ip),
             hostname: Some(name.into()),
             expires: 0,
+            router: None,
         }
     }
 
