@@ -200,6 +200,11 @@ impl Kind {
         Self::Dga,
         Self::ChattyLoop,
     ];
+    /// One bit per kind, for the mute table.
+    const fn bit(self) -> u8 {
+        1 << (self as u8)
+    }
+
     pub const fn label(self) -> &'static str {
         match self {
             Self::RateSpike => "rate_spike",
@@ -238,6 +243,10 @@ pub struct Finding {
     pub threshold: f64,
     /// More evidence in words (beacon period, sample new domains, ...).
     pub detail: String,
+    /// REQ: OBS-038 (ADR-161) — the mute that matched when the finding was created: it is kept
+    /// and listed, but not counted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub muted_by: Option<String>,
 }
 
 /// A registrable domain a device contacted for the first time (that the device's learned set
@@ -461,6 +470,7 @@ impl Client {
         self.storm_hour = hour;
         let pct = u64::from(nx) * 100 / u64::from(total);
         Some(Finding {
+            muted_by: None,
             kind: Kind::NxdomainStorm,
             client: key,
             domain: None,
@@ -575,6 +585,71 @@ mod as_pairs {
 /// Hours closed at most when events resume after a gap (T10.7).
 const MAX_CATCH_UP_HOURS: u64 = 48;
 
+/// REQ: OBS-038 (ADR-161) — the mutes the engine matches a finding against when it creates it: a
+/// device's address (v4-mapped, 16 bytes) is looked up once per finding, never per query.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MuteTable {
+    rules: Vec<MuteRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MuteRule {
+    name: String,
+    /// `(network address, mask)` as 128-bit values over the v4-mapped form.
+    nets: Vec<(u128, u128)>,
+    kinds: u8,
+    expires_s: Option<u64>,
+}
+
+impl MuteTable {
+    /// Adds a mute: `nets` are `(address, prefix length over 128 bits)` in the v4-mapped form
+    /// (an IPv4 `/24` is `::ffff:a.b.c.0/120`).
+    pub fn add(
+        &mut self,
+        name: &str,
+        nets: impl IntoIterator<Item = ([u8; 16], u8)>,
+        kinds: &[Kind],
+        expires_s: Option<u64>,
+    ) {
+        let nets = nets
+            .into_iter()
+            .map(|(a, prefix)| {
+                let mask = match prefix {
+                    0 => 0,
+                    p if p >= 128 => u128::MAX,
+                    p => u128::MAX << (128 - u32::from(p)),
+                };
+                (u128::from_be_bytes(a) & mask, mask)
+            })
+            .collect();
+        self.rules.push(MuteRule {
+            name: name.to_owned(),
+            nets,
+            kinds: kinds.iter().fold(0, |m, k| m | k.bit()),
+            expires_s,
+        });
+    }
+
+    /// The first mute that covers `client` for `kind` at `at_s` (the finding's window start).
+    #[must_use]
+    pub fn matching(&self, client: [u8; 16], kind: Kind, at_s: u64) -> Option<&str> {
+        let ip = u128::from_be_bytes(client);
+        self.rules
+            .iter()
+            .find(|r| {
+                r.kinds & kind.bit() != 0
+                    && r.expires_s.is_none_or(|e| at_s < e)
+                    && r.nets.iter().any(|(net, mask)| ip & mask == *net)
+            })
+            .map(|r| r.name.as_str())
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+}
+
 /// The engine: feed it query events in timestamp order; read findings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Engine {
@@ -585,7 +660,14 @@ pub struct Engine {
     day: u64,
     findings: Vec<Finding>,
     pub evicted: u64,
+    /// Findings counted, by kind. Muted ones are not (see `total_muted`).
     pub total: BTreeMap<Kind, u64>,
+    /// REQ: OBS-038 — findings a mute matched when they were created, by kind.
+    #[serde(default)]
+    pub total_muted: BTreeMap<Kind, u64>,
+    /// REQ: OBS-038 — what is muted now (from the configuration, not saved).
+    #[serde(skip)]
+    mutes: MuteTable,
     /// First-seen domains, oldest first (T7.14).
     #[serde(default)]
     new_domains: std::collections::VecDeque<NewDomain>,
@@ -707,6 +789,8 @@ impl Engine {
             findings: Vec::new(),
             evicted: 0,
             total: BTreeMap::new(),
+            total_muted: BTreeMap::new(),
+            mutes: MuteTable::default(),
             new_domains: std::collections::VecDeque::new(),
             ignore_fps: Vec::new(),
             beacon_rhythms: std::collections::VecDeque::new(),
@@ -726,6 +810,11 @@ impl Engine {
 
     pub fn settings(&self) -> &Settings {
         &self.settings
+    }
+
+    /// REQ: OBS-038 — replaces the mutes (findings already recorded keep what they were).
+    pub fn set_mutes(&mut self, m: MuteTable) {
+        self.mutes = m;
     }
 
     /// Replaces the settings (state is kept).
@@ -930,8 +1019,15 @@ impl Engine {
         }
     }
 
-    fn push(&mut self, f: Finding) {
-        *self.total.entry(f.kind).or_insert(0) += 1;
+    fn push(&mut self, mut f: Finding) {
+        // REQ: OBS-038 — decided once, when the finding is created, against its window start: a
+        // mute that ends later doesn't un-mute what it muted, and a replay gives the same findings.
+        if let Some(name) = self.mutes.matching(f.client, f.kind, f.window_start_s) {
+            f.muted_by = Some(name.to_owned());
+            *self.total_muted.entry(f.kind).or_insert(0) += 1;
+        } else {
+            *self.total.entry(f.kind).or_insert(0) += 1;
+        }
         if self.findings.len() >= MAX_FINDINGS {
             self.findings.remove(0);
         }
@@ -1012,6 +1108,7 @@ impl Engine {
 
     /// Domain volume and beaconing for one device's tracked pairs. Returns how much of the
     /// hour's excess the reported volume findings explain.
+    #[allow(clippy::too_many_lines)] // one pass over a device's tracked domains: volume, beacon, chatty loop
     fn close_pairs(
         client: &mut Client,
         key: [u8; 16],
@@ -1029,6 +1126,7 @@ impl Engine {
             if learned && mature && x >= 200.0 && x > thr && x >= 3.0 * t.volume.mean {
                 explained += x - t.volume.mean;
                 out.push(Finding {
+                    muted_by: None,
                     kind: Kind::DomainVolume,
                     client: key,
                     domain: Some(t.domain.clone()),
@@ -1064,6 +1162,7 @@ impl Engine {
                     t.reported_beacon = true;
                     let (m, s) = mean_std(t.gaps());
                     out.push(Finding {
+                        muted_by: None,
                         kind: Kind::Beacon,
                         client: key,
                         domain: Some(t.domain.clone()),
@@ -1099,6 +1198,7 @@ impl Engine {
                         f64::from(u32::try_from(u64::midpoint(lo, hi)).unwrap_or(0)) / 1000.0
                     };
                     out.push(Finding {
+                        muted_by: None,
                         kind: Kind::ChattyLoop,
                         client: key,
                         domain: Some(t.domain.clone()),
@@ -1133,6 +1233,7 @@ impl Engine {
             .map(|(d, sc)| format!("{d} ({sc:.2})"))
             .collect();
         Finding {
+            muted_by: None,
             kind: Kind::Dga,
             client: key,
             domain: client.dga_samples.first().map(|(d, _)| d.clone()),
@@ -1167,6 +1268,7 @@ impl Engine {
         let (spread, thr) = r.bound(mult, 10.0, 0.25);
         if learned && r.n >= 3 && x >= 300.0 && x > thr && x >= 2.0 * r.mean {
             (explained < 0.5 * (x - r.mean)).then(|| Finding {
+                muted_by: None,
                 kind: Kind::RateSpike,
                 client: key,
                 domain: None,
@@ -1207,6 +1309,7 @@ impl Engine {
             let first_day = client.first_s >= start;
             if learned && client.daily_new.n >= 3 && x >= 20.0 && x > thr {
                 out.push(Finding {
+                    muted_by: None,
                     kind: Kind::Drift,
                     client: key,
                     domain: None,

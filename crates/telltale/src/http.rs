@@ -672,6 +672,7 @@ pub(crate) fn render(src: &Sources) -> String {
         for (k, n) in totals {
             w.sample("telltale_anomalies_total", &[("kind", k.label())], n);
         }
+        render_anomalies_muted(&mut w, a);
         w.family(
             "telltale_anomaly_devices",
             "gauge",
@@ -710,6 +711,19 @@ pub(crate) fn render(src: &Sources) -> String {
     w.family("telltale_local_records", "gauge", "Local records loaded.")
         .sample("telltale_local_records", &[], state.policy.local.len());
     w.finish()
+}
+
+/// REQ: OBS-038 (ADR-161) — what an anomaly mute matched: recorded and listed, not counted in
+/// `telltale_anomalies_total`.
+fn render_anomalies_muted(w: &mut PromWriter, a: &crate::anomaly::Anomalies) {
+    w.family(
+        "telltale_anomalies_muted_total",
+        "counter",
+        "Device anomaly findings a mute matched when they were created, by kind: they are listed on the Anomalies page, marked muted, and not counted in telltale_anomalies_total.",
+    );
+    for (k, n) in a.muted_totals() {
+        w.sample("telltale_anomalies_muted_total", &[("kind", k.label())], n);
+    }
 }
 
 fn render_filter_index(src: &Sources, w: &mut PromWriter) {

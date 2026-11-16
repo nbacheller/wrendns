@@ -8,9 +8,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use telltale_config::{AnomalySensitivity, Config};
+use telltale_config::{AnomalyKind, AnomalySensitivity, Cidr, Config};
 use telltale_telemetry::anomaly::{
-    Engine, Finding, Kind, PairRhythm, RHYTHM_BINS, Sensitivity, Settings,
+    Engine, Finding, Kind, MuteTable, PairRhythm, RHYTHM_BINS, Sensitivity, Settings,
 };
 use telltale_telemetry::event::Record;
 use telltale_telemetry::ring::Sink;
@@ -46,6 +46,37 @@ fn settings(cfg: &Config) -> Settings {
     }
 }
 
+/// REQ: OBS-038 (ADR-161) — a mute's kind, as the engine names it.
+const fn kind(k: AnomalyKind) -> Kind {
+    match k {
+        AnomalyKind::RateSpike => Kind::RateSpike,
+        AnomalyKind::DomainVolume => Kind::DomainVolume,
+        AnomalyKind::Drift => Kind::Drift,
+        AnomalyKind::Beacon => Kind::Beacon,
+        AnomalyKind::NxdomainStorm => Kind::NxdomainStorm,
+        AnomalyKind::Dga => Kind::Dga,
+        AnomalyKind::ChattyLoop => Kind::ChattyLoop,
+    }
+}
+
+/// A network as the engine matches it: the v4-mapped form, the prefix over 128 bits.
+fn mapped(c: &Cidr) -> ([u8; 16], u8) {
+    match c.addr {
+        std::net::IpAddr::V4(a) => (a.to_ipv6_mapped().octets(), 96 + c.prefix),
+        std::net::IpAddr::V6(a) => (a.octets(), c.prefix),
+    }
+}
+
+/// REQ: OBS-038 — the mutes of `cfg`, with device names and groups resolved to networks.
+fn mute_table(cfg: &Config) -> MuteTable {
+    let mut t = MuteTable::default();
+    for m in telltale_config::mute::resolve(cfg) {
+        let kinds: Vec<Kind> = m.kinds.iter().map(|k| kind(*k)).collect();
+        t.add(&m.name, m.nets.iter().map(mapped), &kinds, m.expires_unix);
+    }
+    t
+}
+
 impl Anomalies {
     /// The engine for `cfg`, with saved state when there is some. `None` when disabled or the
     /// query-log privacy level hides names (1 and above: findings name domains and devices,
@@ -70,6 +101,8 @@ impl Anomalies {
             },
             Err(_) => Engine::new(settings(cfg)),
         };
+        let mut engine = engine;
+        engine.set_mutes(mute_table(cfg));
         Some(Arc::new(Self {
             engine: Mutex::new(engine),
             path,
@@ -126,9 +159,20 @@ impl Anomalies {
         (totals, e.clients(), e.evicted)
     }
 
-    /// Applies new settings (a reload); learned state is kept.
+    /// REQ: OBS-038 — findings a mute matched when they were created, by kind (for `/metrics`).
+    pub(crate) fn muted_totals(&self) -> Vec<(Kind, u64)> {
+        let e = self.lock();
+        Kind::ALL
+            .iter()
+            .map(|k| (*k, e.total_muted.get(k).copied().unwrap_or(0)))
+            .collect()
+    }
+
+    /// Applies new settings and mutes (a reload); learned state is kept.
     pub(crate) fn reconfigure(&self, cfg: &Config) {
-        self.lock().set_settings(settings(cfg));
+        let mut e = self.lock();
+        e.set_settings(settings(cfg));
+        e.set_mutes(mute_table(cfg));
     }
 
     /// Writes the state atomically (temp file + rename).

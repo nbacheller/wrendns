@@ -85,7 +85,7 @@ function newKey(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings';
+export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings';
 
 const get = <T>(path: string, query?: Query) => call<T>('GET', path, { query });
 const post = <T>(path: string, body?: unknown) => call<T>('POST', path, { body: body ?? {} });
@@ -159,8 +159,13 @@ export const api = {
   // REQ: FLT-012 (T7.9) — the blockable services.
   services: () => get<S['Items_ServiceInfo']>('/services'),
   clients: () => get<S['Items_ClientInfo']>('/clients'),
-  anomalies: (since = '-7d', acknowledged?: boolean) =>
-    get<S['Items_AnomalyFinding']>('/analytics/anomalies', { since, acknowledged: acknowledged === undefined ? undefined : String(acknowledged) }),
+  // REQ: OBS-038 — `muted` true also lists findings an anomaly mute matched (each has `mutedBy`).
+  anomalies: (since = '-7d', acknowledged?: boolean, muted?: boolean) =>
+    get<S['Items_AnomalyFinding']>('/analytics/anomalies', {
+      since,
+      acknowledged: acknowledged === undefined ? undefined : String(acknowledged),
+      muted: muted === undefined ? undefined : String(muted),
+    }),
   // REQ: OBS-014 — acknowledge findings (or take it back), on every node.
   acknowledgeAnomalies: (ids: string[], note?: string) =>
     post<S['AnomalyAckResult']>('/analytics/anomalies/acknowledge', { ids, ...(note ? { note } : {}) }),

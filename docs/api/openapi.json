@@ -406,7 +406,7 @@
           "stats"
         ],
         "summary": "Device anomalies: rate spikes, heavy volume to one domain, drift, beaconing (OBS-013).",
-        "description": "Each finding compares a device with its own learned baseline (after a learning period,\n7 days by default) and carries the evidence: observed value, usual value ± spread, the\nthreshold, and the window. Findings are alert-only; TelltaleDNS never blocks on them.\nNewest first. In a cluster every node's findings are included (each node learns from the\nqueries it answers), with `nodes` saying which found each. Each has a stable `id` for\nacknowledging it (OBS-014); `acknowledged` says who did and when, and `acknowledged=false`\nreturns only the ones nobody has.",
+        "description": "Each finding compares a device with its own learned baseline (after a learning period,\n7 days by default) and carries the evidence: observed value, usual value ± spread, the\nthreshold, and the window. Findings are alert-only; TelltaleDNS never blocks on them.\nNewest first. In a cluster every node's findings are included (each node learns from the\nqueries it answers), with `nodes` saying which found each. Each has a stable `id` for\nacknowledging it (OBS-014); `acknowledged` says who did and when, and `acknowledged=false`\nreturns only the ones nobody has. A finding an anomaly mute matched (OBS-038) is left out\nunless `muted=true`; it then carries `mutedBy`, the mute's name.",
         "operationId": "anomalies",
         "parameters": [
           {
@@ -422,6 +422,15 @@
             "name": "acknowledged",
             "in": "query",
             "description": "REQ: OBS-014 — `false`: only findings nobody acknowledged; `true`: only acknowledged\nones. Default: both.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "muted",
+            "in": "query",
+            "description": "REQ: OBS-038 — `true`: muted findings are listed too, each with `mutedBy`. Default:\nthey are left out, as they are from the badge and the alerts.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -8525,6 +8534,14 @@
             "description": "`rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.",
             "example": "domain_volume"
           },
+          "mutedBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: OBS-038 (ADR-161) — the anomaly mute (its name) that matched this finding when it\nwas created. A muted finding is kept and listed, but not counted in\n`telltale_anomalies_total`, the sidebar badge, or the `anomaly` alert rule. Absent when no\nmute matched; listed only with `muted=true`.",
+            "example": "lg-tv-ptr-sweep"
+          },
           "nodes": {
             "type": "array",
             "items": {
@@ -13447,6 +13464,14 @@
                   "type": "string",
                   "description": "`rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.",
                   "example": "domain_volume"
+                },
+                "mutedBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: OBS-038 (ADR-161) — the anomaly mute (its name) that matched this finding when it\nwas created. A muted finding is kept and listed, but not counted in\n`telltale_anomalies_total`, the sidebar badge, or the `anomaly` alert rule. Absent when no\nmute matched; listed only with `muted=true`.",
+                  "example": "lg-tv-ptr-sweep"
                 },
                 "nodes": {
                   "type": "array",

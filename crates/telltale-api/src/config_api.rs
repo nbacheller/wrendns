@@ -132,6 +132,11 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/schedules/{name}",
             put(put_schedule).delete(delete_schedule),
         )
+        // REQ: OBS-038 (ADR-161)
+        .route(
+            "/api/v1/anomaly-mutes/{name}",
+            put(put_anomaly_mute).delete(delete_anomaly_mute),
+        )
         // REQ: FLT-017 — a workload's (or a namespace's) group.
         .route(
             "/api/v1/kubernetes/map/{*key}",
@@ -949,6 +954,83 @@ pub(crate) async fn put_schedule(
     .await
 }
 
+/// Mute kinds of device anomaly for some devices or groups (OBS-038).
+///
+/// The body has the same fields as `[[anomaly_mute]]` (the name comes from the path):
+/// `devices` (device names, IPs or CIDRs) and/or `groups`, `kinds` (`rate_spike`,
+/// `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, `dga`, `chatty_loop`), and optionally
+/// `expires` (RFC 3339) and `note`, e.g. `{"devices": ["lg-tv-living"], "kinds":
+/// ["nxdomain_storm"], "expires": "2026-12-31T00:00:00Z", "note": "hourly PTR sweep"}`. A finding
+/// a mute matches when it is created is still recorded and listed (`GET
+/// /analytics/anomalies?muted=true`, with `mutedBy`), but isn't counted in
+/// `telltale_anomalies_total`, the badge, the `anomaly` alert rule, or the health level
+/// (`telltale_anomalies_muted_total` counts it). The same kind still counts for every other
+/// device. The mute is shared: it applies on every node. There is no mute for everyone: name at
+/// least one device or group.
+#[utoipa::path(put, path = "/api/v1/anomaly-mutes/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A field is wrong (no device or group, an unknown kind, a name that matches nothing, a MAC address), or the configuration wouldn't be valid."),
+    ))]
+pub(crate) async fn put_anomaly_mute(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /anomaly-mutes/{name} {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::AnomalyMute, Some(input)),
+    )
+    .await
+}
+
+/// Remove an anomaly mute (OBS-038).
+///
+/// Findings created from now on count again; ones recorded while the mute held stay muted.
+#[utoipa::path(delete, path = "/api/v1/anomaly-mutes/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "No entry by that name."),
+    ))]
+pub(crate) async fn delete_anomaly_mute(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /anomaly-mutes/{name}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::AnomalyMute, None),
+    )
+    .await
+}
+
 /// Put Kubernetes workloads in a group (FLT-017).
 ///
 /// Writes a `[[kubernetes.map]]` rule: the key in the path is `namespace/kind/name` with `*` for
@@ -1367,6 +1449,7 @@ impl Op {
             Self::Managed(ManagedKind::AlertDestination, _) => "alert_destination",
             Self::Managed(ManagedKind::AlertRule, _) => "alert_rule",
             Self::Managed(ManagedKind::Schedule, _) => "schedule",
+            Self::Managed(ManagedKind::AnomalyMute, _) => "anomaly_mute",
             Self::Managed(ManagedKind::RateLimit, _) => "ratelimit",
             Self::Managed(ManagedKind::Exclusions, _) => "exclusions",
             Self::Managed(ManagedKind::Simulate, _) => "simulate",

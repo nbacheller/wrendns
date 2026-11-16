@@ -406,16 +406,31 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "since": {"type": "string", "description": "Findings since (relative like -7d, or RFC 3339). Default -7d."},
-                "acknowledged": {"type": "boolean", "description": "false: only findings nobody acknowledged yet; true: only acknowledged ones. Default: both."}
+                "acknowledged": {"type": "boolean", "description": "false: only findings nobody acknowledged yet; true: only acknowledged ones. Default: both."},
+                "muted": {"type": "boolean", "description": "true: include findings an anomaly mute matched (each has mutedBy, the mute's name). Default: left out, as they are from the badge and alerts."}
             }, "additionalProperties": false})
             },
             calls: |a| {
                 let mut path = query("/api/v1/analytics/anomalies", a, &[("since", "since")]);
-                if let Some(v) = a.get("acknowledged").and_then(Value::as_bool) {
-                    let sep = if path.contains('?') { '&' } else { '?' };
-                    path = format!("{path}{sep}acknowledged={v}");
+                for key in ["acknowledged", "muted"] {
+                    if let Some(v) = a.get(key).and_then(Value::as_bool) {
+                        let sep = if path.contains('?') { '&' } else { '?' };
+                        path = format!("{path}{sep}{key}={v}");
+                    }
                 }
                 Ok(vec![("anomalies".into(), path)])
+            },
+        },
+        // REQ: OBS-038 (ADR-161)
+        Tool {
+            name: "list_anomaly_mutes",
+            description: "Read-only. The anomaly mutes: for which devices or groups which kinds of finding stop counting (still recorded and listed, with mutedBy), until when, and why. A mute is set with plan_set_anomaly_mute. Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![(
+                    "anomalyMutes".into(),
+                    "/api/v1/config/entries?kind=anomaly_mute".into(),
+                )])
             },
         },
         // REQ: OBS-015 (ADR-104)
@@ -1187,6 +1202,78 @@ pub fn write_tools() -> Vec<WriteTool> {
                     summary: format!("Set the schedule {name} ({action})"),
                     body: Some(Value::Object(body)),
                     merge: Some(("schedule", name)),
+                })
+            },
+        },
+        // REQ: OBS-038, AGT-007 (ADR-161) — anomaly mutes, as plans.
+        WriteTool {
+            name: "plan_set_anomaly_mute",
+            description: "Plans a change (nothing changes until apply_plan). Mutes kinds of device anomaly finding for named devices and/or groups, for good or until a date: the finding is still recorded and listed (find_anomalies with muted=true shows it, with the mute's name), but no longer counts in the sidebar badge, the `anomaly` alert rule, the health level or telltale_anomalies_total (telltale_anomalies_muted_total counts it). The same kind still counts for every other device. Use it for a known harmless pattern (a TV's hourly reverse-DNS sweep), not to silence something unexplained: give `note` and prefer `expires`. Shared by the cluster. There is no mute for everyone, and a MAC address isn't accepted (use the device's name or IP). Needs config:write:anomalies.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "The mute's name (1 to 64 characters)."},
+                "devices": {"type": "array", "items": {"type": "string"}, "description": "Device names (from list_devices), IPs or CIDRs."},
+                "groups": {"type": "array", "items": {"type": "string"}, "description": "Groups: their networks and the devices that name them."},
+                "kinds": {"type": "array", "items": {"type": "string", "enum": ["rate_spike", "domain_volume", "drift", "beacon", "nxdomain_storm", "dga", "chatty_loop"]}, "description": "The kinds of finding to mute (at least one)."},
+                "expires": {"type": "string", "description": "When it stops applying (RFC 3339, e.g. 2026-12-31T00:00:00Z). Default: never."},
+                "note": {"type": "string", "description": "Why (up to 200 characters), shown with each muted finding."},
+                "reason": reason_schema()
+            }, "required": ["name", "kinds", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let name = need(a, "name")?;
+                let mut body = pick(
+                    a,
+                    &[
+                        ("devices", "devices"),
+                        ("groups", "groups"),
+                        ("kinds", "kinds"),
+                        ("expires", "expires"),
+                        ("note", "note"),
+                    ],
+                );
+                let has = |k: &str| {
+                    body.get(k)
+                        .and_then(Value::as_array)
+                        .is_some_and(|v| !v.is_empty())
+                };
+                if !has("devices") && !has("groups") {
+                    return Err("give at least one of `devices` and `groups`".into());
+                }
+                if !has("kinds") {
+                    return Err("`kinds`: at least one".into());
+                }
+                body.retain(|_, v| !v.is_null());
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/anomaly-mutes/{}", enc(&name)),
+                    summary: format!("Mute anomaly findings: {name}"),
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_remove_anomaly_mute",
+            description: "Plans a change (nothing changes until apply_plan). Removes an anomaly mute: findings created from now on count again; ones already muted stay muted. Needs config:write:anomalies.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "The mute's name (list_anomaly_mutes)."},
+                "reason": reason_schema()
+            }, "required": ["name", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: true,
+            write: |a| {
+                let name = need(a, "name")?;
+                Ok(Write {
+                    method: "DELETE",
+                    path: format!("/api/v1/anomaly-mutes/{}", enc(&name)),
+                    body: None,
+                    summary: format!("Stop muting anomaly findings: {name}"),
+                    merge: None,
                 })
             },
         },

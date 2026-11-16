@@ -59,6 +59,10 @@ pub const SCOPES: &[(&str, &str)] = &[
         "change the per-client rate limit, or go back to the config file's",
     ),
     (
+        "config:write:anomalies",
+        "mute kinds of device anomaly for devices or groups (they stop counting in the badge and alerts)",
+    ),
+    (
         "config:write:exclusions",
         "change which names and devices are kept out of the query log and analytics",
     ),
@@ -150,6 +154,7 @@ pub enum Need {
 }
 
 /// The scope an agent needs for `method path` (REQ: AGT-004). Deny by default.
+#[allow(clippy::too_many_lines)] // one flat table of routes and the scope each needs
 pub fn required(method: &Method, path: &str) -> Need {
     let p = path.trim_end_matches('/');
     let read = *method == Method::GET || *method == Method::HEAD;
@@ -233,6 +238,10 @@ pub fn required(method: &Method, path: &str) -> Need {
         // REQ: OBS-010 (T9.6)
         if under("/api/v1/alerts") {
             return Need::Scope("config:write:alerts");
+        }
+        // REQ: OBS-038 (ADR-161) — a mute can hide a compromised device, so it has its own scope.
+        if under("/api/v1/anomaly-mutes") {
+            return Need::Scope("config:write:anomalies");
         }
         // REQ: DNS-014 (review 01 q1)
         if under("/api/v1/ratelimit") {
@@ -771,13 +780,36 @@ mod tests {
         );
     }
 
+    /// REQ: OBS-038 — muting anomalies has its own write scope (the mutes are read through
+    /// `GET /config/entries?kind=anomaly_mute`, `config:read`).
+    #[test]
+    fn obs_038_anomaly_mutes_need_their_scope() {
+        use Need::Scope;
+        for m in [Method::PUT, Method::DELETE] {
+            assert_eq!(
+                required(&m, "/api/v1/anomaly-mutes/lg-tv"),
+                Scope("config:write:anomalies"),
+                "{m}"
+            );
+        }
+        assert!(
+            parse_scopes(&["config:write:*".into()])
+                .unwrap()
+                .contains("config:write:anomalies")
+        );
+        assert_eq!(
+            implied_role(&parse_scopes(&["config:write:anomalies".into()]).unwrap()),
+            Role::Operator
+        );
+    }
+
     #[test]
     fn agt_004_scopes_parse_and_imply_roles() {
         let s = parse_scopes(&["config:write:*".into(), "analytics:read".into()]).unwrap();
         assert_eq!(
             s.len(),
-            12,
-            "eleven write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts, ratelimit, exclusions, simulate) + analytics"
+            13,
+            "twelve write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts, ratelimit, anomalies, exclusions, simulate) + analytics"
         );
         assert!(s.contains("config:write:upstreams") && s.contains("config:write:lists"));
         assert!(s.contains("config:write:rules"));

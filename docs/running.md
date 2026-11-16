@@ -2729,7 +2729,7 @@ flush_secs = 5                           # or whatever arrived in 5 s
 - Sinks are read at startup: restart after changing them.
 
 ## Device anomalies
-TelltaleDNS learns how each device usually behaves and points out when that changes (the **Anomalies** page, `GET /api/v1/analytics/anomalies`, and the metric `telltale_anomalies_total{kind}`):
+TelltaleDNS learns how each device usually behaves and points out when that changes (the **Anomalies** page, `GET /api/v1/analytics/anomalies`, and the metric `telltale_anomalies_total{kind}`, with `telltale_anomalies_muted_total{kind}` for findings a [mute](#muting-a-kind-of-finding-for-a-device) matched):
 - **Many more queries than usual** (`rate_spike`): this hour's queries against the device's usual count for this hour of the day.
 - **Unusual traffic to one domain** (`domain_volume`): queries to one registrable domain in an hour against that device's usual volume for it. A spike one domain explains is reported once, as this.
 - **Many new domains** (`drift`): registrable domains the device has never contacted, per day, against its usual number of new ones.
@@ -2774,6 +2774,23 @@ Once you've looked at a finding, acknowledge it: **Acknowledge** on its card (or
 - **In a cluster** every node learns from the queries it answers, and the Anomalies page shows every node's findings (**Found by** names them; the same finding on two nodes is one entry). An acknowledgement made on any node is recorded by the primary and reaches every node within seconds, with the next configuration version; a node that was down gets it when it reconnects. It works in a GitOps-managed cluster too. On a replica that can't reach the primary, acknowledging fails with 503, like other changes.
 - Acknowledgements are kept for 60 days from the finding's window.
 
+### Muting a kind of finding for a device
+Acknowledging clears one finding; a device that does something harmless every hour makes a new one every hour (two TVs that look up the reverse name of every address on the network answer a few hundred NXDOMAINs a minute, which is a real storm to the detector and nothing to worry about). A **mute** says: this kind of finding, for this device, stops counting. On the Anomalies page choose **Mute for this device…** on a finding: the device and the kind are filled in, you pick how long (a day, a week, or until you remove it) and write why, and the preview says what it will do before you save. The list of mutes below the findings has **Remove**.
+```toml
+[[anomaly_mute]]
+name    = "lg-tv-ptr-sweep"
+devices = ["lg-tv-living", "lg-tv-bedroom"]   # device names ([[client]]), IPs or CIDRs
+# groups  = ["iot"]                           # or groups: their networks and the devices that name them
+kinds   = ["nxdomain_storm"]                  # rate_spike, domain_volume, drift, beacon, nxdomain_storm, dga, chatty_loop
+expires = "2026-12-31T00:00:00Z"              # optional: it stops applying (a finding created later counts again)
+note    = "hourly reverse-DNS sweep"
+```
+- **Recorded, not counted.** The finding is made as before and listed (turn on **Show muted** on the page, or `GET /api/v1/analytics/anomalies?muted=true`), marked with the mute that matched (`mutedBy`). It isn't counted in the sidebar badge, the `anomaly` alert rule, the health level, or `telltale_anomalies_total`; `telltale_anomalies_muted_total{kind}` counts it, so a mute never hides that something happened. The same kind of finding for any other device counts as usual.
+- **Decided when the finding is created.** Removing a mute or letting it expire doesn't change findings already recorded; ones made afterwards count. Muting is not blocking: nothing about the device's queries changes.
+- **Narrow on purpose.** A mute names at least one device or group and at least one kind: there is no mute for everyone or for every kind (to switch the detector off, `[telemetry.anomaly] enabled = false`). A MAC address isn't accepted: a device's address changes with its lease, and findings are made from addresses. Name the device (a `[[client]]` with an IP or network in its `match`) or give its IP. A group means its networks and the devices that name it.
+- **In a cluster** a mute is shared like groups and schedules: set on the primary, it reaches every node, including ones that were down. In a cluster whose configuration comes from Git the page and the API refuse the change (409 `gitops_managed`): add the `[[anomaly_mute]]` block to the repository (or the Helm values' `config:`) instead. On a single node that loads its configuration from Git, a mute made here is saved and the response includes the TOML to keep.
+- **Through the API:** `PUT /api/v1/anomaly-mutes/<name>` with the same fields (add `?dryRun=true` to preview), `DELETE` to remove, `GET /api/v1/config/entries?kind=anomaly_mute` to list. The operator role; agents need `config:write:anomalies` (a mute can hide a compromised device, so it isn't part of any other scope, though `config:write:*` includes it) and use `plan_set_anomaly_mute` / `plan_remove_anomaly_mute`. Every change is audited as `config.anomaly_mute`.
+
 ## Alerts
 TelltaleDNS can tell you when something needs attention: by email, on your phone through [ntfy](https://ntfy.sh) or Gotify, in a Slack-compatible channel (Slack, Mattermost, Discord's `/slack` webhook URL), or on any webhook.
 ```toml
@@ -2807,7 +2824,7 @@ Rules watch:
 | `list_failing` | a list fails to update | list |
 | `list_stale` | a URL list's content hasn't changed in `stale_after_days` (default 30; see [Lists that stopped changing](#lists-that-stopped-changing)) | list |
 | `servfail_rate` | SERVFAIL above `threshold` % (default 5) over 5 minutes, at least 50 queries | node |
-| `anomaly` | a [device anomaly](#device-anomalies) is found | finding |
+| `anomaly` | a [device anomaly](#device-anomalies) is found, unless it is acknowledged or [muted](#muting-a-kind-of-finding-for-a-device) | finding |
 | `update_available` | a newer TelltaleDNS build is out | version |
 | `sync_lag` | a replica is behind the primary's configuration (set `for_secs`, say 300, so a normal sync stays quiet) | node |
 | `new_device` | a device TelltaleDNS has never seen starts asking, on any node (quiet for the first day after a fresh start, while every device is new) | device |
@@ -2909,7 +2926,8 @@ listen = "0.0.0.0:8053"
 |---|---|
 | `GET /api/v1/system/info` | version, node, uptime, listeners, query log on/off, active filter snapshot |
 | `GET /api/v1/system/health` | `healthy`, `degraded`, or `severe`, with every reason, its node, and where to look ([Health](#health)) |
-| `GET /api/v1/analytics/anomalies?acknowledged=false` | device anomalies from every node, each with its `id` and who acknowledged it; `POST /api/v1/analytics/anomalies/acknowledge` (or `/unacknowledge`) with `{"ids": [...], "note": "..."}` marks them seen ([Acknowledging](#acknowledging-findings)) |
+| `GET /api/v1/analytics/anomalies?acknowledged=false` | device anomalies from every node, each with its `id` and who acknowledged it; `POST /api/v1/analytics/anomalies/acknowledge` (or `/unacknowledge`) with `{"ids": [...], "note": "..."}` marks them seen ([Acknowledging](#acknowledging-findings)); `muted=true` also lists findings an [anomaly mute](#muting-a-kind-of-finding-for-a-device) matched, each with `mutedBy` |
+| `PUT` / `DELETE /api/v1/anomaly-mutes/<name>` | mute kinds of finding for devices or groups, or remove the mute ([Muting](#muting-a-kind-of-finding-for-a-device)); listed by `GET /api/v1/config/entries?kind=anomaly_mute` |
 | `GET /api/v1/stats/summary?from=-24h` | queries, blocked %, cache hit %, NXDOMAIN/SERVFAIL, active clients, latency by path |
 | `GET /api/v1/stats/timeseries?step=minute&from=-1h` | counts per second or minute by status, type, and response code |
 | `GET /api/v1/stats/top?kind=blocked&limit=10` | top `domains`, `blocked`, `nxdomain`, or `clients` (add `client=IP` for one device's domains; `hour=previous` for the last complete hour, and for clients `hour=rolling` for the last hour whatever the clock hour) |
@@ -2961,7 +2979,7 @@ Give an AI assistant (or any automation) an **agent token** instead of your own 
 | `analytics:read` | statistics, top lists, latency, anomalies, explain, cluster status |
 | `querylog:read` | the query log and live tail: who asked for what |
 | `config:read` | lists, groups, devices, upstreams, local names, forwarded domains |
-| `config:write:clients`, `config:write:records`, `config:write:forwards`, `config:write:rules`, `config:write:lists`, `config:write:groups`, `config:write:upstreams`, `config:write:ratelimit` (`config:write:*` for all) | name and regroup devices; change local names; send domains to other servers; make quick rules; change lists, groups, and upstreams; change the rate limit |
+| `config:write:clients`, `config:write:records`, `config:write:forwards`, `config:write:rules`, `config:write:lists`, `config:write:groups`, `config:write:upstreams`, `config:write:ratelimit`, `config:write:anomalies` (`config:write:*` for all) | name and regroup devices; change local names; send domains to other servers; make quick rules; change lists, groups, and upstreams; change the rate limit; mute kinds of device anomaly |
 | `ops:pause`, `ops:cache`, `ops:anomalies`, `ops:maintenance`, `ops:annotate` | pause blocking; flush the cache; acknowledge device anomalies; start and end [node maintenance](#taking-a-node-down-for-maintenance) (at most 2 hours); leave [notes](#change-markers) on the time charts |
 | `ops:drill` | start and end [failover drills](#failover-drills) (at most 5 minutes; never a default scope) |
 | `cluster:admin` | promote a node to primary |
@@ -3001,7 +3019,8 @@ For agents that start their tools as a subprocess, use the stdio transport. It r
 | `health` | healthy, degraded, or severe, and why (start here when something seems wrong) |
 | `upstream_health` | upstream health (healthy, benched, probing), latency |
 | `list_effectiveness` | list sizes, updates, errors, hits, unique names, and overlap |
-| `find_anomalies` | device anomalies from every node with evidence (including NXDOMAIN storms and DGA-like names), optionally only the unacknowledged ones |
+| `find_anomalies` | device anomalies from every node with evidence (including NXDOMAIN storms and DGA-like names), optionally only the unacknowledged ones, or with `muted` also the ones a mute matched |
+| `list_anomaly_mutes` | the [anomaly mutes](#muting-a-kind-of-finding-for-a-device): devices or groups, kinds, end time, note (needs `config:read`) |
 | `acknowledge_anomalies` | marks findings as seen on every node, or takes it back with `undo` (needs `ops:anomalies`; changes at once, audited) |
 | `new_domains` | domains devices contacted for the first time, with DGA scores |
 | `vqlog` | any count, top list, percentile, or time series over the query log, in one query (needs `querylog:read`; below) |
@@ -3081,6 +3100,7 @@ Resources read the same REST routes with the agent's token, so scopes apply: a p
 | `plan_add_list` | add a filter list (URL or inline rules) | `config:write:lists` |
 | `plan_update_group` | change a group's networks, lists, blocked answer, priority, or schedules | `config:write:groups` (+ `config:read`) |
 | `plan_set_schedule` | make or change a weekly schedule (a bedtime, extra lists, blocked services) | `config:write:groups` |
+| `plan_set_anomaly_mute`, `plan_remove_anomaly_mute` | mute kinds of device anomaly for devices or groups (at least one device or group and one kind; give a note and prefer an end time), or remove the mute | `config:write:anomalies` (+ `config:read`) |
 | `plan_set_ratelimit` | change the per-client rate limit (queries per window, the action, exempt addresses, how clients are grouped) | `config:write:ratelimit` (+ `config:read`) |
 | `plan_update_upstreams` | change or add an upstream server or upstream group | `config:write:upstreams` (+ `config:read`) |
 | `apply_plan`, `discard_plan`, `list_plans` | make the planned change; drop a plan; list yours | the plan's scope |

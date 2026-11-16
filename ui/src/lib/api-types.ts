@@ -121,7 +121,8 @@ export interface paths {
          *     Newest first. In a cluster every node's findings are included (each node learns from the
          *     queries it answers), with `nodes` saying which found each. Each has a stable `id` for
          *     acknowledging it (OBS-014); `acknowledged` says who did and when, and `acknowledged=false`
-         *     returns only the ones nobody has.
+         *     returns only the ones nobody has. A finding an anomaly mute matched (OBS-038) is left out
+         *     unless `muted=true`; it then carries `mutedBy`, the mute's name.
          */
         get: operations["anomalies"];
         put?: never;
@@ -3086,6 +3087,14 @@ export interface components {
              */
             kind: string;
             /**
+             * @description REQ: OBS-038 (ADR-161) — the anomaly mute (its name) that matched this finding when it
+             *     was created. A muted finding is kept and listed, but not counted in
+             *     `telltale_anomalies_total`, the sidebar badge, or the `anomaly` alert rule. Absent when no
+             *     mute matched; listed only with `muted=true`.
+             * @example lg-tv-ptr-sweep
+             */
+            mutedBy?: string | null;
+            /**
              * @description REQ: OBS-014, CLU-002 — the cluster nodes that found it (each learns from the queries it
              *     answers). Empty on a standalone node.
              */
@@ -5105,6 +5114,14 @@ export interface components {
                  * @example domain_volume
                  */
                 kind: string;
+                /**
+                 * @description REQ: OBS-038 (ADR-161) — the anomaly mute (its name) that matched this finding when it
+                 *     was created. A muted finding is kept and listed, but not counted in
+                 *     `telltale_anomalies_total`, the sidebar badge, or the `anomaly` alert rule. Absent when no
+                 *     mute matched; listed only with `muted=true`.
+                 * @example lg-tv-ptr-sweep
+                 */
+                mutedBy?: string | null;
                 /**
                  * @description REQ: OBS-014, CLU-002 — the cluster nodes that found it (each learns from the queries it
                  *     answers). Empty on a standalone node.
@@ -8214,6 +8231,11 @@ export interface operations {
                  *     ones. Default: both.
                  */
                 acknowledged?: boolean;
+                /**
+                 * @description REQ: OBS-038 — `true`: muted findings are listed too, each with `mutedBy`. Default:
+                 *     they are left out, as they are from the badge and the alerts.
+                 */
+                muted?: boolean;
             };
             header?: never;
             path?: never;

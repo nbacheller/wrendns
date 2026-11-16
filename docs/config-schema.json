@@ -39,6 +39,14 @@
         "rule": []
       }
     },
+    "anomaly_mute": {
+      "description": "REQ: OBS-038 (ADR-161) — kinds of anomaly finding muted for devices or groups. Shared by\nthe cluster (the `[telemetry]` section is not), so one entry reaches every node.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/AnomalyMuteConfig"
+      }
+    },
     "api": {
       "description": "The REST API (and, later, the web UI).",
       "$ref": "#/$defs/ApiConfig",
@@ -854,6 +862,101 @@
         }
       },
       "additionalProperties": false
+    },
+    "AnomalyKind": {
+      "description": "A kind of device anomaly finding (`spec/06` §7.1), as named in `[[anomaly_mute]] kinds`.",
+      "oneOf": [
+        {
+          "description": "Many more queries than usual.",
+          "type": "string",
+          "const": "rate_spike"
+        },
+        {
+          "description": "Unusual traffic to one domain.",
+          "type": "string",
+          "const": "domain_volume"
+        },
+        {
+          "description": "Many new domains.",
+          "type": "string",
+          "const": "drift"
+        },
+        {
+          "description": "Regular phone-home.",
+          "type": "string",
+          "const": "beacon"
+        },
+        {
+          "description": "Burst of failed lookups.",
+          "type": "string",
+          "const": "nxdomain_storm"
+        },
+        {
+          "description": "Machine-generated-looking domains.",
+          "type": "string",
+          "const": "dga"
+        },
+        {
+          "description": "A steady fast rhythm to one domain (informational).",
+          "type": "string",
+          "const": "chatty_loop"
+        }
+      ]
+    },
+    "AnomalyMuteConfig": {
+      "description": "REQ: OBS-038 (ADR-161) — a mute: the listed kinds of anomaly finding stop counting for the\nlisted devices and groups (the finding is still recorded and listed, marked muted). The\nsame kind still counts for every other device. Needs at least one device or group: there is\nno \"everyone\", because that is switching the engine off.",
+      "type": "object",
+      "properties": {
+        "devices": {
+          "description": "Devices it applies to: device names (`[[client]] name`), IPs, or CIDRs. A name stands for\nthe IPs and networks its `match` lists (a MAC address or client ID can't be muted by:\nthe address changes with the lease, and the engine sees addresses).",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "expires": {
+          "description": "When it stops applying (RFC 3339). Absent: never. A finding created after this counts\nagain; one created while the mute held stays muted.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "groups": {
+          "description": "Groups it applies to: the networks of the group and the devices that name it.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "kinds": {
+          "description": "The kinds of finding to mute (at least one).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AnomalyKind"
+          }
+        },
+        "name": {
+          "description": "Unique name; the key the API and the Anomalies page use.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "note": {
+          "description": "Why it exists (\"a smart TV's hourly PTR sweep\"), shown with every muted finding. Who made\nit and when is in the audit log (`config.anomaly_mute`).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kinds"
+      ]
     },
     "AnomalySensitivity": {
       "description": "How readily the anomaly engine reports (`spec/06` §7.1).",

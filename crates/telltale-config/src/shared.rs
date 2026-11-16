@@ -188,6 +188,40 @@ mod tests {
         Loader::new().toml_str("t", toml).load().unwrap().config
     }
 
+    // REQ: OBS-038, CLU-003 — an anomaly mute set on the primary reaches a replica with the shared
+    // part (the TVs ask both nodes, so every node must mute them), and resolves there against the
+    // shared devices; taking it away at the primary takes it away there too.
+    #[test]
+    fn obs_038_anomaly_mutes_are_shared() {
+        let primary = load(
+            "[[client]]
+name = \"lg-tv\"
+match = [\"192.168.1.20\"]
+[[anomaly_mute]]
+name = \"sweep\"
+devices = [\"lg-tv\"]
+kinds = [\"nxdomain_storm\"]
+",
+        );
+        let shared = shared_part(&primary);
+        assert!(shared.get("anomaly_mute").is_some(), "{shared}");
+        let replica = load(
+            "[node]
+name = \"pi\"
+",
+        );
+        let merged = with_shared(&replica, &shared).unwrap();
+        assert_eq!(merged.anomaly_mute.len(), 1);
+        let resolved = crate::mute::resolve(&merged);
+        assert_eq!(resolved.len(), 1, "it resolves on the replica");
+        assert_eq!(resolved[0].nets.len(), 1);
+        // No mutes at the primary: none sent, and the replica drops its copy.
+        let none = shared_part(&load(""));
+        assert!(none.get("anomaly_mute").is_none());
+        let off = with_shared(&merged, &none).unwrap();
+        assert_eq!(off.anomaly_mute, Vec::new());
+    }
+
     // REQ: CLU-013 — `[cluster.rollout]` travels with the shared part (the rest of `[cluster]`
     // doesn't); a replica takes the primary's, and the default when the primary sends none.
     #[test]

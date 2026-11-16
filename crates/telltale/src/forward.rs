@@ -171,6 +171,7 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
                 ManagedKind::AlertDestination => "alert_destination",
                 ManagedKind::AlertRule => "alert_rule",
                 ManagedKind::Schedule => "schedule",
+                ManagedKind::AnomalyMute => "anomaly_mute",
                 ManagedKind::RateLimit => "ratelimit",
                 ManagedKind::Exclusions => "exclusions",
                 ManagedKind::Simulate => "simulate",

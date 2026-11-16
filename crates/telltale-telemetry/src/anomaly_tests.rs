@@ -554,3 +554,127 @@ fn obs_014_damaged_state_is_repaired_on_load() {
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
     assert!(e.clients() > 0);
 }
+
+/// 40 NXDOMAIN of 50 queries inside one minute from `dev`, at `t`: one storm finding when the
+/// hour closes.
+fn storm(e: &mut Engine, dev: u8, t: u64) {
+    for i in 0..50u64 {
+        let rc = if i < 40 { 3 } else { 0 };
+        e.observe_answer(
+            t + i % 60,
+            ip(dev),
+            &wire(&format!("q{i}.sweep.example")),
+            Some(rc),
+        );
+    }
+}
+
+fn v4(a: u8, b: u8, c: u8, d: u8) -> [u8; 16] {
+    std::net::Ipv4Addr::new(a, b, c, d)
+        .to_ipv6_mapped()
+        .octets()
+}
+
+/// REQ: OBS-038 (ADR-161) — a finding a mute matches when it is created is recorded and listed
+/// with the mute's name, counted apart, and left out of the totals the badge, the alert and
+/// `/metrics` use; the same kind for another device counts as before.
+#[test]
+fn obs_038_a_muted_device_is_recorded_but_not_counted() {
+    let mut mutes = MuteTable::default();
+    mutes.add(
+        "lg-tv",
+        [(v4(192, 168, 1, 1), 128)],
+        &[Kind::NxdomainStorm],
+        None,
+    );
+    let mut e = Engine::new(Settings::default());
+    e.set_mutes(mutes);
+    let t = DAY0 + 600;
+    storm(&mut e, 1, t);
+    storm(&mut e, 4, t);
+    e.observe_answer(t + 3600, ip(9), &wire("x.example"), Some(0));
+    let storms: Vec<&Finding> = e
+        .findings()
+        .iter()
+        .filter(|f| f.kind == Kind::NxdomainStorm)
+        .collect();
+    assert_eq!(storms.len(), 2, "both are recorded: {storms:?}");
+    let by = |dev: u8| storms.iter().find(|f| f.client == ip(dev)).unwrap();
+    assert_eq!(by(1).muted_by.as_deref(), Some("lg-tv"));
+    assert_eq!(by(4).muted_by, None);
+    assert_eq!(
+        e.total.get(&Kind::NxdomainStorm),
+        Some(&1),
+        "only device 4 counts"
+    );
+    assert_eq!(e.total_muted.get(&Kind::NxdomainStorm), Some(&1));
+}
+
+/// REQ: OBS-038 — a mute is for its kinds and its networks only, and an end time ends it for
+/// findings created after it: one made while it held stays muted.
+#[test]
+fn obs_038_kinds_networks_and_expiry() {
+    let t = DAY0 + 600;
+    let run = |nets: [([u8; 16], u8); 1], kinds: &[Kind], until: Option<u64>| {
+        let mut m = MuteTable::default();
+        m.add("m", nets, kinds, until);
+        let mut e = Engine::new(Settings::default());
+        e.set_mutes(m);
+        storm(&mut e, 1, t);
+        e.observe_answer(t + 3600, ip(9), &wire("x.example"), Some(0));
+        e.findings()
+            .iter()
+            .find(|f| f.kind == Kind::NxdomainStorm)
+            .unwrap()
+            .muted_by
+            .clone()
+    };
+    let one = [(v4(192, 168, 1, 1), 128)];
+    // A network covers the device (192.168.1.0/24 is /120 over the v4-mapped form).
+    assert_eq!(
+        run([(v4(192, 168, 1, 0), 120)], &[Kind::NxdomainStorm], None).as_deref(),
+        Some("m")
+    );
+    // Another network, or another kind, doesn't.
+    assert_eq!(
+        run([(v4(10, 20, 2, 0), 120)], &[Kind::NxdomainStorm], None),
+        None
+    );
+    assert_eq!(run(one, &[Kind::RateSpike, Kind::Dga], None), None);
+    // Ends after the window: muted. Ended before it: counts.
+    assert_eq!(
+        run(one, &[Kind::NxdomainStorm], Some(DAY0 + 86_400)).as_deref(),
+        Some("m")
+    );
+    assert_eq!(run(one, &[Kind::NxdomainStorm], Some(DAY0 + 100)), None);
+}
+
+/// REQ: OBS-038 — the same queries and mutes give the same findings (replay), and changing the
+/// mutes later doesn't rewrite findings already recorded.
+#[test]
+fn obs_038_replay_is_deterministic_and_history_is_kept() {
+    let mut m = MuteTable::default();
+    m.add(
+        "m",
+        [(v4(192, 168, 1, 0), 120)],
+        &[Kind::NxdomainStorm],
+        None,
+    );
+    let build = |m: &MuteTable| {
+        let mut e = Engine::new(Settings::default());
+        e.set_mutes(m.clone());
+        storm(&mut e, 1, DAY0 + 600);
+        e.observe_answer(DAY0 + 600 + 3600, ip(9), &wire("x.example"), Some(0));
+        e
+    };
+    let (a, b) = (build(&m), build(&m));
+    assert_eq!(a, b);
+    let mut c = build(&m);
+    c.set_mutes(MuteTable::default());
+    assert_eq!(
+        c.findings(),
+        a.findings(),
+        "removing the mute keeps what was muted"
+    );
+    assert!(c.findings().iter().any(|f| f.muted_by.is_some()));
+}

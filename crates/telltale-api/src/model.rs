@@ -1908,6 +1908,9 @@ pub struct AnomalyParams {
     /// REQ: OBS-014 — `false`: only findings nobody acknowledged; `true`: only acknowledged
     /// ones. Default: both.
     pub acknowledged: Option<bool>,
+    /// REQ: OBS-038 — `true`: muted findings are listed too, each with `mutedBy`. Default:
+    /// they are left out, as they are from the badge and the alerts.
+    pub muted: Option<bool>,
 }
 
 /// A device anomaly and its evidence (OBS-013). Alert-only: TelltaleDNS never acts on it.
@@ -1956,6 +1959,13 @@ pub struct AnomalyFinding {
     /// badge and the `anomaly` alert rule.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub informational: bool,
+    /// REQ: OBS-038 (ADR-161) — the anomaly mute (its name) that matched this finding when it
+    /// was created. A muted finding is kept and listed, but not counted in
+    /// `telltale_anomalies_total`, the sidebar badge, or the `anomaly` alert rule. Absent when no
+    /// mute matched; listed only with `muted=true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "lg-tv-ptr-sweep")]
+    pub muted_by: Option<String>,
 }
 
 /// REQ: OBS-014 (ADR-103) — a finding's stable ID: its window start (Unix seconds, 8 hex

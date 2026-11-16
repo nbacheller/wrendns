@@ -50,6 +50,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     rules(cfg, &mut r);
     services(cfg, &mut r);
     schedules(cfg, &mut r);
+    anomaly_mutes(cfg, &mut r);
     alerts(cfg, &mut r);
     slo(cfg, &mut r);
     probes(cfg, &mut r);
@@ -927,6 +928,27 @@ fn schedules(cfg: &Config, r: &mut Report<'_>) {
                     format!("no schedule `{}`", s.as_str()),
                 );
             }
+        }
+    }
+}
+
+// REQ: OBS-038 (ADR-161) — anomaly mutes: unique names, at least one device or group and one
+// kind, devices and groups that exist and have addresses, a readable end time.
+fn anomaly_mutes(cfg: &Config, r: &mut Report<'_>) {
+    if cfg.anomaly_mute.len() > crate::schema::MAX_ANOMALY_MUTES {
+        r.err(
+            "anomaly_mute",
+            format!("at most {} anomaly mutes", crate::schema::MAX_ANOMALY_MUTES),
+        );
+    }
+    let mut names = HashSet::new();
+    for (i, m) in cfg.anomaly_mute.iter().enumerate() {
+        let p = format!("anomaly_mute[{i}]");
+        if !names.insert(m.name.as_str()) {
+            r.err(format!("{p}.name"), format!("`{}` is used twice", m.name));
+        }
+        for (field, msg) in crate::mute::problems(cfg, m) {
+            r.err(format!("{p}.{field}"), msg);
         }
     }
 }

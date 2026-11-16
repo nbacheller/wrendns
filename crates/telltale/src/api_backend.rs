@@ -2123,6 +2123,7 @@ impl Backend for ApiBackend {
                     // REQ: OBS-031 — a beacon's strip at report time.
                     rhythm: rhythm.map(|b| b.iter().map(|&n| u32::from(n)).collect()),
                     informational: f.kind.informational(),
+                    muted_by: f.muted_by,
                 }
             })
             .collect();
@@ -2907,6 +2908,16 @@ impl Backend for ApiBackend {
                 &mut out,
             );
         }
+        // REQ: OBS-038
+        if want("anomaly_mute") {
+            rows(
+                "anomaly_mute",
+                &cfg.anomaly_mute,
+                &file.anomaly_mute,
+                &e.anomaly_mutes,
+                &mut out,
+            );
+        }
         if want("alert_rule") {
             rows(
                 "alert_rule",
@@ -3607,6 +3618,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::AlertDestination => crate::managed::ALERT_DESTINATION,
         ManagedKind::AlertRule => crate::managed::ALERT_RULE,
         ManagedKind::Schedule => crate::managed::SCHEDULE,
+        ManagedKind::AnomalyMute => crate::managed::ANOMALY_MUTE,
         ManagedKind::RateLimit => crate::managed::RATELIMIT,
         ManagedKind::Exclusions => crate::managed::EXCLUSIONS,
         ManagedKind::Simulate => crate::managed::SIMULATE,
@@ -3934,6 +3946,13 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         (ManagedKind::Schedule, _) => {
             "Applies within 15 seconds to the groups that use it.".into()
         }
+        // REQ: OBS-038 — decided when a finding is created, so nothing already recorded changes.
+        (ManagedKind::AnomalyMute, true) => {
+            "Applies to findings created from now on, on every node: they are still recorded and listed (with Show muted), but not counted in the badge, the alerts or /metrics (telltale_anomalies_muted_total counts them). Findings already recorded stay as they are.".into()
+        }
+        (ManagedKind::AnomalyMute, false) => {
+            "Findings created from now on count again; ones already muted stay muted.".into()
+        }
         (ManagedKind::AlertDestination | ManagedKind::AlertRule, _) => {
             "Applies at the next alert check; firing alerts of a changed rule start over.".into()
         }
@@ -3997,6 +4016,7 @@ fn plan_managed(
             | ManagedKind::AlertDestination
             | ManagedKind::AlertRule
             | ManagedKind::Schedule
+            | ManagedKind::AnomalyMute
             | ManagedKind::KubernetesMap
     ) {
         return plan_override(src, state, w);
@@ -4630,6 +4650,13 @@ fn plan_override(
             before_cfg.schedule.iter().find(|u| u.name() == name),
             &mut entries.schedules,
         )?,
+        ManagedKind::AnomalyMute => override_step(
+            &name,
+            w.body.as_ref(),
+            file.anomaly_mute.iter().any(|u| u.name() == name),
+            before_cfg.anomaly_mute.iter().find(|u| u.name() == name),
+            &mut entries.anomaly_mutes,
+        )?,
         ManagedKind::KubernetesMap => {
             kubernetes_map_step(&name, w.body.as_ref(), &file, &before_cfg, &mut entries)?
         }
@@ -4650,6 +4677,7 @@ fn plan_override(
         ManagedKind::AlertDestination => named_json(&merged.alerts.destination, &name),
         ManagedKind::AlertRule => named_json(&merged.alerts.rule, &name),
         ManagedKind::Schedule => named_json(&merged.schedule, &name),
+        ManagedKind::AnomalyMute => named_json(&merged.anomaly_mute, &name),
         ManagedKind::KubernetesMap => merged
             .kubernetes
             .map
@@ -5084,6 +5112,7 @@ fn keep_in_git(
         ManagedKind::AlertDestination => "alerts.destination",
         ManagedKind::AlertRule => "alerts.rule",
         ManagedKind::Schedule => "schedule",
+        ManagedKind::AnomalyMute => "anomaly_mute",
         ManagedKind::RateLimit => "ratelimit",
         ManagedKind::Exclusions => "exclusions",
         ManagedKind::Simulate => "simulate",

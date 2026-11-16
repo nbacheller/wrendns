@@ -44,6 +44,9 @@ pub struct Config {
     pub group: Vec<GroupConfig>,
     /// REQ: FLT-010 (T7.10) — weekly schedules that groups use (`schedules` in a group).
     pub schedule: Vec<ScheduleConfig>,
+    /// REQ: OBS-038 (ADR-161) — kinds of anomaly finding muted for devices or groups. Shared by
+    /// the cluster (the `[telemetry]` section is not), so one entry reaches every node.
+    pub anomaly_mute: Vec<AnomalyMuteConfig>,
     /// REQ: OBS-010 (T7.12) — alert rules and where they go.
     pub alerts: AlertsConfig,
     /// REQ: T8.2 — routers whose DHCP names devices (UniFi, OPNsense).
@@ -129,6 +132,7 @@ impl Default for Config {
             list: Vec::new(),
             group: Vec::new(),
             schedule: Vec::new(),
+            anomaly_mute: Vec::new(),
             zone: Vec::new(),
             alerts: AlertsConfig::default(),
             router: Vec::new(),
@@ -1082,6 +1086,76 @@ impl YoutubeRestrict {
         *self == Self::Strict
     }
 }
+
+/// A kind of device anomaly finding (`spec/06` §7.1), as named in `[[anomaly_mute]] kinds`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AnomalyKind {
+    /// Many more queries than usual.
+    RateSpike,
+    /// Unusual traffic to one domain.
+    DomainVolume,
+    /// Many new domains.
+    Drift,
+    /// Regular phone-home.
+    Beacon,
+    /// Burst of failed lookups.
+    NxdomainStorm,
+    /// Machine-generated-looking domains.
+    Dga,
+    /// A steady fast rhythm to one domain (informational).
+    ChattyLoop,
+}
+
+impl AnomalyKind {
+    /// The name in the API, metrics and the config file.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::RateSpike => "rate_spike",
+            Self::DomainVolume => "domain_volume",
+            Self::Drift => "drift",
+            Self::Beacon => "beacon",
+            Self::NxdomainStorm => "nxdomain_storm",
+            Self::Dga => "dga",
+            Self::ChattyLoop => "chatty_loop",
+        }
+    }
+}
+
+/// REQ: OBS-038 (ADR-161) — a mute: the listed kinds of anomaly finding stop counting for the
+/// listed devices and groups (the finding is still recorded and listed, marked muted). The
+/// same kind still counts for every other device. Needs at least one device or group: there is
+/// no "everyone", because that is switching the engine off.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AnomalyMuteConfig {
+    /// Unique name; the key the API and the Anomalies page use.
+    pub name: SafeString,
+    /// Devices it applies to: device names (`[[client]] name`), IPs, or CIDRs. A name stands for
+    /// the IPs and networks its `match` lists (a MAC address or client ID can't be muted by:
+    /// the address changes with the lease, and the engine sees addresses).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<SafeString>,
+    /// Groups it applies to: the networks of the group and the devices that name it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<SafeString>,
+    /// The kinds of finding to mute (at least one).
+    pub kinds: Vec<AnomalyKind>,
+    /// When it stops applying (RFC 3339). Absent: never. A finding created after this counts
+    /// again; one created while the mute held stays muted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires: Option<SafeString>,
+    /// Why it exists ("a smart TV's hourly PTR sweep"), shown with every muted finding. Who made
+    /// it and when is in the audit log (`config.anomaly_mute`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<SafeString>,
+}
+
+/// Most anomaly mutes a configuration may hold.
+pub const MAX_ANOMALY_MUTES: usize = 200;
 
 /// REQ: FLT-010 (T7.10, `spec/05` §3) — a weekly schedule: during its windows, the groups
 /// that name it block everything, or get extra lists or blocked services.

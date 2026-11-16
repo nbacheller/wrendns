@@ -445,12 +445,16 @@ fn merge_findings(parts: Vec<(String, Vec<AnomalyFinding>)>) -> Vec<AnomalyFindi
                 if !seen.nodes.contains(&label) {
                     seen.nodes.push(label.clone());
                 }
+                // REQ: OBS-038 — muted if any node's mute matched (the mutes are shared, so
+                // nodes agree unless one hasn't applied a change yet).
+                let muted_by = seen.muted_by.clone().or_else(|| f.muted_by.clone());
                 // The node that saw the most of it tells the story.
                 if f.observed > seen.observed {
                     let nodes = std::mem::take(&mut seen.nodes);
                     *seen = f;
                     seen.nodes = nodes;
                 }
+                seen.muted_by = muted_by;
             } else {
                 f.nodes = vec![label.clone()];
                 by_id.insert(f.id.clone(), f);
@@ -2466,6 +2470,7 @@ mod anomaly_tests {
             nodes: Vec::new(),
             acknowledged: None,
             informational: false,
+            muted_by: None,
             rhythm: None,
         }
     }

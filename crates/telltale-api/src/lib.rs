@@ -750,6 +750,9 @@ pub enum ManagedKind {
     AlertRule,
     /// REQ: FLT-010 (T9.7) — a schedule (`/schedules/{name}`).
     Schedule,
+    /// REQ: OBS-038 (ADR-161) — an anomaly mute (`/anomaly-mutes/{name}`): kinds of finding that
+    /// stop counting for some devices or groups.
+    AnomalyMute,
     /// REQ: DNS-014 (review 01 q1) — the per-client rate limit, `[ratelimit]` (`/ratelimit/default`):
     /// one entry, named `default`, that replaces the files' section until it's reverted.
     RateLimit,
@@ -1792,7 +1795,8 @@ async fn clients(State(b): State<Shared>, ext: axum::http::Extensions) -> impl I
 /// Newest first. In a cluster every node's findings are included (each node learns from the
 /// queries it answers), with `nodes` saying which found each. Each has a stable `id` for
 /// acknowledging it (OBS-014); `acknowledged` says who did and when, and `acknowledged=false`
-/// returns only the ones nobody has.
+/// returns only the ones nobody has. A finding an anomaly mute matched (OBS-038) is left out
+/// unless `muted=true`; it then carries `mutedBy`, the mute's name.
 #[utoipa::path(get, path = "/api/v1/analytics/anomalies", tag = "stats",
     params(AnomalyParams),
     responses((status = 200, body = Items<AnomalyFinding>, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it.")))]
@@ -1816,6 +1820,10 @@ async fn anomalies(
     .map_err(|e| Problem::internal(format!("anomalies: {e}")))?;
     if let Some(w) = want {
         items.retain(|f| f.acknowledged.is_some() == w);
+    }
+    // REQ: OBS-038 — muted findings are kept, but only listed when asked for.
+    if !p.muted.unwrap_or(false) {
+        items.retain(|f| f.muted_by.is_none());
     }
     Ok(Json(Items {
         items,

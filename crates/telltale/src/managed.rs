@@ -35,6 +35,8 @@ pub(crate) const ALERT_DESTINATION: &str = "alert_destination";
 pub(crate) const ALERT_RULE: &str = "alert_rule";
 /// REQ: FLT-010 (T9.7) — schedules.
 pub(crate) const SCHEDULE: &str = "schedule";
+/// REQ: OBS-038 (ADR-161) — anomaly mutes.
+pub(crate) const ANOMALY_MUTE: &str = "anomaly_mute";
 /// REQ: DNS-014 (review 01 q1) — the rate limit: one entry, `default`, replacing `[ratelimit]`.
 pub(crate) const RATELIMIT: &str = "ratelimit";
 /// REQ: OBS-022 (T12.1) — the exclusions: one entry, `default`, replacing `[exclusions]`.
@@ -93,6 +95,11 @@ impl Named for telltale_config::ScheduleConfig {
         self.name.as_str()
     }
 }
+impl Named for telltale_config::AnomalyMuteConfig {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+}
 impl Named for telltale_config::AlertRule {
     fn name(&self) -> &str {
         self.name.as_str()
@@ -135,6 +142,8 @@ pub(crate) struct Entries {
     pub(crate) alert_destinations: Vec<(String, Ovr<telltale_config::AlertDestination>)>,
     pub(crate) alert_rules: Vec<(String, Ovr<telltale_config::AlertRule>)>,
     pub(crate) schedules: Vec<(String, Ovr<telltale_config::ScheduleConfig>)>,
+    /// REQ: OBS-038 — anomaly mutes.
+    pub(crate) anomaly_mutes: Vec<(String, Ovr<telltale_config::AnomalyMuteConfig>)>,
     /// The `[ratelimit]` the API or UI set, replacing the files' section as a whole.
     pub(crate) ratelimit: Option<telltale_config::RateLimitConfig>,
     /// The `[exclusions]` the API or UI set, likewise.
@@ -221,6 +230,7 @@ pub(crate) fn entries(state: &State) -> Entries {
         alert_destinations: decode_ovr(state, ALERT_DESTINATION),
         alert_rules: decode_ovr(state, ALERT_RULE),
         schedules: decode_ovr(state, SCHEDULE),
+        anomaly_mutes: decode_ovr(state, ANOMALY_MUTE),
         ratelimit: decode::<telltale_config::RateLimitConfig>(state, RATELIMIT)
             .into_iter()
             .next()
@@ -337,6 +347,7 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     apply_ovr(&mut cfg.alerts.destination, &e.alert_destinations);
     apply_ovr(&mut cfg.alerts.rule, &e.alert_rules);
     apply_ovr(&mut cfg.schedule, &e.schedules);
+    apply_ovr(&mut cfg.anomaly_mute, &e.anomaly_mutes);
     apply_kubernetes_map(&mut cfg, &e.kubernetes_map);
     apply_one_of(&mut cfg, e);
     for c in &e.clients {

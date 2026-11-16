@@ -305,8 +305,29 @@ impl Backend for Fake {
             nodes: Vec::new(),
             acknowledged: None,
             informational: false,
+            muted_by: None,
             rhythm: None,
         }];
+        // REQ: OBS-038 — one a mute matched: listed only with `muted=true`.
+        v.push(AnomalyFinding {
+            id: crate::model::anomaly_id("nxdomain_storm", "192.168.1.30", None, NOW - 7200, 60),
+            kind: "nxdomain_storm".into(),
+            client: "192.168.1.30".into(),
+            client_name: Some("lg-tv".into()),
+            domain: None,
+            window_start: "2026-10-04T10:00:00.000Z".into(),
+            window_seconds: 60,
+            observed: 225.0,
+            baseline: 260.0,
+            spread: 0.0,
+            threshold: 30.0,
+            detail: "225 NXDOMAIN answers in a minute".into(),
+            nodes: Vec::new(),
+            acknowledged: None,
+            informational: false,
+            muted_by: Some("tv-sweep".into()),
+            rhythm: None,
+        });
         self.annotate_acks(&mut v);
         v
     }
@@ -530,6 +551,27 @@ fn app() -> (TestApp, Arc<Fake>) {
 }
 // REQ: OBS-014, OBS-015 — acknowledging anomalies over HTTP: an operator's change, audited,
 // reflected in the list and its filter; a viewer can't; health is a plain read.
+/// REQ: OBS-038 (ADR-161) — a finding a mute matched is left out of the list unless `muted=true`,
+/// and then says which mute.
+#[tokio::test]
+async fn obs_038_muted_findings_are_listed_only_when_asked_for() {
+    let (app, _) = app();
+    let (_, _, v) = get(&app, "/api/v1/analytics/anomalies").await;
+    let items = v["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{v}");
+    assert!(items[0].get("mutedBy").is_none());
+    let (_, _, v) = get(&app, "/api/v1/analytics/anomalies?muted=true").await;
+    let items = v["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{v}");
+    let muted: Vec<&serde_json::Value> = items
+        .iter()
+        .filter(|f| f.get("mutedBy").is_some())
+        .collect();
+    assert_eq!(muted.len(), 1);
+    assert_eq!(muted[0]["mutedBy"], "tv-sweep");
+    assert_eq!(muted[0]["kind"], "nxdomain_storm");
+}
+
 #[tokio::test]
 async fn obs_014_acknowledging_anomalies_over_http() {
     let (app, fake) = app();

@@ -1258,3 +1258,94 @@ stub_servers = ["10.0.0.53"]
         assert!(p.contains(&want), "{want} missing from {p:?}");
     }
 }
+
+/// REQ: OBS-038 (ADR-161) — anomaly mutes: a device or group and a kind each, names that exist
+/// and have addresses, no mute for everyone, no MAC address, a readable end time; devices and
+/// groups resolve to the networks the engine matches.
+#[test]
+fn obs_038_anomaly_mutes_are_validated_and_resolved() {
+    let load = |toml: &str| {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+    };
+    let ok = r#"
+[[client]]
+name = "lg-tv"
+match = ["192.168.1.20", "aa:bb:cc:dd:ee:ff"]
+[[client]]
+name = "mac-only"
+match = ["aa:bb:cc:dd:ee:01"]
+[[group]]
+name = "iot"
+networks = ["192.168.9.0/24"]
+[[anomaly_mute]]
+name = "tv-sweep"
+devices = ["lg-tv", "10.0.0.7"]
+groups = ["iot"]
+kinds = ["nxdomain_storm", "chatty_loop"]
+expires = "2026-12-31T00:00:00Z"
+note = "hourly reverse-DNS sweep"
+"#;
+    let loaded = load(ok).unwrap();
+    let r = telltale_config::mute::resolve(&loaded.config);
+    assert_eq!(r.len(), 1);
+    let nets: Vec<String> = r[0]
+        .nets
+        .iter()
+        .map(|c| format!("{}/{}", c.addr, c.prefix))
+        .collect();
+    assert_eq!(nets, ["10.0.0.7/32", "192.168.1.20/32", "192.168.9.0/24"]);
+    assert_eq!(r[0].expires_unix, Some(1_798_675_200));
+    for (bad, why) in [
+        (
+            ok.replace(
+                "devices = [\"lg-tv\", \"10.0.0.7\"]\ngroups = [\"iot\"]",
+                "",
+            ),
+            "switching the anomaly engine off",
+        ),
+        (
+            ok.replace(
+                "kinds = [\"nxdomain_storm\", \"chatty_loop\"]",
+                "kinds = []",
+            ),
+            "at least one kind",
+        ),
+        (ok.replace("\"nxdomain_storm\"", "\"bogus\""), "bogus"),
+        (
+            ok.replace("devices = [\"lg-tv\"", "devices = [\"fridge\""),
+            "neither a device name nor an IP",
+        ),
+        (
+            ok.replace("devices = [\"lg-tv\"", "devices = [\"aa:bb:cc:dd:ee:ff\""),
+            "is a MAC address",
+        ),
+        (
+            ok.replace("devices = [\"lg-tv\"", "devices = [\"mac-only\""),
+            "has no IP or network",
+        ),
+        (
+            ok.replace("groups = [\"iot\"]", "groups = [\"default\"]"),
+            "no addresses to mute",
+        ),
+        (
+            ok.replace("groups = [\"iot\"]", "groups = [\"ghost\"]"),
+            "unknown group `ghost`",
+        ),
+        (
+            ok.replace("2026-12-31T00:00:00Z", "next week"),
+            "isn't an RFC 3339 time",
+        ),
+        (
+            format!(
+                "{ok}\n[[anomaly_mute]]\nname = \"tv-sweep\"\ndevices = [\"10.0.0.8\"]\nkinds = [\"dga\"]\n"
+            ),
+            "used twice",
+        ),
+    ] {
+        let err = format!("{:?}", load(&bad).unwrap_err());
+        assert!(err.contains(why), "{why}: {err}");
+    }
+}

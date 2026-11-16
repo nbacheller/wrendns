@@ -671,6 +671,69 @@ test('obs_014 acknowledge an anomaly', async () => {
   await page.unroute('**/api/v1/analytics/anomalies/*acknowledge');
 });
 
+// REQ: OBS-038 (ADR-161) — "Mute for this device…" fills in the device and the kind, previews through
+// a dry run, and saves to the real server; the finding then counts no more (it hides, and so does
+// the badge) and shows, marked, with "Show muted"; the mute is listed and can be removed. A fresh
+// server has no findings, so the list is stubbed to follow the real mute.
+test('obs_038 mute a kind of finding for a device', async () => {
+  const muteName = '192-168-1-30-nxdomain-storm';
+  let muted = false;
+  const finding = {
+    id: '6a2c0e00a1b2c3d5',
+    kind: 'nxdomain_storm',
+    client: '192.168.1.30',
+    clientName: 'lg-tv',
+    windowStart: '2026-10-08T10:00:00.000Z',
+    windowSeconds: 60,
+    observed: 225,
+    baseline: 260,
+    spread: 0,
+    threshold: 30,
+    detail: '225 NXDOMAIN answers in a minute, 87% of its 260 queries',
+    nodes: [],
+  };
+  await page.route('**/api/v1/analytics/anomalies?*', (route) => {
+    const withMuted = new URL(route.request().url()).searchParams.get('muted') === 'true';
+    const f = muted ? { ...finding, mutedBy: muteName } : finding;
+    return route.fulfill({ json: { items: muted && !withMuted ? [] : [f] } });
+  });
+  await page.route('**/api/v1/anomaly-mutes/*', async (route) => {
+    const res = await route.fetch();
+    const dry = new URL(route.request().url()).searchParams.get('dryRun') === 'true';
+    if (res.ok() && !dry) muted = route.request().method() === 'PUT';
+    await route.fulfill({ response: res });
+  });
+  await page.goto('/#/anomalies');
+  await page.reload(); // the sidebar badge loads at start
+  const badge = page.locator('a.nav[href="#/anomalies"] .count');
+  await expect(badge).toHaveText('1');
+  await page.getByTestId('mute').click();
+  const form = page.getByTestId('mute-form');
+  await expect(form.getByLabel('Device')).toHaveValue('192.168.1.30');
+  await expect(form.getByRole('checkbox', { name: 'Burst of failed lookups' })).toBeChecked();
+  await expect(page.getByTestId('mute-preview')).toContainText('findings created from now on');
+  await form.getByLabel('Note').fill('hourly reverse-DNS sweep');
+  await page.getByTestId('mute-save').click();
+  await expect(page.getByTestId('mute-saved')).toBeVisible();
+  // It no longer counts: the finding and the badge are gone, and the page says so.
+  await expect(page.getByText('1 muted finding is hidden')).toBeVisible();
+  await expect(badge).toHaveCount(0);
+  const row = page.getByTestId('mute-row');
+  await expect(row).toContainText('192.168.1.30');
+  await expect(row).toContainText('Burst of failed lookups');
+  await expect(row).toContainText('hourly reverse-DNS sweep');
+  await page.getByTestId('show-muted').check();
+  await expect(page.getByTestId('muted')).toContainText(`by ${muteName}`);
+  await expect(page.getByTestId('muted')).toContainText('hourly reverse-DNS sweep');
+  // Removing it brings the finding back, counted.
+  await page.getByTestId('remove-mute').click();
+  await expect(page.getByTestId('mute-row')).toHaveCount(0);
+  await expect(page.getByTestId('muted')).toHaveCount(0);
+  await expect(page.getByTestId('mute')).toBeVisible();
+  await page.unroute('**/api/v1/analytics/anomalies?*');
+  await page.unroute('**/api/v1/anomaly-mutes/*');
+});
+
 // The header's icon buttons match: the pause button (its own component) is the same round,
 // borderless button as the theme toggle, on the same line (owner report 2026-10-06).
 test('header icon buttons are the same size and aligned', async () => {

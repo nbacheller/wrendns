@@ -197,6 +197,16 @@
       "docs": "device-anomalies"
     },
     {
+      "id": "anomaly-mutes",
+      "title": "Muting a finding that is harmless",
+      "term": "Anomaly mute",
+      "summary": "A mute stops one kind of finding from counting for one device or group: the finding is still recorded and listed (turn on Show muted), but the sidebar badge, the anomaly alert, the health level and the totals skip it. Every other device is still checked. Give it an end date or a note so it doesn't outlive its reason.",
+      "when": "A device does something harmless over and over: a TV that looks up every address on your network once an hour, a backup job that is busy every night.",
+      "example": "Living room TV, Burst of failed lookups, for a week: its hourly reverse-DNS sweep stops raising an alert, and the finding stays listed as muted.",
+      "caution": "A mute can also hide a real problem on that device for as long as it lasts. Mute the narrowest kind, for the shortest time you are comfortable with, and say why.",
+      "docs": "muting-a-kind-of-finding-for-a-device"
+    },
+    {
       "id": "devices",
       "title": "Name your devices",
       "term": "Clients",

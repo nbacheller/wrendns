@@ -456,6 +456,8 @@ fn observe(
             .anomalies(now.saturating_sub(3600))
             .into_iter()
             .filter(|f| f.acknowledged.is_none())
+            // REQ: OBS-038 — a finding a mute matched never alerts.
+            .filter(|f| f.muted_by.is_none())
             .filter(|f| {
                 if rule.when == AlertWhen::ChattyLoop {
                     f.kind == "chatty_loop"
@@ -1137,6 +1139,7 @@ mod tests {
             acknowledged: None,
             rhythm: None,
             informational,
+            muted_by: None,
         };
         let b = Stub {
             view: telltale_api::model::ClusterView {

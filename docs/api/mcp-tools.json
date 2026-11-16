@@ -428,6 +428,10 @@
           "description": "false: only findings nobody acknowledged yet; true: only acknowledged ones. Default: both.",
           "type": "boolean"
         },
+        "muted": {
+          "description": "true: include findings an anomaly mute matched (each has mutedBy, the mute's name). Default: left out, as they are from the badge and alerts.",
+          "type": "boolean"
+        },
         "since": {
           "description": "Findings since (relative like -7d, or RFC 3339). Default -7d.",
           "type": "string"
@@ -436,6 +440,21 @@
       "type": "object"
     },
     "name": "find_anomalies"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. The anomaly mutes: for which devices or groups which kinds of finding stop counting (still recorded and listed, with mutedBy), until when, and why. A mute is set with plan_set_anomaly_mute. Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "list_anomaly_mutes"
   },
   {
     "annotations": {
@@ -1472,6 +1491,109 @@
       "type": "object"
     },
     "name": "plan_set_schedule"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Mutes kinds of device anomaly finding for named devices and/or groups, for good or until a date: the finding is still recorded and listed (find_anomalies with muted=true shows it, with the mute's name), but no longer counts in the sidebar badge, the `anomaly` alert rule, the health level or telltale_anomalies_total (telltale_anomalies_muted_total counts it). The same kind still counts for every other device. Use it for a known harmless pattern (a TV's hourly reverse-DNS sweep), not to silence something unexplained: give `note` and prefer `expires`. Shared by the cluster. There is no mute for everyone, and a MAC address isn't accepted (use the device's name or IP). Needs config:write:anomalies.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "devices": {
+          "description": "Device names (from list_devices), IPs or CIDRs.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "expires": {
+          "description": "When it stops applying (RFC 3339, e.g. 2026-12-31T00:00:00Z). Default: never.",
+          "type": "string"
+        },
+        "groups": {
+          "description": "Groups: their networks and the devices that name them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kinds": {
+          "description": "The kinds of finding to mute (at least one).",
+          "items": {
+            "enum": [
+              "rate_spike",
+              "domain_volume",
+              "drift",
+              "beacon",
+              "nxdomain_storm",
+              "dga",
+              "chatty_loop"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "The mute's name (1 to 64 characters).",
+          "type": "string"
+        },
+        "note": {
+          "description": "Why (up to 200 characters), shown with each muted finding.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "kinds",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_set_anomaly_mute"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Removes an anomaly mute: findings created from now on count again; ones already muted stay muted. Needs config:write:anomalies.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "The mute's name (list_anomaly_mutes).",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_remove_anomaly_mute"
   },
   {
     "annotations": {

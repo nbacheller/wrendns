@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 mod env;
+pub mod mute;
 pub mod safesearch;
 pub mod schedule;
 pub mod schema;

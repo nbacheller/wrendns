@@ -3,6 +3,8 @@
   // (± spread), and the bar it crossed. Alert-only: nothing here blocks anything.
   // REQ: OBS-014 — acknowledging: mark findings as seen, on every node; they stop counting in
   // the badge and hide here unless "Show acknowledged" is on.
+  // REQ: OBS-038 — muting: a kind of finding for a device stops counting (it is still recorded);
+  // muted findings hide here unless "Show muted" is on, and the mutes are listed below.
   import { api, type S } from '../lib/api';
   import { href } from '../lib/router.svelte';
   import { can } from '../lib/session.svelte';
@@ -10,12 +12,31 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import RhythmStrip from '../lib/components/RhythmStrip.svelte';
+  import MuteForm from '../lib/components/MuteForm.svelte';
 
   let all = $state<S['AnomalyFinding'][]>([]);
   let showAcked = $state(false);
-  const items = $derived(showAcked ? all : all.filter((f) => !f.acknowledged));
-  const ackedCount = $derived(all.filter((f) => f.acknowledged).length);
-  const open = $derived(all.filter((f) => !f.acknowledged));
+  let showMuted = $state(false);
+  // The ones that count; muted findings are listed only on request.
+  const counted = $derived(all.filter((f) => !f.mutedBy));
+  const visible = $derived(showMuted ? all : counted);
+  const items = $derived(showAcked ? visible : visible.filter((f) => !f.acknowledged));
+  const ackedCount = $derived(visible.filter((f) => f.acknowledged).length);
+  const mutedCount = $derived(all.length - counted.length);
+  const open = $derived(counted.filter((f) => !f.acknowledged));
+  // REQ: OBS-038 — the mutes (from the files or the API), and the finding whose form is open.
+  type MuteDef = { devices?: string[]; groups?: string[]; kinds?: string[]; expires?: string; note?: string };
+  let mutes = $state<S['ConfigEntry'][]>([]);
+  let muteFor = $state<string | null>(null);
+  const muteDef = (e: S['ConfigEntry']) => (e.definition ?? {}) as unknown as MuteDef;
+  const noteOf = (name: string) => {
+    const e = mutes.find((m) => m.name === name);
+    return e ? muteDef(e).note : undefined;
+  };
+  const ended = (e: S['ConfigEntry']) => {
+    const x = muteDef(e).expires;
+    return !!x && Date.parse(x) <= Date.now();
+  };
   const writable = $derived(can('operator'));
   let busy = $state(false);
   let actionError = $state<unknown>(null);
@@ -41,6 +62,20 @@
   const absolute = new Set(['nxdomain_storm', 'dga']);
   const windowText = (s: number) => (s >= 86400 ? `${s / 86400} day` : s >= 3600 ? `${s / 3600} h` : `${s / 60} min`);
 
+  async function removeMute(name: string) {
+    busy = true;
+    actionError = null;
+    try {
+      await api.deleteEntry('anomaly-mutes', name);
+      reloadTick++;
+      window.dispatchEvent(new Event('telltale:anomalies-changed'));
+    } catch (e) {
+      actionError = e;
+    } finally {
+      busy = false;
+    }
+  }
+
   async function change(ids: string[], ack: boolean) {
     if (ids.length === 0) return;
     busy = true;
@@ -61,12 +96,16 @@
     void range;
     void reloadTick;
     api
-      .anomalies(range)
+      .anomalies(range, undefined, true)
       .then((r) => {
         all = r.items;
         loaded = true;
       })
       .catch((e) => (error = e));
+    api
+      .configEntries('anomaly_mute')
+      .then((r) => (mutes = r.items))
+      .catch(() => (mutes = []));
     api
       .newDomains(range === '-24h' ? '-24h' : range, 500)
       .then((r) => (fresh = r.items))
@@ -91,10 +130,11 @@
   <p class="muted small">
     Each device is compared with its own usual behavior, learned over its first week. Findings only inform you; to act,
     open the device's queries or move it to a stricter group. Acknowledge a finding once you've looked at it: it stops
-    counting as new, on every node.
+    counting as new, on every node. Mute a kind of finding for a device that does it harmlessly, over and over.
   </p>
   <div class="row toolbar">
     <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={showAcked} data-testid="show-acknowledged" />Show acknowledged ({ackedCount})</label></span>
+    <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={showMuted} data-testid="show-muted" />Show muted ({mutedCount})</label></span>
     <span class="spacer"></span>
     {#if writable && open.length > 1}
       <button class="small" disabled={busy} onclick={() => change(open.map((f) => f.id), true)} data-testid="ack-all"
@@ -105,12 +145,12 @@
   {#if loaded && items.length === 0}
     <section class="card">
       <p class="empty">
-        {#if ackedCount > 0}Nothing new: every finding in this period is acknowledged.{:else}Nothing unusual. New devices are quiet here for their first 7 days while TelltaleDNS learns them.{/if}
+        {#if ackedCount > 0}Nothing new: every finding in this period is acknowledged.{:else if mutedCount > 0}Nothing unusual: {mutedCount} muted {mutedCount === 1 ? 'finding is' : 'findings are'} hidden.{:else}Nothing unusual. New devices are quiet here for their first 7 days while TelltaleDNS learns them.{/if}
       </p>
     </section>
   {/if}
   {#each items as f (f.id)}
-    <section class="card finding" class:acked={!!f.acknowledged} data-testid="anomaly">
+    <section class="card finding" class:acked={!!f.acknowledged} class:muted-finding={!!f.mutedBy} data-testid="anomaly">
       <div class="row">
         <span class="badge {f.informational ? '' : f.kind === 'beacon' || f.kind === 'drift' ? 'warn' : 'bad'}">{titles[f.kind] ?? f.kind}</span>
         {#if f.informational}<span class="muted small" data-testid="informational">for your information: not counted as an anomaly</span>{/if}
@@ -123,6 +163,12 @@
       {#if (f.kind === 'beacon' || f.kind === 'chatty_loop') && f.rhythm && f.domain}
         <!-- REQ: OBS-031 — the beacon's rhythm when it was reported. -->
         <RhythmStrip rows={[{ domain: f.domain, recent: f.rhythm }]} client={f.client} toggle={false} />
+      {/if}
+      {#if f.mutedBy}
+        <p class="small ack-line" data-testid="muted">
+          <span class="badge">Muted</span>
+          by <b>{f.mutedBy}</b>: not counted in the badge, the alerts or the metrics{#if noteOf(f.mutedBy)}: “{noteOf(f.mutedBy)}”{/if}
+        </p>
       {/if}
       {#if f.acknowledged}
         <p class="small ack-line" data-testid="acknowledged">
@@ -147,6 +193,11 @@
         {#if f.nodes && f.nodes.length > 0}<span class="muted small">Found by {f.nodes.join(', ')}</span>{/if}
         <span class="spacer"></span>
         {#if writable}
+          {#if f.mutedBy}
+            <button class="link small" disabled={busy} onclick={() => removeMute(f.mutedBy ?? '')} data-testid="remove-mute-here">Remove mute</button>
+          {:else}
+            <button class="link small" disabled={busy} onclick={() => (muteFor = muteFor === f.id ? null : f.id)} aria-expanded={muteFor === f.id} data-testid="mute">Mute for this device…</button>
+          {/if}
           {#if f.acknowledged}
             <button class="link small" disabled={busy} onclick={() => change([f.id], false)}>Undo acknowledge</button>
           {:else}
@@ -154,8 +205,50 @@
           {/if}
         {/if}
       </div>
+      {#if muteFor === f.id}
+        <MuteForm
+          finding={f}
+          similar={all.filter((x) => x.client === f.client && x.kind === f.kind && !x.mutedBy).length}
+          oncancel={() => (muteFor = null)}
+          onsaved={() => {
+            reloadTick++;
+            window.dispatchEvent(new Event('telltale:anomalies-changed'));
+          }}
+        />
+      {/if}
     </section>
   {/each}
+
+  {#if mutes.length > 0}
+    <section class="card" data-testid="mutes">
+      <div class="row head">
+        <h2>Mutes<HelpButton id="anomaly-mutes" /></h2>
+      </div>
+      <p class="muted small">Kinds of finding that stop counting for these devices. They are still recorded: turn on Show muted to see them.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>For</th><th>Kinds</th><th>Until</th><th>Why</th><th></th></tr></thead>
+          <tbody>
+            {#each mutes as m (m.name)}
+              {@const d = muteDef(m)}
+              <tr data-testid="mute-row" class:ended={ended(m)}>
+                <td class="mono">{m.name}</td>
+                <td class="small">{[...(d.devices ?? []), ...(d.groups ?? []).map((g) => `group ${g}`)].join(', ')}</td>
+                <td class="small">{(d.kinds ?? []).map((k) => titles[k] ?? k).join(', ')}</td>
+                <td class="small">{#if d.expires}{ended(m) ? 'ended ' : ''}{dateTime(Date.parse(d.expires) / 1000)}{:else}until removed{/if}</td>
+                <td class="small">{d.note ?? ''}</td>
+                <td class="num">
+                  {#if writable}
+                    {#if m.source === 'file'}<span class="muted small">in the config file</span>{:else}<button class="link small" disabled={busy} onclick={() => removeMute(m.name)} data-testid="remove-mute">Remove</button>{/if}
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {/if}
 
   <section class="card" data-testid="new-domains">
     <div class="row head">
@@ -191,8 +284,12 @@
     gap: 10px;
     flex-wrap: wrap;
   }
-  .finding.acked {
+  .finding.acked,
+  .finding.muted-finding {
     opacity: 0.75;
+  }
+  .ended {
+    opacity: 0.6;
   }
   .ack-line {
     margin: 4px 0;
