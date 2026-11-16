@@ -1,0 +1,30 @@
+# REQ: T22.4 — the Home Assistant integration's tests against a real TelltaleDNS build and a
+# real Home Assistant core (fork addition).
+name: home-assistant
+on:
+  push:
+    paths: ["integrations/home-assistant/**", "crates/telltale/src/routers.rs", "crates/telltale/src/device_dns.rs", ".github/workflows/home-assistant.yml"]
+  pull_request:
+    paths: ["integrations/home-assistant/**", "crates/telltale/src/routers.rs", "crates/telltale/src/device_dns.rs", ".github/workflows/home-assistant.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build TelltaleDNS (debug)
+        run: cargo build -p telltale
+      - name: Install Home Assistant's test harness
+        run: pip install pytest-homeassistant-custom-component ruff
+      - name: Lint
+        working-directory: integrations/home-assistant
+        run: ruff check custom_components tests && ruff format --check custom_components tests
+      - name: Test
+        working-directory: integrations/home-assistant
+        run: pytest -q -p no:cacheprovider

@@ -1,0 +1,77 @@
+pause_blocking:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: telltale
+    minutes:
+      required: true
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 1440
+          unit_of_measurement: min
+    group:
+      selector:
+        text:
+    reason:
+      selector:
+        text:
+resume_blocking:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: telltale
+    group:
+      selector:
+        text:
+    reason:
+      selector:
+        text:
+quarantine_device:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: telltale
+    device:
+      required: true
+      example: "192.168.20.9"
+      selector:
+        text:
+    reason:
+      selector:
+        text:
+release_device:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: telltale
+    device:
+      required: true
+      example: "192.168.20.9"
+      selector:
+        text:
+    reason:
+      selector:
+        text:
+acknowledge_anomalies:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: telltale
+    ids:
+      required: true
+      selector:
+        text:
+          multiple: true
+    note:
+      selector:
+        text:
+    reason:
+      selector:
+        text:

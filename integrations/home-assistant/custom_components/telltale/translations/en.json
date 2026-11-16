@@ -1,0 +1,124 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to TelltaleDNS",
+        "description": "Create an API token in TelltaleDNS (Settings → Users → API tokens). An agent token with analytics:read and config:read is enough to watch; add ops:pause for the blocking switches, ops:anomalies to acknowledge findings, and config:write:clients to quarantine devices.",
+        "data": {
+          "url": "TelltaleDNS address",
+          "token": "API token",
+          "verify_ssl": "Verify the TLS certificate"
+        },
+        "data_description": {
+          "url": "The web address of any node, for example http://192.0.2.53:8053.",
+          "token": "Starts with tt_."
+        }
+      },
+      "reauth_confirm": {
+        "title": "TelltaleDNS needs a new token",
+        "description": "The token for {url} stopped working (it was revoked or expired). Enter a new one.",
+        "data": {"token": "API token"}
+      }
+    },
+    "error": {
+      "cannot_connect": "TelltaleDNS didn't answer at that address.",
+      "invalid_auth": "TelltaleDNS refused the token.",
+      "missing_scope": "The token can't read the node: give it the analytics:read scope.",
+      "unknown": "Something unexpected went wrong; see the log."
+    },
+    "abort": {
+      "already_configured": "This TelltaleDNS node or cluster is already set up.",
+      "reauth_successful": "The new token works."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "TelltaleDNS options",
+        "data": {
+          "pause_minutes": "Minutes a blocking switch pauses for",
+          "quarantine_group": "Group a quarantined device goes into",
+          "anomaly_events": "Fire telltale_anomaly events for new device anomalies"
+        },
+        "data_description": {
+          "pause_minutes": "Agent tokens may pause for at most 60 minutes.",
+          "quarantine_group": "Create this group in TelltaleDNS first (for example with a block_all schedule that never ends)."
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "problem": {"name": "Problem"}
+    },
+    "sensor": {
+      "queries_24h": {"name": "Queries (24 h)"},
+      "blocked_24h": {"name": "Blocked (24 h)"},
+      "blocked_percent": {"name": "Blocked share (24 h)"},
+      "cache_hit_percent": {"name": "Cache hits (24 h)"},
+      "active_clients": {"name": "Active devices"},
+      "upstream_p90": {"name": "Upstream latency (p90)"},
+      "health": {
+        "name": "Health",
+        "state": {"healthy": "Healthy", "degraded": "Degraded", "severe": "Severe"}
+      },
+      "open_anomalies": {"name": "Open anomalies"},
+      "known_devices": {"name": "Known devices"},
+      "networks": {"name": "Networks"},
+      "version": {"name": "Version"}
+    },
+    "switch": {
+      "blocking": {"name": "Blocking"},
+      "group_blocking": {"name": "Blocking ({group})"}
+    }
+  },
+  "services": {
+    "pause_blocking": {
+      "name": "Pause blocking",
+      "description": "Pause blocking for everyone or one group, for some minutes.",
+      "fields": {
+        "config_entry_id": {"name": "TelltaleDNS", "description": "Which TelltaleDNS (only needed with more than one)."},
+        "minutes": {"name": "Minutes", "description": "1 to 1440 (agent tokens: at most 60)."},
+        "group": {"name": "Group", "description": "One group's devices only; empty: everyone."},
+        "reason": {"name": "Reason", "description": "Goes into TelltaleDNS's audit log."}
+      }
+    },
+    "resume_blocking": {
+      "name": "Resume blocking",
+      "description": "End a pause now (without a group: every pause).",
+      "fields": {
+        "config_entry_id": {"name": "TelltaleDNS", "description": "Which TelltaleDNS (only needed with more than one)."},
+        "group": {"name": "Group", "description": "One group's pause only."},
+        "reason": {"name": "Reason", "description": "Goes into TelltaleDNS's audit log."}
+      }
+    },
+    "quarantine_device": {
+      "name": "Quarantine a device",
+      "description": "Move a device into the quarantine group (by its name, IP, or MAC). It follows the device by MAC when TelltaleDNS knows it.",
+      "fields": {
+        "config_entry_id": {"name": "TelltaleDNS", "description": "Which TelltaleDNS (only needed with more than one)."},
+        "device": {"name": "Device", "description": "A name TelltaleDNS knows, an IP address, or a MAC address."},
+        "reason": {"name": "Reason", "description": "Goes into TelltaleDNS's audit log."}
+      }
+    },
+    "release_device": {
+      "name": "Release a device",
+      "description": "Put a quarantined device back in the groups it had (or remove the device entry the quarantine made).",
+      "fields": {
+        "config_entry_id": {"name": "TelltaleDNS", "description": "Which TelltaleDNS (only needed with more than one)."},
+        "device": {"name": "Device", "description": "The same name, IP, or MAC you quarantined it by."},
+        "reason": {"name": "Reason", "description": "Goes into TelltaleDNS's audit log."}
+      }
+    },
+    "acknowledge_anomalies": {
+      "name": "Acknowledge anomalies",
+      "description": "Mark device anomaly findings as seen in TelltaleDNS.",
+      "fields": {
+        "config_entry_id": {"name": "TelltaleDNS", "description": "Which TelltaleDNS (only needed with more than one)."},
+        "ids": {"name": "Finding IDs", "description": "The id of each finding (from the telltale_anomaly event)."},
+        "note": {"name": "Note", "description": "Why, shown with the finding (200 characters)."},
+        "reason": {"name": "Reason", "description": "Goes into TelltaleDNS's audit log."}
+      }
+    }
+  }
+}
