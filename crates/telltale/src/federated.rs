@@ -150,6 +150,10 @@ enum Read {
     HeatmapKey {
         q: telltale_api::heatmap::KeyQuery,
     },
+    /// REQ: OBS-029 — the peer's own network slots (older peers don't know it).
+    HeatmapNetwork {
+        q: telltale_api::heatmap::NetworkQuery,
+    },
     /// REQ: OBS-027 — the peer's own error-budget attribution part (older peers don't know it).
     SloParts {
         q: telltale_api::attribution::PartQuery,
@@ -170,6 +174,8 @@ enum Read {
     /// REQ: FLT-004, CLU-003 — the primary's lists and their download state, for a replica's
     /// API (older peers don't know it).
     Lists,
+    /// REQ: OBS-009 — the peer's own hits per list (older peers don't know it).
+    ListHits,
 }
 
 /// The reads that change the answering node: operational actions a user asked for on the
@@ -262,6 +268,7 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::Probes => serde_json::to_vec(&b.probes()),
         Read::SloParts { q } => serde_json::to_vec(&b.slo_parts(&q)),
         Read::HeatmapKey { q } => serde_json::to_vec(&b.heatmap_key(&q).map_err(text)?),
+        Read::HeatmapNetwork { q } => serde_json::to_vec(&b.heatmap_network(&q)),
         Read::Exemplars {
             from_us,
             to_us,
@@ -273,6 +280,7 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::Overblocking { limit } => serde_json::to_vec(&b.overblocking(limit)),
         Read::WorkloadCounts => serde_json::to_vec(&b.workload_counts()),
         Read::Lists => serde_json::to_vec(&b.lists()),
+        Read::ListHits => serde_json::to_vec(&b.list_hits()),
     }
     .map_err(|e| e.to_string())
 }
@@ -1011,6 +1019,42 @@ impl Federated {
         }
     }
 
+    /// REQ: CLU-002 — `peers`' time buckets over `[from_s, to_s)`, asked in windows of at most
+    /// [`federation::TIMESERIES_CHUNK`] buckets, all at once: one answer for a busy node's day
+    /// of minutes is over the cluster channel's 1 MiB frame, and was dropped whole. Returns
+    /// each answered window's buckets, and each peer that answered any window (`true` when it
+    /// answered every one). Windows that fail list the peer in `missingNodes`.
+    fn peer_timeseries(
+        &self,
+        peers: Vec<String>,
+        step: Step,
+        from_s: u64,
+        to_s: u64,
+    ) -> (Vec<Vec<TimeBucket>>, Vec<(String, bool)>) {
+        let windows = federation::timeseries_chunks(step, from_s, to_s);
+        let reads = peers
+            .iter()
+            .flat_map(|p| {
+                windows.iter().map(move |&(from_s, to_s)| {
+                    (p.clone(), Read::Timeseries { step, from_s, to_s })
+                })
+            })
+            .collect();
+        let mut parts = Vec::new();
+        let mut got: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for (peer, body) in self.gather(reads) {
+            if let Ok(v) = serde_json::from_slice::<Vec<TimeBucket>>(&body) {
+                parts.push(v);
+                *got.entry(peer).or_default() += 1;
+            }
+        }
+        let answered = peers
+            .into_iter()
+            .filter_map(|p| got.get(&p).map(|n| (p, *n == windows.len())))
+            .collect();
+        (parts, answered)
+    }
+
     /// Asks every reachable peer the same read; decoded answers.
     fn everyone<T: serde::de::DeserializeOwned>(&self, read: impl Fn() -> Read) -> Vec<T> {
         let reads = self.peers().into_iter().map(|p| (p, read())).collect();
@@ -1165,6 +1209,64 @@ impl Backend for Federated {
         }
         Ok(telltale_api::heatmap::KeyPart::merge(parts, n))
     }
+    // REQ: OBS-029, CLU-002 — every node's network slots, summed. Each peer sums its own
+    // minutes into slots: a week of its minute buckets is several megabytes, over the cluster
+    // channel's 1 MiB frame, so asking for those dropped every busy peer from the 15-minute
+    // grid ("didn't answer"). A peer on an older build that doesn't know the read gives its
+    // time buckets instead, a few hours at a time (`peer_timeseries`).
+    fn heatmap_network(&self, q: &telltale_api::heatmap::NetworkQuery) -> Vec<u64> {
+        use telltale_api::heatmap::add_slots;
+        let mut out = vec![0; q.slot_count()];
+        let peers = self.peers();
+        let answers = self.gather(
+            peers
+                .iter()
+                .map(|p| (p.clone(), Read::HeatmapNetwork { q: q.clone() }))
+                .collect(),
+        );
+        let mut live: Vec<String> = vec![self.cluster.identity.meta.node_id.clone()];
+        let mut answered = std::collections::HashSet::new();
+        for (peer, body) in answers {
+            if let Ok(v) = serde_json::from_slice::<Vec<u64>>(&body) {
+                add_slots(&mut out, &v);
+                answered.insert(peer.clone());
+                live.push(peer);
+            }
+        }
+        let missing_first = self.missing_nodes();
+        let older: Vec<String> = peers
+            .into_iter()
+            .filter(|p| !answered.contains(p) && missing_first.contains(&self.label_of(p)))
+            .collect();
+        if !older.is_empty() {
+            let (parts, answered) = self.peer_timeseries(older, q.step(), q.from_s, q.to_s);
+            for buckets in parts {
+                add_slots(&mut out, &q.slots_of(&buckets));
+            }
+            let recovered: Vec<String> = answered
+                .iter()
+                .filter(|(_, whole)| *whole)
+                .map(|(p, _)| self.label_of(p))
+                .collect();
+            live.extend(answered.into_iter().map(|(p, _)| p));
+            *self.missing.lock().unwrap_or_else(PoisonError::into_inner) = missing_first
+                .into_iter()
+                .filter(|m| !recovered.contains(m))
+                .collect();
+        }
+        if self.with_me() {
+            add_slots(&mut out, &self.local.heatmap_network(q));
+        }
+        // REQ: CLU-007 (T9.3) — minutes shipped here by nodes that aren't answering, for the
+        // whole cluster's view only (as `timeseries`).
+        if self.only.is_none() {
+            let shipped = self
+                .local
+                .shipped_timeseries(q.step(), q.from_s, q.to_s, &live);
+            add_slots(&mut out, &q.slots_of(&shipped));
+        }
+        out
+    }
     // REQ: OBS-027 (ADR-127) — every node's part, labelled. A peer on an older build that can't
     // answer gives its hour buckets instead (a timeline, no lists: partial, not missing). Pods
     // that shipped minutes here and aren't answering count from those, for the whole cluster.
@@ -1260,20 +1362,9 @@ impl Backend for Federated {
 
     // REQ: CLU-002 — counters sum across nodes.
     fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {
-        let answers = self.gather(
-            self.peers()
-                .into_iter()
-                .map(|p| (p, Read::Timeseries { step, from_s, to_s }))
-                .collect(),
-        );
+        let (mut parts, answered) = self.peer_timeseries(self.peers(), step, from_s, to_s);
         let mut live: Vec<String> = vec![self.cluster.identity.meta.node_id.clone()];
-        let mut parts: Vec<Vec<TimeBucket>> = Vec::new();
-        for (peer, body) in answers {
-            if let Ok(v) = serde_json::from_slice(&body) {
-                parts.push(v);
-                live.push(peer);
-            }
-        }
+        live.extend(answered.into_iter().map(|(p, _)| p));
         if self.with_me() {
             parts.push(self.local.timeseries(step, from_s, to_s));
         }
@@ -1563,6 +1654,16 @@ impl Backend for Federated {
             Some(theirs) => merge_lists(&mine, theirs),
             None => mine,
         }
+    }
+    // REQ: OBS-009 (T7.14) — every node's hits, added up by list name: the node serving the
+    // API may answer few queries itself (replicas at other sites do).
+    fn list_hits(&self) -> std::collections::BTreeMap<String, u64> {
+        let mut parts = Vec::new();
+        if self.with_me() {
+            parts.push(self.local.list_hits());
+        }
+        parts.extend(self.everyone::<std::collections::BTreeMap<String, u64>>(|| Read::ListHits));
+        telltale_api::federation::merge_list_hits(parts)
     }
     fn groups(&self) -> Vec<GroupInfo> {
         self.local.groups()

@@ -1287,7 +1287,12 @@ type ListGauge = (
 
 /// REQ: FLT-004, `spec/06` §6 alert "list fetch failing for > 48 h": per-list fetch state.
 fn render_lists(w: &mut PromWriter, fetcher: &Fetcher) {
-    let status = fetcher.status();
+    render_list_status(w, &fetcher.status());
+}
+
+/// REQ: FLT-004 — inline rules are never fetched, so they have no last-success time: one would
+/// stay at the last config change and trip the "> 48 h" alert two days after every edit.
+fn render_list_status(w: &mut PromWriter, status: &[(String, ListMeta)]) {
     let families: [ListGauge; 4] = [
         (
             "telltale_list_source_bytes",
@@ -1298,8 +1303,9 @@ fn render_lists(w: &mut PromWriter, fetcher: &Fetcher) {
         (
             "telltale_list_last_success_timestamp_seconds",
             "gauge",
-            "When the list was last confirmed current (download, 304, or unchanged file).",
-            |m| m.last_success,
+            "When the list was last confirmed current (download, 304, or unchanged file). Not \
+             reported for inline rules, which are never fetched.",
+            |m| m.last_success.filter(|_| !m.is_inline()),
         ),
         (
             "telltale_list_last_change_timestamp_seconds",
@@ -1316,7 +1322,7 @@ fn render_lists(w: &mut PromWriter, fetcher: &Fetcher) {
     ];
     for (name, kind, help, value) in families {
         w.family(name, kind, help);
-        for (list, meta) in &status {
+        for (list, meta) in status {
             if let Some(v) = value(meta) {
                 w.sample(name, &[("list", list)], v);
             }

@@ -74,6 +74,8 @@ struct State {
     order: VecDeque<([u8; 16], u64)>,
     /// By name (wire format, as kept).
     suspects: HashMap<Box<[u8]>, Suspect>,
+    /// REQ: OBS-009 — queries each list blocked or allowed since start, by list name.
+    decided: BTreeMap<String, u64>,
 }
 
 /// The shared counts (the sink writes, the API reads).
@@ -230,6 +232,22 @@ impl Shadow {
         l.top.offer(&*name, |k: &[u8]| Box::from(k));
     }
 
+    /// REQ: OBS-009 — one query `list` blocked or allowed.
+    pub(crate) fn note_decided(&self, list: &str) {
+        let mut st = lock(&self.state);
+        match st.decided.get_mut(list) {
+            Some(n) => *n += 1,
+            None => {
+                st.decided.insert(list.to_owned(), 1);
+            }
+        }
+    }
+
+    /// REQ: OBS-009 — queries each list blocked or allowed since start, by list name.
+    pub(crate) fn decided(&self) -> BTreeMap<String, u64> {
+        lock(&self.state).decided.clone()
+    }
+
     /// Would-be blocks per shadow list, for `/metrics`.
     pub(crate) fn hits(&self) -> Vec<(String, u64)> {
         lock(&self.state)
@@ -291,6 +309,22 @@ impl Shadow {
     }
 }
 
+/// REQ: OBS-009 — the list a query's block or allow decision names, by `names` (the filter in
+/// force when the event is folded, a moment after the query). Named here, not kept by list ID,
+/// so a list's count stays its own when later snapshots number the lists differently. Quick
+/// rules, schedules, and answer-address blocks aren't a list's.
+fn decided_list<'a>(e: &QueryEvent, names: &'a [String]) -> Option<&'a str> {
+    let rule = e.rule?;
+    let by_list = matches!(
+        rule.kind,
+        RuleKind::Domain | RuleKind::Modifier | RuleKind::Regex | RuleKind::Cname
+    );
+    if !by_list || !(rule.allow || e.status == Status::Blocked) {
+        return None;
+    }
+    names.get(usize::from(rule.list)).map(String::as_str)
+}
+
 /// Feeds query events to [`Shadow`] on the telemetry thread.
 pub(crate) struct ShadowSink {
     shared: Arc<Shadow>,
@@ -317,6 +351,9 @@ impl Sink for ShadowSink {
         let Some(f) = guard.as_deref() else {
             return;
         };
+        if let Some(list) = decided_list(e, &f.list_names) {
+            self.shared.note_decided(list);
+        }
         match e.status {
             Status::Blocked => {
                 if let Some(rule) = e.rule
@@ -393,6 +430,46 @@ mod tests {
             resp_size: 64,
             answers: 1,
         }
+    }
+
+    // REQ: OBS-009 — a list's block and allow decisions count under its name; other blocks
+    // (quick rules, schedules, answer addresses) and IDs the filter doesn't name don't, and
+    // counts stay with the name when another snapshot numbers the lists differently.
+    #[test]
+    fn obs_009_list_hits_by_name() {
+        use telltale_telemetry::event::Rule;
+        let with = |status, list, kind, allow| QueryEvent {
+            rule: Some(Rule { list, kind, allow }),
+            ..ev(1, 1, status)
+        };
+        let names = vec!["ads".to_owned(), "allowed".to_owned()];
+        let block = with(Status::Blocked, 0, RuleKind::Domain, false);
+        let allow = with(Status::Forwarded, 1, RuleKind::Domain, true);
+        assert_eq!(decided_list(&block, &names), Some("ads"));
+        assert_eq!(decided_list(&allow, &names), Some("allowed"));
+        let regex = with(Status::Blocked, 0, RuleKind::Regex, false);
+        assert_eq!(decided_list(&regex, &names), Some("ads"));
+        for e in [
+            with(Status::Blocked, 0, RuleKind::Quick, false),
+            with(Status::Blocked, 0, RuleKind::Schedule, false),
+            with(Status::Blocked, 0, RuleKind::AnswerIp, false),
+            with(Status::Blocked, 7, RuleKind::Domain, false),
+            with(Status::Forwarded, 0, RuleKind::Domain, false),
+            ev(1, 1, Status::Forwarded),
+        ] {
+            assert_eq!(decided_list(&e, &names), None, "{e:?}");
+        }
+        let s = Shadow::new(0, 0);
+        s.note_decided("ads");
+        s.note_decided("ads");
+        // `ads` disabled: `allowed` is list 0 in the next snapshot.
+        let next = vec!["allowed".to_owned()];
+        let allow = with(Status::Cached, 0, RuleKind::Domain, true);
+        s.note_decided(decided_list(&allow, &next).unwrap());
+        assert_eq!(
+            s.decided().into_iter().collect::<Vec<_>>(),
+            vec![("ads".to_owned(), 2), ("allowed".to_owned(), 1)]
+        );
     }
 
     // REQ: OBS-018 — a burst of blocked retries is a suspect once per burst; a normal answer

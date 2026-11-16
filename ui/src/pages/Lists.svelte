@@ -260,7 +260,7 @@
   <ConfigEditor kind="list" path="lists" title="Manage lists" noun="list" fields={listFields}
     summary={(d) => `${String(d.kind ?? 'block')} · ${d.url ? String(d.url) : `${((d.rules as string[]) ?? []).length} rules`}${d.enabled === false ? ' · off' : ''}`}
     onchanged={async () => (lists = (await api.lists()).items)} formAction={tryList} />
-  <p class="muted small">"Names used" counts the names this list puts in the active snapshot; "Unique" the ones no other list has (what removing it would lose). "Hits" counts the queries it decided on this node since it started.</p>
+  <p class="muted small">"Names used" counts the names this list puts in the active snapshot; "Unique" the ones no other list has (what removing it would lose). "Hits" counts the queries it decided since each node started, across the cluster.</p>
 </div>
 
 <style>

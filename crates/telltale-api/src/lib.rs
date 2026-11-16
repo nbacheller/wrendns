@@ -263,7 +263,15 @@ pub trait Backend: Send + Sync + 'static {
         limit: usize,
     ) -> Result<QueryPage, Problem>;
     fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem>;
+    /// Configured lists; `GET /api/v1/lists` fills each one's `hits` from
+    /// [`Backend::list_hits`].
     fn lists(&self) -> Vec<ListInfo>;
+    /// REQ: OBS-009 (T7.14) — queries each list blocked or allowed since start, by list name:
+    /// this node's, and in a cluster every node's added up (the nodes serving DNS needn't be
+    /// the one serving the API).
+    fn list_hits(&self) -> std::collections::BTreeMap<String, u64> {
+        self.lists().into_iter().map(|l| (l.name, l.hits)).collect()
+    }
     fn groups(&self) -> Vec<GroupInfo>;
     fn clients(&self) -> Vec<ClientInfo>;
     fn upstreams(&self) -> Vec<UpstreamInfo>;
@@ -356,6 +364,11 @@ pub trait Backend: Send + Sync + 'static {
     /// REQ: OBS-032 — the query log's privacy level (0 to 3; a device's flow needs 1 or lower).
     fn qlog_privacy_level(&self) -> u8 {
         0
+    }
+    /// REQ: OBS-029 (ADR-129) — the network's queries (or blocked queries) per slot, from the
+    /// time buckets (every node's, summed; each node sums its own).
+    fn heatmap_network(&self, q: &heatmap::NetworkQuery) -> Vec<u64> {
+        q.slots_of(&self.timeseries(q.step(), q.from_s, q.to_s))
     }
     /// REQ: OBS-029 (ADR-129) — a device's or a name's hours from the hourly top lists (every
     /// node's, summed); `privacy_level` when the privacy level hides them.
@@ -1795,16 +1808,31 @@ async fn explain(
 /// Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,
 /// `pending`) and last error, size, and how many names it contributes to the active snapshot;
 /// when it was last checked, last confirmed current, and last changed, and whether a refresh is
-/// queued or downloading it now (`refreshing`). On a cluster replica the download state is the
-/// primary's (it downloads and compiles the lists every node serves); hits are this node's.
-/// When the primary doesn't answer, `missingNodes` names it and the state is this node's own.
+/// queued or downloading it now (`refreshing`). `hits` adds up every node's in a cluster. On a
+/// cluster replica the download state is the primary's (it downloads and compiles the lists
+/// every node serves). `missingNodes` names the nodes whose hits are left out and, when the
+/// primary doesn't answer, the primary (the download state shown is then this node's own).
 #[utoipa::path(get, path = "/api/v1/lists", tag = "config",
     responses((status = 200, body = Items<ListInfo>, description = "The result.")))]
 async fn lists(State(b): State<Shared>) -> Result<Json<Items<ListInfo>>, Problem> {
-    // A cluster replica asks the primary for the download state (it blocks on that call).
-    // REQ: FLT-004 — a primary that didn't answer is named in `missingNodes`: the download
-    // state shown is then this node's own.
-    let (items, missing_nodes) = blocking(move || Ok((b.lists(), b.missing_nodes()))).await?;
+    // A cluster replica asks the primary for the download state and every node for its hits
+    // (both block on cluster calls).
+    let (items, missing_nodes) = blocking(move || {
+        // REQ: FLT-004 — a primary that didn't answer is named in `missingNodes`.
+        let mut items = b.lists();
+        let mut missing = b.missing_nodes();
+        // REQ: OBS-009 (T7.14) — hits from every node: in a cluster the API's node may answer
+        // few or no queries itself. Each federated read resets `missing_nodes`: keep both.
+        let hits = b.list_hits();
+        missing.extend(b.missing_nodes());
+        missing.sort();
+        missing.dedup();
+        for l in &mut items {
+            l.hits = hits.get(&l.name).copied().unwrap_or(0);
+        }
+        Ok((items, missing))
+    })
+    .await?;
     Ok(Json(Items {
         items,
         missing_nodes,

@@ -40,7 +40,8 @@ impl ListSource {
             Self::Path(p) => format!("file:{}", p.display()),
             Self::Inline(rules) => {
                 format!(
-                    "inline:{}",
+                    "{}{}",
+                    store::INLINE_SOURCE_PREFIX,
                     &content_hash(rules.join("\n").as_bytes())[..16]
                 )
             }
@@ -862,6 +863,19 @@ mod tests {
             .source
             .key();
         assert_eq!(next_attempt(&inline, &m), 0);
+    }
+
+    /// REQ: FLT-004 — only inline rules count as inline: their metadata has no download to age.
+    #[test]
+    fn flt_004_inline_sources_are_recognised() {
+        let meta = |source: ListSource| ListMeta {
+            source: spec(source).source.key(),
+            ..ListMeta::default()
+        };
+        assert!(meta(ListSource::Inline(vec!["||a.com^".into()])).is_inline());
+        assert!(!meta(ListSource::Url("https://example.com/inline.txt".into())).is_inline());
+        assert!(!meta(ListSource::Path("inline:a.txt".into())).is_inline());
+        assert!(!ListMeta::default().is_inline());
     }
 
     #[test]
