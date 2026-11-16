@@ -502,12 +502,17 @@ fn ops_012_the_name_of_a_thread_may_hold_spaces_and_parentheses() {
 #[cfg(target_os = "linux")]
 #[test]
 fn ops_012_the_thread_table_lists_this_process_threads() {
+    // A thread takes its name when it starts: wait until it is running before reading the table
+    // (a slow machine otherwise shows it still under its parent's name).
+    let (up_tx, up) = std::sync::mpsc::channel();
     let me = std::thread::Builder::new()
         .name("wd-test-thread".to_owned())
-        .spawn(|| {
+        .spawn(move || {
+            let _ = up_tx.send(());
             std::thread::sleep(secs(2));
         })
         .unwrap();
+    up.recv_timeout(secs(5)).unwrap();
     let rows = thread_rows();
     assert!(rows.len() >= 2, "{rows:?}");
     assert!(rows.iter().any(|r| r.name == "wd-test-thread"), "{rows:?}");
