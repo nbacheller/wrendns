@@ -936,7 +936,7 @@ telltale lists compile -c telltale.toml     # compile now and show per-list numb
 ```
 `unique` counts the names no other list has. A list with few unique names adds little beyond your other lists.
 
-The **Lists** page and `GET /api/v1/lists` show the same per list: `unique`, `hits` (queries it decided on this node since it started), and `overlap` (the lists it shares names with, and how many). A list that's 95% or more inside another is marked, and one with no hits is marked "none yet".
+The **Lists** page and `GET /api/v1/lists` show the same per list: `unique`, `hits` (queries it decided since each node started; in a cluster, every node's added up), and `overlap` (the lists it shares names with, and how many). A list that's 95% or more inside another is marked, and one with no hits is marked "none yet".
 
 ### Blocking
 A query is checked against the filter after local records and before the cache, so a blocked name never reaches an upstream:

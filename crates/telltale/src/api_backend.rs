@@ -1636,11 +1636,6 @@ impl Backend for ApiBackend {
                 .as_ref()
                 .map(|c| c.manifest.clone())
         });
-        // REQ: OBS-009 (T7.14) — hits per list ID on this node since it started.
-        let mut hits: std::collections::HashMap<u16, u64> = std::collections::HashMap::new();
-        for ((_, list), n) in &self.src.pipeline.telemetry.aggregates().exported.blocked {
-            *hits.entry(*list).or_insert(0) += n;
-        }
         cfg.list
             .iter()
             .map(|l| {
@@ -1655,10 +1650,6 @@ impl Backend for ApiBackend {
                 let entries = per.map_or(0, |s| s.entries);
                 let unique = per.map_or(0, |s| s.unique);
                 let regex_skipped = per.map_or(0, |s| s.regex_skipped);
-                let list_hits = id
-                    .and_then(|i| u16::try_from(i).ok())
-                    .and_then(|i| hits.get(&i).copied())
-                    .unwrap_or(0);
                 let mut overlap: Vec<telltale_api::model::ListShare> = match (&compiled, id) {
                     (Some(m), Some(i)) => {
                         let i = u16::try_from(i).unwrap_or(u16::MAX);
@@ -1708,7 +1699,8 @@ impl Backend for ApiBackend {
                     entries,
                     unique,
                     regex_skipped,
-                    hits: list_hits,
+                    // REQ: OBS-009 — the API fills it in from `list_hits` (every node's).
+                    hits: 0,
                     overlap,
                     last_checked_unix_seconds: meta.and_then(|m| m.last_attempt),
                     last_changed_unix_seconds: meta.and_then(|m| m.last_changed),
@@ -1716,6 +1708,13 @@ impl Backend for ApiBackend {
                 }
             })
             .collect()
+    }
+
+    // REQ: OBS-009 (T7.14) — this node's blocks and allows by list name, counted on the
+    // telemetry thread (`shadow::ShadowSink`): a replica that only receives the snapshot
+    // counts too, and the counts survive lists being renumbered.
+    fn list_hits(&self) -> std::collections::BTreeMap<String, u64> {
+        self.src.shadow.decided()
     }
 
     fn groups(&self) -> Vec<GroupInfo> {

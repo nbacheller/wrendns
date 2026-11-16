@@ -262,7 +262,15 @@ pub trait Backend: Send + Sync + 'static {
         limit: usize,
     ) -> Result<QueryPage, Problem>;
     fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem>;
+    /// Configured lists; `GET /api/v1/lists` fills each one's `hits` from
+    /// [`Backend::list_hits`].
     fn lists(&self) -> Vec<ListInfo>;
+    /// REQ: OBS-009 (T7.14) — queries each list blocked or allowed since start, by list name:
+    /// this node's, and in a cluster every node's added up (the nodes serving DNS needn't be
+    /// the one serving the API).
+    fn list_hits(&self) -> std::collections::BTreeMap<String, u64> {
+        self.lists().into_iter().map(|l| (l.name, l.hits)).collect()
+    }
     fn groups(&self) -> Vec<GroupInfo>;
     fn clients(&self) -> Vec<ClientInfo>;
     fn upstreams(&self) -> Vec<UpstreamInfo>;
@@ -1758,13 +1766,26 @@ async fn explain(
 ///
 /// Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,
 /// `pending`) and last error, size, and how many names it contributes to the active snapshot.
+/// `hits` adds up every node's in a cluster.
 #[utoipa::path(get, path = "/api/v1/lists", tag = "config",
     responses((status = 200, body = Items<ListInfo>, description = "The result.")))]
-async fn lists(State(b): State<Shared>) -> Json<Items<ListInfo>> {
-    Json(Items {
-        missing_nodes: Vec::new(),
-        items: b.lists(),
+async fn lists(State(b): State<Shared>) -> Result<Json<Items<ListInfo>>, Problem> {
+    let bk = Arc::clone(&b);
+    // REQ: OBS-009 (T7.14) — hits from every node: in a cluster the API's node may answer
+    // few or no queries itself.
+    let items = blocking(move || {
+        let hits = bk.list_hits();
+        let mut items = bk.lists();
+        for l in &mut items {
+            l.hits = hits.get(&l.name).copied().unwrap_or(0);
+        }
+        Ok(items)
     })
+    .await?;
+    Ok(Json(Items {
+        missing_nodes: b.missing_nodes(),
+        items,
+    }))
 }
 
 /// Blockable services.

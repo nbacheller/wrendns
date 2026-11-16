@@ -1804,6 +1804,7 @@ export interface paths {
          * Filter lists and their download state.
          * @description Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,
          *     `pending`) and last error, size, and how many names it contributes to the active snapshot.
+         *     `hits` adds up every node's in a cluster.
          */
         get: operations["lists"];
         put?: never;
@@ -5571,7 +5572,8 @@ export interface components {
                 error?: string | null;
                 /**
                  * Format: int64
-                 * @description Queries it blocked (or allowed, for an allow list) on this node since it started.
+                 * @description Queries it blocked (or allowed, for an allow list) since each node started; in a
+                 *     cluster, every node's added up.
                  */
                 hits: number;
                 /** @description `block` or `allow`. */
@@ -6158,7 +6160,8 @@ export interface components {
             error?: string | null;
             /**
              * Format: int64
-             * @description Queries it blocked (or allowed, for an allow list) on this node since it started.
+             * @description Queries it blocked (or allowed, for an allow list) since each node started; in a
+             *     cluster, every node's added up.
              */
             hits: number;
             /** @description `block` or `allow`. */

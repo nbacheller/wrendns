@@ -96,6 +96,15 @@ pub fn merge_shadow(
         .collect()
 }
 
+/// REQ: OBS-009 (T7.14) — every node's hits per list, added up by list name.
+pub fn merge_list_hits(parts: Vec<BTreeMap<String, u64>>) -> BTreeMap<String, u64> {
+    let mut by: BTreeMap<String, u64> = BTreeMap::new();
+    for (list, n) in parts.into_iter().flatten() {
+        *by.entry(list).or_insert(0) += n;
+    }
+    by
+}
+
 /// REQ: OBS-018 (ADR-109) — every node's over-blocking suspects, merged by name and ranked:
 /// a normal answer soon after a block weighs ten retry bursts; at most `limit`.
 pub fn merge_overblocking(
@@ -331,6 +340,31 @@ fn data_encoding_base64url(s: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::model::{NameCount, OverblockSuspect, ShadowListStats};
+
+    // REQ: OBS-009 (T7.14) — list hits add up by name over nodes; a list only one node has
+    // used keeps its count, and a node with none (the API's own, say) adds nothing.
+    #[test]
+    fn obs_009_list_hits_merge() {
+        let node = |rows: &[(&str, u64)]| {
+            rows.iter()
+                .map(|(l, n)| ((*l).to_owned(), *n))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let m = merge_list_hits(vec![
+            node(&[("ads", 0), ("trackers", 0)]),
+            node(&[("ads", 40), ("trackers", 2)]),
+            node(&[("ads", 9), ("malware", 1)]),
+        ]);
+        assert_eq!(
+            m.into_iter().collect::<Vec<_>>(),
+            vec![
+                ("ads".to_owned(), 49),
+                ("malware".to_owned(), 1),
+                ("trackers".to_owned(), 2)
+            ]
+        );
+        assert!(merge_list_hits(Vec::new()).is_empty());
+    }
 
     // REQ: OBS-018 — two nodes' shadow counts add up by list, top names by name, the earliest
     // start and latest hit win; suspects merge by name and rank allows above retries.

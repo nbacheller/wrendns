@@ -167,6 +167,8 @@ enum Read {
     },
     /// REQ: FLT-017 — the peer's per-workload counts (older peers don't know it).
     WorkloadCounts,
+    /// REQ: OBS-009 — the peer's own hits per list (older peers don't know it).
+    ListHits,
 }
 
 /// The reads that change the answering node: operational actions a user asked for on the
@@ -259,6 +261,7 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::ShadowLists => serde_json::to_vec(&b.shadow_lists()),
         Read::Overblocking { limit } => serde_json::to_vec(&b.overblocking(limit)),
         Read::WorkloadCounts => serde_json::to_vec(&b.workload_counts()),
+        Read::ListHits => serde_json::to_vec(&b.list_hits()),
     }
     .map_err(|e| e.to_string())
 }
@@ -1507,6 +1510,16 @@ impl Backend for Federated {
     }
     fn lists(&self) -> Vec<ListInfo> {
         self.local.lists()
+    }
+    // REQ: OBS-009 (T7.14) — every node's hits, added up by list name: the node serving the
+    // API may answer few queries itself (replicas at other sites do).
+    fn list_hits(&self) -> std::collections::BTreeMap<String, u64> {
+        let mut parts = Vec::new();
+        if self.with_me() {
+            parts.push(self.local.list_hits());
+        }
+        parts.extend(self.everyone::<std::collections::BTreeMap<String, u64>>(|| Read::ListHits));
+        telltale_api::federation::merge_list_hits(parts)
     }
     fn groups(&self) -> Vec<GroupInfo> {
         self.local.groups()
