@@ -30,12 +30,16 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. The heaviest items in the current or previous hour: most queried domains, most blocked domains, names answered NXDOMAIN, most active clients, or most queried internal names (the Kubernetes cluster domain and reverse lookups of private addresses, which the domains and NXDOMAIN lists leave out). For clients, also the last hour whatever the clock hour (hour=rolling: 60-65 minutes, exact counts). Optionally for one client (domains only) or one client group.",
+    "description": "Read-only. The heaviest items in the current or previous hour, or over a window of hours (`from`, such as -24h or -7d): most queried domains, most blocked domains, names answered NXDOMAIN, most active clients, or most queried internal names (the Kubernetes cluster domain and reverse lookups of private addresses, which the domains and NXDOMAIN lists leave out). For clients, also the last hour whatever the clock hour (hour=rolling: 60-65 minutes, exact counts). Optionally for one client (domains only) or one client group (current, previous, or rolling hour only).",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
         "client": {
           "description": "A client IP: its top domains (kind=domains only).",
+          "type": "string"
+        },
+        "from": {
+          "description": "A window instead of one hour: relative (-24h, -7d) or RFC 3339. Every hour it overlaps counts whole. Not with hour, client, or group.",
           "type": "string"
         },
         "group": {
@@ -70,6 +74,10 @@
         },
         "scope": {
           "description": "Which nodes: cluster (default, every node), site:<name>, node:<name or ID>, or node:local (the node you're connected to). Nodes that don't answer within 2 s are listed in missingNodes.",
+          "type": "string"
+        },
+        "to": {
+          "description": "The window's end (default now). Only with from.",
           "type": "string"
         }
       },

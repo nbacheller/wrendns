@@ -2445,8 +2445,9 @@ export interface paths {
         /**
          * Totals over a time range.
          * @description Queries, blocked (count and percent), cache hits, forwarded, NXDOMAIN and SERVFAIL counts
-         *     over the range (per-minute data up to 48 hours back, hourly rollups beyond), plus this
-         *     hour's active clients and latency percentiles by answer path. Example:
+         *     over the range (per-minute data up to 48 hours back, hourly rollups beyond), the devices
+         *     seen in the hours the range overlaps (active clients), and this hour's latency
+         *     percentiles by answer path. Example:
          *     `GET /api/v1/stats/summary?from=-24h` or `?from=-30d`.
          */
         get: operations["stats_summary"];
@@ -2496,6 +2497,8 @@ export interface paths {
          *     With `kind=clients&hour=rolling`, the clients of the last hour (60–65 minutes, whole
          *     5-minute slots) rather than of the clock hour, with exact counts (`errorBound` 0); with
          *     `group`, the clients whose settings come from that group.
+         *     With `from=-24h`, the hours the window overlaps, summed per key (stored hours and the
+         *     current one).
          */
         get: operations["stats_top"];
         put?: never;
@@ -7325,7 +7328,9 @@ export interface components {
         Summary: {
             /**
              * Format: int64
-             * @description Distinct clients seen this hour.
+             * @description Distinct clients seen in the hours the range overlaps (REQ: OBS-004): this hour's list,
+             *     the previous hour's, and each stored hour's busiest 100, so ranges past the last two
+             *     hours undercount on networks with more than 100 devices an hour.
              */
             activeClients: number;
             /** Format: int64 */
@@ -12899,6 +12904,14 @@ export interface operations {
                  *     (this node). Federated reads list nodes that didn't answer in `missingNodes`.
                  */
                 scope?: string;
+                /**
+                 * @description A window instead of one hour (REQ: OBS-004): a relative offset such as `-24h`, or RFC
+                 *     3339. Every hour the window overlaps counts whole: the stored hours (400 days) plus the
+                 *     current one. Not with `hour`, `client`, or `group`.
+                 */
+                from?: string;
+                /** @description The window's end (default: now). Only with `from`. */
+                to?: string;
             };
             header?: never;
             path?: never;
