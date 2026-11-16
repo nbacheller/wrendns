@@ -367,6 +367,68 @@ INSERT INTO client_by_group VALUES (1,1);"#,
     );
 }
 
+/// REQ: DNS-019, API-007 (ADR-168) — Pi-hole's domain-needed, iCloud Private Relay, and
+/// Firefox canary settings carry over (v6 `pihole.toml`, v5 `setupVars.conf` and
+/// `pihole-FTL.conf`); left at Pi-hole's defaults, no `[special]` section is written.
+#[test]
+fn dns_019_pihole_special_names() {
+    let v6 = |toml: &str| {
+        let mut e = archive::Entries::new();
+        e.insert("etc/pihole/pihole.toml".into(), toml.as_bytes().to_vec());
+        convert(&Source::from_entries(e).unwrap(), "pihole.toml").unwrap()
+    };
+    let im = v6(r#"[dns]
+  upstreams = [ "9.9.9.9" ] ### CHANGED, default = []
+  domainNeeded = true ### CHANGED, default = false
+
+  [dns.specialDomains]
+    mozillaCanary = true
+    iCloudPrivateRelay = false ### CHANGED, default = true
+    designatedResolver = true
+"#);
+    let cfg = load(&im.toml);
+    assert!(cfg.special.single_label_nxdomain);
+    assert!(!cfg.special.block_icloud_private_relay);
+    assert!(cfg.special.block_firefox_canary);
+    let notes = im.notes.join("\n");
+    for mapped in ["domainNeeded", "iCloudPrivateRelay"] {
+        assert!(!notes.contains(mapped), "{mapped} is imported:\n{notes}");
+    }
+
+    let im = v6(
+        "[dns]\n  upstreams = [ \"9.9.9.9\" ] ### CHANGED, default = []\n  domainNeeded = false\n",
+    );
+    assert!(!im.toml.contains("[special]"), "defaults: nothing to write");
+    assert_eq!(
+        load(&im.toml).special,
+        telltale_config::SpecialConfig::default()
+    );
+
+    let v5 = |setup: &str, ftl: &str| {
+        let mut e = archive::Entries::new();
+        e.insert("setupVars.conf".into(), setup.as_bytes().to_vec());
+        e.insert("pihole-FTL.conf".into(), ftl.as_bytes().to_vec());
+        convert(&Source::from_entries(e).unwrap(), "teleporter.tar.gz").unwrap()
+    };
+    let im = v5(
+        "PIHOLE_DNS_1=9.9.9.9\nDNS_FQDN_REQUIRED=true\n",
+        "BLOCK_ICLOUD_PR=false\nMOZILLA_CANARY=false\n",
+    );
+    let cfg = load(&im.toml);
+    assert!(cfg.special.single_label_nxdomain);
+    assert!(!cfg.special.block_icloud_private_relay);
+    assert!(!cfg.special.block_firefox_canary);
+    let notes = im.notes.join("\n");
+    for mapped in ["DNS_FQDN_REQUIRED", "BLOCK_ICLOUD_PR", "MOZILLA_CANARY"] {
+        assert!(!notes.contains(mapped), "{mapped} is imported:\n{notes}");
+    }
+    let im = v5(
+        "PIHOLE_DNS_1=9.9.9.9\nDNS_FQDN_REQUIRED=false\n",
+        "BLOCK_ICLOUD_PR=true\n",
+    );
+    assert!(!im.toml.contains("[special]"));
+}
+
 #[test]
 fn api_007_reverse_zones() {
     assert_eq!(reverse_zones("10.0.0.0/8").unwrap(), ["10.in-addr.arpa"]);

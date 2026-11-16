@@ -530,3 +530,43 @@ answer = "cdn.example"
         assert!(served(&p, name, "10.0.0.9").is_none(), "{name}");
     }
 }
+
+/// REQ: DNS-019 (ADR-168) — iCloud Private Relay, resolver.arpa, and (switched on)
+/// single-label names are explained as special answers, and the pipeline answers them the
+/// same way without forwarding; switched off, they resolve normally in both.
+#[test]
+fn dns_019_special_names_are_explained() {
+    let rcode = |a: &[u8]| a[3] & 0x0F;
+    let (p, sources) = setup_with("[special]\nsingle_label_nxdomain = true\n");
+    for (name, text, rc) in [
+        ("mask.icloud.com", "iCloud Private Relay", 3),
+        ("mask-h2.icloud.com", "iCloud Private Relay", 3),
+        ("_dns.resolver.arpa", "never forwarded", 0),
+        ("printer", "single-label name", 3),
+    ] {
+        let e = ask(&p, &sources, name, "10.0.0.9");
+        assert_eq!(e.outcome, Outcome::Special, "{name}: {}", e.summary);
+        assert!(e.summary.contains(text), "{name}: {}", e.summary);
+        let a = served(&p, name, "10.0.0.9").unwrap_or_else(|| panic!("{name}: forwarded"));
+        assert_eq!(rcode(&a), rc, "{name}");
+    }
+    // A single-label name with a local record is still answered from it.
+    let (p, sources) = setup_with(
+        "[special]\nsingle_label_nxdomain = true\n[[record]]\nname = \"nas\"\ntype = \"A\"\nvalue = \"10.0.0.11\"\n",
+    );
+    assert_eq!(ask(&p, &sources, "nas", "10.0.0.9").outcome, Outcome::Local);
+    let a = served(&p, "nas", "10.0.0.9").unwrap();
+    assert!(contains(&a, &[10, 0, 0, 11]));
+
+    let (p, sources) = setup_with("[special]\nblock_icloud_private_relay = false\n");
+    for name in ["mask.icloud.com", "printer"] {
+        let e = ask(&p, &sources, name, "10.0.0.9");
+        assert_eq!(e.outcome, Outcome::Resolved, "{name}: {}", e.summary);
+        assert!(
+            served(&p, name, "10.0.0.9").is_none(),
+            "{name}: not forwarded"
+        );
+    }
+    // resolver.arpa has no switch: never forwarded.
+    assert!(served(&p, "x.resolver.arpa", "10.0.0.9").is_some());
+}

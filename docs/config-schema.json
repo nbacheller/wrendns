@@ -397,9 +397,11 @@
       "$ref": "#/$defs/SpecialConfig",
       "default": {
         "block_firefox_canary": true,
+        "block_icloud_private_relay": true,
         "localhost": true,
         "private_ptr_nxdomain": true,
-        "refuse_chaos": true
+        "refuse_chaos": true,
+        "single_label_nxdomain": false
       }
     },
     "support": {
@@ -3777,6 +3779,19 @@
           "type": "boolean",
           "default": true
         },
+        "block_icloud_private_relay": {
+          "description": "`mask.icloud.com` and `mask-h2.icloud.com` → NXDOMAIN, so Apple devices turn iCloud\nPrivate Relay off on this network and their queries keep coming here, filtered\n(ADR-168; Pi-hole's `iCloudPrivateRelay`).",
+          "type": "boolean",
+          "default": true
+        },
+        "ddr_name": {
+          "description": "The name the certificates of this node's DoT, DoH, and DoQ listeners carry (such as\n`dns.example.com`). Set, `_dns.resolver.arpa` SVCB answers advertise those listeners\nfor Discovery of Designated Resolvers (RFC 9462); unset, `resolver.arpa` queries get\nno data. `resolver.arpa` is never forwarded (ADR-168).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "localhost": {
           "description": "`localhost` and `*.localhost` → `127.0.0.1` / `::1` (RFC 6761 §6.3).",
           "type": "boolean",
@@ -3791,6 +3806,11 @@
           "description": "CHAOS-class `version.bind`, `id.server`, ... → REFUSED.",
           "type": "boolean",
           "default": true
+        },
+        "single_label_nxdomain": {
+          "description": "Single-label names (`nas`, no dot) asked for A, AAAA, or HTTPS that no local record,\nzone, or device name answers → NXDOMAIN instead of forwarding them, unless a\n`[[route]]` matches them (ADR-168; Pi-hole and dnsmasq `domain-needed`).",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false

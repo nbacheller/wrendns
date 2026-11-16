@@ -66,6 +66,9 @@ pub(crate) struct Policy {
     pub(crate) limiter: Option<RateLimiter>,
     pub(crate) limit_action: RateLimitAction,
     pub(crate) special: SpecialConfig,
+    /// REQ: DNS-019 (ADR-168) — the DDR answer for `_dns.resolver.arpa` SVCB (RFC 9462): one
+    /// SVCB RDATA per encrypted listener; empty without `[special] ddr_name`.
+    pub(crate) ddr: Vec<Box<[u8]>>,
     /// Local records (DNS-010), answered before cache and upstreams.
     pub(crate) local: Arc<LocalData>,
     /// Groups and known clients (FLT-005, FLT-006).
@@ -107,6 +110,7 @@ impl Policy {
             limiter: RateLimiter::new(&cfg.ratelimit),
             limit_action: cfg.ratelimit.action,
             special: cfg.special.clone(),
+            ddr: telltale_policy::ddr_records(cfg),
             local: Arc::new(local),
             quick,
             clients: Arc::new(clients),
@@ -1666,10 +1670,41 @@ impl Pipeline {
         let special = telltale_policy::classify(&q, &st.policy.special);
         match special {
             Some(Special::Refused) => Err(self.simple(&q, out, rcode::REFUSED, None, meta)),
-            Some(Special::Nxdomain) => Err(self.simple(&q, out, rcode::NXDOMAIN, None, meta)),
+            // REQ: DNS-019 (ADR-168) — iCloud Private Relay's names, like the Firefox canary.
+            Some(Special::Nxdomain | Special::PrivateRelay) => {
+                Err(self.simple(&q, out, rcode::NXDOMAIN, None, meta))
+            }
             Some(Special::Localhost) => Err(self.localhost(&q, out, meta)),
+            Some(Special::ResolverArpa) => Err(self.resolver_arpa(&q, &st.policy.ddr, out, meta)),
             other => Ok(other),
         }
+    }
+
+    /// REQ: DNS-019 (ADR-168) — `resolver.arpa` (RFC 9462), answered here and never forwarded:
+    /// `_dns.resolver.arpa` SVCB gets this node's DDR records, anything else no data (with an
+    /// SOA, so clients cache it). The records are built with the policy; no allocation here.
+    fn resolver_arpa(
+        &self,
+        q: &Query<'_>,
+        ddr: &[Box<[u8]>],
+        out: &mut [u8],
+        meta: &RequestMeta,
+    ) -> Response {
+        let edns = response_edns(q, self.settings.edns_payload, None);
+        let len = ResponseBuilder::new(q, out, rcode::NOERROR)
+            .ok()
+            .and_then(|mut b| {
+                b.authoritative(true);
+                if telltale_policy::is_ddr_query(q) && !ddr.is_empty() {
+                    for r in ddr {
+                        b.answer_rdata(None, rtype::SVCB, 300, r).ok()?;
+                    }
+                } else {
+                    b.authority_soa(300).ok()?;
+                }
+                b.finish(edns).ok()
+            });
+        ready(len.map(|l| self.finish(q, out, l, meta.transport)))
     }
 
     /// Routing, private-PTR handling, cache lookup, and deferral to upstreams.
@@ -1691,8 +1726,11 @@ impl Pipeline {
         let question = Question::from_query(&q);
         // REQ: FLT-005, UPS-007 — routes can match the client's groups.
         let selection = st.router.select(&question, groups);
-        // Private reverse lookups stay local unless a route explicitly forwards them (RFC 6303).
-        if special == Some(Special::PrivatePtr) && !selection.is_some_and(|s| s.routed) {
+        // Private reverse lookups stay local unless a route explicitly forwards them (RFC 6303);
+        // REQ: DNS-019 (ADR-168) — so do single-label names with domain-needed on.
+        if matches!(special, Some(Special::PrivatePtr | Special::SingleLabel))
+            && !selection.is_some_and(|s| s.routed)
+        {
             return self.simple(&q, out, rcode::NXDOMAIN, None, meta);
         }
         let Some(sel) = selection else {
@@ -5222,6 +5260,124 @@ mod policy_tests {
             ask(&p, peer, "4.3.30.10.in-addr.arpa", rtype::PTR, 1),
             Some((rcode::NXDOMAIN, 0))
         );
+        // REQ: DNS-019 (ADR-168) — iCloud Private Relay and resolver.arpa, by default.
+        assert_eq!(
+            ask(&p, peer, "mask.icloud.com", rtype::A, 1),
+            Some((rcode::NXDOMAIN, 0))
+        );
+        assert_eq!(
+            ask(&p, peer, "mask-h2.icloud.com", rtype::HTTPS, 1),
+            Some((rcode::NXDOMAIN, 0))
+        );
+        assert_eq!(
+            ask(&p, peer, "_dns.resolver.arpa", rtype::SVCB, 1),
+            Some((rcode::NOERROR, 0)),
+            "no ddr_name: no data, not forwarded"
+        );
+        // Bare names go on (here: no upstream configured, so REFUSED) with domain-needed off.
+        assert_eq!(ask(&p, peer, "nas", rtype::A, 1), Some((rcode::REFUSED, 0)));
+        let p = pipeline(Policy {
+            special: SpecialConfig {
+                block_icloud_private_relay: false,
+                ..SpecialConfig::default()
+            },
+            ..Policy::open()
+        });
+        assert_eq!(
+            ask(&p, peer, "mask.icloud.com", rtype::A, 1),
+            Some((rcode::REFUSED, 0)),
+            "switched off: resolved like any name"
+        );
+    }
+
+    fn config(toml: &str) -> telltale_config::Config {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config
+    }
+
+    /// REQ: DNS-019 (ADR-168) — DDR: `_dns.resolver.arpa` SVCB lists the encrypted listeners
+    /// (RFC 9462); its other types and names get no data, authoritatively, with an SOA.
+    #[test]
+    fn dns_019_ddr_answers_advertise_encrypted_listeners() {
+        let cfg = config(
+            "[[listen]]\nproto = \"dot\"\naddr = \"0.0.0.0:853\"\ntls = { cert = \"/c\", key = \"/k\" }\n\
+             [[listen]]\nproto = \"doq\"\naddr = \"0.0.0.0:8853\"\ntls = { cert = \"/c\", key = \"/k\" }\n\
+             [special]\nddr_name = \"dns.example.com\"\n",
+        );
+        let p = pipeline(Policy {
+            ddr: telltale_policy::ddr_records(&cfg),
+            ..Policy::open()
+        });
+        let mut buf = [0u8; 512];
+        let n = NameBuf::from_presentation("_dns.resolver.arpa").unwrap();
+        let len = build_query(&mut buf, 3, &n, rtype::SVCB, 1, true, None).unwrap();
+        let meta = RequestMeta {
+            peer: "10.0.0.1:53".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let mut out = [0u8; 4096];
+        let Response::Ready(l) = Handler(Arc::clone(&p)).handle(&buf[..len], &meta, &mut out)
+        else {
+            panic!("not answered at once");
+        };
+        let s = summarize(&out[..l]).unwrap();
+        assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 2));
+        assert_ne!(out[2] & 0x04, 0, "authoritative");
+        let msg = &out[..l];
+        let has = |needle: &[u8]| msg.windows(needle.len()).any(|w| w == needle);
+        assert!(has(b"\x03dns\x07example\x03com\x00\x00\x01\x00\x04\x03dot"));
+        assert!(has(b"\x03dns\x07example\x03com\x00\x00\x01\x00\x04\x03doq"));
+        for (name, qtype) in [
+            ("_dns.resolver.arpa", rtype::A),
+            ("resolver.arpa", rtype::SVCB),
+        ] {
+            assert_eq!(
+                ask(&p, "10.0.0.1:53", name, qtype, 1),
+                Some((rcode::NOERROR, 0)),
+                "{name}"
+            );
+        }
+    }
+
+    /// REQ: DNS-019 (ADR-168) — domain-needed: bare names get NXDOMAIN instead of going to
+    /// an upstream, unless a `[[route]]` matches them; names with a dot still go on.
+    #[test]
+    fn dns_019_single_label_names_stay_local() {
+        let cfg = config(
+            "[[upstream]]\nname = \"u\"\nurl = \"udp://127.0.0.1:9\"\n\
+             [[upstream_group]]\nname = \"default\"\nmembers = [\"u\"]\n\
+             [[upstream]]\nname = \"r\"\nurl = \"udp://127.0.0.1:10\"\n\
+             [[upstream_group]]\nname = \"router\"\nmembers = [\"r\"]\n\
+             [[route]]\nmatch_suffix = [\"printer\"]\nupstream_group = \"router\"\n\
+             [special]\nsingle_label_nxdomain = true\n",
+        );
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy {
+                special: cfg.special.clone(),
+                ..Policy::open()
+            },
+        );
+        let peer = "10.0.0.1:53";
+        for qtype in [rtype::A, rtype::AAAA, rtype::HTTPS] {
+            assert_eq!(
+                ask(&p, peer, "nas", qtype, 1),
+                Some((rcode::NXDOMAIN, 0)),
+                "type {qtype}"
+            );
+        }
+        // `None`: deferred to an upstream.
+        assert_eq!(ask(&p, peer, "printer", rtype::A, 1), None, "routed");
+        assert_eq!(ask(&p, peer, "nas.example", rtype::A, 1), None);
+        assert_eq!(ask(&p, peer, "com", rtype::DS, 1), None, "a TLD's DS");
     }
 }
 

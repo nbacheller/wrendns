@@ -767,6 +767,10 @@ impl Decider {
         if special == Some(Special::PrivatePtr) && !selection.as_ref().is_some_and(|s| s.routed) {
             return Verdict::Answered(Arc::from("private reverse lookup: NXDOMAIN"));
         }
+        // REQ: DNS-019 (ADR-168) — domain-needed, as the pipeline's `resolve_or_defer`.
+        if special == Some(Special::SingleLabel) && !selection.as_ref().is_some_and(|s| s.routed) {
+            return Verdict::Answered(Arc::from("single-label name: NXDOMAIN"));
+        }
         Verdict::Resolved {
             allowed_by,
             route: selection.map(|s| Arc::from(s.group.name.as_str())),

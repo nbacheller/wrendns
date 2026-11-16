@@ -118,6 +118,7 @@ Then point your router's DHCP DNS server setting at the Pi's address so every de
 | Clients (IP, CIDR, MAC) | `[[client]]` named by the Pi-hole comment, in the same groups. Clients in no group (nothing is blocked for them in Pi-hole) go to `pihole-no-group`, which has no lists |
 | DHCP reservations | named devices: the MAC and IP join a matching client, or become a new one named by the host name |
 | DNSSEC, rate limit, blocking mode (NULL, NXDOMAIN, NODATA) | `[dnssec] mode = "validate"`, `[ratelimit]`, each group's `block_mode` |
+| Never forward non-FQDN queries (`dns.domainNeeded`, v5 `DNS_FQDN_REQUIRED`); iCloud Private Relay and Firefox canary blocking (`dns.specialDomains`, v5 `BLOCK_ICLOUD_PR`, `MOZILLA_CANARY`) | `[special] single_label_nxdomain`, `block_icloud_private_relay`, `block_firefox_canary`, written only where Pi-hole differs from the defaults |
 
 The header lists what has no equivalent, by setting name (values, such as password hashes, are never copied):
 - clients matched by host name or network interface (add their IP or MAC instead);
@@ -1265,7 +1266,7 @@ youtube_restrict = "strict"                 # or "moderate", or "off" to leave Y
 - Google (every country domain), Bing, DuckDuckGo, Yandex, and Pixabay answer as a CNAME to their own safe-search service (`forcesafesearch.google.com`, `strict.bing.com`, ...), with that service's addresses, so the engine enforces it. YouTube gets Restricted Mode (`restrict.youtube.com`, or `restrictmoderate.youtube.com`).
 - HTTPS records for those names get no data, so browsers use the safe-search addresses rather than hints for the normal ones.
 - It applies to the group's devices only; the table is part of the binary (`presets/safesearch.toml`).
-- Browsers using their own encrypted DNS bypass it (as they bypass all filtering): TelltaleDNS answers `use-application-dns.net` with NXDOMAIN so Firefox turns its own DoH off.
+- Browsers using their own encrypted DNS bypass it (as they bypass all filtering): TelltaleDNS answers `use-application-dns.net` with NXDOMAIN so Firefox turns its own DoH off, and iCloud Private Relay's names with NXDOMAIN so Apple devices turn Private Relay off on this network ([Special names](#special-names)).
 - In the UI: **Groups → Manage groups → Edit → Safe search**.
 
 ### Schedules
@@ -1572,8 +1573,22 @@ Handled before anything else (each can be turned off under `[special]`):
 | `use-application-dns.net` | NXDOMAIN | stops Firefox from silently switching to its own DoH (`block_firefox_canary`) |
 | CHAOS class (`version.bind`, …) | REFUSED | no fingerprinting (`refuse_chaos`) |
 | reverse lookups for private IPs | NXDOMAIN | never leaks your LAN layout to public resolvers, unless a local record or a `[[route]]` covers it (`private_ptr_nxdomain`) |
+| `mask.icloud.com`, `mask-h2.icloud.com` | NXDOMAIN | Apple devices then turn iCloud Private Relay off on this network, so their lookups keep coming here and are filtered (`block_icloud_private_relay`) |
+| `resolver.arpa` and its subdomains | no data, or the DDR records below | never forwarded (RFC 9462): an upstream's own DDR answer would point your devices past TelltaleDNS |
+| single-label names (`nas`, `printer`) asked for A, AAAA, or HTTPS | NXDOMAIN | **off by default** (`single_label_nxdomain = true`, Pi-hole's "never forward non-FQDN"): bare names never leave your network. Local records, zones, device names, and a `[[route]]` that matches the name still answer it |
 
 `.local` names are passed through unchanged (many Active Directory domains use them; route them with `[[route]]`).
+
+```toml
+[special]
+block_icloud_private_relay = true   # default
+single_label_nxdomain = false       # default; true = domain-needed
+ddr_name = "dns.example.com"        # optional: advertise encrypted DNS (below)
+```
+
+**iCloud Private Relay.** Apple's documented way for a network to opt out: when these two names don't resolve, devices tell their user that Private Relay is off for this network and use the network's DNS. Set `block_icloud_private_relay = false` to let Private Relay work; Apple devices with it on then bypass TelltaleDNS, as any relay or VPN does. Explain and the query log show these answers as `special`.
+
+**Discovery of Designated Resolvers (DDR, RFC 9462).** With `ddr_name` set to the host name in your encrypted listeners' certificate, a device that asks `_dns.resolver.arpa` for SVCB (Windows 11, iOS 16 and macOS 13 and later, among others) learns this node's DoT, DoH, DoH3, and DoQ listeners: one record per listener, with its port, its DoH path (`/dns-query{?dns}` unless the listener sets `path`), and its address when the listener binds one (not `0.0.0.0`, `::`, or loopback). Devices upgrade to encrypted DNS only when the certificate also lists the IP address they reach TelltaleDNS on (an IP SAN), so include it when you issue the certificate. Behind Docker or Kubernetes port mappings, the advertised ports are the listeners' own. Without `ddr_name`, or on a node with no encrypted listener, `_dns.resolver.arpa` gets no data. `[special]` is shared in a cluster; each node advertises its own listeners.
 
 ## Routing (conditional forwarding)
 ```toml

@@ -66,6 +66,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     sinks(cfg, &mut r);
     routers(cfg, &mut r);
     device_names(cfg, &mut r);
+    special_names(cfg, &mut r);
     rewrites(cfg, &mut r);
     zones(cfg, &mut r);
     otlp(cfg, &mut r);
@@ -242,18 +243,7 @@ fn device_names(cfg: &Config, r: &mut Report<'_>) {
     let l = &cfg.local;
     if let Some(d) = &l.device_domain {
         let d = d.trim_end_matches('.');
-        let ok = !d.is_empty()
-            && d.len() <= 200
-            && d.split('.').all(|label| {
-                !label.is_empty()
-                    && label.len() <= 63
-                    && !label.starts_with('-')
-                    && !label.ends_with('-')
-                    && label
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            });
-        if !ok {
+        if !host_name_ok(d, 200) {
             r.err(
                 "local.device_domain",
                 "a domain name, e.g. home.arpa (RFC 8375) or lan",
@@ -270,6 +260,40 @@ fn device_names(cfg: &Config, r: &mut Report<'_>) {
     }
     if l.device_mdns && !cfg.clients.mdns {
         r.warn("local.device_mdns: no effect without [clients] mdns = true");
+    }
+}
+
+/// Letters, digits, and hyphens in labels of 1 to 63 bytes, at most `max` bytes in all.
+fn host_name_ok(d: &str, max: usize) -> bool {
+    !d.is_empty()
+        && d.len() <= max
+        && d.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+}
+
+// REQ: DNS-019 (ADR-168) — DDR's target is the host name the encrypted listeners' certificates
+// carry; without such a listener on this node there is nothing to advertise.
+fn special_names(cfg: &Config, r: &mut Report<'_>) {
+    let Some(name) = &cfg.special.ddr_name else {
+        return;
+    };
+    let name = name.trim_end_matches('.');
+    if !host_name_ok(name, 253) || !name.contains('.') {
+        r.err(
+            "special.ddr_name",
+            "the host name in the encrypted listeners' certificates, e.g. dns.example.com",
+        );
+    } else if !cfg.listen.iter().any(|l| l.proto.needs_tls()) {
+        r.warn(
+            "special.ddr_name: this node has no dot, doh, doh3, or doq listener to advertise; _dns.resolver.arpa gets no data",
+        );
     }
 }
 
