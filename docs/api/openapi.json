@@ -11277,7 +11277,8 @@
           "node_is_primary",
           "node_is_up",
           "credential_reentry_required",
-          "secrets_locked"
+          "secrets_locked",
+          "upgrade_required"
         ]
       },
       "ConfigChange": {
@@ -15184,7 +15185,8 @@
                   "type": [
                     "object",
                     "null"
-                  ]
+                  ],
+                  "description": "The write's body as shown: credentials read `<redacted>` (API-014)."
                 },
                 "configVersion": {
                   "type": "integer",
@@ -17794,7 +17796,8 @@
             "type": [
               "object",
               "null"
-            ]
+            ],
+            "description": "The write's body as shown: credentials read `<redacted>` (API-014)."
           },
           "configVersion": {
             "type": "integer",

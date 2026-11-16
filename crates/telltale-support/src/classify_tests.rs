@@ -45,6 +45,22 @@ fn api_014_credential_paths_cover_secret_class() {
         uncovered.is_empty(),
         "secret-class fields neither redacted by the API (telltale-config credentials::PATHS) nor listed as not credentials (NOT_CREDENTIALS, with a reason): {uncovered:#?}"
     );
+    // REQ: API-014 (review of T23.1) — and every field classed `url` has its password redacted.
+    let url_covered: Vec<String> = PATHS
+        .iter()
+        .filter(|c| c.part == telltale_config::credentials::Part::UrlPassword)
+        .map(|c| norm(c.path))
+        .collect();
+    let urls: Vec<&str> = TABLE
+        .iter()
+        .filter(|(_, c)| *c == Class::Url)
+        .map(|(p, _)| *p)
+        .filter(|p| !url_covered.iter().any(|c| c == p))
+        .collect();
+    assert!(
+        urls.is_empty(),
+        "url-class fields whose password the API doesn't redact (add them to credentials::PATHS as UrlPassword): {urls:#?}"
+    );
     let info = schema_info();
     for p in &covered {
         assert!(info.needs_class.contains(p), "PATHS names no field: {p}");

@@ -151,7 +151,8 @@ async fn call(
     client: &telltale_filter::fetch::Client,
     req: http::Request<Vec<u8>>,
 ) -> Result<(http::StatusCode, http::HeaderMap, Value), String> {
-    let url = req.uri().to_string();
+    // REQ: API-014 — an error never quotes a password in the URL.
+    let url = telltale_config::credentials::url_shown(&req.uri().to_string());
     let resp = tokio::time::timeout(Duration::from_secs(15), client.request(req, MAX_ANSWER))
         .await
         .map_err(|_| format!("{url}: timed out"))?
@@ -799,6 +800,11 @@ pub(crate) async fn run(
                     failing.insert(r.name.to_string(), false);
                 }
                 Err(e) => {
+                    // REQ: API-014 — nor does the log.
+                    let e = e.replace(
+                        r.url.as_str(),
+                        &telltale_config::credentials::url_shown(r.url.as_str()),
+                    );
                     if !was_failing {
                         if resolver_pod {
                             info!(router = %r.name, error = %e, "router integration failed on this resolver pod (the controller reads the router)");

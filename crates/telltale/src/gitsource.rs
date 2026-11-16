@@ -330,7 +330,7 @@ pub(crate) async fn run(
                         &telltale_api::auth::Actor::system("git"),
                         "config.git",
                         s.commit.as_deref().unwrap_or(""),
-                        &serde_json::json!({ "author": s.author, "subject": s.subject, "signedBy": s.signed_by, "repo": g.repo.as_str() }),
+                        &serde_json::json!({ "author": s.author, "subject": s.subject, "signedBy": s.signed_by, "repo": telltale_config::credentials::url_shown(g.repo.as_str()) }),
                     );
                 }
                 // REQ: OBS-033 — the marker says Git, and the commit's author.
@@ -378,8 +378,12 @@ pub(crate) fn view(cfg: &Config, primary: bool) -> Option<telltale_api::model::C
     };
     if primary && let Some(g) = &cfg.cluster.git {
         let s = status(cfg).unwrap_or_default();
+        // REQ: API-014 — a password in the repository's URL never leaves (nor in an error that
+        // quotes the URL).
+        let repo = telltale_config::credentials::url_shown(g.repo.as_str());
         return Some(telltale_api::model::ClusterSource {
-            repo: g.repo.to_string(),
+            error: s.error.map(|e| e.replace(g.repo.as_str(), &repo)),
+            repo,
             git_ref: g.git_ref.to_string(),
             path: g.path.to_string(),
             commit: s.commit.clone(),
@@ -388,13 +392,12 @@ pub(crate) fn view(cfg: &Config, primary: bool) -> Option<telltale_api::model::C
             subject: s.commit.as_ref().map(|_| s.subject.clone()),
             signed_by: s.signed_by,
             checked_at: at(s.checked_ms),
-            error: s.error,
             refused: s.refused,
         });
     }
     let m = crate::replication::last_applied(cfg)?.source?;
     Some(telltale_api::model::ClusterSource {
-        repo: m.repo,
+        repo: telltale_config::credentials::url_shown(&m.repo),
         git_ref: m.git_ref,
         path: m.path,
         commit: Some(m.commit),
@@ -500,6 +503,31 @@ mod tests {
         assert!(webhook_ok(&cfg, Some(&format!("sha256={hex}")), b"{}").is_ok());
         assert!(webhook_ok(&cfg, Some(&format!("sha256={hex}")), b"{\"x\":1}").is_err());
         assert!(webhook_ok(&cfg, None, b"{}").is_err());
+    }
+
+    /// REQ: API-014 — the Cluster page's Git source never shows a password in the repository's
+    /// URL.
+    #[test]
+    fn api_014_git_repo_password_never_shown() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = Config::default();
+        cfg.node.data_dir =
+            telltale_config::SafeString::new(tmp.path().to_string_lossy().into_owned()).unwrap();
+        cfg.cluster.git = Some(GitSourceConfig {
+            repo: "https://u:pl4ntedgit@git.example/r.git".into(),
+            git_ref: "main".into(),
+            path: "t.toml".into(),
+            credentials_file: None,
+            poll_secs: 60,
+            require_signed: false,
+            allowed_signers_file: None,
+            allow_rewind: false,
+            max_bytes: telltale_config::ByteSize::mib(1),
+            webhook_secret_file: None,
+        });
+        let v = view(&cfg, true).unwrap();
+        assert_eq!(v.repo, "https://u:<redacted>@git.example/r.git");
+        assert!(!serde_json::to_string(&v).unwrap().contains("pl4ntedgit"));
     }
 
     /// REQ: API-014 (ADR-167 §4) — an empty secret file refuses every webhook, even one signed

@@ -12,7 +12,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use base64::Engine as _;
 use telltale_config::Config;
@@ -159,11 +159,20 @@ fn read_key_file(
     NodeKey::parse(&text, source)
 }
 
-/// Creates `path` with a new key: `O_CREAT|O_EXCL`, 0600, written and synced. An existing file is
-/// never replaced (a race with another start reads that one instead).
+/// Creates `path` with a new key, never partly written and never over an existing file: the key
+/// goes to `<path>.tmp` (`O_CREAT|O_EXCL`, 0600), is synced, then hard-linked to `path` (which
+/// fails if `path` exists: a race with another start reads that one instead), and the directory
+/// is synced. A crash leaves at most the temporary file, which the next start replaces.
 fn create_key_file(path: &Path) -> Result<(), String> {
     use std::io::Write as _;
+    let err = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
     let text = NodeKey::generate()?;
+    let tmp = path.with_extension("key.tmp");
+    if let Err(e) = std::fs::remove_file(&tmp)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(err(&tmp, e));
+    }
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
@@ -171,15 +180,29 @@ fn create_key_file(path: &Path) -> Result<(), String> {
         use std::os::unix::fs::OpenOptionsExt as _;
         opts.mode(0o600);
     }
-    let mut f = match opts.open(path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
-        Err(e) => return Err(format!("{}: {e}", path.display())),
-    };
+    let mut f = opts.open(&tmp).map_err(|e| err(&tmp, e))?;
     f.write_all(text.as_bytes())
         .and_then(|()| f.write_all(b"\n"))
         .and_then(|()| f.sync_all())
-        .map_err(|e| format!("{}: {e}", path.display()))
+        .map_err(|e| err(&tmp, e))?;
+    drop(f);
+    let linked = match std::fs::hard_link(&tmp, path) {
+        // A filesystem without hard links: rename, still never over an existing key.
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists && !path.exists() => {
+            std::fs::rename(&tmp, path).map_err(|e| err(path, e))
+        }
+        // Linked, or a key is there already (another start's): that one is read.
+        _ => Ok(()),
+    };
+    let _ = std::fs::remove_file(&tmp);
+    linked?;
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        std::fs::File::open(dir)
+            .and_then(|d| d.sync_all())
+            .map_err(|e| err(dir, e))?;
+    }
+    Ok(())
 }
 
 /// REQ: OPS-014 (ADR-167 §3) — the node's keys from `cfg` and the environment (`var`). `create`:
@@ -228,36 +251,60 @@ pub(crate) fn load(
     })
 }
 
-/// The keys, loaded once per process on first use (`Sources::secrets_key`).
+/// How long a failed load is kept before the next use tries again.
+const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The keys, loaded on first use (`Sources::secrets_key`) and kept for the process; a failure is
+/// kept only for [`RETRY_AFTER`], so a key mounted (or a `[node] secrets_key_file` set) after
+/// the start is picked up without a restart.
 #[derive(Debug, Default)]
-pub(crate) struct KeySlot(OnceLock<Result<Arc<Keys>, String>>);
+pub(crate) struct KeySlot(Mutex<Option<Loaded>>);
+
+#[derive(Debug)]
+enum Loaded {
+    Ok(Arc<Keys>),
+    Failed(String, std::time::Instant),
+}
 
 impl KeySlot {
     /// The keys, or why there are none (the store is locked: T23.3).
     pub(crate) fn get(&self, cfg: &Config) -> Result<Arc<Keys>, String> {
-        self.0
-            .get_or_init(|| {
-                let r = load(cfg, &|k| std::env::var(k).ok(), !cfg.cluster.ephemeral);
-                match &r {
-                    Ok(k) => {
-                        for w in &k.warnings {
-                            tracing::warn!("{w}");
-                        }
-                        tracing::info!(
-                            source = %k.current.source(),
-                            key_id = %hex(&k.current.key_id()),
-                            previous = ?k.previous.as_ref().map(|p| hex(&p.key_id())),
-                            "secrets key loaded"
-                        );
-                    }
-                    Err(e) if cfg.cluster.ephemeral => {
-                        tracing::debug!("no secrets key on this resolver pod: {e}");
-                    }
-                    Err(e) => tracing::error!("no secrets key: {e}"),
+        let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        match &*slot {
+            Some(Loaded::Ok(k)) => return Ok(Arc::clone(k)),
+            Some(Loaded::Failed(e, at)) if at.elapsed() < RETRY_AFTER => return Err(e.clone()),
+            _ => {}
+        }
+        let r = load(cfg, &|k| std::env::var(k).ok(), !cfg.cluster.ephemeral);
+        let (out, logged) = match r {
+            Ok(k) => {
+                for w in &k.warnings {
+                    tracing::warn!("{w}");
                 }
-                r.map(Arc::new)
-            })
-            .clone()
+                tracing::info!(
+                    source = %k.current.source(),
+                    key_id = %hex(&k.current.key_id()),
+                    previous = ?k.previous.as_ref().map(|p| hex(&p.key_id())),
+                    "secrets key loaded"
+                );
+                let k = Arc::new(k);
+                (Ok(Arc::clone(&k)), Loaded::Ok(k))
+            }
+            Err(e) => {
+                // Logged when the reason first shows or changes, not at every retry.
+                let again = matches!(&*slot, Some(Loaded::Failed(prev, _)) if *prev == e);
+                if !again {
+                    if cfg.cluster.ephemeral {
+                        tracing::debug!("no secrets key on this resolver pod: {e}");
+                    } else {
+                        tracing::error!("no secrets key: {e}");
+                    }
+                }
+                (Err(e.clone()), Loaded::Failed(e, std::time::Instant::now()))
+            }
+        };
+        *slot = Some(logged);
+        out
     }
 }
 
@@ -320,6 +367,39 @@ mod tests {
             "pods make none"
         );
         assert!(!empty.path().join(KEY_FILE).exists());
+    }
+
+    /// REQ: OPS-014 — the key file is made whole or not at all (a leftover temporary file from
+    /// a crash is replaced; an existing key is never replaced), and a failed load is retried.
+    #[test]
+    fn ops_014_key_file_made_whole_and_failures_retried() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join(KEY_FILE);
+        std::fs::write(tmp.path().join("secrets.key.tmp"), "ttsk1:trunc").unwrap();
+        create_key_file(&file).unwrap();
+        assert!(!tmp.path().join("secrets.key.tmp").exists());
+        let first = std::fs::read_to_string(&file).unwrap();
+        NodeKey::parse(&first, KeySource::DataDir(file.clone())).unwrap();
+        create_key_file(&file).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            first,
+            "never replaced"
+        );
+
+        // A configured key file that isn't there yet: an error, kept for a while, not for good.
+        let mut c = cfg(tmp.path());
+        let later = tmp.path().join("mounted.key");
+        c.node.secrets_key_file =
+            telltale_config::SafeString::new(later.to_str().unwrap()).unwrap();
+        let slot = KeySlot::default();
+        assert!(slot.get(&c).is_err());
+        std::fs::write(&later, NodeKey::generate().unwrap()).unwrap();
+        assert!(slot.get(&c).is_err(), "within the retry interval");
+        if let Some(Loaded::Failed(_, at)) = &mut *slot.0.lock().unwrap() {
+            *at = std::time::Instant::now().checked_sub(RETRY_AFTER).unwrap();
+        }
+        assert!(slot.get(&c).is_ok(), "picked up after the interval");
     }
 
     /// REQ: API-014 — the idempotency digest is keyed (another node's key gives another digest),

@@ -32,15 +32,44 @@ impl Drop for Supervisor {
 }
 
 /// The plugin's command line and environment. REQ: OPS-014, API-014 (ADR-167 §3) — it inherits
-/// the server's environment but never the secrets keys, the bootstrap admin's password, or an
-/// API token (`telltale_config::NEVER_INHERITED`).
+/// the server's environment, but no `TELLTALE_*` variable (they can carry configuration with
+/// credentials, `TELLTALE_UPSTREAM_*` headers or an OIDC `client_secret`, besides the secrets
+/// keys, the bootstrap admin's password, and an API token: `telltale_config::NEVER_INHERITED`)
+/// except the two it is given.
 fn command(
     program: &std::path::Path,
     args: &[String],
     socket: &std::path::Path,
     name: &str,
 ) -> Command {
+    command_from(
+        program,
+        args,
+        socket,
+        name,
+        std::env::vars_os().map(|(k, _)| k),
+    )
+}
+
+/// [`command`] with the names of the environment it would inherit given (tests).
+fn command_from(
+    program: &std::path::Path,
+    args: &[String],
+    socket: &std::path::Path,
+    name: &str,
+    inherited: impl Iterator<Item = std::ffi::OsString>,
+) -> Command {
     let mut c = Command::new(program);
+    for v in telltale_config::NEVER_INHERITED {
+        c.env_remove(v);
+    }
+    for k in inherited {
+        if k.to_str()
+            .is_none_or(|k| k.starts_with(telltale_config::ENV_PREFIX))
+        {
+            c.env_remove(k);
+        }
+    }
     c.args(args)
         .env("TELLTALE_PLUGIN_SOCKET", socket)
         .env("TELLTALE_UPSTREAM", name)
@@ -48,9 +77,6 @@ fn command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    for v in telltale_config::NEVER_INHERITED {
-        c.env_remove(v);
-    }
     c
 }
 
@@ -138,11 +164,19 @@ mod env_tests {
     /// bootstrap password, or the API token, and with its own socket and name.
     #[test]
     fn ops_014_plugin_env_has_no_secrets_key() {
-        let c = command(
+        let c = command_from(
             std::path::Path::new("/usr/local/bin/plugin"),
             &["--flag".to_owned()],
             std::path::Path::new("/run/telltale/p.sock"),
             "plug",
+            [
+                "PATH",
+                "TELLTALE_AUTH_OIDC_PROVIDER",
+                "TELLTALE_PLUGIN_SOCKET",
+                "HTTPS_PROXY",
+            ]
+            .into_iter()
+            .map(std::ffi::OsString::from),
         );
         let envs: Vec<(String, Option<String>)> = c
             .as_std()
@@ -160,12 +194,18 @@ mod env_tests {
             "TELLTALE_BOOTSTRAP_ADMIN_PASSWORD",
             "TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH",
             "TELLTALE_TOKEN",
+            // Any other TELLTALE_* variable too (configuration that may hold a credential).
+            "TELLTALE_AUTH_OIDC_PROVIDER",
         ] {
             assert!(
                 envs.contains(&(k.to_owned(), None)),
                 "{k} removed: {envs:?}"
             );
         }
+        for k in ["PATH", "HTTPS_PROXY"] {
+            assert!(!envs.iter().any(|(e, _)| e == k), "{k} inherited: {envs:?}");
+        }
+        assert!(envs.contains(&("TELLTALE_UPSTREAM".to_owned(), Some("plug".to_owned()))));
         assert!(envs.contains(&(
             "TELLTALE_PLUGIN_SOCKET".to_owned(),
             Some("/run/telltale/p.sock".to_owned())

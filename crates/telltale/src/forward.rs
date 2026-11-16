@@ -397,6 +397,60 @@ async fn send<T: serde::de::DeserializeOwned>(
     }
 }
 
+/// The first version whose primary applies the marker rule (ADR-167 §4).
+const MARKERS_SINCE: (u64, u64, u64) = (0, 8, 0);
+
+/// Whether a version string (`0.8.0`, `v0.8.1-rc.1`) is at least `min`; unreadable is not.
+fn version_at_least(v: &str, min: (u64, u64, u64)) -> bool {
+    let core = v.trim().trim_start_matches('v');
+    let core = core.split(['-', '+']).next().unwrap_or_default();
+    let mut parts = core.split('.').map(|p| p.parse::<u64>().ok());
+    match (
+        parts.next().flatten(),
+        parts.next().flatten(),
+        parts.next().flatten(),
+    ) {
+        (Some(a), Some(b), Some(c)) => (a, b, c) >= min,
+        _ => false,
+    }
+}
+
+/// REQ: API-014, CLU-010 (ADR-167 §4) — a body that sends `<redacted>` back goes only to a
+/// primary that resolves it: an older one (N−1) would store the marker itself as the header or
+/// password, and publish it to every node. 409 `upgrade_required` otherwise (a primary whose
+/// version isn't known counts as older).
+fn markers_understood(
+    cluster: &Cluster,
+    primary: &str,
+    kind: ManagedKind,
+    body: Option<&serde_json::Value>,
+) -> Result<(), Problem> {
+    if !body
+        .is_some_and(|b| telltale_config::credentials::has_marker(crate::redact::api_kind(kind), b))
+    {
+        return Ok(());
+    }
+    let version = cluster
+        .members()
+        .into_iter()
+        .find(|m| m.node_id == primary)
+        .map(|m| m.version);
+    if version
+        .as_deref()
+        .is_some_and(|v| version_at_least(v, MARKERS_SINCE))
+    {
+        return Ok(());
+    }
+    Err(Problem::new(
+        Code::UpgradeRequired,
+        format!(
+            "the change sends `<redacted>` back for a credential, and the primary ({}) is too old to keep the stored value: it would store `<redacted>` itself",
+            version.as_deref().unwrap_or("version unknown")
+        ),
+    )
+    .hint("Upgrade the primary first, or send the credential itself instead of `<redacted>`."))
+}
+
 /// Forwards a configuration write. REQ: API-014 — the primary's answer is redacted again here
 /// (an older primary's isn't): it becomes this node's response, audit record, and stored
 /// idempotency response.
@@ -406,6 +460,9 @@ pub(crate) async fn managed(
     w: ManagedWrite,
 ) -> Result<ConfigChange, Problem> {
     let kind = w.kind;
+    if let Some(p) = &primary {
+        markers_understood(&cluster, p, kind, w.body.as_ref())?;
+    }
     let mut c: ConfigChange = send(&cluster, primary, w.into()).await?;
     crate::redact::change(kind, &mut c);
     Ok(c)
@@ -488,6 +545,17 @@ mod tests {
             .concat();
         assert!(audit.contains("alice via pi"), "{audit}");
         assert!(leaks(&audit).is_empty(), "{audit}");
+    }
+
+    /// REQ: API-014, CLU-010 — which primaries resolve `<redacted>`.
+    #[test]
+    fn api_014_marker_capable_versions() {
+        for v in ["0.8.0", "v0.8.0", "0.8.1-rc.1", "0.10.0", "1.0.0+build"] {
+            assert!(version_at_least(v, MARKERS_SINCE), "{v}");
+        }
+        for v in ["0.7.9", "0.7", "", "dev", "0.7.12-rc.1"] {
+            assert!(!version_at_least(v, MARKERS_SINCE), "{v}");
+        }
     }
 
     // REQ: OBS-014 — an acknowledgement crosses the channel intact.

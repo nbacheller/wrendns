@@ -2559,6 +2559,7 @@ async fn agt_007_viewers_see_only_their_own_plans() {
         method: "PUT".into(),
         path: "/api/v1/rules/x".into(),
         body: None,
+        write_body: None,
         preview: serde_json::json!({}),
         config_version: 1,
         reason: "too many ads".into(),

@@ -54,7 +54,53 @@ pub const PATHS: &[Credential] = &[
         part: Part::UrlPassword,
     },
     Credential {
+        path: "upstream[].relay",
+        part: Part::UrlPassword,
+    },
+    Credential {
         path: "alerts.destination[].url",
+        part: Part::UrlPassword,
+    },
+    // REQ: API-014 (review of T23.1) — every other field the support package classes `url`: a
+    // password in any of them is redacted the same way (`api_014_credential_paths_cover_url_class`).
+    Credential {
+        path: "list[].url",
+        part: Part::UrlPassword,
+    },
+    Credential {
+        path: "router[].url",
+        part: Part::UrlPassword,
+    },
+    Credential {
+        path: "cluster.git.repo",
+        part: Part::UrlPassword,
+    },
+    Credential {
+        path: "cluster.join_url",
+        part: Part::UrlPassword,
+    },
+    Credential {
+        path: "telemetry.otlp.endpoint",
+        part: Part::UrlPassword,
+    },
+    Credential {
+        path: "telemetry.ship.to",
+        part: Part::UrlPassword,
+    },
+    Credential {
+        path: "telemetry.sink[].url",
+        part: Part::UrlPassword,
+    },
+    Credential {
+        path: "updates.index_url",
+        part: Part::UrlPassword,
+    },
+    Credential {
+        path: "auth.oidc.public_url",
+        part: Part::UrlPassword,
+    },
+    Credential {
+        path: "auth.oidc.provider[].issuer",
         part: Part::UrlPassword,
     },
     Credential {
@@ -100,6 +146,7 @@ pub fn entry_prefix(kind: &str) -> Option<&'static str> {
     match kind {
         "upstream" => Some("upstream[]"),
         "alert_destination" => Some("alerts.destination[]"),
+        "list" => Some("list[]"),
         _ => None,
     }
 }
@@ -262,6 +309,60 @@ pub fn redact_json(v: &mut Value) -> Vec<String> {
     out
 }
 
+/// Calls `f` with every value at `segs` under `v` and its JSON Pointer (RFC 6901).
+fn visit_ptr(v: &Value, segs: &[Seg<'_>], here: &str, f: &mut dyn FnMut(&str, &Value)) {
+    let Some((first, rest)) = segs.split_first() else {
+        f(here, v);
+        return;
+    };
+    let esc = |k: &str| format!("{here}/{}", k.replace('~', "~0").replace('/', "~1"));
+    match first {
+        Seg::Key(k) => {
+            if let Some(inner) = v.get(*k) {
+                visit_ptr(inner, rest, &esc(k), f);
+            }
+        }
+        Seg::Each => {
+            if let Value::Array(items) = v {
+                for (i, item) in items.iter().enumerate() {
+                    visit_ptr(item, rest, &format!("{here}/{i}"), f);
+                }
+            }
+        }
+        Seg::AnyKey => {
+            if let Value::Object(m) = v {
+                for (k, item) in m {
+                    visit_ptr(item, rest, &esc(k), f);
+                }
+            }
+        }
+    }
+}
+
+/// REQ: API-014, CLU-013 — the JSON Pointers of credentials that differ between two whole
+/// configurations `a` and `b` although they read the same redacted (a header's value, or only
+/// a URL's password, changed). A diff of the redacted sides can't see these, so a pin's diff
+/// lists them with the marker as the value: the change shows, the values don't.
+#[must_use]
+pub fn hidden_changes(a: &Value, b: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    for c in PATHS {
+        visit_ptr(b, &segments(c.path), "", &mut |ptr, new| {
+            let Some(old) = a.pointer(ptr) else {
+                return;
+            };
+            if old == new {
+                return;
+            }
+            let (mut x, mut y) = (old.clone(), new.clone());
+            if redact_leaf(&mut x, c.part) && redact_leaf(&mut y, c.part) && x == y {
+                out.push(ptr.to_owned());
+            }
+        });
+    }
+    out
+}
+
 fn marker() -> SafeString {
     SafeString::from(MARKER)
 }
@@ -288,14 +389,27 @@ pub fn redact_config(c: &mut Config) {
             }
         }
         redact_url_field(&mut u.url);
-        if let Some(p) = &mut u.proxy {
+        for p in [&mut u.proxy, &mut u.relay].into_iter().flatten() {
             redact_url_field(p);
         }
     }
     for d in &mut c.alerts.destination {
         redact_url_field(&mut d.url);
     }
+    for l in &mut c.list {
+        if let Some(u) = &mut l.url {
+            redact_url_field(u);
+        }
+    }
+    for r in &mut c.router {
+        redact_url_field(&mut r.url);
+    }
+    if let Some(g) = &mut c.cluster.git {
+        redact_url_field(&mut g.repo);
+    }
+    redact_url_field(&mut c.auth.oidc.public_url);
     for p in &mut c.auth.oidc.provider {
+        redact_url_field(&mut p.issuer);
         if let Some(s) = &mut p.client_secret
             && !s.is_empty()
         {
@@ -307,14 +421,48 @@ pub fn redact_config(c: &mut Config) {
             *v = marker();
         }
     }
+    for s in &mut c.telemetry.sink {
+        if let Some(u) = &mut s.url {
+            redact_url_field(u);
+        }
+    }
+    for u in [
+        &mut c.cluster.join_url,
+        &mut c.telemetry.otlp.endpoint,
+        &mut c.telemetry.ship.to,
+        &mut c.updates.index_url,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        redact_url_field(u);
+    }
+}
+
+/// Whether the leaf `v` holds a credential's value (not empty, not the marker).
+fn holds_value(v: &Value, part: Part) -> bool {
+    let Value::String(s) = v else {
+        return false;
+    };
+    match part {
+        Part::Whole => !s.is_empty() && s != MARKER,
+        Part::UrlPassword => password_span(s).is_some() && !url_has_marker(s),
+    }
 }
 
 /// REQ: API-014 — whether an entry body (`kind` as the API names it) sets any credential field
-/// (so storing it keyed needs the node key).
+/// to a value (so storing it keyed needs the node key). A `<redacted>` sent back is no value: a
+/// body of markers only holds nothing secret.
 #[must_use]
 pub fn has_credential(kind: &str, body: &Value) -> bool {
     let mut probe = body.clone();
-    !redact_entry(kind, &mut probe).is_empty()
+    let mut found = false;
+    for (path, part) in entry_paths(kind) {
+        visit(&mut probe, &segments(path), "", &mut |_, leaf| {
+            found |= holds_value(leaf, part);
+        });
+    }
+    found
 }
 
 /// Every place `body` sends the marker back, relative to the entry.
@@ -426,13 +574,20 @@ pub fn restore_markers(
         }
     }
     for (path, part) in found {
-        let value = at(current, &path).filter(|v| match (part, v) {
-            (Part::Whole, Value::String(s)) => !s.is_empty() && s != MARKER,
-            (Part::UrlPassword, Value::String(s)) => {
-                password_span(s).is_some() && !url_has_marker(s)
-            }
-            _ => false,
-        });
+        // A URL with the marker keeps its password only while the URL itself is the same
+        // (it's replaced whole by the stored one): a field that isn't a destination (a relay)
+        // is held to that too.
+        if part == Part::UrlPassword
+            && destination(at(body, &path)) != destination(at(current, &path))
+        {
+            return Err(Reentry {
+                field: path.clone(),
+                why: format!(
+                    "`{path}` sends `{MARKER}` for its password, and the URL changed: a credential isn't sent to a new destination without being entered again"
+                ),
+            });
+        }
+        let value = at(current, &path).filter(|v| holds_value(v, part));
         let Some(value) = value.cloned() else {
             return Err(Reentry {
                 field: path.clone(),
@@ -501,7 +656,7 @@ mod tests {
         }
         assert_eq!(v["tls_server_name"], "doh.example");
         assert_eq!(
-            redact_entry("list", &mut json!({"url": "https://a:b@c/"})),
+            redact_entry("record", &mut json!({"url": "https://a:b@c/"})),
             Vec::<String>::new()
         );
     }
@@ -558,6 +713,74 @@ mod tests {
         ));
     }
 
+    /// REQ: API-014 — a password in any URL field of the configuration is redacted (a list's
+    /// URL through the entries too), and a relay sent back with the marker but a new host needs
+    /// the credential again.
+    #[test]
+    fn api_014_url_passwords_in_every_url_field() {
+        let mut v = json!({
+            "list": [{"name": "ads", "url": "https://l:l1stpw@lists.example/ads.txt"}],
+            "router": [{"name": "r", "url": "https://r:r0uterpw@10.0.0.1/"}],
+            "cluster": {"git": {"repo": "https://g:g1tpw@git.example/r.git"}, "join_url": "https://j:j01npw@p:8443"},
+            "telemetry": {"otlp": {"endpoint": "http://o:0tlpendpw@otel:4318"},
+                          "ship": {"to": "https://s:sh1ppw@ship.example/"},
+                          "sink": [{"name": "k", "url": "https://k:s1nkpw@sink.example/"}]},
+            "updates": {"index_url": "https://i:1ndexpw@updates.example/"},
+            "auth": {"oidc": {"public_url": "https://a:publ1cpw@dns.example/",
+                              "provider": [{"id": "kc", "issuer": "https://b:1ssuerpw@kc.example/"}]}}
+        });
+        let paths = redact_json(&mut v);
+        assert_eq!(paths.len(), 10, "{paths:?}");
+        let text = v.to_string();
+        assert!(!text.contains("pw@"), "{text}");
+        assert!(
+            text.contains("https://l:<redacted>@lists.example/ads.txt"),
+            "{text}"
+        );
+        let mut list = json!({"name": "ads", "url": "https://l:l1stpw@lists.example/ads.txt"});
+        assert_eq!(redact_entry("list", &mut list), ["url"]);
+        // A relay isn't a destination field, but its URL is held to its own host.
+        let current =
+            json!({"url": "odoh://doh.example/q", "relay": "https://u:r3lay@relay.example/"});
+        let mut moved =
+            json!({"url": "odoh://doh.example/q", "relay": "https://u:<redacted>@evil.example/"});
+        let e = restore_markers("upstream", &mut moved, Some(&current)).unwrap_err();
+        assert_eq!(e.field, "relay", "{e:?}");
+        let mut same =
+            json!({"url": "odoh://doh.example/q", "relay": "https://u:<redacted>@relay.example/"});
+        restore_markers("upstream", &mut same, Some(&current)).unwrap();
+        assert_eq!(same, current);
+    }
+
+    /// REQ: API-014 — a body whose credentials are all `<redacted>` holds no value (so it needs
+    /// no node key to be kept keyed).
+    #[test]
+    fn api_014_markers_are_not_credentials() {
+        let mut shown = upstream();
+        redact_entry("upstream", &mut shown);
+        assert!(!has_credential("upstream", &shown));
+        shown["headers"]["X-New"] = json!("typed");
+        assert!(has_credential("upstream", &shown));
+    }
+
+    /// REQ: API-014, CLU-013 — a credential that changed reads the same on both sides once
+    /// redacted; `hidden_changes` finds it by its pointer.
+    #[test]
+    fn api_014_hidden_changes_found_by_pointer() {
+        let a = json!({"upstream": [upstream()]});
+        let mut b = a.clone();
+        b["upstream"][0]["headers"]["Authorization"] = json!("Bearer other");
+        b["upstream"][0]["url"] = json!("https://me:other@doh.example/dns-query");
+        b["upstream"][0]["tls_server_name"] = json!("x.example");
+        let mut got = hidden_changes(&a, &b);
+        got.sort();
+        assert_eq!(
+            got,
+            ["/upstream/0/headers/Authorization", "/upstream/0/url"]
+        );
+        assert_eq!(hidden_changes(&a, &a), Vec::<String>::new());
+    }
+
     /// REQ: API-014 — `config check --print` (typed) and the API (JSON) redact the same fields.
     #[test]
     fn api_014_typed_and_json_redaction_agree() {
@@ -578,14 +801,19 @@ members = ["nextdns", "plug"]
 name = "hook"
 type = "webhook"
 url = "https://u:p4ss@hook.example/"
+[[list]]
+name = "ads"
+url = "https://l:l1stpw@lists.example/ads.txt"
 [telemetry.otlp]
-endpoint = "http://otel:4318"
+endpoint = "http://o:0tlpendpw@otel:4318"
 headers = { api-key = "0tlp" }
+[updates]
+index_url = "https://i:1ndexpw@updates.example/index.json"
 [auth.oidc]
 public_url = "https://dns.example.com"
 [[auth.oidc.provider]]
 id = "kc"
-issuer = "https://kc.example/realms/home"
+issuer = "https://b:1ssuerpw@kc.example/realms/home"
 client_id = "telltale"
 client_secret = "cl13nt"
 "#;
@@ -602,7 +830,10 @@ client_secret = "cl13nt"
         let typed = serde_json::to_value(&cfg).unwrap();
         assert_eq!(typed, by_json);
         let text = toml::to_string(&cfg).unwrap();
-        for planted in ["hunter2", "s3cret", "pw0", "4rg", "p4ss", "0tlp", "cl13nt"] {
+        for planted in [
+            "hunter2", "s3cret", "pw0", "4rg", "p4ss", "0tlp", "cl13nt", "l1stpw", "1ndexpw",
+            "1ssuerpw",
+        ] {
             assert!(!text.contains(planted), "{planted}: {text}");
         }
     }

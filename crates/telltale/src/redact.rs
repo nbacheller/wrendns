@@ -70,29 +70,35 @@ pub(crate) fn change(kind: ManagedKind, c: &mut ConfigChange) {
 /// Explains the marker in TOML for Git.
 pub(crate) const GIT_NOTE: &str = "# `<redacted>` stands for a credential that isn't shown: put the value there (or use a *_file).\n";
 
+/// What replaces TOML that can't be read back (so can't be checked for credentials).
+pub(crate) const UNREADABLE_TOML: &str = "# The primary's TOML for Git couldn't be checked for credentials, so it isn't shown: copy the entry from the files or the UI instead.\n";
+
 /// REQ: API-014 — TOML (to keep a change in Git, from an older primary) with its credentials
-/// redacted; unchanged when it has none.
+/// redacted; unchanged when it has none. Text that doesn't parse can't be checked, so only
+/// its leading comments and a note are kept.
 pub(crate) fn toml_text(text: &str) -> String {
-    let Ok(table) = toml::from_str::<toml::Table>(text) else {
-        return text.to_owned();
-    };
-    let Ok(mut v) = serde_json::to_value(&table) else {
-        return text.to_owned();
+    let head: String = text
+        .lines()
+        .take_while(|l| l.starts_with('#'))
+        .flat_map(|l| [l, "\n"])
+        .collect();
+    let parsed = toml::from_str::<toml::Table>(text)
+        .ok()
+        .and_then(|t| serde_json::to_value(&t).ok());
+    let Some(mut v) = parsed else {
+        return format!("{head}{UNREADABLE_TOML}");
     };
     let before = v.clone();
     credentials::redact_json(&mut v);
     if v == before {
         return text.to_owned();
     }
-    let rendered = toml::Value::try_from(&v)
+    let Some(rendered) = toml::Value::try_from(&v)
         .ok()
         .and_then(|t| toml::to_string(&t).ok())
-        .unwrap_or_default();
-    let head: String = text
-        .lines()
-        .take_while(|l| l.starts_with('#'))
-        .flat_map(|l| [l, "\n"])
-        .collect();
+    else {
+        return format!("{head}{UNREADABLE_TOML}");
+    };
     format!("{head}{GIT_NOTE}{rendered}")
 }
 
@@ -124,5 +130,13 @@ mod tests {
         assert!(out.contains(GIT_NOTE), "{out}");
         let plain = "# Remove the [[list]] `ads` from the configuration in Git.\n";
         assert_eq!(toml_text(plain), plain);
+        // Unreadable: the comments and a note, never the text.
+        let bad = "# Add to the configuration in Git.\n[[upstream]\nheaders = { Authorization = \"Bearer s3cret\" }\n";
+        let out = toml_text(bad);
+        assert!(!out.contains("s3cret"), "{out}");
+        assert_eq!(
+            out,
+            format!("# Add to the configuration in Git.\n{UNREADABLE_TOML}")
+        );
     }
 }

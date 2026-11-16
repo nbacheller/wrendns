@@ -142,7 +142,7 @@ path = "telltale/shared.toml"
     <li class="step"><b>In a cluster, the primary.</b> Its shared settings replace the shared sections of every other node's own files.</li>
   </ol>
   <p class="muted"><code>telltale config check telltale.toml --print</code> shows layers 1 to 4 merged. The UI's entries are listed with their source by <code>GET /api/v1/config/entries</code>.</p>
-  <p class="muted"><b>Credentials are never shown.</b> An upstream's <code>headers</code> and <code>args</code>, a password in a URL, an OIDC <code>client_secret</code>, and OTLP headers read <code>&lt;redacted&gt;</code> in the API, the audit log, the TOML to keep in Git, MCP, and <code>--print</code> (<code>--show-secrets</code> prints them on the node). Editing an entry keeps them while it points where it did; change its URL, proxy, TLS name, CA, or bootstrap addresses and the credential has to be typed again.</p>
+  <p class="muted"><b>Credentials are never shown.</b> An upstream's <code>headers</code> and <code>args</code>, a password in any URL, an OIDC <code>client_secret</code>, and OTLP headers read <code>&lt;redacted&gt;</code> in the API, the audit log, the TOML to keep in Git, agents' plans, MCP, and <code>--print</code> (<code>--show-secrets</code> prints them on the node). Editing an entry keeps them while it points where it did; change its URL, proxy, TLS name, CA, or bootstrap addresses and the credential has to be typed again. <b>Test it</b> never uses a stored credential: type it into the draft. On a replica, keeping a credential this way needs a primary on the same version (until then, <code>409 upgrade_required</code>).</p>
 </section>
 
 <section id="shared">

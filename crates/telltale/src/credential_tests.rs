@@ -25,6 +25,7 @@ pub(crate) const PROXY_PASSWORD: &str = "plantedproxy81e0";
 pub(crate) const HOOK_PASSWORD: &str = "plantedhook6a6a";
 pub(crate) const CLIENT_SECRET: &str = "planted-client-secret-55aa";
 pub(crate) const OTLP: &str = "planted-otlp-1d2c";
+pub(crate) const LIST_PASSWORD: &str = "plantedlist3e9f";
 const PLANTED: &[&str] = &[
     HEADER,
     "planted-header-7f3a",
@@ -34,6 +35,7 @@ const PLANTED: &[&str] = &[
     HOOK_PASSWORD,
     CLIENT_SECRET,
     OTLP,
+    LIST_PASSWORD,
 ];
 
 pub(crate) fn planted_toml(extra: &str) -> String {
@@ -56,6 +58,9 @@ members = ["nextdns", "plug"]
 name = "hook"
 type = "webhook"
 url = "https://u:{HOOK_PASSWORD}@hook.example/notify"
+[[list]]
+name = "ads"
+url = "https://l:{LIST_PASSWORD}@lists.example/ads.txt"
 [telemetry.otlp]
 headers = {{ api-key = "{OTLP}" }}
 [auth.oidc]
@@ -101,6 +106,14 @@ pub(crate) fn config(toml: &str) -> telltale_config::Config {
 /// A standalone node with the planted configuration, its API (an admin token), and a reload
 /// loop that applies what the API stores.
 pub(crate) fn harness(extra: &str) -> Harness {
+    harness_in(extra, None)
+}
+
+/// [`harness`] on a cluster member (`cluster`): its API is the federated one.
+pub(crate) fn harness_in(
+    extra: &str,
+    cluster: Option<Arc<telltale_cluster::net::Cluster>>,
+) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = config(&planted_toml(extra));
     cfg.node.data_dir = telltale_config::SafeString::new(dir.path().to_str().unwrap()).unwrap();
@@ -108,6 +121,7 @@ pub(crate) fn harness(extra: &str) -> Harness {
     let src = Arc::new(Sources {
         reload,
         allowed: vec![telltale_config::Cidr::parse("127.0.0.0/8").unwrap()],
+        cluster,
         ..crate::http::tests::sources_in(dir.path())
     });
     src.config.store(Arc::new(cfg.clone()));
@@ -581,6 +595,26 @@ async fn api_014_planted_credential_never_returned() {
     let body = json!({"url": format!("https://me:{URL_PASSWORD}@doh.example/q"), "headers": {"Authorization": HEADER}});
     let (s, _, v) = h.call("PUT", "/api/v1/upstreams/second", Some(&body)).await;
     assert_eq!(s, StatusCode::OK, "{v}");
+    let rpc = |id: u64, method: &str, params: Value| json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+    // And an agent's plan whose body holds a URL password (plans keep the write they replay).
+    let (_, _, v) = h
+        .call(
+            "POST",
+            "/mcp",
+            Some(&rpc(
+                9,
+                "tools/call",
+                json!({"name": "plan_update_upstreams", "arguments": {
+                    "kind": "upstream", "name": "third",
+                    "url": format!("https://me:{URL_PASSWORD}@doh3.example/dns-query"),
+                    "reason": "a third one"}}),
+            )),
+        )
+        .await;
+    assert_ne!(v["result"]["isError"], true, "{v}");
+    assert!(leaks(&v.to_string()).is_empty(), "{v}");
+    let (_, _, plans) = h.call("GET", "/api/v1/plans", None).await;
+    assert_eq!(plans["items"].as_array().map(Vec::len), Some(1), "{plans}");
 
     let (_, _, doc) = h.call("GET", "/api/v1/openapi.json", None).await;
     let paths = doc["paths"].as_object().unwrap();
@@ -620,8 +654,7 @@ async fn api_014_planted_credential_never_returned() {
     assert!(walked > 60, "{walked} GETs");
     assert!(answered > 40, "{answered} of {walked} GETs answered 200");
 
-    // MCP: every read tool, every resource.
-    let rpc = |id: u64, method: &str, params: Value| json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+    // MCP: every read tool (`list_plans` included), every resource.
     let (_, _, tools) = h
         .call("POST", "/mcp", Some(&rpc(1, "tools/list", json!({}))))
         .await;
@@ -707,4 +740,246 @@ async fn api_014_webhook_401_is_generic() {
     assert_eq!(s, StatusCode::UNAUTHORIZED, "{text}");
     assert!(!text.contains("planted-hook-path"), "{text}");
     assert!(!text.contains("No such file"), "{text}");
+}
+
+/// REQ: API-014, CLU-013 — a pin that holds back a credential's change: the pin's diff and the
+/// `409 cluster_pinned` a write gets show that it changed (a `replace` with the marker), never
+/// the value pinned or the one held back.
+#[tokio::test]
+async fn api_014_pin_diff_never_shows_a_credential() {
+    use telltale_cluster::sync::{BlobStore, ClusterManifest, PinInfo, blob_ref};
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap().replace('\\', "/");
+    let node = format!("[node]\ndata_dir = \"{d}\"\n");
+    let pinned_cfg = config(&format!("{node}{}", planted_toml("")));
+    // The files now: only the header's value changed.
+    let now = format!(
+        "{node}{}",
+        planted_toml("").replace(HEADER, "Bearer planted-header-7f3a-v2")
+    );
+    let file = dir.path().join("t.toml");
+    std::fs::write(&file, &now).unwrap();
+    let id = telltale_cluster::node::Identity::init(
+        dir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    let src = Sources {
+        cluster: Some(telltale_cluster::net::Cluster::new(id, "0.8.0")),
+        config_files: vec![file],
+        ..crate::http::tests::sources_in(dir.path())
+    };
+    let cfg = config(&now);
+    src.config.store(Arc::new(cfg.clone()));
+    src.file_config.store(Arc::new(cfg));
+    // The pinned version, and the pin.
+    let bytes = serde_json::to_vec(&telltale_config::shared::shared_part(&pinned_cfg)).unwrap();
+    let b = blob_ref("config.json", &bytes);
+    BlobStore::open(dir.path())
+        .unwrap()
+        .put(&b, &bytes)
+        .unwrap();
+    let cdir = telltale_cluster::node::dir_of(dir.path());
+    std::fs::write(
+        cdir.join(crate::rollout::PINNED),
+        serde_json::to_vec(&ClusterManifest {
+            config: b,
+            ..ClusterManifest::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    crate::rollout::State {
+        active: None,
+        pinned: Some(PinInfo {
+            to: (1, 2),
+            since_ms: 1,
+            by: "root".into(),
+            reason: "hold".into(),
+        }),
+    }
+    .save(&cdir)
+    .unwrap();
+
+    let (ops, sentences) = crate::rollout::surface::pin_diff(&src).unwrap();
+    let text = serde_json::to_string(&ops).unwrap();
+    assert!(leaks(&text).is_empty(), "{text}");
+    assert!(
+        ops.iter().any(|o| o["op"] == "replace"
+            && o["path"] == "/upstream/0/headers/Authorization"
+            && o["value"] == "<redacted>"),
+        "the change shows: {text}"
+    );
+    assert!(
+        sentences.iter().any(|s| s == "upstream: changed"),
+        "{sentences:?}"
+    );
+    let p = crate::rollout::surface::pinned_problem(&src).unwrap();
+    let text = serde_json::to_string(&p).unwrap();
+    assert!(text.contains("cluster_pinned"), "{text}");
+    assert!(text.contains("/upstream/0/headers/Authorization"), "{text}");
+    assert!(leaks(&text).is_empty(), "{text}");
+    // A version diff (the rollout commands' `diff`) is the same function.
+    let a = telltale_config::shared::shared_part(&pinned_cfg);
+    let mut b = a.clone();
+    b["upstream"][0]["url"] = json!("https://me:other-pw@doh.example/dns-query");
+    let ops = crate::rollout::surface::shared_diff(&a, &b);
+    let text = serde_json::to_string(&ops).unwrap();
+    assert_eq!(ops.len(), 1, "{text}");
+    assert!(
+        leaks(&text).is_empty() && !text.contains("other-pw"),
+        "{text}"
+    );
+}
+
+/// What an older primary's stub received, and what keeps the two-node cluster up.
+struct OlderPrimary {
+    got: Arc<std::sync::Mutex<Vec<Value>>>,
+    stop: tokio::sync::watch::Sender<bool>,
+    _primary: Arc<telltale_cluster::net::Cluster>,
+    _dirs: (tempfile::TempDir, tempfile::TempDir),
+}
+
+/// A two-node cluster: the primary at `version`, answering forwarded writes as an older primary
+/// does (the entry as stored, credentials in), and the replica, joined and connected.
+async fn older_primary_and_replica(
+    version: &str,
+) -> (Arc<telltale_cluster::net::Cluster>, OlderPrimary) {
+    use telltale_cluster::net::{Cluster, dial, join, serve};
+    use telltale_cluster::node::{Identity, JoinRequest, TokenGrants};
+    let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let addr = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let url = format!("https://{addr}");
+    let pid = Identity::init(pdir.path(), "home", vec![url.clone()], "k8s").unwrap();
+    let token = pid
+        .create_token_for(
+            600,
+            Some(vec![url.clone()]),
+            TokenGrants {
+                eligible: true,
+                witness: false,
+            },
+        )
+        .unwrap();
+    let primary = Cluster::new(pid, version);
+    let got = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let g = Arc::clone(&got);
+    primary.set_rpc_handler(Arc::new(move |_peer, kind, body| {
+        let g = Arc::clone(&g);
+        Box::pin(async move {
+            if kind != crate::forward::KIND {
+                return Err("not answered by this stub".to_owned());
+            }
+            let w: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+            let after = w["body"].clone();
+            g.lock().unwrap().push(w);
+            let git = format!(
+                "# Add to the configuration in Git.\n[[upstream]]\nname = \"nextdns\"\n\n[upstream.headers]\nAuthorization = \"{HEADER}\"\n"
+            );
+            let answer = json!({"ok": {
+                "applied": true, "configVersion": 7, "before": null, "after": after,
+                "recentQueries": 0, "impact": "", "warnings": [], "keepInGit": git
+            }});
+            serde_json::to_vec(&answer).map_err(|e| e.to_string())
+        })
+    }));
+    let (stop_tx, stop) = tokio::sync::watch::channel(false);
+    tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let key = telltale_cluster::pki::new_node_key().unwrap();
+    let req = JoinRequest {
+        witness: false,
+        ephemeral: false,
+        secret: token.secret.clone(),
+        csr_pem: key.csr_pem.clone(),
+        advertise: vec![],
+        site: "pi".into(),
+        eligible: true,
+        version: crate::build_info::VERSION.into(),
+    };
+    let resp = join(&token, &req).await.unwrap();
+    let rid = Identity::save_joined(rdir.path(), &key.key_pem, &resp, "pi", true, vec![]).unwrap();
+    let replica = Cluster::new(rid, crate::build_info::VERSION);
+    tokio::spawn(dial(Arc::clone(&replica), stop));
+    for _ in 0..400 {
+        if replica.reachable_primary().is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        replica.reachable_primary().is_some(),
+        "the replica connects"
+    );
+    (
+        replica,
+        OlderPrimary {
+            got,
+            stop: stop_tx,
+            _primary: primary,
+            _dirs: (pdir, rdir),
+        },
+    )
+}
+
+/// REQ: API-014, CLU-010 — a write entered on a replica, through the real route (the federated
+/// backend, `forward::managed`, the entry node's audit record and stored idempotency response)
+/// to an older primary that answers with the credentials in: none of them comes back. And a
+/// body that sends `<redacted>` back is refused (409 `upgrade_required`) rather than forwarded
+/// to a primary that would store the marker itself.
+#[tokio::test(flavor = "multi_thread")]
+async fn api_014_replica_write_through_an_older_primary() {
+    let (replica, older) = older_primary_and_replica("0.7.4").await;
+    let h = harness_in("", Some(replica));
+    let put = |body: &Value, key: &str| {
+        let mut r = h.request("PUT", "/api/v1/upstreams/nextdns", Some(body));
+        r.headers_mut()
+            .insert("idempotency-key", key.parse().unwrap());
+        r
+    };
+    let typed = json!({
+        "url": format!("https://me:{URL_PASSWORD}@doh.example/dns-query"),
+        "tls_server_name": "doh.example",
+        "headers": {"Authorization": HEADER}
+    });
+    let (s, _, text) = h.send(put(&typed, "replica-1")).await;
+    assert_eq!(s, StatusCode::OK, "{text}");
+    assert!(leaks(&text).is_empty(), "{text}");
+    assert!(text.contains("<redacted>"), "{text}");
+    assert_eq!(older.got.lock().unwrap().len(), 1, "forwarded");
+    let audit = h.audit_text();
+    assert!(audit.contains("upstream.put nextdns"), "{audit}");
+    assert!(leaks(&audit).is_empty(), "{audit}");
+    let row = h
+        .auth
+        .state()
+        .idempotent(
+            &format!("{}:replica-1", h.admin_id),
+            crate::pipeline::unix_now(),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(leaks(&row.response).is_empty(), "{}", row.response);
+    let (s, hd, again) = h.send(put(&typed, "replica-1")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(hd.get("idempotency-replayed").unwrap(), "true");
+    assert_eq!(again, text);
+
+    // Markers sent back: refused here, nothing forwarded.
+    let (_, _, v) = h
+        .call("GET", "/api/v1/config/entries?kind=upstream", None)
+        .await;
+    let def = entry(&v, "nextdns")["definition"].clone();
+    assert!(def.to_string().contains("<redacted>"), "{def}");
+    let (s, _, r) = h.call("PUT", "/api/v1/upstreams/nextdns", Some(&def)).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{r}");
+    assert_eq!(r["code"], "upgrade_required", "{r}");
+    assert!(r["detail"].as_str().unwrap().contains("0.7.4"), "{r}");
+    assert_eq!(older.got.lock().unwrap().len(), 1, "not forwarded");
+    let _ = older.stop.send(true);
 }

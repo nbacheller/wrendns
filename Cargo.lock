@@ -3518,6 +3518,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "telltale-config",
  "telltale-store",
  "telltale-telemetry",
  "tokio",

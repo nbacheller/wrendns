@@ -2456,6 +2456,7 @@ impl Mcp {
             method: w.method.to_owned(),
             path: w.path,
             body: w.body,
+            write_body: None,
             preview,
             config_version: version,
             reason,
@@ -2616,7 +2617,8 @@ impl Mcp {
             .send(
                 &plan.method,
                 &plan.path,
-                plan.body.as_ref(),
+                // REQ: API-014 — the body as the agent gave it (`body` is shown redacted).
+                plan.write_body.as_ref(),
                 auth,
                 client,
                 &extra,

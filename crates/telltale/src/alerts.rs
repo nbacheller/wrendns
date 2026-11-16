@@ -837,7 +837,14 @@ async fn deliver(
         .map_err(|_| "timed out".to_owned())?
         .map_err(|e| match token.as_deref().filter(|t| !t.is_empty()) {
             // REQ: API-014 — an error that quotes the request never shows the token.
-            Some(t) => e.message.replace(t, telltale_config::credentials::MARKER),
+            // The URL carries it percent-encoded: both forms go.
+            Some(t) => e
+                .message
+                .replace(t, telltale_config::credentials::MARKER)
+                .replace(
+                    &crate::kubernetes::encode(t),
+                    telltale_config::credentials::MARKER,
+                ),
             None => e.message,
         })?;
     if resp.status().is_success() {

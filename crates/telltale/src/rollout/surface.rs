@@ -76,12 +76,27 @@ fn served_shared(src: &Sources) -> serde_json::Value {
 }
 
 /// REQ: API-014 — a patch between two shared configurations, with their credentials redacted
-/// first: a pin's diff is shown in the API and the 409, and never carries a value.
-fn shared_diff(a: &serde_json::Value, b: &serde_json::Value) -> Vec<serde_json::Value> {
-    let (mut a, mut b) = (a.clone(), b.clone());
-    telltale_config::credentials::redact_json(&mut a);
-    telltale_config::credentials::redact_json(&mut b);
-    json_diff(&a, &b)
+/// first: a pin's diff is shown in the API and the 409, and never carries a value. A credential
+/// that changed while reading the same redacted (only a header's value, only a URL's password)
+/// still shows, as a `replace` with the marker as its value.
+pub(crate) fn shared_diff(a: &serde_json::Value, b: &serde_json::Value) -> Vec<serde_json::Value> {
+    use telltale_config::credentials::{MARKER, hidden_changes, redact_json};
+    let hidden = hidden_changes(a, b);
+    let (mut ra, mut rb) = (a.clone(), b.clone());
+    redact_json(&mut ra);
+    redact_json(&mut rb);
+    let mut ops = json_diff(&ra, &rb);
+    for ptr in hidden {
+        let covered = ops.iter().any(|o| {
+            o["path"]
+                .as_str()
+                .is_some_and(|p| ptr == p || ptr.starts_with(&format!("{p}/")))
+        });
+        if !covered {
+            ops.push(serde_json::json!({"op": "replace", "path": ptr, "value": MARKER}));
+        }
+    }
+    ops
 }
 
 /// REQ: CLU-013 — what a pin holds back: JSON Patch from the pinned version to what this

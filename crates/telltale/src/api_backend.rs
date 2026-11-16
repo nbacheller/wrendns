@@ -1685,11 +1685,17 @@ impl Backend for ApiBackend {
                     _ => Vec::new(),
                 };
                 overlap.sort_by(|a, b| b.names.cmp(&a.names).then(a.list.cmp(&b.list)));
-                let source = l
-                    .url
-                    .as_ref()
-                    .or(l.path.as_ref())
-                    .map_or_else(|| "inline".to_owned(), ToString::to_string);
+                // REQ: API-014 — a password in the list's URL never leaves (nor in an error
+                // that quotes the URL).
+                let raw = l.url.as_ref().or(l.path.as_ref()).map(ToString::to_string);
+                let source = raw.as_deref().map_or_else(
+                    || "inline".to_owned(),
+                    telltale_config::credentials::url_shown,
+                );
+                let error = meta.and_then(|m| m.last_error.clone()).map(|e| match &raw {
+                    Some(r) if *r != source => e.replace(r.as_str(), &source),
+                    _ => e,
+                });
                 let state = match meta {
                     Some(m) if m.last_error.is_some() && !m.has_content() => "failed",
                     Some(m) if m.has_content() => "ok",
@@ -1702,7 +1708,7 @@ impl Backend for ApiBackend {
                     mode: label(&l.mode),
                     source,
                     state: state.to_owned(),
-                    error: meta.and_then(|m| m.last_error.clone()),
+                    error,
                     bytes: meta.map_or(0, |m| m.bytes),
                     lines: meta.map_or(0, |m| m.lines),
                     entries,
@@ -2597,6 +2603,16 @@ impl Backend for ApiBackend {
         &self,
         body: serde_json::Value,
     ) -> telltale_api::BoxFuture<Result<telltale_api::model::CheckResult, Problem>> {
+        // REQ: API-014 — nor does a list check (a password in its URL).
+        if telltale_config::credentials::has_marker("list", &body) {
+            return Box::pin(async {
+                Err(Problem::new(
+                    Code::CredentialReentryRequired,
+                    "the draft sends `<redacted>` for the password in its URL, and a check never uses stored values",
+                )
+                .hint("Enter the password in the draft's URL to check it."))
+            });
+        }
         let cfg = self.src.config.load_full();
         Box::pin(async move { crate::checks::list(&cfg, body).await })
     }
@@ -4754,11 +4770,6 @@ fn named_json<T: crate::managed::Named + Serialize>(
         .map(|x| serde_json::to_value(x).unwrap_or_default())
 }
 
-/// REQ: API-002 (T7.5, ADR-069) — a change to an upstream, upstream group, list, or group: it
-/// may override or hide the files' entry of the same name. `PUT` stores a definition; `DELETE`
-/// removes what the API stored (so the files' entry, if any, is back), or else hides the
-/// files' entry. The merged configuration must validate.
-#[allow(clippy::too_many_lines)] // one branch per kind of entry
 /// REQ: API-014 (ADR-167 §4) — `w`'s body with every `<redacted>` replaced by the value in
 /// effect (`current`'s entry `name`), when it sends any back; 422
 /// `credential_reentry_required` when its destination changed or there is no value to keep.
@@ -4778,6 +4789,7 @@ fn restore_markers(
     let entry = match w.kind {
         ManagedKind::Upstream => named_json(&current.upstream, name),
         ManagedKind::AlertDestination => named_json(&current.alerts.destination, name),
+        ManagedKind::List => named_json(&current.list, name),
         _ => None,
     };
     let mut body = body.clone();
@@ -4790,6 +4802,10 @@ fn restore_markers(
     Ok(Some(body))
 }
 
+/// REQ: API-002 (T7.5, ADR-069) — a change to an upstream, upstream group, list, or group: it
+/// may override or hide the files' entry of the same name. `PUT` stores a definition; `DELETE`
+/// removes what the API stored (so the files' entry, if any, is back), or else hides the
+/// files' entry. The merged configuration must validate.
 #[allow(clippy::too_many_lines)] // one branch per kind of entry
 fn plan_override(
     src: &Sources,

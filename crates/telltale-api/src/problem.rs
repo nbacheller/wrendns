@@ -92,6 +92,9 @@ pub enum Code {
     /// REQ: API-014, OPS-014 (ADR-167 §3) — this node's secrets key can't be read, so nothing
     /// that needs it (a write with an `Idempotency-Key` that sets a credential) can be done.
     SecretsLocked,
+    /// REQ: API-014, CLU-010 (ADR-167 §4) — the change needs a newer primary: it sends
+    /// `<redacted>` back, which an older primary would store as the value.
+    UpgradeRequired,
 }
 
 impl Code {
@@ -136,6 +139,7 @@ impl Code {
                 "https://telltaledns.dev/problems/credential_reentry_required"
             }
             Self::SecretsLocked => "https://telltaledns.dev/problems/secrets_locked",
+            Self::UpgradeRequired => "https://telltaledns.dev/problems/upgrade_required",
         }
     }
 
@@ -178,6 +182,7 @@ impl Code {
             Self::NodeIsUp => "The node is up",
             Self::CredentialReentryRequired => "Enter the credential again",
             Self::SecretsLocked => "Secrets key unavailable",
+            Self::UpgradeRequired => "Upgrade the primary first",
         }
     }
 
@@ -201,7 +206,8 @@ impl Code {
             | Self::DrillRefused
             | Self::DrillActive
             | Self::NodeIsPrimary
-            | Self::NodeIsUp => StatusCode::CONFLICT,
+            | Self::NodeIsUp
+            | Self::UpgradeRequired => StatusCode::CONFLICT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::VersionConflict => StatusCode::PRECONDITION_FAILED,
             Self::InvalidConfig
