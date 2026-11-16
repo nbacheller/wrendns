@@ -2410,7 +2410,7 @@ Counters are kept per thread and summed on scrape, so recording never slows a qu
 - Uptime monitors, phones checking their connection, and other background lookups can crowd it: [keep them out](#keeping-names-and-devices-out-of-the-log).
 
 ### Where does time go?
-The dashboard's **Where time goes** card (Advanced view) has two views:
+The dashboard's **Where time goes** section (Advanced view) has two views:
 - **Percentiles:** this hour's p50, p90, p99, and max per answer path and transport, and the time spent waiting for upstreams.
 - **Heatmap:** answers over time (minutes for 1 to 24 hours, hours for 7 days) in the bands of `telltale_query_duration_seconds` (50 µs to 5 s, and slower), darker where more answers landed; one path or several (**cache**, **upstream**, **local names**, **blocked & special**). The dashed line is the [latency objective](#service-level-objectives)'s threshold. Dots are real queries (exemplars): select one to open it in the query log. The ticks along the top are [change markers](#change-markers). **Table** lists the counts.
 - On the **Upstreams** page, **Answer time over time** shows the same for one upstream.
@@ -2620,7 +2620,8 @@ clients = ["192.168.1.10", "10.20.0.0/24"]               # addresses or networks
 
 ### Internal names
 Some names are your own network talking to itself: reverse lookups of private addresses (`20.1.168.192.in-addr.arpa`) and, in Kubernetes, the cluster's names (`postgres.db.svc.cluster.local`). A pod's search list alone turns one lookup of `api.github.com` into three failed ones under `cluster.local` first. These **internal names** get their own top list, so the dashboard's **Top domains** shows what your network reaches outside:
-- The dashboard's **Top domains** card switches between **Internet** and **Internal**. The NXDOMAIN list leaves internal names out too.
+- The dashboard's **Top domains** list switches between **Internet** and **Internal**. The NXDOMAIN list leaves internal names out too.
+- Long names stay on one line. A Kubernetes service shows as its name with the namespace beside it (`postgres` and `db` for `postgres.db.svc.cluster.local`); a pod's search-list variants of one name are a single row marked **search suffix ×3**; long hash labels are shortened and reverse lookups show the address. Tap a row's count for the full name (with a **Copy** button) and, for a merged row, each variant with its count.
 - They're still in the query log, the live view, a device's own top domains, the blocked list, exports, and Prometheus: nothing is hidden, only sorted.
 - Internal by default: reverse lookups of private and local addresses (the same ranges as `[special] private_ptr_nxdomain`), and `cluster.local` with `[kubernetes] enabled`. Add your own, each with its subdomains, per node (`[telemetry]` isn't shared):
   ```toml
@@ -2834,7 +2835,7 @@ Open `http://<server>:8053/` in a browser. On first start it asks for the setup 
 
 | Page | What it shows |
 |---|---|
-| Dashboard | queries, blocked %, cache hits, upstream latency, active clients; the [service level](#service-level-objectives) (each objective's last 30 days, error budget left, and burn rates); queries over time by status (15 min to 48 h); where time goes; top domains, blocked names, and clients with their groups (click through to the query log); upstream share and health. In a cluster, **Showing** switches between every node together, one node, or one site's nodes (remembered in your browser) |
+| Dashboard | queries, blocked %, cache hits, upstream latency, active clients, each with its change against the previous period; one chart whose hover gives the exact figures for each moment (totals and blocked, or the split by status; the Advanced view adds traffic by group and upstream exchanges), with a **Table** view and the change markers; the [service level](#service-level-objectives) (each objective's last 30 days, error budget left, and burn rates); where time goes; top domains, blocked names, and clients with their groups, one line each (click a name to open the query log, tap a count for the full name); upstream share and health. In a cluster, **Showing** switches between every node together, one node, or one site's nodes (remembered in your browser) |
 | Query log | search by name (contains, exact, subdomains, wildcard, regex), client, status, type, response code, slowness, and time; each row shows how long it took and how much of that was the upstream; **Why?** explains the decision. Filters live in the URL, so a search can be bookmarked or shared. **Live** streams new matching queries as they happen (the newest 500 stay on screen) |
 | Explain | why any name is or isn't blocked for any device |
 | Clients, Groups, Lists, Upstreams | devices seen and configured; groups and their lists; list download state and size; upstream health (Healthy, Benched, or Probing: the circuit breaker's closed, open, and half-open), traffic, failures by kind (timeouts, connection errors, SERVFAIL, ...), and latency |

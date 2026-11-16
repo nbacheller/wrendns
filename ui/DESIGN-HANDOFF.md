@@ -210,6 +210,8 @@ JSON is camelCase; units are in field names (`totalMs`, `ttlSeconds`, `*UnixSeco
 | **Local DNS** `#/local-dns` | none | explanatory note + example | Waits for the config API. |
 | **Settings** `#/settings?tab=` | `auth/me`, `auth/password`, `auth/totp/*`, `tokens`, `users`, `audit`, `audit/verify`, `system/info` | tabs: Account (password, two-factor), API tokens (create once, revoke), Users (admin: role, 2FA reset, Basic opt-in, disable, two-click delete), Audit log (admin: filter by action, Older paging, Verify chain), System | TOTP shows an `otpauth://` link + key (no QR library, by budget choice; a tiny dependency-free QR encoder would be acceptable if < ~8 KiB gz). |
 
+**Dashboard (ADR-157).** `Dashboard.svelte` only chooses between two pages: `DashboardCalm.svelte` (the default) and `DashboardLegacy.svelte` (the previous one, unchanged, until it is removed). `#/?view=legacy` shows the legacy page and remembers it in `localStorage` (`dashboard.view`); `#/?view=new` clears it. No link in the UI points at `view=legacy`, and it isn't in the user docs; the legacy page has a quiet "Switch to the new dashboard" link. The new page's parts live in `src/lib/dash/`: `data.svelte.ts` (the loading, the derived series, the range; the Advanced-only calls run on their own, one at a time), `SmoothChart.svelte` (rebucketing in `smooth.ts`, the tooltip, the Table view, the change markers), `TopList.svelte` with `names.ts` (reading Kubernetes, hash and reverse-zone names; merging search-suffix variants), `Stat.svelte`, `DashControls.svelte`, `DashHead.svelte`. A tooltip-only design is wrong for a phone: keep detail one tap away.
+
 ---
 
 ## 7. Test contract: selectors you must keep (or update the tests in the same change)
@@ -235,7 +237,7 @@ text, labels, or roles below breaks CI.
 - **CSS hooks:** `table.log tbody tr` (query rows; a row contains the status text and list
   name), `.table-view table` (chart table view), `.explain` (ExplainView root), `code.token`
   (the newly created token), `main`, `main table`.
-- **Texts:** `Queries by status` (chart title), `No tokens yet.`.
+- **Texts:** `No tokens yet.`. **Dashboard hooks:** `dashboard-chart` (the chart's card; its view buttons are named `Totals`, `Status`, `Groups`, `Upstream`; the figure is named for the view), `stat-queries|blocked|cache|upstream|clients`, `slo-card` and `slo-<objective>`, `time-heatmap-tab`, `domains-internal-tab`, `devices-by-type`, `chart-markers` and `marker-tip` inside the chart; the lists are plain sections found by their heading (`Top domains`, `Top blocked`, `Top clients`).
 - **Behaviors:** URL gets `status=local` after pressing the chip; after sign-in the current hash
   route is kept; a viewer opening `?tab=users` lands on Account; no horizontal overflow at
   360 px; no console errors at all.

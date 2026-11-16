@@ -268,7 +268,8 @@ clients = ["192.168.1.10", "10.20.0.0/24"]               # addresses or networks
   <h2>Internal names</h2>
   <p>Reverse lookups of private addresses, and in Kubernetes the cluster's own names, are your network talking to itself. A pod's search list alone turns one lookup of <code>api.github.com</code> into three failed ones under <code>cluster.local</code> first. These internal names have their own top list, so <b>Top domains</b> shows what your network reaches outside.</p>
   <ul>
-    <li>The dashboard's <b>Top domains</b> card switches between <b>Internet</b> and <b>Internal</b>. The NXDOMAIN list leaves internal names out too.</li>
+    <li>The dashboard's <b>Top domains</b> list switches between <b>Internet</b> and <b>Internal</b>. The NXDOMAIN list leaves internal names out too.</li>
+    <li>Long names stay on one line. A Kubernetes service shows as its name with the namespace beside it (<code>postgres</code> and <code>db</code> for <code>postgres.db.svc.cluster.local</code>); a pod's search-list variants of one name are a single row marked <b>search suffix ×3</b>; long hash labels are shortened and reverse lookups show the address. Tap a row's count for the full name (with a <b>Copy</b> button) and, for a merged row, each variant with its count.</li>
     <li>Nothing is hidden: they stay in the query log, the live view, a device's own top domains, the blocked list, exports, and Prometheus.</li>
     <li>Internal by default: reverse lookups of private and local addresses, and <code>cluster.local</code> when Kubernetes workloads are on. Add your own on each node:</li>
   </ul>
