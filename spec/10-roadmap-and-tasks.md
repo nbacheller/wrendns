@@ -689,6 +689,303 @@ Two tasks from the design session of 2026-10-18, built in order T15.1 → T15.2 
   - *Done 2026-11-16:* (1) the e2e suite (74 tests) passes on the VM and in CI, with the tests that found cards by class moved to the new hooks; (2)–(4) `SmoothChart`, `TopList` and `names.ts` as in ADR-157, looked at on the demo network and on the live cluster's name shapes (read-only); (5) the e2e test `api_005 the previous dashboard is reachable and remembered`; (6) `npm run check` clean, bundle 229.9 KiB gzipped. The contributor's #31 (per-device status split, issue #30, ADR-159), #34 (lists follow the range, ADR-160), #36 (legend width) and #42 (rolling last hour, ADR-158) were ported onto it (the split also rides on range reads), and the PRs closed with a note.
   - *Open:* the owner's acceptance of ADR-157 to ADR-160; when to remove the previous dashboard; a server-side option to fold pods' search suffixes in the top lists; the rolling hour (ADR-158) has no per-device status split.
 
+## M23 — Secrets and integrations in the UI (owner request 2026-11-16)
+
+Anything set up through a secret file can also be entered in the UI, and the files keep working and win. Values are write-only, encrypted per node and replicated to full members (ADR-167). Nothing changes on the query path, and no crate is added. Every task records its image delta (`deploy/image/size.py --oci`) against a milestone total of at most 0.10 MiB.
+
+Order:
+1. T23.1 ships first, with no behavior change.
+2. T23.2 ships right away, with T23.1 (owner decision 2026-11-16).
+3. T23.3–T23.5 come before any UI task.
+
+- [ ] **T23.1 Close the credential leaks in read surfaces.** *(API-014, OPS-011, AGT-010; ADR-167 §4)*
+  - **Credential table.** `telltale-config::credentials::PATHS`, checked for completeness against `classify.rs`.
+  - **Where it is applied:**
+    - `config_entries`, again on a replica after decoding (`api_backend.rs:2873-2960`, `federated.rs:2439-2450`), with `ConfigEntry.redacted`;
+    - write responses;
+    - both audit sites (`config_api.rs:1902-1913`, `forward.rs:232-237`, `apply_ack`);
+    - `keep_in_git`, forward logging, and a redacting `Debug` on `forward::Write`;
+    - `config check --print` (`--show-secrets`);
+    - `compare.rs`, and the MCP read tools and resources.
+  - **Marker rule.** A `<redacted>` marker keeps the value only while the destination is unchanged, otherwise 422 `credential_reentry_required`. Checks never resolve markers.
+  - **Idempotency.** The node key loader (`telltale::secrets::NodeKey`: env, `[node] secrets_key_file`, `secrets.key`, subkeys) lands here. The idempotency request becomes a keyed hash of the full body, and the response is stored redacted.
+  - **Storage hygiene.** Migration 10 purges old idempotency rows. `secure_delete=ON` and WAL `TRUNCATE` checkpoints.
+  - **Spawned processes.** `RESERVED` gains `SECRETS_KEY` and `SECRETS_PREVIOUS_KEY`. Plugin and self-update `Command`s `env_remove` the key, bootstrap-password and token variables.
+  - **Git webhook.** A generic 401 with the detail logged, empty secrets refused, and the Gotify token percent-encoded.
+  - **Docs.** The comment at `config_api.rs:656-657`, `docs/running.md`, `site/guide-monitoring.html`, and the release note on older audit entries.
+  - *AC:*
+    1. `api_014_config_entries_redacts_upstream_headers_and_args`: headers, args and URL passwords come back as `<redacted>` and are listed in `redacted`, on the primary and on a replica, including against an N-1 primary.
+    2. `api_014_write_response_and_audit_redacted`: covers a write entered on a replica and both audit records.
+    3. `api_014_idempotency_row_holds_no_credential`: replay still works, and two PUTs differing only in a header value are not treated as a replay.
+    4. `api_014_keep_in_git_never_prints_values`.
+    5. `api_014_redacted_marker_keeps_value`, `api_014_redacted_marker_without_value_422`, and `api_014_redacted_marker_with_new_url_422`, including an MCP `plan_update_upstreams` URL change.
+    6. `api_014_config_check_print_redacts`.
+    7. `api_014_credential_paths_cover_secret_class`.
+    8. `api_014_planted_credential_never_returned`: walks every GET in the OpenAPI document (except `/backup` and the support package, for stated reasons), compare, every MCP read tool and resource, and the query tail, with a planted header, arg, URL password and `client_secret`.
+    9. `ops_014_plugin_env_has_no_secrets_key`.
+    10. `api_014_webhook_401_is_generic` and `api_014_empty_webhook_secret_refused`.
+    11. `api_014_idempotency_purge_leaves_no_residue`: the file and WAL hold no planted value after migration 10.
+    12. The OpenAPI document and `api-types.ts` are regenerated, clippy is clean, and the size delta is recorded.
+
+- [ ] **T23.2 Who may point a credential somewhere.** *(API-014, CLU-010; ADR-167 §4)* This is a behavior change. The owner chose to ship it right away, with T23.1 (2026-11-16).
+  - **Admin-only:** `*_file` and `*_ref` changes, destination changes on any entry holding a credential, and `exec://`/`unix://` on writes and checks.
+  - **Paths:** canonicalized, the denied prefixes and key paths, `[node] secret_file_dirs` for `*_file`, and existing out-of-bounds API paths reported in `credential_issues`.
+  - **Audit and alerting:** `credential.redirect` and the alert event.
+  - **Forwarding.** Forwarded writes carry `role` and `agent` and are re-checked on the primary. Role-less credential-affecting forwards get 409 `upgrade_required`.
+  - **The Alerts page** shows path fields read-only to operators.
+  - **Docs:** `docs/running.md`, `site/guide-monitoring.html`, and T9.6's amended criterion.
+  - *AC:*
+    1. `api_014_file_reference_change_needs_admin`: an operator gets 403.
+    2. `api_014_operator_cannot_redirect_credential`: an upstream with headers and an alert with `token_file` both give 403 on a URL change.
+    3. `api_014_operator_cannot_create_exec_upstream`: covers PUT, `checks/upstream` and a switch to `exec://`.
+    4. `api_014_file_path_confined`: covers `/proc/self/environ`, a symlink into `data_dir`, the key file paths, and a path outside `secret_file_dirs`.
+    5. `api_014_forwarded_write_rechecked_on_primary`, including a role-less (N-1) forward refused.
+    6. `api_014_admin_redirect_audited_and_alerted`.
+    7. The Playwright Alerts page shows operator read-only fields.
+    8. The size delta is recorded.
+
+- [ ] **T23.3 Encrypted secret store and `*_ref` fields.** *(OPS-014, NFR-005; ADR-167 §2–3)*
+  - **Storage.** Migration 11 creates the `secrets` table with stamps and tombstones. The `ring` ChaCha20-Poly1305 associated data includes `kind` and the stamp.
+  - **Values.** `SecretValue` and `Zeroizing`, with ciphertext cached in memory. `Credential::resolve` replaces the six read sites. Readable checks open without reading.
+  - **Config fields.** The `*_ref` schema fields, serialized only when set, with validation.
+  - **Key handling.** Key generation only on an empty table; the locked state; the replica self-heal rule.
+  - **CLI.** `telltale secrets status | rotate-key`, offline.
+  - **Health.** The reasons `secrets_locked` and `secrets_ephemeral`, and the `telltale_secrets` metric. Backups drop the table.
+  - **Helm.** The default is the data-directory key. `secretsKey.existingSecret` is mounted read-only on full members only, with `[node] secrets_key_file` set. `secretsKey.generate` (lookup) is documented as unsafe under Argo CD.
+  - **Docs.** `docs/secrets.md` (threat model, custody, rotation, recovery), `docs/running.md`, the Helm README, the site settings page, and help topics.
+  - **Dependencies.** `zeroize` and `argon2` become direct, with one justification line each.
+  - *AC:*
+    1. `ops_014_first_start_creates_key_0600`.
+    2. `ops_014_env_and_file_key_override_win`.
+    3. `ops_014_configured_key_unreadable_locks_store`: writes give 503, health is degraded, and DNS answers with `/readyz` unchanged in the same test.
+    4. `ops_014_missing_key_with_rows_locks_not_generates`.
+    5. `ops_014_row_swap_fails_aad`: covers name, kind and stamp.
+    6. `ops_014_previous_key_reencrypts_at_start`, and `ops_014_rotate_key_crash_safe` (a `.new` file is recovered, and no old-`key_id` ciphertext is left in the file or WAL).
+    7. `ops_014_file_inline_ref_mutually_exclusive`.
+    8. `ops_014_file_wins_over_ref` and `ops_014_override_cannot_replace_file_credential`.
+    9. `ops_014_unreadable_secret_integration_not_configured`.
+    10. `ops_014_backup_excludes_secret_rows`.
+    11. `ops_014_secret_value_debug_redacted`.
+    12. `ops_014_key_vars_never_logged`: covers `config check --print`, the support package and `Debug`.
+    13. `ops_014_control_chars_and_empty_refused`.
+    14. Helm template tests show the key on controllers only and none on resolver pods, with persistence on and off.
+    15. `cargo deny check` passes, and `cargo tree -d` shows no new crate and no duplicate version.
+    16. The size delta is recorded.
+
+- [ ] **T23.4 Write-only secrets API, `ctl`, and MCP status.** *(API-015, AGT-001–005, AGT-009, API-008; ADR-167 §4–5)*
+  - **Routes.** `GET /api/v1/secrets[/{name}]`, proxied to the primary with `stale` fallback. `PUT`/`DELETE` are admin-only (agents 403), with dry run, keyed `Idempotency-Key`, `If-Match` on the head, `X-Telltale-Reason`, `no-store`, and the HTTPS-or-loopback rule (`[api] allow_secrets_over_http`).
+  - **Rules.** Lease and fence checked, 409 `secret_in_use` across nodes with `?force`, 409 `set_by_file`. GitOps and pins allowed; emergency primary 409.
+  - **Replicas** forward through the dedicated RPC kind `secret.put`/`secret.delete`.
+  - **Audit** as `secret.put|delete`.
+  - **CLI.** `telltale ctl secrets list|set NAME [--from-file F|-]|clear`.
+  - **MCP** `secrets_status`. The agent forbidden list gains the secret writes.
+  - **Docs.** OpenAPI with `writeOnly`, `docs/running.md` (API and ctl), and spec/13 §3 exceptions.
+  - *AC:*
+    1. `api_015_put_returns_metadata_only`.
+    2. `api_015_get_never_returns_value`.
+    3. `api_015_dry_run_stores_nothing`.
+    4. `api_015_idempotency_replay_without_body`: the same key with a different value gives 409.
+    5. `api_015_operator_cannot_set`.
+    6. `api_015_agent_token_refused_with_admin_owner`.
+    7. `api_015_audit_without_value`.
+    8. `api_015_replica_forward_logs_no_value`: TRACE capture on both nodes.
+    9. `api_015_n_minus_1_primary_refuses_by_kind`.
+    10. `api_015_gitops_authority_allows_secret_writes`, `api_015_pinned_allows_secret_writes` and `api_015_emergency_primary_refuses`.
+    11. `api_015_no_lease_refuses`.
+    12. `api_015_delete_in_use_refused`: lists a node-local reference on another node.
+    13. `api_015_plain_http_refused_unless_loopback_or_allowed`.
+    14. `api_015_csrf_enforced`.
+    15. `api_015_value_limits`.
+    16. `api_001_committed_openapi` and `agt_006_committed` are regenerated.
+    17. The size delta is recorded.
+
+- [ ] **T23.5 Replicate secrets to full members.** *(CLU-015, CLU-003, CLU-004, CLU-005, CLU-010; ADR-167 §6)*
+  - **Heartbeats.** `Heartbeat` gains `secrets_head`, `secrets_applied`, `secrets_unreadable`, `credential_issues` and `secret_refs`.
+  - **RPCs.** `secrets.fetch` (the registry `!ephemeral && !witness` rule, primary of the highest epoch only, head and digest check, `held` rows, `secrets_unavailable`, paged under 900 KiB) and the reverse heal.
+  - **Applying.** Upsert by stamp, tombstones, orphans under Conflicts, origin rules at init and join, purge on removal or leave, and fetch backoff.
+  - **UI.** A Cluster page column.
+  - **Docs.** `docs/running.md` (cluster) and `site/guide-kubernetes.html`.
+  - *AC:*
+    1. `clu_015_replica_gets_secret_reencrypted`.
+    2. `clu_015_ephemeral_and_witness_refused`, including a member claiming to be full.
+    3. `clu_015_delete_propagates_by_tombstone`.
+    4. `clu_015_replica_wrong_key_heals`.
+    5. `clu_015_no_plaintext_on_disk`.
+    6. `clu_015_partition_keeps_last_set`.
+    7. `clu_015_n_minus_1_ignores_fields`.
+    8. `clu_015_local_rows_shadowed_not_dropped`.
+    9. `clu_015_primary_key_loss_does_not_wipe_replicas`, together with the reverse heal.
+    10. `clu_015_promoted_primary_keeps_secrets` and `clu_015_primary_move_then_delete_propagates`.
+    11. `clu_015_stale_epoch_secret_orphaned`.
+    12. `clu_015_replicates_while_pinned` and `clu_015_not_gated_by_canary_bake`.
+    13. `clu_015_stale_answer_rejected`: a wrong head or digest.
+    14. `clu_015_fetch_never_gates_readiness`.
+    15. `clu_015_removed_member_purges`.
+    16. A `telltale-sim` partition and failover case.
+    17. A two-process e2e: set on a replica, forwarded, then replicated back.
+    18. The size delta is recorded.
+
+- [ ] **T23.6 Secrets page, `SecretField`, and alert credentials in the UI.** *(API-015, API-011, OBS-010; ADR-167 §9)*
+  - **Page.** Settings → "Integrations & secrets".
+  - **Component.** `SecretField.svelte`, with every state from §9, the autocomplete and password-manager attributes, and no show toggle.
+  - **Alerts.** The path inputs (`Alerts.svelte:36-39`) become `SecretField` writing `token_ref`/`password_ref`. File-set values are shown read-only.
+  - **Help** topics.
+  - *AC:*
+    1. Playwright `api_015 secret field is write-only`: never in the DOM after save, never pre-filled.
+    2. `api_015 set by file is read-only`.
+    3. `api_015 replace and clear`.
+    4. `api_015 alert destination with a stored token delivers` (fake ntfy).
+    5. An operator sees status only.
+    6. Over plain HTTP the field explains the refusal.
+    7. `npm run check` and `check:help` are clean, and the bundle stays under 400 KiB.
+    8. `docs/running.md`, `site/guide-monitoring.html` and `site/guide-settings.html` are updated.
+    9. The size delta is recorded.
+
+- [ ] **T23.7 Routers as a managed kind, with hot reload.** *(API-016, API-012, API-013, API-002; ADR-167 §2, §7)*
+  - **Kind.** `ManagedKind::Router` (admin-only, files win under ADR-040, `keep_in_git` with references only, forward kind).
+  - **Routes.** `PUT`/`DELETE /api/v1/routers/{name}`, `GET /api/v1/routers` (entries plus status: last poll, result, devices, networks, credential source, polling node), `config_entries` kind `router`, MCP `list_routers`.
+  - **Reload.** `routers::run` reads the live list and recomputes the interval each round. Polling follows §1 (stored credentials on the primary, explicit ephemeral skip). Changes trigger a debounced poll, and unchanged routers keep their state.
+  - **Code rules.** `unwrap_used`, `expect_used` and `indexing_slicing` are denied in `routers.rs`.
+  - **Inline certificate.** `tls_ca_pem` (16 KiB, exclusive with `tls_ca`).
+  - **Docs.** `docs/running.md` and the API reference.
+  - *AC:*
+    1. `api_016_router_put_applies_without_restart`.
+    2. `api_016_router_delete_drops_leases`.
+    3. `api_016_unchanged_router_keeps_state`.
+    4. `api_016_file_router_read_only`: 409.
+    5. `api_016_router_secret_change_polls_debounced`.
+    6. `api_016_router_write_needs_admin`.
+    7. `api_016_router_failure_isolated`: failing, malformed and oversized answers leave the other routers and DNS unaffected.
+    8. `api_016_ephemeral_member_skips_routers`.
+    9. `api_016_stored_credential_router_polls_on_primary_only`: a replica gets the names through peer leases, and a new primary takes over after failover.
+    10. `clu_010_ref_fields_with_n_minus_1`: the N-1 replica keeps its last good version, and the write warns.
+    11. The `validate.rs:284-332` rules apply to API bodies.
+    12. The OpenAPI document and MCP snapshot are regenerated.
+    13. The size delta is recorded.
+
+- [ ] **T23.8 Routers page.** *(API-016, API-011, API-010; ADR-120, ADR-167 §9)*
+  - **Form per kind.**
+    - UniFi: URL, site, key or user and password, `tls_server_name`, certificate, interval.
+    - OPNsense: key and secret.
+    - Home Assistant: token, with the administrator note from ADR-166.
+  - **Check routes**, both admin-only, both on the agent forbidden list, no MCP tool:
+    - `POST /api/v1/checks/router` makes one read-only poll. It resolves a `_ref` only when the body's URL and TLS fields equal the stored entry's, unless the caller is admin, and error text follows AGT-009.
+    - `POST /api/v1/checks/router-certificate {url}` returns the subject names, fingerprint and PEM, plus a suggested `tls_server_name`.
+  - **A status card** per router.
+  - *AC:*
+    1. Playwright `api_016 add a UniFi router from the UI`.
+    2. `api_016 trust the console certificate`: no `tls_insecure_skip_verify`.
+    3. `api_016 file router shows set by file`.
+    4. `api_016 check reports a wrong key` without saving.
+    5. `api_016_router_checks_need_admin_and_refuse_agents`.
+    6. `api_016_check_does_not_send_ref_to_new_url`.
+    7. `site/guide-devices.html`, `site/guide-kubernetes.html` and `Clients.svelte:258-263` are updated.
+    8. The bundle stays under its cap, and the size delta is recorded.
+
+- [ ] **T23.9 Backups with passphrase-encrypted secrets.** *(API-007, API-015; ADR-167 §8, amends ADR-063)*
+  - **Format.** `data/secrets.enc`; Argon2id (m = 19 MiB, t = 2, p = 1, recorded, bounded on restore to m ≤ 256 MiB and t ≤ 10, one at a time); ChaCha20-Poly1305; the manifest's `secrets {...}`; `VERSION` 2 only with secrets; the head stripped.
+  - **CLI.**
+    - `create --secrets-passphrase-file|--secrets-passphrase-stdin|prompt`, with the omitted notice and the inline-credential warning covering files and `managed` rows.
+    - `restore --secrets-passphrase-file|prompt|--skip-secrets`: the key is resolved from `-c` and the environment, it refuses to generate when a source is configured, prints the source and `key_id`, and re-stamps rows.
+    - `show`.
+  - **API.** `POST /api/v1/backup` (admin, HTTPS rule, a session signed in within 10 minutes for a passphrase backup, header, audit, alert event). `GET` stays.
+  - **UI.** The Settings → Backup passphrase, confirmation and the "recent sign-in" prompt.
+  - *AC:*
+    1. `api_007_backup_without_passphrase_omits_secrets`.
+    2. `api_007_roundtrip_with_passphrase`.
+    3. `api_007_wrong_passphrase_moves_nothing`.
+    4. `api_007_v2_without_passphrase_refused_unless_skip`.
+    5. `api_007_v1_archive_still_restores` and `api_007_no_secrets_stays_v1`.
+    6. `api_007_kdf_params_bounded`.
+    7. `api_007_concurrent_backup_kdf_429`.
+    8. `api_007_planted_secret_absent_from_plaintext`: raw, base64 and hex.
+    9. `api_007_passphrase_never_logged_or_audited`.
+    10. `api_007_restore_uses_configured_key_source`.
+    11. `api_007_restore_restamps`.
+    12. `api_007_passphrase_backup_needs_recent_sign_in`: a token gets 403.
+    13. `api_007_backup_post_refused_for_agents`.
+    14. The Pi 4 KDF time and peak RSS are measured and recorded, with parameters tuned to at most 1.5 s.
+    15. spec/08 §8, `docs/running.md`, `docs/secrets.md` and `site/guide-settings.html` are updated.
+    16. The size delta is recorded.
+
+- [ ] **T23.10 Node-managed entries, and OIDC providers in the UI applied without a restart.** *(API-016, API-004, CLU-010; ADR-167 §6–7, corrects ADR-045's implementation note)*
+  - **Manifest.** `ClusterManifest.node_managed` (optional `BlobRef`, references only). It is persisted on every member, validated and merged separately, inherited and seeded at promotion, carried unchanged under a Git source.
+  - **Kind.** `oidc_provider` (admin-only): id, name, issuer, `client_id`, `client_secret_ref`, scopes, claims, role rules. File ids win. `public_url` stays node-local, and a node without it shows the provider as inactive.
+  - **Auth.** `Auth.oidc` becomes `ArcSwapOption`. Flows and the discovery cache move to `Auth`, and rebuilds are single-flight with a generation counter.
+  - *AC:*
+    1. `api_016_oidc_provider_added_without_restart` (fake issuer).
+    2. `api_016_oidc_discovery_failure_keeps_previous`.
+    3. `api_016_oidc_file_provider_wins`.
+    4. `api_016_oidc_sessions_survive_reload`.
+    5. `api_016_oidc_sign_in_spanning_reload_completes`.
+    6. `api_016_oidc_stale_rebuild_discarded`.
+    7. `api_016_break_glass_admin_unaffected`.
+    8. `api_016_oidc_on_replica_uses_replicated_secret`.
+    9. `clu_015_node_managed_survives_promotion`.
+    10. `clu_015_node_managed_refs_only`.
+    11. `clu_010_node_managed_ignored_by_n_minus_1`.
+    12. `clu_004_bad_node_managed_keeps_shared_part`.
+    13. Playwright for the provider form.
+    14. `site/guide-users.html`, Helm `values.yaml` notes and spec/08 §6 are updated.
+    15. The size delta is recorded.
+
+- [ ] **T23.11 Sink and OTLP credentials, and sinks reloaded without a restart.** *(API-016, OBS-010, OBS-006, NFR-007; ADR-167 §7)*
+  - **Config.** `telemetry.sink[].token_ref` and `telemetry.otlp.header_refs`, plus the admin-only `sink` kind through `node_managed`.
+  - **Reload.** The drainer-owned `EventSinks` takes a new `Vec<Out>` by `try_recv` once per batch (`ring.rs:301`, `tail.rs:115-146`, `sinks.rs:66-72`). `DROPS` becomes swappable. Spill files are keyed by name and URL hash, a removed sink's thread is joined (2 s) and its spill deleted.
+  - **OTLP** headers are resolved per batch.
+  - **Ephemeral** members skip sinks that need stored secrets, with an info log.
+  - *AC:*
+    1. `api_016_sink_added_without_restart`.
+    2. `api_016_removed_sink_flushes_then_stops` (2 s).
+    3. `api_016_failing_sink_build_isolated`.
+    4. `api_016_readded_sink_name_new_url_no_replay`.
+    5. `obs_006_otlp_header_ref_sent`.
+    6. `nfr_007_sink_drops_counted_across_reload`.
+    7. `make bench-smoke` shows no regression against the previous commit (five alternating rounds, `--baseline`), and the NFR-002 zero-allocation test still passes.
+    8. The Settings → Telemetry form uses `SecretField`.
+    9. `docs/running.md` and `site/guide-monitoring.html` are updated.
+    10. The size delta is recorded.
+
+- [ ] **T23.12 Git credentials and webhook secret from the UI.** *(API-016, CLU-003; ADR-049, ADR-167)*
+  - **Config.** `[cluster.git] credentials_ref` and `webhook_secret_ref`, node-local in the file or Helm values. The values are stored and replicated. `[cluster.git]` itself stays file-only.
+  - **UI.** The Cluster page's Git card shows credential status with a `SecretField`.
+  - *AC:*
+    1. `clu_003_git_poll_uses_stored_credentials` (fake forge).
+    2. `clu_003_webhook_hmac_with_stored_secret`.
+    3. `clu_003_git_credentials_survive_primary_move`.
+    4. `clu_003_webhook_secret_minimum_length`.
+    5. Under GitOps authority the secret can be set and the entry can't.
+    6. `docs/running.md` and `site/guide-settings.html` are updated.
+    7. The size delta is recorded.
+
+- [ ] **T23.13 Identification settings and group device classes in the UI.** *(API-016, OBS-025; ADR-111 pattern)*
+  - **Settings.** An `identify-settings` singleton kind, admin-only with no agent scope (owner decision 2026-11-16; revisit after T23.8): `enabled` and `max_clients`. `signatures_file` stays a file.
+  - **Groups.** A `device_classes` multi-select in `Groups.svelte`, checked against the raw group body (`config_api.rs:403-426`).
+  - *AC:*
+    1. `obs_025_identify_settings_apply_on_reload`.
+    2. `obs_025_device_classes_from_groups_form`: two groups claiming one class give a 422 naming the field.
+    3. Playwright for both forms.
+    4. `site/groups.html:78` matches the UI, and `docs/running.md` and help topics are updated.
+    5. The size delta is recorded.
+
+- [ ] **T23.14 Deployment bundles, docs, and the size gate.** *(OPS-001, OPS-002, OPS-004, DOC-006, NFR-005)*
+  - **Compose and `deploy/docker-desktop/`.**
+    - The key is generated in the volume, and `TELLTALE_NODE_SECRETS_KEY_FILE` is documented.
+    - `telltale.toml` (lines 36 and 51) keeps the `/run/secrets` wiring as one of two documented options. The secrets directory is not opened or changed.
+    - If the API port is published on 127.0.0.1 only, the bundle sets `allow_secrets_over_http`. Otherwise it enables `[api] tls = { self_signed = true }`.
+  - **Helm.** The `secretsKey` README.
+  - **systemd.** `install.sh` creates the key owned by `telltale`.
+  - **Spec.** Every amendment in ADR-167 §10.
+  - *AC:*
+    1. `size.py` shows a milestone growth of at most 0.10 MiB per architecture, with the per-task deltas summed and recorded.
+    2. `cargo deny check` passes with no new crate.
+    3. `smoke.sh` passes with a read-only root filesystem and the key in the volume.
+    4. Helm `ct` lint and template tests pass with persistence on and off.
+    5. Site link and Lighthouse checks pass.
+    6. Every ADR-167 amendment is written into the ADRs and specs it names, including spec/13 §3's admin-only kinds.
+
+---
+
 ## M22 — Network inventory and home integrations (fork owner request 2026-11-16)
 In the fork `nbacheller/telltaledns`: the IP and DNS side of a small network, without a DHCP server (ADR-091 stands). The routers and Home Assistant already know the devices; TelltaleDNS names them in DNS, shows the networks they sit in, and stays read-only toward both. Off by default; nothing new on the query path but one branch (and, when on, one lock-free load). A Home Assistant custom integration that reads this API lives outside the binary (`integrations/home-assistant/` in the fork's bundle), so it never touches the DNS path.
 

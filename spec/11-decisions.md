@@ -1291,6 +1291,379 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-167 — Secrets entered in the UI: a write-only encrypted store referenced by name, replicated to full members outside configuration versions, with files still winning (Proposed)
+
+**Context:** On 2026-11-16 the owner asked that anything configured today through a secret file can also be entered in the UI, and that the files keep working. The owner fixed four points:
+1. A secret entered in the UI replicates to full cluster members over the mTLS cluster channel and is re-encrypted on each node. It never reaches ephemeral resolver pods.
+2. Secrets are encrypted in `state.db` with a per-node key: `<data_dir>/secrets.key` (0600) by default, or one that comes from an environment variable or a mounted file.
+3. A backup carries secrets only when they are encrypted with a passphrase given at backup time, and the backup says so when it leaves them out.
+4. A `*_file` or inline value in the configuration files wins. The UI shows it as set by file and won't edit it.
+
+The code this ADR changes is at commit `a708f7f`.
+
+- **Where secrets live now.**
+  - Most are files named by a `*_file` path and read when used: `routers.rs:112-119`, `alerts.rs:737-745,809-817`, `sinks.rs:719-725`, `gitsource.rs:205-210,419-422`, `auth_setup.rs:69-78`, `telltale-cluster/src/net.rs:1008-1015`.
+  - The rest are inline values: `auth.oidc.provider[].client_secret` (`schema.rs:2745`), `upstream[].headers` (`schema.rs:520-522`) and `telemetry.otlp.headers` (`schema.rs:2388`).
+  - `SafeString` prints the plain value in both `Debug` and `Serialize` (`telltale-config/src/types.rs:49-75`).
+- **Existing leaks.**
+  - `GET /api/v1/config/entries` returns `serde_json::to_value(e)` (`api_backend.rs:2895`), so upstream `headers` and exec `args` come back unredacted. On a replica the primary's body is passed through unchanged (`federated.rs:2439-2450`).
+  - The write path copies bodies into these places:
+    - the idempotency table (`config_api.rs:190,1850-1860`);
+    - the audit `{before, after}` (`config_api.rs:1902-1913`);
+    - a second audit entry on the primary for every forwarded write (`forward.rs:232-237`);
+    - the `keepInGit` TOML (`api_backend.rs:5223-5260`);
+    - the forward to the primary (`federated.rs:2412-2422`). `forward::Write` derives `Debug` with the raw body (`forward.rs:31`).
+  - `telltale config check --print` prints inline secrets (`main.rs:1622-1623`).
+  - The Git webhook returns the internal error (file path, I/O error) with its 401 to anyone (`api_backend.rs:3285-3289`). It also HMACs with `secret.trim()`, so an empty secret file gives an empty key that anyone can forge (`gitsource.rs:419-432`).
+- **Existing exfiltration paths.**
+  - An operator can point an alert destination's `token_file` at any file the process can read (for example `<data_dir>/cluster/ca.key` or `/proc/self/environ`) and its `url` at their own host (`alerts.rs:809-817`).
+  - An operator, or an agent with `config:write:upstreams`, can create an `exec://` upstream (`validate.rs:19,1462-1468`). The plugin is spawned with the parent's whole environment and no `env_clear`/`env_remove` (`telltale-upstream/src/plugin.rs:55-62`). Self-update spawns the same way (`selfupdate.rs:101,201`).
+  - The primary applies a forwarded write with only `by: String` and no role (`forward.rs:34-44,182-191`).
+- **Precedents for secrets between nodes.**
+  - ADR-045 replicates TOTP secrets, stored as plain BLOBs (`telltale-store/src/state/identity.rs:33,142`).
+  - ADR-051 sends the CA key in `KeyShare` (`wire.rs:75-83`).
+  - ADR-143 withholds identities from ephemeral members (`net.rs:2530-2545`). Witnesses are non-ephemeral but serve no DNS or UI (`node.rs:39,747-751`).
+  - So ADR-045's "never cross the cluster channel" really covers only file secrets.
+- **Ordering and versions.**
+  - Configuration orders by `(epoch, seq)` with a `base` for orphan detection (`sync.rs:36-60`) and is fenced (`net.rs:645-647`).
+  - Pins and canary rollouts gate everything in `ClusterManifest` (`spec/12` §4, CLU-013).
+  - `ClusterManifest` has no `deny_unknown_fields`, and heartbeats are prost messages, so new optional fields are N-1-safe.
+  - Config structs do use `deny_unknown_fields` (`schema.rs:3,1249`), and `with_shared` refuses unknown shared keys (`shared.rs:84-90`). An N-1 replica therefore refuses a version that uses a new field, the same limit ADR quick-rules records (`spec/11:1242`).
+- **Startup-only readers.**
+  - `[[router]]` (`server.rs:1099-1106`). `resolver_pod` there only lowers the log level, so pods do poll today (`routers.rs:724-738`).
+  - OIDC. `Auth.oidc` is a `OnceLock`, `set_oidc` silently ignores every set after the first (`telltale-api/src/auth/mod.rs:315,404,465-467`), and in-flight flows live inside `Oidc.flows` (`oidc.rs:107,279`).
+  - Sinks (`sinks.rs:66-72`). `Sink::record` takes `&mut self` (`ring.rs:527`) and `DROPS` is a `OnceLock` (`sinks.rs:52,112`).
+  - Alerts, Git and the bootstrap secret re-read at use.
+- **Settings only in files:** `[[router]]`, OIDC providers, sinks, `[cluster.git]`, `[identify]` and the Groups form's `device_classes`.
+- **Spec inconsistency:** ADR-045's implementation note says OIDC provider settings replicate, but `auth` is in `NODE_LOCAL` (`shared.rs:15-26`).
+- **Other code facts.**
+  - The release profile aborts on panic (`Cargo.toml:46-51`).
+  - `state.db` runs WAL with no `secure_delete` (`state.rs:250-254`).
+  - `[api] tls` defaults to none (`schema.rs:2618-2625`).
+  - The edition is 2024, so `std::env::remove_var` is `unsafe` (AGENTS rule 7).
+- **Already linked:** `ring` 0.17.14 (direct in `crates/telltale`), `blake3` and `arc-swap` (direct), `argon2` 0.6.0 (`telltale-api`), `zeroize` 1.9.0 (transitive). The image is about 14.70–14.75 MiB against the 15 MiB gate.
+
+**Decision:**
+
+**1. Scope.**
+
+| Field | Decision | Why |
+|---|---|---|
+| `router[].api_key` / `api_secret` / `password` (UniFi, OPNsense, Home Assistant token) | **In** (T23.3, T23.7–8) | The owner's main case. A router whose credential is stored polls on the primary (or a standalone node) only. The others get its names through ADR-125's peer leases, which keeps ADR-125's "not every node polls" rule. A router whose credential is a file keeps polling where it does today, except that ephemeral pods now skip it explicitly. |
+| `alerts.destination[].token` / `password` | **In** (T23.6) | Read at each delivery, on the primary or a standalone node. |
+| `cluster.git.credentials` / `webhook_secret` | **In** (T23.12) | Read at each poll or request. Replication means every Git-eligible primary has them. |
+| `telemetry.sink[].token`, `telemetry.otlp.headers` | **In** (T23.11) | Telemetry never affects DNS (02 §8). On ephemeral pods a sink that needs a stored secret is skipped and logged once at info. |
+| `auth.oidc.provider[].client_secret` | **In** (T23.10) | Only full members serve the UI. |
+| `upstream[].headers`, `upstream[].tls_client_key` | **Later** | They sit on the answering path, and resolver pods would never have the value (decision 1, CLU-004). Inline and file values keep working, and T23.1 redacts them. |
+| `upstream[].args`, URL and proxy userinfo | **Out** (redacted only) | Not credential fields by design. `exec://`/`unix://` become admin-only (T23.2). |
+| `listen[].tls.key`, `api.tls.key` | **Later (P2), status only now** | A node's own identity, already hot-reloaded (`telltale-net/src/tls.rs:26-78`). Replicating one node's key is wrong, and a bad API key could lock out the UI. |
+| `cluster.bootstrap_secret` | **Out, status only** | Pods need it before the channel is trusted (ADR-058). |
+| `allowed_signers_file`, `trust_anchors_file`, `*.tls_ca`, `signatures_file` | **Not secrets** | A router's CA becomes an inline `tls_ca_pem` (T23.8). The others stay files. |
+
+Non-secret settings that exist only in files are phased with the forms that need them:
+- a `router` kind (T23.7);
+- `oidc_provider` and `sink` kinds (T23.10–11);
+- Git `*_ref` fields. `[cluster.git]` itself stays file-only, pinned by `set-authority` (ADR-049);
+- `identify-settings` and `[[group]] device_classes` (T23.13).
+
+**2. Data model.**
+- **A new table, not `managed`.** Migration 11 creates:
+  `secrets(name TEXT PRIMARY KEY, kind TEXT NOT NULL, key_id BLOB, nonce BLOB, ciphertext BLOB, stamp_epoch INTEGER NOT NULL, stamp_seq INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0, origin TEXT NOT NULL, updated INTEGER NOT NULL, updated_by TEXT NOT NULL)`.
+  - A row with `deleted=1` is a tombstone with no ciphertext.
+  - Tombstones are kept for 90 days, and at most 512 of them, so offline members still learn of deletions.
+  - The managed copy paths (`shared_part`, `config/entries`, `keepInGit`, audit) never see this table.
+- **Stamps.** Every change is stamped `(epoch, seq)`. On a cluster that is the current epoch and a per-epoch counter, taken under `fence` and the lease check (`may_publish`, ADR-056). On a standalone node it is `(0, n)`. A stamp is never reused, delete-then-recreate included.
+- **The secrets head** is `{stamp, digest}`. `digest` = BLAKE3 over the sorted `(name, kind, stamp, deleted)` list. It holds no value and no value hash.
+- **Names** match `^[a-z0-9][a-z0-9._-]{0,62}$`. `kind` is `text` (`pem` is reserved).
+- **Values.**
+  - At most 8 KiB, UTF-8, trimmed.
+  - Empty after trimming is refused, and `webhook_secret` needs at least 16 characters.
+  - `text` refuses every control character (as `SafeString` does). `pem` will allow `\n`.
+  - `"<redacted>"` is refused as a value.
+- **Limits:** at most 128 live secrets, and at most 512 KiB of encoded values in one fetch (section 6).
+- **References.** Each field gets a sibling `<field>_ref = "<name>"`:
+  - `router[].api_key_ref` / `api_secret_ref` / `password_ref`;
+  - `alerts.destination[].token_ref` / `password_ref`;
+  - `auth.oidc.provider[].client_secret_ref`;
+  - `telemetry.sink[].token_ref`;
+  - `telemetry.otlp.header_refs = {"<Header>" = "<name>"}`;
+  - `cluster.git.credentials_ref` / `webhook_secret_ref`.
+
+  These fields are serialized only when set, so configurations without them still converge on N-1 replicas. The UI names a new secret `<kind>.<entry>.<field>`, while the configuration always holds the explicit name, so a Git-managed file can say `api_key_ref = "unifi"`.
+- **Validation** (`validate.rs`):
+  - At most one of inline, `_file` and `_ref` per field.
+  - A missing `_ref` is a load **warning** (DNS never depends on the store) and a **422 `secret_missing`** on an API write.
+  - `"<redacted>"` in a file is a load error.
+- **Precedence, judged against the file layer and not the effective entry** (decision 4). The file layer is TOML, `TELLTALE_*` and CLI; on a replica, for a shared section, it is the primary's file layer as published.
+  1. If the file layer sets the field inline or by `_file`, the source is `inline`/`file`. The UI shows "Set by file (`<path>`, read on each node)" and whether it is readable on this node. An API write that sets, drops or replaces it, whether by `_ref`, an ADR-069 override or a hidden entry, is refused with 409 `set_by_file`. An override that changes other fields gets the file's credential field carried over by the server.
+  2. Otherwise a `_ref` gives `stored`.
+  3. Otherwise the source is `none`.
+- **Kinds.**
+  - `router` and `oidc_provider` follow ADR-040: names defined in the files are read-only through the API.
+  - Alert destinations keep ADR-069, constrained by rule 1.
+- **One resolver.** `telltale::secrets::Credential::resolve(inline, file, ref) -> Resolved { value: SecretValue, source }` replaces the six read sites.
+- **`SecretValue`.**
+  - Its `Debug` and `Display` print `<redacted>`, it has no `Serialize`, and it is zeroized on drop.
+  - The claim is limited to our own buffers: prost, TLS and stream buffers are not zeroized, and the docs say so.
+- **Readable checks** open the file read-only with `O_NONBLOCK` and close it without reading. A file that isn't a regular file reports "not usable". `stat` alone can't tell readability.
+
+**3. Encryption and the node key.**
+- **Cipher.** ChaCha20-Poly1305 from `ring::aead`, so no new crate. It is fast on a Pi 4, which has no AES instructions.
+- **Nonce:** 96 random bits from `SystemRandom` per encryption. With a few thousand writes per key this stays far below 2^32.
+- **Associated data:** `"telltale-secret\x01" ‖ key_id ‖ kind ‖ name ‖ be64(stamp_epoch) ‖ be64(stamp_seq)`.
+- **Key format.**
+  - A key is 32 random bytes, written as `ttsk1:<base64url, no padding>`.
+  - `key_id` is the first 8 bytes of `blake3::derive_key("telltale secrets key-id v1", key)`.
+  - Subkeys are derived as `"telltale secrets aead v1"` and `"telltale secrets idempotency v1"`.
+- **Key source, first match wins:**
+  1. `TELLTALE_SECRETS_KEY`;
+  2. `[node] secrets_key_file` (env `TELLTALE_NODE_SECRETS_KEY_FILE`; the only spelling documented);
+  3. `<data_dir>/secrets.key`.
+
+  The previous key comes from `TELLTALE_SECRETS_PREVIOUS_KEY` or `[node] secrets_previous_key_file`. Both variables join `RESERVED` (`env.rs:22-44`). Spawned processes (plugins, self-update) have them, `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD*` and `TELLTALE_TOKEN` removed with `Command::env_remove`; no `unsafe`. The docs prefer a file, and on Kubernetes `secretKeyRef` over a literal `value`.
+- **Creating the data-dir key.** `secrets.key` is generated only when the `secrets` table holds no rows and no tombstones.
+  - It is created with `O_CREAT|O_EXCL`, mode 0600, written and fsynced, never renamed over an existing file.
+  - A key file readable by others, or owned by another user, gives a warning. Group read by the process's own gid doesn't warn (kubelet with `fsGroup`).
+- **Rotation.**
+  - At start, rows under the previous `key_id` are re-encrypted in one transaction, followed by `wal_checkpoint(TRUNCATE)`.
+  - `telltale secrets rotate-key` is offline and covers the data-dir key only. It writes `secrets.key.new`, re-encrypts, commits, checkpoints, then renames. A leftover `.new` file is tried by `key_id` at the next start.
+- **Locked store.** The store is **locked** when:
+  - a configured source (1 or 2) can't be read or parsed;
+  - source 3 is missing while rows exist;
+  - or no row decrypts under any available key.
+
+  While locked:
+  - nothing is generated, and secret writes return 503 `secrets_locked`;
+  - status reads work, and health shows `secrets_locked` (degraded, OBS-015);
+  - DNS and `/readyz` are unaffected.
+
+  One exception: a **replica** whose rows are all `origin='cluster'` may generate a new key, drop those rows and refetch.
+- **Row states.** A row whose `key_id` matches neither key is `unreadable`, and one that fails authentication is `corrupt`. Re-entering the value, or a sync, repairs it.
+- **When a secret can't be read.** An integration that needs an unreadable secret reports "not configured: secret `<name>` can't be read on this node (<reason>)" and logs once until that changes. The metric is `telltale_secrets{state}`.
+- **Threat model** (`docs/secrets.md`).
+  - With the data-dir key, the store protects copies of `state.db` and backups, not someone who holds the whole data directory.
+  - Admins are trusted not to misuse a stored secret, but cannot read one back (except through a passphrase backup, section 8).
+  - Operators and agents can neither read nor redirect one.
+
+**4. API and rules.**
+- **Routes.**
+  - `GET /api/v1/secrets[/{name}]` (operator; agents with `config:read`) returns metadata only:
+    - `name`, `kind`, `set`, `stamp`, `updated`, `updatedBy`, `origin`;
+    - `usedBy [{kind, name, field, source, node?}]`;
+    - `nodes [{node, applied, unreadable}]`;
+    - `credentials`: every credential field on this node with its source, its path and whether it is readable.
+
+    On a replica this is proxied to the primary when one is reachable (as `config_entries` is). Otherwise it is local with `stale: true`.
+  - `PUT /api/v1/secrets/{name}` takes `{"value", "kind"}`, and `DELETE /api/v1/secrets/{name}`. Both need **admin**, answer with metadata only, and carry `Cache-Control: no-store`.
+    - `DELETE` of a referenced secret is 409 `secret_in_use`, listing users across nodes (section 6). If a full member's references are unknown (offline), it needs `?force=true`.
+- **Transport.** `PUT /secrets` and a passphrase `POST /backup` are refused with 403 `insecure_transport` unless the request is HTTPS (`is_https`, including trusted proxies) or comes from loopback.
+  - `[api] allow_secrets_over_http = true` (node-local, file only) lifts this.
+  - The UI explains and links to `[api] tls = { self_signed = true }` (ADR-149).
+- **Agents:** 403 `agent_not_allowed` on secret writes whatever the scopes.
+- **AGT conformance.**
+  - AGT-001: `value` is `writeOnly`.
+  - AGT-002: `?dryRun=true` checks name, kind and size, reports `wouldCreate`/`wouldReplace` and the entries that would become configured, and stores nothing.
+  - AGT-003: the stored request is `PUT /secrets/{name} ` plus the hex keyed BLAKE3 of the value under the idempotency subkey. The same key with a different value is 409.
+  - AGT-005: audited as `secret.put|delete {name, kind, stamp, usedBy}`, never the value or its length.
+  - `If-Match` takes the secrets head as an ETag.
+- **On a replica**, writes are forwarded to the primary as a dedicated RPC kind `secret.put`/`secret.delete`, not a variant of `api.write`, so an N-1 primary refuses it by kind.
+  - The value travels as `SecretValue`, and the request type's `Debug` redacts.
+  - The forward carries `role` and `agent` (below), and logs only the operation and the name.
+  - With no primary reachable, the answer is 409.
+- **When writes are allowed.**
+  - **Lease and fence:** a primary without a valid lease, or past the fence, refuses with 409.
+  - **GitOps authority:** secret writes are allowed (secrets are state, never in Git, ADR-049); entry writes stay 409 `gitops_managed`.
+  - **Emergency primary:** 409.
+  - **Pin or canary rollout:** allowed. The secrets head travels outside `ClusterManifest` (section 6), so pins and rollouts neither hold it back nor bump `seq`.
+- **Credential rules for entries** (T23.2):
+  - Creating or changing any `*_file` or `*_ref`, or the destination fields of an entry that has any credential (inline, file or ref), needs admin. Destination fields are `url`, `proxy`, `host`, `tls_server_name`, `tls_ca`, `bootstrap` and the scheme.
+  - The `router`, `oidc_provider` and `sink` kinds are admin-only.
+  - Creating, or switching to, an `exec://` or `unix://` upstream needs admin, on writes and on `checks/upstream` alike.
+  - API-set paths:
+    - are canonicalized at write and at use;
+    - must not be under `/proc`, `/sys`, `/dev`, `data_dir`, or any configured key, previous-key, bootstrap or TLS key path, and these denials apply to every API-settable path (`list[].path`, `tls_ca` included);
+    - `*_file` must also sit under `[node] secret_file_dirs` (node file only; default `/run/secrets`, `/var/run/secrets`, `/etc/telltale/secrets`).
+    - An existing API-set path outside these rules stops being read and reports the reason in `credential_issues`.
+  - An admin write that changes the destination of an entry with a `_ref`, or points a `_ref` at a secret already used by a different kind, is audited as `credential.redirect` and raises the alert event `credential_redirected`.
+  - Forwarded writes carry `role` and `agent`, and the primary re-checks every rule. A credential-affecting write forwarded without a role (an N-1 replica) is refused with 409 `upgrade_required`.
+- **Redaction everywhere bodies are copied** (T23.1).
+  - `telltale-config::credentials::PATHS` lists:
+    - `upstream[].headers.*`, `upstream[].args[*]`;
+    - URL userinfo passwords in `upstream[].url`, `upstream[].proxy` and `alerts.destination[].url`;
+    - `auth.oidc.provider[].client_secret`, `telemetry.otlp.headers.*`.
+  - It is applied by:
+    - `config_entries` (again on a replica after decoding);
+    - write responses, both audit sites (`config_api.rs:1902-1913`, `forward.rs:232-237`, `apply_ack`);
+    - the stored idempotency response;
+    - `keepInGit`, forward logging, `config check --print` (`--show-secrets` opts in);
+    - `GET /cluster/compare`, every MCP read tool and resource, and the support package.
+  - Values come back as `"<redacted>"`, and `ConfigEntry.redacted` lists the paths.
+  - **The marker rule:** a PUT that sends `"<redacted>"` keeps the current value only when the entry's destination fields are unchanged. Otherwise it is 422 `credential_reentry_required`. With no current value it is 422 too. `POST /checks/*` never resolves markers.
+  - **Idempotency.** The stored request is the keyed BLAKE3 of the canonical full body (node key, idempotency subkey), and the stored response is redacted. With the store locked, a write carrying an `Idempotency-Key` whose body holds a credential path is 503.
+  - **Migration 10** purges existing idempotency rows. `state.db` gets `PRAGMA secure_delete=ON`, plus `wal_checkpoint(TRUNCATE)` after the migration, after rotation and after secret deletes.
+  - A test fails when a field classed `secret` in `telltale-support/src/classify.rs` is in neither `PATHS` nor a reasoned allow-list (usernames). `*_ref` fields are class `name`.
+- **The Git webhook** answers a generic 401 and logs the detail, and refuses empty secrets.
+- **Delivery errors** keep hosts only, never URL queries. The Gotify token is percent-encoded (`alerts.rs:821-825`).
+
+**5. MCP and agents.**
+- **New read-only tools.** `secrets_status` wraps `GET /api/v1/secrets` (`config:read`). `list_routers` wraps `GET /api/v1/routers`.
+- **No write tools** for secrets, or for the `router`, `oidc_provider`, `sink` or `identify-settings` kinds. These have no agent scope. A value would otherwise sit in AGT-007 plan memory, the approval diff and the agent's transcript, as with OPS-011 and ADR-156.
+- **Plans meet the marker rule.** MCP plans that merge from `config/entries` (`mcp.rs:2321,2372`) carry `"<redacted>"`, so a plan that changes an upstream's destination fails at apply with `credential_reentry_required`, and the plan summary says so.
+- **Agent forbidden list.** `POST /api/v1/backup`, `/checks/router*` and the secret writes join it (`agent.rs:590-598`).
+- **spec/13 §3** records these exceptions.
+
+**6. Replication** (CLU-015, decision 1).
+- **The head travels in heartbeats, not in configuration.** The primary's `Heartbeat` (prost, new optional tags) carries `secrets_head {epoch, seq, digest}`. Nothing goes in `ClusterManifest`, so pins, canary bakes, `If-Match configVersion`, version history and lag are unaffected. N-1 nodes ignore the tags (CLU-010).
+- **Fetching.** A full replica sends the RPC `secrets.fetch {since_digest}` when the head's digest differs from its own.
+  - It sends it only to the node it holds as primary of the highest epoch it has seen, and ignores a head from a lower epoch (`spec/12` fencing rule 4).
+  - Fetches happen at most once per head, back off from 30 s to 10 min on failure, and never run while the local store is locked.
+  - Fetching never gates manifest application, `applied` or readiness (ADR-058).
+- **The primary answers** only a peer that its **registry** records as `!ephemeral && !witness`.
+  - The answer is `{head, items: [{name, kind, value?, stamp, deleted, updated, updated_by, held?}]}`.
+  - A row the primary can't decrypt is sent as `held` (no value), and the replica keeps its own row with that stamp.
+  - A locked primary, or one that generated a new key, answers `secrets_unavailable`, and replicas keep their set.
+  - An emergency primary still answers.
+  - The answer is protobuf `bytes`, capped at 900 KiB encoded and paged beyond that. It never touches the blob store, so no plaintext reaches anyone's disk.
+- **The replica checks** that the answer's head equals the announced head and that the digest recomputed from the items matches. Otherwise it discards the answer.
+- **Applying.**
+  - The replica re-encrypts each value under its own key.
+  - In one transaction it upserts `origin='cluster'` rows by stamp: a higher stamp wins, and a tombstone deletes.
+  - It never deletes a name by its absence from the set.
+- **Orphans.** Rows a demoted primary stamped in an epoch after the new primary's base are orphaned. They are not deleted, but listed under Conflicts as "re-enter on the current primary" and not used.
+- **Origin.**
+  - On the primary every row is authoritative and stored as `origin='cluster'`. At `cluster init` and at join, a standalone node's rows become cluster rows on the primary.
+  - On a joining replica, local rows stay usable on that node, and are flagged `shadowed` when a cluster row of the same name arrives.
+  - On removal (ADR-155) or leave, cluster rows are purged and the purge is audited.
+- **Reverse heal.** A primary with unreadable rows fetches them from a registry-full replica holding the same stamp. The replica answers only the current primary.
+- **Heartbeats from members** carry `secrets_applied` (head), `secrets_unreadable`, `credential_issues` (at most 32 paths) and `secret_refs`: the names this node's node-local fields reference, at most 128, sent on change and every 60 s. `DELETE` checks the union of these.
+- **Ephemeral pods** hold no secrets, need no key, never generate `secrets.key` and never report `secrets_locked`.
+- **Node-managed entries** (`oidc_provider`, `sink`) are configuration, not secrets, so they are versioned. `ClusterManifest` gains an optional `node_managed: BlobRef` holding references only, which N-1 nodes ignore.
+  - Every member persists the last one it applied.
+  - Each member validates and merges it separately from the shared part, under its own files, where file ids win. A failure drops only those entries, logs once, and leaves the shared part and DNS untouched (CLU-004).
+  - A newly promoted primary publishes the inherited blob overlaid with its own rows, and seeds its managed rows from it.
+  - A primary with a Git source carries the blob unchanged, and writes of these kinds there are 409 `gitops_managed`.
+  - Ephemeral members skip entries that need a stored secret, with one info log.
+
+**7. Hot reload.** Nothing here touches the query path.
+- **Routers.**
+  - `routers::run` reads the live `[[router]]` from `Sources` at each round, and no longer returns on an empty list. It recomputes `interval` each round.
+  - Changed or removed routers are rebuilt or dropped, and unchanged routers keep their state.
+  - A `Notify` on a router or secret change polls, debounced to at least 5 s.
+  - Polling follows section 1's rule: stored credentials on the primary or a standalone node, file credentials as today, and ephemeral pods skip explicitly.
+  - Failures are logged once until they change, and names stay as last read.
+  - The release build aborts on panic, so `routers.rs` gets `clippy::unwrap_used`, `expect_used` and `indexing_slicing` denied, and malformed answers are tested.
+- **OIDC.**
+  - `Auth.oidc` becomes `ArcSwapOption<Oidc>`.
+  - In-flight flows (PKCE verifier, nonce) and the discovery cache move into `Auth`, so a swap keeps sign-ins in progress.
+  - Rebuilds run one at a time with a generation counter, and a stale result is discarded.
+  - A provider whose discovery fails keeps its previous settings, or is left out with a reason.
+  - Sessions and the break-glass admin are untouched.
+- **Sinks.**
+  - The drainer-owned `EventSinks` receives a new `Vec<Out>` through a channel `try_recv` once per batch.
+  - `DROPS` becomes swappable.
+  - Spill files are keyed by name plus a hash of the URL. A removed sink's thread is joined (2 s bound) before its name is reused, and its spill file is deleted.
+  - OTLP headers are resolved per export batch.
+- **Alerts and Git** use the resolver at use. The store keeps ciphertext in memory and decrypts at use.
+
+**8. Backups** (amends ADR-063 and API-007).
+- **Never in a backup:** the `secrets` table, its tombstones and the head. They are dropped like `sessions` and `idempotency` (`backup.rs:302`), and `sqlite_copy` vacuums. The node key is never included either.
+- **With a passphrase** of at least 12 characters, the archive gains `data/secrets.enc`:
+  - ChaCha20-Poly1305 over the JSON list `{name, kind, value, updated, updated_by}`;
+  - the key from Argon2id v1.3, m = 19,456 KiB, t = 2, p = 1 (the same as password hashing), with a 16-byte salt and 32 bytes of output, parameters recorded;
+  - a 12-byte random nonce;
+  - associated data `"telltale-backup-secrets v1" ‖ backup_id`.
+
+  One KDF runs at a time per process; a second request gets 429. Restore refuses m > 256 MiB or t > 10.
+- **Manifest and version.** The manifest gains `secrets {included, count, omittedReason?, kdf, aead, nonce, backupId}`. `VERSION` becomes **2 only when `secrets.enc` is present**, so older builds refuse it; archives without secrets stay version 1.
+- **Without a passphrase,** the CLI, the API header and the UI all say "N stored secrets were left out". The backup also warns when the configuration files or `managed` rows hold inline credentials, which are copied as they are.
+- **Restore** (offline):
+  - `--secrets-passphrase-file F`, a TTY prompt, or `--skip-secrets`. A version 2 archive with neither is refused before anything moves.
+  - A wrong passphrase reports "wrong passphrase or damaged archive" and moves nothing.
+  - The key is resolved from the same configuration (`-c`) and environment as the server. Restore refuses, rather than generating, when a configured source is unavailable, and prints the source and `key_id` it used.
+  - Rows are re-stamped in the restoring node's current epoch, inside the staged `state.db`.
+- **API.**
+  - `POST /api/v1/backup` (admin; not agents; HTTPS rule from section 4) takes `{includeQlog?, passphrase?}` and answers with `X-Telltale-Backup-Secrets: included|omitted; count=N`.
+  - With a passphrase it needs an interactive session signed in within the last 10 minutes; tokens get 403 `reauth_required`, with a hint to run `telltale backup create` on the node.
+  - It is audited as `backup.create {secretsIncluded, count}`, and with secrets included it raises the alert event `secrets_exported`.
+  - It takes no `Idempotency-Key`, because it changes no state.
+  - `GET /api/v1/backup` stays and omits secrets.
+
+**9. UI.**
+- **Settings → "Integrations & secrets":**
+  - stored secrets (name, used by, updated, by, readable per node, Replace, Clear);
+  - credential fields set by file (path, readable on this node);
+  - store state (key source, locked/unreadable/ephemeral);
+  - orphaned rows.
+- **`SecretField.svelte`:**
+  - a write-only `type=password` input, never pre-filled, with `autocomplete="off"`, `spellcheck="false"`, `data-1p-ignore`, `data-lpignore` and no show toggle;
+  - states: Not set, Set (updated, by), Set by file, Inline in the file, Unreadable on `<node>`, and Can't be set over plain HTTP.
+- **Saving** is `PUT /secrets/<auto-name>`, then the entry with `_ref`. A failure in between leaves at most an unused secret, which the page lists.
+- **Every "?"** has a help topic.
+
+**10. What this amends.**
+- **ADR-045:** the channel rule covers file secrets only, and its OIDC implementation note is corrected.
+- **ADR-048 and OPS-005:** secret writes are allowed under GitOps authority.
+- **ADR-049:** references by name.
+- **ADR-063, API-007:** section 8.
+- **ADR-069:** credential fields of alert destinations follow section 2 rule 1.
+- **ADR-116 and CLU-013:** secrets are not configuration versions; pins and rollouts don't gate them.
+- **ADR-120:** "key files at the same paths" or a stored secret. Stored-credential routers poll on the primary.
+- **ADR-125:** confirmed for stored-credential routers.
+- **ADR-156:** the credential table moves to `telltale-config`, and `*_ref` fields are class `name`.
+- **T9.6:**
+  - The criterion becomes "secret values pass only through `/api/v1/secrets`".
+  - `config:write:alerts` no longer covers credential or destination fields of a destination that has a credential, so those `plan_*` alert changes get 403.
+- **Also:** the comment at `config_api.rs:656-657`; spec/08 §3.3, §6 and §8; spec/12 §4 and §6; spec/13 §3.
+
+**New direct dependencies.** No new crates are added.
+- `zeroize` becomes a direct dependency of `crates/telltale`. It is already in the lock through RustCrypto, and it is needed for `SecretValue`.
+- `argon2` becomes direct there too, for `backup.rs`. It is already linked through `telltale-api`.
+
+**Alternatives rejected:**
+- **Reusing `managed` for values:** every copy path would carry them.
+- **A shared cluster key, `privacy.key` or the CA key:** one node's compromise would expose everyone's, and decision 2 says per-node keys.
+- **Values as content-addressed blobs:** replicas write blobs to disk.
+- **The secrets head in `ClusterManifest`:** every secret write would become a configuration version, gated by pins and rollouts.
+- **Deletion by absence:** one primary that can't read its rows would wipe every replica.
+- **A plain per-node counter as the version:** it goes backwards after failover.
+- **Router secrets only on the polling node:** that breaks when the primary moves, and the owner chose replication.
+- **Every full member polling every stored-credential router:** ADR-125 rejected it.
+- **Secrets on ephemeral pods:** decision 1.
+- **Upstream refs now:** pods answer most queries and would lack the value.
+- **`*_secret` suffixes, or `*_file = "secret:<name>"`:** awkward names, overloaded paths.
+- **Values in entry bodies:** that is the general write path again.
+- **Plain HTTP allowed silently:** the value would cross the network in clear.
+- **`env_clear()` for plugins:** it breaks plugins that need `PATH` or proxy variables. `env_remove` of the named variables plus admin-only `exec://` covers the risk, since a same-user process could read `secrets.key` anyway.
+- **Argon2 at m = 64 MiB inside the DNS process:** it competes with NFR-001's working set.
+- **The `chacha20poly1305`/`aes-gcm` crates:** `ring` already provides the cipher. **AES-256-GCM:** slower on a Pi.
+- **MCP write tools, or operator role for secret writes:** both are exfiltration paths.
+- **UI-made OIDC providers and sinks kept node-local:** each node would need its own write route, against the single management plane.
+
+**Consequences:**
+- **Who benefits.** Home and Pi users can run routers, alerts, Git, sinks and OIDC from the UI. File and Kubernetes Secret setups behave as before and win.
+- **Timing.** A secret set on any node reaches every full member within one heartbeat plus one RPC. Resolver pods still need `*_file` mounts for sinks and OTLP.
+- **Behavior changes** (T23.2):
+  - Operators and agents can no longer change `*_file` paths, credential-bearing destinations, or `exec://`/`unix://` upstreams.
+  - Existing API-set file paths outside `secret_file_dirs` stop being read.
+  - Stored-credential routers poll on the primary only.
+- **Mixed versions (CLU-010).** As with quick rules, an N-1 replica refuses a configuration version that uses a new `*_ref` or `tls_ca_pem` field, and keeps its last good version until it is upgraded. An API write that adds one warns, naming the older members. Credential-affecting writes forwarded by N-1 replicas are refused.
+- **Plain HTTP.** Secret entry over plain HTTP from another host is refused unless `[api] allow_secrets_over_http` is set.
+- **Helm.**
+  - The default key lives in the data directory.
+  - `secretsKey.existingSecret` is recommended.
+  - `secretsKey.generate=true` (Helm `lookup`) is documented as unsafe under `helm template` or Argo CD.
+  - With persistence off, stored secrets are lost at every restart, and the health reason `secrets_ephemeral` says so.
+- **Unchanged:** the query path, and the crate list. Image growth is limited to 0.10 MiB for the milestone, recorded per task.
+- **Old audit entries.** Entries written before T23.1 may hold upstream headers and can't be rewritten (hash chain). The release note says so.
+
+**Owner decisions on the open questions (2026-11-16):**
+1. The admin-only credential rules (T23.2) ship right away, with T23.1, not with the UI.
+2. Upstream credentials (`headers`, `tls_client_key`) stay file or inline only, redacted everywhere; no task sends secrets to resolver pods.
+3. OIDC providers and sinks made in the UI reach every full member as node-managed configuration; providers and sinks defined in files stay per node.
+4. Entering a secret over plain HTTP from another host is refused unless `[api] allow_secrets_over_http = true`.
+5. Agents get no write scope for router or `[identify]` fields for now (admin-only, as above). Revisit after T23.8.
+6. Audit entries written before T23.1 stay as they are (the hash chain forbids rewriting); the release note warns about them.
+
 ## ADR-166 — More naming sources: UniFi reservations and networks, Home Assistant through a template, and a fixed order when sources disagree (Proposed)
 **Context:** T22.2, T22.3 (API-012, API-013). ADR-080 left UniFi's offline known clients undone; Home Assistant knows curated names for IoT devices (by MAC, not IP); a home has a router *and* Home Assistant naming the same address. ADR-080's lease view kept whichever router was read last (a `HashMap` walk).
 **Decision:**
