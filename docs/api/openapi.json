@@ -4525,7 +4525,7 @@
           "config"
         ],
         "summary": "Filter lists and their download state.",
-        "description": "Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,\n`pending`) and last error, size, and how many names it contributes to the active snapshot.",
+        "description": "Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,\n`pending`) and last error, size, and how many names it contributes to the active snapshot;\nwhen it was last checked, last confirmed current, and last changed, and whether a refresh is\nqueued or downloading it now (`refreshing`). On a cluster replica the download state is the\nprimary's (it downloads and compiles the lists every node serves); hits are this node's.",
         "operationId": "lists",
         "responses": {
           "200": {
@@ -4534,6 +4534,106 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Items_ListInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/lists/refresh": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Update lists now.",
+        "description": "Downloads every enabled filter list again now (or only the lists in `names`), without\nwaiting for their `refresh_secs` schedule, like Pi-hole's \"Update Gravity\" (`pihole -g`).\nAnswers 202 at once with what was queued; the downloads run in the background, and\n`refreshing` in `GET /api/v1/lists` is true until each list's download ends\n(`lastSuccessUnixSeconds` then moves on). Unchanged sources cost one conditional request\neach, and the filter snapshot is recompiled only when something changed (it then serves\nwithin seconds). A failed download keeps the last good copy. Disabled lists are left out\n(`skipped`). In a cluster the primary downloads and compiles the lists every node serves:\na replica forwards the request (503 when it can't reach the primary; replicas keep serving\nthe last lists). `?dryRun=true` says what would be queued and queues nothing.\n`Idempotency-Key` replays the first answer for 24 hours. It changes no configuration (a\nGitOps-managed cluster takes it too). Needs the operator role (agents: the\n`config:write:lists` scope and a reason); audit-logged as `lists.refresh`.",
+        "operationId": "refresh_lists",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Check and report without changing anything.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Optional: `{}` or no body refreshes every enabled list.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ListsRefreshRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Queued (or, with dryRun, what would be): the lists, the ones left out, and the node that downloads them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListsRefreshResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A malformed body or an empty name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Needs the operator role (agents: config:write:lists).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No list by one of those names (the hint lists them).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This node doesn't download lists (`lists_not_here`: role resolver), or an Idempotency-Key reused for another request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A cluster replica that can't reach the primary (it downloads the lists).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -11275,7 +11375,8 @@
           "drill_active",
           "drill_targets",
           "node_is_primary",
-          "node_is_up"
+          "node_is_up",
+          "lists_not_here"
         ]
       },
       "ConfigChange": {
@@ -14772,6 +14873,7 @@
                     "null"
                   ],
                   "format": "int64",
+                  "description": "Last time the content changed (Unix seconds).",
                   "minimum": 0
                 },
                 "lastCheckedUnixSeconds": {
@@ -14780,6 +14882,16 @@
                     "null"
                   ],
                   "format": "int64",
+                  "description": "Last download attempt (Unix seconds), whatever its outcome.",
+                  "minimum": 0
+                },
+                "lastSuccessUnixSeconds": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "REQ: FLT-004 — last time the source was confirmed current: a download, a `304 Not\nModified`, or the same content again (Unix seconds).",
                   "minimum": 0
                 },
                 "lines": {
@@ -14800,6 +14912,10 @@
                     "$ref": "#/components/schemas/ListShare"
                   },
                   "description": "Lists it shares names with, most shared first."
+                },
+                "refreshing": {
+                  "type": "boolean",
+                  "description": "REQ: FLT-004 — a refresh asked for (`POST /api/v1/lists/refresh`) is waiting to start\nor downloading this list now (also true during a scheduled download). It clears when\nthe download ends; the snapshot follows within seconds if the content changed."
                 },
                 "regexSkipped": {
                   "type": "integer",
@@ -16409,6 +16525,7 @@
               "null"
             ],
             "format": "int64",
+            "description": "Last time the content changed (Unix seconds).",
             "minimum": 0
           },
           "lastCheckedUnixSeconds": {
@@ -16417,6 +16534,16 @@
               "null"
             ],
             "format": "int64",
+            "description": "Last download attempt (Unix seconds), whatever its outcome.",
+            "minimum": 0
+          },
+          "lastSuccessUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "REQ: FLT-004 — last time the source was confirmed current: a download, a `304 Not\nModified`, or the same content again (Unix seconds).",
             "minimum": 0
           },
           "lines": {
@@ -16437,6 +16564,10 @@
               "$ref": "#/components/schemas/ListShare"
             },
             "description": "Lists it shares names with, most shared first."
+          },
+          "refreshing": {
+            "type": "boolean",
+            "description": "REQ: FLT-004 — a refresh asked for (`POST /api/v1/lists/refresh`) is waiting to start\nor downloading this list now (also true during a scheduled download). It clears when\nthe download ends; the snapshot follows within seconds if the content changed."
           },
           "regexSkipped": {
             "type": "integer",
@@ -16466,6 +16597,23 @@
             "format": "int64",
             "description": "REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).",
             "minimum": 0
+          }
+        }
+      },
+      "ListRefreshSkip": {
+        "type": "object",
+        "description": "A named list a refresh leaves out.",
+        "required": [
+          "name",
+          "reason"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "`disabled` (the list is off: it's never downloaded until it's turned on)."
           }
         }
       },
@@ -16686,6 +16834,75 @@
                 }
               }
             }
+          }
+        }
+      },
+      "ListsRefreshRequest": {
+        "type": "object",
+        "description": "REQ: FLT-004 — which lists to download again now (`POST /api/v1/lists/refresh`).",
+        "properties": {
+          "names": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Only these lists, by name (as `GET /api/v1/lists` lists them). Absent or empty: every\nenabled list.",
+            "example": [
+              "hagezi-pro"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ListsRefreshResult": {
+        "type": "object",
+        "description": "REQ: FLT-004 — what a refresh queued (`202 Accepted`), or with `dryRun`, would queue.",
+        "required": [
+          "dryRun",
+          "queued",
+          "skipped",
+          "alreadyRefreshing",
+          "note"
+        ],
+        "properties": {
+          "alreadyRefreshing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Of `queued`, the lists downloading already: each is downloaded once more when that\ndownload ends."
+          },
+          "dryRun": {
+            "type": "boolean",
+            "description": "True when nothing was queued (`?dryRun=true`): `queued` is what would be."
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node that downloads and compiles the lists: this one, or (on a cluster replica) the\nprimary the request was forwarded to."
+          },
+          "note": {
+            "type": "string",
+            "description": "What happens next, in a sentence."
+          },
+          "queued": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The lists queued for download now (or that would be), in configuration order."
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListRefreshSkip"
+            },
+            "description": "Named lists left out, and why."
           }
         }
       },

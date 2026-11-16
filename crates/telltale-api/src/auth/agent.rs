@@ -45,7 +45,10 @@ pub const SCOPES: &[(&str, &str)] = &[
         "config:write:upstreams",
         "add, change, and remove upstreams and upstream groups",
     ),
-    ("config:write:lists", "add, change, and remove filter lists"),
+    (
+        "config:write:lists",
+        "add, change, and remove filter lists; download them again now",
+    ),
     (
         "config:write:alerts",
         "add, change, test, and remove alert destinations and rules",
@@ -353,7 +356,9 @@ fn post_need(p: &str) -> Option<Need> {
         }
         // REQ: API-002 (T9.12) — checks need the scope that saves the entry.
         "/api/v1/checks/upstream" => Need::Scope("config:write:upstreams"),
-        "/api/v1/checks/list" => Need::Scope("config:write:lists"),
+        // REQ: FLT-004 — and "update lists now": whoever may save a list (which downloads it)
+        // may download it again.
+        "/api/v1/checks/list" | "/api/v1/lists/refresh" => Need::Scope("config:write:lists"),
         // MCP: each tool's REST calls are checked on their own (ADR-065).
         "/mcp" => Need::Any,
         // REQ: AGT-004 (T6.13) — flushing the cache is an immediate low-risk op (spec/13 §3).
@@ -657,6 +662,26 @@ mod tests {
         assert_eq!(
             required(&Method::GET, "/api/v1/cache/entries"),
             Scope("analytics:read")
+        );
+    }
+
+    /// REQ: FLT-004, AGT-004 — "update lists now" needs `config:write:lists` (an operator
+    /// scope, not a default one); reading the lists is `config:read`.
+    #[test]
+    fn flt_004_list_refresh_needs_the_lists_scope() {
+        use Need::Scope;
+        assert_eq!(
+            required(&Method::POST, "/api/v1/lists/refresh"),
+            Scope("config:write:lists")
+        );
+        assert_eq!(
+            required(&Method::GET, "/api/v1/lists"),
+            Scope("config:read")
+        );
+        assert!(!DEFAULT_SCOPES.contains(&"config:write:lists"));
+        assert_eq!(
+            implied_role(&parse_scopes(&["config:write:lists".into()]).unwrap()),
+            Role::Operator
         );
     }
 

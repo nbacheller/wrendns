@@ -629,6 +629,104 @@ async fn flt_004_run_loop_signals_changes_and_prunes() {
         .unwrap();
 }
 
+// REQ: FLT-004 — a refresh asked for names only those lists (disabled and unknown names are
+// skipped), requests made before it starts merge, and `is_refreshing` holds from the request
+// until the download ends.
+#[tokio::test]
+async fn flt_004_refresh_now_of_some_lists() {
+    let srv = serve(
+        handler(|r, _| {
+            if r.path == "/slow" {
+                Reply {
+                    delay: Duration::from_millis(600),
+                    ..ok("slow.com
+")
+                }
+            } else {
+                ok("a.com
+")
+            }
+        }),
+        None,
+    )
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let f = fetcher(tmp.path(), settings(), &[]);
+    let mut off = spec("off", srv.url("http", "h", "/off"));
+    off.enabled = false;
+    let specs = vec![
+        spec("a", srv.url("http", "h", "/a")),
+        spec("slow", srv.url("http", "h", "/slow")),
+        off,
+    ];
+    let (specs_tx, specs_rx) = watch::channel(Arc::new(specs));
+    let (changed_tx, mut changed_rx) = watch::channel(0u64);
+    let task = tokio::spawn(Arc::clone(&f).run(specs_rx, changed_tx));
+    // The first round downloads both enabled lists.
+    for _ in 0..2 {
+        tokio::time::timeout(Duration::from_secs(5), changed_rx.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        if f.store().read_source("slow").is_ok() {
+            break;
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while f.is_refreshing("slow") || f.is_refreshing("a") {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let before = srv.requests().len();
+    assert_eq!(before, 2, "{:?}", srv.requests());
+    assert!(!f.is_refreshing("a"));
+
+    // Two requests before the round starts become one round: `slow` and `off` (disabled, so
+    // skipped) and a name nobody configured.
+    f.request_refresh_of(Some(&["slow".to_owned()]));
+    f.request_refresh_of(Some(&["off".to_owned(), "nope".to_owned()]));
+    assert!(f.is_refreshing("slow"), "queued counts as refreshing");
+    assert!(!f.is_refreshing("a"));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(f.is_refreshing("slow"), "still downloading");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while f.is_refreshing("slow") {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let paths: Vec<String> = srv.requests()[before..]
+        .iter()
+        .map(|r| r.path.clone())
+        .collect();
+    assert_eq!(paths, ["/slow"], "only the list asked for");
+
+    // Every list: both enabled ones, never the disabled one.
+    f.request_refresh();
+    assert!(f.is_refreshing("a") && f.is_refreshing("slow"));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while f.is_refreshing("a") || f.is_refreshing("slow") {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut paths: Vec<String> = srv.requests()[before + 1..]
+        .iter()
+        .map(|r| r.path.clone())
+        .collect();
+    paths.sort();
+    assert_eq!(paths, ["/a", "/slow"]);
+    drop(specs_tx);
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
 // ---------------------------------------------------------------- Client::request (T9.24)
 
 /// A TLS acceptor for `lists.test` and its certificate as PEM (what `tls_ca` files hold).

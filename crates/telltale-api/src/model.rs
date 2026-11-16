@@ -719,7 +719,7 @@ pub struct ExplainRoute {
 }
 
 /// A filter list and its download state.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ListInfo {
     pub name: String,
@@ -748,14 +748,66 @@ pub struct ListInfo {
     pub hits: u64,
     /// Lists it shares names with, most shared first.
     pub overlap: Vec<ListShare>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Last download attempt (Unix seconds), whatever its outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_checked_unix_seconds: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// REQ: FLT-004 — last time the source was confirmed current: a download, a `304 Not
+    /// Modified`, or the same content again (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_success_unix_seconds: Option<u64>,
+    /// Last time the content changed (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_changed_unix_seconds: Option<u64>,
+    /// REQ: FLT-004 — a refresh asked for (`POST /api/v1/lists/refresh`) is waiting to start
+    /// or downloading this list now (also true during a scheduled download). It clears when
+    /// the download ends; the snapshot follows within seconds if the content changed.
+    #[serde(default)]
+    pub refreshing: bool,
     /// REQ: OBS-023 — days since a URL list's content last changed, when that's longer than its
     /// `stale_after_days`: the source may be abandoned while still answering.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale_days: Option<u64>,
+}
+
+/// REQ: FLT-004 — which lists to download again now (`POST /api/v1/lists/refresh`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListsRefreshRequest {
+    /// Only these lists, by name (as `GET /api/v1/lists` lists them). Absent or empty: every
+    /// enabled list.
+    #[schema(example = json!(["hagezi-pro"]))]
+    #[serde(default)]
+    pub names: Option<Vec<String>>,
+}
+
+/// A named list a refresh leaves out.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListRefreshSkip {
+    pub name: String,
+    /// `disabled` (the list is off: it's never downloaded until it's turned on).
+    pub reason: String,
+}
+
+/// REQ: FLT-004 — what a refresh queued (`202 Accepted`), or with `dryRun`, would queue.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListsRefreshResult {
+    /// True when nothing was queued (`?dryRun=true`): `queued` is what would be.
+    pub dry_run: bool,
+    /// The lists queued for download now (or that would be), in configuration order.
+    pub queued: Vec<String>,
+    /// Named lists left out, and why.
+    pub skipped: Vec<ListRefreshSkip>,
+    /// Of `queued`, the lists downloading already: each is downloaded once more when that
+    /// download ends.
+    pub already_refreshing: Vec<String>,
+    /// The node that downloads and compiles the lists: this one, or (on a cluster replica) the
+    /// primary the request was forwarded to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// What happens next, in a sentence.
+    pub note: String,
 }
 
 /// A client group.

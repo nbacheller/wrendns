@@ -86,6 +86,9 @@ pub enum Code {
     NodeIsPrimary,
     /// REQ: CLU-001 (ADR-155) — the node to remove is up: pass `force` to cut it off anyway.
     NodeIsUp,
+    /// REQ: FLT-004 — this node doesn't download lists (role `resolver`, or the list fetcher
+    /// didn't start): ask a node that does.
+    ListsNotHere,
 }
 
 impl Code {
@@ -126,6 +129,7 @@ impl Code {
             Self::DrillTargets => "https://telltaledns.dev/problems/drill_targets",
             Self::NodeIsPrimary => "https://telltaledns.dev/problems/node_is_primary",
             Self::NodeIsUp => "https://telltaledns.dev/problems/node_is_up",
+            Self::ListsNotHere => "https://telltaledns.dev/problems/lists_not_here",
         }
     }
 
@@ -166,6 +170,7 @@ impl Code {
             Self::DrillTargets => "Invalid drill request",
             Self::NodeIsPrimary => "The node is the primary",
             Self::NodeIsUp => "The node is up",
+            Self::ListsNotHere => "Lists aren't downloaded here",
         }
     }
 
@@ -187,7 +192,8 @@ impl Code {
             | Self::DrillRefused
             | Self::DrillActive
             | Self::NodeIsPrimary
-            | Self::NodeIsUp => StatusCode::CONFLICT,
+            | Self::NodeIsUp
+            | Self::ListsNotHere => StatusCode::CONFLICT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::VersionConflict => StatusCode::PRECONDITION_FAILED,
             Self::InvalidConfig

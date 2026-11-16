@@ -138,8 +138,12 @@ pub(crate) enum CtlCommand {
         #[arg(long)]
         client: Option<String>,
     },
-    /// Filter lists, with download state, unique names, and hits.
-    Lists,
+    /// Filter lists, with download state, unique names, and hits; `lists refresh` downloads
+    /// them again now.
+    Lists {
+        #[command(subcommand)]
+        cmd: Option<ListsCmd>,
+    },
     Groups,
     Clients,
     Upstreams,
@@ -178,6 +182,24 @@ pub(crate) enum CtlCommand {
     /// DELETE any API path.
     Delete {
         path: String,
+    },
+}
+
+/// REQ: FLT-004 — `telltale ctl lists`.
+#[derive(Debug, Subcommand)]
+pub(crate) enum ListsCmd {
+    /// Download every enabled list again now (or only the ones named), like `pihole -g`. In a
+    /// cluster the primary downloads them (a replica forwards). Unchanged lists cost one
+    /// conditional request; the filter is recompiled only if something changed.
+    Refresh {
+        /// Only these lists (default: every enabled list).
+        names: Vec<String>,
+        /// Show what would be downloaded without downloading anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Wait until the downloads end (at most 5 minutes), then print the lists.
+        #[arg(long)]
+        wait: bool,
     },
 }
 
@@ -978,25 +1000,59 @@ pub(crate) async fn run(
             .await?,
             Some(Box::new(|v: &Value| format!("{}\n", s(v, "summary")))),
         ),
-        CtlCommand::Lists => (
-            api.get("lists").await?,
-            Some(Box::new(|v: &Value| {
-                let rows: Vec<Vec<String>> = items(v)
-                    .iter()
-                    .map(|r| {
-                        vec![
-                            s(r, "name"),
-                            s(r, "kind"),
-                            s(r, "state"),
-                            s(r, "entries"),
-                            s(r, "unique"),
-                            s(r, "hits"),
-                        ]
+        CtlCommand::Lists { cmd: None } => (api.get("lists").await?, Some(Box::new(lists_text))),
+        // REQ: FLT-004 — "update lists now".
+        CtlCommand::Lists {
+            cmd:
+                Some(ListsCmd::Refresh {
+                    names,
+                    dry_run,
+                    wait,
+                }),
+        } => {
+            let body = if names.is_empty() {
+                json!({})
+            } else {
+                json!({ "names": names })
+            };
+            let r = api
+                .call(
+                    http::Method::POST,
+                    &format!("lists/refresh{}", if dry_run { "?dryRun=true" } else { "" }),
+                    Some(&body),
+                )
+                .await?;
+            if wait && !dry_run {
+                let queued: Vec<String> = r["queued"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_owned))
+                            .collect()
                     })
-                    .collect();
-                table(&["LIST", "KIND", "STATE", "NAMES", "UNIQUE", "HITS"], &rows)
-            })),
-        ),
+                    .unwrap_or_default();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+                let lists = loop {
+                    let v = api.get("lists").await?;
+                    let busy = items(&v).iter().any(|l| {
+                        l["refreshing"].as_bool() == Some(true)
+                            && queued.iter().any(|q| l["name"].as_str() == Some(q))
+                    });
+                    if !busy || std::time::Instant::now() >= deadline {
+                        break v;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                };
+                (
+                    json!({ "refresh": r, "lists": lists }),
+                    Some(Box::new(|v: &Value| {
+                        format!("{}{}", refresh_text(&v["refresh"]), lists_text(&v["lists"]))
+                    })),
+                )
+            } else {
+                (r, Some(Box::new(refresh_text)))
+            }
+        }
         CtlCommand::Groups => {
             named(&api, "groups", &["name", "lists", "blockMode", "networks"]).await?
         }
@@ -1064,6 +1120,54 @@ pub(crate) async fn run(
 type Rendered = (Value, Option<Box<dyn Fn(&Value) -> String>>);
 
 /// REQ: OBS-024 — a simulation as text: the counts, then the top names of each kind.
+/// `telltale ctl lists`: one row per list.
+fn lists_text(v: &Value) -> String {
+    let rows: Vec<Vec<String>> = items(v)
+        .iter()
+        .map(|r| {
+            vec![
+                s(r, "name"),
+                s(r, "kind"),
+                if r["refreshing"].as_bool() == Some(true) {
+                    "refreshing".to_owned()
+                } else {
+                    s(r, "state")
+                },
+                s(r, "entries"),
+                s(r, "unique"),
+                s(r, "hits"),
+            ]
+        })
+        .collect();
+    table(&["LIST", "KIND", "STATE", "NAMES", "UNIQUE", "HITS"], &rows)
+}
+
+/// REQ: FLT-004 — what a refresh queued.
+fn refresh_text(v: &Value) -> String {
+    let mut out = String::new();
+    let queued = s(v, "queued");
+    let node = s(v, "node");
+    let on = if node.is_empty() {
+        String::new()
+    } else {
+        format!(" on {node}")
+    };
+    if v["dryRun"].as_bool() == Some(true) {
+        let _ = writeln!(out, "would refresh{on}: {}", or_none(&queued));
+    } else {
+        let _ = writeln!(out, "refreshing{on}: {}", or_none(&queued));
+    }
+    for k in v["skipped"].as_array().map_or(&[][..], Vec::as_slice) {
+        let _ = writeln!(out, "skipped {} ({})", s(k, "name"), s(k, "reason"));
+    }
+    let _ = writeln!(out, "{}", s(v, "note"));
+    out
+}
+
+fn or_none(v: &str) -> &str {
+    if v.is_empty() { "nothing" } else { v }
+}
+
 fn simulation_text(v: &Value) -> String {
     let mut out = String::new();
     if v["available"] == Value::Bool(false) {
@@ -1425,6 +1529,23 @@ mod tests {
     }
 
     /// REQ: OPS-010 — `--for` takes seconds or a unit; node names go into the path safely.
+    #[test]
+    fn flt_004_ctl_refresh_text() {
+        let v = json!({"dryRun": false, "queued": ["hagezi", "mine"], "skipped": [{"name": "old", "reason": "disabled"}],
+            "alreadyRefreshing": [], "node": "pi", "note": "2 lists queued."});
+        let t = refresh_text(&v);
+        assert!(t.starts_with("refreshing on pi: hagezi, mine\n"), "{t}");
+        assert!(t.contains("skipped old (disabled)"), "{t}");
+        let dry = refresh_text(
+            &json!({"dryRun": true, "queued": [], "skipped": [], "note": "Nothing to download."}),
+        );
+        assert!(dry.starts_with("would refresh: nothing\n"), "{dry}");
+        let l = lists_text(
+            &json!({"items": [{"name": "mine", "kind": "block", "state": "ok", "refreshing": true, "entries": 3, "unique": 1, "hits": 0}]}),
+        );
+        assert!(l.contains("refreshing"), "{l}");
+    }
+
     #[test]
     fn ops_010_ctl_durations_and_node_paths() {
         assert_eq!(parse_duration("2h"), Ok(7200));

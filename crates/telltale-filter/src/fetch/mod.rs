@@ -8,7 +8,7 @@
 mod http;
 mod store;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -165,6 +165,49 @@ pub struct Fetcher {
     settings: FetchSettings,
     metas: Mutex<HashMap<String, ListMeta>>,
     refresh_now: Notify,
+    /// REQ: FLT-004 — refreshes asked for and lists downloading now (`refreshing`).
+    manual: Mutex<Manual>,
+}
+
+/// REQ: FLT-004 — what [`Fetcher::is_refreshing`] reads.
+#[derive(Debug, Default)]
+struct Manual {
+    /// A refresh asked for that hasn't started yet. Requests made before it starts merge into
+    /// it.
+    queued: Option<Asked>,
+    /// Lists downloading now, with how many rounds hold each (a scheduled round and an
+    /// asked-for one can overlap).
+    running: HashMap<String, u32>,
+}
+
+/// The lists a refresh was asked for.
+#[derive(Debug)]
+enum Asked {
+    All,
+    Some(BTreeSet<String>),
+}
+
+/// One list's place in [`Manual::running`], given back when its download ends (or is
+/// cancelled with the task).
+struct Running {
+    fetcher: Arc<Fetcher>,
+    name: String,
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let mut m = self
+            .fetcher
+            .manual
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(n) = m.running.get_mut(&self.name) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                m.running.remove(&self.name);
+            }
+        }
+    }
 }
 
 impl Fetcher {
@@ -175,6 +218,7 @@ impl Fetcher {
             settings,
             metas: Mutex::new(HashMap::new()),
             refresh_now: Notify::new(),
+            manual: Mutex::new(Manual::default()),
         }
     }
 
@@ -190,9 +234,58 @@ impl Fetcher {
         out
     }
 
-    /// Makes `run` refresh every list now, regardless of schedule (`POST /lists/refresh`).
+    /// Makes `run` refresh every enabled list now, regardless of schedule (`SIGUSR1`).
     pub fn request_refresh(&self) {
+        self.request_refresh_of(None);
+    }
+
+    /// REQ: FLT-004 — makes `run` refresh `names` (`None`: every enabled list) now, regardless
+    /// of schedule (`POST /api/v1/lists/refresh`). Requests made before the refresh starts
+    /// merge into it; one made while lists are downloading starts another round after it.
+    /// Names that aren't configured, and disabled lists, are skipped.
+    pub fn request_refresh_of(&self, names: Option<&[String]>) {
+        {
+            let mut m = self.manual.lock().unwrap_or_else(PoisonError::into_inner);
+            m.queued = Some(match (m.queued.take(), names) {
+                (Some(Asked::All), _) | (_, None) => Asked::All,
+                (Some(Asked::Some(mut set)), Some(n)) => {
+                    set.extend(n.iter().cloned());
+                    Asked::Some(set)
+                }
+                (None, Some(n)) => Asked::Some(n.iter().cloned().collect()),
+            });
+        }
         self.refresh_now.notify_one();
+    }
+
+    /// REQ: FLT-004 — true while `name` waits for a refresh asked for, or is downloading.
+    pub fn is_refreshing(&self, name: &str) -> bool {
+        let m = self.manual.lock().unwrap_or_else(PoisonError::into_inner);
+        m.running.contains_key(name)
+            || match &m.queued {
+                Some(Asked::All) => true,
+                Some(Asked::Some(set)) => set.contains(name),
+                None => false,
+            }
+    }
+
+    /// The refresh asked for, as the enabled lists of `specs` it covers, now marked running
+    /// (in one step, so `is_refreshing` never misses them in between).
+    fn start_asked(&self, specs: &[ListSpec]) -> Vec<ListSpec> {
+        let mut m = self.manual.lock().unwrap_or_else(PoisonError::into_inner);
+        let picked: Vec<ListSpec> = match m.queued.take() {
+            None => Vec::new(),
+            Some(Asked::All) => specs.iter().filter(|s| s.enabled).cloned().collect(),
+            Some(Asked::Some(names)) => specs
+                .iter()
+                .filter(|s| s.enabled && names.contains(&s.name))
+                .cloned()
+                .collect(),
+        };
+        for s in &picked {
+            *m.running.entry(s.name.clone()).or_insert(0) += 1;
+        }
+        picked
     }
 
     fn meta(&self, name: &str) -> ListMeta {
@@ -213,13 +306,27 @@ impl Fetcher {
             .insert(name.to_owned(), meta);
     }
 
-    fn spawn_refreshes(self: &Arc<Self>, specs: &[ListSpec]) -> JoinSet<(String, Outcome)> {
+    /// `counted`: [`Self::start_asked`] already marked `specs` running.
+    fn spawn_refreshes(
+        self: &Arc<Self>,
+        specs: &[ListSpec],
+        counted: bool,
+    ) -> JoinSet<(String, Outcome)> {
         let sem = Arc::new(Semaphore::new(self.settings.concurrency.max(1)));
         let mut set = JoinSet::new();
         // A disabled list is kept in the specs (its files stay) but never fetched.
         for spec in specs.iter().filter(|s| s.enabled).cloned() {
+            if !counted {
+                let mut m = self.manual.lock().unwrap_or_else(PoisonError::into_inner);
+                *m.running.entry(spec.name.clone()).or_insert(0) += 1;
+            }
+            let running = Running {
+                fetcher: Arc::clone(self),
+                name: spec.name.clone(),
+            };
             let (this, sem) = (Arc::clone(self), Arc::clone(&sem));
             set.spawn(async move {
+                let _running = running;
                 let _permit = sem.acquire_owned().await;
                 let outcome = this.refresh_one(&spec).await;
                 (spec.name, outcome)
@@ -230,7 +337,7 @@ impl Fetcher {
 
     /// Refreshes `specs` concurrently (at most `concurrency` at a time).
     pub async fn refresh(self: &Arc<Self>, specs: &[ListSpec]) -> Vec<(String, Outcome)> {
-        let mut set = self.spawn_refreshes(specs);
+        let mut set = self.spawn_refreshes(specs, false);
         let mut out = Vec::with_capacity(specs.len());
         while let Some(res) = set.join_next().await {
             match res {
@@ -250,8 +357,9 @@ impl Fetcher {
         self: &Arc<Self>,
         specs: &[ListSpec],
         changed: &watch::Sender<u64>,
+        counted: bool,
     ) {
-        let mut set = self.spawn_refreshes(specs);
+        let mut set = self.spawn_refreshes(specs, counted);
         let mut pending: Option<tokio::time::Instant> = None;
         loop {
             let deadline = pending.map(|t| t + self.settings.settle);
@@ -481,7 +589,7 @@ impl Fetcher {
 
             let (due, next) = self.due(&list, unix_now());
             if !due.is_empty() {
-                self.refresh_and_signal(&due, &changed).await;
+                self.refresh_and_signal(&due, &changed, false).await;
                 continue;
             }
             // Wake at the next due time (re-checked at least hourly, in case the clock jumped).
@@ -490,7 +598,11 @@ impl Fetcher {
                 .min(Duration::from_secs(3600));
             tokio::select! {
                 () = tokio::time::sleep(wait) => {}
-                () = self.refresh_now.notified() => self.refresh_and_signal(&list, &changed).await,
+                // REQ: FLT-004 — a refresh asked for: the lists it names (or all), now.
+                () = self.refresh_now.notified() => {
+                    let asked = self.start_asked(&list);
+                    self.refresh_and_signal(&asked, &changed, true).await;
+                }
                 r = specs.changed() => if r.is_err() { return },
             }
         }

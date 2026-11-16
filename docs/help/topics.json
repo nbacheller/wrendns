@@ -280,6 +280,16 @@
       "docs": "filter-lists"
     },
     {
+      "id": "list-update-now",
+      "title": "Update lists now",
+      "term": "Update now (list refresh)",
+      "summary": "Downloads every enabled list again right away instead of waiting for its schedule, like Pi-hole's Update Gravity. The page shows progress; each list's State says \"updating\" until its download ends.",
+      "when": "A list maintainer fixed a false positive or added new names, or you just added a list.",
+      "example": "A site broke because of a list entry the maintainer removed this morning: Update now picks up the fix without waiting a day.",
+      "caution": "Unchanged lists cost one small request each, and blocking only changes if a list did. In a cluster the primary downloads the lists for every node. Agents need the config:write:lists scope.",
+      "docs": "filter-lists"
+    },
+    {
       "id": "upstreams",
       "title": "Where answers come from",
       "term": "Upstreams (forwarders)",
