@@ -291,6 +291,11 @@
         {:else}
           <div class="sh"><h2>{l.title} <span class="muted small">{d.topLabel}</span></h2></div>
         {/if}
+        {#if l.kind === 'clients' && l.items.some((i) => i.byStatus)}
+          <p class="legend small muted" data-testid="clients-legend">
+            {#each [['blocked', '--s-blocked'], ['cached', '--s-cached'], ['forwarded', '--s-forwarded'], ['other', '--s-other']] as [k, c] (k)}<span><i style:background={`var(${c})`}></i>{k}</span>{/each}
+          </p>
+        {/if}
         <TopList items={l.items} kind={l.kind} link={l.link} groupColor={d.groupColor} onchanged={() => void d.load()} />
         {#if d.advanced && l.kind === 'clients' && types.length}
           <p class="types small muted" data-testid="devices-by-type">
@@ -466,6 +471,23 @@
     gap: 8px;
   }
 
+  /* REQ: OBS-004 (ADR-159) — the key to a device's split bar. */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 12px;
+    margin: 4px 0 0;
+  }
+  .legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .legend i {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+  }
   .types {
     display: flex;
     flex-wrap: wrap;

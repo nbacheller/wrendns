@@ -327,6 +327,47 @@ test('obs_015 health icon, its reasons, and the phone dot', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
 });
 
+// REQ: OBS-004 (ADR-159, ADR-160) — a top client's bar is split by how its queries were answered
+// (a device a peer on an older build reported has none), and the top lists follow the range: they
+// ask for it and say which hours they cover, except for one group's lists, which are this hour's.
+test('obs_004 top clients split by status; the top lists follow the range', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.route('**/api/v1/stats/top?*', (route) => {
+    if (new URL(route.request().url()).searchParams.get('kind') !== 'clients') return route.fallback();
+    return route.fulfill({
+      json: {
+        items: [
+          { key: '10.9.9.9', name: 'Kitchen TV', count: 100, errorBound: 0, byStatus: { blocked: 60, cached: 25, forwarded: 10 } },
+          { key: '10.9.9.8', count: 40, errorBound: 0 },
+        ],
+      },
+    });
+  });
+  const clientsFrom24h = page.waitForRequest((r) => /stats\/top\?/.test(r.url()) && r.url().includes('kind=clients') && r.url().includes('from=-24h'));
+  await page.goto('/#/');
+  await page.reload();
+  await clientsFrom24h;
+  const clients = listOf('Top clients');
+  await expect(clients.getByTestId('clients-legend')).toBeVisible();
+  const split = clients.getByTestId('client-split');
+  await expect(split).toHaveCount(1);
+  await expect(split).toHaveAccessibleName('60 blocked · 25 cached · 10 forwarded · 5 other');
+  // Tapping the count shows the numbers.
+  await clients.getByRole('button', { name: /^Details for Kitchen TV/ }).click();
+  await expect(clients.locator('.how')).toContainText('blocked');
+  await expect(clients.locator('.how')).toContainText('60');
+  // The headings say which hours they cover: the range, or this hour for one group.
+  await expect(listOf('Top domains')).toContainText('last 24 h');
+  await page.getByRole('button', { name: '15 min', exact: true }).click();
+  await expect(listOf('Top domains')).toContainText(/since \d/);
+  const groupOnly = page.waitForRequest((r) => /stats\/top\?/.test(r.url()) && r.url().includes('kind=blocked') && r.url().includes('group=lab') && !r.url().includes('from='));
+  await page.getByLabel('Group').selectOption('lab');
+  await groupOnly;
+  await expect(listOf('Top domains')).toContainText('this hour');
+  await page.getByLabel('Group').selectOption('');
+  await page.unroute('**/api/v1/stats/top?*');
+});
+
 // T6.8 — a chart's legend sits above the plot and wraps; its values change on hover ("total"
 // becomes a time, the range's sums one bucket's counts). Each keeps its width, so on a narrow
 // screen the legend doesn't rewrap and move the plot under the cursor.

@@ -9,6 +9,9 @@
   //  - A device's groups are dots with the name on hover, and a pod's own name is its workload's.
   //  - Tap the count for the full name with a Copy button and, where the display differs from the
   //    name, one sentence saying how.
+  //  - REQ: OBS-004 (ADR-159) — a device's queries split by how they were answered: a thin bar under
+  //    its name (as long as its share of the busiest, in the status colours), and the numbers in the
+  //    tap panel.
   import type { S } from '../api';
   import ClientChip from '../components/ClientChip.svelte';
   import { num } from '../format';
@@ -68,6 +71,7 @@
     return out.sort((a, b) => b.count - a.count);
   });
   const shown = $derived(rows.slice(0, limit));
+  const max = $derived(Math.max(1, ...rows.map((r) => r.count)));
   const total = $derived(Math.max(1, rows.reduce((a, r) => a + r.count, 0)));
   let open = $state<Record<string, boolean>>({});
   let copied = $state('');
@@ -84,6 +88,19 @@
     return !label.includes('.') && label.length > 22 ? [label.slice(0, -7), label.slice(-7)] : [label, ''];
   }
   const pctOf = (v: number, t: number) => (t ? `${((v / t) * 100).toFixed(v / t < 0.1 ? 1 : 0)}%` : '–');
+
+  // A device's split: blocked, cached (stale and refreshed included) and forwarded come from the API;
+  // "other" is the rest of its count (local, special, refused, …, and the sketch's error bound).
+  const COLORS = { blocked: '--s-blocked', cached: '--s-cached', forwarded: '--s-forwarded', other: '--s-other' } as const;
+  function splitOf(it: S['TopItem'], count: number) {
+    const s = it.byStatus;
+    if (!s) return null;
+    const other = Math.max(0, count - s.blocked - s.cached - s.forwarded);
+    return (['blocked', 'cached', 'forwarded', 'other'] as const)
+      .map((k) => ({ k, n: k === 'other' ? other : s[k], color: COLORS[k] }))
+      .filter((p) => p.n > 0);
+  }
+  const splitText = (parts: { k: string; n: number }[]) => parts.map((p) => `${num(p.n)} ${p.k}`).join(' · ');
 
   async function copy(text: string) {
     try {
@@ -108,7 +125,8 @@
       {@const [sub, base] = p ? cut(p.main) : kind === 'clients' ? ['', ''] : cut(it.key)}
       {@const [head, tail] = ends(base)}
       {@const tag = merged ? `search suffix ×${r.variants.length}` : (p?.tag ?? '')}
-      <li class:open={open[it.key]}>
+      {@const sp = kind === 'clients' ? splitOf(it, r.count) : null}
+      <li class:open={open[it.key]} style:--w={`${(r.count / max) * 100}%`}>
         <div class="line">
           <span class="who">
             {#if kind === 'clients'}
@@ -123,6 +141,11 @@
             <span class="num">{num(r.count)}</span><span class="chev" aria-hidden="true"></span>
           </button>
         </div>
+        {#if sp}
+          <div class="sp" role="img" aria-label={splitText(sp)} title={splitText(sp)} data-testid="client-split">
+            {#each sp as q (q.k)}<span style:flex-grow={q.n} style:background={`var(${q.color})`}></span>{/each}
+          </div>
+        {/if}
         {#if open[it.key]}
           <div class="more">
             {#if merged}
@@ -139,6 +162,13 @@
               </div>
               {#if it.name && kind === 'clients'}<div class="small muted">{it.name}</div>{/if}
               {#if p?.note}<p class="small muted">{p.note}</p>{/if}
+            {/if}
+            {#if sp}
+              <ul class="how">
+                {#each sp as q (q.k)}
+                  <li><i style:background={`var(${q.color})`}></i><span>{q.k}</span><b>{num(q.n)}</b><span class="muted">{pctOf(q.n, r.count)}</span></li>
+                {/each}
+              </ul>
             {/if}
             <p class="small muted">
               {num(r.count)} queries · {pctOf(r.count, total)} of this list ·
@@ -283,6 +313,50 @@
     .chev {
       transition: none;
     }
+  }
+
+  /* How a device's queries were answered: as long as its share of the busiest, in the status colours. */
+  .sp {
+    display: flex;
+    gap: 1px;
+    width: max(var(--w), 8px);
+    height: 3px;
+    margin: -5px 4px 8px;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .sp span {
+    min-width: 1px;
+  }
+  .how {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 3px;
+    max-width: 320px;
+  }
+  .how li {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    border: 0;
+  }
+  .how i {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    align-self: center;
+  }
+  .how b {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+  }
+  .how .muted {
+    min-width: 3.4em;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
   }
 
   .more {
