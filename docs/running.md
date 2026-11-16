@@ -210,6 +210,7 @@ Admins can also download one in the web UI (**Settings → System → Download a
 
 **Left out:**
 - sign-in sessions (everyone signs in again);
+- [stored secrets](#stored-secrets) and the node's secrets key: they're encrypted with a key no backup holds, so a restored node has none (set them again);
 - downloaded lists, compiled snapshots, and the cache, which are rebuilt;
 - the cluster identity and its CA key. A restored cluster member starts on its own: run `telltale cluster init` or join it again.
 
@@ -304,7 +305,7 @@ the chart's schema rejects a mistyped value with its path.
 - **`hostNetwork: true`** answers on port 53 of the node itself (no LoadBalancer, MAC addresses visible). Binding 53 there needs root with only `NET_BIND_SERVICE` kept; on Ubuntu nodes turn off systemd-resolved's stub listener first. k3s's CoreDNS doesn't conflict.
 - **The UI and API**: `service.api.type: LoadBalancer`, or `ingress.enabled` with `ingress.host` (set `[api] trusted_proxies` in `config` to your ingress's network).
 - **Configuration**: `config:` is merged after the chart's own settings (listeners, data directory, ports): upstreams, lists, groups, `[auth.oidc]`, everything in `docs/configuration.md`.
-- **Secrets**: `auth.bootstrapAdmin.existingSecret` creates the first admin (keys `username` and `password` or `password-hash`); `secretMounts` mounts Secrets at `/etc/telltale-secrets/<name>` (for example an OIDC `client_secret_file`).
+- **Secrets**: `auth.bootstrapAdmin.existingSecret` creates the first admin (keys `username` and `password` or `password-hash`); `secretMounts` mounts Secrets at `/etc/telltale-secrets/<name>` (for example an OIDC `client_secret_file`). The key of the [stored secrets](#stored-secrets) is, by default, `secrets.key` on the controller's volume; better, give your own Secret with `secretsKey.existingSecret` (entry `secretsKey.key`, default `secrets.key`, holding `ttsk1:` and 43 base64url characters): it is mounted read-only on the controller only, with `[node] secrets_key_file` set, and never on resolver pods, which hold no stored secrets. `secretsKey.generate: true` makes that Secret with the chart and keeps it (Helm `lookup`), which doesn't work under `helm template` or Argo CD: each render would make a new key and lock the store. With `persistence.enabled: false` stored secrets are lost at every restart, and health says `secrets_ephemeral`.
 - **Monitoring**: `serviceMonitor.enabled`, `prometheusRule.enabled` (down, all upstreams down, SERVFAIL rate, stale lists, dropped telemetry, masked client IPs, device anomalies), and `grafanaDashboard.enabled` (a ConfigMap for the Grafana sidecar).
 - **`networkPolicy.enabled`** limits who may query (`dnsFrom`), reach the UI (`apiFrom`), and scrape (`metricsFrom`).
 - **Encrypted DNS**: `encrypted.dot.enabled` (853), `encrypted.doh.enabled` (443, plus `encrypted.doh.http3`), and `encrypted.doq.enabled` add DoT, DoH, and DoQ to the DNS Service; the certificate comes from `encrypted.tls.secretName` or a cert-manager `Certificate` (`encrypted.tls.certManager.issuerRef` and `dnsNames`; add a wildcard for client IDs) and is reloaded when renewed. `encrypted.proxyProtocol` accepts PROXY protocol v2 on TCP, DoT, and DoH.
@@ -2984,7 +2985,7 @@ The icon at the bottom of the menu says how TelltaleDNS is doing, for every node
 | Icon | Level | When |
 |---|---|---|
 | circle with a check (quiet) | healthy | nothing below |
-| triangle with "!" (amber) | degraded | DNS answers, but something needs a look: one upstream isn't answering while its group still has others; a cluster node is unreachable, not serving, or behind on configuration for a minute; a list fails to download, or [hasn't changed in 30 days](#lists-that-stopped-changing); a device was rate-limited in the last 5 minutes; SERVFAIL for 5% or more of the last 5 minutes' queries; a data disk is over 90% full; a [service-level objective](#service-level-objectives) burns its error budget fast; a [listener check](#listener-checks) fails twice in a row; a listener's certificate expires within 14 days |
+| triangle with "!" (amber) | degraded | DNS answers, but something needs a look: one upstream isn't answering while its group still has others; a cluster node is unreachable, not serving, or behind on configuration for a minute; a list fails to download, or [hasn't changed in 30 days](#lists-that-stopped-changing); a device was rate-limited in the last 5 minutes; SERVFAIL for 5% or more of the last 5 minutes' queries; a data disk is over 90% full; a [service-level objective](#service-level-objectives) burns its error budget fast; a [listener check](#listener-checks) fails twice in a row; a listener's certificate expires within 14 days; the [stored secrets](#stored-secrets) are locked (`secrets_locked`), or kept in a data directory that doesn't survive a restart (`secrets_ephemeral`) |
 | octagon with "×" (red) | severe | DNS is failing for some devices: no upstream in a group answers, no node serves DNS (its listeners aren't bound, or none answers its own check), SERVFAIL for 25% or more, or a listener's certificate has expired |
 
 Click it for every reason, its node, and a link to the page to look at. On a phone, where the menu is hidden, a dot on the menu button shows when the level isn't healthy. Device anomalies don't change the level; they have their own badge. A node in [maintenance](#taking-a-node-down-for-maintenance) is left out of the level (its conditions, and its being unreachable) and listed instead ("1 node in maintenance until 14:00 (SD card swap)"); a node in maintenance that still answers counts as serving. The same answer is at `GET /api/v1/system/health` and in the MCP tool `health`. Each condition is judged over a window it already has (the upstream's circuit breaker, the last 5 minutes, the cluster heartbeat), so one failed lookup doesn't change the icon.
@@ -3019,7 +3020,40 @@ Some fields hold credentials: an upstream's `headers` (a DoH API token) and `arg
 - **Retries keep no request.** An `Idempotency-Key` record keeps a keyed hash of the request (keyed with the node's secrets key, below) and the redacted response, so a request that differs only in a header value is a different request (409). If the key can't be read, a write with an `Idempotency-Key` that sets a credential is refused (503 `secrets_locked`); send it without the header.
 - **Older records.** Upgrading deletes the retry records kept before (they held request bodies), with `secure_delete` on and the WAL truncated. Audit entries written before this version may hold an upstream's headers: the audit log's hash chain forbids rewriting them, so treat an older `state.db` (and its backups) as sensitive.
 
-**The node's secrets key.** Each full member has one key, which keys those hashes (and, later, the encrypted secrets store). It comes from the first of `TELLTALE_SECRETS_KEY`, a file named by `[node] secrets_key_file` (`TELLTALE_NODE_SECRETS_KEY_FILE`, for a mounted Kubernetes Secret), or `<data_dir>/secrets.key`, which the first start creates (mode 0600, written whole through `secrets.key.tmp`; never replaced). A key is `ttsk1:` and 43 base64url characters. Prefer a file to the variable, and on Kubernetes a `secretKeyRef` to a literal `value`. A configured key that can't be read leaves the node without one: DNS is unaffected, the log says why, and the node tries again at most every 30 seconds (a key mounted after the start is picked up without a restart). Resolver pods need none.
+**The node's secrets key.** Each full member has one key, which encrypts the [stored secrets](#stored-secrets) and keys those hashes. It comes from the first of `TELLTALE_SECRETS_KEY`, a file named by `[node] secrets_key_file` (`TELLTALE_NODE_SECRETS_KEY_FILE`, for a mounted Kubernetes Secret), or `<data_dir>/secrets.key`, which the first start creates while no secret is stored (mode 0600, written whole through `secrets.key.tmp`; never replaced). A key is `ttsk1:` and 43 base64url characters. Prefer a file to the variable, and on Kubernetes a `secretKeyRef` to a literal `value`. A configured key that can't be read leaves the store locked: DNS is unaffected, the log says why, and the node tries again at most every 30 seconds (a key mounted after the start is picked up without a restart). Resolver pods need none. Custody, rotation and recovery: [docs/secrets.md](secrets.md).
+
+#### Stored secrets
+
+A credential that comes from a file can instead name a **stored secret**: a value kept in `state.db`, encrypted with the node's key (ChaCha20-Poly1305), and never shown again, not even to admins. Each such field has a `_ref` beside its `_file`, holding the secret's name (lowercase letters, digits, `.`, `_` and `-`, up to 63):
+
+| Credential | File | Stored secret |
+|---|---|---|
+| a router's API key, API secret, password | `api_key_file`, `api_secret_file`, `password_file` | `api_key_ref`, `api_secret_ref`, `password_ref` |
+| an alert destination's token, password | `token_file`, `password_file` | `token_ref`, `password_ref` |
+| an OIDC provider's client secret | `client_secret` (inline), `client_secret_file` | `client_secret_ref` |
+| an event sink's token | `token_file` | `token_ref` |
+| OTLP headers | `headers` (inline) | `header_refs = { api-key = "otlp" }` |
+| the Git source's credentials, webhook secret | `credentials_file`, `webhook_secret_file` | `credentials_ref`, `webhook_secret_ref` |
+
+```toml
+[[router]]
+name = "unifi"
+type = "unifi"
+url = "https://192.168.1.1"
+api_key_ref = "unifi"     # the secret named `unifi`
+```
+
+- **One source per credential.** A field takes its inline value, its `_file`, or its `_ref`: setting two is a configuration error. `<redacted>` (what a redacted copy shows) is never a value: in the files it is an error too.
+- **The files win.** A credential the configuration files set (inline or by file) can't be set, replaced or removed through the UI or API: a change that tries is refused with 409 `set_by_file`, and so is hiding a destination the files define with a credential. An override that changes other fields keeps the files' credential. Should an override hold a reference the files have since set a file for, the file is used.
+- **A reference to a secret that isn't stored** is a warning when the configuration loads (DNS never depends on the store) and 422 `secret_missing` on an API write. An integration whose secret can't be read on this node (missing, encrypted with another key, damaged, or the store locked) reports itself "not configured: secret `<name>` can't be read on this node (why)", logged once until that changes. Setting a reference is an admin's change, like a file; pointing one at a secret an entry of another kind uses is audited as `credential.redirect`.
+- **Resolver pods** hold no stored secrets: an integration there that names one isn't configured (use a file).
+- **`telltale secrets status`** (on the node, with its `-c` files) shows the store (`ready`, `locked` with why, or `ephemeral` on a resolver pod), the key's source and `key_id` (never the key), each stored secret without its value (readable, `unreadable`: another key made it, or `corrupt`), and every credential field with its source and whether this node can read it (a file is opened without being read). It exits 1 while the store is locked, and never makes a key.
+- **`telltale secrets rotate-key`** replaces the data-directory key with TelltaleDNS stopped (it refuses while the node runs): every stored secret is re-encrypted under a new key in one transaction, then the new key replaces `secrets.key`. An interrupted rotation is finished, or undone, at the next start. A key from `TELLTALE_SECRETS_KEY` or `[node] secrets_key_file` is rotated by setting the new key there and the old one as `TELLTALE_SECRETS_PREVIOUS_KEY` (or `[node] secrets_previous_key_file`): the next start re-encrypts and logs that the previous key can go.
+- **Locked.** With the configured key unreadable, `secrets.key` missing while secrets are stored (a new key is never made then), or no stored secret readable with the key, the store is locked: secret writes get 503 `secrets_locked`, health is degraded (`secrets_locked`), status reads work, and DNS and `/readyz` are unaffected. A replica whose stored secrets all came from the cluster drops them, makes a new key, and gets them again from the primary.
+- **Backups never hold them**: the rows, their deletion records and the node key are left out of every backup (`telltale backup create`). A restored node has no stored secrets; set them again.
+- **Metrics:** `telltale_secrets{state="readable|unreadable|corrupt"}`.
+
+Values are entered through the API and Settings → Integrations & secrets, which come with the secrets API (admins only); until then a reference names no stored secret and is reported as missing.
 
 #### Who may point a credential somewhere
 

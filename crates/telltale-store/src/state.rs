@@ -129,6 +129,21 @@ const MIGRATIONS: &[&str] = &[
     // could hold an upstream's headers; they now keep a keyed hash. The old ones go (with
     // `secure_delete` on, their pages are overwritten; `init` then truncates the WAL).
     "DELETE FROM idempotency;",
+    // 11: REQ: OPS-014 (ADR-167 §2) — secrets entered in the UI, encrypted under the node's key
+    // (`key_id`), stamped `(epoch, seq)`; a deleted one is a tombstone without ciphertext.
+    "CREATE TABLE secrets (
+        name TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        key_id BLOB,
+        nonce BLOB,
+        ciphertext BLOB,
+        stamp_epoch INTEGER NOT NULL,
+        stamp_seq INTEGER NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        origin TEXT NOT NULL,
+        updated INTEGER NOT NULL,
+        updated_by TEXT NOT NULL
+    );",
 ];
 
 /// REQ: API-014 — the migration that purges the old idempotency records.
@@ -150,10 +165,12 @@ pub mod acks;
 pub mod audit;
 pub mod identity;
 pub mod managed;
+pub mod secrets;
 pub use acks::AnomalyAck;
 pub use audit::{AuditEntry, NewAudit, Verify};
 pub use identity::{IdRecovery, IdToken, IdUser, Identities, ImportReport};
 pub use managed::{Managed, ManagedError, Replay};
+pub use secrets::{SecretRow, Stamp};
 
 /// A user row.
 #[derive(Debug, Clone, PartialEq, Eq)]

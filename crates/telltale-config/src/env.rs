@@ -44,6 +44,9 @@ const RESERVED: &[&str] = &[
     // REQ: OPS-014, API-014 (ADR-167 §3) — the node's secrets key and the one before a rotation.
     "SECRETS_KEY",
     "SECRETS_PREVIOUS_KEY",
+    // REQ: OPS-014 (ADR-167) — set by the Helm chart when the data directory isn't kept across
+    // restarts (persistence off): stored secrets would be lost (`secrets_ephemeral`).
+    "DATA_EPHEMERAL",
 ];
 
 /// REQ: OPS-014, API-014 (ADR-167 §3) — variables a process this one starts (an `exec://`

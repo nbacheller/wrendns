@@ -590,6 +590,14 @@
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "password_ref": {
+          "description": "REQ: OPS-014 (ADR-167 §2) — or the name of a stored secret holding the password.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "tls_ca": {
           "description": "`email`: a PEM file with the mail server's certificate (or its CA), for a private\nserver; public ones are trusted already.",
           "type": [
@@ -608,6 +616,14 @@
         },
         "token_file": {
           "description": "A file holding the token (ntfy access token, Gotify application token), so it stays\nout of the config and Git.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "token_ref": {
+          "description": "REQ: OPS-014 (ADR-167 §2) — or the name of a stored secret holding the token; at most one of `token_file` and `token_ref`.",
           "type": [
             "string",
             "null"
@@ -2021,6 +2037,14 @@
           "default": null,
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "credentials_ref": {
+          "description": "REQ: OPS-014 (ADR-167 §2) — or the name of a stored secret holding it (Settings → Integrations & secrets); at most one of `credentials_file` and `credentials_ref`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "max_bytes": {
           "description": "Largest file accepted.",
           "default": "1MiB",
@@ -2070,6 +2094,14 @@
             "null"
           ],
           "default": null,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "webhook_secret_ref": {
+          "description": "REQ: OPS-014 (ADR-167 §2) — or the name of a stored secret holding it; at most one of `webhook_secret_file` and `webhook_secret_ref`.",
+          "type": [
+            "string",
+            "null"
+          ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         }
       },
@@ -2751,6 +2783,14 @@
           "default": null,
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "client_secret_ref": {
+          "description": "REQ: OPS-014 (ADR-167 §2) — ... or the name of a stored secret holding it. At most one of the three.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "default_role": {
           "description": "Role for users whose groups match no rule. Unset: they can't sign in.",
           "anyOf": [
@@ -2854,6 +2894,17 @@
             "null"
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "header_refs": {
+          "description": "REQ: OPS-014 (ADR-167 §2) — headers whose values are stored secrets, by header:\n`header_refs = { api-key = \"otlp\" }`. A header may be in `headers` or here, not both.",
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[^\\u0000-\\u001F\\u007F-\\u009F]*$": {
+              "type": "string",
+              "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+            }
+          }
         },
         "headers": {
           "description": "Extra headers (an API key for a hosted collector).",
@@ -3238,8 +3289,24 @@
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "api_key_ref": {
+          "description": "REQ: OPS-014 (ADR-167 §2) — or the name of a stored secret holding it (`api_key_ref = \"unifi\"`); at most one of `api_key_file` and `api_key_ref`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "api_secret_file": {
           "description": "OPNsense: the API secret (a file).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "api_secret_ref": {
+          "description": "REQ: OPS-014 (ADR-167 §2) — or the name of a stored secret holding it.",
           "type": [
             "string",
             "null"
@@ -3259,6 +3326,14 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "password_file": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "password_ref": {
+          "description": "REQ: OPS-014 (ADR-167 §2) — or the name of a stored secret holding the password.",
           "type": [
             "string",
             "null"
@@ -3710,6 +3785,14 @@
         },
         "token_file": {
           "description": "`webhook`: a file holding a token sent as `Authorization: <token_scheme> <token>`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "token_ref": {
+          "description": "REQ: OPS-014 (ADR-167 §2) — `webhook`: or the name of a stored secret holding the token.",
           "type": [
             "string",
             "null"

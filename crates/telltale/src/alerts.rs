@@ -253,7 +253,11 @@ impl Engine {
 }
 
 /// REQ: OBS-010 (T9.6) — a test message to `d`, from `node`.
-pub(crate) async fn send_test(d: &AlertDestination, node: &str) -> Result<(), String> {
+pub(crate) async fn send_test(
+    d: &AlertDestination,
+    node: &str,
+    store: &crate::secrets::SecretStore,
+) -> Result<(), String> {
     let n = Notice {
         rule: 0,
         subject: "test".to_owned(),
@@ -265,7 +269,7 @@ pub(crate) async fn send_test(d: &AlertDestination, node: &str) -> Result<(), St
     };
     let client =
         telltale_filter::fetch::Client::new(Arc::new(telltale_filter::fetch::SystemResolver), &[])?;
-    deliver(&client, d, "Test", &n, node).await
+    deliver(&client, d, "Test", &n, node, store).await
 }
 
 /// Records a delivery's outcome for the status API (the latest per destination).
@@ -737,16 +741,15 @@ async fn deliver_email(
     rule: &str,
     n: &Notice,
     node: &str,
+    store: &crate::secrets::SecretStore,
 ) -> Result<(), String> {
     let (host, port, security) = crate::smtp::parse_url(d.url.as_str())?;
-    let login = match (&d.username, &d.password_file) {
-        (Some(u), Some(f)) => Some((
-            u.to_string(),
-            std::fs::read_to_string(f.as_str())
-                .map_err(|e| format!("{}: {e}", f.as_str()))?
-                .trim()
-                .to_owned(),
-        )),
+    // REQ: OPS-014 (ADR-167 §2) — the password from its file or the store.
+    let password =
+        crate::secrets::Credential::of(d.password_file.as_ref(), d.password_ref.as_ref())
+            .resolve(Some(store))?;
+    let login = match (&d.username, password) {
+        (Some(u), Some(p)) => Some((u.to_string(), p.value.expose().to_owned())),
         _ => None,
     };
     let extra_roots = match &d.tls_ca {
@@ -807,27 +810,24 @@ async fn deliver(
     rule: &str,
     n: &Notice,
     node: &str,
+    store: &crate::secrets::SecretStore,
 ) -> Result<(), String> {
     if d.kind == AlertKind::Email {
-        return deliver_email(d, rule, n, node).await;
+        return deliver_email(d, rule, n, node, store).await;
     }
-    let token = match &d.token_file {
-        Some(f) => Some(
-            std::fs::read_to_string(f.as_str())
-                .map_err(|e| format!("{}: {e}", f.as_str()))?
-                .trim()
-                .to_owned(),
-        ),
-        None => None,
-    };
-    let (body, ct, headers) = render(d, token.as_deref(), rule, n, node);
+    // REQ: OPS-014 (ADR-167 §2) — the token from its file or the store.
+    let token = crate::secrets::Credential::of(d.token_file.as_ref(), d.token_ref.as_ref())
+        .resolve(Some(store))?
+        .map(|r| r.value);
+    let token = token.as_ref().map(crate::secrets::SecretValue::expose);
+    let (body, ct, headers) = render(d, token, rule, n, node);
     let mut url = d.url.to_string();
     if d.kind == AlertKind::Gotify {
         // REQ: API-014 (ADR-167 §4) — the token is one query value, whatever it holds.
         url = format!(
             "{}/message?token={}",
             url.trim_end_matches('/'),
-            crate::kubernetes::encode(token.as_deref().unwrap_or_default())
+            crate::kubernetes::encode(token.unwrap_or_default())
         );
     }
     let mut req = http::Request::post(url)
@@ -840,7 +840,7 @@ async fn deliver(
     let resp = tokio::time::timeout(Duration::from_secs(10), client.request(req, 64 * 1024))
         .await
         .map_err(|_| "timed out".to_owned())?
-        .map_err(|e| match token.as_deref().filter(|t| !t.is_empty()) {
+        .map_err(|e| match token.filter(|t| !t.is_empty()) {
             // REQ: API-014 — an error that quotes the request never shows the token.
             // The URL carries it percent-encoded: both forms go.
             Some(t) => e
@@ -1073,7 +1073,7 @@ pub(crate) async fn run(
                         Arc::clone(&sources),
                     );
                     tokio::spawn(async move {
-                        let r = deliver(&client, &d, &rname, &n, &node).await;
+                        let r = deliver(&client, &d, &rname, &n, &node, &src.secrets).await;
                         if let Err(e) = &r {
                             warn!(destination = %d.name, error = %e, "alert not delivered");
                         }
@@ -1482,10 +1482,12 @@ mod tests {
             kind,
             url: telltale_config::SafeString::new("https://example.test/x").unwrap(),
             token_file: None,
+            token_ref: None,
             from: None,
             to: Vec::new(),
             username: None,
             password_file: None,
+            password_ref: None,
             tls_ca: None,
         };
         let n = Notice {

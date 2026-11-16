@@ -792,18 +792,19 @@ async fn start_http(
     // REQ: API-003 — behind sign-in. Rule 5: if state.db can't be opened, the API stays off
     // and DNS keeps answering.
     if cfg.api.enabled {
-        let c = cfg.clone();
-        let auth = match tokio::task::spawn_blocking(move || crate::auth_setup::open(&c)).await {
-            Ok(Ok(a)) => a,
-            Ok(Err(e)) => {
-                error!("api disabled: cannot open the user database: {e}");
-                return Ok(());
-            }
-            Err(e) => {
-                error!("api disabled: {e}");
-                return Ok(());
-            }
-        };
+        let (c, store) = (cfg.clone(), Arc::clone(&sources.secrets));
+        let auth =
+            match tokio::task::spawn_blocking(move || crate::auth_setup::open(&c, &store)).await {
+                Ok(Ok(a)) => a,
+                Ok(Err(e)) => {
+                    error!("api disabled: cannot open the user database: {e}");
+                    return Ok(());
+                }
+                Err(e) => {
+                    error!("api disabled: {e}");
+                    return Ok(());
+                }
+            };
         let _purge =
             crate::auth_setup::spawn_purge(Arc::clone(&auth), cfg.auth.audit_retention_days);
         let addr = cfg.api.listen;
@@ -898,8 +899,16 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     let anomaly_sink = anomalies
         .as_ref()
         .map(|a| Box::new(a.sink()) as Box<dyn telltale_telemetry::ring::Sink>);
+    // REQ: OPS-014 (ADR-167 §2–3) — the secrets store: nothing is read yet (the first use, or
+    // the blocking load below, opens it). DNS never waits for it.
+    let secrets = Arc::new(crate::secrets::SecretStore::new(&cfg));
     // REQ: OBS-010 (T7.13) — event sinks (file, syslog, webhook) on the same pass.
-    let events = crate::sinks::start(&cfg, &pipeline, &tokio::runtime::Handle::current());
+    let events = crate::sinks::start(
+        &cfg,
+        &pipeline,
+        &tokio::runtime::Handle::current(),
+        Some(&secrets),
+    );
     // REQ: OBS-018 (T11.5) — shadow lists and over-blocking suspects, on the same pass.
     let shadow = Arc::new(crate::shadow::Shadow::new(
         cfg.telemetry.qlog.privacy_level,
@@ -1024,17 +1033,19 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         probes: Arc::default(),
         shadow,
         traces,
-        secrets_key: crate::secrets::KeySlot::default(),
+        secrets,
     });
-    // REQ: OPS-014, API-014 (ADR-167 §3) — the node key, at start on full members (made on the
-    // first one), so a missing or unreadable key shows in the log at once. Resolver pods hold
-    // no secrets and need none. Nothing here waits on it (a blocking task: the file is synced
-    // when made): DNS doesn't depend on the key.
+    // REQ: OPS-014, API-014 (ADR-167 §3) — the store and the node key, at start on full members
+    // (the key made on the first one, while the table is empty), so a missing or unreadable key
+    // shows in the log at once; then every 30 s it retries a locked store, and a locked replica
+    // whose rows are all the cluster's heals. Resolver pods hold no secrets and need none.
+    // Nothing here waits on it (blocking tasks): DNS doesn't depend on the store.
     if !cfg.cluster.ephemeral {
-        let (s, c) = (Arc::clone(&sources), cfg.clone());
-        tokio::task::spawn_blocking(move || {
-            let _ = s.secrets_key.get(&c);
-        });
+        crate::secrets::store::spawn_upkeep(
+            Arc::clone(&sources),
+            cfg.clone(),
+            http_stopped.clone(),
+        );
     }
     http::serve_peers(&sources);
     // REQ: OBS-025 — device identification, on a thread of its own.
@@ -1114,6 +1125,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         Arc::clone(&pipeline.router_networks),
         http_stopped.clone(),
         cfg.cluster.ephemeral,
+        Arc::clone(&sources.secrets),
     ));
     // REQ: DNS-023 (T22.1) — device names answered in DNS (`[local] device_domain`), rebuilt
     // off the query path; follows reloads.
@@ -1449,6 +1461,10 @@ async fn reload(
     if let Some(a) = &sources.anomalies {
         a.reconfigure(&new);
     }
+    // REQ: OPS-014 (ADR-167 §2–3) — new key settings are read at the next use; a reference to a
+    // secret this node doesn't store is a warning (DNS never depends on the store).
+    sources.secrets.configure(&new);
+    crate::secrets::credential::warn_missing(&new, &sources.secrets);
     // REQ: AGT-009 — the agent kill switch follows the (cluster-shared) configuration.
     if let Some(a) = sources.auth.get() {
         a.agents()

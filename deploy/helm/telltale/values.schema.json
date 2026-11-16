@@ -181,6 +181,21 @@
         }
       }
     },
+    "secretsKey": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "generate": {
+          "type": "boolean"
+        }
+      }
+    },
     "secretMounts": {
       "type": "array",
       "items": {

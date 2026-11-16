@@ -58,7 +58,10 @@ fn role(r: UserRole) -> Role {
 
 /// REQ: API-004 — OIDC providers from `[auth.oidc]`, reaching them with the same HTTPS client
 /// as list downloads (system resolver, Mozilla roots, no redirects, 1 MiB, 15 s).
-fn oidc(cfg: &Config) -> io::Result<Option<telltale_api::auth::oidc::Oidc>> {
+fn oidc(
+    cfg: &Config,
+    store: &crate::secrets::SecretStore,
+) -> io::Result<Option<telltale_api::auth::oidc::Oidc>> {
     use telltale_api::auth::oidc::{Fetch, Oidc, OidcSettings, ProviderSettings};
     let o = &cfg.auth.oidc;
     if o.provider.is_empty() {
@@ -66,16 +69,15 @@ fn oidc(cfg: &Config) -> io::Result<Option<telltale_api::auth::oidc::Oidc>> {
     }
     let mut providers = Vec::new();
     for p in &o.provider {
-        let client_secret = match (&p.client_secret, &p.client_secret_file) {
-            (Some(s), _) => Some(s.to_string()),
-            (None, Some(f)) => Some(
-                std::fs::read_to_string(f.as_str())
-                    .map_err(|e| io::Error::other(format!("{}: {e}", f.as_str())))?
-                    .trim()
-                    .to_owned(),
-            ),
-            (None, None) => None,
-        };
+        // REQ: OPS-014 (ADR-167 §2) — inline, its file, or the store.
+        let client_secret = crate::secrets::Credential::of(
+            p.client_secret_file.as_ref(),
+            p.client_secret_ref.as_ref(),
+        )
+        .with_inline(p.client_secret.as_ref())
+        .resolve(Some(store))
+        .map_err(|e| io::Error::other(format!("provider `{}`: {e}", p.id)))?
+        .map(|r| r.value.expose().to_owned());
         providers.push(ProviderSettings {
             id: p.id.to_string(),
             name: if p.name.is_empty() {
@@ -153,10 +155,10 @@ fn write_secret(path: &Path, token: &str) -> io::Result<()> {
 }
 
 /// Opens the auth service for the server. Blocking (Argon2 for a bootstrap password).
-pub(crate) fn open(cfg: &Config) -> io::Result<Arc<Auth>> {
+pub(crate) fn open(cfg: &Config, store: &crate::secrets::SecretStore) -> io::Result<Arc<Auth>> {
     let auth = Arc::new(Auth::new(Arc::new(open_state(cfg)?), settings(cfg)));
     // A broken provider setup (say, a missing secret file) leaves password sign-in working.
-    match oidc(cfg) {
+    match oidc(cfg, store) {
         Ok(Some(o)) => auth.set_oidc(o),
         Ok(None) => {}
         // REQ: CLU-009 (ADR-120) — a Helm resolver pod has the chart's whole configuration but

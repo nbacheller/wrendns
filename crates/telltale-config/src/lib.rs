@@ -19,6 +19,7 @@ pub mod mute;
 pub mod safesearch;
 pub mod schedule;
 pub mod schema;
+pub mod secret_refs;
 pub mod services;
 pub mod shared;
 mod types;

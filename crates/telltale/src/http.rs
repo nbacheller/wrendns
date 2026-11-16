@@ -101,8 +101,9 @@ pub(crate) struct Sources {
     pub(crate) shadow: Arc<crate::shadow::Shadow>,
     /// REQ: OBS-017 (T11.6) — latency exemplars and the queries waiting to go out as traces.
     pub(crate) traces: Arc<crate::traces::Traces>,
-    /// REQ: OPS-014, API-014 (ADR-167 §3) — the node's secrets key, loaded on first use.
-    pub(crate) secrets_key: crate::secrets::KeySlot,
+    /// REQ: OPS-014, API-014 (ADR-167 §2–3) — the secrets entered in the UI (encrypted) and the
+    /// node key, loaded on first use.
+    pub(crate) secrets: Arc<crate::secrets::SecretStore>,
 }
 
 impl Sources {
@@ -957,6 +958,26 @@ fn render_process(w: &mut PromWriter, src: &Sources) {
                 "telltale_sink_dropped_total",
                 &[("sink", name.as_str())],
                 *n,
+            );
+        }
+    }
+    // REQ: OPS-014 (ADR-167 §3) — stored secrets by how they stand on this node.
+    let st = src.secrets.status();
+    if st.state != crate::secrets::store::StoreState::Ephemeral {
+        let f = w.family(
+            "telltale_secrets",
+            "gauge",
+            "Secrets stored on this node, by state: readable, unreadable (another key made them), or corrupt (they fail their integrity check).",
+        );
+        for h in [
+            crate::secrets::store::RowHealth::Readable,
+            crate::secrets::store::RowHealth::Unreadable,
+            crate::secrets::store::RowHealth::Corrupt,
+        ] {
+            f.sample(
+                "telltale_secrets",
+                &[("state", h.as_str())],
+                u64::try_from(st.count(h)).unwrap_or(u64::MAX),
             );
         }
     }

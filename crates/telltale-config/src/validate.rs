@@ -78,6 +78,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     cache_and_telemetry(cfg, &mut r);
     auth(cfg, &mut r);
     cluster(cfg, &mut r);
+    secret_references(cfg, &mut r);
     r.warnings
 }
 
@@ -287,37 +288,40 @@ fn routers(cfg: &Config, r: &mut Report<'_>) {
                 "an https:// URL, e.g. https://192.168.1.1",
             );
         }
+        // REQ: OPS-014 (ADR-167 §2) — each credential from a file or a stored secret.
+        let key = x.api_key_file.is_some() || x.api_key_ref.is_some();
+        let api_secret = x.api_secret_file.is_some() || x.api_secret_ref.is_some();
+        let password = x.password_file.is_some() || x.password_ref.is_some();
         match x.kind {
             crate::RouterKind::Unifi => {
-                if x.api_key_file.is_none() && (x.username.is_none() || x.password_file.is_none()) {
+                if !key && (x.username.is_none() || !password) {
                     r.err(
                         p.clone(),
-                        "UniFi needs api_key_file, or username and password_file",
+                        "UniFi needs api_key_file (or api_key_ref), or username and password_file (or password_ref)",
                     );
                 }
             }
             crate::RouterKind::Opnsense => {
-                if x.api_key_file.is_none() || x.api_secret_file.is_none() {
-                    r.err(p.clone(), "OPNsense needs api_key_file and api_secret_file");
+                if !key || !api_secret {
+                    r.err(
+                        p.clone(),
+                        "OPNsense needs api_key_file and api_secret_file (or their _ref)",
+                    );
                 }
             }
             // REQ: API-012 (T22.3) — a long-lived access token, and nothing UniFi- or
             // OPNsense-only.
             crate::RouterKind::HomeAssistant => {
-                if x.api_key_file.is_none() {
+                if !key {
                     r.err(
                         p.clone(),
-                        "Home Assistant needs api_key_file (a file holding a long-lived access token)",
+                        "Home Assistant needs api_key_file (a file holding a long-lived access token) or api_key_ref",
                     );
                 }
-                if x.username.is_some()
-                    || x.password_file.is_some()
-                    || x.api_secret_file.is_some()
-                    || x.site.is_some()
-                {
+                if x.username.is_some() || password || api_secret || x.site.is_some() {
                     r.err(
                         p.clone(),
-                        "Home Assistant takes api_key_file only (not username, password_file, api_secret_file, or site)",
+                        "Home Assistant takes api_key_file or api_key_ref only (not username, a password, an API secret, or site)",
                     );
                 }
             }
@@ -767,10 +771,11 @@ fn alerts(cfg: &Config, r: &mut Report<'_>) {
             if d.to.is_empty() || d.to.iter().any(|t| !t.as_str().contains('@')) {
                 r.err(format!("{p}.to"), "one or more email addresses");
             }
-            if d.username.is_some() != d.password_file.is_some() {
+            // REQ: OPS-014 (ADR-167 §2) — the password from a file or a stored secret.
+            if d.username.is_some() != (d.password_file.is_some() || d.password_ref.is_some()) {
                 r.err(
                     format!("{p}.password_file"),
-                    "username and password_file go together",
+                    "username and password_file (or password_ref) go together",
                 );
             }
             if d.username.is_some() && u.starts_with("smtp+insecure://") {
@@ -1303,12 +1308,6 @@ fn oidc(o: &crate::OidcConfig, r: &mut Report<'_>) {
         }
         if p.client_id.is_empty() {
             r.err(format!("{at}.client_id"), "must not be empty");
-        }
-        if p.client_secret.is_some() && p.client_secret_file.is_some() {
-            r.err(
-                format!("{at}.client_secret_file"),
-                "set client_secret or client_secret_file, not both",
-            );
         }
         if !p.scopes.iter().any(|s| s.as_str() == "openid") {
             r.err(format!("{at}.scopes"), "must include `openid`");
@@ -1969,5 +1968,100 @@ fn cache_and_telemetry(cfg: &Config, r: &mut Report<'_>) {
     }
     if t.qlog.flush_interval_secs == 0 {
         r.err("telemetry.qlog.flush_interval_secs", "must be at least 1");
+    }
+}
+
+/// REQ: OPS-014 (ADR-167 §2) — references to stored secrets: at most one of a credential's inline
+/// value, `_file` and `_ref`; the names a secret may have; a header in `headers` or `header_refs`,
+/// not both. And (REQ: API-014) no credential in the files reads `<redacted>`: that is what a
+/// redacted copy shows (`config check --print`, the TOML to keep in Git), never a value.
+fn secret_references(cfg: &Config, r: &mut Report<'_>) {
+    use crate::credentials::MARKER;
+    use crate::secret_refs::{fields_of, valid_name};
+    const NAME: &str = "a stored secret's name: lowercase letters, digits, `.`, `_` or `-`, starting with a letter or digit, at most 63";
+    fn set(v: &serde_json::Value, k: &str) -> bool {
+        match v.get(k) {
+            None | Some(serde_json::Value::Null) => false,
+            Some(serde_json::Value::String(s)) => !s.is_empty(),
+            Some(_) => true,
+        }
+    }
+    fn each<T: serde::Serialize>(list: &[T]) -> Vec<serde_json::Value> {
+        list.iter()
+            .filter_map(|x| serde_json::to_value(x).ok())
+            .collect()
+    }
+    let mut check = |kind: &str, at: &str, v: &serde_json::Value| {
+        for f in fields_of(kind) {
+            let keys: Vec<&str> = f.inline.into_iter().chain([f.file, f.reference]).collect();
+            if keys.iter().filter(|k| set(v, k)).count() > 1 {
+                r.err(
+                    format!("{at}.{}", f.reference),
+                    format!("set one of {}, not more", keys.join(", ")),
+                );
+            }
+            if let Some(n) = v.get(f.reference).and_then(serde_json::Value::as_str)
+                && !valid_name(n)
+            {
+                r.err(format!("{at}.{}", f.reference), NAME);
+            }
+            if let Some(i) = f.inline
+                && v.get(i).and_then(serde_json::Value::as_str) == Some(MARKER)
+            {
+                r.err(
+                    format!("{at}.{i}"),
+                    format!(
+                        "`{MARKER}` is what a redacted copy shows, not a value: set the credential itself"
+                    ),
+                );
+            }
+        }
+    };
+    for (i, v) in each(&cfg.router).iter().enumerate() {
+        check("router", &format!("router[{i}]"), v);
+    }
+    for (i, v) in each(&cfg.alerts.destination).iter().enumerate() {
+        check("alert_destination", &format!("alerts.destination[{i}]"), v);
+    }
+    for (i, v) in each(&cfg.auth.oidc.provider).iter().enumerate() {
+        check("oidc_provider", &format!("auth.oidc.provider[{i}]"), v);
+    }
+    for (i, v) in each(&cfg.telemetry.sink).iter().enumerate() {
+        check("sink", &format!("telemetry.sink[{i}]"), v);
+    }
+    if let Some(g) = &cfg.cluster.git
+        && let Ok(v) = serde_json::to_value(g)
+    {
+        check("git", "cluster.git", &v);
+    }
+    let o = &cfg.telemetry.otlp;
+    for (h, n) in &o.header_refs {
+        if o.headers.contains_key(h) {
+            r.err(
+                format!("telemetry.otlp.header_refs.{h}"),
+                "the header is in `headers` too: set it in one of them",
+            );
+        }
+        if !valid_name(n) {
+            r.err(format!("telemetry.otlp.header_refs.{h}"), NAME);
+        }
+    }
+    if o.headers.values().any(|v| v.as_str() == MARKER) {
+        r.err(
+            "telemetry.otlp.headers",
+            format!("`{MARKER}` is what a redacted copy shows, not a value"),
+        );
+    }
+    for (i, u) in cfg.upstream.iter().enumerate() {
+        if u.headers.values().any(|v| v.as_str() == MARKER)
+            || u.args.iter().any(|a| a.as_str() == MARKER)
+        {
+            r.err(
+                format!("upstream[{i}]"),
+                format!(
+                    "`{MARKER}` is what a redacted copy shows, not a value: set the header or argument itself"
+                ),
+            );
+        }
     }
 }

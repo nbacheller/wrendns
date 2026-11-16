@@ -508,7 +508,7 @@ pub(crate) async fn run(
             }
             let body = traces_body(&batch, &names, &resource).to_string();
             let n = batch.len() as u64;
-            match crate::otlp::post(&client, &url, &cfg, body).await {
+            match crate::otlp::post(&client, &url, &cfg, body, &sources.secrets).await {
                 Ok(()) => {
                     shared.sent.fetch_add(n, Ordering::Relaxed);
                     if failing {

@@ -65,7 +65,6 @@ pub(crate) fn sources_in(dir: &std::path::Path) -> Sources {
         started: Instant::now(),
         lists: ArcSwapOption::empty(),
         qlog: None,
-        config: ArcSwap::from_pointee(cfg),
         file_config: ArcSwap::from_pointee(telltale_config::Config::default()),
         config_files: Vec::new(),
         update: Arc::new(std::sync::Mutex::new(crate::updates::initial(false))),
@@ -87,7 +86,13 @@ pub(crate) fn sources_in(dir: &std::path::Path) -> Sources {
         probes: Arc::default(),
         shadow: Arc::new(crate::shadow::Shadow::new(0, 0)),
         traces: Arc::default(),
-        secrets_key: crate::secrets::KeySlot::default(),
+        secrets: Arc::new(crate::secrets::SecretStore::with_env(
+            &cfg,
+            Arc::new(|_: &str| None),
+            true,
+            false,
+        )),
+        config: ArcSwap::from_pointee(cfg),
     }
 }
 

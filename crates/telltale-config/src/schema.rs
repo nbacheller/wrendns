@@ -339,6 +339,9 @@ pub struct GitSourceConfig {
     /// A file with an access token (or `user:password`) for private repositories.
     #[serde(default)]
     pub credentials_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-167 §2) — or the name of a stored secret holding it (Settings → Integrations & secrets); at most one of `credentials_file` and `credentials_ref`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials_ref: Option<SafeString>,
     /// How often to check the ref, in seconds.
     #[serde(default = "default_git_poll")]
     pub poll_secs: u32,
@@ -358,6 +361,9 @@ pub struct GitSourceConfig {
     /// which checks the ref at once instead of at the next poll.
     #[serde(default)]
     pub webhook_secret_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-167 §2) — or the name of a stored secret holding it; at most one of `webhook_secret_file` and `webhook_secret_ref`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook_secret_ref: Option<SafeString>,
 }
 
 fn default_git_ref() -> SafeString {
@@ -1287,15 +1293,24 @@ pub struct RouterConfig {
     /// long-lived access token. A file holding it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-167 §2) — or the name of a stored secret holding it (`api_key_ref = "unifi"`); at most one of `api_key_file` and `api_key_ref`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_ref: Option<SafeString>,
     /// OPNsense: the API secret (a file).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_secret_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-167 §2) — or the name of a stored secret holding it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_secret_ref: Option<SafeString>,
     /// UniFi without an API key: a local (read-only is enough) user and a file holding its
     /// password.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<SafeString>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-167 §2) — or the name of a stored secret holding the password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_ref: Option<SafeString>,
     /// A PEM file with the console's certificate (or its CA), for self-signed consoles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_ca: Option<SafeString>,
@@ -1368,6 +1383,9 @@ pub struct AlertDestination {
     /// out of the config and Git.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-167 §2) — or the name of a stored secret holding the token; at most one of `token_file` and `token_ref`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_ref: Option<SafeString>,
     /// REQ: OBS-010 (T9.4) — `email`: the sender address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<SafeString>,
@@ -1380,6 +1398,9 @@ pub struct AlertDestination {
     pub username: Option<SafeString>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-167 §2) — or the name of a stored secret holding the password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_ref: Option<SafeString>,
     /// `email`: a PEM file with the mail server's certificate (or its CA), for a private
     /// server; public ones are trusted already.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2414,6 +2435,10 @@ pub struct OtlpConfig {
     /// Extra headers (an API key for a hosted collector).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<SafeString, SafeString>,
+    /// REQ: OPS-014 (ADR-167 §2) — headers whose values are stored secrets, by header:
+    /// `header_refs = { api-key = "otlp" }`. A header may be in `headers` or here, not both.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub header_refs: BTreeMap<SafeString, SafeString>,
     /// REQ: OBS-017 (T11.6) — send 1 in this many queries as a trace to
     /// `<endpoint>/v1/traces` (0: none). Needs `endpoint`.
     pub traces_sample_every: u32,
@@ -2427,6 +2452,7 @@ impl Default for OtlpConfig {
             endpoint: None,
             interval_secs: 60,
             headers: BTreeMap::new(),
+            header_refs: BTreeMap::new(),
             traces_sample_every: 0,
             traces_slow_ms: 0,
         }
@@ -2490,6 +2516,9 @@ pub struct SinkConfig {
     /// `webhook`: a file holding a token sent as `Authorization: <token_scheme> <token>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-167 §2) — `webhook`: or the name of a stored secret holding the token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_ref: Option<SafeString>,
     /// `webhook`: the scheme for the token (`Bearer`; Splunk HEC uses `Splunk`).
     #[serde(default = "default_token_scheme")]
     pub token_scheme: SafeString,
@@ -2774,6 +2803,9 @@ pub struct OidcProvider {
     /// ... a file holding it (a mounted Kubernetes Secret). Neither: a public client (PKCE).
     #[serde(default)]
     pub client_secret_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-167 §2) — ... or the name of a stored secret holding it. At most one of the three.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret_ref: Option<SafeString>,
     /// Scopes to request. Default: `openid`, `profile`, `email`.
     #[serde(default = "default_oidc_scopes")]
     pub scopes: Vec<SafeString>,

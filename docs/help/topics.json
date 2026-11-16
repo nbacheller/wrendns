@@ -821,6 +821,17 @@
       "example": "A pod looking up api.github.com first tries api.github.com.argocd.svc.cluster.local and two more cluster names (its search list); those failures land under Internal, not in Top domains or the NXDOMAIN list.",
       "caution": "Nothing is hidden: internal names stay in the query log, the live view, a device's own top domains, and the blocked list. Add your own (e.g. lan) with [telemetry] internal_names on each node.",
       "docs": "internal-names"
+    },
+    {
+      "id": "stored-secrets",
+      "title": "Keep a password or token on the node, encrypted",
+      "term": "Stored secret",
+      "summary": "A credential (a router's API key, an alert token, an OIDC client secret) kept in TelltaleDNS's own database, encrypted with the node's key, and never shown again once saved.",
+      "when": "You'd rather enter a credential in the UI than put a file on the machine.",
+      "example": "api_key_ref = \"unifi\" uses the stored secret named unifi as the UniFi console's API key.",
+      "caution": "A credential set in the config file wins and can't be changed in the UI. Keep a copy of the node's key: without it, stored secrets can't be read. Backups never include them.",
+      "docs": "stored-secrets",
+      "general": true
     }
   ]
 }

@@ -41,16 +41,21 @@ export interface paths {
          *     `{"type": "ntfy", "url": "https://ntfy.sh/my-topic"}`, or for email
          *     `{"type": "email", "url": "smtp://smtp.gmail.com:587", "from": "me@gmail.com", "to":
          *     ["me@gmail.com"], "username": "me@gmail.com", "password_file": "/run/secrets/smtp"}`.
-         *     Secrets stay in files on the node (`token_file`, `password_file`): only the path is sent, and
-         *     a password in `url` reads `<redacted>` wherever the destination is shown (API-014; send it
-         *     back as it is to keep it, as long as the URL's host is unchanged).
-         *     A destination the config files define is overridden until this one is deleted.
+         *     Secrets stay in files on the node (`token_file`, `password_file`) or in its encrypted store
+         *     (`token_ref`, `password_ref` name a stored secret: 422 `secret_missing` when none has that
+         *     name): only the path or the name is sent, and a password in `url` reads `<redacted>` wherever
+         *     the destination is shown (API-014; send it back as it is to keep it, as long as the URL's host
+         *     is unchanged). Setting a file or a reference is an admin's (OPS-014).
+         *     A destination the config files define is overridden until this one is deleted; a credential
+         *     the files set for it stays as they set it: left out of the body, it is kept, and a body that
+         *     sets, replaces or removes it is refused (409 `set_by_file`).
          */
         put: operations["put_alert_destination"];
         post?: never;
         /**
          * Remove an alert destination (OBS-010, T9.6).
-         * @description Rules that still send to it make the configuration invalid (422 says which).
+         * @description Rules that still send to it make the configuration invalid (422 says which). A destination
+         *     the config files define, with a credential they set, can't be hidden (409 `set_by_file`).
          */
         delete: operations["delete_alert_destination"];
         options?: never;
@@ -4253,7 +4258,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "path_not_allowed";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "path_not_allowed" | "set_by_file" | "secret_missing";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -8307,6 +8312,15 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description `set_by_file`: the config files set this destination's credential, and they win. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -8316,7 +8330,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description A field is wrong, or the configuration wouldn't be valid: problem+json says which. */
+            /** @description A field is wrong, a reference names no stored secret (`secret_missing`), or the configuration wouldn't be valid: problem+json says which. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -8365,6 +8379,15 @@ export interface operations {
             };
             /** @description No entry by that name. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define it with a credential. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

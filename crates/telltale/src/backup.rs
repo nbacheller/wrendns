@@ -163,7 +163,8 @@ pub(crate) struct Created {
     pub bytes: u64,
 }
 
-/// A consistent copy of an SQLite database (works while the server writes to it).
+/// A consistent copy of an SQLite database (works while the server writes to it), with the
+/// `strip` statements run on the copy before it is vacuumed (what never goes into a backup).
 fn sqlite_copy(src: &Path, dst: &Path, strip: &[&str]) -> Result<(), String> {
     let db = rusqlite::Connection::open_with_flags(
         src,
@@ -180,9 +181,9 @@ fn sqlite_copy(src: &Path, dst: &Path, strip: &[&str]) -> Result<(), String> {
         let copy = rusqlite::Connection::open(dst).map_err(|e| e.to_string())?;
         copy.pragma_update(None, "temp_store", "MEMORY")
             .map_err(|e| e.to_string())?;
-        for t in strip {
+        for sql in strip {
             // A table that isn't there (an older schema) is fine.
-            let _ = copy.execute(&format!("DELETE FROM {t}"), []);
+            let _ = copy.execute(sql, []);
         }
         copy.execute_batch("VACUUM").map_err(|e| e.to_string())?;
     }
@@ -299,7 +300,18 @@ fn write_archive(
     }
 
     for (db, strip) in [
-        ("state.db", &["sessions", "idempotency"][..]),
+        // REQ: OPS-014 (ADR-167 §8) — sessions and retry records never; nor the secrets store
+        // (rows, tombstones and its stamp): its values are encrypted under this node's key,
+        // which no backup holds.
+        (
+            "state.db",
+            &[
+                "DELETE FROM sessions",
+                "DELETE FROM idempotency",
+                "DELETE FROM secrets",
+                "DELETE FROM meta WHERE key = 'secrets_stamp'",
+            ][..],
+        ),
         ("rollups.db", &[][..]),
     ] {
         let src = data.join(db);

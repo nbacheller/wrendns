@@ -353,6 +353,18 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
     apply_ovr(&mut cfg.list, &e.lists);
     apply_ovr(&mut cfg.group, &e.groups);
     apply_ovr(&mut cfg.alerts.destination, &e.alert_destinations);
+    // REQ: OPS-014 (ADR-167 §2, decision 4) — a credential this node's files set (inline or by
+    // file) wins over whatever an override stored for it (one stored before the files set it):
+    // the merged entry has one source per field, the files'.
+    for d in &mut cfg.alerts.destination {
+        if let Some(f) = own.alerts.destination.iter().find(|f| f.name == d.name) {
+            for field in
+                telltale_config::secret_refs::prefer_file_credentials("alert_destination", f, d)
+            {
+                warn!(destination = %d.name, field, "an alert destination's credential is set by the configuration files, which win over the one stored through the API");
+            }
+        }
+    }
     apply_ovr(&mut cfg.alerts.rule, &e.alert_rules);
     apply_ovr(&mut cfg.schedule, &e.schedules);
     apply_ovr(&mut cfg.anomaly_mute, &e.anomaly_mutes);

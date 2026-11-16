@@ -1,32 +1,56 @@
-//! REQ: OPS-014, API-014 (ADR-167 §3) — the node's secrets key. One 32-byte key per node,
-//! written `ttsk1:<base64url>`, from the first of:
+//! REQ: OPS-014, API-014 (ADR-167 §2–3) — secrets entered in the UI, and the node key that
+//! encrypts them. One 32-byte key per node, written `ttsk1:<base64url>`, from the first of:
 //! 1. `TELLTALE_SECRETS_KEY`;
 //! 2. `[node] secrets_key_file` (`TELLTALE_NODE_SECRETS_KEY_FILE`);
-//! 3. `<data_dir>/secrets.key`, created (0600, never over an existing file) on first start.
+//! 3. `<data_dir>/secrets.key`, created (0600, never over an existing file) on a full member's
+//!    first start, and only while the `secrets` table is empty.
 //!
 //! The previous key, during a rotation, comes from `TELLTALE_SECRETS_PREVIOUS_KEY` or
 //! `[node] secrets_previous_key_file`. Purposes get their own subkeys (BLAKE3 `derive_key`): the
-//! encrypted store (T23.3) and the keyed hashes `Idempotency-Key` records keep (T23.1). A
-//! configured source that can't be read or parsed leaves the node without a key ("locked"):
-//! nothing is generated in its place, and DNS is unaffected (02 §8).
+//! encrypted store ([`store`]) and the keyed hashes `Idempotency-Key` records keep (T23.1). A
+//! configured source that can't be read or parsed leaves the store locked: nothing is generated
+//! in its place, and DNS is unaffected (02 §8).
+//!
+//! - [`value`]: `SecretValue`, printed `<redacted>`, wiped on drop.
+//! - [`store`]: the encrypted table, its states (ready, locked, ephemeral) and rotation.
+//! - [`credential`]: `Credential::resolve`, the one place a credential is read (inline, file, or
+//!   stored), and the readable check.
+//! - [`cli`]: `telltale secrets status | rotate-key`.
+
+pub(crate) mod cli;
+pub(crate) mod credential;
+pub(crate) mod store;
+#[cfg(test)]
+mod tests;
+pub(crate) mod value;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
 
 use base64::Engine as _;
 use telltale_config::Config;
+use zeroize::{Zeroize as _, Zeroizing};
+
+pub(crate) use credential::{Credential, Source};
+pub(crate) use store::SecretStore;
+pub(crate) use value::SecretValue;
 
 /// The data-directory key's file name.
 pub(crate) const KEY_FILE: &str = "secrets.key";
+/// A rotation's new key, until it replaces `secrets.key` (ADR-167 §3).
+pub(crate) const NEW_KEY_FILE: &str = "secrets.key.new";
 /// The text form's prefix (the format's version).
 const PREFIX: &str = "ttsk1:";
 /// `TELLTALE_SECRETS_KEY` and `TELLTALE_SECRETS_PREVIOUS_KEY`.
 pub(crate) const KEY_VAR: &str = "TELLTALE_SECRETS_KEY";
 pub(crate) const PREVIOUS_KEY_VAR: &str = "TELLTALE_SECRETS_PREVIOUS_KEY";
+/// REQ: OPS-014 (ADR-167, Helm persistence off) — set when the data directory isn't kept across
+/// restarts (an `emptyDir`): stored secrets would be lost at every restart (`secrets_ephemeral`).
+pub(crate) const DATA_EPHEMERAL_VAR: &str = "TELLTALE_DATA_EPHEMERAL";
 /// Subkey contexts (ADR-167 §3).
 const KEY_ID_CONTEXT: &str = "telltale secrets key-id v1";
 const IDEMPOTENCY_CONTEXT: &str = "telltale secrets idempotency v1";
+pub(crate) const AEAD_CONTEXT: &str = "telltale secrets aead v1";
 
 /// Where a key came from (shown in status, never the key).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,10 +72,16 @@ impl fmt::Display for KeySource {
     }
 }
 
-/// One node key. Its `Debug` never shows the bytes.
+/// One node key. Its `Debug` never shows the bytes, and they are wiped when it's dropped.
 pub(crate) struct NodeKey {
     key: [u8; 32],
     source: KeySource,
+}
+
+impl Drop for NodeKey {
+    fn drop(&mut self) {
+        self.key.zeroize();
+    }
 }
 
 impl fmt::Debug for NodeKey {
@@ -64,7 +94,7 @@ impl fmt::Debug for NodeKey {
     }
 }
 
-fn hex(b: &[u8]) -> String {
+pub(crate) fn hex(b: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut s = String::with_capacity(b.len() * 2);
     for x in b {
@@ -79,26 +109,30 @@ impl NodeKey {
         let body = text.trim().strip_prefix(PREFIX).ok_or_else(|| {
             format!("{source}: not a TelltaleDNS secrets key (expected `{PREFIX}...`)")
         })?;
-        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(body)
-            .map_err(|_| format!("{source}: the key isn't base64url"))?;
-        let key: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| format!("{source}: the key isn't 32 bytes"))?;
+        let bytes = Zeroizing::new(
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(body)
+                .map_err(|_| format!("{source}: the key isn't base64url"))?,
+        );
+        let mut key = [0u8; 32];
+        if bytes.len() != key.len() {
+            return Err(format!("{source}: the key isn't 32 bytes"));
+        }
+        key.copy_from_slice(&bytes);
         Ok(Self { key, source })
     }
 
     /// A new random key's text form.
-    pub(crate) fn generate() -> Result<String, String> {
+    pub(crate) fn generate() -> Result<Zeroizing<String>, String> {
         use ring::rand::SecureRandom as _;
-        let mut key = [0u8; 32];
+        let mut key = Zeroizing::new([0u8; 32]);
         ring::rand::SystemRandom::new()
-            .fill(&mut key)
+            .fill(&mut *key)
             .map_err(|_| "no randomness for a new secrets key".to_owned())?;
-        Ok(format!(
+        Ok(Zeroizing::new(format!(
             "{PREFIX}{}",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key)
-        ))
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(*key)
+        )))
     }
 
     /// The first 8 bytes of the key-id subkey: names the key in rows and status, safely.
@@ -109,9 +143,9 @@ impl NodeKey {
         id
     }
 
-    /// A purpose's subkey.
-    pub(crate) fn subkey(&self, context: &str) -> [u8; 32] {
-        blake3::derive_key(context, &self.key)
+    /// A purpose's subkey (wiped when dropped).
+    pub(crate) fn subkey(&self, context: &str) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(blake3::derive_key(context, &self.key))
     }
 
     pub(crate) fn source(&self) -> &KeySource {
@@ -143,7 +177,9 @@ fn read_key_file(
     source: KeySource,
     warnings: &mut Vec<String>,
 ) -> Result<NodeKey, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let text = Zeroizing::new(
+        std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?,
+    );
     #[cfg(unix)]
     if let Ok(meta) = std::fs::metadata(path) {
         use std::os::unix::fs::PermissionsExt as _;
@@ -159,12 +195,40 @@ fn read_key_file(
     NodeKey::parse(&text, source)
 }
 
+/// Writes `text` to a new file `path` (`O_CREAT|O_EXCL`, 0600) and syncs it.
+pub(crate) fn write_new_key(path: &Path, text: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    let err = |e: std::io::Error| format!("{}: {e}", path.display());
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path).map_err(err)?;
+    f.write_all(text.as_bytes())
+        .and_then(|()| f.write_all(b"\n"))
+        .and_then(|()| f.sync_all())
+        .map_err(err)
+}
+
+/// Syncs the directory `dir`, so a link or rename in it survives a crash.
+pub(crate) fn sync_dir(dir: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    std::fs::File::open(dir)
+        .and_then(|d| d.sync_all())
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
+}
+
 /// Creates `path` with a new key, never partly written and never over an existing file: the key
 /// goes to `<path>.tmp` (`O_CREAT|O_EXCL`, 0600), is synced, then hard-linked to `path` (which
 /// fails if `path` exists: a race with another start reads that one instead), and the directory
 /// is synced. A crash leaves at most the temporary file, which the next start replaces.
 fn create_key_file(path: &Path) -> Result<(), String> {
-    use std::io::Write as _;
     let err = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
     let text = NodeKey::generate()?;
     let tmp = path.with_extension("key.tmp");
@@ -173,19 +237,7 @@ fn create_key_file(path: &Path) -> Result<(), String> {
     {
         return Err(err(&tmp, e));
     }
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        opts.mode(0o600);
-    }
-    let mut f = opts.open(&tmp).map_err(|e| err(&tmp, e))?;
-    f.write_all(text.as_bytes())
-        .and_then(|()| f.write_all(b"\n"))
-        .and_then(|()| f.sync_all())
-        .map_err(|e| err(&tmp, e))?;
-    drop(f);
+    write_new_key(&tmp, &text)?;
     let linked = match std::fs::hard_link(&tmp, path) {
         // A filesystem without hard links: rename, still never over an existing key.
         Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists && !path.exists() => {
@@ -196,31 +248,63 @@ fn create_key_file(path: &Path) -> Result<(), String> {
     };
     let _ = std::fs::remove_file(&tmp);
     linked?;
-    #[cfg(unix)]
-    if let Some(dir) = path.parent() {
-        std::fs::File::open(dir)
-            .and_then(|d| d.sync_all())
-            .map_err(|e| err(dir, e))?;
+    match path.parent() {
+        Some(dir) => sync_dir(dir),
+        None => Ok(()),
     }
-    Ok(())
 }
 
-/// REQ: OPS-014 (ADR-167 §3) — the node's keys from `cfg` and the environment (`var`). `create`:
-/// make the data-directory key when no other source is set and it doesn't exist (never on an
-/// ephemeral resolver pod, which holds no secrets).
+/// Where a node's keys come from: the node-local settings the store reads (ADR-167 §3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeyPaths {
+    pub(crate) data_dir: PathBuf,
+    /// `[node] secrets_key_file` (empty: not set).
+    pub(crate) key_file: String,
+    /// `[node] secrets_previous_key_file`.
+    pub(crate) previous_file: String,
+    /// A resolver pod (`[cluster] ephemeral`): it holds no secrets and makes no key.
+    pub(crate) ephemeral: bool,
+}
+
+impl KeyPaths {
+    pub(crate) fn of(cfg: &Config) -> Self {
+        Self {
+            data_dir: PathBuf::from(cfg.node.data_dir.as_str()),
+            key_file: cfg.node.secrets_key_file.trim().to_owned(),
+            previous_file: cfg.node.secrets_previous_key_file.trim().to_owned(),
+            ephemeral: cfg.cluster.ephemeral,
+        }
+    }
+
+    /// `<data_dir>/secrets.key`.
+    pub(crate) fn data_key(&self) -> PathBuf {
+        self.data_dir.join(KEY_FILE)
+    }
+
+    /// Whether the key is the data directory's (no variable, no `[node] secrets_key_file`): the
+    /// only one this node makes, rotates or replaces.
+    pub(crate) fn uses_data_key(&self, var: &dyn Fn(&str) -> Option<String>) -> bool {
+        self.key_file.is_empty() && var(KEY_VAR).is_none_or(|t| t.trim().is_empty())
+    }
+}
+
+/// REQ: OPS-014 (ADR-167 §3) — the node's keys from its settings and the environment (`var`).
+/// `create`: make the data-directory key when no other source is set and it doesn't exist (the
+/// store asks only while its table is empty, and never on an ephemeral resolver pod).
 pub(crate) fn load(
-    cfg: &Config,
+    paths: &KeyPaths,
     var: &dyn Fn(&str) -> Option<String>,
     create: bool,
 ) -> Result<Keys, String> {
     let mut warnings = Vec::new();
     let current = if let Some(text) = var(KEY_VAR).filter(|t| !t.trim().is_empty()) {
+        let text = Zeroizing::new(text);
         NodeKey::parse(&text, KeySource::Env)?
-    } else if !cfg.node.secrets_key_file.is_empty() {
-        let p = PathBuf::from(cfg.node.secrets_key_file.as_str());
+    } else if !paths.key_file.is_empty() {
+        let p = PathBuf::from(&paths.key_file);
         read_key_file(&p, KeySource::File(p.clone()), &mut warnings)?
     } else {
-        let p = Path::new(cfg.node.data_dir.as_str()).join(KEY_FILE);
+        let p = paths.data_key();
         if !p.exists() {
             if !create {
                 return Err(format!(
@@ -233,9 +317,10 @@ pub(crate) fn load(
         read_key_file(&p, KeySource::DataDir(p.clone()), &mut warnings)?
     };
     let previous = if let Some(text) = var(PREVIOUS_KEY_VAR).filter(|t| !t.trim().is_empty()) {
+        let text = Zeroizing::new(text);
         Some(NodeKey::parse(&text, KeySource::Env)?)
-    } else if !cfg.node.secrets_previous_key_file.is_empty() {
-        let p = PathBuf::from(cfg.node.secrets_previous_key_file.as_str());
+    } else if !paths.previous_file.is_empty() {
+        let p = PathBuf::from(&paths.previous_file);
         Some(read_key_file(
             &p,
             KeySource::File(p.clone()),
@@ -251,176 +336,7 @@ pub(crate) fn load(
     })
 }
 
-/// How long a failed load is kept before the next use tries again.
-const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// The keys, loaded on first use (`Sources::secrets_key`) and kept for the process; a failure is
-/// kept only for [`RETRY_AFTER`], so a key mounted (or a `[node] secrets_key_file` set) after
-/// the start is picked up without a restart.
-#[derive(Debug, Default)]
-pub(crate) struct KeySlot(Mutex<Option<Loaded>>);
-
-#[derive(Debug)]
-enum Loaded {
-    Ok(Arc<Keys>),
-    Failed(String, std::time::Instant),
-}
-
-impl KeySlot {
-    /// The keys, or why there are none (the store is locked: T23.3).
-    pub(crate) fn get(&self, cfg: &Config) -> Result<Arc<Keys>, String> {
-        let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        match &*slot {
-            Some(Loaded::Ok(k)) => return Ok(Arc::clone(k)),
-            Some(Loaded::Failed(e, at)) if at.elapsed() < RETRY_AFTER => return Err(e.clone()),
-            _ => {}
-        }
-        let r = load(cfg, &|k| std::env::var(k).ok(), !cfg.cluster.ephemeral);
-        let (out, logged) = match r {
-            Ok(k) => {
-                for w in &k.warnings {
-                    tracing::warn!("{w}");
-                }
-                tracing::info!(
-                    source = %k.current.source(),
-                    key_id = %hex(&k.current.key_id()),
-                    previous = ?k.previous.as_ref().map(|p| hex(&p.key_id())),
-                    "secrets key loaded"
-                );
-                let k = Arc::new(k);
-                (Ok(Arc::clone(&k)), Loaded::Ok(k))
-            }
-            Err(e) => {
-                // Logged when the reason first shows or changes, not at every retry.
-                let again = matches!(&*slot, Some(Loaded::Failed(prev, _)) if *prev == e);
-                if !again {
-                    if cfg.cluster.ephemeral {
-                        tracing::debug!("no secrets key on this resolver pod: {e}");
-                    } else {
-                        tracing::error!("no secrets key: {e}");
-                    }
-                }
-                (Err(e.clone()), Loaded::Failed(e, std::time::Instant::now()))
-            }
-        };
-        *slot = Some(logged);
-        out
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn cfg(dir: &Path) -> Config {
-        let mut c = Config::default();
-        c.node.data_dir = telltale_config::SafeString::new(dir.to_str().unwrap()).unwrap();
-        c
-    }
-
-    /// REQ: OPS-014 (ADR-167 §3) — the first start makes `secrets.key` (0600), the next start
-    /// reads the same key; the variable, then `[node] secrets_key_file`, win over it; a
-    /// configured source that's unreadable is an error, never a new key.
-    #[test]
-    #[allow(clippy::many_single_char_names)] // one load per source
-    fn ops_014_node_key_sources_in_order() {
-        let tmp = tempfile::tempdir().unwrap();
-        let c = cfg(tmp.path());
-        let none = |_: &str| None;
-        let a = load(&c, &none, true).unwrap();
-        let file = tmp.path().join(KEY_FILE);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
-        assert!(matches!(a.current.source(), KeySource::DataDir(_)));
-        let b = load(&c, &none, true).unwrap();
-        assert_eq!(a.current.key_id(), b.current.key_id(), "the same key again");
-        assert!(a.warnings.is_empty(), "{:?}", a.warnings);
-
-        let env_key = NodeKey::generate().unwrap();
-        let from_env = |k: &str| (k == KEY_VAR).then(|| env_key.clone());
-        let e = load(&c, &from_env, true).unwrap();
-        assert_eq!(*e.current.source(), KeySource::Env);
-        assert_ne!(e.current.key_id(), a.current.key_id());
-
-        let mut with_file = c.clone();
-        let kf = tmp.path().join("mounted.key");
-        std::fs::write(&kf, NodeKey::generate().unwrap()).unwrap();
-        with_file.node.secrets_key_file =
-            telltale_config::SafeString::new(kf.to_str().unwrap()).unwrap();
-        let f = load(&with_file, &none, true).unwrap();
-        assert!(matches!(f.current.source(), KeySource::File(_)));
-        assert_eq!(
-            load(&with_file, &from_env, true).unwrap().current.key_id(),
-            e.current.key_id(),
-            "the variable wins over the file"
-        );
-
-        std::fs::write(&kf, "not a key").unwrap();
-        assert!(load(&with_file, &none, true).is_err(), "unreadable: no key");
-        let empty = tempfile::tempdir().unwrap();
-        assert!(
-            load(&cfg(empty.path()), &none, false).is_err(),
-            "pods make none"
-        );
-        assert!(!empty.path().join(KEY_FILE).exists());
-    }
-
-    /// REQ: OPS-014 — the key file is made whole or not at all (a leftover temporary file from
-    /// a crash is replaced; an existing key is never replaced), and a failed load is retried.
-    #[test]
-    fn ops_014_key_file_made_whole_and_failures_retried() {
-        let tmp = tempfile::tempdir().unwrap();
-        let file = tmp.path().join(KEY_FILE);
-        std::fs::write(tmp.path().join("secrets.key.tmp"), "ttsk1:trunc").unwrap();
-        create_key_file(&file).unwrap();
-        assert!(!tmp.path().join("secrets.key.tmp").exists());
-        let first = std::fs::read_to_string(&file).unwrap();
-        NodeKey::parse(&first, KeySource::DataDir(file.clone())).unwrap();
-        create_key_file(&file).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&file).unwrap(),
-            first,
-            "never replaced"
-        );
-
-        // A configured key file that isn't there yet: an error, kept for a while, not for good.
-        let mut c = cfg(tmp.path());
-        let later = tmp.path().join("mounted.key");
-        c.node.secrets_key_file =
-            telltale_config::SafeString::new(later.to_str().unwrap()).unwrap();
-        let slot = KeySlot::default();
-        assert!(slot.get(&c).is_err());
-        std::fs::write(&later, NodeKey::generate().unwrap()).unwrap();
-        assert!(slot.get(&c).is_err(), "within the retry interval");
-        if let Some(Loaded::Failed(_, at)) = &mut *slot.0.lock().unwrap() {
-            *at = std::time::Instant::now().checked_sub(RETRY_AFTER).unwrap();
-        }
-        assert!(slot.get(&c).is_ok(), "picked up after the interval");
-    }
-
-    /// REQ: API-014 — the idempotency digest is keyed (another node's key gives another digest),
-    /// and a key's `Debug` shows its ID, never its bytes.
-    #[test]
-    fn api_014_idempotency_digest_is_keyed() {
-        let a = NodeKey::parse(&NodeKey::generate().unwrap(), KeySource::Env).unwrap();
-        let b = NodeKey::parse(&NodeKey::generate().unwrap(), KeySource::Env).unwrap();
-        let req = b"PUT /upstreams/x {\"headers\":{\"Authorization\":\"Bearer s3cret\"}}";
-        assert_eq!(a.idempotency_digest(req), a.idempotency_digest(req));
-        assert_ne!(a.idempotency_digest(req), b.idempotency_digest(req));
-        assert_ne!(
-            a.idempotency_digest(req),
-            blake3::hash(req).to_hex().to_string()
-        );
-        let text = format!("{a:?}");
-        assert!(text.contains("<redacted>"), "{text}");
-        assert!(!text.contains(&format!("{:?}", a.key)), "{text}");
-        assert_ne!(
-            a.subkey("telltale secrets aead v1"),
-            a.subkey(IDEMPOTENCY_CONTEXT)
-        );
-    }
+/// The process environment, as the store reads it.
+pub(crate) fn process_env(k: &str) -> Option<String> {
+    std::env::var(k).ok()
 }

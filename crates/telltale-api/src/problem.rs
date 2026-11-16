@@ -100,6 +100,11 @@ pub enum Code {
     /// (under `/proc`, `/sys`, `/dev`, the data directory, or a key file), or a file holding a
     /// credential isn't under `[node] secret_file_dirs`.
     PathNotAllowed,
+    /// REQ: OPS-014 (ADR-167 §2, decision 4) — the configuration files set this credential
+    /// (inline or by file), and they win: the API can't set, replace or remove it.
+    SetByFile,
+    /// REQ: OPS-014 (ADR-167 §2) — a `*_ref` names a secret this node doesn't store.
+    SecretMissing,
 }
 
 impl Code {
@@ -146,6 +151,8 @@ impl Code {
             Self::SecretsLocked => "https://telltaledns.dev/problems/secrets_locked",
             Self::UpgradeRequired => "https://telltaledns.dev/problems/upgrade_required",
             Self::PathNotAllowed => "https://telltaledns.dev/problems/path_not_allowed",
+            Self::SetByFile => "https://telltaledns.dev/problems/set_by_file",
+            Self::SecretMissing => "https://telltaledns.dev/problems/secret_missing",
         }
     }
 
@@ -190,6 +197,8 @@ impl Code {
             Self::SecretsLocked => "Secrets key unavailable",
             Self::UpgradeRequired => "Upgrade needed",
             Self::PathNotAllowed => "Path not allowed",
+            Self::SetByFile => "Set by the configuration files",
+            Self::SecretMissing => "No such stored secret",
         }
     }
 
@@ -214,7 +223,8 @@ impl Code {
             | Self::DrillActive
             | Self::NodeIsPrimary
             | Self::NodeIsUp
-            | Self::UpgradeRequired => StatusCode::CONFLICT,
+            | Self::UpgradeRequired
+            | Self::SetByFile => StatusCode::CONFLICT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::VersionConflict => StatusCode::PRECONDITION_FAILED,
             Self::InvalidConfig
@@ -227,7 +237,8 @@ impl Code {
             | Self::PrivacyLevel
             | Self::DrillTargets
             | Self::CredentialReentryRequired
-            | Self::PathNotAllowed => StatusCode::UNPROCESSABLE_ENTITY,
+            | Self::PathNotAllowed
+            | Self::SecretMissing => StatusCode::UNPROCESSABLE_ENTITY,
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
         }
     }

@@ -201,3 +201,83 @@ fn api_007_restore_trusts_only_plain_recorded_directories() {
         assert!(e.contains("--data-dir"), "{bad}: {e}");
     }
 }
+
+/// REQ: OPS-014, API-007 (AC10, ADR-167 §8) — a backup holds no stored secret: not the rows, the
+/// tombstones or the stamp counter of `state.db`, nor the node key; what it restores has an empty
+/// store and no ciphertext.
+#[test]
+fn ops_014_backup_excludes_secret_rows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    let conf = tmp.path().join("telltale.toml");
+    fs::write(
+        &conf,
+        format!("[node]\nname = \"pi\"\ndata_dir = \"{}\"\n", data.display()),
+    )
+    .unwrap();
+    let cfg = telltale_config::Loader::new()
+        .file(&conf)
+        .load()
+        .unwrap()
+        .config;
+    let store = crate::secrets::SecretStore::with_env(
+        &cfg,
+        std::sync::Arc::new(|_: &str| None),
+        true,
+        false,
+    );
+    let v = crate::secrets::SecretValue::new(
+        crate::secrets::value::Kind::Text,
+        zeroize::Zeroizing::new("p".repeat(120)),
+    )
+    .unwrap();
+    for name in ["unifi", "gone"] {
+        store
+            .put(
+                name,
+                crate::secrets::value::Kind::Text,
+                &v,
+                0,
+                "root",
+                "local",
+                1,
+            )
+            .unwrap();
+    }
+    store.delete("gone", 0, "root", 2).unwrap();
+    let state = telltale_store::state::State::open(&data.join("state.db")).unwrap();
+    let row = state.secret_row("unifi").unwrap().unwrap();
+    assert_eq!(state.secret_row_count().unwrap(), 2);
+    drop(state);
+    let out = tmp.path().join("b.ttbk");
+    create(&[conf], &cfg, false, &out).unwrap();
+    let m = show(&out).unwrap();
+    assert!(
+        !paths(&m).iter().any(|p| p.contains("secrets.key")),
+        "{:?}",
+        paths(&m)
+    );
+    let new = tmp.path().join("new");
+    restore(&out, Some(&new.join("data")), Some(&new.join("etc")), false).unwrap();
+    let db = rusqlite::Connection::open(new.join("data/state.db")).unwrap();
+    let n: i64 = db
+        .query_row("SELECT count(*) FROM secrets", [], |r| r.get(0))
+        .unwrap();
+    let stamp: i64 = db
+        .query_row(
+            "SELECT count(*) FROM meta WHERE key LIKE 'secrets%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!((n, stamp), (0, 0));
+    drop(db);
+    let bytes = fs::read(new.join("data/state.db")).unwrap();
+    assert!(
+        !bytes
+            .windows(row.ciphertext.len())
+            .any(|w| w == row.ciphertext),
+        "ciphertext in the restored database"
+    );
+    assert!(!new.join("data/secrets.key").exists());
+}

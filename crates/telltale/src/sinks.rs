@@ -69,6 +69,7 @@ pub(crate) fn start(
     cfg: &Config,
     pipeline: &Arc<Pipeline>,
     rt: &tokio::runtime::Handle,
+    store: Option<&Arc<crate::secrets::SecretStore>>,
 ) -> Option<Box<dyn Sink>> {
     let mut outs = Vec::new();
     for s in &cfg.telemetry.sink {
@@ -76,7 +77,7 @@ pub(crate) fn start(
         let dropped = Arc::new(AtomicU64::new(0));
         let name = s.name.to_string();
         let c = s.clone();
-        let (d, rt) = (Arc::clone(&dropped), rt.clone());
+        let (d, rt, store) = (Arc::clone(&dropped), rt.clone(), store.cloned());
         let host = crate::http::node_name(cfg);
         let spill = Spill::new(s, cfg.node.data_dir.as_str());
         let spawned = std::thread::Builder::new()
@@ -84,7 +85,9 @@ pub(crate) fn start(
             .spawn(move || match c.kind {
                 SinkKind::File => file_writer(&c, &rx),
                 SinkKind::Syslog => syslog_writer(&c, &rx, &host),
-                SinkKind::Webhook => webhook_writer(&c, &rx, &d, &rt, &host, spill.as_ref()),
+                SinkKind::Webhook => {
+                    webhook_writer(&c, &rx, &d, &rt, &host, spill.as_ref(), store.as_deref());
+                }
             });
         if let Err(e) = spawned {
             warn!(sink = %name, error = %e, "event sink disabled: cannot start its thread");
@@ -465,6 +468,7 @@ fn webhook_writer(
     rt: &tokio::runtime::Handle,
     host: &str,
     spill: Option<&Spill>,
+    store: Option<&crate::secrets::SecretStore>,
 ) {
     let client = match telltale_filter::fetch::Client::new(
         Arc::new(telltale_filter::fetch::SystemResolver),
@@ -500,14 +504,14 @@ fn webhook_writer(
             first = None;
             // REQ: OBS-010 (T9.11) — quiet: a chance to send what was kept.
             if let Some(s) = spill {
-                replay(s, c, &client, rt, host, batch);
+                replay(s, c, &client, rt, host, batch, store);
             }
             continue;
         }
         let body = webhook_body(c, &buf, host);
         let mut delivered = false;
         for attempt in 0..3u32 {
-            match rt.block_on(post(&client, c, body.clone())) {
+            match rt.block_on(post(&client, c, body.clone(), store)) {
                 Ok(()) => {
                     delivered = true;
                     break;
@@ -522,7 +526,7 @@ fn webhook_writer(
         }
         match (delivered, spill) {
             // REQ: OBS-010 (T9.11) — the collector is back: send what was kept, oldest first.
-            (true, Some(s)) => replay(s, c, &client, rt, host, batch),
+            (true, Some(s)) => replay(s, c, &client, rt, host, batch, store),
             (true, None) => {}
             (false, Some(s)) if s.push(&buf) => {
                 info!(sink = %c.name, events = buf.len(), "event sink batch kept on disk until the collector is back");
@@ -559,6 +563,7 @@ fn replay(
     rt: &tokio::runtime::Handle,
     host: &str,
     batch: usize,
+    store: Option<&crate::secrets::SecretStore>,
 ) {
     for _ in 0..20 {
         let (events, next) = s.take(batch);
@@ -566,7 +571,7 @@ fn replay(
             return;
         }
         if rt
-            .block_on(post(client, c, webhook_body(c, &events, host)))
+            .block_on(post(client, c, webhook_body(c, &events, host), store))
             .is_err()
         {
             return;
@@ -707,6 +712,7 @@ async fn post(
     client: &telltale_filter::fetch::Client,
     c: &SinkConfig,
     body: String,
+    store: Option<&crate::secrets::SecretStore>,
 ) -> Result<(), String> {
     let url = c.url.as_ref().map_or("", |u| u.as_str());
     let ct = match c.format {
@@ -716,11 +722,13 @@ async fn post(
     let mut req = http::Request::post(url)
         .header("content-type", ct)
         .header("user-agent", "TelltaleDNS");
-    if let Some(f) = &c.token_file {
-        let t = std::fs::read_to_string(f.as_str()).map_err(|e| format!("{}: {e}", f.as_str()))?;
+    // REQ: OPS-014 (ADR-167 §2) — the token from its file or the store, read per batch.
+    if let Some(t) = crate::secrets::Credential::of(c.token_file.as_ref(), c.token_ref.as_ref())
+        .resolve(store)?
+    {
         req = req.header(
             "authorization",
-            format!("{} {}", c.token_scheme.as_str(), t.trim()),
+            format!("{} {}", c.token_scheme.as_str(), t.value.expose()),
         );
     }
     let req = req.body(body.into_bytes()).map_err(|e| e.to_string())?;

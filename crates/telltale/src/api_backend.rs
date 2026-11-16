@@ -2289,6 +2289,11 @@ impl Backend for ApiBackend {
                 k.stale(now).then(|| k.age_s(now).unwrap_or(0))
             },
         });
+        // REQ: OPS-014 (ADR-167 §3) — a locked store, or secrets on a data directory that isn't
+        // kept: degraded, DNS unaffected.
+        reasons.extend(crate::secrets::store::health_reasons(
+            &self.src.secrets.status(),
+        ));
         // REQ: OPS-010 — a standalone node in maintenance leaves its own conditions out (in a
         // cluster, the federated health does it from every node's heartbeats).
         let mut maintenance = Vec::new();
@@ -2567,10 +2572,11 @@ impl Backend for ApiBackend {
             .cloned();
         let node = crate::http::node_name(&cfg);
         let name = name.to_owned();
+        let store = Arc::clone(&self.src.secrets);
         Box::pin(async move {
             let d =
                 d.ok_or_else(|| Problem::not_found(format!("no alert destination `{name}`")))?;
-            let r = crate::alerts::send_test(&d, &node).await;
+            let r = crate::alerts::send_test(&d, &node, &store).await;
             Ok(telltale_api::model::AlertTest {
                 ok: r.is_ok(),
                 error: r.err(),
@@ -3114,8 +3120,7 @@ impl Backend for ApiBackend {
         request: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<Vec<u8>, Problem> {
-        let cfg = self.src.config.load();
-        if let Ok(k) = self.src.secrets_key.get(&cfg) {
+        if let Ok(k) = self.src.secrets.keys() {
             return Ok(k
                 .current
                 .idempotency_digest(request.as_bytes())
@@ -3378,7 +3383,8 @@ impl Backend for ApiBackend {
         }
         // REQ: API-014 (ADR-167 §4) — the caller learns only that it was refused; why (a file
         // path, an I/O error) goes to the log for the operator.
-        crate::gitsource::webhook_ok(&cfg, signature.as_deref(), &body).map_err(|e| {
+        crate::gitsource::webhook_ok(&cfg, signature.as_deref(), &body, Some(&self.src.secrets))
+            .map_err(|e| {
             tracing::warn!("Git webhook refused: {e}");
             Problem::new(Code::Unauthorized, "the webhook's signature wasn't accepted").hint(
                 "Set the webhook's secret to the contents of [cluster.git] webhook_secret_file; the server log says why it was refused.",
@@ -4863,10 +4869,26 @@ fn plan_override(
     // REQ: API-014 (ADR-167 §4, the marker rule) — `<redacted>` sent back keeps the value in
     // effect while the destination is unchanged; otherwise the credential is entered again.
     let restored = restore_markers(w, &name, &before_cfg)?;
-    let body_in = restored.as_ref().or(w.body.as_ref());
+    // REQ: OPS-014 (ADR-167 §2, decision 4) — a credential the files set wins: carried over when
+    // the body leaves it out, refused (409 `set_by_file`) when the body sets, drops or replaces
+    // it, or hides the entry that has it.
+    let carried = set_by_file(
+        w,
+        &name,
+        &file,
+        &entries,
+        restored.as_ref().or(w.body.as_ref()),
+    )?;
+    let body_in = carried.as_ref().or(restored.as_ref()).or(w.body.as_ref());
     // REQ: API-014, CLU-010 (T23.2, ADR-167 §4) — who may point a credential somewhere, and
     // where an API-set path may point.
-    let redirect = credential_rules(w, &name, &file, &before_cfg, body_in)?;
+    let mut redirect = credential_rules(w, &name, &file, &before_cfg, body_in)?;
+    // REQ: OPS-014 (ADR-167 §2, §4) — a reference names a stored secret (422 `secret_missing`
+    // otherwise), and one pointed at a secret another kind of entry uses is a redirect too.
+    if let Some(body) = body_in {
+        let r = secret_references(src, w, &name, &before_cfg, body)?;
+        redirect = redirect.or(r);
+    }
     // REQ: API-002 (T9.22) — removing an upstream also takes it out of its upstream groups.
     // A DELETE that reverts an override of the files' entry (or un-hides it) brings the
     // upstream back: nothing to cascade.
@@ -4986,6 +5008,113 @@ fn plan_override(
         candidate: merged,
         redirect,
     })
+}
+
+/// REQ: OPS-014 (ADR-167 §2, decision 4) — for a write to an entry the files also define: each
+/// credential field the files set inline or by file is carried over from them when the body
+/// leaves it out (`Some(body)` returned), and a body that sets, drops or replaces one, or a
+/// `DELETE` that would hide such an entry, is refused (409 `set_by_file`).
+fn set_by_file(
+    w: &ManagedWrite,
+    name: &str,
+    file: &telltale_config::Config,
+    entries: &crate::managed::Entries,
+    body: Option<&serde_json::Value>,
+) -> Result<Option<serde_json::Value>, Problem> {
+    let (kind, in_files, overridden) = match w.kind {
+        ManagedKind::AlertDestination => (
+            "alert_destination",
+            named_json(&file.alerts.destination, name),
+            entries.alert_destinations.iter().any(|(n, _)| n == name),
+        ),
+        _ => return Ok(None),
+    };
+    let Some(in_files) = in_files else {
+        return Ok(None);
+    };
+    let held = telltale_config::secret_refs::set_by_file(kind, &in_files);
+    let refused = |field: &str, how: &str| {
+        Problem::new(
+            Code::SetByFile,
+            format!(
+                "`{name}`'s {field} is set by the configuration files ({how}), which win: it can't be set, replaced or removed here"
+            ),
+        )
+        .hint("Change it in the configuration file, or leave it out of the request (it is kept as the files set it).")
+    };
+    let Some(body) = body else {
+        // Removing what the API stored brings the files' entry back; hiding it would drop the
+        // files' credential.
+        return match held.first() {
+            Some(f) if !overridden => Err(refused(f.field, f.file)),
+            _ => Ok(None),
+        };
+    };
+    if held.is_empty() {
+        return Ok(None);
+    }
+    let mut out = body.clone();
+    telltale_config::secret_refs::carry_file_credentials(kind, &in_files, &mut out)
+        .map_err(|f| refused(f.field, f.file))?;
+    Ok(Some(out))
+}
+
+/// REQ: OPS-014 (ADR-167 §2, §4) — the references an entry body makes to stored secrets: each
+/// must name one this node stores (422 `secret_missing`), and a reference changed to a secret
+/// that an entry of another kind uses is audited as `credential.redirect` (the detail returned).
+fn secret_references(
+    src: &Sources,
+    w: &ManagedWrite,
+    name: &str,
+    current: &telltale_config::Config,
+    body: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, Problem> {
+    let kind = match w.kind {
+        ManagedKind::AlertDestination => "alert_destination",
+        _ => return Ok(None),
+    };
+    let before = named_json(&current.alerts.destination, name);
+    let used = telltale_config::secret_refs::references(current);
+    let mut redirect = None;
+    for f in telltale_config::secret_refs::fields_of(kind) {
+        let Some(secret) = body
+            .get(f.reference)
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+        else {
+            continue;
+        };
+        if !src.secrets.exists(secret) {
+            return Err(Problem::new(
+                Code::SecretMissing,
+                format!(
+                    "`{}`: no stored secret is named `{secret}` on this node",
+                    f.reference
+                ),
+            )
+            .hint("Set the secret first (Settings → Integrations & secrets), then name it here."));
+        }
+        let was = before
+            .as_ref()
+            .and_then(|b| b.get(f.reference))
+            .and_then(serde_json::Value::as_str);
+        let others: Vec<&str> = used
+            .iter()
+            .filter(|r| r.name == secret && r.kind != kind)
+            .map(|r| r.kind)
+            .collect();
+        if was != Some(secret) && !others.is_empty() && redirect.is_none() {
+            redirect = Some(serde_json::json!({
+                "kind": kind,
+                "name": name,
+                "field": f.reference,
+                "from": was,
+                "to": secret,
+                "secretUsedBy": others,
+            }));
+        }
+    }
+    Ok(redirect)
 }
 
 /// REQ: API-014, CLU-010 (T23.2) — [`crate::credential_rules::check_write`] for a write to an

@@ -57,6 +57,8 @@ mod replication;
 mod rollout;
 mod rollups;
 mod routers;
+#[cfg(test)]
+mod secret_store_tests;
 mod secrets;
 mod selfupdate;
 mod server;
@@ -150,6 +152,16 @@ enum Command {
     Auth {
         #[command(subcommand)]
         command: AuthCommand,
+    },
+    /// The secrets entered in the UI: the store's state and key, and a new key. Run on the node,
+    /// with the same configuration and environment as the server.
+    // REQ: OPS-014 (ADR-167 §3)
+    Secrets {
+        #[command(subcommand)]
+        command: SecretsCommand,
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config", global = true)]
+        config: Vec<PathBuf>,
     },
     /// Search the query log (newest first), offline from the data directory.
     // REQ: OBS-003
@@ -508,6 +520,18 @@ enum AuthCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum SecretsCommand {
+    /// The store (ready, locked, or ephemeral), its key's source and ID (never the key), each
+    /// stored secret without its value, and every credential field with its source and whether
+    /// this node can read it. Exits 1 when the store is locked. Never makes a key.
+    Status,
+    /// Replace the data-directory key (`secrets.key`): every stored secret is re-encrypted under a
+    /// new one. Stop TelltaleDNS first. A key from `TELLTALE_SECRETS_KEY` or
+    /// `[node] secrets_key_file` is rotated by setting the old one as the previous key instead.
+    RotateKey,
+}
+
+#[derive(Debug, Subcommand)]
 enum AuditCommand {
     /// Check the audit log's hash chain; exits non-zero if an entry was changed or removed.
     // REQ: API-006
@@ -741,6 +765,7 @@ fn main() -> ExitCode {
             )
         }
         Command::Auth { command } => Ok(run_auth(command)),
+        Command::Secrets { command, config } => Ok(run_secrets(&command, config)),
         Command::Audit { command } => Ok(run_audit(command)),
         Command::Explain {
             name,
@@ -1029,6 +1054,49 @@ fn run_mcp(
             ExitCode::FAILURE
         }
     }
+}
+
+// REQ: OPS-014 (ADR-167 §3)
+fn run_secrets(command: &SecretsCommand, config: Vec<PathBuf>) -> ExitCode {
+    let files = config_files(config);
+    let Some(cfg) = server::load(&files) else {
+        return ExitCode::FAILURE;
+    };
+    let env = secrets::cli::env();
+    let result = match command {
+        SecretsCommand::Status => secrets::cli::status(&cfg, env, &mut io::stdout().lock())
+            .map_err(|e| e.to_string())
+            .map(|ok| {
+                if ok {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                }
+            }),
+        SecretsCommand::RotateKey => {
+            secrets::cli::rotate_key(&cfg, &env, secrets::cli::Until::Done).map(|r| {
+                eprintln!(
+                    "rotated the secrets key: key_id {} -> {}; {} secret(s) re-encrypted{}",
+                    r.from,
+                    r.to,
+                    r.reencrypted,
+                    if r.skipped > 0 {
+                        format!(
+                            ", {} left as they were (not readable under the old key either)",
+                            r.skipped
+                        )
+                    } else {
+                        String::new()
+                    }
+                );
+                ExitCode::SUCCESS
+            })
+        }
+    };
+    result.unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        ExitCode::FAILURE
+    })
 }
 
 // REQ: API-007 (T6.7, ADR-063)
