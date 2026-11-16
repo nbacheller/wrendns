@@ -408,7 +408,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "list_effectiveness",
-            description: "Read-only. Filter lists: size, last update, errors, hits since start, unique names (only that list has them), and which lists overlap. Find dead, failing, or redundant lists.",
+            description: "Read-only. Filter lists: size, last check, last confirmed current, last change, errors, whether a refresh is downloading it now (`refreshing`), hits since start, unique names (only that list has them), and which lists overlap. Find dead, failing, or redundant lists.",
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("lists".into(), "/api/v1/lists".into())]),
         },
@@ -1558,6 +1558,48 @@ pub fn write_tools() -> Vec<WriteTool> {
                         || "Empty the cache".into(),
                         |n| format!("Flush {n} from the cache"),
                     ),
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
+        // REQ: FLT-004 — "update lists now" (like `pihole -g`).
+        WriteTool {
+            name: "refresh_lists",
+            description: "Changes at once (audited, no plan; no configuration changes). Downloads the filter lists again now instead of waiting for their schedule: every enabled list, or only `names`. Returns the lists queued, the named ones left out (disabled), and the node that downloads them (the primary, in a cluster). The downloads run in the background: `refreshing` in list_effectiveness clears when each list is done. Unchanged lists cost one conditional request; the filter is recompiled only if something changed. With dryRun, says what would be queued and queues nothing. Needs the config:write:lists scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "names": {"type": "array", "items": {"type": "string"}, "maxItems": 256, "description": "Only these lists, by name (default: every enabled list)."},
+                "dryRun": {"type": "boolean", "description": "Say what would be downloaded; download nothing."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: false,
+            write: |a| {
+                let names = strings(a, "names");
+                let dry = a.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
+                let what = if names.is_empty() {
+                    "every enabled filter list".to_owned()
+                } else {
+                    format!("the lists {}", names.join(", "))
+                };
+                let mut body = serde_json::Map::new();
+                if !names.is_empty() {
+                    body.insert("names".into(), json!(names));
+                }
+                Ok(Write {
+                    method: "POST",
+                    path: if dry {
+                        "/api/v1/lists/refresh?dryRun=true".into()
+                    } else {
+                        "/api/v1/lists/refresh".into()
+                    },
+                    summary: if dry {
+                        format!("Check what refreshing {what} would download")
+                    } else {
+                        format!("Download {what} again now")
+                    },
                     body: Some(Value::Object(body)),
                     merge: None,
                 })
@@ -2889,7 +2931,7 @@ impl Mcp {
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}, "resources": {"listChanged": false}, "prompts": {"listChanged": false}},
                     "serverInfo": {"name": "telltaledns", "title": "TelltaleDNS", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": "TelltaleDNS is a filtering DNS resolver. Start with get_overview, then narrow down with top_items, search_queries, get_client_profile, latency_breakdown, and upstream_health; explain_decision says why a name was blocked or routed. Times take relative offsets like -1h. To change something, a plan_* tool returns a planId and a preview without changing anything; apply_plan makes the change (an operator may have to approve it first). flush_cache, pause_blocking, and resume_blocking act at once. Every write needs a `reason`.",
+                    "instructions": "TelltaleDNS is a filtering DNS resolver. Start with get_overview, then narrow down with top_items, search_queries, get_client_profile, latency_breakdown, and upstream_health; explain_decision says why a name was blocked or routed. Times take relative offsets like -1h. To change something, a plan_* tool returns a planId and a preview without changing anything; apply_plan makes the change (an operator may have to approve it first). flush_cache, refresh_lists, pause_blocking, and resume_blocking act at once. Every write needs a `reason`.",
                 });
                 return (Some(rpc_ok(&id, &result)), Some(sid));
             }
@@ -3157,6 +3199,21 @@ mod tests {
         assert_eq!(g.body.unwrap()["block_mode"], "nxdomain");
         assert_eq!(g.merge, Some(("group", "kids".to_owned())));
         assert!((find("pause_blocking").write)(&json!({})).is_err());
+        // REQ: FLT-004 — refresh_lists: every list by default, some by name, or a dry run.
+        let r = (find("refresh_lists").write)(&json!({"reason": "r"})).unwrap();
+        assert_eq!(
+            (r.method, r.path.as_str()),
+            ("POST", "/api/v1/lists/refresh")
+        );
+        assert_eq!(r.body, Some(json!({})));
+        let r = (find("refresh_lists").write)(
+            &json!({"names": ["hagezi"], "dryRun": true, "reason": "r"}),
+        )
+        .unwrap();
+        assert_eq!(r.path, "/api/v1/lists/refresh?dryRun=true");
+        assert_eq!(r.body, Some(json!({"names": ["hagezi"]})));
+        assert!(r.summary.contains("hagezi"), "{}", r.summary);
+        assert_eq!(find("refresh_lists").effect, Effect::Immediate);
     }
 }
 

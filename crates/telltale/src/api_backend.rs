@@ -1711,7 +1711,13 @@ impl Backend for ApiBackend {
                     hits: list_hits,
                     overlap,
                     last_checked_unix_seconds: meta.and_then(|m| m.last_attempt),
+                    last_success_unix_seconds: meta.and_then(|m| m.last_success),
                     last_changed_unix_seconds: meta.and_then(|m| m.last_changed),
+                    // REQ: FLT-004 — a refresh asked for, or a download, in progress.
+                    refreshing: l.enabled
+                        && shared
+                            .as_ref()
+                            .is_some_and(|s| s.fetcher.is_refreshing(l.name.as_str())),
                     stale_days: stale_days(&cfg.filter, l, meta.and_then(|m| m.last_changed)),
                 }
             })
@@ -2209,6 +2215,55 @@ impl Backend for ApiBackend {
             .await
             .map_err(|e| Problem::internal(format!("acknowledge worker failed: {e}")))?
         })
+    }
+
+    // REQ: FLT-004 — "update lists now": queued on this node's fetcher (its run loop downloads
+    // them in the background; the compiler follows if anything changed).
+    fn lists_refresh(
+        &self,
+        w: telltale_api::ListsRefreshWrite,
+    ) -> BoxFuture<Result<telltale_api::model::ListsRefreshResult, Problem>> {
+        let cfg = self.src.config.load();
+        let configured: Vec<(String, bool)> = cfg
+            .list
+            .iter()
+            .map(|l| (l.name.to_string(), l.enabled))
+            .collect();
+        let shared = self.src.lists.load_full();
+        let r = match &shared {
+            Some(l) => telltale_api::lists_api::answer(
+                &configured,
+                &w,
+                Some(crate::http::node_name(&cfg)),
+                |n| l.fetcher.is_refreshing(n),
+                |names| {
+                    tracing::info!(by = %w.by, lists = ?names, "refreshing lists (API)");
+                    l.fetcher.request_refresh_of(names);
+                },
+            ),
+            // An emergency primary that took over from a synced replica keeps the lists it was
+            // sent; list refresh is paused until the cluster has its usual primary (spec/12 §5).
+            None if crate::replication::follows_primary(&cfg)
+                && self.src.cluster.as_ref().is_some_and(|c| c.is_primary()) =>
+            {
+                Err(Problem::unavailable(
+                    "this node took over as primary in an emergency: it serves the lists it was last sent and doesn't download them",
+                )
+                .hint("List refresh is paused while the cluster runs on an emergency primary (it resumes when the usual primary is back); DNS keeps answering with the last lists meanwhile."))
+            }
+            // A synced cluster replica serves the primary's lists (CLU-003); the federated
+            // backend forwards there, so this is a primary it couldn't reach.
+            None if crate::replication::follows_primary(&cfg) => Err(Problem::unavailable(
+                "this node is a cluster replica: the primary downloads the lists, and it isn't reachable",
+            )
+            .hint("Retry when the primary is back, or refresh on the primary; this node keeps serving the last lists meanwhile.")),
+            // Nothing configured: nothing to download (no fetcher runs without lists).
+            None if configured.is_empty() && cfg.node.role != telltale_config::Role::Resolver => {
+                telltale_api::lists_api::answer(&configured, &w, None, |_| false, |_| {})
+            }
+            None => Err(telltale_api::lists_api::not_here()),
+        };
+        Box::pin(async move { r })
     }
 
     // REQ: OBS-015 (ADR-104) — this node's own conditions.
@@ -6173,5 +6228,115 @@ mod rule_edit_tests {
         .unwrap();
         assert_eq!(maker(&taken), Some("bob"));
         assert!(taken.created.is_some());
+    }
+}
+
+#[cfg(test)]
+mod lists_refresh_tests {
+    use super::*;
+
+    fn cfg(toml: &str) -> telltale_config::Config {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .map_err(|e| format!("{e:?}"))
+            .unwrap()
+            .config
+    }
+
+    fn lines(api: &ApiBackend, name: &str) -> u64 {
+        api.lists()
+            .into_iter()
+            .find(|l| l.name == name)
+            .map_or(0, |l| l.lines)
+    }
+
+    async fn until(what: &str, mut f: impl FnMut() -> bool) {
+        for _ in 0..250 {
+            if f() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    /// REQ: FLT-004 — "update lists now" on a node that downloads lists: a dry run changes
+    /// nothing; a refresh downloads the list again although it isn't due (a file that changed
+    /// is stored again, with `refreshing` while it's queued or downloading and
+    /// `lastSuccessUnixSeconds` after); a disabled list is skipped. A resolver-role node says
+    /// it doesn't download lists.
+    #[tokio::test]
+    async fn flt_004_update_lists_now_on_the_node_that_downloads_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("mine.txt");
+        std::fs::write(&file, "a.example\n").unwrap();
+        let data = tmp.path().join("data");
+        let conf = cfg(&format!(
+            "[node]\ndata_dir = {:?}\n[[list]]\nname = \"mine\"\npath = {:?}\n[[list]]\nname = \"off\"\nrules = [\"b.example\"]\nenabled = false\n",
+            data.to_string_lossy(),
+            file.to_string_lossy()
+        ));
+        let mut sources = crate::http::tests::sources_in(&data);
+        sources.config = arc_swap::ArcSwap::from_pointee(conf.clone());
+        let src = Arc::new(sources);
+        let lists = crate::lists::Lists::start(&conf, &src.pipeline).unwrap();
+        src.lists.store(Some(Arc::clone(&lists.shared)));
+        let api = ApiBackend {
+            src: Arc::clone(&src),
+        };
+        until("the first download", || lines(&api, "mine") == 1).await;
+        until("the first round to end", || {
+            api.lists().iter().all(|l| !l.refreshing)
+        })
+        .await;
+        std::fs::write(&file, "a.example\nb.example\nc.example\n").unwrap();
+
+        let write = |names: Option<&[&str]>, dry_run: bool| telltale_api::ListsRefreshWrite {
+            names: names.map(|n| n.iter().map(|n| (*n).to_owned()).collect()),
+            dry_run,
+            by: "alice".into(),
+            reason: None,
+        };
+        let r = api.lists_refresh(write(None, true)).await.unwrap();
+        assert!(r.dry_run);
+        assert_eq!(r.queued, ["mine"], "enabled lists only");
+        assert_eq!(
+            r.node.as_deref(),
+            Some(crate::http::node_name(&conf).as_str())
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(lines(&api, "mine"), 1, "a dry run downloads nothing");
+
+        let r = api
+            .lists_refresh(write(Some(&["mine", "off"]), false))
+            .await
+            .unwrap();
+        assert_eq!(r.queued, ["mine"]);
+        assert_eq!(r.skipped[0].name, "off");
+        until("the refresh", || lines(&api, "mine") == 3).await;
+        until("the refresh to end", || {
+            api.lists().iter().all(|l| !l.refreshing)
+        })
+        .await;
+        let mine = api.lists().into_iter().find(|l| l.name == "mine").unwrap();
+        assert!(mine.last_success_unix_seconds.is_some());
+        assert!(!api.lists().iter().any(|l| l.name == "off" && l.refreshing));
+
+        let e = api
+            .lists_refresh(write(Some(&["nope"]), false))
+            .await
+            .unwrap_err();
+        assert_eq!(e.status, 404);
+        lists.stop();
+
+        // A resolver pod downloads nothing.
+        let mut resolver = conf.clone();
+        resolver.node.role = telltale_config::Role::Resolver;
+        src.config.store(Arc::new(resolver));
+        src.lists.store(None);
+        let e = api.lists_refresh(write(None, false)).await.unwrap_err();
+        assert_eq!(e.code, telltale_api::problem::Code::ListsNotHere);
     }
 }

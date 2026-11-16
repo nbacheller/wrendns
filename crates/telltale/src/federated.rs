@@ -167,6 +167,9 @@ enum Read {
     },
     /// REQ: FLT-017 — the peer's per-workload counts (older peers don't know it).
     WorkloadCounts,
+    /// REQ: FLT-004, CLU-003 — the primary's lists and their download state, for a replica's
+    /// API (older peers don't know it).
+    Lists,
 }
 
 /// The reads that change the answering node: operational actions a user asked for on the
@@ -179,6 +182,16 @@ fn changes_state(r: &Read) -> bool {
 }
 
 /// Answers a peer's read from this node's own data.
+/// REQ: FLT-004, CLU-003 — a replica's list view: the primary's lists and download state
+/// (`theirs`, in its order), with this node's own hits (`mine`; 0 for a list it hasn't
+/// compiled yet).
+fn merge_lists(mine: &[ListInfo], mut theirs: Vec<ListInfo>) -> Vec<ListInfo> {
+    for l in &mut theirs {
+        l.hits = mine.iter().find(|m| m.name == l.name).map_or(0, |m| m.hits);
+    }
+    theirs
+}
+
 fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
     let text = |p: Problem| p.detail;
     match r {
@@ -259,6 +272,7 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::ShadowLists => serde_json::to_vec(&b.shadow_lists()),
         Read::Overblocking { limit } => serde_json::to_vec(&b.overblocking(limit)),
         Read::WorkloadCounts => serde_json::to_vec(&b.workload_counts()),
+        Read::Lists => serde_json::to_vec(&b.lists()),
     }
     .map_err(|e| e.to_string())
 }
@@ -1505,8 +1519,50 @@ impl Backend for Federated {
     fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem> {
         self.local.explain(p)
     }
+    // REQ: FLT-004, CLU-003 — the primary downloads and compiles the lists every node serves, so
+    // a replica shows the primary's download state (and `refreshing`, after a refresh it
+    // forwarded); hits stay this node's own. Without a reachable primary, or with one too old
+    // to answer, this node's own view.
+    // When the primary doesn't answer, it is named in `missingNodes` (so the UI and
+    // `ctl lists refresh --wait` know the download state shown is this node's own).
     fn lists(&self) -> Vec<ListInfo> {
-        self.local.lists()
+        let mine = self.local.lists();
+        let primary = self
+            .cluster
+            .members()
+            .into_iter()
+            .find(|m| m.primary)
+            .map(|m| m.node_id);
+        let primary = match primary {
+            Some(p) if !self.cluster.is_primary() => p,
+            // The primary itself, or no primary known yet: this node's view is the answer.
+            _ => {
+                self.missing
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clear();
+                return mine;
+            }
+        };
+        let theirs = self
+            .cluster
+            .reachable_primary()
+            .and_then(|p| self.call_one(&p, &Read::Lists, DEADLINE))
+            .and_then(|r| {
+                r.map_err(|e| tracing::debug!(error = %e, "the primary's lists unread"))
+                    .ok()
+            })
+            .and_then(|body| serde_json::from_slice::<Vec<ListInfo>>(&body).ok());
+        let missing = if theirs.is_some() {
+            Vec::new()
+        } else {
+            vec![self.label_of(&primary)]
+        };
+        *self.missing.lock().unwrap_or_else(PoisonError::into_inner) = missing;
+        match theirs {
+            Some(theirs) => merge_lists(&mine, theirs),
+            None => mine,
+        }
     }
     fn groups(&self) -> Vec<GroupInfo> {
         self.local.groups()
@@ -1715,6 +1771,25 @@ impl Backend for Federated {
             let _ = local.anomaly_ack(w).await;
             Ok(r)
         })
+    }
+    // REQ: FLT-004, CLU-003 — lists download where they compile: on the primary. A replica
+    // forwards (an unsynced replica too: what it compiles itself is replaced once it syncs);
+    // without a reachable primary, this node's own fetcher if it runs one, else 503.
+    fn lists_refresh(
+        &self,
+        w: telltale_api::ListsRefreshWrite,
+    ) -> BoxFuture<Result<telltale_api::model::ListsRefreshResult, Problem>> {
+        if self.cluster.is_primary() {
+            return self.local.lists_refresh(w);
+        }
+        match self.cluster.reachable_primary() {
+            Some(primary) => Box::pin(crate::forward::lists_refresh(
+                Arc::clone(&self.cluster),
+                Some(primary),
+                w,
+            )),
+            None => self.local.lists_refresh(w),
+        }
     }
     // REQ: OBS-015 (ADR-104) — every node's own conditions, plus the cluster's (peers
     // unreachable or behind) as this node sees them.
@@ -2462,6 +2537,70 @@ impl Backend for Federated {
             WriteRoute::Here => self.local.write_client(w),
             WriteRoute::NoLease => Box::pin(async { Err(no_lease()) }),
         }
+    }
+}
+
+#[cfg(test)]
+mod lists_tests {
+    use super::*;
+
+    fn list(name: &str, state: &str, hits: u64, refreshing: bool) -> ListInfo {
+        serde_json::from_value(serde_json::json!({
+            "name": name, "kind": "block", "enabled": true, "mode": "enforce",
+            "source": format!("https://lists.example/{name}"), "state": state,
+            "bytes": 10, "lines": 1, "entries": 1, "unique": 1, "regexSkipped": 0,
+            "hits": hits, "overlap": [], "refreshing": refreshing,
+        }))
+        .unwrap()
+    }
+
+    // REQ: FLT-004, CLU-003 — a replica shows the primary's lists and download state
+    // (`refreshing` included) with its own hits; a list it hasn't compiled yet has 0 hits.
+    #[test]
+    fn flt_004_replica_lists_merge_the_primarys_state_with_own_hits() {
+        let mine = vec![list("hagezi", "pending", 7, false)];
+        let theirs = vec![
+            list("hagezi", "ok", 900, true),
+            list("new", "failed", 5, false),
+        ];
+        let got = merge_lists(&mine, theirs);
+        let row: Vec<(&str, &str, u64, bool)> = got
+            .iter()
+            .map(|l| (l.name.as_str(), l.state.as_str(), l.hits, l.refreshing))
+            .collect();
+        assert_eq!(
+            row,
+            [("hagezi", "ok", 7, true), ("new", "failed", 0, false)]
+        );
+    }
+
+    // REQ: FLT-004, CLU-003 — the primary answers `Read::Lists` with its own lists (what the
+    // replica merges); the read crosses the channel by name.
+    #[test]
+    fn flt_004_primary_answers_the_lists_read() {
+        let wire = serde_json::to_vec(&Read::Lists).unwrap();
+        let back: Read = serde_json::from_slice(&wire).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut src = crate::http::tests::sources_in(tmp.path());
+        let mut cfg = (**src.config.load()).clone();
+        cfg.list = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                "[[list]]\nname = \"mine\"\nrules = [\"a.example\"]\n",
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .map_err(|e| format!("{e:?}"))
+            .unwrap()
+            .config
+            .list;
+        src.config = arc_swap::ArcSwap::from_pointee(cfg);
+        let b = crate::api_backend::ApiBackend { src: Arc::new(src) };
+        let body = answer(&b, back).unwrap();
+        let got: Vec<ListInfo> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "mine");
+        assert!(!got[0].refreshing);
     }
 }
 

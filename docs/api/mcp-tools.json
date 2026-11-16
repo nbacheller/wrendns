@@ -420,7 +420,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. Filter lists: size, last update, errors, hits since start, unique names (only that list has them), and which lists overlap. Find dead, failing, or redundant lists.",
+    "description": "Read-only. Filter lists: size, last check, last confirmed current, last change, errors, whether a refresh is downloading it now (`refreshing`), hits since start, unique names (only that list has them), and which lists overlap. Find dead, failing, or redundant lists.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {},
@@ -1950,6 +1950,41 @@
       "type": "object"
     },
     "name": "flush_cache"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes at once (audited, no plan; no configuration changes). Downloads the filter lists again now instead of waiting for their schedule: every enabled list, or only `names`. Returns the lists queued, the named ones left out (disabled), and the node that downloads them (the primary, in a cluster). The downloads run in the background: `refreshing` in list_effectiveness clears when each list is done. Unchanged lists cost one conditional request; the filter is recompiled only if something changed. With dryRun, says what would be queued and queues nothing. Needs the config:write:lists scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "dryRun": {
+          "description": "Say what would be downloaded; download nothing.",
+          "type": "boolean"
+        },
+        "names": {
+          "description": "Only these lists, by name (default: every enabled list).",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "refresh_lists"
   },
   {
     "annotations": {

@@ -8,6 +8,7 @@
   import HelpButton from '../lib/components/HelpButton.svelte';
   import ShareBar from '../lib/components/ShareBar.svelte';
   import { currentMode } from '../lib/mode.svelte';
+  import { can } from '../lib/session.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
 
   // REQ: API-002 (T7.5) — add and change lists here.
@@ -26,6 +27,8 @@
   ];
 
   let lists = $state<S['ListInfo'][]>([]);
+  // REQ: FLT-004 — on a replica, the primary when it didn't answer (the state shown is then this node's).
+  let unread = $state<string[]>([]);
   let info = $state<S['SystemInfo'] | null>(null);
   // REQ: OBS-018 — what shadow lists would have blocked, and likely over-blocking.
   let shadow = $state<S['ShadowListStats'][]>([]);
@@ -44,6 +47,7 @@
           api.overblocking(20).catch(() => ({ items: [] as S['OverblockSuspect'][] })),
         ]);
         lists = l.items;
+        unread = l.missingNodes ?? [];
         info = i;
         shadow = sh.items;
         suspects = ob.items;
@@ -55,6 +59,53 @@
     }, 15000),
   );
   const advanced = $derived(currentMode() === 'advanced');
+
+  // REQ: FLT-004 — "Update now" (like Pi-hole's Update Gravity): queue every enabled list,
+  // then follow `refreshing` until the downloads end (the snapshot follows within seconds).
+  let refresh = $state<S['ListsRefreshResult'] | null>(null);
+  let refreshError = $state<unknown>(null);
+  let starting = $state(false);
+  const updating = $derived(
+    starting || (refresh !== null && lists.some((l) => l.refreshing && refresh!.queued.includes(l.name))),
+  );
+  // The oldest enabled list's last confirmation, so one fresh list can't hide a stale one. A
+  // list never downloaded makes it null.
+  const lastUpdated = $derived.by(() => {
+    const on = lists.filter((l) => l.enabled);
+    if (on.length === 0 || on.some((l) => !l.lastSuccessUnixSeconds)) return null;
+    return Math.min(...on.map((l) => l.lastSuccessUnixSeconds ?? 0));
+  });
+  // The lists this refresh queued whose download failed.
+  const failed = $derived(
+    refresh === null
+      ? []
+      : lists.filter((l) => refresh!.queued.includes(l.name) && (l.state === 'failed' || !!l.error)),
+  );
+  async function updateNow() {
+    starting = true;
+    refreshError = null;
+    try {
+      refresh = await api.refreshLists();
+      ({ items: lists, missingNodes: unread = [] } = await api.lists());
+    } catch (e) {
+      refreshError = e;
+      refresh = null;
+    } finally {
+      starting = false;
+    }
+  }
+  // While lists download, check every 2 s instead of every 15 s.
+  $effect(() => {
+    if (!updating) return;
+    const t = setInterval(async () => {
+      try {
+        ({ items: lists, missingNodes: unread = [] } = await api.lists());
+      } catch {
+        // the 15 s poll reports errors
+      }
+    }, 2000);
+    return () => clearInterval(t);
+  });
   // REQ: API-002 (T9.12) — download and parse the draft list before saving it.
   const tryList = {
     label: 'Test it',
@@ -71,13 +122,45 @@
 <div class="page">
   <div class="page-head">
     <h1>Lists<HelpButton id="lists" /></h1>
-    {#if info}
-      <span class="muted">
-        {num(info.filterNames)} blocked names in snapshot {info.filterSnapshot ?? '–'}
-      </span>
-    {/if}
+    <div class="head-side">
+      {#if info}
+        <span class="muted">
+          {num(info.filterNames)} blocked names in snapshot {info.filterSnapshot ?? '–'}
+        </span>
+      {/if}
+      {#if can('operator') && lists.some((l) => l.enabled)}
+        <!-- REQ: FLT-004 — download every enabled list again now. -->
+        <button class="update" onclick={updateNow} disabled={updating} data-testid="lists-update-now"
+          title="Download every enabled list again now instead of waiting for its schedule">
+          {updating ? 'Updating…' : 'Update now'}
+        </button><HelpButton id="list-update-now" />
+      {/if}
+    </div>
   </div>
   <ErrorNote {error} />
+  <ErrorNote error={refreshError} />
+  {#if unread.length}
+    <div class="notice warn" role="status" data-testid="lists-unread">Not read: {unread.join(', ')}. The download state shown is this node's own until the primary answers.</div>
+  {/if}
+  {#if refresh || lastUpdated || lists.some((l) => l.enabled)}
+    <p class="small muted refresh-status" data-testid="lists-refresh-status" aria-live="polite">
+      {#if updating && refresh}
+        Downloading {refresh.queued.length} {refresh.queued.length === 1 ? 'list' : 'lists'}{refresh.node ? ` on ${refresh.node}` : ''}…
+      {:else if refresh && refresh.queued.length === 0}
+        {refresh.note}
+      {:else if refresh && failed.length}
+        <span class="err" data-testid="lists-refresh-failed">{failed.length} of {refresh.queued.length} {refresh.queued.length === 1 ? 'list' : 'lists'} failed to download{refresh.node ? ` on ${refresh.node}` : ''}: {failed.map((l) => `${l.name} (${l.error ?? 'failed'})`).join('; ')}.</span>
+        They keep their last good copy.
+      {:else if refresh}
+        Lists updated{refresh.node ? ` on ${refresh.node}` : ''}: {lastUpdated ? `every enabled list confirmed current ${ago(lastUpdated)} or later` : 'some lists have never downloaded'}. Unchanged lists keep their copy; the snapshot follows within seconds if anything changed.
+      {:else if lastUpdated}
+        Every enabled list confirmed current {ago(lastUpdated)} or later.
+      {:else}
+        Some enabled lists have never downloaded.
+      {/if}
+      {#if refresh?.skipped.length}<span> Left out (off): {refresh.skipped.map((k) => k.name).join(', ')}.</span>{/if}
+    </p>
+  {/if}
   <section class="card">
     {#if !loaded}
       <p class="empty muted">Loading…</p>
@@ -102,6 +185,7 @@
                 <td><span class="badge {l.kind === 'allow' ? 'ok' : 'bad'}">{l.kind}</span></td>
                 <td>
                   <StatusBadge value={l.state} />
+                  {#if l.refreshing}<div class="small muted" data-testid="list-refreshing">updating…</div>{/if}
                   <!-- REQ: OBS-023 — downloads fine, but its content stopped changing. -->
                   {#if l.staleDays}<div class="small warn-text" data-testid="list-stale" title="Its source may be abandoned while still answering">unchanged for {l.staleDays} days</div>{/if}
                 </td>
@@ -180,6 +264,15 @@
 </div>
 
 <style>
+  .head-side {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
+  .refresh-status {
+    margin: 0 0 8px;
+  }
   .src {
     word-break: break-all;
     max-width: 420px;

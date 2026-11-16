@@ -26,6 +26,7 @@ pub mod heatmap;
 pub mod identify_api;
 pub mod kubernetes_api;
 pub mod latency_heatmap;
+pub mod lists_api;
 pub mod maintenance_api;
 pub mod mcp;
 pub mod model;
@@ -289,6 +290,16 @@ pub trait Backend: Send + Sync + 'static {
                 "acknowledging anomalies isn't available on this node",
             ))
         })
+    }
+    /// REQ: FLT-004 — queues a download of `w.names` (or every enabled list) now, regardless
+    /// of schedule, where lists are downloaded: this node, or in a cluster the primary (a
+    /// replica forwards). With `w.dry_run`, says what it would queue.
+    fn lists_refresh(
+        &self,
+        w: ListsRefreshWrite,
+    ) -> BoxFuture<Result<model::ListsRefreshResult, Problem>> {
+        let _ = w;
+        Box::pin(async { Err(lists_api::not_here()) })
     }
     /// REQ: OBS-020 (ADR-107) — the synthetic probes' latest results (every node, in a
     /// cluster).
@@ -833,6 +844,21 @@ pub struct SimulateOpts {
     pub until_s: Option<u64>,
 }
 
+/// REQ: FLT-004 — a list refresh, as the API checked it (and as it crosses the cluster channel
+/// to the primary).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ListsRefreshWrite {
+    /// The lists named; `None` is every enabled list.
+    pub names: Option<Vec<String>>,
+    /// Say what would be queued; queue nothing.
+    pub dry_run: bool,
+    /// Who asked: the actor's name.
+    pub by: String,
+    /// Why, as the user gave it (`X-Telltale-Reason`), for the primary's audit entry (AGT-005).
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 /// REQ: OBS-014 — an acknowledge (`ack`) or unacknowledge of findings by ID.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AnomalyAckWrite {
@@ -983,6 +1009,11 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
             config_api::routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_operator)),
         )
+        // REQ: FLT-004 — "update lists now" needs operator (agents: config:write:lists).
+        .merge(
+            lists_api::routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_operator)),
+        )
         // REQ: DNS-006 (T6.13) — flushing the cache needs operator (agents: ops:cache).
         .merge(
             cache_api::flush_routes(Arc::clone(&backend), Arc::clone(&auth))
@@ -1113,11 +1144,11 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
+        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
+        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::ListsRefreshRequest, model::ListsRefreshResult, model::ListRefreshSkip, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Annotation, model::AnnotationPage, model::NoteRequest, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::DrillAll, model::DrillTargets, model::DrillRequest, model::DrillMode, model::DrillCheck, model::DrillTargetDevice, model::DrillStart, model::ActiveDrill, model::DrillDevice, model::DrillNodeCount, model::DrillSummary, model::DrillReport, model::DrillPage, model::AffinityNode, model::AffinityRow, model::AffinityPage, model::GuardReadings, model::ClusterPin, model::ClusterRollout, model::RolloutFailure, model::RolloutNode, model::RolloutStatus, model::ClusterVersion, model::ClusterVersions, model::PinRequest, model::RolloutAction, model::NodeRemoval, model::SupportPackageRequest, model::DeviceIdentity, model::IdentityEvidence, model::WorkloadEvidence, model::ExplainWorkload, model::WorkloadInfo, model::WorkloadPod, model::WorkloadPage, model::KubernetesStatus, model::MatchedDomain, model::IdentityRunnerUp, model::Simulation, model::SimulatedClass, model::SimulatedName, model::SimulatedDevice, model::SimulatedGroup, model::SimulateRequest, model::SloStatus, attribution::SloAttribution, attribution::AttributionBudget, attribution::AttributionPoint, attribution::AttributionRow, attribution::AttributionCoverage, heatmap::Heatmap, flow::QueryFlow, flow::FlowNode, flow::FlowLink, compare::NodeCompare, compare::NodeNumbers, compare::NodeSeries, compare::NodeFinding, rhythm_api::ClientRhythm, rhythm_api::RhythmDomain, timeline::DeviceTimeline, timeline::TimelineLane, timeline::TimelineEvent, latency_heatmap::LatencyHeatmap, latency_heatmap::LatencyExemplar, latency_heatmap::LatencyExemplars, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, model::NetworkInfo, UpstreamInfo, Step, TopKind,
@@ -1762,14 +1793,22 @@ async fn explain(
 /// Filter lists and their download state.
 ///
 /// Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,
-/// `pending`) and last error, size, and how many names it contributes to the active snapshot.
+/// `pending`) and last error, size, and how many names it contributes to the active snapshot;
+/// when it was last checked, last confirmed current, and last changed, and whether a refresh is
+/// queued or downloading it now (`refreshing`). On a cluster replica the download state is the
+/// primary's (it downloads and compiles the lists every node serves); hits are this node's.
+/// When the primary doesn't answer, `missingNodes` names it and the state is this node's own.
 #[utoipa::path(get, path = "/api/v1/lists", tag = "config",
     responses((status = 200, body = Items<ListInfo>, description = "The result.")))]
-async fn lists(State(b): State<Shared>) -> Json<Items<ListInfo>> {
-    Json(Items {
-        missing_nodes: Vec::new(),
-        items: b.lists(),
-    })
+async fn lists(State(b): State<Shared>) -> Result<Json<Items<ListInfo>>, Problem> {
+    // A cluster replica asks the primary for the download state (it blocks on that call).
+    // REQ: FLT-004 — a primary that didn't answer is named in `missingNodes`: the download
+    // state shown is then this node's own.
+    let (items, missing_nodes) = blocking(move || Ok((b.lists(), b.missing_nodes()))).await?;
+    Ok(Json(Items {
+        items,
+        missing_nodes,
+    }))
 }
 
 /// Blockable services.

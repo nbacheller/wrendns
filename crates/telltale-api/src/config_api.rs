@@ -1937,7 +1937,7 @@ async fn write(
     }
 }
 
-fn replay(r: &Replay) -> Response {
+pub(crate) fn replay(r: &Replay) -> Response {
     let status = StatusCode::from_u16(r.status).unwrap_or(StatusCode::OK);
     let mut resp = (status, r.response.clone()).into_response();
     let h = resp.headers_mut();

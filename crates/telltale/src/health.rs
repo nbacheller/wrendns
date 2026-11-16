@@ -791,7 +791,9 @@ mod tests {
             hits: 0,
             overlap: Vec::new(),
             last_checked_unix_seconds: None,
+            last_success_unix_seconds: None,
             last_changed_unix_seconds: None,
+            refreshing: false,
             stale_days: None,
         };
         let stale = ListInfo {

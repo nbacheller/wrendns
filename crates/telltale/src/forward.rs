@@ -14,7 +14,10 @@ use serde::{Deserialize, Serialize};
 use telltale_api::auth::Actor;
 use telltale_api::model::{ClientChange, ClientInput, ConfigChange};
 use telltale_api::problem::{Code, Problem};
-use telltale_api::{AnomalyAckWrite, ClientWrite, ManagedKind, ManagedWrite, Shared, SimulateOpts};
+use telltale_api::{
+    AnomalyAckWrite, ClientWrite, ListsRefreshWrite, ManagedKind, ManagedWrite, Shared,
+    SimulateOpts,
+};
 use telltale_cluster::net::Cluster;
 
 use crate::http::Sources;
@@ -53,6 +56,9 @@ pub(crate) enum Write {
     },
     /// REQ: OBS-014 (ADR-103) — acknowledging anomalies (not configuration, so a Git-managed cluster takes it too).
     AnomalyAck(AnomalyAckWrite),
+    /// REQ: FLT-004, CLU-003 — "update lists now": the primary downloads the lists (not
+    /// configuration either). An older primary refuses the unknown write: the replica says 503.
+    ListsRefresh(ListsRefreshWrite),
 }
 
 impl From<ManagedWrite> for Write {
@@ -216,6 +222,7 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
             (verb("client", deleting), (name, by), r)
         }
         Write::AnomalyAck(w) => return apply_ack(src, local, peer, &via, w).await,
+        Write::ListsRefresh(w) => return apply_lists_refresh(src, local, peer, &via, w).await,
     };
     match result {
         Ok(c) => {
@@ -276,6 +283,45 @@ async fn apply_ack(
             action,
             &target,
             &serde_json::json!({ "ids": ids, "changed": res.changed }),
+        );
+    }
+    match r {
+        Ok(res) => Answer::Ok(serde_json::to_value(res).unwrap_or_default()),
+        Err(p) => Answer::Err(p.into()),
+    }
+}
+
+/// REQ: FLT-004 — a forwarded list refresh, queued here (the primary) and audited with the user
+/// and the entry node.
+async fn apply_lists_refresh(
+    src: &Sources,
+    local: &Shared,
+    peer: &str,
+    via: &str,
+    mut w: ListsRefreshWrite,
+) -> Answer {
+    let by = w.by.clone();
+    w.by = format!("{by} via {via}");
+    let dry_run = w.dry_run;
+    let reason = w.reason.clone();
+    let target = w
+        .names
+        .as_ref()
+        .map_or_else(|| "*".to_owned(), |n| n.join(", "));
+    let r = local.lists_refresh(w).await;
+    if let (Ok(res), Some(auth), false) = (&r, src.auth.get(), dry_run) {
+        let actor = Actor {
+            name: format!("{by} via {via}"),
+            kind: "cluster",
+            remote: Some(format!("node {peer}")),
+            // REQ: AGT-005 — the reason the user gave on the entry node.
+            reason,
+        };
+        auth.record(
+            &actor,
+            "lists.refresh",
+            &target,
+            &serde_json::json!({ "queued": res.queued, "skipped": res.skipped }),
         );
     }
     match r {
@@ -366,6 +412,15 @@ pub(crate) async fn anomaly_ack(
     send(&cluster, primary, Write::AnomalyAck(w)).await
 }
 
+/// REQ: FLT-004 — forwards "update lists now" to the primary.
+pub(crate) async fn lists_refresh(
+    cluster: Arc<Cluster>,
+    primary: Option<String>,
+    w: ListsRefreshWrite,
+) -> Result<telltale_api::model::ListsRefreshResult, Problem> {
+    send(&cluster, primary, Write::ListsRefresh(w)).await
+}
+
 /// Forwards a device write.
 pub(crate) async fn client(
     cluster: Arc<Cluster>,
@@ -407,6 +462,121 @@ mod tests {
             panic!("expected an acknowledgement")
         };
         assert_eq!((a.ids.len(), a.ack, a.by.as_str()), (1, true, "alice"));
+    }
+
+    // REQ: FLT-004, CLU-003 — a list refresh crosses the channel intact (who, which lists,
+    // dry run), and the primary's answer comes back as the same result.
+    #[test]
+    fn flt_004_list_refresh_round_trips() {
+        let w = Write::ListsRefresh(ListsRefreshWrite {
+            names: Some(vec!["hagezi".into()]),
+            dry_run: true,
+            by: "alice".into(),
+            reason: Some("lists moved".into()),
+        });
+        let back: Write = serde_json::from_slice(&serde_json::to_vec(&w).unwrap()).unwrap();
+        let Write::ListsRefresh(r) = back else {
+            panic!("expected a list refresh")
+        };
+        assert_eq!(
+            (r.names.as_deref(), r.dry_run, r.by.as_str()),
+            (Some(&["hagezi".to_owned()][..]), true, "alice")
+        );
+        let res = telltale_api::model::ListsRefreshResult {
+            dry_run: false,
+            queued: vec!["hagezi".into()],
+            skipped: Vec::new(),
+            already_refreshing: Vec::new(),
+            node: Some("primary".into()),
+            note: "1 list queued".into(),
+        };
+        let wire = encode_answer(Ok(res)).unwrap();
+        let got: telltale_api::model::ListsRefreshResult = decode_answer(&wire).unwrap();
+        assert_eq!(
+            (got.queued, got.node.as_deref()),
+            (vec!["hagezi".to_owned()], Some("primary"))
+        );
+        // A refusal keeps its code (a replica answers 409, not 500).
+        let wire = encode_answer::<()>(Err(telltale_api::lists_api::not_here())).unwrap();
+        let e = decode_answer::<()>(&wire).unwrap_err();
+        assert_eq!(e.code, Code::ListsNotHere);
+    }
+
+    // REQ: FLT-004, CLU-003, AGT-005 — the primary queues a forwarded refresh on its own
+    // fetcher and audits it as "<user> via <entry site>", with the entry node and the reason;
+    // a dry run queues nothing and isn't audited.
+    #[tokio::test]
+    async fn flt_004_primary_queues_and_audits_a_forwarded_refresh() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("mine.txt");
+        std::fs::write(&file, "a.example\n").unwrap();
+        let data = tmp.path().join("data");
+        let conf = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                format!(
+                    "[node]\ndata_dir = {:?}\n[[list]]\nname = \"mine\"\npath = {:?}\n",
+                    data.to_string_lossy(),
+                    file.to_string_lossy()
+                ),
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .map_err(|e| format!("{e:?}"))
+            .unwrap()
+            .config;
+        let mut sources = crate::http::tests::sources_in(&data);
+        sources.config = arc_swap::ArcSwap::from_pointee(conf.clone());
+        let auth = Arc::new(telltale_api::auth::Auth::new(
+            Arc::new(telltale_store::state::State::in_memory().unwrap()),
+            telltale_api::auth::Settings::default(),
+        ));
+        let _ = sources.auth.set(Arc::clone(&auth));
+        let src = Arc::new(sources);
+        let lists = crate::lists::Lists::start(&conf, &src.pipeline).unwrap();
+        src.lists.store(Some(Arc::clone(&lists.shared)));
+        let local: Shared = Arc::new(crate::api_backend::ApiBackend {
+            src: Arc::clone(&src),
+        });
+        let fetcher = Arc::clone(&lists.shared.fetcher);
+        for _ in 0..250 {
+            if !fetcher.is_refreshing("mine") && local.lists().iter().any(|l| l.lines == 1) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(!fetcher.is_refreshing("mine"), "the first round ended");
+
+        let w = |dry_run| ListsRefreshWrite {
+            names: Some(vec!["mine".into()]),
+            dry_run,
+            by: "alice".into(),
+            reason: Some("lists moved".into()),
+        };
+        let audited = || {
+            auth.state()
+                .audit_page(None, 10, Some("lists.refresh"), None)
+                .unwrap()
+        };
+        let a = apply_lists_refresh(&src, &local, "n2", "garage", w(true)).await;
+        assert!(matches!(a, Answer::Ok(_)));
+        assert!(!fetcher.is_refreshing("mine"), "a dry run queues nothing");
+        assert!(audited().is_empty(), "a dry run isn't audited");
+
+        let a = apply_lists_refresh(&src, &local, "n2", "garage", w(false)).await;
+        let Answer::Ok(v) = a else {
+            panic!("expected the refresh to be queued")
+        };
+        assert_eq!(v["queued"], serde_json::json!(["mine"]));
+        let rows = audited();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.actor, "alice via garage");
+        assert_eq!(row.actor_kind, "cluster");
+        assert_eq!(row.remote.as_deref(), Some("node n2"));
+        assert_eq!(row.reason.as_deref(), Some("lists moved"));
+        assert_eq!(row.target, "mine");
+        lists.stop();
     }
 
     #[test]

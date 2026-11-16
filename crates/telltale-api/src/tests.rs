@@ -60,6 +60,30 @@ impl Backend for Fake {
         self.notes.lock().unwrap().push(a.clone());
         Ok(a)
     }
+    // REQ: FLT-004 — two enabled lists and a disabled one; queuing is recorded.
+    fn lists_refresh(
+        &self,
+        w: crate::ListsRefreshWrite,
+    ) -> crate::BoxFuture<Result<crate::model::ListsRefreshResult, Problem>> {
+        let configured = [
+            ("hagezi".to_owned(), true),
+            ("old".to_owned(), false),
+            ("mine".to_owned(), true),
+        ];
+        let r = crate::lists_api::answer(
+            &configured,
+            &w,
+            Some("test".into()),
+            |_| false,
+            |names| {
+                self.seen
+                    .lock()
+                    .unwrap()
+                    .push(format!("lists_refresh {names:?} by {}", w.by));
+            },
+        );
+        Box::pin(async move { r })
+    }
     fn system_info(&self) -> SystemInfo {
         SystemInfo {
             version: "0.1.0".into(),
@@ -1560,8 +1584,8 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 113 with CLU-001's /cluster/nodes/{id}.
     // 114 with OBS-038's /anomaly-mutes/{name}; 116 with OPS-011's /system/support-package and
     // /system/support-package/{id}/map.
-    // 117 with API-013's /networks.
-    assert_eq!(paths.len(), 117);
+    // 117 with API-013's /networks; 118 with FLT-004's /lists/refresh.
+    assert_eq!(paths.len(), 118);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -3043,4 +3067,229 @@ async fn clu_014_drill_requests_over_http() {
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
     let (s, _, v) = send(&app, get("/api/v1/nodes/local/drill")).await;
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+}
+
+// REQ: FLT-004, AGT-002, AGT-003, AGT-004, AGT-005 — "update lists now" over HTTP: 202 with
+// what was queued (every list, or the ones named), a dry run that queues nothing, an
+// Idempotency-Key replay, the audit entry, 404 for an unknown list, and the roles and scope:
+// operators and `config:write:lists` agents (with a reason), not viewers or read-only agents.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one story: queue, dry run, replay, refuse
+async fn flt_004_update_lists_now_over_http() {
+    let (app, fake) = app();
+    let post = |uri: &str, bearer: &str, body: &str, extra: &[(&str, &str)]| {
+        let mut b = Request::post(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json");
+        for (k, v) in extra {
+            b = b.header(*k, *v);
+        }
+        b.body(Body::from(body.to_owned())).unwrap()
+    };
+    let queued = |fake: &Fake| {
+        fake.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.starts_with("lists_refresh"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    // No body: every enabled list.
+    let (s, _, v) = send(&app, post("/api/v1/lists/refresh", &app.bearer, "", &[])).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    assert_eq!(v["queued"], serde_json::json!(["hagezi", "mine"]));
+    assert_eq!(v["dryRun"], false);
+    assert_eq!(v["node"], "test");
+    assert_eq!(
+        queued(&fake),
+        ["lists_refresh None by token:tests (owner: root)"]
+    );
+    let audit = app
+        .auth
+        .state()
+        .audit_page(None, 10, Some("lists.refresh"), None)
+        .unwrap();
+    assert_eq!(
+        (audit.len(), audit[0].target.as_str()),
+        (1, "*"),
+        "{audit:?}"
+    );
+
+    // A dry run says what it would queue, queues nothing, and isn't audited.
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/lists/refresh?dryRun=true",
+            &app.bearer,
+            r#"{"names":["mine","old"]}"#,
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    assert_eq!(
+        (v["dryRun"].as_bool(), v["queued"].clone()),
+        (Some(true), serde_json::json!(["mine"]))
+    );
+    assert_eq!(v["skipped"][0]["name"], "old");
+    assert_eq!(v["skipped"][0]["reason"], "disabled");
+    assert_eq!(queued(&fake).len(), 1);
+
+    // Idempotency: the same key and request replays the first answer without queuing again;
+    // the same key for another request is refused.
+    let key = [("idempotency-key", "refresh-1")];
+    let (s, h, _) = send(
+        &app,
+        post(
+            "/api/v1/lists/refresh",
+            &app.bearer,
+            r#"{"names":["mine"]}"#,
+            &key,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED);
+    assert!(h.get("idempotency-replayed").is_none());
+    let (s, h, v) = send(
+        &app,
+        post(
+            "/api/v1/lists/refresh",
+            &app.bearer,
+            r#"{"names":["mine"]}"#,
+            &key,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    assert_eq!(h.get("idempotency-replayed").unwrap(), "true");
+    assert_eq!(v["queued"], serde_json::json!(["mine"]));
+    assert_eq!(queued(&fake).len(), 2, "{:?}", queued(&fake));
+    let (s, _, _) = send(
+        &app,
+        post(
+            "/api/v1/lists/refresh",
+            &app.bearer,
+            r#"{"names":["hagezi"]}"#,
+            &key,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+
+    // Unknown names, a malformed body, unknown fields.
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/lists/refresh",
+            &app.bearer,
+            r#"{"names":["nope"]}"#,
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    assert!(v["hint"].as_str().unwrap().contains("hagezi"), "{v}");
+    for bad in ["{", r#"{"all":true}"#, r#"{"names":[""]}"#] {
+        let (s, _, v) = send(&app, post("/api/v1/lists/refresh", &app.bearer, bad, &[])).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}: {v}");
+    }
+
+    // A viewer can't.
+    let vic = app
+        .auth
+        .create_user("vic", "a viewer password", auth::Role::Viewer, false, NOW)
+        .unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            vic.id,
+            "ro",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let viewer = format!("tt_{tid}_{secret}");
+    let (s, _, _) = send(&app, post("/api/v1/lists/refresh", &viewer, "{}", &[])).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // Agents: config:write:lists and a reason.
+    let token = |name: &str, scopes: &str| {
+        Request::post("/api/v1/tokens")
+            .header("cookie", &app.cookie)
+            .header("x-csrf-token", &app.csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"name":"{name}","kind":"agent","scopes":[{scopes}]}}"#
+            )))
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, token("reader", r#""config:read""#)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let reader = v["token"].as_str().unwrap().to_owned();
+    let why = [(
+        "x-telltale-reason",
+        "the list maintainer fixed a false positive",
+    )];
+    let (s, _, v) = send(&app, post("/api/v1/lists/refresh", &reader, "{}", &why)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(
+        v["detail"].as_str().unwrap().contains("config:write:lists"),
+        "{v}"
+    );
+    let (s, _, v) = send(&app, token("lists", r#""config:write:lists""#)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let agent = v["token"].as_str().unwrap().to_owned();
+    let (s, _, _) = send(&app, post("/api/v1/lists/refresh", &agent, "{}", &[])).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "agents must give a reason");
+    let (s, _, v) = send(&app, post("/api/v1/lists/refresh", &agent, "{}", &why)).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    let audit = app
+        .auth
+        .state()
+        .audit_page(None, 10, Some("lists.refresh"), None)
+        .unwrap();
+    assert!(audit[0].actor.starts_with("agent:lists"), "{audit:?}");
+    assert_eq!(audit[0].reason.as_deref(), Some(why[0].1));
+
+    // The MCP tool is a thin wrapper over the same route.
+    let rpc = |body: serde_json::Value| {
+        Request::post("/mcp")
+            .header("authorization", format!("Bearer {agent}"))
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let (_, _, v) = send(
+        &app,
+        rpc(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "refresh_lists", "arguments": {"names": ["hagezi"], "dryRun": true, "reason": "check first"}}})),
+    )
+    .await;
+    assert_eq!(v["result"]["isError"], false, "{v}");
+    assert_eq!(
+        v["result"]["structuredContent"]["result"]["queued"],
+        serde_json::json!(["hagezi"]),
+        "{v}"
+    );
+    assert_eq!(v["result"]["structuredContent"]["result"]["dryRun"], true);
+    let (_, _, v) = send(
+        &app,
+        rpc(
+            serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "refresh_lists", "arguments": {"reason": "lists are a day old"}}}),
+        ),
+    )
+    .await;
+    assert_eq!(v["result"]["isError"], false, "{v}");
+    let last = queued(&fake).last().cloned().unwrap();
+    assert!(
+        last.starts_with("lists_refresh None by agent:lists"),
+        "{last}"
+    );
 }

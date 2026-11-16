@@ -1542,6 +1542,57 @@ test('api_002 lists and upstreams are edited from the UI', async () => {
   await expect(router).toContainText('config file');
 });
 
+// REQ: FLT-004 — "Update now" on the Lists page queues every enabled list (202), follows the
+// downloads, and says when they're done; the API takes a dry run and names, refuses unknown
+// lists and viewers, and audits the refresh.
+test('flt_004 update lists now', async () => {
+  await page.goto('/#/lists');
+  const btn = page.getByTestId('lists-update-now');
+  await expect(btn).toHaveText('Update now');
+  const queued = page.waitForResponse((r) => r.url().endsWith('/api/v1/lists/refresh') && r.request().method() === 'POST');
+  await btn.click();
+  const res = await queued;
+  expect(res.status()).toBe(202);
+  const body = await res.json();
+  expect(body.queued).toContain('e2e-block');
+  expect(body.dryRun).toBe(false);
+  const status = page.getByTestId('lists-refresh-status');
+  await expect(status).toContainText('Lists updated', { timeout: 15_000 });
+  await expect(btn).toHaveText('Update now');
+  await expect(page.getByTestId('list-refreshing')).toHaveCount(0);
+  const lists = (await (await page.request.get('/api/v1/lists')).json()).items as { name: string; refreshing: boolean; lastSuccessUnixSeconds?: number }[];
+  const block = lists.find((l) => l.name === 'e2e-block')!;
+  expect(block.refreshing).toBe(false);
+  expect(block.lastSuccessUnixSeconds).toBeGreaterThan(0);
+
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const post = (path: string, data: object) => page.request.post(path, { headers: { 'x-csrf-token': csrf }, data });
+  const dry = await post('/api/v1/lists/refresh?dryRun=true', { names: ['e2e-block'] });
+  expect(dry.status()).toBe(202);
+  expect((await dry.json()).dryRun).toBe(true);
+  expect((await post('/api/v1/lists/refresh', { names: ['no-such-list'] })).status()).toBe(404);
+  const audit = (await (await page.request.get('/api/v1/audit?action=lists.refresh')).json()).items;
+  expect(audit.length).toBeGreaterThan(0);
+
+  // A viewer sees the lists but no button, and the API refuses.
+  const viewer = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  const vr = viewer.request;
+  const st = await (await vr.get('/api/v1/auth/status')).json();
+  const login = await vr.post('/api/v1/auth/login', {
+    headers: { 'x-csrf-token': st.csrfToken ?? '' },
+    data: { username: VIEWER.user, password: VIEWER.pass },
+  });
+  expect(login.ok()).toBeTruthy();
+  const vcsrf = (await (await vr.get('/api/v1/auth/status')).json()).csrfToken as string;
+  expect((await vr.post('/api/v1/lists/refresh', { headers: { 'x-csrf-token': vcsrf }, data: {} })).status()).toBe(403);
+  const vpage = await viewer.newPage();
+  await vpage.goto('/#/lists');
+  await expect(vpage.getByRole('heading', { name: /^Lists/ })).toBeVisible();
+  await expect(vpage.getByText('e2e-block').first()).toBeVisible();
+  await expect(vpage.getByTestId('lists-update-now')).toHaveCount(0);
+  await viewer.close();
+});
+
 test('api_002 upstreams and lists can be added, overridden, and reverted', async () => {
   const r = page.request;
   const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;

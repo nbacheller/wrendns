@@ -1424,9 +1424,10 @@ export interface paths {
         };
         /**
          * Devices found on the network (API-010; T8.2, T8.3).
-         * @description The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense), then the
-         *     names devices announce over mDNS (`[clients] mdns`), each with the name the device has in
-         *     TelltaleDNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name
+         * @description The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense, and the
+         *     devices Home Assistant names), then the names devices announce over mDNS (`[clients] mdns`),
+         *     each with the name the device has in TelltaleDNS and, with `[local] device_domain`, the
+         *     name it answers as in DNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name
          *     because these are the router's DHCP leases.
          */
         get: operations["dhcp_leases"];
@@ -1803,11 +1804,47 @@ export interface paths {
         /**
          * Filter lists and their download state.
          * @description Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,
-         *     `pending`) and last error, size, and how many names it contributes to the active snapshot.
+         *     `pending`) and last error, size, and how many names it contributes to the active snapshot;
+         *     when it was last checked, last confirmed current, and last changed, and whether a refresh is
+         *     queued or downloading it now (`refreshing`). On a cluster replica the download state is the
+         *     primary's (it downloads and compiles the lists every node serves); hits are this node's.
+         *     When the primary doesn't answer, `missingNodes` names it and the state is this node's own.
          */
         get: operations["lists"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/lists/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Update lists now.
+         * @description Downloads every enabled filter list again now (or only the lists in `names`), without
+         *     waiting for their `refresh_secs` schedule, like Pi-hole's "Update Gravity" (`pihole -g`).
+         *     Answers 202 at once with what was queued; the downloads run in the background, and
+         *     `refreshing` in `GET /api/v1/lists` is true until each list's download ends
+         *     (`lastSuccessUnixSeconds` then moves on). Unchanged sources cost one conditional request
+         *     each, and the filter snapshot is recompiled only when something changed (it then serves
+         *     within seconds). A failed download keeps the last good copy. Disabled lists are left out
+         *     (`skipped`). In a cluster the primary downloads and compiles the lists every node serves:
+         *     a replica forwards the request (503 when it can't reach the primary; replicas keep serving
+         *     the last lists). `?dryRun=true` says what would be queued and queues nothing.
+         *     `Idempotency-Key` replays the first answer for 24 hours. It changes no configuration (a
+         *     GitOps-managed cluster takes it too). Needs the operator role (agents: the
+         *     `config:write:lists` scope and a reason); audit-logged as `lists.refresh`.
+         */
+        post: operations["refresh_lists"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1839,6 +1876,30 @@ export interface paths {
          *     deleted in turn. The configuration is checked first (say, a group still using a list).
          */
         delete: operations["delete_list"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/networks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Networks on your network: subnets, VLANs, and how full they are (API-013; T22.2).
+         * @description The LANs and VLANs your routers report (`[[router]]`, UniFi: subnet, VLAN, DHCP pool,
+         *     domain), then any client group's `networks` that no router reported. Each with the group
+         *     that covers it and how many known devices are in it (the routers' DHCP clients, Home
+         *     Assistant's devices, and mDNS names), so you can see which networks are filling up. Read
+         *     on this node (the one that reads the routers).
+         */
+        get: operations["networks"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -4219,7 +4280,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -4401,6 +4462,11 @@ export interface components {
             /** @description The device's name in TelltaleDNS (a named client, else the host name). */
             clientName?: string | null;
             /**
+             * @description REQ: DNS-023 (T22.1) — the name it answers as in DNS (`kitchen-tablet.home.arpa`),
+             *     with `[local] device_domain` set.
+             */
+            dnsName?: string | null;
+            /**
              * Format: int64
              * @description When the router's lease ends (Unix seconds; 0 when unknown).
              */
@@ -4409,6 +4475,11 @@ export interface components {
             hostname?: string | null;
             ip: string;
             mac: string;
+            /**
+             * @description REQ: API-012 (T22.3) — the `[[router]]` whose answer named it (`udm`,
+             *     `home-assistant`); absent for mDNS.
+             */
+            router?: string | null;
             /**
              * @description `router` (read from a `[[router]]`) or `mdns` (the name the device announces,
              *     `[clients] mdns`; no MAC).
@@ -5429,6 +5500,11 @@ export interface components {
                 /** @description The device's name in TelltaleDNS (a named client, else the host name). */
                 clientName?: string | null;
                 /**
+                 * @description REQ: DNS-023 (T22.1) — the name it answers as in DNS (`kitchen-tablet.home.arpa`),
+                 *     with `[local] device_domain` set.
+                 */
+                dnsName?: string | null;
+                /**
                  * Format: int64
                  * @description When the router's lease ends (Unix seconds; 0 when unknown).
                  */
@@ -5437,6 +5513,11 @@ export interface components {
                 hostname?: string | null;
                 ip: string;
                 mac: string;
+                /**
+                 * @description REQ: API-012 (T22.3) — the `[[router]]` whose answer named it (`udm`,
+                 *     `home-assistant`); absent for mDNS.
+                 */
+                router?: string | null;
                 /**
                  * @description `router` (read from a `[[router]]`) or `mdns` (the name the device announces,
                  *     `[clients] mdns`; no MAC).
@@ -5576,10 +5657,22 @@ export interface components {
                 hits: number;
                 /** @description `block` or `allow`. */
                 kind: string;
-                /** Format: int64 */
+                /**
+                 * Format: int64
+                 * @description Last time the content changed (Unix seconds).
+                 */
                 lastChangedUnixSeconds?: number | null;
-                /** Format: int64 */
+                /**
+                 * Format: int64
+                 * @description Last download attempt (Unix seconds), whatever its outcome.
+                 */
                 lastCheckedUnixSeconds?: number | null;
+                /**
+                 * Format: int64
+                 * @description REQ: FLT-004 — last time the source was confirmed current: a download, a `304 Not
+                 *     Modified`, or the same content again (Unix seconds).
+                 */
+                lastSuccessUnixSeconds?: number | null;
                 /** Format: int64 */
                 lines: number;
                 /**
@@ -5590,6 +5683,12 @@ export interface components {
                 name: string;
                 /** @description Lists it shares names with, most shared first. */
                 overlap: components["schemas"]["ListShare"][];
+                /**
+                 * @description REQ: FLT-004 — a refresh asked for (`POST /api/v1/lists/refresh`) is waiting to start
+                 *     or downloading this list now (also true during a scheduled download). It clears when
+                 *     the download ends; the snapshot follows within seconds if the content changed.
+                 */
+                refreshing?: boolean;
                 /**
                  * Format: int64
                  * @description REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot
@@ -5623,6 +5722,57 @@ export interface components {
                 records: components["schemas"]["RecordInput"][];
                 /** @description `file` (read-only here) or `api`. */
                 source: string;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
+        Items_NetworkInfo: {
+            items: {
+                /**
+                 * Format: int64
+                 * @description Host addresses in it (without the network and broadcast addresses).
+                 */
+                addresses: number;
+                /**
+                 * Format: int64
+                 * @description Devices known in it: the routers' DHCP clients, Home Assistant's devices, and mDNS
+                 *     names.
+                 */
+                devices: number;
+                dhcpEnd?: string | null;
+                /** @description The DHCP pool, when the router serves DHCP on it. */
+                dhcpStart?: string | null;
+                /** @description The domain the router hands out on it. */
+                domain?: string | null;
+                gateway?: string | null;
+                /** @description The client group whose networks hold it (most specific), if any. */
+                group?: string | null;
+                /** @example IoT */
+                name: string;
+                /**
+                 * Format: int64
+                 * @description Of `devices`, those outside the DHCP pool (fixed addresses and reservations).
+                 */
+                outsidePool: number;
+                /** @description The router's own word for it (UniFi: `corporate`, `guest`). */
+                purpose?: string | null;
+                /** @description The `[[router]]` that reported it. */
+                router?: string | null;
+                /** @description `router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry). */
+                source: string;
+                /**
+                 * @description The network in CIDR form.
+                 * @example 192.168.20.0/24
+                 */
+                subnet: string;
+                /**
+                 * Format: double
+                 * @description `devices` as a share of `addresses`, 0–100.
+                 */
+                usedPercent: number;
+                /** Format: int32 */
+                vlan?: number | null;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -6163,10 +6313,22 @@ export interface components {
             hits: number;
             /** @description `block` or `allow`. */
             kind: string;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Last time the content changed (Unix seconds).
+             */
             lastChangedUnixSeconds?: number | null;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Last download attempt (Unix seconds), whatever its outcome.
+             */
             lastCheckedUnixSeconds?: number | null;
+            /**
+             * Format: int64
+             * @description REQ: FLT-004 — last time the source was confirmed current: a download, a `304 Not
+             *     Modified`, or the same content again (Unix seconds).
+             */
+            lastSuccessUnixSeconds?: number | null;
             /** Format: int64 */
             lines: number;
             /**
@@ -6177,6 +6339,12 @@ export interface components {
             name: string;
             /** @description Lists it shares names with, most shared first. */
             overlap: components["schemas"]["ListShare"][];
+            /**
+             * @description REQ: FLT-004 — a refresh asked for (`POST /api/v1/lists/refresh`) is waiting to start
+             *     or downloading this list now (also true during a scheduled download). It clears when
+             *     the download ends; the snapshot follows within seconds if the content changed.
+             */
+            refreshing?: boolean;
             /**
              * Format: int64
              * @description REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot
@@ -6198,6 +6366,12 @@ export interface components {
              * @description REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).
              */
             unique: number;
+        };
+        /** @description A named list a refresh leaves out. */
+        ListRefreshSkip: {
+            name: string;
+            /** @description `disabled` (the list is off: it's never downloaded until it's turned on). */
+            reason: string;
         };
         /** @description Names a list shares with another (OBS-009). */
         ListShare: {
@@ -6263,6 +6437,38 @@ export interface components {
                 totpEnabled: boolean;
                 username: string;
             }[];
+        };
+        /** @description REQ: FLT-004 — which lists to download again now (`POST /api/v1/lists/refresh`). */
+        ListsRefreshRequest: {
+            /**
+             * @description Only these lists, by name (as `GET /api/v1/lists` lists them). Absent or empty: every
+             *     enabled list.
+             * @example [
+             *       "hagezi-pro"
+             *     ]
+             */
+            names?: string[] | null;
+        };
+        /** @description REQ: FLT-004 — what a refresh queued (`202 Accepted`), or with `dryRun`, would queue. */
+        ListsRefreshResult: {
+            /**
+             * @description Of `queued`, the lists downloading already: each is downloaded once more when that
+             *     download ends.
+             */
+            alreadyRefreshing: string[];
+            /** @description True when nothing was queued (`?dryRun=true`): `queued` is what would be. */
+            dryRun: boolean;
+            /**
+             * @description The node that downloads and compiles the lists: this one, or (on a cluster replica) the
+             *     primary the request was forwarded to.
+             */
+            node?: string | null;
+            /** @description What happens next, in a sentence. */
+            note: string;
+            /** @description The lists queued for download now (or that would be), in configuration order. */
+            queued: string[];
+            /** @description Named lists left out, and why. */
+            skipped: components["schemas"]["ListRefreshSkip"][];
         };
         /** @description A name TelltaleDNS answers itself. */
         LocalName: {
@@ -6391,6 +6597,56 @@ export interface components {
          * @enum {string}
          */
         NameMatch: "substring" | "exact" | "suffix" | "glob" | "regex";
+        /**
+         * @description REQ: API-013 (T22.2) — a network: a LAN or VLAN a router reported, or a client group's
+         *     network that no router reported, with how many known devices are in it.
+         */
+        NetworkInfo: {
+            /**
+             * Format: int64
+             * @description Host addresses in it (without the network and broadcast addresses).
+             */
+            addresses: number;
+            /**
+             * Format: int64
+             * @description Devices known in it: the routers' DHCP clients, Home Assistant's devices, and mDNS
+             *     names.
+             */
+            devices: number;
+            dhcpEnd?: string | null;
+            /** @description The DHCP pool, when the router serves DHCP on it. */
+            dhcpStart?: string | null;
+            /** @description The domain the router hands out on it. */
+            domain?: string | null;
+            gateway?: string | null;
+            /** @description The client group whose networks hold it (most specific), if any. */
+            group?: string | null;
+            /** @example IoT */
+            name: string;
+            /**
+             * Format: int64
+             * @description Of `devices`, those outside the DHCP pool (fixed addresses and reservations).
+             */
+            outsidePool: number;
+            /** @description The router's own word for it (UniFi: `corporate`, `guest`). */
+            purpose?: string | null;
+            /** @description The `[[router]]` that reported it. */
+            router?: string | null;
+            /** @description `router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry). */
+            source: string;
+            /**
+             * @description The network in CIDR form.
+             * @example 192.168.20.0/24
+             */
+            subnet: string;
+            /**
+             * Format: double
+             * @description `devices` as a share of `addresses`, 0–100.
+             */
+            usedPercent: number;
+            /** Format: int32 */
+            vlan?: number | null;
+        };
         /** @description A new display: its link's code, shown only in this response. */
         NewDisplay: {
             /**
@@ -11402,6 +11658,79 @@ export interface operations {
             };
         };
     };
+    refresh_lists: {
+        parameters: {
+            query?: {
+                /** @description Check and report without changing anything. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Optional: `{}` or no body refreshes every enabled list. */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ListsRefreshRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Queued (or, with dryRun, what would be): the lists, the ones left out, and the node that downloads them. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListsRefreshResult"];
+                };
+            };
+            /** @description A malformed body or an empty name. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Needs the operator role (agents: config:write:lists). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No list by one of those names (the hint lists them). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description This node doesn't download lists (`lists_not_here`: role resolver), or an Idempotency-Key reused for another request. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A cluster replica that can't reach the primary (it downloads the lists). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     put_list: {
         parameters: {
             query?: {
@@ -11523,6 +11852,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    networks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_NetworkInfo"];
                 };
             };
         };
