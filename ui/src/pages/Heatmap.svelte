@@ -35,7 +35,10 @@
   let tip = $state<{ x: number; y: number; text: string } | null>(null);
 
   // Finer grains only where the data has them: the network, within 7 days; phones get hours.
-  const effectiveGrain = $derived(kind !== 'network' || win.days > 7 || width < 480 ? 'hour' : grain);
+  // The grid's width is 0 while it's hidden (loading, or the table view): the window's stands in,
+  // so the first load and the table toggle don't fetch at another grain.
+  let innerWidth = $state(window.innerWidth);
+  const effectiveGrain = $derived(kind !== 'network' || win.days > 7 || (width || innerWidth) < 480 ? 'hour' : grain);
 
   async function load() {
     if (kind !== 'network' && !key) {
@@ -234,7 +237,7 @@
   });
 </script>
 
-<svelte:window bind:innerHeight />
+<svelte:window bind:innerHeight bind:innerWidth />
 
 <div class="page">
   <div class="page-head">
