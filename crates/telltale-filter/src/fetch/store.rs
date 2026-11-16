@@ -47,7 +47,16 @@ impl ListMeta {
     pub fn has_content(&self) -> bool {
         self.content_hash.is_some()
     }
+
+    /// True when the stored content is inline rules from the config. They're stored when the
+    /// config changes and never fetched, so `last_success` doesn't age like a download's.
+    pub fn is_inline(&self) -> bool {
+        self.source.starts_with(INLINE_SOURCE_PREFIX)
+    }
 }
+
+/// How [`ListMeta::source`] starts for inline rules (followed by the rules' hash).
+pub(crate) const INLINE_SOURCE_PREFIX: &str = "inline:";
 
 /// The `lists/` directory.
 #[derive(Debug, Clone)]

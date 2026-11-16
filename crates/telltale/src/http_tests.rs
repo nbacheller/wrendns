@@ -365,6 +365,45 @@ fn obs_005_ring_series_are_unique_per_thread_name() {
     assert_eq!(text.matches("ring=\"twin\"").count(), 2, "{text}");
 }
 
+// REQ: FLT-004 — an inline list is never fetched, so it reports no last-success time (it would
+// trip the "> 48 h" list alert two days after every config edit); its other gauges remain.
+#[test]
+fn flt_004_inline_lists_report_no_last_success() {
+    let meta = |source: &str| ListMeta {
+        source: source.into(),
+        content_hash: Some("h".into()),
+        bytes: 10,
+        last_success: Some(1_000),
+        last_changed: Some(900),
+        ..ListMeta::default()
+    };
+    let status = vec![
+        ("remote".to_owned(), meta("https://example.com/l.txt")),
+        ("allowed".to_owned(), meta("inline:0123456789abcdef")),
+    ];
+    let mut w = PromWriter::new();
+    render_list_status(&mut w, &status);
+    let text = w.finish();
+    assert!(
+        text.contains("telltale_list_last_success_timestamp_seconds{list=\"remote\"} 1000"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("telltale_list_last_success_timestamp_seconds{list=\"allowed\"}"),
+        "{text}"
+    );
+    for family in [
+        "telltale_list_source_bytes",
+        "telltale_list_last_change_timestamp_seconds",
+        "telltale_list_fetch_consecutive_failures",
+    ] {
+        assert!(
+            text.contains(&format!("{family}{{list=\"allowed\"}}")),
+            "{text}"
+        );
+    }
+}
+
 // REQ: CLU-002 (ADR-125) — a node without the router (a resolver pod) names a device by
 // what the other nodes' routers know; this node's own sources still come first.
 #[test]
