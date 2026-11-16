@@ -331,7 +331,9 @@ test('obs_015 health icon, its reasons, and the phone dot', async () => {
 // becomes a time, the range's sums one bucket's counts). Each keeps its width, so on a narrow
 // screen the legend doesn't rewrap and move the plot under the cursor.
 test('chart legend keeps its place while hovering', async () => {
-  await page.goto('/#/');
+  // This legend is the shared Chart's (the previous dashboard, the Cache page); the new
+  // dashboard's chart has a legend of its own that doesn't change on hover (ADR-157).
+  await page.goto('/#/?view=legacy');
   const card = page.locator('section.card.chart', { hasText: 'Queries by status' });
   const over = card.locator('.u-over');
   const layout = () =>
@@ -357,6 +359,9 @@ test('chart legend keeps its place while hovering', async () => {
   }
   await page.mouse.move(0, 0);
   await page.setViewportSize({ width: 1280, height: 800 });
+  // The choice of the previous dashboard is remembered: put the new one back for the tests after.
+  await page.goto('/#/?view=new');
+  await expect(page.getByTestId('dashboard-chart')).toBeVisible();
 });
 
 // REQ: OBS-016 — the dashboard's Service level card (Advanced view only): the server's
