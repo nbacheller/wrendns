@@ -15,7 +15,14 @@
     ip,
     name = null,
     onchanged,
-  }: { ip: string; name?: string | null; onchanged?: (name: string) => void } = $props();
+    display,
+  }: {
+    ip: string;
+    name?: string | null;
+    onchanged?: (name: string) => void;
+    /** What to show in place of the name (a pod's workload for its full pod name); the name is still the device's. */
+    display?: string;
+  } = $props();
 
   let open = $state(false);
   let editing = $state<'name' | 'groups' | 'workload' | null>(null);
@@ -210,7 +217,7 @@
       e.stopPropagation();
       open = !open;
     }}
-    >{#if workload}<span class="glyph" aria-label="Kubernetes workload"><Icon name="workload" size={14} /></span>{/if}{label}</button
+    >{#if workload}<span class="glyph" aria-label="Kubernetes workload"><Icon name="workload" size={14} /></span>{/if}{display ?? label}</button
   >
   {#if open}
     <span class="menu" role="menu" aria-label={`Device ${ip}`}>
