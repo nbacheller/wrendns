@@ -2,8 +2,9 @@
 //!
 //! Part of TelltaleDNS. See `spec/02-architecture.md` §2–3 and `spec/03` §1.
 //!
-//! REQ: NFR-003 — all `unsafe` lives in the private `sys` module (Linux syscalls), and every
-//! block carries a `// SAFETY:` justification (enforced by `clippy::undocumented_unsafe_blocks`).
+//! REQ: NFR-003 — all `unsafe` lives in the private `sys` module (Linux syscalls) and in
+//! `stacks` (the watchdog's thread stacks, OPS-012), and every block carries a `// SAFETY:`
+//! justification (enforced by `clippy::undocumented_unsafe_blocks`).
 
 pub mod doh;
 pub mod doh3;
@@ -12,6 +13,8 @@ pub mod handler;
 pub mod neigh;
 pub mod peer_limit;
 pub mod proxy;
+#[cfg(target_os = "linux")]
+pub mod stacks;
 #[cfg(target_os = "linux")]
 mod sys;
 pub mod tcp;
