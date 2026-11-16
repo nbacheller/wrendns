@@ -4525,7 +4525,7 @@
           "config"
         ],
         "summary": "Filter lists and their download state.",
-        "description": "Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,\n`pending`) and last error, size, and how many names it contributes to the active snapshot;\nwhen it was last checked, last confirmed current, and last changed, and whether a refresh is\nqueued or downloading it now (`refreshing`). On a cluster replica the download state is the\nprimary's (it downloads and compiles the lists every node serves); hits are this node's.",
+        "description": "Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,\n`pending`) and last error, size, and how many names it contributes to the active snapshot;\nwhen it was last checked, last confirmed current, and last changed, and whether a refresh is\nqueued or downloading it now (`refreshing`). On a cluster replica the download state is the\nprimary's (it downloads and compiles the lists every node serves); hits are this node's.\nWhen the primary doesn't answer, `missingNodes` names it and the state is this node's own.",
         "operationId": "lists",
         "responses": {
           "200": {

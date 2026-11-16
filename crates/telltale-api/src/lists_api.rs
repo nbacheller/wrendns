@@ -58,9 +58,15 @@ pub fn names(req: &ListsRefreshRequest) -> Result<Option<Vec<String>>, Problem> 
     let mut out: Vec<String> = Vec::new();
     for n in given {
         let n = n.trim();
-        if n.is_empty() || n.chars().any(char::is_control) {
+        if n.is_empty() {
             return Err(Problem::invalid("`names`: a list name is empty")
                 .hint("Use the names from GET /api/v1/lists."));
+        }
+        if n.chars().any(char::is_control) {
+            return Err(
+                Problem::invalid("`names`: a list name has a control character")
+                    .hint("Use the names from GET /api/v1/lists."),
+            );
         }
         if !out.iter().any(|o| o == n) {
             out.push(n.to_owned());
@@ -233,6 +239,7 @@ pub(crate) async fn refresh_lists(
         names: names.clone(),
         dry_run,
         by: actor.name.clone(),
+        reason: actor.reason.clone(),
     };
     match backend.lists_refresh(w).await {
         Ok(r) => {
@@ -307,6 +314,7 @@ mod tests {
             names: names.map(|n| n.iter().map(|s| (*s).to_owned()).collect()),
             dry_run,
             by: "alice".into(),
+            reason: None,
         }
     }
 

@@ -2241,6 +2241,16 @@ impl Backend for ApiBackend {
                     l.fetcher.request_refresh_of(names);
                 },
             ),
+            // An emergency primary that took over from a synced replica keeps the lists it was
+            // sent; list refresh is paused until the cluster has its usual primary (spec/12 §5).
+            None if crate::replication::follows_primary(&cfg)
+                && self.src.cluster.as_ref().is_some_and(|c| c.is_primary()) =>
+            {
+                Err(Problem::unavailable(
+                    "this node took over as primary in an emergency: it serves the lists it was last sent and doesn't download them",
+                )
+                .hint("List refresh is paused while the cluster runs on an emergency primary (it resumes when the usual primary is back); DNS keeps answering with the last lists meanwhile."))
+            }
             // A synced cluster replica serves the primary's lists (CLU-003); the federated
             // backend forwards there, so this is a primary it couldn't reach.
             None if crate::replication::follows_primary(&cfg) => Err(Problem::unavailable(
@@ -6287,6 +6297,7 @@ mod lists_refresh_tests {
             names: names.map(|n| n.iter().map(|n| (*n).to_owned()).collect()),
             dry_run,
             by: "alice".into(),
+            reason: None,
         };
         let r = api.lists_refresh(write(None, true)).await.unwrap();
         assert!(r.dry_run);

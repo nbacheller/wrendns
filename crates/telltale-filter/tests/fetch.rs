@@ -639,12 +639,10 @@ async fn flt_004_refresh_now_of_some_lists() {
             if r.path == "/slow" {
                 Reply {
                     delay: Duration::from_millis(600),
-                    ..ok("slow.com
-")
+                    ..ok("slow.com\n")
                 }
             } else {
-                ok("a.com
-")
+                ok("a.com\n")
             }
         }),
         None,
@@ -720,6 +718,84 @@ async fn flt_004_refresh_now_of_some_lists() {
         .collect();
     paths.sort();
     assert_eq!(paths, ["/a", "/slow"]);
+    drop(specs_tx);
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+// REQ: FLT-004 — a refresh asked for while the list is downloading starts one more round after
+// it (not more), and `is_refreshing` holds across both.
+#[tokio::test]
+async fn flt_004_refresh_asked_during_a_download_runs_once_more() {
+    let srv = serve(
+        handler(|_, _| Reply {
+            delay: Duration::from_millis(600),
+            ..ok("slow.com\n")
+        }),
+        None,
+    )
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let f = fetcher(tmp.path(), settings(), &[]);
+    let (specs_tx, specs_rx) =
+        watch::channel(Arc::new(vec![spec("slow", srv.url("http", "h", "/slow"))]));
+    let (changed_tx, mut changed_rx) = watch::channel(0u64);
+    let task = tokio::spawn(Arc::clone(&f).run(specs_rx, changed_tx));
+    tokio::time::timeout(Duration::from_secs(5), changed_rx.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while f.is_refreshing("slow") {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // A request made while the list is downloading starts one more round after it, and
+    // `is_refreshing` holds across both.
+    let mid = srv.requests().len();
+    f.request_refresh_of(Some(&["slow".to_owned()]));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while srv.requests().len() == mid {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // `/slow` is in its 600 ms delay now.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    f.request_refresh_of(Some(&["slow".to_owned()]));
+    let second_started = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            assert!(
+                f.is_refreshing("slow"),
+                "refreshing until the second round starts"
+            );
+            if srv.requests().len() == mid + 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(second_started.is_ok(), "{:?}", srv.requests());
+    assert!(f.is_refreshing("slow"), "the second round is downloading");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while f.is_refreshing("slow") {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let paths: Vec<String> = srv.requests()[mid..]
+        .iter()
+        .map(|r| r.path.clone())
+        .collect();
+    assert_eq!(paths, ["/slow", "/slow"], "one more round, not more");
     drop(specs_tx);
     tokio::time::timeout(Duration::from_secs(5), task)
         .await

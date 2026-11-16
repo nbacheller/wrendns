@@ -197,9 +197,13 @@ pub(crate) enum ListsCmd {
         /// Show what would be downloaded without downloading anything.
         #[arg(long)]
         dry_run: bool,
-        /// Wait until the downloads end (at most 5 minutes), then print the lists.
+        /// Wait until the downloads end (at most 5 minutes; exits non-zero if they haven't),
+        /// then print the lists.
         #[arg(long)]
         wait: bool,
+        /// Why, for the audit log (sent as `X-Telltale-Reason`; agent tokens must give one).
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 
@@ -361,12 +365,26 @@ impl Api {
         path: &str,
         body: Option<&Value>,
     ) -> Result<Value, String> {
+        self.call_with_reason(method, path, body, None).await
+    }
+
+    /// [`Self::call`] with an `X-Telltale-Reason` header (AGT-005: agent tokens must say why).
+    async fn call_with_reason(
+        &self,
+        method: http::Method,
+        path: &str,
+        body: Option<&Value>,
+        reason: Option<&str>,
+    ) -> Result<Value, String> {
         let url = self.url(path);
         let mut req = http::Request::builder()
             .method(method)
             .uri(url.as_str())
             .header("authorization", format!("Bearer {}", self.token))
             .header("accept", "application/json");
+        if let Some(r) = reason.map(str::trim).filter(|r| !r.is_empty()) {
+            req = req.header(telltale_api::auth::routes::REASON, r);
+        }
         let bytes = match body {
             Some(b) => {
                 req = req.header("content-type", "application/json");
@@ -1008,6 +1026,7 @@ pub(crate) async fn run(
                     names,
                     dry_run,
                     wait,
+                    reason,
                 }),
         } => {
             let body = if names.is_empty() {
@@ -1016,10 +1035,11 @@ pub(crate) async fn run(
                 json!({ "names": names })
             };
             let r = api
-                .call(
+                .call_with_reason(
                     http::Method::POST,
                     &format!("lists/refresh{}", if dry_run { "?dryRun=true" } else { "" }),
                     Some(&body),
+                    reason.as_deref(),
                 )
                 .await?;
             if wait && !dry_run {
@@ -1034,12 +1054,29 @@ pub(crate) async fn run(
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
                 let lists = loop {
                     let v = api.get("lists").await?;
+                    // A replica whose primary didn't answer shows its own view: it can't tell
+                    // whether the downloads ended.
+                    if let Some(m) = v["missingNodes"].as_array().filter(|m| !m.is_empty()) {
+                        let m: Vec<&str> = m.iter().filter_map(Value::as_str).collect();
+                        return Err(format!(
+                            "{}can't follow the downloads: {} didn't answer; check again with `telltale ctl lists`",
+                            refresh_text(&r),
+                            m.join(", ")
+                        ));
+                    }
                     let busy = items(&v).iter().any(|l| {
                         l["refreshing"].as_bool() == Some(true)
                             && queued.iter().any(|q| l["name"].as_str() == Some(q))
                     });
-                    if !busy || std::time::Instant::now() >= deadline {
+                    if !busy {
                         break v;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(format!(
+                            "{}{}lists still downloading after 5 minutes; check again with `telltale ctl lists`",
+                            refresh_text(&r),
+                            lists_text(&v)
+                        ));
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 };
@@ -1119,8 +1156,7 @@ pub(crate) async fn run(
 
 type Rendered = (Value, Option<Box<dyn Fn(&Value) -> String>>);
 
-/// REQ: OBS-024 — a simulation as text: the counts, then the top names of each kind.
-/// `telltale ctl lists`: one row per list.
+/// REQ: FLT-004 — `telltale ctl lists`: one row per list.
 fn lists_text(v: &Value) -> String {
     let rows: Vec<Vec<String>> = items(v)
         .iter()
@@ -1168,6 +1204,7 @@ fn or_none(v: &str) -> &str {
     if v.is_empty() { "nothing" } else { v }
 }
 
+/// REQ: OBS-024 — a simulation as text: the counts, then the top names of each kind.
 fn simulation_text(v: &Value) -> String {
     let mut out = String::new();
     if v["available"] == Value::Bool(false) {
@@ -1528,7 +1565,7 @@ mod tests {
         );
     }
 
-    /// REQ: OPS-010 — `--for` takes seconds or a unit; node names go into the path safely.
+    /// REQ: FLT-004 — what a refresh queued, as text.
     #[test]
     fn flt_004_ctl_refresh_text() {
         let v = json!({"dryRun": false, "queued": ["hagezi", "mine"], "skipped": [{"name": "old", "reason": "disabled"}],
@@ -1546,6 +1583,7 @@ mod tests {
         assert!(l.contains("refreshing"), "{l}");
     }
 
+    /// REQ: OPS-010 — `--for` takes seconds or a unit; node names go into the path safely.
     #[test]
     fn ops_010_ctl_durations_and_node_paths() {
         assert_eq!(parse_duration("2h"), Ok(7200));

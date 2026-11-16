@@ -27,6 +27,8 @@
   ];
 
   let lists = $state<S['ListInfo'][]>([]);
+  // REQ: FLT-004 — on a replica, the primary when it didn't answer (the state shown is then this node's).
+  let unread = $state<string[]>([]);
   let info = $state<S['SystemInfo'] | null>(null);
   // REQ: OBS-018 — what shadow lists would have blocked, and likely over-blocking.
   let shadow = $state<S['ShadowListStats'][]>([]);
@@ -45,6 +47,7 @@
           api.overblocking(20).catch(() => ({ items: [] as S['OverblockSuspect'][] })),
         ]);
         lists = l.items;
+        unread = l.missingNodes ?? [];
         info = i;
         shadow = sh.items;
         suspects = ob.items;
@@ -65,15 +68,25 @@
   const updating = $derived(
     starting || (refresh !== null && lists.some((l) => l.refreshing && refresh!.queued.includes(l.name))),
   );
-  const lastUpdated = $derived(
-    Math.max(0, ...lists.filter((l) => l.enabled).map((l) => l.lastSuccessUnixSeconds ?? 0)) || null,
+  // The oldest enabled list's last confirmation, so one fresh list can't hide a stale one. A
+  // list never downloaded makes it null.
+  const lastUpdated = $derived.by(() => {
+    const on = lists.filter((l) => l.enabled);
+    if (on.length === 0 || on.some((l) => !l.lastSuccessUnixSeconds)) return null;
+    return Math.min(...on.map((l) => l.lastSuccessUnixSeconds ?? 0));
+  });
+  // The lists this refresh queued whose download failed.
+  const failed = $derived(
+    refresh === null
+      ? []
+      : lists.filter((l) => refresh!.queued.includes(l.name) && (l.state === 'failed' || !!l.error)),
   );
   async function updateNow() {
     starting = true;
     refreshError = null;
     try {
       refresh = await api.refreshLists();
-      lists = (await api.lists()).items;
+      ({ items: lists, missingNodes: unread = [] } = await api.lists());
     } catch (e) {
       refreshError = e;
       refresh = null;
@@ -86,7 +99,7 @@
     if (!updating) return;
     const t = setInterval(async () => {
       try {
-        lists = (await api.lists()).items;
+        ({ items: lists, missingNodes: unread = [] } = await api.lists());
       } catch {
         // the 15 s poll reports errors
       }
@@ -126,16 +139,24 @@
   </div>
   <ErrorNote {error} />
   <ErrorNote error={refreshError} />
-  {#if refresh || lastUpdated}
+  {#if unread.length}
+    <div class="notice warn" role="status" data-testid="lists-unread">Not read: {unread.join(', ')}. The download state shown is this node's own until the primary answers.</div>
+  {/if}
+  {#if refresh || lastUpdated || lists.some((l) => l.enabled)}
     <p class="small muted refresh-status" data-testid="lists-refresh-status" aria-live="polite">
       {#if updating && refresh}
         Downloading {refresh.queued.length} {refresh.queued.length === 1 ? 'list' : 'lists'}{refresh.node ? ` on ${refresh.node}` : ''}…
       {:else if refresh && refresh.queued.length === 0}
         {refresh.note}
+      {:else if refresh && failed.length}
+        <span class="err" data-testid="lists-refresh-failed">{failed.length} of {refresh.queued.length} {refresh.queued.length === 1 ? 'list' : 'lists'} failed to download{refresh.node ? ` on ${refresh.node}` : ''}: {failed.map((l) => `${l.name} (${l.error ?? 'failed'})`).join('; ')}.</span>
+        They keep their last good copy.
       {:else if refresh}
-        Lists updated{refresh.node ? ` on ${refresh.node}` : ''}: last confirmed current {ago(lastUpdated)}. Unchanged lists keep their copy; the snapshot follows within seconds if anything changed.
+        Lists updated{refresh.node ? ` on ${refresh.node}` : ''}: {lastUpdated ? `every enabled list confirmed current ${ago(lastUpdated)} or later` : 'some lists have never downloaded'}. Unchanged lists keep their copy; the snapshot follows within seconds if anything changed.
+      {:else if lastUpdated}
+        Every enabled list confirmed current {ago(lastUpdated)} or later.
       {:else}
-        Last confirmed current {ago(lastUpdated)}.
+        Some enabled lists have never downloaded.
       {/if}
       {#if refresh?.skipped.length}<span> Left out (off): {refresh.skipped.map((k) => k.name).join(', ')}.</span>{/if}
     </p>

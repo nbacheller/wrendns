@@ -854,6 +854,9 @@ pub struct ListsRefreshWrite {
     pub dry_run: bool,
     /// Who asked: the actor's name.
     pub by: String,
+    /// Why, as the user gave it (`X-Telltale-Reason`), for the primary's audit entry (AGT-005).
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// REQ: OBS-014 — an acknowledge (`ack`) or unacknowledge of findings by ID.
@@ -1794,14 +1797,17 @@ async fn explain(
 /// when it was last checked, last confirmed current, and last changed, and whether a refresh is
 /// queued or downloading it now (`refreshing`). On a cluster replica the download state is the
 /// primary's (it downloads and compiles the lists every node serves); hits are this node's.
+/// When the primary doesn't answer, `missingNodes` names it and the state is this node's own.
 #[utoipa::path(get, path = "/api/v1/lists", tag = "config",
     responses((status = 200, body = Items<ListInfo>, description = "The result.")))]
 async fn lists(State(b): State<Shared>) -> Result<Json<Items<ListInfo>>, Problem> {
     // A cluster replica asks the primary for the download state (it blocks on that call).
-    let items = blocking(move || Ok(b.lists())).await?;
+    // REQ: FLT-004 — a primary that didn't answer is named in `missingNodes`: the download
+    // state shown is then this node's own.
+    let (items, missing_nodes) = blocking(move || Ok((b.lists(), b.missing_nodes()))).await?;
     Ok(Json(Items {
-        missing_nodes: Vec::new(),
         items,
+        missing_nodes,
     }))
 }
 

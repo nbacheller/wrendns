@@ -1808,6 +1808,7 @@ export interface paths {
          *     when it was last checked, last confirmed current, and last changed, and whether a refresh is
          *     queued or downloading it now (`refreshing`). On a cluster replica the download state is the
          *     primary's (it downloads and compiles the lists every node serves); hits are this node's.
+         *     When the primary doesn't answer, `missingNodes` names it and the state is this node's own.
          */
         get: operations["lists"];
         put?: never;
