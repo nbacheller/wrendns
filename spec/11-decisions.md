@@ -2,6 +2,8 @@
 
 Format: Context → Decision → Consequences. New ADRs append here (`ADR-0NN`). The owner accepted every ADR proposed through ADR-096 on 2026-10-07; new ones start as Proposed. An agent must not contradict an accepted ADR without adding a superseding ADR and flagging it to the owner.
 
+ADR numbers from 901 up belong to this fork (nbacheller/telltaledns); lower numbers follow upstream (paimonsoror/telltaledns).
+
 ## ADR-001 — Language: Rust (Accepted)
 **Context:** Performance and footprint are paramount: a small, steady memory footprint on a Raspberry Pi and microsecond cache hits. That rules out garbage-collection pauses and runtime memory overhead, and we want memory safety at the same time.
 **Decision:** Rust (stable, 2024 edition), tokio, rustls (ring or aws-lc-rs backend), quinn.
@@ -1291,7 +1293,15 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
-## ADR-169 — Update lists now: one queued round per request, on the node that downloads lists (Proposed)
+## ADR-906 — Fork ADR numbers: fork-only ADRs take the next free number from 901 up (Proposed)
+**Context:** This fork (nbacheller/telltaledns) and upstream (paimonsoror/telltaledns) both record decisions as ADRs. Upstream's numbering ended at ADR-164, so the fork's first five decisions after it (numbers 165 to 169) sat where upstream's next decisions would go, and one number could mean two decisions once a sync brought them together.
+**Decision:**
+- Fork-only ADRs take the next free number at or above 901, in order, and a number is never reused.
+- Upstream's ADR numbers are kept as they are; the fork does not renumber them.
+- On each upstream sync, check upstream's new ADR and requirement IDs against this file. If one of them lands on a fork ADR number, renumber the fork ADR (901 and up), never upstream's.
+**Consequences:** On 2026-11-16 the fork's numbers 165 to 169 became 901 to 905, and every reference in code, spec, docs, site, UI, and bench was updated to match. Upstream's numbers stay below 901, so the two ranges do not meet.
+
+## ADR-905 — Update lists now: one queued round per request, on the node that downloads lists (Proposed)
 **Context:** `spec/07` §2 promises `POST /lists/refresh`, but only `SIGUSR1` refreshed lists, and on a cluster replica nothing could (replicas don't download lists, CLU-003) while its Lists page showed every list as "pending". Pi-hole users expect "Update Gravity".
 **Decision:**
 - `POST /api/v1/lists/refresh` (body `{}`, `null`, or `{"names": [...]}`; `?dryRun=true`; `Idempotency-Key`) queues the enabled lists named, or every enabled list, on the node that downloads lists, and answers 202 with `queued`, `skipped` (disabled), `alreadyRefreshing`, `node` and `note`. An unknown name is 404 with the real names in the hint. A node that doesn't download lists (role `resolver`, or no fetcher) answers 409 `lists_not_here`. A dry run queues nothing and isn't audited (AGT-002); a key replays the first answer for 24 h and a reused key with another body is 409 (AGT-003). Audited as `lists.refresh`.
@@ -1301,7 +1311,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - **Surfaces:** the Lists page **Update now** (operators; progress, failures named, "last confirmed current" from the oldest enabled list); `telltale ctl lists refresh [names] [--dry-run] [--wait] [--reason]`, where `--wait` exits non-zero after 5 minutes or when the primary is unread; MCP `refresh_lists`, an immediate audited op with no plan (`spec/13` §3.2), like `flush_cache`: it changes no configuration and costs one conditional request per unchanged list.
 **Consequences:** `SIGUSR1` still refreshes only the node that gets it. The fetcher's new lock is taken only when a download starts or ends, on a refresh request, and on a lists read; the query path is unchanged.
 
-## ADR-168 — Pi-hole's special names: iCloud Private Relay blocked by default, resolver.arpa kept local with DDR, domain-needed opt-in (Proposed)
+## ADR-904 — Pi-hole's special names: iCloud Private Relay blocked by default, resolver.arpa kept local with DDR, domain-needed opt-in (Proposed)
 **Context:** DNS-019, `spec/03` §3 step 4 (DDR promised at P1). Pi-hole users rely on three behaviours we lacked: Pi-hole answers iCloud Private Relay's names NXDOMAIN by default (Apple's documented opt-out for networks: devices then use the network's DNS, so filtering applies); it answers `resolver.arpa` locally (`designatedResolver`); and `domain-needed` keeps bare names off upstreams. RFC 9462 §6.5 says forwarders shouldn't forward `resolver.arpa`: an upstream's DDR answer names a resolver whose certificate can't cover our address.
 **Decision:**
 - **iCloud Private Relay:** `[special] block_icloud_private_relay`, default **true** (a behaviour change, for Pi-hole parity): exactly `mask.icloud.com` and `mask-h2.icloud.com` → NXDOMAIN (with SOA), all types, before local data and filtering; status `special`. A bool, like `block_firefox_canary`.
@@ -1312,7 +1322,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 **Alternatives rejected:** a string enum `icloud_private_relay = "block"|"allow"`; NXDOMAIN for `resolver.arpa` (RFC 9462 and Pi-hole use NODATA); the DDR target from the certificate's SAN (needs X.509 parsing in the policy crate); domain-needed for every type (breaks DS/NS of TLDs under DNSSEC); forwarding `resolver.arpa` when no `ddr_name` is set.
 **Consequences:** Apple devices with Private Relay on show "Private Relay is turned off for this network" until an admin flips the switch. Windows 11, iOS 16+ and macOS 13+ discover encrypted DNS by themselves once `ddr_name` and an IP-SAN certificate are in place. Behind port mappings the advertised ports are the listeners' own (a per-node `ddr_port` is a possible follow-up), and a load balancer that adds PROXY headers gets no DDR (a possible opt-in later).
 
-## ADR-167 — Secrets entered in the UI: a write-only encrypted store referenced by name, replicated to full members outside configuration versions, with files still winning (Proposed)
+## ADR-903 — Secrets entered in the UI: a write-only encrypted store referenced by name, replicated to full members outside configuration versions, with files still winning (Proposed)
 
 **Context:** On 2026-11-16 the owner asked that anything configured today through a secret file can also be entered in the UI, and that the files keep working. The owner fixed four points:
 1. A secret entered in the UI replicates to full cluster members over the mTLS cluster channel and is re-encrypted on each node. It never reaches ephemeral resolver pods.
@@ -1685,7 +1695,7 @@ Non-secret settings that exist only in files are phased with the forms that need
 5. Agents get no write scope for router or `[identify]` fields for now (admin-only, as above). Revisit after T23.8.
 6. Audit entries written before T23.1 stay as they are (the hash chain forbids rewriting); the release note warns about them.
 
-## ADR-166 — More naming sources: UniFi reservations and networks, Home Assistant through a template, and a fixed order when sources disagree (Proposed)
+## ADR-902 — More naming sources: UniFi reservations and networks, Home Assistant through a template, and a fixed order when sources disagree (Proposed)
 **Context:** T22.2, T22.3 (API-012, API-013). ADR-080 left UniFi's offline known clients undone; Home Assistant knows curated names for IoT devices (by MAC, not IP); a home has a router *and* Home Assistant naming the same address. ADR-080's lease view kept whichever router was read last (a `HashMap` walk).
 **Decision:**
 - **UniFi:** after `stat/sta`, read `rest/user` and `rest/networkconf` with the same key or session. Only known clients with `use_fixedip` and a `fixed_ip` are kept (a last address may belong to someone else by now); a connected device's current address wins over its reservation. Networks: the ones with an `ip_subnet`, not WAN or VPN; the subnet from the gateway's address and prefix; the VLAN only when enabled; the pool only when DHCP is on. Both reads are optional: refused or failed, the connected clients still name devices, and one log line says what was skipped (again only when that changes).
@@ -1695,11 +1705,11 @@ Non-secret settings that exist only in files are phased with the forms that need
 **Alternatives rejected:** a WebSocket client for Home Assistant's registry (a new dependency on the binary for one read); Home Assistant's names always winning (its integrations' default names are model names, worse than a router's alias); known UniFi clients without a reservation (stale addresses would name the wrong device in DNS, T22.1).
 **Consequences:** two more GETs per UniFi poll; one template render per Home Assistant poll (sub-second on a few thousand entities); names in the query log and DNS can now come from Home Assistant.
 
-## ADR-165 — Device names in DNS: built off the path from the names TelltaleDNS already has, after configured data, one label each (Proposed)
+## ADR-901 — Device names in DNS: built off the path from the names TelltaleDNS already has, after configured data, one label each (Proposed)
 **Context:** T22.1 (DNS-023). People want DNS kept in step with DHCP leases (dnsmasq's and Technitium's DHCP do it) but ADR-091 keeps DHCP with the router. TelltaleDNS already holds the routers' leases, Home Assistant's names, mDNS names, and named devices, by address.
 **Decision:**
 - **Off by default.** `[local] device_domain` turns it on (`home.arpa`, RFC 8375, in the docs); `local` is refused (RFC 6762). `device_ttl` 60 s (names follow DHCP). mDNS names only with `device_mdns` and the listener on.
-- **Sources and their order for an address:** a named device matched by exactly that address or by the lease's MAC (a CIDR client names a set of devices, so never) → a router's or Home Assistant's name (ADR-166's order) → an mDNS name; this node's routers first, then the peers' (CLU-002).
+- **Sources and their order for an address:** a named device matched by exactly that address or by the lease's MAC (a CIDR client names a set of devices, so never) → a router's or Home Assistant's name (ADR-902's order) → an mDNS name; this node's routers first, then the peers' (CLU-002).
 - **One label per name:** lowercase ASCII letters, digits, and hyphens, at most 63 bytes; apostrophes dropped, everything else separates words. No punycode: a name with no ASCII letters or digits is skipped.
 - **Reserved labels:** `wpad` and `isatap` (how Windows finds a proxy and an IPv6 tunnel: a device that names itself so could take over other machines' traffic; dnsmasq and Windows DNS's global query block list refuse them) and `localhost` are never device names.
 - **Collisions:** one label, one address: the better source, then the lower address, keeps it; the others get neither A nor PTR (half-registered names would point the PTR somewhere the A doesn't). Counted in the log line for each change.

@@ -367,7 +367,7 @@ INSERT INTO client_by_group VALUES (1,1);"#,
     );
 }
 
-/// REQ: DNS-019, API-007 (ADR-168) — Pi-hole's domain-needed, iCloud Private Relay, and
+/// REQ: DNS-019, API-007 (ADR-904) — Pi-hole's domain-needed, iCloud Private Relay, and
 /// Firefox canary settings carry over (v6 `pihole.toml`, v5 `setupVars.conf` and
 /// `pihole-FTL.conf`); left at Pi-hole's defaults, no `[special]` section is written.
 #[test]

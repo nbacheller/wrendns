@@ -1,4 +1,4 @@
-//! Special-use names (`spec/03` §3 step 4; RFC 6761, RFC 6303, RFC 9462; ADR-014, ADR-168).
+//! Special-use names (`spec/03` §3 step 4; RFC 6761, RFC 6303, RFC 9462; ADR-014, ADR-904).
 
 use std::net::IpAddr;
 use std::sync::OnceLock;
@@ -17,13 +17,13 @@ pub enum Special {
     Localhost,
     /// Reverse lookup for a private address: NXDOMAIN unless local data or a route covers it.
     PrivatePtr,
-    /// REQ: DNS-019 (ADR-168) — iCloud Private Relay's names: NXDOMAIN, so Apple devices
+    /// REQ: DNS-019 (ADR-904) — iCloud Private Relay's names: NXDOMAIN, so Apple devices
     /// turn Private Relay off on this network.
     PrivateRelay,
-    /// REQ: DNS-019 (ADR-168) — `resolver.arpa` (RFC 9462): our DDR records for
+    /// REQ: DNS-019 (ADR-904) — `resolver.arpa` (RFC 9462): our DDR records for
     /// `_dns.resolver.arpa` SVCB, else no data. Never forwarded.
     ResolverArpa,
-    /// REQ: DNS-019 (ADR-168) — a single-label name (`domain-needed`): NXDOMAIN unless local
+    /// REQ: DNS-019 (ADR-904) — a single-label name (`domain-needed`): NXDOMAIN unless local
     /// data or a route covers it.
     SingleLabel,
 }
@@ -82,13 +82,13 @@ pub fn classify(q: &Query<'_>, cfg: &SpecialConfig) -> Option<Special> {
     let (top, labels) = top_label(name.as_wire());
     let hit = match top {
         b"net" if cfg.block_firefox_canary && *name == n.canary => Some(Special::Nxdomain),
-        // REQ: DNS-019 (ADR-168) — iCloud Private Relay, the two names Apple documents.
+        // REQ: DNS-019 (ADR-904) — iCloud Private Relay, the two names Apple documents.
         b"com" if cfg.block_icloud_private_relay && (*name == n.relay || *name == n.relay_h2) => {
             Some(Special::PrivateRelay)
         }
         b"invalid" => Some(Special::Nxdomain),
         b"localhost" if cfg.localhost => Some(Special::Localhost),
-        // REQ: DNS-019 (ADR-168) — RFC 9462 §6.5: resolver.arpa stays here.
+        // REQ: DNS-019 (ADR-904) — RFC 9462 §6.5: resolver.arpa stays here.
         b"arpa" if name.is_subdomain_of(&n.resolver_arpa) => Some(Special::ResolverArpa),
         b"arpa" if cfg.private_ptr_nxdomain && is_private_reverse(name, n) => {
             Some(Special::PrivatePtr)
@@ -98,19 +98,19 @@ pub fn classify(q: &Query<'_>, cfg: &SpecialConfig) -> Option<Special> {
     if hit.is_some() {
         return hit;
     }
-    // REQ: DNS-019 (ADR-168) — domain-needed: host lookups of a bare name.
+    // REQ: DNS-019 (ADR-904) — domain-needed: host lookups of a bare name.
     (cfg.single_label_nxdomain
         && labels == 1
         && matches!(q.qtype, rtype::A | rtype::AAAA | rtype::HTTPS))
     .then_some(Special::SingleLabel)
 }
 
-/// REQ: DNS-019 (ADR-168) — true for the DDR question itself: `_dns.resolver.arpa` SVCB.
+/// REQ: DNS-019 (ADR-904) — true for the DDR question itself: `_dns.resolver.arpa` SVCB.
 pub fn is_ddr_query(q: &Query<'_>) -> bool {
     q.qtype == rtype::SVCB && q.qname == names().ddr
 }
 
-/// REQ: DNS-019 (ADR-168) — Discovery of Designated Resolvers (RFC 9462, RFC 9461): one
+/// REQ: DNS-019 (ADR-904) — Discovery of Designated Resolvers (RFC 9462, RFC 9461): one
 /// SVCB record (RDATA) per DoT, DoH, DoH3, and DoQ listener of this node, in listener order
 /// (priority 1, 2, ...), targeting `[special] ddr_name`. Empty without a name or encrypted
 /// listeners. Built off the query path, when the policy is.
@@ -239,7 +239,7 @@ mod tests {
         classify(&q, cfg)
     }
 
-    /// REQ: DNS-019 (ADR-168) — iCloud Private Relay's two names are NXDOMAIN by default, and
+    /// REQ: DNS-019 (ADR-904) — iCloud Private Relay's two names are NXDOMAIN by default, and
     /// resolve normally with the switch off; other icloud.com names are never touched.
     #[test]
     fn dns_019_icloud_private_relay() {
@@ -271,7 +271,7 @@ mod tests {
         assert_eq!(classify_with("mask.icloud.com", rtype::A, 1, &off), None);
     }
 
-    /// REQ: DNS-019 (ADR-168) — every name in resolver.arpa stays local (RFC 9462 §6.5),
+    /// REQ: DNS-019 (ADR-904) — every name in resolver.arpa stays local (RFC 9462 §6.5),
     /// whatever the other switches say; only `_dns.resolver.arpa` SVCB is the DDR question.
     #[test]
     fn dns_019_resolver_arpa_stays_local() {
@@ -299,7 +299,7 @@ mod tests {
         assert!(!ask("x._dns.resolver.arpa", rtype::SVCB));
     }
 
-    /// REQ: DNS-019 (ADR-168) — domain-needed: off by default; on, host lookups (A, AAAA,
+    /// REQ: DNS-019 (ADR-904) — domain-needed: off by default; on, host lookups (A, AAAA,
     /// HTTPS) of a bare name, never names with a dot, the root, or a TLD's DS or NS.
     #[test]
     fn dns_019_single_label_names() {
@@ -339,7 +339,7 @@ mod tests {
             .config
     }
 
-    /// REQ: DNS-019 (ADR-168) — DDR records: one SVCB per reachable encrypted listener, in
+    /// REQ: DNS-019 (ADR-904) — DDR records: one SVCB per reachable encrypted listener, in
     /// order, with its ALPN, port, a hint for a specific address, and the DoH path template.
     #[test]
     fn dns_019_ddr_records_encode_the_listeners() {

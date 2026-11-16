@@ -66,7 +66,7 @@ pub(crate) struct Policy {
     pub(crate) limiter: Option<RateLimiter>,
     pub(crate) limit_action: RateLimitAction,
     pub(crate) special: SpecialConfig,
-    /// REQ: DNS-019 (ADR-168) — the DDR answer for `_dns.resolver.arpa` SVCB (RFC 9462): one
+    /// REQ: DNS-019 (ADR-904) — the DDR answer for `_dns.resolver.arpa` SVCB (RFC 9462): one
     /// SVCB RDATA per encrypted listener; empty without `[special] ddr_name`.
     pub(crate) ddr: Vec<Box<[u8]>>,
     /// Local records (DNS-010), answered before cache and upstreams.
@@ -1670,7 +1670,7 @@ impl Pipeline {
         let special = telltale_policy::classify(&q, &st.policy.special);
         match special {
             Some(Special::Refused) => Err(self.simple(&q, out, rcode::REFUSED, None, meta)),
-            // REQ: DNS-019 (ADR-168) — iCloud Private Relay's names, like the Firefox canary.
+            // REQ: DNS-019 (ADR-904) — iCloud Private Relay's names, like the Firefox canary.
             Some(Special::Nxdomain | Special::PrivateRelay) => {
                 Err(self.simple(&q, out, rcode::NXDOMAIN, None, meta))
             }
@@ -1680,7 +1680,7 @@ impl Pipeline {
         }
     }
 
-    /// REQ: DNS-019 (ADR-168) — `resolver.arpa` (RFC 9462), answered here and never forwarded:
+    /// REQ: DNS-019 (ADR-904) — `resolver.arpa` (RFC 9462), answered here and never forwarded:
     /// `_dns.resolver.arpa` SVCB gets this node's DDR records, anything else no data (with an
     /// SOA, so clients cache it). The records are built with the policy; no allocation here.
     fn resolver_arpa(
@@ -1727,7 +1727,7 @@ impl Pipeline {
         // REQ: FLT-005, UPS-007 — routes can match the client's groups.
         let selection = st.router.select(&question, groups);
         // Private reverse lookups stay local unless a route explicitly forwards them (RFC 6303);
-        // REQ: DNS-019 (ADR-168) — so do single-label names with domain-needed on.
+        // REQ: DNS-019 (ADR-904) — so do single-label names with domain-needed on.
         if matches!(special, Some(Special::PrivatePtr | Special::SingleLabel))
             && !selection.is_some_and(|s| s.routed)
         {
@@ -5260,7 +5260,7 @@ mod policy_tests {
             ask(&p, peer, "4.3.30.10.in-addr.arpa", rtype::PTR, 1),
             Some((rcode::NXDOMAIN, 0))
         );
-        // REQ: DNS-019 (ADR-168) — iCloud Private Relay and resolver.arpa, by default.
+        // REQ: DNS-019 (ADR-904) — iCloud Private Relay and resolver.arpa, by default.
         assert_eq!(
             ask(&p, peer, "mask.icloud.com", rtype::A, 1),
             Some((rcode::NXDOMAIN, 0))
@@ -5299,7 +5299,7 @@ mod policy_tests {
             .config
     }
 
-    /// REQ: DNS-019 (ADR-168) — DDR: `_dns.resolver.arpa` SVCB lists the encrypted listeners
+    /// REQ: DNS-019 (ADR-904) — DDR: `_dns.resolver.arpa` SVCB lists the encrypted listeners
     /// (RFC 9462); its other types and names get no data, authoritatively, with an SOA.
     #[test]
     fn dns_019_ddr_answers_advertise_encrypted_listeners() {
@@ -5345,7 +5345,7 @@ mod policy_tests {
         }
     }
 
-    /// REQ: DNS-019 (ADR-168) — domain-needed: bare names get NXDOMAIN instead of going to
+    /// REQ: DNS-019 (ADR-904) — domain-needed: bare names get NXDOMAIN instead of going to
     /// an upstream, unless a `[[route]]` matches them; names with a dot still go on.
     #[test]
     fn dns_019_single_label_names_stay_local() {

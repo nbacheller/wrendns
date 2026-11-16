@@ -693,11 +693,11 @@ Two tasks from the design session of 2026-10-18, built in order T15.1 → T15.2 
 
 What a home running a Pi-hole pair behind a keepalived VIP needs to switch to TelltaleDNS and keep running it: Pi-hole's special names, "Update Gravity", the importer's gaps, and the failover pieces. The UniFi integration (M22) is the edge Pi-hole never had. Benchmarks from Docker Desktop don't count for the 5% rule (every UDP `bind()` there takes about 10 ms; `bench/README.md`), so each hot-path task reruns `make bench-smoke` on the homelab before release.
 
-- [x] **T24.1 Pi-hole's special names.** *(DNS-019, DNS-002, API-007; ADR-168)* `[special] block_icloud_private_relay` (on), `single_label_nxdomain` (off), `ddr_name` (RFC 9462 SVCB for `_dns.resolver.arpa`, one per reachable DoT/DoH/DoH3/DoQ listener); `resolver.arpa` never forwarded; a TLD-dispatch classifier without allocation; explain, simulate and the query log (`special`); the Pi-hole importer maps the matching v5 and v6 settings.
+- [x] **T24.1 Pi-hole's special names.** *(DNS-019, DNS-002, API-007; ADR-904)* `[special] block_icloud_private_relay` (on), `single_label_nxdomain` (off), `ddr_name` (RFC 9462 SVCB for `_dns.resolver.arpa`, one per reachable DoT/DoH/DoH3/DoQ listener); `resolver.arpa` never forwarded; a TLD-dispatch classifier without allocation; explain, simulate and the query log (`special`); the Pi-hole importer maps the matching v5 and v6 settings.
   - *AC:* (1) `mask.icloud.com`, `mask-h2.icloud.com` → NXDOMAIN before local data and the filter; (2) `resolver.arpa` is never forwarded, even with `private_ptr_nxdomain` off; (3) `_dns.resolver.arpa` SVCB lists the encrypted listeners, without loopback or PROXY-protocol ones, byte-exact; (4) bare names → NXDOMAIN only when enabled, and local data or a route still answers them; (5) the importer maps the settings; (6) explain and simulate show `special`; (7) `nfr_002` passes.
   - *Done 2026-11-16:* `dns_019_icloud_private_relay`, `dns_019_resolver_arpa_stays_local`, `dns_019_single_label_names`, `dns_019_ddr_records_encode_the_listeners`, `dns_019_ddr_answers_advertise_encrypted_listeners`, `dns_019_single_label_names_stay_local`, `dns_019_special_names_in_pipeline`, `dns_019_special_names_are_explained`, `dns_019_pihole_special_names`; docs/running.md (Special names), site standards (RFC 9462 supported), guide-encrypted.
   - *Open:* `bench-smoke` on quiet hardware (Docker Desktop gave qps +7.9% with p99 noise of 2–3×, so no verdict); nothing checks that the certificate covers `ddr_name`.
-- [x] **T24.2 Update lists now.** *(FLT-004, CLU-003, AGT-001..006, API-005; ADR-169)* `POST /api/v1/lists/refresh`, `Fetcher::request_refresh_of`/`is_refreshing`, `refreshing` and `lastSuccessUnixSeconds` on `GET /lists`, replica forwarding and the primary's list state on replicas, MCP `refresh_lists`, `telltale ctl lists refresh`, the Lists page **Update now**, help topic `list-update-now`.
+- [x] **T24.2 Update lists now.** *(FLT-004, CLU-003, AGT-001..006, API-005; ADR-905)* `POST /api/v1/lists/refresh`, `Fetcher::request_refresh_of`/`is_refreshing`, `refreshing` and `lastSuccessUnixSeconds` on `GET /lists`, replica forwarding and the primary's list state on replicas, MCP `refresh_lists`, `telltale ctl lists refresh`, the Lists page **Update now**, help topic `list-update-now`.
   - *AC:* (1) 202 with the lists queued: every enabled list by default, the named ones otherwise, disabled ones skipped, an unknown name 404; (2) a dry run queues nothing and isn't audited; an Idempotency-Key replays, and a reused key for another body is 409; (3) operator role; agents need `config:write:lists` and a reason; audited as `lists.refresh`; (4) `refreshing` holds from the request to the end of the download, and a request during a download runs one more round; (5) a replica forwards to the primary, which queues and audits (`<user> via <site>`, with the reason), and a replica's list view is the primary's with its own hits, naming an unanswering primary in `missingNodes`; (6) the UI button is for operators, follows the downloads and names the lists that failed.
   - *Done 2026-11-16:* `flt_004_refresh_now_of_some_lists`, `flt_004_refresh_asked_during_a_download_runs_once_more`, `flt_004_refresh_plans_the_lists_named`, `flt_004_refresh_names_are_checked`, `flt_004_refresh_answer_queues_unless_dry_run`, `flt_004_list_refresh_needs_the_lists_scope`, `flt_004_update_lists_now_over_http`, `flt_004_list_refresh_round_trips`, `flt_004_primary_queues_and_audits_a_forwarded_refresh`, `flt_004_replica_lists_merge_the_primarys_state_with_own_hits`, `flt_004_primary_answers_the_lists_read`, `flt_004_update_lists_now_on_the_node_that_downloads_them`, `flt_004_ctl_refresh_text`; OpenAPI, the MCP snapshot and the UI types regenerated.
   - *Open:* the e2e `flt_004 update lists now` (written; the dev container has no browser libraries); a live two-node forwarding test; per-row Update buttons.
@@ -714,14 +714,14 @@ What a home running a Pi-hole pair behind a keepalived VIP needs to switch to Te
 
 ## M23 — Secrets and integrations in the UI (owner request 2026-11-16)
 
-Anything set up through a secret file can also be entered in the UI, and the files keep working and win. Values are write-only, encrypted per node and replicated to full members (ADR-167). Nothing changes on the query path, and no crate is added. Every task records its image delta (`deploy/image/size.py --oci`) against a milestone total of at most 0.10 MiB.
+Anything set up through a secret file can also be entered in the UI, and the files keep working and win. Values are write-only, encrypted per node and replicated to full members (ADR-903). Nothing changes on the query path, and no crate is added. Every task records its image delta (`deploy/image/size.py --oci`) against a milestone total of at most 0.10 MiB.
 
 Order:
 1. T23.1 ships first, with no behavior change.
 2. T23.2 ships right away, with T23.1 (owner decision 2026-11-16).
 3. T23.3–T23.5 come before any UI task.
 
-- [ ] **T23.1 Close the credential leaks in read surfaces.** *(API-014, OPS-011, AGT-010; ADR-167 §4)*
+- [ ] **T23.1 Close the credential leaks in read surfaces.** *(API-014, OPS-011, AGT-010; ADR-903 §4)*
   - **Credential table.** `telltale-config::credentials::PATHS`, checked for completeness against `classify.rs`.
   - **Where it is applied:**
     - `config_entries`, again on a replica after decoding (`api_backend.rs:2873-2960`, `federated.rs:2439-2450`), with `ConfigEntry.redacted`;
@@ -750,7 +750,7 @@ Order:
     11. `api_014_idempotency_purge_leaves_no_residue`: the file and WAL hold no planted value after migration 10.
     12. The OpenAPI document and `api-types.ts` are regenerated, clippy is clean, and the size delta is recorded.
 
-- [ ] **T23.2 Who may point a credential somewhere.** *(API-014, CLU-010; ADR-167 §4)* This is a behavior change. The owner chose to ship it right away, with T23.1 (2026-11-16).
+- [ ] **T23.2 Who may point a credential somewhere.** *(API-014, CLU-010; ADR-903 §4)* This is a behavior change. The owner chose to ship it right away, with T23.1 (2026-11-16).
   - **Admin-only:** `*_file` and `*_ref` changes, destination changes on any entry holding a credential, and `exec://`/`unix://` on writes and checks.
   - **Paths:** canonicalized, the denied prefixes and key paths, `[node] secret_file_dirs` for `*_file`, and existing out-of-bounds API paths reported in `credential_issues`.
   - **Audit and alerting:** `credential.redirect` and the alert event.
@@ -767,7 +767,7 @@ Order:
     7. The Playwright Alerts page shows operator read-only fields.
     8. The size delta is recorded.
 
-- [ ] **T23.3 Encrypted secret store and `*_ref` fields.** *(OPS-014, NFR-005; ADR-167 §2–3)*
+- [ ] **T23.3 Encrypted secret store and `*_ref` fields.** *(OPS-014, NFR-005; ADR-903 §2–3)*
   - **Storage.** Migration 11 creates the `secrets` table with stamps and tombstones. The `ring` ChaCha20-Poly1305 associated data includes `kind` and the stamp.
   - **Values.** `SecretValue` and `Zeroizing`, with ciphertext cached in memory. `Credential::resolve` replaces the six read sites. Readable checks open without reading.
   - **Config fields.** The `*_ref` schema fields, serialized only when set, with validation.
@@ -795,7 +795,7 @@ Order:
     15. `cargo deny check` passes, and `cargo tree -d` shows no new crate and no duplicate version.
     16. The size delta is recorded.
 
-- [ ] **T23.4 Write-only secrets API, `ctl`, and MCP status.** *(API-015, AGT-001–005, AGT-009, API-008; ADR-167 §4–5)*
+- [ ] **T23.4 Write-only secrets API, `ctl`, and MCP status.** *(API-015, AGT-001–005, AGT-009, API-008; ADR-903 §4–5)*
   - **Routes.** `GET /api/v1/secrets[/{name}]`, proxied to the primary with `stale` fallback. `PUT`/`DELETE` are admin-only (agents 403), with dry run, keyed `Idempotency-Key`, `If-Match` on the head, `X-Telltale-Reason`, `no-store`, and the HTTPS-or-loopback rule (`[api] allow_secrets_over_http`).
   - **Rules.** Lease and fence checked, 409 `secret_in_use` across nodes with `?force`, 409 `set_by_file`. GitOps and pins allowed; emergency primary 409.
   - **Replicas** forward through the dedicated RPC kind `secret.put`/`secret.delete`.
@@ -822,7 +822,7 @@ Order:
     16. `api_001_committed_openapi` and `agt_006_committed` are regenerated.
     17. The size delta is recorded.
 
-- [ ] **T23.5 Replicate secrets to full members.** *(CLU-015, CLU-003, CLU-004, CLU-005, CLU-010; ADR-167 §6)*
+- [ ] **T23.5 Replicate secrets to full members.** *(CLU-015, CLU-003, CLU-004, CLU-005, CLU-010; ADR-903 §6)*
   - **Heartbeats.** `Heartbeat` gains `secrets_head`, `secrets_applied`, `secrets_unreadable`, `credential_issues` and `secret_refs`.
   - **RPCs.** `secrets.fetch` (the registry `!ephemeral && !witness` rule, primary of the highest epoch only, head and digest check, `held` rows, `secrets_unavailable`, paged under 900 KiB) and the reverse heal.
   - **Applying.** Upsert by stamp, tombstones, orphans under Conflicts, origin rules at init and join, purge on removal or leave, and fetch backoff.
@@ -848,7 +848,7 @@ Order:
     17. A two-process e2e: set on a replica, forwarded, then replicated back.
     18. The size delta is recorded.
 
-- [ ] **T23.6 Secrets page, `SecretField`, and alert credentials in the UI.** *(API-015, API-011, OBS-010; ADR-167 §9)*
+- [ ] **T23.6 Secrets page, `SecretField`, and alert credentials in the UI.** *(API-015, API-011, OBS-010; ADR-903 §9)*
   - **Page.** Settings → "Integrations & secrets".
   - **Component.** `SecretField.svelte`, with every state from §9, the autocomplete and password-manager attributes, and no show toggle.
   - **Alerts.** The path inputs (`Alerts.svelte:36-39`) become `SecretField` writing `token_ref`/`password_ref`. File-set values are shown read-only.
@@ -864,7 +864,7 @@ Order:
     8. `docs/running.md`, `site/guide-monitoring.html` and `site/guide-settings.html` are updated.
     9. The size delta is recorded.
 
-- [ ] **T23.7 Routers as a managed kind, with hot reload.** *(API-016, API-012, API-013, API-002; ADR-167 §2, §7)*
+- [ ] **T23.7 Routers as a managed kind, with hot reload.** *(API-016, API-012, API-013, API-002; ADR-903 §2, §7)*
   - **Kind.** `ManagedKind::Router` (admin-only, files win under ADR-040, `keep_in_git` with references only, forward kind).
   - **Routes.** `PUT`/`DELETE /api/v1/routers/{name}`, `GET /api/v1/routers` (entries plus status: last poll, result, devices, networks, credential source, polling node), `config_entries` kind `router`, MCP `list_routers`.
   - **Reload.** `routers::run` reads the live list and recomputes the interval each round. Polling follows §1 (stored credentials on the primary, explicit ephemeral skip). Changes trigger a debounced poll, and unchanged routers keep their state.
@@ -886,11 +886,11 @@ Order:
     12. The OpenAPI document and MCP snapshot are regenerated.
     13. The size delta is recorded.
 
-- [ ] **T23.8 Routers page.** *(API-016, API-011, API-010; ADR-120, ADR-167 §9)*
+- [ ] **T23.8 Routers page.** *(API-016, API-011, API-010; ADR-120, ADR-903 §9)*
   - **Form per kind.**
     - UniFi: URL, site, key or user and password, `tls_server_name`, certificate, interval.
     - OPNsense: key and secret.
-    - Home Assistant: token, with the administrator note from ADR-166.
+    - Home Assistant: token, with the administrator note from ADR-902.
   - **Check routes**, both admin-only, both on the agent forbidden list, no MCP tool:
     - `POST /api/v1/checks/router` makes one read-only poll. It resolves a `_ref` only when the body's URL and TLS fields equal the stored entry's, unless the caller is admin, and error text follows AGT-009.
     - `POST /api/v1/checks/router-certificate {url}` returns the subject names, fingerprint and PEM, plus a suggested `tls_server_name`.
@@ -905,7 +905,7 @@ Order:
     7. `site/guide-devices.html`, `site/guide-kubernetes.html` and `Clients.svelte:258-263` are updated.
     8. The bundle stays under its cap, and the size delta is recorded.
 
-- [ ] **T23.9 Backups with passphrase-encrypted secrets.** *(API-007, API-015; ADR-167 §8, amends ADR-063)*
+- [ ] **T23.9 Backups with passphrase-encrypted secrets.** *(API-007, API-015; ADR-903 §8, amends ADR-063)*
   - **Format.** `data/secrets.enc`; Argon2id (m = 19 MiB, t = 2, p = 1, recorded, bounded on restore to m ≤ 256 MiB and t ≤ 10, one at a time); ChaCha20-Poly1305; the manifest's `secrets {...}`; `VERSION` 2 only with secrets; the head stripped.
   - **CLI.**
     - `create --secrets-passphrase-file|--secrets-passphrase-stdin|prompt`, with the omitted notice and the inline-credential warning covering files and `managed` rows.
@@ -931,7 +931,7 @@ Order:
     15. spec/08 §8, `docs/running.md`, `docs/secrets.md` and `site/guide-settings.html` are updated.
     16. The size delta is recorded.
 
-- [ ] **T23.10 Node-managed entries, and OIDC providers in the UI applied without a restart.** *(API-016, API-004, CLU-010; ADR-167 §6–7, corrects ADR-045's implementation note)*
+- [ ] **T23.10 Node-managed entries, and OIDC providers in the UI applied without a restart.** *(API-016, API-004, CLU-010; ADR-903 §6–7, corrects ADR-045's implementation note)*
   - **Manifest.** `ClusterManifest.node_managed` (optional `BlobRef`, references only). It is persisted on every member, validated and merged separately, inherited and seeded at promotion, carried unchanged under a Git source.
   - **Kind.** `oidc_provider` (admin-only): id, name, issuer, `client_id`, `client_secret_ref`, scopes, claims, role rules. File ids win. `public_url` stays node-local, and a node without it shows the provider as inactive.
   - **Auth.** `Auth.oidc` becomes `ArcSwapOption`. Flows and the discovery cache move to `Auth`, and rebuilds are single-flight with a generation counter.
@@ -952,7 +952,7 @@ Order:
     14. `site/guide-users.html`, Helm `values.yaml` notes and spec/08 §6 are updated.
     15. The size delta is recorded.
 
-- [ ] **T23.11 Sink and OTLP credentials, and sinks reloaded without a restart.** *(API-016, OBS-010, OBS-006, NFR-007; ADR-167 §7)*
+- [ ] **T23.11 Sink and OTLP credentials, and sinks reloaded without a restart.** *(API-016, OBS-010, OBS-006, NFR-007; ADR-903 §7)*
   - **Config.** `telemetry.sink[].token_ref` and `telemetry.otlp.header_refs`, plus the admin-only `sink` kind through `node_managed`.
   - **Reload.** The drainer-owned `EventSinks` takes a new `Vec<Out>` by `try_recv` once per batch (`ring.rs:301`, `tail.rs:115-146`, `sinks.rs:66-72`). `DROPS` becomes swappable. Spill files are keyed by name and URL hash, a removed sink's thread is joined (2 s) and its spill deleted.
   - **OTLP** headers are resolved per batch.
@@ -969,7 +969,7 @@ Order:
     9. `docs/running.md` and `site/guide-monitoring.html` are updated.
     10. The size delta is recorded.
 
-- [ ] **T23.12 Git credentials and webhook secret from the UI.** *(API-016, CLU-003; ADR-049, ADR-167)*
+- [ ] **T23.12 Git credentials and webhook secret from the UI.** *(API-016, CLU-003; ADR-049, ADR-903)*
   - **Config.** `[cluster.git] credentials_ref` and `webhook_secret_ref`, node-local in the file or Helm values. The values are stored and replicated. `[cluster.git]` itself stays file-only.
   - **UI.** The Cluster page's Git card shows credential status with a `SecretField`.
   - *AC:*
@@ -998,31 +998,31 @@ Order:
     - If the API port is published on 127.0.0.1 only, the bundle sets `allow_secrets_over_http`. Otherwise it enables `[api] tls = { self_signed = true }`.
   - **Helm.** The `secretsKey` README.
   - **systemd.** `install.sh` creates the key owned by `telltale`.
-  - **Spec.** Every amendment in ADR-167 §10.
+  - **Spec.** Every amendment in ADR-903 §10.
   - *AC:*
     1. `size.py` shows a milestone growth of at most 0.10 MiB per architecture, with the per-task deltas summed and recorded.
     2. `cargo deny check` passes with no new crate.
     3. `smoke.sh` passes with a read-only root filesystem and the key in the volume.
     4. Helm `ct` lint and template tests pass with persistence on and off.
     5. Site link and Lighthouse checks pass.
-    6. Every ADR-167 amendment is written into the ADRs and specs it names, including spec/13 §3's admin-only kinds.
+    6. Every ADR-903 amendment is written into the ADRs and specs it names, including spec/13 §3's admin-only kinds.
 
 ---
 
 ## M22 — Network inventory and home integrations (fork owner request 2026-11-16)
 In the fork `nbacheller/telltaledns`: the IP and DNS side of a small network, without a DHCP server (ADR-091 stands). The routers and Home Assistant already know the devices; TelltaleDNS names them in DNS, shows the networks they sit in, and stays read-only toward both. Off by default; nothing new on the query path but one branch (and, when on, one lock-free load). A Home Assistant custom integration that reads this API lives outside the binary (`integrations/home-assistant/` in the fork's bundle), so it never touches the DNS path.
 
-- [x] **T22.1 Device names in DNS.** *(DNS-023, DNS-010, API-010, CLU-002; ADR-165)* `[local] device_domain`, `device_ttl` (60), `device_mdns`; `device_label`; the device-name table (`device_dns.rs`, rebuilt every 10 s off the query path, follows reloads); the pipeline answers it after local records and a zone's own records, before a zone's NXDOMAIN; explain; `dnsName` on leases.
+- [x] **T22.1 Device names in DNS.** *(DNS-023, DNS-010, API-010, CLU-002; ADR-901)* `[local] device_domain`, `device_ttl` (60), `device_mdns`; `device_label`; the device-name table (`device_dns.rs`, rebuilt every 10 s off the query path, follows reloads); the pipeline answers it after local records and a zone's own records, before a zone's NXDOMAIN; explain; `dnsName` on leases.
   - *AC:* (1) a router's, Home Assistant's, or named device's name answers A and PTR, authoritatively; (2) a `[[record]]` and a zone's own record for the same name win; (3) a device name inside a zone answers, other names in the zone are still NXDOMAIN; (4) off, the table is ignored; (5) two devices with one label: the named device, then router, then mDNS, then the lowest address keeps it; a CIDR client's name never becomes a device name; (6) `local` is refused as the domain; (7) `wpad`, `isatap`, and `localhost` are never device names.
   - *Done 2026-11-16:* `telltale_policy::{device_label, LocalData::from_device_names}`, `ClientTable::{by_exact_ip, by_exact_mac, exact_ips}`, `crates/telltale/src/device_dns.rs`, `Pipeline::device_names`, `Policy::device_dns`, the `local_answer`/`zone_answer` order, `answered_early` (explain; simulation passes none: device names follow the routers, not the simulated configuration). Tests: `dns_023_*` (label, table, settings, names from every source, the pipeline order), config validation; `deploy/routers-e2e.sh` asks real DNS for three device names and a PTR.
   - *Open:* IPv6 (the routers' leases are IPv4; T24.8); `bench-smoke` on quiet hardware (T24.3 has Docker Desktop numbers, which can't give a verdict).
-- [x] **T22.2 UniFi reservations and networks.** *(API-010, API-013; ADR-166)* Known clients with a fixed IP (`rest/user`: offline reserved devices keep their name; known clients without one are left out), the networks (`rest/networkconf`: subnet from the gateway's address, VLAN when enabled, DHCP pool when on, domain; no WAN or VPN); both optional reads, reported once when they don't work; `GET /api/v1/networks`; MCP `list_networks`.
+- [x] **T22.2 UniFi reservations and networks.** *(API-010, API-013; ADR-902)* Known clients with a fixed IP (`rest/user`: offline reserved devices keep their name; known clients without one are left out), the networks (`rest/networkconf`: subnet from the gateway's address, VLAN when enabled, DHCP pool when on, domain; no WAN or VPN); both optional reads, reported once when they don't work; `GET /api/v1/networks`; MCP `list_networks`.
   - *AC:* a connected device's address wins over its reservation; a network lists its group, size, devices, share used, and devices outside the pool; group networks no router reported are listed too; agents with `config:read` read networks and leases.
   - *Done 2026-11-16:* `unifi_reserved`, `unifi_merge`, `unifi_networks`, `Network`, `Pipeline::router_networks`, `NetworkInfo`, the backend's `networks`, the agent scope, the OpenAPI and MCP catalogs. Tests: `t22_2_unifi_reservations`, `api_013_unifi_networks`; e2e: the networks API against a fake console.
   - *Open:* OPNsense networks (its interfaces API); the networks on the Groups page and a "make a group from this network" action (the T3.14 deferral "router VLAN import").
-- [x] **T22.3 Home Assistant as a naming source.** *(API-012; ADR-166)* `type = "home_assistant"` (a token file only), the registry template, MACs matched to addresses from the routers' answers, else Home Assistant's trackers; rank-ordered leases (a name given in Home Assistant, then routers in configuration order, then an integration's name); `router` on leases.
+- [x] **T22.3 Home Assistant as a naming source.** *(API-012; ADR-902)* `type = "home_assistant"` (a token file only), the registry template, MACs matched to addresses from the routers' answers, else Home Assistant's trackers; rank-ordered leases (a name given in Home Assistant, then routers in configuration order, then an integration's name); `router` on leases.
   - *AC:* a curated name beats a router's host name; an integration's default name doesn't; a device whose MAC has no address anywhere is skipped; a token error says the token is wrong or not an administrator's.
-  - *Done 2026-11-16:* `HA_TEMPLATE`, `ha_devices`, `ha_seen`, `rebuild` by rank; config validation; tests `api_012_*`, `adr_166_lease_precedence`; e2e with a fake Home Assistant. The template was rendered by a real Home Assistant core in the companion integration's tests.
+  - *Done 2026-11-16:* `HA_TEMPLATE`, `ha_devices`, `ha_seen`, `rebuild` by rank; config validation; tests `api_012_*`, `adr_902_lease_precedence`; e2e with a fake Home Assistant. The template was rendered by a real Home Assistant core in the companion integration's tests.
   - *Open:* areas (Home Assistant's rooms) as group suggestions; the neighbor table as a MAC → address source; reading the registry over Home Assistant's WebSocket API instead of a template, if an administrator token is a problem.
 - [x] **T22.4 Home Assistant integration (companion, outside the binary).** *(API-002, AGT-004, AGT-009, OBS-013)* `integrations/home-assistant/custom_components/telltale`: a config flow (address and API token, reauth), sensors (24-hour queries, blocked, blocked share, cache hits, active devices, upstream p90, health, open anomalies, known devices, networks, version), a problem binary sensor, blocking switches for everyone and per group (off = pause for the configured minutes; the pause API's answer updates them at once), actions (pause, resume, quarantine, release, acknowledge), and a `telltale_anomaly` event per new, unmuted finding. Every change sends `X-Telltale-Reason`; a missing scope or an older build disables only that feature.
   - *Done 2026-11-16:* 10 tests (`pytest-homeassistant-custom-component`, Home Assistant 2026.2): against the real debug binary (config flow, entities, pausing a group, the audit reason, quarantine answering a blocked name and release deleting the entry), with mocks (anomaly events once, muted skipped, an upstream build's 403/404, reauth), and the registry template through Home Assistant's real `/api/template` (needs an administrator) plus a TelltaleDNS process reading a Home Assistant test server and answering `porch-light.home.arpa`. CI: `.github/workflows/home-assistant.yml`.

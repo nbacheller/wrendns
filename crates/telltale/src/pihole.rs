@@ -295,9 +295,9 @@ struct Settings {
     rev_servers: Vec<String>,
     dnssec: bool,
     rate_limit: Option<(u32, u32)>,
-    /// REQ: DNS-019 (ADR-168) — `domain-needed`: never forward bare names.
+    /// REQ: DNS-019 (ADR-904) — `domain-needed`: never forward bare names.
     domain_needed: bool,
-    /// REQ: DNS-019 (ADR-168) — iCloud Private Relay and Firefox canary handling, when set.
+    /// REQ: DNS-019 (ADR-904) — iCloud Private Relay and Firefox canary handling, when set.
     icloud_relay: Option<bool>,
     mozilla_canary: Option<bool>,
     blocking_mode: Option<String>,
@@ -1242,7 +1242,7 @@ impl<'a> Builder<'a> {
                 );
             }
         }
-        // REQ: DNS-019 (ADR-168) — special names, only where Pi-hole differs from our defaults
+        // REQ: DNS-019 (ADR-904) — special names, only where Pi-hole differs from our defaults
         // (both block the iCloud and Firefox names by default; domain-needed is off in both).
         let mut special = String::new();
         if self.s.domain_needed {

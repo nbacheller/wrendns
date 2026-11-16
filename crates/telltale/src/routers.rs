@@ -19,7 +19,7 @@
 //! the naming falls back to (after configured device names). Never on the DNS path; a router
 //! that's down keeps its last answer and is logged.
 //!
-//! When two sources name one address (ADR-166): a name you gave the device in Home Assistant
+//! When two sources name one address (ADR-902): a name you gave the device in Home Assistant
 //! wins, then the routers' (in configuration order), then the name a Home Assistant
 //! integration gave it.
 
@@ -43,10 +43,10 @@ const MAX_ANSWER: u64 = 16 << 20;
 pub(crate) type Entry = (String, Ipv4Addr, Option<String>);
 /// What a router reported.
 pub(crate) type Seen = Vec<Entry>;
-/// An entry with how good its name is (ADR-166).
+/// An entry with how good its name is (ADR-902).
 type Ranked = (u8, Entry);
 
-/// How good a name is when two sources name one address (lower wins; ADR-166).
+/// How good a name is when two sources name one address (lower wins; ADR-902).
 const RANK_CURATED: u8 = 0;
 const RANK_ROUTER: u8 = 1;
 const RANK_INTEGRATION: u8 = 2;
@@ -609,7 +609,7 @@ async fn poll_home_assistant(
 }
 
 /// The leases view from every router's last answer, best name first for each address
-/// (ADR-166): rank, then the order of `[[router]]` entries.
+/// (ADR-902): rank, then the order of `[[router]]` entries.
 fn rebuild(order: &[String], parts: &HashMap<String, Polled>, view: &ArcSwap<Leases>) {
     let mut all: Vec<(u8, usize, &str, &Entry)> = Vec::new();
     for (i, name) in order.iter().enumerate() {
@@ -1037,11 +1037,11 @@ mod tests {
         assert!(HA_TEMPLATE.contains("device_attr(d, 'connections')"));
     }
 
-    /// REQ: ADR-166 — one address named by several sources: a curated Home Assistant name
+    /// REQ: ADR-902 — one address named by several sources: a curated Home Assistant name
     /// wins, then routers in configuration order, then an integration's name; a better source
     /// without a name doesn't hide a worse one's.
     #[test]
-    fn adr_166_lease_precedence() {
+    fn adr_902_lease_precedence() {
         let ip = |d: u8| Ipv4Addr::new(192, 168, 10, d);
         let mac = |d: u8| format!("aa:bb:cc:00:00:{d:02x}");
         let order = vec!["udm".to_owned(), "opn".to_owned(), "ha".to_owned()];

@@ -325,7 +325,7 @@ pub(crate) fn explain(
         e.summary = "private reverse lookup with no [[route]] for it: NXDOMAIN without forwarding (RFC 6303)".into();
     } else if special == Some(Special::SingleLabel) && !selection.as_ref().is_some_and(|s| s.routed)
     {
-        // REQ: DNS-019 (ADR-168)
+        // REQ: DNS-019 (ADR-904)
         e.outcome = Outcome::Special;
         e.summary = "single-label name with no local answer and no [[route]] for it: NXDOMAIN without forwarding ([special] single_label_nxdomain)".into();
     } else if let Some(sel) = selection {
@@ -548,7 +548,7 @@ pub(crate) fn answered_early(
         Some(Special::Refused) => "special-use query: REFUSED without forwarding",
         Some(Special::Nxdomain) => "special-use name: NXDOMAIN without forwarding",
         Some(Special::Localhost) => "localhost: answered with loopback addresses",
-        // REQ: DNS-019 (ADR-168)
+        // REQ: DNS-019 (ADR-904)
         Some(Special::PrivateRelay) => {
             "iCloud Private Relay name: NXDOMAIN without forwarding, so Apple devices keep using this resolver ([special] block_icloud_private_relay)"
         }

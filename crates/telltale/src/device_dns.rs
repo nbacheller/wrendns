@@ -1,4 +1,4 @@
-//! REQ: DNS-023 (T22.1; ADR-165) — the devices TelltaleDNS knows by name answer in DNS, as
+//! REQ: DNS-023 (T22.1; ADR-901) — the devices TelltaleDNS knows by name answer in DNS, as
 //! `<name>.<[local] device_domain>` with a PTR for the address, like a router that registers
 //! its DHCP clients' names. TelltaleDNS still doesn't run DHCP (ADR-091): the names come from
 //! named devices with one address, the routers' DHCP clients and Home Assistant (`[[router]]`),
@@ -8,7 +8,7 @@
 //! without locking (02 §3). Configured records, hosts files, and a zone's own records win;
 //! the table only fills the gaps.
 //!
-//! When two devices' names make the same label, one keeps it (ADR-165): a named device,
+//! When two devices' names make the same label, one keeps it (ADR-901): a named device,
 //! then a router's or Home Assistant's name, then an mDNS name, then the lowest address. The
 //! others get neither an A record nor a PTR; collisions are counted in the log line that
 //! reports each change.
@@ -55,7 +55,7 @@ pub(crate) struct DeviceNames {
     pub(crate) by_ip: HashMap<Ipv4Addr, String>,
 }
 
-/// Labels no device gets, whatever it calls itself (ADR-165): `wpad` and `isatap` are how
+/// Labels no device gets, whatever it calls itself (ADR-901): `wpad` and `isatap` are how
 /// Windows finds a proxy and a tunnel, so a device named that could take over other machines'
 /// traffic (dnsmasq and Windows DNS refuse them too); `localhost` is RFC 6761's.
 const RESERVED: [&str; 3] = ["wpad", "isatap", "localhost"];

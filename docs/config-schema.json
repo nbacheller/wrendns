@@ -3780,12 +3780,12 @@
           "default": true
         },
         "block_icloud_private_relay": {
-          "description": "`mask.icloud.com` and `mask-h2.icloud.com` → NXDOMAIN, so Apple devices turn iCloud\nPrivate Relay off on this network and their queries keep coming here, filtered\n(ADR-168; Pi-hole's `iCloudPrivateRelay`).",
+          "description": "`mask.icloud.com` and `mask-h2.icloud.com` → NXDOMAIN, so Apple devices turn iCloud\nPrivate Relay off on this network and their queries keep coming here, filtered\n(ADR-904; Pi-hole's `iCloudPrivateRelay`).",
           "type": "boolean",
           "default": true
         },
         "ddr_name": {
-          "description": "The name the certificates of this node's DoT, DoH, and DoQ listeners carry (such as\n`dns.example.com`). Set, `_dns.resolver.arpa` SVCB answers advertise those listeners\nfor Discovery of Designated Resolvers (RFC 9462), except listeners bound to loopback or\nwith `proxy_protocol` on; unset, `resolver.arpa` queries get no data. `resolver.arpa`\nis never forwarded (ADR-168).",
+          "description": "The name the certificates of this node's DoT, DoH, and DoQ listeners carry (such as\n`dns.example.com`). Set, `_dns.resolver.arpa` SVCB answers advertise those listeners\nfor Discovery of Designated Resolvers (RFC 9462), except listeners bound to loopback or\nwith `proxy_protocol` on; unset, `resolver.arpa` queries get no data. `resolver.arpa`\nis never forwarded (ADR-904).",
           "type": [
             "string",
             "null"
@@ -3808,7 +3808,7 @@
           "default": true
         },
         "single_label_nxdomain": {
-          "description": "Single-label names (`nas`, no dot) asked for A, AAAA, or HTTPS that no local record,\nzone, or device name answers → NXDOMAIN instead of forwarding them, unless a\n`[[route]]` matches them (ADR-168; Pi-hole and dnsmasq `domain-needed`).",
+          "description": "Single-label names (`nas`, no dot) asked for A, AAAA, or HTTPS that no local record,\nzone, or device name answers → NXDOMAIN instead of forwarding them, unless a\n`[[route]]` matches them (ADR-904; Pi-hole and dnsmasq `domain-needed`).",
           "type": "boolean",
           "default": false
         }

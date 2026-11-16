@@ -278,7 +278,7 @@ fn host_name_ok(d: &str, max: usize) -> bool {
         })
 }
 
-// REQ: DNS-019 (ADR-168) — DDR's target is the host name the encrypted listeners' certificates
+// REQ: DNS-019 (ADR-904) — DDR's target is the host name the encrypted listeners' certificates
 // carry; without such a listener on this node there is nothing to advertise.
 fn special_names(cfg: &Config, r: &mut Report<'_>) {
     let Some(name) = &cfg.special.ddr_name else {

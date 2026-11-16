@@ -531,7 +531,7 @@ answer = "cdn.example"
     }
 }
 
-/// REQ: DNS-019 (ADR-168) — iCloud Private Relay, resolver.arpa, and (switched on)
+/// REQ: DNS-019 (ADR-904) — iCloud Private Relay, resolver.arpa, and (switched on)
 /// single-label names are explained as special answers, and the pipeline answers them the
 /// same way without forwarding; switched off, they resolve normally in both.
 #[test]
