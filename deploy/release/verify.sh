@@ -39,6 +39,8 @@ for t in x86_64-linux aarch64-linux armv7-linux; do
   grep -q " telltale-$t\$" "$tmp/SHA256SUMS" || bad "no telltale-$t in SHA256SUMS"
   # REQ: NFR-005 (T10.10) — a CycloneDX SBOM per binary, under the signed sums.
   grep -q " telltale-$t.cdx.json\$" "$tmp/SHA256SUMS" || bad "no SBOM telltale-$t.cdx.json in SHA256SUMS"
+  # REQ: OPS-013 — the debug file of each binary is published and signed with the rest.
+  grep -q " telltale-$t.debug.zst\$" "$tmp/SHA256SUMS" || bad "no debug file telltale-$t.debug.zst in SHA256SUMS"
 done
 grep -q "\"channel\": \"stable\"" "$tmp/releases.json" && grep -q "\"version\": \"$v\"" "$tmp/releases.json" &&
   ok "releases.json: channel stable, version $v" || bad "releases.json isn't stable $v"

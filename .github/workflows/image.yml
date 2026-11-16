@@ -92,6 +92,18 @@ jobs:
           for f in dist/telltale-*; do
             grep -aqF "$line" "$f" || { echo "::error::$f doesn't carry '$line'"; exit 1; }
           done
+          # REQ: OPS-013 (ADR-164) — each binary's debug file (symbols and line tables), compressed, as
+          # `telltale-<arch>-linux.debug.zst`: a stack taken from the stripped binary is read with it.
+          # It is covered by the signed SHA256SUMS like the binaries (after the checks above, which
+          # look for the version line inside every binary).
+          sh .github/scripts/apt-install.sh zstd
+          for pair in amd64:x86_64 arm64:aarch64 arm_v7:armv7; do
+            src="bin/linux_${pair%%:*}/telltale.debug"
+            test -s "$src" || { echo "::error::no debug file for ${pair%%:*}"; exit 1; }
+            zstd -10 -T0 -q "$src" -o "dist/telltale-${pair##*:}-linux.debug.zst"
+          done
+          chmod 644 dist/*.debug.zst
+          ls -l dist
 
       # REQ: NFR-005 (T10.10) — each binary carries its dependency list (cargo-auditable), and
       # each gets a CycloneDX SBOM read from that list, published with the release and covered

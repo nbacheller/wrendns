@@ -84,7 +84,10 @@ jobs:
             docker buildx build --no-cache $args --platform linux/amd64 --target bin --output "type=local,dest=out$n" .
             docker buildx prune -af >/dev/null
           done
-          sha256sum out1/telltale out2/telltale
+          sha256sum out1/telltale out2/telltale out1/telltale.debug out2/telltale.debug
+          # REQ: OPS-013 — the debug file is rebuilt the same way; a difference is reported, not failed.
+          cmp -s out1/telltale.debug out2/telltale.debug \
+            || echo "::warning::the debug files of two clean builds differ"
           if cmp -s out1/telltale out2/telltale; then
             echo "## Reproducible: two clean builds of ${GITHUB_SHA::7} are identical" >> "$GITHUB_STEP_SUMMARY"
           else

@@ -53,7 +53,8 @@ the version is `X.Y.Z` (no suffix); `Cargo.toml` and `Chart.yaml` say `X.Y.Z`; t
 `helm`, and `docker`):
 `SHA256SUMS` and `releases.json` are signed with `deploy/release/telltale-release.pub`; the
 x86_64 binary matches its sum and reports `X.Y.Z … channel stable`; all three architectures
-are listed; `releases/latest` points at `vX.Y.Z`; `:X.Y.Z`, `:X.Y`, `:X`, and `:latest` are
+are listed with their SBOM and their debug file (`telltale-<arch>-linux.debug.zst`, the symbols
+that make a stack from the stripped binary readable); `releases/latest` points at `vX.Y.Z`; `:X.Y.Z`, `:X.Y`, `:X`, and `:latest` are
 the same multi-arch image (amd64, arm64, arm/v7); chart `X.Y.Z` has appVersion `X.Y.Z`.
 
 ## When something fails

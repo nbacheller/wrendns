@@ -68,7 +68,8 @@ RUN case "${TARGETARCH}${TARGETVARIANT}" in \
       armv7)  echo armv7-unknown-linux-musleabihf ;; \
       *) echo "unsupported target ${TARGETARCH}${TARGETVARIANT}" >&2; exit 1 ;; \
     esac > /rust-target \
- && rustup target add "$(cat /rust-target)"
+ && rustup target add "$(cat /rust-target)" \
+ && rustup component add llvm-tools
 
 WORKDIR /src
 # REQ: OPS-004 (ADR-046) — the build identity CI stamps into every architecture alike.
@@ -85,9 +86,21 @@ COPY --from=ui /ui/dist /src/ui/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target,id=telltale-target-${TARGETARCH}${TARGETVARIANT},sharing=locked \
     set -eu; t="$(cat /rust-target)"; \
+    mkdir -p /out/usr/local/bin /out/etc/ssl/certs /out/var/lib/telltale /out/etc/telltale /out/usr/share /debug; \
+    # REQ: OPS-013 (ADR-164) — link once with symbols and line tables, then split that one output:
+    # the shipped binary is the stripped copy (what `strip = true` made before: the symbol table
+    # and debug sections are gone, the dependency data stays; the line tables shift the layout by
+    # 0.015%, benchmarked in ADR-164), and
+    # `/debug/telltale.debug` is the rest, matched to it by debuglink (name and CRC). It stays out
+    # of `/out`, which the image copies whole: it is only a release asset (the `bin` target), so a
+    # stack from a stripped binary can be read afterwards.
+    up="$(echo "${PROFILE}" | tr 'a-z-' 'A-Z_')"; \
+    export "CARGO_PROFILE_${up}_STRIP=none" "CARGO_PROFILE_${up}_DEBUG=line-tables-only"; \
     cargo auditable zigbuild --locked --profile "${PROFILE}" -p telltale --target "$t"; \
-    mkdir -p /out/usr/local/bin /out/etc/ssl/certs /out/var/lib/telltale /out/etc/telltale /out/usr/share; \
-    cp "target/$t/${PROFILE}/telltale" /out/usr/local/bin/telltale; \
+    oc="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"; \
+    "$oc" --only-keep-debug "target/$t/${PROFILE}/telltale" /debug/telltale.debug; \
+    "$oc" --strip-all --keep-section=.dep-v0 --add-gnu-debuglink=/debug/telltale.debug \
+      "target/$t/${PROFILE}/telltale" /out/usr/local/bin/telltale; \
     cp /etc/ssl/certs/ca-certificates.crt /out/etc/ssl/certs/; \
     cp -r /usr/share/zoneinfo /out/usr/share/zoneinfo; \
     printf 'root:x:0:0:root:/:/sbin/nologin\ntelltale:x:65532:65532:telltale:/var/lib/telltale:/sbin/nologin\n' > /out/etc/passwd; \
@@ -97,6 +110,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 #   docker buildx build --platform linux/arm64 --target bin --output type=local,dest=out .
 FROM scratch AS bin
 COPY --from=build /out/usr/local/bin/telltale /telltale
+COPY --from=build /debug/telltale.debug /telltale.debug
 
 FROM scratch
 ARG VERSION=dev
