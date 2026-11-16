@@ -22,6 +22,13 @@ async function capture(browser: Browser, theme: 'light' | 'dark', width: number,
     delete info.clientIpsMasked;
     await route.fulfill({ response: res, json: info });
   });
+  // The demo network is minutes old, so the period before it has a few stray queries and the
+  // dashboard's change arrows read as nonsense ("up 14,099%"). The pictures leave them out: the
+  // request for the previous period fails, and the page shows no change.
+  await page.route('**/api/v1/stats/summary*', async (route) => {
+    if (new URL(route.request().url()).searchParams.has('to')) await route.abort();
+    else await route.continue();
+  });
   await page.goto('/');
   await page.getByLabel('Username', { exact: true }).fill('admin');
   await page.getByLabel('Password', { exact: true }).fill('correct horse battery');

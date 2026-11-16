@@ -15,7 +15,7 @@ Every connection on your network starts with a DNS lookup. TelltaleDNS answers i
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/dashboard-dark.jpg">
-    <img alt="The TelltaleDNS dashboard: queries, blocked share, cache hits, upstream latency, and active clients; queries by status over 15 minutes and answers by status; and the top domains, blocked names, and devices with their groups" src="docs/images/dashboard-light.jpg" width="900">
+    <img alt="The TelltaleDNS dashboard: queries, blocked share, cache hits, upstream latency, and active clients as plain numbers with their change; one chart of queries and blocked over 15 minutes with a change marker; and the top domains, blocked names, and clients with their groups" src="docs/images/dashboard-light.jpg" width="900">
   </picture>
   <br>
   <sub>The dashboard on a demo network. Every device, name, and address in it is made up.</sub>
