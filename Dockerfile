@@ -104,7 +104,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cp /etc/ssl/certs/ca-certificates.crt /out/etc/ssl/certs/; \
     cp -r /usr/share/zoneinfo /out/usr/share/zoneinfo; \
     printf 'root:x:0:0:root:/:/sbin/nologin\ntelltale:x:65532:65532:telltale:/var/lib/telltale:/sbin/nologin\n' > /out/etc/passwd; \
-    printf 'root:x:0:\ntelltale:x:65532:\n' > /out/etc/group
+    printf 'root:x:0:\ntelltale:x:65532:\n' > /out/etc/group; \
+    # The data directory belongs to the image's user. Owned here, because `COPY --from` keeps
+    # ownership; a later `COPY --chown` of the empty directory left it owned by root.
+    chown 65532:65532 /out/var/lib/telltale
 
 # REQ: OPS-004 — just the static binary, for release assets and native installs:
 #   docker buildx build --platform linux/arm64 --target bin --output type=local,dest=out .
@@ -122,7 +125,6 @@ LABEL org.opencontainers.image.title="TelltaleDNS" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}"
 COPY --from=build /out/ /
-COPY --from=build --chown=65532:65532 /out/var/lib/telltale /var/lib/telltale
 # REQ: OPS-004 (ADR-046) — containers update by pulling a new image.
 ENV TELLTALE_INSTALL=container
 USER 65532:65532

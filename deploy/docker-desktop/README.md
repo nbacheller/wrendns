@@ -87,6 +87,13 @@ Then open <http://localhost:8053/> and sign in with that token.
   nslookup -port=1053 192.0.2.21 127.0.0.1                 # reverse lookup
   ```
 
+  On Windows, `nslookup` gets no answer from a port other than 53 (`No response from server`), though TelltaleDNS answers. Ask from a container instead, through the same published port:
+
+  ```sh
+  docker run --rm alpine nslookup -port=1053 kitchen-tablet.home.arpa host.docker.internal
+  docker run --rm alpine nslookup -port=1053 192.0.2.21 host.docker.internal
+  ```
+
 - **The inventory, through the API.** Create a token under **Settings → Users → API tokens**, then:
 
   ```sh
