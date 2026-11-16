@@ -16,6 +16,8 @@ mod cache_history;
 mod cache_sizing;
 mod checks;
 mod cluster;
+#[cfg(test)]
+mod credential_tests;
 mod ctl;
 mod datadir;
 mod device_dns;
@@ -46,11 +48,13 @@ mod privacy;
 mod probes;
 mod qlog_cli;
 mod readiness;
+mod redact;
 mod replay;
 mod replication;
 mod rollout;
 mod rollups;
 mod routers;
+mod secrets;
 mod selfupdate;
 mod server;
 mod shadow;
@@ -641,9 +645,14 @@ enum ConfigCommand {
         /// Ignore TELLTALE_* environment variables.
         #[arg(long)]
         no_env: bool,
-        /// Print the effective config (defaults + files + env) as TOML.
+        /// Print the effective config (defaults + files + env) as TOML. Credentials (upstream
+        /// headers and args, passwords in URLs, an OIDC client secret, OTLP headers) print as
+        /// `<redacted>`.
         #[arg(long)]
         print: bool,
+        /// With --print: print credentials as they are (REQ: API-014).
+        #[arg(long, requires = "print")]
+        show_secrets: bool,
     },
     /// Print the JSON Schema for telltale.toml (for editor completion).
     Schema,
@@ -1597,6 +1606,7 @@ fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
             files,
             no_env,
             print,
+            show_secrets,
         } => {
             let mut loader = files.iter().fold(Loader::new(), Loader::file);
             if !no_env {
@@ -1620,7 +1630,7 @@ fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
                         return Ok(ExitCode::FAILURE);
                     }
                     if print {
-                        let text = toml::to_string(&cfg.config).map_err(io::Error::other)?;
+                        let text = printed_config(&cfg.config, show_secrets)?;
                         write!(out, "{text}")?;
                     } else {
                         writeln!(out, "config OK")?;
@@ -1637,6 +1647,17 @@ fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
             }
         }
     }
+}
+
+/// REQ: API-014 (ADR-167 §4) — `config check --print`: the effective configuration as TOML,
+/// its credentials redacted unless `show_secrets`.
+fn printed_config(cfg: &telltale_config::Config, show_secrets: bool) -> io::Result<String> {
+    if show_secrets {
+        return toml::to_string(cfg).map_err(io::Error::other);
+    }
+    let mut shown = cfg.clone();
+    telltale_config::credentials::redact_config(&mut shown);
+    toml::to_string(&shown).map_err(io::Error::other)
 }
 
 /// `telltale services list`.

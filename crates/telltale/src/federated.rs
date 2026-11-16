@@ -19,7 +19,7 @@ use telltale_api::model::{
     TopItem, TopKind, UpstreamInfo,
 };
 use telltale_api::problem::Problem;
-use telltale_api::{Backend, BoxFuture, ClientWrite, ManagedWrite, Shared};
+use telltale_api::{Backend, BoxFuture, ClientWrite, ManagedKind, ManagedWrite, Shared};
 use telltale_cluster::net::{Cluster, RpcHandler};
 
 /// The RPC every federated read uses; its body is a JSON [`Read`].
@@ -2446,11 +2446,20 @@ impl Backend for Federated {
                 },
                 VERSION_DEADLINE,
             )
-            && let Ok(v) = serde_json::from_slice::<Vec<telltale_api::model::ConfigEntry>>(&body)
+            && let Some(v) = entries_from_primary(&body)
         {
             return v;
         }
         self.local.config_entries(kind)
+    }
+    // REQ: API-014 — the keyed hash is this node's (the entry node keeps the record).
+    fn idempotency_request(
+        &self,
+        kind: Option<ManagedKind>,
+        request: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<Vec<u8>, Problem> {
+        self.local.idempotency_request(kind, request, body)
     }
     fn write_client(&self, w: ClientWrite) -> BoxFuture<Result<ClientChange, Problem>> {
         match self.write_route() {
@@ -2463,6 +2472,14 @@ impl Backend for Federated {
             WriteRoute::NoLease => Box::pin(async { Err(no_lease()) }),
         }
     }
+}
+
+/// REQ: API-014 — the primary's entries as a replica shows them: redacted again here, since an
+/// older primary (N−1) sends its definitions as they are.
+pub(crate) fn entries_from_primary(body: &[u8]) -> Option<Vec<telltale_api::model::ConfigEntry>> {
+    let mut v = serde_json::from_slice::<Vec<telltale_api::model::ConfigEntry>>(body).ok()?;
+    crate::redact::entries(&mut v);
+    Some(v)
 }
 
 #[cfg(test)]

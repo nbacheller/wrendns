@@ -101,6 +101,8 @@ pub(crate) struct Sources {
     pub(crate) shadow: Arc<crate::shadow::Shadow>,
     /// REQ: OBS-017 (T11.6) — latency exemplars and the queries waiting to go out as traces.
     pub(crate) traces: Arc<crate::traces::Traces>,
+    /// REQ: OPS-014, API-014 (ADR-167 §3) — the node's secrets key, loaded on first use.
+    pub(crate) secrets_key: crate::secrets::KeySlot,
 }
 
 impl Sources {

@@ -27,8 +27,8 @@ const DEADLINE: Duration = Duration::from_secs(10);
 /// `[simulate] max_secs` (300 s at most), plus the peers' list downloads.
 const SIMULATE_DEADLINE: Duration = Duration::from_secs(10 + 300 + 30);
 
-/// A configuration write, as sent to the primary.
-#[derive(Debug, Serialize, Deserialize)]
+/// A configuration write, as sent to the primary. Its `Debug` redacts credentials (API-014).
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "write", rename_all = "snake_case")]
 pub(crate) enum Write {
     Managed {
@@ -53,6 +53,50 @@ pub(crate) enum Write {
     },
     /// REQ: OBS-014 (ADR-103) — acknowledging anomalies (not configuration, so a Git-managed cluster takes it too).
     AnomalyAck(AnomalyAckWrite),
+}
+
+/// REQ: API-014 (ADR-167 §4) — what forward logging shows of a write: everything but a
+/// credential's value.
+impl std::fmt::Debug for Write {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Managed {
+                kind,
+                name,
+                body,
+                dry_run,
+                expect,
+                by,
+                simulate,
+            } => f
+                .debug_struct("Managed")
+                .field("kind", kind)
+                .field("name", name)
+                .field("body", &crate::redact::body(*kind, body.as_ref()))
+                .field("dry_run", dry_run)
+                .field("expect", expect)
+                .field("by", by)
+                .field("simulate", simulate)
+                .finish(),
+            Self::Client {
+                name,
+                input,
+                dry_run,
+                expect,
+                by,
+                simulate,
+            } => f
+                .debug_struct("Client")
+                .field("name", name)
+                .field("input", input)
+                .field("dry_run", dry_run)
+                .field("expect", expect)
+                .field("by", by)
+                .field("simulate", simulate)
+                .finish(),
+            Self::AnomalyAck(a) => f.debug_tuple("AnomalyAck").field(a).finish(),
+        }
+    }
 }
 
 impl From<ManagedWrite> for Write {
@@ -130,8 +174,16 @@ pub(crate) async fn handle(
     body: Vec<u8>,
 ) -> Result<Vec<u8>, String> {
     let write: Write = serde_json::from_slice(&body).map_err(|e| format!("bad write: {e}"))?;
+    tracing::debug!(%peer, ?write, "a forwarded write");
     let answer = if cluster.is_primary() {
-        apply(&src, &local, &cluster, &peer, write).await
+        let via = cluster
+            .members()
+            .into_iter()
+            .find(|m| m.node_id == peer)
+            .map(|m| m.site)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| peer.clone());
+        apply(&src, &local, &peer, &via, write).await
     } else {
         Answer::Err(
             Problem::new(Code::Conflict, "this node isn't the primary any more")
@@ -142,15 +194,9 @@ pub(crate) async fn handle(
     serde_json::to_vec(&answer).map_err(|e| e.to_string())
 }
 
-async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: Write) -> Answer {
-    let via = cluster
-        .members()
-        .into_iter()
-        .find(|m| m.node_id == peer)
-        .map(|m| m.site)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| peer.to_owned());
-    let (action, target, result) = match w {
+/// Applies a forwarded write here (the primary) for `peer` (shown as `via`), and audits it.
+async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -> Answer {
+    let (action, target, result, kind) = match w {
         Write::Managed {
             kind,
             name,
@@ -191,7 +237,7 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
                 })
                 .await
                 .map(|c| serde_json::to_value(c).unwrap_or_default());
-            (verb(action, deleting), (name, by), r)
+            (verb(action, deleting), (name, by), r, Some(kind))
         }
         Write::Client {
             name,
@@ -213,9 +259,9 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
                 })
                 .await
                 .map(|c| serde_json::to_value(c).unwrap_or_default());
-            (verb("client", deleting), (name, by), r)
+            (verb("client", deleting), (name, by), r, None)
         }
-        Write::AnomalyAck(w) => return apply_ack(src, local, peer, &via, w).await,
+        Write::AnomalyAck(w) => return apply_ack(src, local, peer, via, w).await,
     };
     match result {
         Ok(c) => {
@@ -229,12 +275,14 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
                     remote: Some(format!("node {peer}")),
                     reason: None,
                 };
-                auth.record(
-                    &actor,
-                    &action,
-                    &target.0,
-                    &serde_json::json!({ "before": c["before"], "after": c["after"], "configVersion": c["configVersion"] }),
-                );
+                // REQ: API-014 — the second audit record is redacted like the first.
+                let detail = match kind {
+                    Some(k) => crate::redact::audit_detail(k, &c),
+                    None => {
+                        serde_json::json!({ "before": c["before"], "after": c["after"], "configVersion": c["configVersion"] })
+                    }
+                };
+                auth.record(&actor, &action, &target.0, &detail);
             }
             Answer::Ok(c)
         }
@@ -330,6 +378,7 @@ async fn send<T: serde::de::DeserializeOwned>(
         } => SIMULATE_DEADLINE,
         _ => DEADLINE,
     };
+    tracing::debug!(?primary, write = ?w, "forwarding a write to the primary");
     let body = serde_json::to_vec(&w).map_err(|e| Problem::internal(e.to_string()))?;
     let reply = cluster
         .call(&primary, KIND, body, deadline)
@@ -348,13 +397,18 @@ async fn send<T: serde::de::DeserializeOwned>(
     }
 }
 
-/// Forwards a local-name or forwarded-domain write.
+/// Forwards a configuration write. REQ: API-014 — the primary's answer is redacted again here
+/// (an older primary's isn't): it becomes this node's response, audit record, and stored
+/// idempotency response.
 pub(crate) async fn managed(
     cluster: Arc<Cluster>,
     primary: Option<String>,
     w: ManagedWrite,
 ) -> Result<ConfigChange, Problem> {
-    send(&cluster, primary, w.into()).await
+    let kind = w.kind;
+    let mut c: ConfigChange = send(&cluster, primary, w.into()).await?;
+    crate::redact::change(kind, &mut c);
+    Ok(c)
 }
 
 /// REQ: OBS-014 — forwards an acknowledge or unacknowledge.
@@ -391,6 +445,49 @@ mod tests {
         let p: Problem = w.into();
         assert_eq!(p.code, Code::Conflict);
         assert_eq!(p.hint.as_deref(), Some("re-read"));
+    }
+
+    /// REQ: API-014 — a write forwarded from a replica: the primary's answer (the entry node's
+    /// response) and the primary's audit record carry no credential, and neither does forward
+    /// logging (`Write`'s `Debug`).
+    #[tokio::test]
+    async fn api_014_forwarded_write_audit_redacted() {
+        use crate::credential_tests::{HEADER, URL_PASSWORD, harness, leaks};
+        let h = harness("");
+        let local: Shared = Arc::new(crate::api_backend::ApiBackend {
+            src: Arc::clone(&h.src),
+        });
+        let w = Write::Managed {
+            kind: ManagedKind::Upstream,
+            name: "nextdns".into(),
+            body: Some(serde_json::json!({
+                "url": format!("https://me:{URL_PASSWORD}@doh.example/dns-query"),
+                "headers": {"Authorization": HEADER}
+            })),
+            dry_run: false,
+            expect: None,
+            by: "alice".into(),
+            simulate: None,
+        };
+        let logged = format!("{w:?}");
+        assert!(leaks(&logged).is_empty(), "{logged}");
+        assert!(logged.contains("nextdns"), "{logged}");
+        let Answer::Ok(c) = apply(&h.src, &local, "node-b", "pi", w).await else {
+            panic!("refused")
+        };
+        assert_eq!(c["applied"], true, "{c}");
+        assert!(leaks(&c.to_string()).is_empty(), "{c}");
+        let audit = h
+            .auth
+            .state()
+            .audit_page(None, 10, Some("upstream."), None)
+            .unwrap()
+            .iter()
+            .map(|e| format!("{} {}\n", e.actor, e.detail))
+            .collect::<Vec<_>>()
+            .concat();
+        assert!(audit.contains("alice via pi"), "{audit}");
+        assert!(leaks(&audit).is_empty(), "{audit}");
     }
 
     // REQ: OBS-014 — an acknowledgement crosses the channel intact.

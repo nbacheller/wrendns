@@ -25,6 +25,36 @@ fn ops_011_every_string_field_of_the_schema_has_a_class() {
     );
 }
 
+/// REQ: API-014 (ADR-167 §4) — every field the support package keeps out as a secret is either
+/// in the credential table every API read surface redacts (`telltale_config::credentials::PATHS`)
+/// or in its reasoned list of fields that aren't credentials (usernames, a public client ID).
+/// The table's paths are real fields too.
+#[test]
+fn api_014_credential_paths_cover_secret_class() {
+    use telltale_config::credentials::{NOT_CREDENTIALS, PATHS};
+    let norm = |p: &str| p.trim_end_matches(".*").replace("[*]", "[]");
+    let covered: Vec<String> = PATHS.iter().map(|c| norm(c.path)).collect();
+    let uncovered: Vec<&str> = TABLE
+        .iter()
+        .filter(|(_, c)| *c == Class::Secret)
+        .map(|(p, _)| *p)
+        .filter(|p| !covered.iter().any(|c| c == p))
+        .filter(|p| !NOT_CREDENTIALS.iter().any(|(n, _)| n == p))
+        .collect();
+    assert!(
+        uncovered.is_empty(),
+        "secret-class fields neither redacted by the API (telltale-config credentials::PATHS) nor listed as not credentials (NOT_CREDENTIALS, with a reason): {uncovered:#?}"
+    );
+    let info = schema_info();
+    for p in &covered {
+        assert!(info.needs_class.contains(p), "PATHS names no field: {p}");
+    }
+    for (p, why) in NOT_CREDENTIALS {
+        assert_eq!(class_of(p), Some(Class::Secret), "{p}");
+        assert!(why.len() > 20, "{p}: say why");
+    }
+}
+
 #[test]
 fn ops_011_every_table_entry_names_a_real_field() {
     let info = schema_info();

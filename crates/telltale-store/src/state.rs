@@ -125,7 +125,14 @@ const MIGRATIONS: &[&str] = &[
     // `display`, optionally limited to some networks, exchanged once for a display session.
     "ALTER TABLE tokens ADD COLUMN display_networks TEXT;
     ALTER TABLE sessions ADD COLUMN display_token TEXT;",
+    // 10: REQ: API-014 (ADR-167 §4) — idempotency records used to keep the request's text, which
+    // could hold an upstream's headers; they now keep a keyed hash. The old ones go (with
+    // `secure_delete` on, their pages are overwritten; `init` then truncates the WAL).
+    "DELETE FROM idempotency;",
 ];
+
+/// REQ: API-014 — the migration that purges the old idempotency records.
+const PURGE_IDEMPOTENCY: usize = 10;
 
 /// REQ: OBS-035 (T14.13) — the pseudo agent scope that marks a display token. An older node
 /// reads it as an agent scope that allows nothing, so a display token can't act as a token there.
@@ -133,6 +140,11 @@ pub const DISPLAY_SCOPE: &str = "display";
 
 /// Stored for OIDC users: no password matches it (they sign in at their provider).
 pub const NO_PASSWORD: &str = "!oidc";
+
+/// `PRAGMA wal_checkpoint(TRUNCATE)` (a no-op on a database in memory).
+fn checkpoint_truncate(conn: &Connection) -> rusqlite::Result<()> {
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+}
 
 pub mod acks;
 pub mod audit;
@@ -252,6 +264,8 @@ impl State {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         // ADR-124 — no temp files (read-only root filesystems have nowhere to put them).
         conn.pragma_update(None, "temp_store", "MEMORY")?;
+        // REQ: API-014 (ADR-167 §4) — deleted rows are overwritten, not left in free pages.
+        conn.pragma_update(None, "secure_delete", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -273,10 +287,21 @@ impl State {
                 [(n + 1).to_string()],
             )?;
             tx.commit()?;
+            // REQ: API-014 — and their old page images leave the WAL too.
+            if n + 1 == PURGE_IDEMPOTENCY {
+                checkpoint_truncate(&conn)?;
+            }
         }
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// REQ: API-014 (ADR-167 §4) — copies the WAL into the database and truncates it, so pages
+    /// overwritten by `secure_delete` don't survive there (after the idempotency purge; the
+    /// secrets store's rotation and deletes use it too).
+    pub fn checkpoint(&self) -> Result<()> {
+        self.with(checkpoint_truncate)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -784,6 +809,56 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ: API-014 (ADR-167 §4) — a `state.db` from before migration 10 had idempotency records
+    /// holding request text (an upstream's headers): after the upgrade, neither the database nor
+    /// its WAL holds a byte of it, and replays start over. Deletes overwrite from then on.
+    #[test]
+    fn api_014_idempotency_purge_leaves_no_residue() {
+        const PLANTED: &str = "Bearer planted-s3cret-0123456789";
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+            for sql in &MIGRATIONS[..PURGE_IDEMPOTENCY - 1] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute("INSERT INTO meta (key, value) VALUES ('schema', '9')", [])
+                .unwrap();
+            let body =
+                format!("PUT /upstreams/x {{\"headers\":{{\"Authorization\":\"{PLANTED}\"}}}}");
+            for i in 0..50 {
+                conn.execute(
+                    "INSERT INTO idempotency (key, request, status, response, created) VALUES (?1, ?2, 200, ?3, 1)",
+                    params![format!("1:k{i}"), body.as_bytes(), body],
+                )
+                .unwrap();
+            }
+        }
+        let raw = |p: &Path| std::fs::read(p).unwrap_or_default();
+        let wal = tmp.path().join("state.db-wal");
+        let has = |b: &[u8]| b.windows(PLANTED.len()).any(|w| w == PLANTED.as_bytes());
+        assert!(
+            has(&raw(&path)) || has(&raw(&wal)),
+            "planted before the upgrade"
+        );
+        let s = State::open(&path).unwrap();
+        assert!(!has(&raw(&path)), "state.db holds the old request");
+        assert!(!has(&raw(&wal)), "the WAL holds the old request");
+        assert_eq!(s.idempotent("1:k0", 2).unwrap(), None);
+        let secure: i64 = s
+            .lock()
+            .query_row("PRAGMA secure_delete", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(secure, 1);
+        s.checkpoint().unwrap();
+    }
 
     // REQ: OPS-001, ADR-124 — no temp files: the image's root filesystem is read-only.
     #[test]

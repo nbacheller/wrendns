@@ -818,10 +818,11 @@ async fn deliver(
     let (body, ct, headers) = render(d, token.as_deref(), rule, n, node);
     let mut url = d.url.to_string();
     if d.kind == AlertKind::Gotify {
+        // REQ: API-014 (ADR-167 §4) — the token is one query value, whatever it holds.
         url = format!(
             "{}/message?token={}",
             url.trim_end_matches('/'),
-            token.as_deref().unwrap_or_default()
+            crate::kubernetes::encode(token.as_deref().unwrap_or_default())
         );
     }
     let mut req = http::Request::post(url)
@@ -834,7 +835,11 @@ async fn deliver(
     let resp = tokio::time::timeout(Duration::from_secs(10), client.request(req, 64 * 1024))
         .await
         .map_err(|_| "timed out".to_owned())?
-        .map_err(|e| e.message)?;
+        .map_err(|e| match token.as_deref().filter(|t| !t.is_empty()) {
+            // REQ: API-014 — an error that quotes the request never shows the token.
+            Some(t) => e.message.replace(t, telltale_config::credentials::MARKER),
+            None => e.message,
+        })?;
     if resp.status().is_success() {
         Ok(())
     } else {

@@ -654,7 +654,9 @@ fn group_guard(
 /// `{"type": "ntfy", "url": "https://ntfy.sh/my-topic"}`, or for email
 /// `{"type": "email", "url": "smtp://smtp.gmail.com:587", "from": "me@gmail.com", "to":
 /// ["me@gmail.com"], "username": "me@gmail.com", "password_file": "/run/secrets/smtp"}`.
-/// Secrets stay in files on the node (`token_file`, `password_file`): only the path is sent.
+/// Secrets stay in files on the node (`token_file`, `password_file`): only the path is sent, and
+/// a password in `url` reads `<redacted>` wherever the destination is shown (API-014; send it
+/// back as it is to keep it, as long as the URL's host is unchanged).
 /// A destination the config files define is overridden until this one is deleted.
 #[utoipa::path(put, path = "/api/v1/alerts/destinations/{name}", tag = "config",
     params(("name" = String, Path, description = "The name."), DryRun),
@@ -1851,10 +1853,26 @@ async fn write(
         .and_then(|v| v.to_str().ok())
         .map(|k| format!("{}:{}", p.user_id, k.trim()))
         .filter(|k| !dry_run && k.len() > 2);
+    // REQ: API-014 (ADR-167 §4) — the record keeps a keyed hash of the whole request, never
+    // its text (a body can carry an upstream's headers), so a body differing only in a
+    // credential is another request.
+    let fingerprint = if key.is_some() {
+        let (kind, body) = match &op {
+            Op::Managed(k, b) => (Some(*k), b.as_ref()),
+            Op::Client(_) => (None, None),
+        };
+        match backend.idempotency_request(kind, &request, body) {
+            Ok(f) => Some(f),
+            Err(e) => return e.into_response(),
+        }
+    } else {
+        None
+    };
+    drop(request);
     let now = backend.now_unix_seconds();
-    if let Some(k) = &key {
+    if let (Some(k), Some(f)) = (&key, &fingerprint) {
         match auth.state().idempotent(k, now) {
-            Ok(Some(r)) if r.request == request.as_bytes() => return replay(&r),
+            Ok(Some(r)) if &r.request == f => return replay(&r),
             Ok(Some(_)) => {
                 return Problem::new(
                     Code::Conflict,
@@ -1913,11 +1931,12 @@ async fn write(
             &serde_json::json!({ "before": c["before"], "after": c["after"], "configVersion": c["configVersion"] }),
         );
     }
-    if let Some(k) = &key
+    if let (Some(k), Some(f)) = (&key, fingerprint)
         && status.is_success()
     {
+        // The response is the backend's, redacted already (API-014).
         let r = Replay {
-            request: request.into_bytes(),
+            request: f,
             status: status.as_u16(),
             response: text.clone(),
         };

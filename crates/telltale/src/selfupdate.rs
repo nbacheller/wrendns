@@ -98,7 +98,7 @@ pub(crate) fn run(o: &Options) -> Result<Outcome, String> {
         .map_err(|e| e.to_string())?;
     let outcome = rt.block_on(update(o, &exe, asset, RELEASE_KEY))?;
     if o.restart && matches!(outcome, Outcome::Updated { .. }) {
-        let status = std::process::Command::new("systemctl")
+        let status = scrubbed("systemctl")
             .args(["restart", "telltale"])
             .status()
             .map_err(|e| format!("updated, but `systemctl restart telltale` failed: {e}"))?;
@@ -198,7 +198,7 @@ fn install(exe: &Path, new: &[u8]) -> Result<PathBuf, String> {
     }
     set_executable(&staged).map_err(|e| err("cannot chmod", e))?;
     // A binary that can't even print its version (wrong arch, truncated) never goes live.
-    let ok = std::process::Command::new(&staged)
+    let ok = scrubbed(&staged)
         .arg("--version")
         .output()
         .is_ok_and(|o| o.status.success());
@@ -223,6 +223,16 @@ fn set_executable(p: &Path) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn set_executable(_: &Path) -> std::io::Result<()> {
     Ok(())
+}
+
+/// REQ: OPS-014, API-014 (ADR-167 §3) — a command that doesn't inherit the secrets keys, the
+/// bootstrap admin's password, or an API token (`telltale_config::NEVER_INHERITED`).
+pub(crate) fn scrubbed(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut c = std::process::Command::new(program);
+    for v in telltale_config::NEVER_INHERITED {
+        c.env_remove(v);
+    }
+    c
 }
 
 #[cfg(test)]

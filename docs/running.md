@@ -746,6 +746,7 @@ url = "exec:///usr/local/bin/consul-dns-plugin"
 args = ["--datacenter", "home"]
 ```
 - With `exec://`, TelltaleDNS starts the program and tells it where to listen in `TELLTALE_PLUGIN_SOCKET` (under `<data_dir>/plugins/`; `TELLTALE_UPSTREAM` has the upstream's name). If it exits, it's restarted after 1 s, then 2, 4, ... up to 60 s (back to 1 s once it has run for a minute). Its output goes to TelltaleDNS's log. It's stopped when the configuration changes or TelltaleDNS stops.
+- The plugin gets TelltaleDNS's environment except `TELLTALE_SECRETS_KEY`, `TELLTALE_SECRETS_PREVIOUS_KEY`, `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD`, `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH` and `TELLTALE_TOKEN` (the self-update's checks and restart don't get them either). Its `args` are treated as credentials: the API and `telltale config check --print` show them as `<redacted>`.
 - A plugin can't hurt the resolver: it's another process, every exchange has the upstream's timeout, and a dead plugin is a failing upstream like any other (health, breaker, the group's other members).
 
 ## How a query is answered
@@ -2036,7 +2037,8 @@ path = "telltale/shared.toml"             # the shared settings, in TelltaleDNS'
   `allowed_signers_file` are accepted (`git config gpg.format ssh`; Ed25519 keys).
 - **Webhook:** point the repository's push webhook at `https://<node>/api/v1/hooks/git` with
   the secret from `webhook_secret_file`. Changes then apply within seconds, not at the next
-  poll.
+  poll. A refused webhook gets a plain 401 (the log says why: a wrong signature, an unreadable
+  file), and an empty secret file refuses every webhook.
 - **Outages don't matter to DNS:** with the repository unreachable, every node keeps serving
   the last commit (`telltale_cluster_git_failing` and an alert after 15 minutes).
 - **What you see:** the Cluster page shows the repository, the commit in use (author,
@@ -3005,6 +3007,17 @@ Changes are stored in `state.db`, next to named devices and local names. **The c
 **Keep it in Git.** On a node whose configuration comes from Git (`[cluster] config_source = "gitops"`, as with the Helm chart and Argo CD or Flux), the change works at once, but a rebuild from Git won't have it. After **Apply** the UI shows the TOML to add to the repository (with the Helm chart: under `config:` in the values) with a **Copy** button, or which block to remove. Once Git has it, **Revert to the file** removes the UI's copy. The API returns the same text as `keepInGit`.
 
 The same through the API: `PUT` or `DELETE` on `/api/v1/upstreams/{name}`, `/api/v1/upstream-groups/{name}`, `/api/v1/lists/{name}`, and `/api/v1/groups/{name}`, with `?dryRun=true` to preview. The body has the same fields as the TOML section. `GET /api/v1/config/entries?kind=list` lists the entries with their sources.
+
+#### Credentials are never shown
+
+Some fields hold credentials: an upstream's `headers` (a DoH API token) and `args` (an `exec://` plugin's command line), a password in a URL (`https://me:password@doh.example/dns-query`, an upstream's `proxy`, an alert destination's `url`), an OIDC provider's `client_secret`, and `[telemetry.otlp] headers`. TelltaleDNS never sends one back once it has it:
+- `GET /api/v1/config/entries` shows each as `<redacted>` (a URL keeps its user and host: `https://me:<redacted>@doh.example/dns-query`), and the entry's `redacted` lists which fields (`headers.Authorization`, `args[1]`, `url`). A replica shows the primary's entries the same way, even from an older primary.
+- So do write responses, the audit log (both records of a change made on a replica), the TOML to keep a change in Git, pin and version diffs, every MCP tool and resource, and `telltale config check --print` (add `--show-secrets` to print them on the node itself).
+- **Sending `<redacted>` back keeps the value.** The UI and agents edit an entry by sending the definition they read back, markers included: each `<redacted>` keeps the stored value, as long as the entry still points where it did (`url`, `proxy`, `tls_server_name`, `tls_ca`, and `bootstrap` unchanged; the scheme is part of the URL). Change any of those and the credential has to be typed again: the write is refused with 422 `credential_reentry_required`, naming the field. That's the same for an agent's `plan_update_upstreams` that moves an upstream. A `<redacted>` with nothing stored behind it is 422 too, and `POST /api/v1/checks/upstream` never uses stored values (a draft with `<redacted>` is refused).
+- **Retries keep no request.** An `Idempotency-Key` record keeps a keyed hash of the request (keyed with the node's secrets key, below) and the redacted response, so a request that differs only in a header value is a different request (409). If the key can't be read, a write with an `Idempotency-Key` that sets a credential is refused (503 `secrets_locked`); send it without the header.
+- **Older records.** Upgrading deletes the retry records kept before (they held request bodies), with `secure_delete` on and the WAL truncated. Audit entries written before this version may hold an upstream's headers: the audit log's hash chain forbids rewriting them, so treat an older `state.db` (and its backups) as sensitive.
+
+**The node's secrets key.** Each full member has one key, which keys those hashes (and, later, the encrypted secrets store). It comes from the first of `TELLTALE_SECRETS_KEY`, a file named by `[node] secrets_key_file` (`TELLTALE_NODE_SECRETS_KEY_FILE`, for a mounted Kubernetes Secret), or `<data_dir>/secrets.key`, which the first start creates (mode 0600; never replaced). A key is `ttsk1:` and 43 base64url characters. Prefer a file to the variable, and on Kubernetes a `secretKeyRef` to a literal `value`. A configured key that can't be read leaves the node without one: DNS is unaffected, and the log says why. Resolver pods need none.
 
 ## API
 A REST API (JSON) listens on `0.0.0.0:8053` by default and also serves `/metrics` and the health probes:

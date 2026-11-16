@@ -6,7 +6,7 @@ TelltaleDNS reads one TOML file, `telltale.toml`, plus optional overrides. Every
 ```sh
 telltale config check telltale.toml               # "config OK" or a list of errors
 telltale config check telltale.toml node.toml     # later files override earlier ones
-telltale config check telltale.toml --print       # show the effective config (defaults + files + env)
+telltale config check telltale.toml --print       # show the effective config (defaults + files + env; credentials as <redacted>, --show-secrets to see them)
 telltale config check telltale.toml --no-env      # ignore TELLTALE_* variables
 ```
 Every problem is reported with the exact key path, and all problems are reported at once:
@@ -54,7 +54,7 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 ## Sections
 | Section | Purpose | Reference |
 |---|---|---|
-| `[node]` | role (`all`/`resolver`/`controller`), name, worker threads, data directory, `drain_delay_secs`, `maintenance_default_secs` (how long maintenance lasts when a request doesn't say; maintenance itself is node state, started from the Cluster page, `telltale ctl maintenance`, or the API) | `spec/02`, OPS-010 |
+| `[node]` | role (`all`/`resolver`/`controller`), name, worker threads, data directory, `drain_delay_secs`, `maintenance_default_secs` (how long maintenance lasts when a request doesn't say; maintenance itself is node state, started from the Cluster page, `telltale ctl maintenance`, or the API), `secrets_key_file` and `secrets_previous_key_file` (the node's secrets key in a file instead of `TELLTALE_SECRETS_KEY` or `<data_dir>/secrets.key`; see running.md, "Credentials are never shown") | `spec/02`, OPS-010, OPS-014 |
 | `[cluster]` | cluster name, site label, primary eligibility | `spec/12` |
 | `[cluster.rollout]` | staged rollouts: `canaries` (node IDs, `site:<name>`, or `ephemeral`; empty, the default, means changes reach every node at once), `bake_secs` (at least 5; 300), `servfail_pct` (5), `require_traffic`, `max_bake_secs` (3,600), `fail_on_disconnect` (true), `history` (versions kept for pinning; 20); shared across a cluster; also in Settings → Cluster | CLU-013, `docs/running.md` |
 | `[[listen]]` | `udp`, `tcp`, `dot`, `doh`, `doh3` (DoH over HTTP/3), and `doq` listeners; `tls` cert/key for the encrypted ones (reloaded on change), DoH `path`, `proxy_protocol` (v2) on TCP-based listeners. Default: UDP + TCP on port 53, IPv4 and IPv6 | `spec/03` §1, DNS-002/003/020 |

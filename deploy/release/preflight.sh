@@ -7,7 +7,7 @@
 # 1. X.Y.Z, with no suffix (pre-releases aren't cut by this workflow).
 # 2. Cargo.toml's workspace version and the chart's version are X.Y.Z.
 # 3. The tag vX.Y.Z doesn't exist yet.
-# 4. Release notes exist: deploy/release/notes/vX.Y.Z.md.
+# 4. Release notes exist, and aren't a draft: deploy/release/notes/vX.Y.Z.md.
 # 5. CI passed on the commit being tagged (default: HEAD).
 set -eu
 v=${1:?usage: preflight.sh <X.Y.Z> [commit]}
@@ -24,6 +24,10 @@ if git ls-remote --exit-code --tags origin "refs/tags/v$v" >/dev/null 2>&1; then
   fail "tag v$v already exists"
 fi
 [ -s "deploy/release/notes/v$v.md" ] || fail "write deploy/release/notes/v$v.md (the release's notes) first"
+# Notes started early (upgrade items kept as tasks land) open with `_Draft`.
+if grep -q '^_Draft' "deploy/release/notes/v$v.md"; then
+  fail "deploy/release/notes/v$v.md is still a draft: write the highlights and remove the _Draft line"
+fi
 
 # The CI workflow's runs for this commit: the newest must have succeeded.
 ci=$(gh run list --workflow ci.yml --commit "$sha" --limit 1 --json status,conclusion \

@@ -420,6 +420,11 @@ pub(crate) fn webhook_ok(cfg: &Config, signature: Option<&str>, body: &[u8]) -> 
         .as_ref()
         .ok_or("no webhook_secret_file is set")?;
     let secret = std::fs::read_to_string(file.as_str()).map_err(|e| format!("{file}: {e}"))?;
+    // REQ: API-014 (ADR-167 §4) — an empty secret is an empty HMAC key, which anyone can sign
+    // with: refused, whatever the signature.
+    if secret.trim().is_empty() {
+        return Err(format!("{file} is empty: a webhook secret is needed"));
+    }
     let sig = signature
         .and_then(|s| s.strip_prefix("sha256="))
         .ok_or("missing X-Hub-Signature-256")?;
@@ -495,5 +500,39 @@ mod tests {
         assert!(webhook_ok(&cfg, Some(&format!("sha256={hex}")), b"{}").is_ok());
         assert!(webhook_ok(&cfg, Some(&format!("sha256={hex}")), b"{\"x\":1}").is_err());
         assert!(webhook_ok(&cfg, None, b"{}").is_err());
+    }
+
+    /// REQ: API-014 (ADR-167 §4) — an empty secret file refuses every webhook, even one signed
+    /// with the empty key.
+    #[test]
+    fn api_014_empty_webhook_secret_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secret = tmp.path().join("hook");
+        std::fs::write(&secret, "  \n").unwrap();
+        let mut cfg = Config::default();
+        cfg.cluster.git = Some(telltale_config::GitSourceConfig {
+            repo: "https://example.com/r".into(),
+            git_ref: "main".into(),
+            path: "t.toml".into(),
+            credentials_file: None,
+            poll_secs: 60,
+            require_signed: false,
+            allowed_signers_file: None,
+            allow_rewind: false,
+            max_bytes: telltale_config::ByteSize::mib(1),
+            webhook_secret_file: Some(
+                telltale_config::SafeString::new(secret.to_string_lossy().into_owned()).unwrap(),
+            ),
+        });
+        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b"");
+        let tag = ring::hmac::sign(&key, b"{}");
+        let hex = tag
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .concat();
+        let e = webhook_ok(&cfg, Some(&format!("sha256={hex}")), b"{}").unwrap_err();
+        assert!(e.contains("empty"), "{e}");
     }
 }

@@ -2577,6 +2577,17 @@ impl Backend for ApiBackend {
         &self,
         body: serde_json::Value,
     ) -> telltale_api::BoxFuture<Result<telltale_api::model::CheckResult, Problem>> {
+        // REQ: API-014 (ADR-167 §4) — checks never resolve `<redacted>`: the draft is sent as
+        // typed, so a credential it uses has to be typed too.
+        if telltale_config::credentials::has_marker("upstream", &body) {
+            return Box::pin(async {
+                Err(Problem::new(
+                    Code::CredentialReentryRequired,
+                    "the draft sends `<redacted>` for a credential, and a check never uses stored values",
+                )
+                .hint("Enter the credential in the draft to check it, or save the upstream unchanged and check it from the Upstreams page."))
+            });
+        }
         let cfg = self.src.config.load_full();
         Box::pin(async move { crate::checks::upstream(&cfg, body).await })
     }
@@ -2893,6 +2904,7 @@ impl Backend for ApiBackend {
                     }
                     .to_owned(),
                     definition: serde_json::to_value(e).ok(),
+                    redacted: Vec::new(),
                 });
             }
             for (n, o) in stored {
@@ -2902,6 +2914,7 @@ impl Backend for ApiBackend {
                         name: n.clone(),
                         source: "hidden".to_owned(),
                         definition: None,
+                        redacted: Vec::new(),
                     });
                 }
             }
@@ -2970,6 +2983,7 @@ impl Backend for ApiBackend {
                 }
                 .to_owned(),
                 definition: serde_json::to_value(&cfg.ratelimit).ok(),
+                redacted: Vec::new(),
             });
         }
         // REQ: OBS-022 (T12.1) — likewise, the exclusions.
@@ -2984,6 +2998,7 @@ impl Backend for ApiBackend {
                 }
                 .to_owned(),
                 definition: serde_json::to_value(&cfg.exclusions).ok(),
+                redacted: Vec::new(),
             });
         }
         // REQ: CLU-013 (T13.2) — likewise, the rollout settings.
@@ -2998,6 +3013,7 @@ impl Backend for ApiBackend {
                 }
                 .to_owned(),
                 definition: serde_json::to_value(&cfg.cluster.rollout).ok(),
+                redacted: Vec::new(),
             });
         }
         // REQ: OBS-024 (T13.1) — likewise, the simulation settings.
@@ -3012,6 +3028,7 @@ impl Backend for ApiBackend {
                 }
                 .to_owned(),
                 definition: serde_json::to_value(&cfg.simulate).ok(),
+                redacted: Vec::new(),
             });
         }
         // REQ: FLT-010 (T9.7)
@@ -3043,7 +3060,44 @@ impl Backend for ApiBackend {
                 &mut out,
             );
         }
+        // REQ: API-014 — credentials never leave in a definition.
+        crate::redact::entries(&mut out);
         out
+    }
+
+    // REQ: API-014 (ADR-167 §4, AGT-003) — an `Idempotency-Key` record keeps a hash of the
+    // request keyed with this node's secrets key. Without the key, a body that sets a credential
+    // isn't kept at all (503); one that sets none has nothing to protect, so a plain hash does.
+    fn idempotency_request(
+        &self,
+        kind: Option<ManagedKind>,
+        request: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<Vec<u8>, Problem> {
+        let cfg = self.src.config.load();
+        if let Ok(k) = self.src.secrets_key.get(&cfg) {
+            return Ok(k
+                .current
+                .idempotency_digest(request.as_bytes())
+                .into_bytes());
+        }
+        let credential = match (kind, body) {
+            (Some(k), Some(b)) => {
+                telltale_config::credentials::has_credential(crate::redact::api_kind(k), b)
+            }
+            _ => false,
+        };
+        if credential {
+            return Err(Problem::new(
+                Code::SecretsLocked,
+                "this node's secrets key can't be read, so a retry record of a change with a credential can't be kept",
+            )
+            .hint("Send the change without Idempotency-Key, or fix the key (the server log says what's wrong: TELLTALE_SECRETS_KEY, [node] secrets_key_file, or secrets.key in the data directory)."));
+        }
+        Ok(blake3::hash(request.as_bytes())
+            .to_hex()
+            .as_bytes()
+            .to_vec())
     }
 
     // REQ: OPS-004 (ADR-046) — "Check now" in Settings.
@@ -3282,9 +3336,12 @@ impl Backend for ApiBackend {
                 "this node has no Git configuration source",
             ));
         }
+        // REQ: API-014 (ADR-167 §4) — the caller learns only that it was refused; why (a file
+        // path, an I/O error) goes to the log for the operator.
         crate::gitsource::webhook_ok(&cfg, signature.as_deref(), &body).map_err(|e| {
-            Problem::new(Code::Unauthorized, e).hint(
-                "Set the webhook's secret to the contents of [cluster.git] webhook_secret_file.",
+            tracing::warn!("Git webhook refused: {e}");
+            Problem::new(Code::Unauthorized, "the webhook's signature wasn't accepted").hint(
+                "Set the webhook's secret to the contents of [cluster.git] webhook_secret_file; the server log says why it was refused.",
             )
         })?;
         self.src.git_poke.notify_one();
@@ -3428,7 +3485,8 @@ impl Backend for ApiBackend {
                 UpstreamInfo {
                     id: u.id,
                     name: u.name.clone(),
-                    endpoint: u.endpoint.to_string(),
+                    // REQ: API-014 — a URL's password never leaves.
+                    endpoint: telltale_config::credentials::url_shown(&u.endpoint.to_string()),
                     groups: cfg
                         .upstream_group
                         .iter()
@@ -4701,6 +4759,38 @@ fn named_json<T: crate::managed::Named + Serialize>(
 /// removes what the API stored (so the files' entry, if any, is back), or else hides the
 /// files' entry. The merged configuration must validate.
 #[allow(clippy::too_many_lines)] // one branch per kind of entry
+/// REQ: API-014 (ADR-167 §4) — `w`'s body with every `<redacted>` replaced by the value in
+/// effect (`current`'s entry `name`), when it sends any back; 422
+/// `credential_reentry_required` when its destination changed or there is no value to keep.
+fn restore_markers(
+    w: &ManagedWrite,
+    name: &str,
+    current: &telltale_config::Config,
+) -> Result<Option<serde_json::Value>, Problem> {
+    let kind = crate::redact::api_kind(w.kind);
+    let Some(body) = w
+        .body
+        .as_ref()
+        .filter(|b| telltale_config::credentials::has_marker(kind, b))
+    else {
+        return Ok(None);
+    };
+    let entry = match w.kind {
+        ManagedKind::Upstream => named_json(&current.upstream, name),
+        ManagedKind::AlertDestination => named_json(&current.alerts.destination, name),
+        _ => None,
+    };
+    let mut body = body.clone();
+    telltale_config::credentials::restore_markers(kind, &mut body, entry.as_ref()).map_err(|e| {
+        Problem::new(Code::CredentialReentryRequired, e.why).hint(format!(
+            "Send the value of `{}` itself (a credential is kept only while the entry points where it did).",
+            e.field
+        ))
+    })?;
+    Ok(Some(body))
+}
+
+#[allow(clippy::too_many_lines)] // one branch per kind of entry
 fn plan_override(
     src: &Sources,
     state: &telltale_store::state::State,
@@ -4714,45 +4804,50 @@ fn plan_override(
     let file = src.file_config.load_full();
     let mut entries = crate::managed::entries(state);
     let before_cfg = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
+    // REQ: API-014 (ADR-167 §4, the marker rule) — `<redacted>` sent back keeps the value in
+    // effect while the destination is unchanged; otherwise the credential is entered again.
+    let restored = restore_markers(w, &name, &before_cfg)?;
+    let body_in = restored.as_ref().or(w.body.as_ref());
     // REQ: API-002 (T9.22) — removing an upstream also takes it out of its upstream groups.
     // A DELETE that reverts an override of the files' entry (or un-hides it) brings the
     // upstream back: nothing to cascade.
     let reverting = entries.upstreams.iter().any(|(n, _)| *n == name)
         && file.upstream.iter().any(|u| u.name() == name);
-    let (also, also_groups) = if w.kind == ManagedKind::Upstream && w.body.is_none() && !reverting {
+    let (also, also_groups) = if w.kind == ManagedKind::Upstream && body_in.is_none() && !reverting
+    {
         upstream_cascade(&name, &file, &before_cfg, &mut entries)?
     } else {
         (Vec::new(), Vec::new())
     };
-    if w.kind == ManagedKind::UpstreamGroup && w.body.is_none() {
+    if w.kind == ManagedKind::UpstreamGroup && body_in.is_none() {
         upstream_group_in_use(&name, &file, &entries, &before_cfg)?;
     }
 
     let (before, body) = match w.kind {
         ManagedKind::Upstream => override_step(
             &name,
-            w.body.as_ref(),
+            body_in,
             file.upstream.iter().any(|u| u.name() == name),
             before_cfg.upstream.iter().find(|u| u.name() == name),
             &mut entries.upstreams,
         )?,
         ManagedKind::UpstreamGroup => override_step(
             &name,
-            w.body.as_ref(),
+            body_in,
             file.upstream_group.iter().any(|u| u.name() == name),
             before_cfg.upstream_group.iter().find(|u| u.name() == name),
             &mut entries.upstream_groups,
         )?,
         ManagedKind::List => override_step(
             &name,
-            w.body.as_ref(),
+            body_in,
             file.list.iter().any(|u| u.name() == name),
             before_cfg.list.iter().find(|u| u.name() == name),
             &mut entries.lists,
         )?,
         ManagedKind::AlertDestination => override_step(
             &name,
-            w.body.as_ref(),
+            body_in,
             file.alerts.destination.iter().any(|u| u.name() == name),
             before_cfg
                 .alerts
@@ -4763,31 +4858,31 @@ fn plan_override(
         )?,
         ManagedKind::AlertRule => override_step(
             &name,
-            w.body.as_ref(),
+            body_in,
             file.alerts.rule.iter().any(|u| u.name() == name),
             before_cfg.alerts.rule.iter().find(|u| u.name() == name),
             &mut entries.alert_rules,
         )?,
         ManagedKind::Schedule => override_step(
             &name,
-            w.body.as_ref(),
+            body_in,
             file.schedule.iter().any(|u| u.name() == name),
             before_cfg.schedule.iter().find(|u| u.name() == name),
             &mut entries.schedules,
         )?,
         ManagedKind::AnomalyMute => override_step(
             &name,
-            w.body.as_ref(),
+            body_in,
             file.anomaly_mute.iter().any(|u| u.name() == name),
             before_cfg.anomaly_mute.iter().find(|u| u.name() == name),
             &mut entries.anomaly_mutes,
         )?,
         ManagedKind::KubernetesMap => {
-            kubernetes_map_step(&name, w.body.as_ref(), &file, &before_cfg, &mut entries)?
+            kubernetes_map_step(&name, body_in, &file, &before_cfg, &mut entries)?
         }
         _ => override_step(
             &name,
-            w.body.as_ref(),
+            body_in,
             file.group.iter().any(|u| u.name() == name),
             before_cfg.group.iter().find(|u| u.name() == name),
             &mut entries.groups,
@@ -4812,7 +4907,7 @@ fn plan_override(
         _ => named_json(&merged.group, &name),
     };
     let warnings = telltale_config::validate_config(&merged).unwrap_or_default();
-    let (recent_queries, impact) = managed_impact(src, w.kind, &name, w.body.is_some());
+    let (recent_queries, impact) = managed_impact(src, w.kind, &name, body_in.is_some());
     let impact = with_cascade(impact, &also_groups);
     Ok(ManagedPlan {
         name,
@@ -5038,6 +5133,7 @@ impl ApiBackend {
         out
     }
 
+    #[allow(clippy::too_many_lines)] // plan, dry run, store, apply: one path
     pub(crate) fn do_write_managed(
         &self,
         w: ManagedWrite,
@@ -5066,18 +5162,34 @@ impl ApiBackend {
                 .map_err(|e| Problem::internal(format!("request worker failed: {e}")))??
             };
             // T7.5 — on a Git-managed node, what to add to Git to keep the change.
-            let keep_in_git = (src.config.load().cluster.config_source.as_str() == "gitops")
-                .then(|| keep_in_git(w.kind, &plan.name, w.body.as_ref(), plan.after.as_ref()));
-            let change = |applied, version| ConfigChange {
-                applied,
-                config_version: version,
-                before: plan.before.clone(),
-                after: plan.after.clone(),
-                recent_queries: plan.recent_queries,
-                impact: plan.impact.clone(),
-                warnings: plan.warnings.clone(),
-                keep_in_git: keep_in_git.clone(),
-                simulation: None,
+            // REQ: API-014 — from the redacted body and entry: never a credential's value.
+            let keep_in_git =
+                (src.config.load().cluster.config_source.as_str() == "gitops").then(|| {
+                    let body = crate::redact::body(w.kind, w.body.as_ref());
+                    let after = crate::redact::body(w.kind, plan.after.as_ref());
+                    let text = keep_in_git(w.kind, &plan.name, body.as_ref(), after.as_ref());
+                    if text.contains(telltale_config::credentials::MARKER) {
+                        format!("{}{text}", crate::redact::GIT_NOTE)
+                    } else {
+                        text
+                    }
+                });
+            let change = |applied, version| {
+                let mut c = ConfigChange {
+                    applied,
+                    config_version: version,
+                    before: plan.before.clone(),
+                    after: plan.after.clone(),
+                    recent_queries: plan.recent_queries,
+                    impact: plan.impact.clone(),
+                    warnings: plan.warnings.clone(),
+                    keep_in_git: keep_in_git.clone(),
+                    simulation: None,
+                };
+                // REQ: API-014 — the answer, and so both audit records and the stored
+                // idempotency response, carry no credential.
+                crate::redact::change(w.kind, &mut c);
+                c
             };
             if w.dry_run {
                 if let Some(v) = w.expect

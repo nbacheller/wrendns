@@ -1024,7 +1024,18 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         probes: Arc::default(),
         shadow,
         traces,
+        secrets_key: crate::secrets::KeySlot::default(),
     });
+    // REQ: OPS-014, API-014 (ADR-167 §3) — the node key, at start on full members (made on the
+    // first one), so a missing or unreadable key shows in the log at once. Resolver pods hold
+    // no secrets and need none. Nothing here waits on it (a blocking task: the file is synced
+    // when made): DNS doesn't depend on the key.
+    if !cfg.cluster.ephemeral {
+        let (s, c) = (Arc::clone(&sources), cfg.clone());
+        tokio::task::spawn_blocking(move || {
+            let _ = s.secrets_key.get(&c);
+        });
+    }
     http::serve_peers(&sources);
     // REQ: OBS-025 — device identification, on a thread of its own.
     sources.identify.spawn(Arc::clone(&sources));

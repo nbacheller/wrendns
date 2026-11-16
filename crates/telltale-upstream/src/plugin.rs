@@ -31,6 +31,29 @@ impl Drop for Supervisor {
     }
 }
 
+/// The plugin's command line and environment. REQ: OPS-014, API-014 (ADR-167 §3) — it inherits
+/// the server's environment but never the secrets keys, the bootstrap admin's password, or an
+/// API token (`telltale_config::NEVER_INHERITED`).
+fn command(
+    program: &std::path::Path,
+    args: &[String],
+    socket: &std::path::Path,
+    name: &str,
+) -> Command {
+    let mut c = Command::new(program);
+    c.args(args)
+        .env("TELLTALE_PLUGIN_SOCKET", socket)
+        .env("TELLTALE_UPSTREAM", name)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    for v in telltale_config::NEVER_INHERITED {
+        c.env_remove(v);
+    }
+    c
+}
+
 /// Starts `program args` with `TELLTALE_PLUGIN_SOCKET=socket`, restarting it when it exits
 /// (1 s, doubling to 60 s; back to 1 s after a minute of running). Without a Tokio runtime
 /// (config checks), nothing is started.
@@ -52,15 +75,7 @@ pub(crate) fn supervise(
             }
             let _ = std::fs::remove_file(&socket);
             let started = Instant::now();
-            let child = Command::new(&program)
-                .args(&args)
-                .env("TELLTALE_PLUGIN_SOCKET", &socket)
-                .env("TELLTALE_UPSTREAM", &name)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true)
-                .spawn();
+            let child = command(&program, &args, &socket, &name).spawn();
             match child {
                 Ok(mut child) => {
                     info!(upstream = %name, program = %program.display(), "plugin started");
@@ -112,5 +127,48 @@ impl Either {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::*;
+
+    /// REQ: OPS-014, API-014 (ADR-167 §3) — a plugin is started without the secrets keys, the
+    /// bootstrap password, or the API token, and with its own socket and name.
+    #[test]
+    fn ops_014_plugin_env_has_no_secrets_key() {
+        let c = command(
+            std::path::Path::new("/usr/local/bin/plugin"),
+            &["--flag".to_owned()],
+            std::path::Path::new("/run/telltale/p.sock"),
+            "plug",
+        );
+        let envs: Vec<(String, Option<String>)> = c
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        for k in [
+            "TELLTALE_SECRETS_KEY",
+            "TELLTALE_SECRETS_PREVIOUS_KEY",
+            "TELLTALE_BOOTSTRAP_ADMIN_PASSWORD",
+            "TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH",
+            "TELLTALE_TOKEN",
+        ] {
+            assert!(
+                envs.contains(&(k.to_owned(), None)),
+                "{k} removed: {envs:?}"
+            );
+        }
+        assert!(envs.contains(&(
+            "TELLTALE_PLUGIN_SOCKET".to_owned(),
+            Some("/run/telltale/p.sock".to_owned())
+        )));
     }
 }

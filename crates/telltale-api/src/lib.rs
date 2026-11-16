@@ -484,6 +484,23 @@ pub trait Backend: Send + Sync + 'static {
     fn config_version(&self) -> u64 {
         0
     }
+    /// REQ: API-014 (ADR-167 §4, AGT-003) — what an `Idempotency-Key` record keeps of a write:
+    /// never its text, a hash of it. The node keys it under its secrets key; `kind` and `body`
+    /// say whether the body sets a credential, which can't be kept without that key (503
+    /// `secrets_locked`). This default (an unkeyed hash) is for backends that hold no
+    /// configuration.
+    fn idempotency_request(
+        &self,
+        kind: Option<ManagedKind>,
+        request: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<Vec<u8>, Problem> {
+        let _ = (kind, body);
+        Ok(blake3::hash(request.as_bytes())
+            .to_hex()
+            .as_bytes()
+            .to_vec())
+    }
     /// REQ: OBS-025 (T13.3) — what each device seen lately looks like.
     fn identities(&self) -> Vec<model::DeviceIdentity> {
         Vec::new()
@@ -2032,7 +2049,13 @@ async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
 /// from (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the
 /// config files' entry of the same name), or `hidden` (the files' entry is left out; listed so
 /// it can be brought back). `DELETE` on an override's or a hidden entry's path brings the
-/// files' version back. Secrets aren't part of these sections.
+/// files' version back.
+///
+/// Credentials never come back (API-014): upstream `headers` and `args`, and the password in a
+/// URL (`https://me:<redacted>@host/`) read `<redacted>`, and `redacted` lists where. Sending
+/// `<redacted>` back in a `PUT` keeps the stored value while the entry's destination (`url`,
+/// `proxy`, `tls_server_name`, `tls_ca`, `bootstrap`) is unchanged; with a new destination the
+/// credential has to be entered again (422 `credential_reentry_required`).
 #[utoipa::path(get, path = "/api/v1/config/entries", tag = "config",
     params(EntriesQuery),
     responses((status = 200, body = Items<ConfigEntry>, description = "The entries, by kind and name.")))]

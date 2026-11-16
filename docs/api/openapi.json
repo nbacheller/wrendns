@@ -37,7 +37,7 @@
           "config"
         ],
         "summary": "Add or change an alert destination (OBS-010, T9.6).",
-        "description": "The body has the same fields as `[[alerts.destination]]` (the name comes from the path):\n`{\"type\": \"ntfy\", \"url\": \"https://ntfy.sh/my-topic\"}`, or for email\n`{\"type\": \"email\", \"url\": \"smtp://smtp.gmail.com:587\", \"from\": \"me@gmail.com\", \"to\":\n[\"me@gmail.com\"], \"username\": \"me@gmail.com\", \"password_file\": \"/run/secrets/smtp\"}`.\nSecrets stay in files on the node (`token_file`, `password_file`): only the path is sent.\nA destination the config files define is overridden until this one is deleted.",
+        "description": "The body has the same fields as `[[alerts.destination]]` (the name comes from the path):\n`{\"type\": \"ntfy\", \"url\": \"https://ntfy.sh/my-topic\"}`, or for email\n`{\"type\": \"email\", \"url\": \"smtp://smtp.gmail.com:587\", \"from\": \"me@gmail.com\", \"to\":\n[\"me@gmail.com\"], \"username\": \"me@gmail.com\", \"password_file\": \"/run/secrets/smtp\"}`.\nSecrets stay in files on the node (`token_file`, `password_file`): only the path is sent, and\na password in `url` reads `<redacted>` wherever the destination is shown (API-014; send it\nback as it is to keep it, as long as the URL's host is unchanged).\nA destination the config files define is overridden until this one is deleted.",
         "operationId": "put_alert_destination",
         "parameters": [
           {
@@ -3309,7 +3309,7 @@
           "config"
         ],
         "summary": "The configuration's upstreams, upstream groups, lists, and groups, with their sources.",
-        "description": "Each definition in effect, with the same fields as in `telltale.toml`, and where it comes\nfrom (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the\nconfig files' entry of the same name), or `hidden` (the files' entry is left out; listed so\nit can be brought back). `DELETE` on an override's or a hidden entry's path brings the\nfiles' version back. Secrets aren't part of these sections.",
+        "description": "Each definition in effect, with the same fields as in `telltale.toml`, and where it comes\nfrom (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the\nconfig files' entry of the same name), or `hidden` (the files' entry is left out; listed so\nit can be brought back). `DELETE` on an override's or a hidden entry's path brings the\nfiles' version back.\n\nCredentials never come back (API-014): upstream `headers` and `args`, and the password in a\nURL (`https://me:<redacted>@host/`) read `<redacted>`, and `redacted` lists where. Sending\n`<redacted>` back in a `PUT` keeps the stored value while the entry's destination (`url`,\n`proxy`, `tls_server_name`, `tls_ca`, `bootstrap`) is unchanged; with a new destination the\ncredential has to be entered again (422 `credential_reentry_required`).",
         "operationId": "config_entries",
         "parameters": [
           {
@@ -11275,7 +11275,9 @@
           "drill_active",
           "drill_targets",
           "node_is_primary",
-          "node_is_up"
+          "node_is_up",
+          "credential_reentry_required",
+          "secrets_locked"
         ]
       },
       "ConfigChange": {
@@ -11362,7 +11364,7 @@
               "object",
               "null"
             ],
-            "description": "The definition in effect, with the same fields as in `telltale.toml` (absent when\nhidden)."
+            "description": "The definition in effect, with the same fields as in `telltale.toml` (absent when\nhidden). Credentials read `<redacted>` (API-014)."
           },
           "kind": {
             "type": "string",
@@ -11370,6 +11372,13 @@
           },
           "name": {
             "type": "string"
+          },
+          "redacted": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "REQ: API-014 — the fields of `definition` that hold a credential and read `<redacted>`\n(`headers.Authorization`, `args[1]`, `url` for a URL's password). Send them back as they\nare to keep the values."
           },
           "source": {
             "type": "string",
@@ -14184,7 +14193,7 @@
                     "object",
                     "null"
                   ],
-                  "description": "The definition in effect, with the same fields as in `telltale.toml` (absent when\nhidden)."
+                  "description": "The definition in effect, with the same fields as in `telltale.toml` (absent when\nhidden). Credentials read `<redacted>` (API-014)."
                 },
                 "kind": {
                   "type": "string",
@@ -14192,6 +14201,13 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "redacted": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "REQ: API-014 — the fields of `definition` that hold a credential and read `<redacted>`\n(`headers.Authorization`, `args[1]`, `url` for a URL's password). Send them back as they\nare to keep the values."
                 },
                 "source": {
                   "type": "string",

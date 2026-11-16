@@ -1664,6 +1664,15 @@ Non-secret settings that exist only in files are phased with the forms that need
 5. Agents get no write scope for router or `[identify]` fields for now (admin-only, as above). Revisit after T23.8.
 6. Audit entries written before T23.1 stay as they are (the hash chain forbids rewriting); the release note warns about them.
 
+**Implementation notes (T23.1, 2026-11-16; Proposed, for the owner):**
+1. **Sites with nothing to redact.** `apply_ack` audits finding IDs and a count, never a configuration body, so it is unchanged. `compare.rs` (`GET /cluster/compare`) carries only numbers and node labels. The surfaces that do carry shared configuration are the pin and version diffs (`rollout/surface.rs`, also the 409 `cluster_pinned` body): both sides are redacted before the diff. `GET /upstreams`' `endpoint` goes through the URL redaction too.
+2. **Checks and markers.** "Checks never resolve markers" is implemented as a refusal: `POST /checks/upstream` with `<redacted>` at a credential path is 422 `credential_reentry_required`, so a check never runs with a literal marker as a header.
+3. **Destination comparison.** Absent, `null`, `""` and `[]` count as the same value; URLs are compared with their passwords replaced by the marker, so a changed user name or host is a changed destination. A URL's user information runs to the last `@` before any `?` or `#` (conservative: a stray `/` in a password is still redacted).
+4. **The node key in T23.1.** `telltale::secrets` loads the key at start on full members, in a blocking task (DNS never waits for it). With no `secrets` table yet, the data-directory key is made whenever it is missing; T23.3 adds the empty-table condition and the locked state. A key file with any "other" permission bit or group write warns; the owner check needs the process's uid (no `libc` in the binary) and is left to T23.3. `zeroize` isn't used yet (it becomes direct in T23.3).
+5. **Idempotency without a key.** With the key unavailable, a write carrying `Idempotency-Key` and a credential is 503 `secrets_locked` (the code is added now); one without a credential keeps a plain BLAKE3 of the request, which holds nothing secret.
+6. **Delivery errors.** Besides percent-encoding the Gotify token, an HTTP error that quotes the request has the token replaced by the marker.
+7. **Release notes.** `deploy/release/notes/v0.8.0.md` is started as a draft with the upgrade items (older audit entries, the purge, the new key), and `preflight.sh` refuses notes whose first line begins `_Draft`.
+
 ## ADR-166 — More naming sources: UniFi reservations and networks, Home Assistant through a template, and a fixed order when sources disagree (Proposed)
 **Context:** T22.2, T22.3 (API-012, API-013). ADR-080 left UniFi's offline known clients undone; Home Assistant knows curated names for IoT devices (by MAC, not IP); a home has a router *and* Home Assistant naming the same address. ADR-080's lease view kept whichever router was read last (a `HashMap` walk).
 **Decision:**

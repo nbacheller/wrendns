@@ -301,6 +301,8 @@
         "maintenance_default_secs": 3600,
         "name": "",
         "role": "all",
+        "secrets_key_file": "",
+        "secrets_previous_key_file": "",
         "workers": 0
       }
     },
@@ -2620,6 +2622,18 @@
           "description": "Process role.",
           "$ref": "#/$defs/Role",
           "default": "all"
+        },
+        "secrets_key_file": {
+          "description": "REQ: OPS-014, API-014 (ADR-167 §3) — a file holding this node's secrets key\n(`ttsk1:...`), for example a mounted Kubernetes Secret. It keys the hashes kept for\n`Idempotency-Key` retries. Empty: the `TELLTALE_SECRETS_KEY` variable, else\n`<data_dir>/secrets.key` (made, mode 0600, on first start). Set it from the environment as\n`TELLTALE_NODE_SECRETS_KEY_FILE`.",
+          "type": "string",
+          "default": "",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "secrets_previous_key_file": {
+          "description": "REQ: OPS-014 — the key before a rotation, in a file (or `TELLTALE_SECRETS_PREVIOUS_KEY`).",
+          "type": "string",
+          "default": "",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "workers": {
           "description": "UDP worker threads; 0 means `min(cgroup CPU limit, cores)`.",

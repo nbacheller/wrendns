@@ -87,6 +87,7 @@ pub(crate) fn sources_in(dir: &std::path::Path) -> Sources {
         probes: Arc::default(),
         shadow: Arc::new(crate::shadow::Shadow::new(0, 0)),
         traces: Arc::default(),
+        secrets_key: crate::secrets::KeySlot::default(),
     }
 }
 

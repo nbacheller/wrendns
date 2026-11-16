@@ -41,7 +41,9 @@ export interface paths {
          *     `{"type": "ntfy", "url": "https://ntfy.sh/my-topic"}`, or for email
          *     `{"type": "email", "url": "smtp://smtp.gmail.com:587", "from": "me@gmail.com", "to":
          *     ["me@gmail.com"], "username": "me@gmail.com", "password_file": "/run/secrets/smtp"}`.
-         *     Secrets stay in files on the node (`token_file`, `password_file`): only the path is sent.
+         *     Secrets stay in files on the node (`token_file`, `password_file`): only the path is sent, and
+         *     a password in `url` reads `<redacted>` wherever the destination is shown (API-014; send it
+         *     back as it is to keep it, as long as the URL's host is unchanged).
          *     A destination the config files define is overridden until this one is deleted.
          */
         put: operations["put_alert_destination"];
@@ -1404,7 +1406,13 @@ export interface paths {
          *     from (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the
          *     config files' entry of the same name), or `hidden` (the files' entry is left out; listed so
          *     it can be brought back). `DELETE` on an override's or a hidden entry's path brings the
-         *     files' version back. Secrets aren't part of these sections.
+         *     files' version back.
+         *
+         *     Credentials never come back (API-014): upstream `headers` and `args`, and the password in a
+         *     URL (`https://me:<redacted>@host/`) read `<redacted>`, and `redacted` lists where. Sending
+         *     `<redacted>` back in a `PUT` keeps the stored value while the entry's destination (`url`,
+         *     `proxy`, `tls_server_name`, `tls_ca`, `bootstrap`) is unchanged; with a new destination the
+         *     credential has to be entered again (422 `credential_reentry_required`).
          */
         get: operations["config_entries"];
         put?: never;
@@ -1424,9 +1432,10 @@ export interface paths {
         };
         /**
          * Devices found on the network (API-010; T8.2, T8.3).
-         * @description The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense), then the
-         *     names devices announce over mDNS (`[clients] mdns`), each with the name the device has in
-         *     TelltaleDNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name
+         * @description The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense, and the
+         *     devices Home Assistant names), then the names devices announce over mDNS (`[clients] mdns`),
+         *     each with the name the device has in TelltaleDNS and, with `[local] device_domain`, the
+         *     name it answers as in DNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name
          *     because these are the router's DHCP leases.
          */
         get: operations["dhcp_leases"];
@@ -1839,6 +1848,30 @@ export interface paths {
          *     deleted in turn. The configuration is checked first (say, a group still using a list).
          */
         delete: operations["delete_list"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/networks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Networks on your network: subnets, VLANs, and how full they are (API-013; T22.2).
+         * @description The LANs and VLANs your routers report (`[[router]]`, UniFi: subnet, VLAN, DHCP pool,
+         *     domain), then any client group's `networks` that no router reported. Each with the group
+         *     that covers it and how many known devices are in it (the routers' DHCP clients, Home
+         *     Assistant's devices, and mDNS names), so you can see which networks are filling up. Read
+         *     on this node (the one that reads the routers).
+         */
+        get: operations["networks"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -4219,7 +4252,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "credential_reentry_required" | "secrets_locked";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -4259,12 +4292,18 @@ export interface components {
         ConfigEntry: {
             /**
              * @description The definition in effect, with the same fields as in `telltale.toml` (absent when
-             *     hidden).
+             *     hidden). Credentials read `<redacted>` (API-014).
              */
             definition?: Record<string, never> | null;
             /** @description `upstream`, `upstream_group`, `list`, or `group`. */
             kind: string;
             name: string;
+            /**
+             * @description REQ: API-014 — the fields of `definition` that hold a credential and read `<redacted>`
+             *     (`headers.Authorization`, `args[1]`, `url` for a URL's password). Send them back as they
+             *     are to keep the values.
+             */
+            redacted?: string[];
             /**
              * @description `file` (the config files), `added` (made through the UI or API), `override` (replaces
              *     the files' entry of that name), or `hidden` (the files' entry is left out).
@@ -4401,6 +4440,11 @@ export interface components {
             /** @description The device's name in TelltaleDNS (a named client, else the host name). */
             clientName?: string | null;
             /**
+             * @description REQ: DNS-023 (T22.1) — the name it answers as in DNS (`kitchen-tablet.home.arpa`),
+             *     with `[local] device_domain` set.
+             */
+            dnsName?: string | null;
+            /**
              * Format: int64
              * @description When the router's lease ends (Unix seconds; 0 when unknown).
              */
@@ -4409,6 +4453,11 @@ export interface components {
             hostname?: string | null;
             ip: string;
             mac: string;
+            /**
+             * @description REQ: API-012 (T22.3) — the `[[router]]` whose answer named it (`udm`,
+             *     `home-assistant`); absent for mDNS.
+             */
+            router?: string | null;
             /**
              * @description `router` (read from a `[[router]]`) or `mdns` (the name the device announces,
              *     `[clients] mdns`; no MAC).
@@ -5356,12 +5405,18 @@ export interface components {
             items: {
                 /**
                  * @description The definition in effect, with the same fields as in `telltale.toml` (absent when
-                 *     hidden).
+                 *     hidden). Credentials read `<redacted>` (API-014).
                  */
                 definition?: Record<string, never> | null;
                 /** @description `upstream`, `upstream_group`, `list`, or `group`. */
                 kind: string;
                 name: string;
+                /**
+                 * @description REQ: API-014 — the fields of `definition` that hold a credential and read `<redacted>`
+                 *     (`headers.Authorization`, `args[1]`, `url` for a URL's password). Send them back as they
+                 *     are to keep the values.
+                 */
+                redacted?: string[];
                 /**
                  * @description `file` (the config files), `added` (made through the UI or API), `override` (replaces
                  *     the files' entry of that name), or `hidden` (the files' entry is left out).
@@ -5429,6 +5484,11 @@ export interface components {
                 /** @description The device's name in TelltaleDNS (a named client, else the host name). */
                 clientName?: string | null;
                 /**
+                 * @description REQ: DNS-023 (T22.1) — the name it answers as in DNS (`kitchen-tablet.home.arpa`),
+                 *     with `[local] device_domain` set.
+                 */
+                dnsName?: string | null;
+                /**
                  * Format: int64
                  * @description When the router's lease ends (Unix seconds; 0 when unknown).
                  */
@@ -5437,6 +5497,11 @@ export interface components {
                 hostname?: string | null;
                 ip: string;
                 mac: string;
+                /**
+                 * @description REQ: API-012 (T22.3) — the `[[router]]` whose answer named it (`udm`,
+                 *     `home-assistant`); absent for mDNS.
+                 */
+                router?: string | null;
                 /**
                  * @description `router` (read from a `[[router]]`) or `mdns` (the name the device announces,
                  *     `[clients] mdns`; no MAC).
@@ -5623,6 +5688,57 @@ export interface components {
                 records: components["schemas"]["RecordInput"][];
                 /** @description `file` (read-only here) or `api`. */
                 source: string;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
+        Items_NetworkInfo: {
+            items: {
+                /**
+                 * Format: int64
+                 * @description Host addresses in it (without the network and broadcast addresses).
+                 */
+                addresses: number;
+                /**
+                 * Format: int64
+                 * @description Devices known in it: the routers' DHCP clients, Home Assistant's devices, and mDNS
+                 *     names.
+                 */
+                devices: number;
+                dhcpEnd?: string | null;
+                /** @description The DHCP pool, when the router serves DHCP on it. */
+                dhcpStart?: string | null;
+                /** @description The domain the router hands out on it. */
+                domain?: string | null;
+                gateway?: string | null;
+                /** @description The client group whose networks hold it (most specific), if any. */
+                group?: string | null;
+                /** @example IoT */
+                name: string;
+                /**
+                 * Format: int64
+                 * @description Of `devices`, those outside the DHCP pool (fixed addresses and reservations).
+                 */
+                outsidePool: number;
+                /** @description The router's own word for it (UniFi: `corporate`, `guest`). */
+                purpose?: string | null;
+                /** @description The `[[router]]` that reported it. */
+                router?: string | null;
+                /** @description `router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry). */
+                source: string;
+                /**
+                 * @description The network in CIDR form.
+                 * @example 192.168.20.0/24
+                 */
+                subnet: string;
+                /**
+                 * Format: double
+                 * @description `devices` as a share of `addresses`, 0–100.
+                 */
+                usedPercent: number;
+                /** Format: int32 */
+                vlan?: number | null;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -6391,6 +6507,56 @@ export interface components {
          * @enum {string}
          */
         NameMatch: "substring" | "exact" | "suffix" | "glob" | "regex";
+        /**
+         * @description REQ: API-013 (T22.2) — a network: a LAN or VLAN a router reported, or a client group's
+         *     network that no router reported, with how many known devices are in it.
+         */
+        NetworkInfo: {
+            /**
+             * Format: int64
+             * @description Host addresses in it (without the network and broadcast addresses).
+             */
+            addresses: number;
+            /**
+             * Format: int64
+             * @description Devices known in it: the routers' DHCP clients, Home Assistant's devices, and mDNS
+             *     names.
+             */
+            devices: number;
+            dhcpEnd?: string | null;
+            /** @description The DHCP pool, when the router serves DHCP on it. */
+            dhcpStart?: string | null;
+            /** @description The domain the router hands out on it. */
+            domain?: string | null;
+            gateway?: string | null;
+            /** @description The client group whose networks hold it (most specific), if any. */
+            group?: string | null;
+            /** @example IoT */
+            name: string;
+            /**
+             * Format: int64
+             * @description Of `devices`, those outside the DHCP pool (fixed addresses and reservations).
+             */
+            outsidePool: number;
+            /** @description The router's own word for it (UniFi: `corporate`, `guest`). */
+            purpose?: string | null;
+            /** @description The `[[router]]` that reported it. */
+            router?: string | null;
+            /** @description `router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry). */
+            source: string;
+            /**
+             * @description The network in CIDR form.
+             * @example 192.168.20.0/24
+             */
+            subnet: string;
+            /**
+             * Format: double
+             * @description `devices` as a share of `addresses`, 0–100.
+             */
+            usedPercent: number;
+            /** Format: int32 */
+            vlan?: number | null;
+        };
         /** @description A new display: its link's code, shown only in this response. */
         NewDisplay: {
             /**
@@ -11523,6 +11689,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    networks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_NetworkInfo"];
                 };
             };
         };

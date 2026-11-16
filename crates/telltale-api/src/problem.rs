@@ -86,6 +86,12 @@ pub enum Code {
     NodeIsPrimary,
     /// REQ: CLU-001 (ADR-155) — the node to remove is up: pass `force` to cut it off anyway.
     NodeIsUp,
+    /// REQ: API-014 (ADR-167 §4) — a write sent `<redacted>` back for a credential whose entry
+    /// now points somewhere else (or that has no stored value): enter the credential again.
+    CredentialReentryRequired,
+    /// REQ: API-014, OPS-014 (ADR-167 §3) — this node's secrets key can't be read, so nothing
+    /// that needs it (a write with an `Idempotency-Key` that sets a credential) can be done.
+    SecretsLocked,
 }
 
 impl Code {
@@ -126,6 +132,10 @@ impl Code {
             Self::DrillTargets => "https://telltaledns.dev/problems/drill_targets",
             Self::NodeIsPrimary => "https://telltaledns.dev/problems/node_is_primary",
             Self::NodeIsUp => "https://telltaledns.dev/problems/node_is_up",
+            Self::CredentialReentryRequired => {
+                "https://telltaledns.dev/problems/credential_reentry_required"
+            }
+            Self::SecretsLocked => "https://telltaledns.dev/problems/secrets_locked",
         }
     }
 
@@ -166,6 +176,8 @@ impl Code {
             Self::DrillTargets => "Invalid drill request",
             Self::NodeIsPrimary => "The node is the primary",
             Self::NodeIsUp => "The node is up",
+            Self::CredentialReentryRequired => "Enter the credential again",
+            Self::SecretsLocked => "Secrets key unavailable",
         }
     }
 
@@ -173,7 +185,9 @@ impl Code {
         match self {
             Self::InvalidParameter | Self::UnsupportedScope => StatusCode::BAD_REQUEST,
             Self::NotFound | Self::NodeUnknown | Self::VersionUnknown => StatusCode::NOT_FOUND,
-            Self::Unavailable | Self::NodeUnreachable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Unavailable | Self::NodeUnreachable | Self::SecretsLocked => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Unauthorized | Self::TotpRequired => StatusCode::UNAUTHORIZED,
             Self::Forbidden | Self::CsrfRejected => StatusCode::FORBIDDEN,
@@ -198,7 +212,8 @@ impl Code {
             | Self::AnnotationTime
             | Self::HeatmapWindow
             | Self::PrivacyLevel
-            | Self::DrillTargets => StatusCode::UNPROCESSABLE_ENTITY,
+            | Self::DrillTargets
+            | Self::CredentialReentryRequired => StatusCode::UNPROCESSABLE_ENTITY,
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
         }
     }

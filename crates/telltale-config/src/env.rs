@@ -41,6 +41,20 @@ const RESERVED: &[&str] = &[
     "DRILL_RETURN_SECS",
     "DRILL_RETRY_SECS",
     "DRILL_IGNORE_HEALTH",
+    // REQ: OPS-014, API-014 (ADR-167 §3) — the node's secrets key and the one before a rotation.
+    "SECRETS_KEY",
+    "SECRETS_PREVIOUS_KEY",
+];
+
+/// REQ: OPS-014, API-014 (ADR-167 §3) — variables a process this one starts (an `exec://`
+/// plugin, the self-update's checks and restart) never inherits: the secrets keys, the
+/// bootstrap admin's password, and the API token `telltale ctl` reads.
+pub const NEVER_INHERITED: &[&str] = &[
+    "TELLTALE_SECRETS_KEY",
+    "TELLTALE_SECRETS_PREVIOUS_KEY",
+    "TELLTALE_BOOTSTRAP_ADMIN_PASSWORD",
+    "TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH",
+    "TELLTALE_TOKEN",
 ];
 
 /// Applies matching variables onto `root`, using `defaults` for path resolution and types.

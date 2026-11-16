@@ -1470,9 +1470,14 @@ pub struct ConfigEntry {
     /// the files' entry of that name), or `hidden` (the files' entry is left out).
     pub source: String,
     /// The definition in effect, with the same fields as in `telltale.toml` (absent when
-    /// hidden).
+    /// hidden). Credentials read `<redacted>` (API-014).
     #[schema(value_type = Option<Object>)]
     pub definition: Option<serde_json::Value>,
+    /// REQ: API-014 — the fields of `definition` that hold a credential and read `<redacted>`
+    /// (`headers.Authorization`, `args[1]`, `url` for a URL's password). Send them back as they
+    /// are to keep the values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redacted: Vec<String>,
 }
 
 /// `GET /api/v1/config/entries` parameters.

@@ -75,12 +75,21 @@ fn served_shared(src: &Sources) -> serde_json::Value {
     shared_part(&src.config.load())
 }
 
+/// REQ: API-014 — a patch between two shared configurations, with their credentials redacted
+/// first: a pin's diff is shown in the API and the 409, and never carries a value.
+fn shared_diff(a: &serde_json::Value, b: &serde_json::Value) -> Vec<serde_json::Value> {
+    let (mut a, mut b) = (a.clone(), b.clone());
+    telltale_config::credentials::redact_json(&mut a);
+    telltale_config::credentials::redact_json(&mut b);
+    json_diff(&a, &b)
+}
+
 /// REQ: CLU-013 — what a pin holds back: JSON Patch from the pinned version to what this
 /// primary would publish, and one sentence per section.
 pub(crate) fn pin_diff(src: &Sources) -> Option<(Vec<serde_json::Value>, Vec<String>)> {
     let m = super::pinned_manifest(&cluster_dir(src))?;
     let pinned = shared_of(&store(src)?, &m.config)?;
-    let ops = json_diff(&pinned, &unpinned_shared(src)?);
+    let ops = shared_diff(&pinned, &unpinned_shared(src)?);
     let sentences = diff_sentences(&ops);
     Some((ops, sentences))
 }
@@ -364,7 +373,7 @@ pub(crate) async fn command(
                 ));
             }
             if let Some(target) = shared_of(&st, &entry.config) {
-                out.diff = json_diff(&served_shared(src), &target);
+                out.diff = shared_diff(&served_shared(src), &target);
                 out.changes = diff_sentences(&out.diff);
             }
             if dry_run {

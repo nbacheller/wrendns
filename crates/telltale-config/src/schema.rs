@@ -204,6 +204,14 @@ pub struct NodeConfig {
     /// seconds: 60 to 86400 (a day). Maintenance itself is started from the Cluster page,
     /// `telltale ctl maintenance start`, or the API; it's the node's state, not configuration.
     pub maintenance_default_secs: u32,
+    /// REQ: OPS-014, API-014 (ADR-167 §3) — a file holding this node's secrets key
+    /// (`ttsk1:...`), for example a mounted Kubernetes Secret. It keys the hashes kept for
+    /// `Idempotency-Key` retries. Empty: the `TELLTALE_SECRETS_KEY` variable, else
+    /// `<data_dir>/secrets.key` (made, mode 0600, on first start). Set it from the environment as
+    /// `TELLTALE_NODE_SECRETS_KEY_FILE`.
+    pub secrets_key_file: SafeString,
+    /// REQ: OPS-014 — the key before a rotation, in a file (or `TELLTALE_SECRETS_PREVIOUS_KEY`).
+    pub secrets_previous_key_file: SafeString,
 }
 
 impl Default for NodeConfig {
@@ -215,6 +223,8 @@ impl Default for NodeConfig {
             data_dir: SafeString::from("/var/lib/telltale"),
             drain_delay_secs: 0,
             maintenance_default_secs: 3600,
+            secrets_key_file: SafeString::default(),
+            secrets_previous_key_file: SafeString::default(),
         }
     }
 }
