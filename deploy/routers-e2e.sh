@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # REQ: T8.2, T8.3 — router integrations against fake UniFi OS and OPNsense APIs, and mDNS: a UniFi login
-# (cookie) and its client list, OPNsense leases with an API key, the leases in the API, and a
-# device named from the router in the query log. Needs python3, dig, curl.
+# (cookie) and its client list (connected, then the offline clients it knows), OPNsense leases with an
+# API key, the leases in the API, and a device named from the router in the query log. Needs python3, dig, curl.
 # Usage: deploy/routers-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -52,6 +52,13 @@ class UniFi(http.server.BaseHTTPRequestHandler):
             self.reply(200, {"meta": {"rc": "ok"}, "data": [
                 {"mac": "02:00:00:00:00:01", "ip": "127.0.0.1", "hostname": "laptop-77", "name": "Desk laptop"},
                 {"mac": "02:00:00:00:00:02", "ip": "192.168.1.31", "hostname": "roku"}]})
+        elif self.path.startswith("/proxy/network/v2/api/site/default/clients/history?") and "TOKEN=abc123" in (self.headers.get("cookie") or ""):
+            self.reply(200, [
+                {"mac": "02:00:00:00:00:04", "last_ip": "192.168.1.50", "name": "Old iPad", "last_seen": 1700000000},
+                {"mac": "02:00:00:00:00:05", "last_ip": "192.168.1.31", "hostname": "stale", "last_seen": 1600000000}])
+        elif self.path == "/proxy/network/api/s/default/rest/user" and "TOKEN=abc123" in (self.headers.get("cookie") or ""):
+            self.reply(200, {"meta": {"rc": "ok"}, "data": [
+                {"mac": "02:00:00:00:00:06", "use_fixedip": True, "fixed_ip": "192.168.1.51", "name": "Garage camera"}]})
         else:
             self.reply(401, {"meta": {"rc": "error", "msg": "api.err.LoginRequired"}})
     def log_message(self, *a):
@@ -122,7 +129,9 @@ curl -sf -b "$E/jar" "$API/api/v1/dhcp/leases" | python3 -c '
 import json, sys
 items = {x["ip"]: x for x in json.load(sys.stdin)["items"]}
 assert items["127.0.0.1"]["hostname"] == "Desk laptop" and items["127.0.0.1"]["source"] == "router", items
-assert items["192.168.1.31"]["hostname"] == "roku", items
+assert items["192.168.1.31"]["hostname"] == "roku", "an offline client must not take the address of a connected one"
+assert items["192.168.1.50"]["hostname"] == "Old iPad", "offline clients from the v2 history"
+assert items["192.168.1.51"]["hostname"] == "Garage camera", "known clients from rest/user"
 assert items["192.168.1.40"]["hostname"] == "printer", "Kea leases from OPNsense"
 print(f"leases: {len(items)} from the routers")
 ' || fail "leases API"
