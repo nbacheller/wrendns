@@ -350,6 +350,9 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     apply_ovr(&mut cfg.anomaly_mute, &e.anomaly_mutes);
     apply_kubernetes_map(&mut cfg, &e.kubernetes_map);
     apply_one_of(&mut cfg, e);
+    // REQ: API-014 (T23.2, ADR-167 §4) — a stored path the rules refuse isn't read
+    // (`effective` logs why; the entries list it in `credentialIssues`).
+    crate::credential_rules::confine(&mut cfg, file, e);
     for c in &e.clients {
         if !cfg.client.iter().any(|f| f.name == c.name) {
             cfg.client.push(c.clone());
@@ -500,7 +503,11 @@ pub(crate) fn effective(file: &Config) -> Config {
             return file.clone();
         }
     };
-    match merge(file, &entries(&state)) {
+    let e = entries(&state);
+    for i in crate::credential_rules::issues(file, &e) {
+        warn!(kind = i.kind, name = %i.name, field = i.field, "a path set through the UI or API: {}", i.reason);
+    }
+    match merge(file, &e) {
         Ok(c) => c,
         Err(errs) => {
             for e in &errs {

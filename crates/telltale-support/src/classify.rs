@@ -142,6 +142,7 @@ const TABLE: &[(&str, Class)] = &[
     ("local.device_domain", Scan),
     ("node.data_dir", Scan),
     ("node.name", Name(C::Node)),
+    ("node.secret_file_dirs[]", Scan),
     ("node.secrets_key_file", Scan),
     ("node.secrets_previous_key_file", Scan),
     ("probe.targets[]", Scan),

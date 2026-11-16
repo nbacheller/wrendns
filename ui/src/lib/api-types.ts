@@ -4252,7 +4252,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "credential_reentry_required" | "secrets_locked" | "upgrade_required";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "path_not_allowed";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -4290,6 +4290,12 @@ export interface components {
          *     in effect and where it comes from.
          */
         ConfigEntry: {
+            /**
+             * @description REQ: API-014 (T23.2, ADR-167 §4) — paths this entry sets through the UI or API that the
+             *     path rules refuse (under `/proc` or the data directory, a key file, a credential file
+             *     outside `[node] secret_file_dirs`): they aren't read until an admin sets another.
+             */
+            credentialIssues?: components["schemas"]["CredentialIssue"][];
             /**
              * @description The definition in effect, with the same fields as in `telltale.toml` (absent when
              *     hidden). Credentials read `<redacted>` (API-014).
@@ -4355,6 +4361,13 @@ export interface components {
             password: string;
             role: components["schemas"]["Role"];
             username: string;
+        };
+        /** @description REQ: API-014 (T23.2) — a stored path that isn't read, and why. */
+        CredentialIssue: {
+            /** @description The entry's field (`token_file`, `tls_ca`, `path`). */
+            field: string;
+            /** @description Why it isn't read. */
+            reason: string;
         };
         /**
          * @description REQ: OBS-025 (T13.3, ADR-117) — what a device looks like: a guess from its MAC vendor,
@@ -5403,6 +5416,12 @@ export interface components {
         /** @description A list wrapper used by every collection endpoint. */
         Items_ConfigEntry: {
             items: {
+                /**
+                 * @description REQ: API-014 (T23.2, ADR-167 §4) — paths this entry sets through the UI or API that the
+                 *     path rules refuse (under `/proc` or the data directory, a key file, a credential file
+                 *     outside `[node] secret_file_dirs`): they aren't read until an admin sets another.
+                 */
+                credentialIssues?: components["schemas"]["CredentialIssue"][];
                 /**
                  * @description The definition in effect, with the same fields as in `telltale.toml` (absent when
                  *     hidden). Credentials read `<redacted>` (API-014).

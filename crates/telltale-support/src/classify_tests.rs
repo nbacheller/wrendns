@@ -71,6 +71,53 @@ fn api_014_credential_paths_cover_secret_class() {
     }
 }
 
+/// REQ: API-014 (T23.2, ADR-167 §4) — every file path an API entry can set is held to the path
+/// rules (`telltale_config::credentials::API_PATHS`): the fields of the API's entry kinds classed
+/// `scan` are either in it or named here as not paths.
+#[test]
+fn api_014_api_paths_cover_path_fields() {
+    use telltale_config::credentials::API_PATHS;
+    const NOT_PATHS: &[&str] = &[
+        "alerts.destination[].from",
+        "alerts.destination[].to[]",
+        "upstream[].bootstrap[]",
+        "upstream[].ecs",
+        "upstream[].recursive.stub_servers[]",
+        "upstream[].tls_server_name",
+    ];
+    let prefix = |kind: &str| match kind {
+        "upstream" => "upstream[]",
+        "alert_destination" => "alerts.destination[]",
+        _ => "list[]",
+    };
+    let listed: Vec<String> = API_PATHS
+        .iter()
+        .map(|(k, f, _)| format!("{}.{f}", prefix(k)))
+        .collect();
+    let missing: Vec<&str> = TABLE
+        .iter()
+        .filter(|(p, c)| {
+            *c == Class::Scan
+                && ["upstream[].", "alerts.destination[].", "list[]."]
+                    .iter()
+                    .any(|x| p.starts_with(x))
+        })
+        .map(|(p, _)| *p)
+        .filter(|p| !listed.iter().any(|l| l == p) && !NOT_PATHS.contains(p))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "path fields of API entries not held to the path rules (add them to credentials::API_PATHS): {missing:#?}"
+    );
+    let info = schema_info();
+    for p in &listed {
+        assert!(
+            info.needs_class.contains(p),
+            "API_PATHS names no field: {p}"
+        );
+    }
+}
+
 #[test]
 fn ops_011_every_table_entry_names_a_real_field() {
     let info = schema_info();

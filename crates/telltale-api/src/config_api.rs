@@ -845,6 +845,29 @@ pub(crate) async fn check_upstream(
     let p = principal(&ext)?;
     let input = body(b)?;
     let url = input.get("url").cloned().unwrap_or_default();
+    // REQ: API-014 (T23.2, ADR-167 §4) — a check builds and runs the draft: one that runs a
+    // program (`exec://`, `unix://`) or reads a file holding a credential is an admin's, as
+    // saving it would be. Agents never, whatever their scopes.
+    let program = telltale_config::credentials::runs_program(url.as_str().unwrap_or_default());
+    let key_file = telltale_config::credentials::reference_changes("upstream", None, &input);
+    if (program || !key_file.is_empty())
+        && (p.role != crate::auth::Role::Admin || p.agent.is_some())
+    {
+        let what = if program {
+            "an `exec://` or `unix://` upstream runs a program, or talks to a socket, on the node"
+                .to_owned()
+        } else {
+            format!(
+                "`{}` names a file holding a credential",
+                key_file.join("`, `")
+            )
+        };
+        return Err(Problem::new(
+            Code::Forbidden,
+            format!("only an admin can check this draft: {what}"),
+        )
+        .hint("Ask an admin to check and add this upstream."));
+    }
     let mut r = backend.check_upstream(input).await?;
     let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
     auth.record(
@@ -1912,6 +1935,9 @@ async fn write(
                 expect,
                 by: actor.name.clone(),
                 simulate,
+                // REQ: API-014 (T23.2) — the backend holds credential changes to the role.
+                role: Some(p.role),
+                agent: p.agent.as_ref().map(|a| a.token_name.clone()),
             })
             .await
             .map(|c| serde_json::to_value(c).unwrap_or_default()),

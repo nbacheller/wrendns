@@ -11278,7 +11278,8 @@
           "node_is_up",
           "credential_reentry_required",
           "secrets_locked",
-          "upgrade_required"
+          "upgrade_required",
+          "path_not_allowed"
         ]
       },
       "ConfigChange": {
@@ -11360,6 +11361,13 @@
           "source"
         ],
         "properties": {
+          "credentialIssues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CredentialIssue"
+            },
+            "description": "REQ: API-014 (T23.2, ADR-167 §4) — paths this entry sets through the UI or API that the\npath rules refuse (under `/proc` or the data directory, a key file, a credential file\noutside `[node] secret_file_dirs`): they aren't read until an admin sets another."
+          },
           "definition": {
             "type": [
               "object",
@@ -11506,6 +11514,24 @@
           },
           "username": {
             "type": "string"
+          }
+        }
+      },
+      "CredentialIssue": {
+        "type": "object",
+        "description": "REQ: API-014 (T23.2) — a stored path that isn't read, and why.",
+        "required": [
+          "field",
+          "reason"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "The entry's field (`token_file`, `tls_ca`, `path`)."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why it isn't read."
           }
         }
       },
@@ -14189,6 +14215,13 @@
                 "source"
               ],
               "properties": {
+                "credentialIssues": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CredentialIssue"
+                  },
+                  "description": "REQ: API-014 (T23.2, ADR-167 §4) — paths this entry sets through the UI or API that the\npath rules refuse (under `/proc` or the data directory, a key file, a credential file\noutside `[node] secret_file_dirs`): they aren't read until an admin sets another."
+                },
                 "definition": {
                   "type": [
                     "object",

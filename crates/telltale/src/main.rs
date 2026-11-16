@@ -16,6 +16,9 @@ mod cache_history;
 mod cache_sizing;
 mod checks;
 mod cluster;
+mod credential_rules;
+#[cfg(test)]
+mod credential_rules_tests;
 #[cfg(test)]
 mod credential_tests;
 mod ctl;

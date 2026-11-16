@@ -301,6 +301,11 @@
         "maintenance_default_secs": 3600,
         "name": "",
         "role": "all",
+        "secret_file_dirs": [
+          "/run/secrets",
+          "/var/run/secrets",
+          "/etc/telltale/secrets"
+        ],
         "secrets_key_file": "",
         "secrets_previous_key_file": "",
         "workers": 0
@@ -799,6 +804,11 @@
           "description": "REQ: CLU-014 — a failover drill's report is ready (scheduled or started by hand; once\nper drill): who followed, who was stuck, coverage.",
           "type": "string",
           "const": "drill_report"
+        },
+        {
+          "description": "REQ: API-014 (T23.2, ADR-167 §4) — an admin changed where an entry's credential is sent\n(an upstream's URL or TLS name, an alert destination's URL): once per change, from the\naudit log's `credential.redirect` records.",
+          "type": "string",
+          "const": "credential_redirected"
         }
       ]
     },
@@ -2622,6 +2632,19 @@
           "description": "Process role.",
           "$ref": "#/$defs/Role",
           "default": "all"
+        },
+        "secret_file_dirs": {
+          "description": "REQ: API-014 (ADR-167 §4) — where a file holding a credential (an alert destination's\n`token_file` or `password_file`, an upstream's `tls_client_key`) set through the UI or\nAPI may be. Paths in the config files aren't limited. Only this node's own files set it:\nthe cluster never shares it.",
+          "type": "array",
+          "default": [
+            "/run/secrets",
+            "/var/run/secrets",
+            "/etc/telltale/secrets"
+          ],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
         },
         "secrets_key_file": {
           "description": "REQ: OPS-014, API-014 (ADR-167 §3) — a file holding this node's secrets key\n(`ttsk1:...`), for example a mounted Kubernetes Secret. It keys the hashes kept for\n`Idempotency-Key` retries. Empty: the `TELLTALE_SECRETS_KEY` variable, else\n`<data_dir>/secrets.key` (made, mode 0600, on first start). Set it from the environment as\n`TELLTALE_NODE_SECRETS_KEY_FILE`.",

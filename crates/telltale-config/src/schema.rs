@@ -212,7 +212,17 @@ pub struct NodeConfig {
     pub secrets_key_file: SafeString,
     /// REQ: OPS-014 — the key before a rotation, in a file (or `TELLTALE_SECRETS_PREVIOUS_KEY`).
     pub secrets_previous_key_file: SafeString,
+    /// REQ: API-014 (ADR-167 §4) — where a file holding a credential (an alert destination's
+    /// `token_file` or `password_file`, an upstream's `tls_client_key`) set through the UI or
+    /// API may be. Paths in the config files aren't limited. Only this node's own files set it:
+    /// the cluster never shares it.
+    pub secret_file_dirs: Vec<SafeString>,
 }
+
+/// REQ: API-014 — `[node] secret_file_dirs` when not set: where Docker, Kubernetes and the
+/// packages put secrets.
+pub const DEFAULT_SECRET_FILE_DIRS: &[&str] =
+    &["/run/secrets", "/var/run/secrets", "/etc/telltale/secrets"];
 
 impl Default for NodeConfig {
     fn default() -> Self {
@@ -225,6 +235,10 @@ impl Default for NodeConfig {
             maintenance_default_secs: 3600,
             secrets_key_file: SafeString::default(),
             secrets_previous_key_file: SafeString::default(),
+            secret_file_dirs: DEFAULT_SECRET_FILE_DIRS
+                .iter()
+                .map(|d| SafeString::from(*d))
+                .collect(),
         }
     }
 }
@@ -1465,6 +1479,10 @@ pub enum AlertWhen {
     /// REQ: CLU-014 — a failover drill's report is ready (scheduled or started by hand; once
     /// per drill): who followed, who was stuck, coverage.
     DrillReport,
+    /// REQ: API-014 (T23.2, ADR-167 §4) — an admin changed where an entry's credential is sent
+    /// (an upstream's URL or TLS name, an alert destination's URL): once per change, from the
+    /// audit log's `credential.redirect` records.
+    CredentialRedirected,
 }
 
 /// REQ: FLT-014 (T7.20) — one rewrite.

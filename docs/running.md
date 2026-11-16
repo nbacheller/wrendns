@@ -2935,14 +2935,15 @@ Rules watch:
 | `cluster_pinned` | the cluster is [pinned](#pinning-the-cluster-to-a-version) to an older version, so changes wait (raise `for_secs` if you pin on purpose for long) | cluster |
 | `chatty_loop` | a device asks a domain at a steady rhythm faster than every 30 s (an informational finding the `anomaly` rule leaves out; see [Device anomalies](#device-anomalies)) | finding |
 | `drill_report` | a [failover drill](#failover-drills)'s report is ready, scheduled or started by hand: followed, stuck, quiet, coverage | drill |
+| `credential_redirected` | an admin changed where an entry's credential is sent (an upstream's URL or TLS name, an alert destination's URL; see [Who may point a credential somewhere](#who-may-point-a-credential-somewhere)) | change |
 
 - **Nodes in maintenance** are left out of the per-node conditions, and an alert about one that was firing resolves with "(maintenance)". When the window ends, `for_secs` counts from zero. The Alerts page says whose alerts are paused, until when.
-- A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies, updates, new devices, pending plans, and failed rollouts go out once each.
+- A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies, updates, new devices, pending plans, failed rollouts, and credential redirects go out once each.
 - In a cluster, the primary checks the rules against the whole cluster's data and sends the alerts, so you get one message, not one per node.
 - Formats: `webhook` posts JSON (`rule`, `status` = `firing` or `resolved`, `subject`, `summary`, `node`, `time`); `ntfy` posts the text with a title and priority (a token from `token_file` as a Bearer token); `gotify` posts to `<url>/message` with the application token from `token_file`; `slack` posts `{"text": ...}`.
 - Alerts never affect DNS: a destination that's down is logged (`alert not delivered`) and skipped.
 - **In the UI:** **Alerts** (under System) shows what's firing now and how the last delivery to each destination went, and adds, changes, or removes destinations and rules like other configuration (a dry run first; on a Git-managed cluster it says what to add to Git). **Send test** on a destination sends a test message and shows the result, a wrong password or an unreachable server included.
-- **API:** `GET /api/v1/alerts` (firing alerts and deliveries), `PUT`/`DELETE /api/v1/alerts/destinations/{name}` and `/api/v1/alerts/rules/{name}` (same fields as the configuration, with `?dryRun=true`, `If-Match`, and `Idempotency-Key`), and `POST /api/v1/alerts/destinations/{name}/test`. Agent tokens need `config:write:alerts`. Passwords and tokens stay in files on the node: only their paths go through the API.
+- **API:** `GET /api/v1/alerts` (firing alerts and deliveries), `PUT`/`DELETE /api/v1/alerts/destinations/{name}` and `/api/v1/alerts/rules/{name}` (same fields as the configuration, with `?dryRun=true`, `If-Match`, and `Idempotency-Key`), and `POST /api/v1/alerts/destinations/{name}/test`. Agent tokens need `config:write:alerts`, which doesn't cover a destination's `token_file` or `password_file`, nor the address of one that has a credential (403: those are an admin's, see [Who may point a credential somewhere](#who-may-point-a-credential-somewhere)). Passwords and tokens stay in files on the node: only their paths go through the API, and a file set there must be in `[node] secret_file_dirs` (`/run/secrets` by default).
 
 ### Email
 Any mail account that allows SMTP sign-in works; you don't need a mail server of your own:
@@ -3019,6 +3020,29 @@ Some fields hold credentials: an upstream's `headers` (a DoH API token) and `arg
 - **Older records.** Upgrading deletes the retry records kept before (they held request bodies), with `secure_delete` on and the WAL truncated. Audit entries written before this version may hold an upstream's headers: the audit log's hash chain forbids rewriting them, so treat an older `state.db` (and its backups) as sensitive.
 
 **The node's secrets key.** Each full member has one key, which keys those hashes (and, later, the encrypted secrets store). It comes from the first of `TELLTALE_SECRETS_KEY`, a file named by `[node] secrets_key_file` (`TELLTALE_NODE_SECRETS_KEY_FILE`, for a mounted Kubernetes Secret), or `<data_dir>/secrets.key`, which the first start creates (mode 0600, written whole through `secrets.key.tmp`; never replaced). A key is `ttsk1:` and 43 base64url characters. Prefer a file to the variable, and on Kubernetes a `secretKeyRef` to a literal `value`. A configured key that can't be read leaves the node without one: DNS is unaffected, the log says why, and the node tries again at most every 30 seconds (a key mounted after the start is picked up without a restart). Resolver pods need none.
+
+#### Who may point a credential somewhere
+
+Operators can't read a credential, and they can't send one somewhere else either. These changes need the **admin** role, through the UI or the API (agent tokens never make them, whatever their scopes):
+- **Which file holds a credential:** an alert destination's `token_file` and `password_file`, and an upstream's `tls_client_key` (adding, changing or removing one).
+- **Where an entry with a credential sends it:** its `url` (the scheme counts), `proxy`, `host`, `tls_server_name`, `tls_ca` or `bootstrap`, when the entry has headers, arguments, a password in a URL, or a credential file. Other edits of such an entry (its weight, a rule's recipients) stay an operator's. An entry without a credential can be moved by an operator.
+- **Programs:** creating an `exec://` or `unix://` upstream, switching one to it, or changing a plugin's program or `args`. **Test it** (`POST /api/v1/checks/upstream`) on such a draft, or on one with a `tls_client_key`, needs admin too.
+
+An operator gets 403 (`forbidden`), dry runs included, naming the field.
+
+**Where a path set through the UI or API may point.** Every path an entry sets (`token_file`, `password_file`, `tls_ca`, `tls_client_cert`, `tls_client_key`, a list's `path`) is checked with its symbolic links followed, for admins too: it may not be under `/proc`, `/sys`, `/dev` or the data directory, nor be the secrets key (`[node] secrets_key_file`, the previous key), `[cluster] bootstrap_secret_file`, or a listener's or the API's TLS key. A file holding a credential must also be in one of `[node] secret_file_dirs`:
+```toml
+[node]
+# The default: where Docker, Kubernetes and the packages put secrets.
+secret_file_dirs = ["/run/secrets", "/var/run/secrets", "/etc/telltale/secrets"]
+```
+A refused path is 422 `path_not_allowed`. `secret_file_dirs` comes from the node's own files (never from the cluster), and paths in the configuration files aren't limited by it. A path an override keeps from the files' entry of the same name counts as the files'.
+
+**Paths stored before this version.** A path set through the API that breaks these rules is no longer read: the upstream, list or alert fails as with a missing file, the log says why at each reload, and `GET /api/v1/config/entries` lists it in the entry's `credentialIssues` (the UI marks the row "not read"). An admin sets another path (or moves the file) to fix it.
+
+**Redirects are audited.** When an admin changes where an entry's credential goes, the dry run warns, and the change gets its own audit record, `credential.redirect` (which field, from where to where, passwords as `<redacted>`). The alert condition `credential_redirected` sends it, once per change.
+
+**In a cluster**, a replica forwards the change with the role of whoever made it, and the primary checks again. A change that touches a credential forwarded by a replica that's too old to say (0.7) is refused with 409 `upgrade_required`; other changes from it still go through. Upgrade the replicas, or make the change on the primary.
 
 ## API
 A REST API (JSON) listens on `0.0.0.0:8053` by default and also serves `/metrics` and the health probes:

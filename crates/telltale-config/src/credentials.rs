@@ -140,6 +140,123 @@ pub const DESTINATION_FIELDS: &[&str] = &[
     "bootstrap",
 ];
 
+/// REQ: API-014 (ADR-167 §4, T23.2) — the file paths an API entry may set (`kind` as the API
+/// names it), and whether the file holds a credential: such a file is changed by an admin only,
+/// and must sit under `[node] secret_file_dirs`. Every path is held to the denied prefixes.
+/// `api_014_api_paths_cover_path_fields` checks the list against the schema.
+pub const API_PATHS: &[(&str, &str, bool)] = &[
+    ("upstream", "tls_ca", false),
+    ("upstream", "tls_client_cert", false),
+    ("upstream", "tls_client_key", true),
+    ("alert_destination", "token_file", true),
+    ("alert_destination", "password_file", true),
+    ("alert_destination", "tls_ca", false),
+    ("list", "path", false),
+];
+
+/// A field as compared for a change: absent, `null`, `""`, `[]` and `{}` are the same.
+fn normalized(v: Option<&Value>) -> Value {
+    match v {
+        None | Some(Value::Null) => Value::Null,
+        Some(Value::String(s)) if s.is_empty() => Value::Null,
+        Some(Value::Array(a)) if a.is_empty() => Value::Null,
+        Some(Value::Object(m)) if m.is_empty() => Value::Null,
+        Some(other) => other.clone(),
+    }
+}
+
+/// Whether `key` names a reference to a stored secret (`token_ref`, `header_refs`; T23.3).
+fn is_reference(key: &str) -> bool {
+    key.ends_with("_ref") || key.ends_with("_refs")
+}
+
+/// REQ: API-014 (T23.2) — whether an entry (`kind` as the API names it) holds a credential: a
+/// value in a credential field (a header, an argument, a URL's password; the marker too, which
+/// stands for a stored value), a file holding one, or a reference to a stored secret.
+#[must_use]
+pub fn holds_credential(kind: &str, entry: &Value) -> bool {
+    let mut probe = entry.clone();
+    let mut found = false;
+    for (path, part) in entry_paths(kind) {
+        visit(&mut probe, &segments(path), "", &mut |_, leaf| {
+            found |= match (part, &*leaf) {
+                (Part::Whole, Value::String(s)) => !s.is_empty(),
+                (Part::UrlPassword, Value::String(s)) => password_span(s).is_some(),
+                _ => false,
+            };
+        });
+    }
+    let file = API_PATHS
+        .iter()
+        .any(|(k, f, cred)| *cred && *k == kind && normalized(entry.get(*f)) != Value::Null);
+    let reference = entry.as_object().is_some_and(|m| {
+        m.iter()
+            .any(|(k, v)| is_reference(k) && normalized(Some(v)) != Value::Null)
+    });
+    found || file || reference
+}
+
+/// REQ: API-014 (T23.2) — the first destination field ([`DESTINATION_FIELDS`]) `after` sets
+/// differently from `before`. A URL is compared without its password (and with its scheme).
+#[must_use]
+pub fn destination_change(before: &Value, after: &Value) -> Option<&'static str> {
+    DESTINATION_FIELDS
+        .iter()
+        .find(|f| destination(before.get(**f)) != destination(after.get(**f)))
+        .copied()
+}
+
+/// REQ: API-014 (T23.2) — the credential-file and secret-reference fields (`*_file`, `*_ref`,
+/// an upstream's `tls_client_key`) `after` sets differently from `before` (`None`: a new entry).
+#[must_use]
+pub fn reference_changes(kind: &str, before: Option<&Value>, after: &Value) -> Vec<String> {
+    let mut keys: Vec<String> = API_PATHS
+        .iter()
+        .filter(|(k, _, cred)| *cred && *k == kind)
+        .map(|(_, f, _)| (*f).to_owned())
+        .collect();
+    for v in [before, Some(after)].into_iter().flatten() {
+        if let Some(m) = v.as_object() {
+            keys.extend(
+                m.keys()
+                    .filter(|k| is_reference(k) || k.ends_with("_file"))
+                    .cloned(),
+            );
+        }
+    }
+    keys.sort();
+    keys.dedup();
+    keys.into_iter()
+        .filter(|k| {
+            normalized(before.and_then(|b| b.get(k.as_str()))) != normalized(after.get(k.as_str()))
+        })
+        .collect()
+}
+
+/// REQ: API-014 (T23.2) — whether an upstream URL runs a program on the node or talks to a
+/// local socket (`exec://`, `unix://`): only an admin sets one up.
+#[must_use]
+pub fn runs_program(url: &str) -> bool {
+    let u = url.trim().to_ascii_lowercase();
+    u.starts_with("exec://") || u.starts_with("unix://")
+}
+
+/// REQ: API-014 (T23.2) — whether an upstream write creates, or switches to, one that
+/// [`runs_program`], or changes which program (its URL) or command line (`args`) an existing one
+/// runs. Other changes to such an upstream (its weight, timeout) aren't.
+#[must_use]
+pub fn program_change(before: Option<&Value>, after: &Value) -> bool {
+    if !runs_program(after.get("url").and_then(Value::as_str).unwrap_or_default()) {
+        return false;
+    }
+    let Some(before) = before else {
+        return true;
+    };
+    ["url", "args"]
+        .iter()
+        .any(|f| normalized(before.get(*f)) != normalized(after.get(*f)))
+}
+
 /// The configuration path of an API entry kind's array (`upstream` → `upstream[]`).
 #[must_use]
 pub fn entry_prefix(kind: &str) -> Option<&'static str> {
@@ -836,5 +953,92 @@ client_secret = "cl13nt"
         ] {
             assert!(!text.contains(planted), "{planted}: {text}");
         }
+    }
+
+    /// REQ: API-014 (T23.2) — what makes a change admin-only: who holds a credential, where it
+    /// goes, which file or secret it comes from, and which program an upstream runs.
+    #[test]
+    fn api_014_credential_rule_helpers() {
+        // Holding a credential: a value, a marker, a credential file, or a reference.
+        assert!(holds_credential("upstream", &upstream()));
+        assert!(holds_credential(
+            "upstream",
+            &json!({"url": "https://d.example/", "headers": {"A": MARKER}})
+        ));
+        assert!(holds_credential(
+            "upstream",
+            &json!({"url": "tls://9.9.9.9", "tls_client_key": "/run/secrets/k.pem"})
+        ));
+        assert!(holds_credential(
+            "alert_destination",
+            &json!({"type": "ntfy", "url": "https://ntfy.sh/t", "token_file": "/run/secrets/t"})
+        ));
+        assert!(holds_credential(
+            "alert_destination",
+            &json!({"type": "ntfy", "url": "https://ntfy.sh/t", "token_ref": "ntfy"})
+        ));
+        assert!(!holds_credential(
+            "upstream",
+            &json!({"url": "tls://9.9.9.9", "tls_ca": "/etc/ca.pem", "headers": {}})
+        ));
+        assert!(!holds_credential(
+            "list",
+            &json!({"url": "https://l.example/a.txt"})
+        ));
+        // Where it goes: a new host or scheme, not a new password.
+        let a = json!({"url": "https://me:pw@doh.example/q", "tls_server_name": "doh.example"});
+        let pw = json!({"url": "https://me:other@doh.example/q", "tls_server_name": "doh.example"});
+        let host = json!({"url": "https://me:pw@evil.example/q", "tls_server_name": "doh.example"});
+        let scheme = json!({"url": "h3://me:pw@doh.example/q", "tls_server_name": "doh.example"});
+        assert_eq!(destination_change(&a, &pw), None);
+        assert_eq!(destination_change(&a, &host), Some("url"));
+        assert_eq!(destination_change(&a, &scheme), Some("url"));
+        assert_eq!(
+            destination_change(&a, &json!({"url": "https://me:pw@doh.example/q"})),
+            Some("tls_server_name")
+        );
+        // Which file or secret: absent and empty are the same.
+        let d = json!({"type": "ntfy", "url": "https://ntfy.sh/t", "token_file": "/run/secrets/t"});
+        assert_eq!(
+            reference_changes("alert_destination", Some(&d), &d),
+            Vec::<String>::new()
+        );
+        let mut moved = d.clone();
+        moved["token_file"] = json!("/run/secrets/other");
+        assert_eq!(
+            reference_changes("alert_destination", Some(&d), &moved),
+            ["token_file"]
+        );
+        assert_eq!(
+            reference_changes("alert_destination", None, &json!({"password_file": ""})),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            reference_changes(
+                "upstream",
+                None,
+                &json!({"url": "x", "tls_client_key": "/k"})
+            ),
+            ["tls_client_key"]
+        );
+        assert_eq!(
+            reference_changes("alert_destination", Some(&d), &json!({"token_ref": "n"})),
+            ["token_file", "token_ref"]
+        );
+        // Which program.
+        let plug = json!({"url": "exec:///usr/local/bin/p", "args": ["--x"]});
+        assert!(program_change(None, &plug));
+        assert!(!program_change(Some(&plug), &plug));
+        let mut weight = plug.clone();
+        weight["weight"] = json!(5);
+        assert!(!program_change(Some(&plug), &weight));
+        let mut args = plug.clone();
+        args["args"] = json!(["--y"]);
+        assert!(program_change(Some(&plug), &args));
+        assert!(program_change(
+            Some(&json!({"url": "tls://9.9.9.9"})),
+            &json!({"url": "UNIX:///run/p.sock"})
+        ));
+        assert!(!program_change(None, &json!({"url": "tls://9.9.9.9"})));
     }
 }

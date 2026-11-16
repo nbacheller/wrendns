@@ -2594,6 +2594,11 @@ impl Backend for ApiBackend {
                 .hint("Enter the credential in the draft to check it, or save the upstream unchanged and check it from the Upstreams page."))
             });
         }
+        // REQ: API-014 (T23.2) — the check reads the draft's files: the path rules hold.
+        let rules = crate::credential_rules::PathRules::of(&self.src.file_config.load());
+        if let Err(p) = crate::credential_rules::check_draft_paths("upstream", &body, &rules) {
+            return Box::pin(async { Err(p) });
+        }
         let cfg = self.src.config.load_full();
         Box::pin(async move { crate::checks::upstream(&cfg, body).await })
     }
@@ -2921,6 +2926,7 @@ impl Backend for ApiBackend {
                     .to_owned(),
                     definition: serde_json::to_value(e).ok(),
                     redacted: Vec::new(),
+                    credential_issues: Vec::new(),
                 });
             }
             for (n, o) in stored {
@@ -2931,6 +2937,7 @@ impl Backend for ApiBackend {
                         source: "hidden".to_owned(),
                         definition: None,
                         redacted: Vec::new(),
+                        credential_issues: Vec::new(),
                     });
                 }
             }
@@ -3000,6 +3007,7 @@ impl Backend for ApiBackend {
                 .to_owned(),
                 definition: serde_json::to_value(&cfg.ratelimit).ok(),
                 redacted: Vec::new(),
+                credential_issues: Vec::new(),
             });
         }
         // REQ: OBS-022 (T12.1) — likewise, the exclusions.
@@ -3015,6 +3023,7 @@ impl Backend for ApiBackend {
                 .to_owned(),
                 definition: serde_json::to_value(&cfg.exclusions).ok(),
                 redacted: Vec::new(),
+                credential_issues: Vec::new(),
             });
         }
         // REQ: CLU-013 (T13.2) — likewise, the rollout settings.
@@ -3030,6 +3039,7 @@ impl Backend for ApiBackend {
                 .to_owned(),
                 definition: serde_json::to_value(&cfg.cluster.rollout).ok(),
                 redacted: Vec::new(),
+                credential_issues: Vec::new(),
             });
         }
         // REQ: OBS-024 (T13.1) — likewise, the simulation settings.
@@ -3045,6 +3055,7 @@ impl Backend for ApiBackend {
                 .to_owned(),
                 definition: serde_json::to_value(&cfg.simulate).ok(),
                 redacted: Vec::new(),
+                credential_issues: Vec::new(),
             });
         }
         // REQ: FLT-010 (T9.7)
@@ -3075,6 +3086,19 @@ impl Backend for ApiBackend {
                 &e.alert_rules,
                 &mut out,
             );
+        }
+        // REQ: API-014 (T23.2, ADR-167 §4) — stored paths the path rules refuse (not read).
+        for i in crate::credential_rules::issues(&file, &e) {
+            if let Some(x) = out
+                .iter_mut()
+                .find(|x| x.kind == i.kind && x.name == i.name)
+            {
+                x.credential_issues
+                    .push(telltale_api::model::CredentialIssue {
+                        field: i.field.to_owned(),
+                        reason: i.reason,
+                    });
+            }
         }
         // REQ: API-014 — credentials never leave in a definition.
         crate::redact::entries(&mut out);
@@ -3858,6 +3882,9 @@ pub(crate) fn spawn_rule_sweep(
                     expect: None,
                     by: "rule expiry".into(),
                     simulate: None,
+                    // The node itself: a quick rule holds no credential.
+                    role: Some(telltale_api::auth::Role::Admin),
+                    agent: None,
                 };
                 match backend.write_managed(w).await {
                     Ok(c) if c.applied => auth.record(
@@ -4035,6 +4062,9 @@ struct ManagedPlan {
     also: AlsoStored,
     /// REQ: OBS-024 — the merged configuration with the change (for `simulate`).
     candidate: telltale_config::Config,
+    /// REQ: API-014 (T23.2) — an admin changes where a credential goes: the
+    /// `credential.redirect` audit detail.
+    redirect: Option<serde_json::Value>,
 }
 
 /// Parses a records body into stored form.
@@ -4277,6 +4307,14 @@ fn plan_managed(
                 None => None,
                 Some(v) => {
                     let f = forward_of(v, &name)?;
+                    // REQ: API-014 (T23.2) — the servers become upstreams: one that runs a
+                    // program is an admin's, as with `PUT /upstreams`.
+                    crate::credential_rules::check_forward_servers(
+                        &name,
+                        &f.servers,
+                        w.role,
+                        w.agent.as_deref(),
+                    )?;
                     entries.forwards.push((name.clone(), f.clone()));
                     Some(f)
                 }
@@ -4348,6 +4386,7 @@ fn plan_managed(
         warnings,
         also: Vec::new(),
         candidate: merged,
+        redirect: None,
     })
 }
 
@@ -4490,6 +4529,7 @@ fn plan_singleton(
         warnings,
         also: Vec::new(),
         candidate: change.merged,
+        redirect: None,
     })
 }
 
@@ -4824,6 +4864,9 @@ fn plan_override(
     // effect while the destination is unchanged; otherwise the credential is entered again.
     let restored = restore_markers(w, &name, &before_cfg)?;
     let body_in = restored.as_ref().or(w.body.as_ref());
+    // REQ: API-014, CLU-010 (T23.2, ADR-167 §4) — who may point a credential somewhere, and
+    // where an API-set path may point.
+    let redirect = credential_rules(w, &name, &file, &before_cfg, body_in)?;
     // REQ: API-002 (T9.22) — removing an upstream also takes it out of its upstream groups.
     // A DELETE that reverts an override of the files' entry (or un-hides it) brings the
     // upstream back: nothing to cascade.
@@ -4922,7 +4965,13 @@ fn plan_override(
             .map(|r| serde_json::to_value(r).unwrap_or_default()),
         _ => named_json(&merged.group, &name),
     };
-    let warnings = telltale_config::validate_config(&merged).unwrap_or_default();
+    let mut warnings: Vec<String> = telltale_config::validate_config(&merged).unwrap_or_default();
+    if let Some(r) = &redirect {
+        warnings.push(format!(
+            "This sends `{name}`'s credential somewhere new (`{}` changes): the change is audited as credential.redirect and raises the credential_redirected alert.",
+            r["field"].as_str().unwrap_or("url")
+        ));
+    }
     let (recent_queries, impact) = managed_impact(src, w.kind, &name, body_in.is_some());
     let impact = with_cascade(impact, &also_groups);
     Ok(ManagedPlan {
@@ -4935,7 +4984,47 @@ fn plan_override(
         warnings,
         also,
         candidate: merged,
+        redirect,
     })
+}
+
+/// REQ: API-014, CLU-010 (T23.2) — [`crate::credential_rules::check_write`] for a write to an
+/// upstream, alert destination or list: the entry in effect, the files' entry, and the body to
+/// store (markers restored).
+fn credential_rules(
+    w: &ManagedWrite,
+    name: &str,
+    file: &telltale_config::Config,
+    current: &telltale_config::Config,
+    body: Option<&serde_json::Value>,
+) -> Result<Option<serde_json::Value>, Problem> {
+    let (before, in_files) = match w.kind {
+        ManagedKind::Upstream => (
+            named_json(&current.upstream, name),
+            named_json(&file.upstream, name),
+        ),
+        ManagedKind::AlertDestination => (
+            named_json(&current.alerts.destination, name),
+            named_json(&file.alerts.destination, name),
+        ),
+        ManagedKind::List => (
+            named_json(&current.list, name),
+            named_json(&file.list, name),
+        ),
+        _ => return Ok(None),
+    };
+    crate::credential_rules::check_write(
+        &crate::credential_rules::WriteCheck {
+            kind: crate::redact::api_kind(w.kind),
+            name,
+            before: before.as_ref(),
+            file: in_files.as_ref(),
+            after: body,
+            role: w.role,
+            agent: w.agent.as_deref(),
+        },
+        &crate::credential_rules::PathRules::of(file),
+    )
 }
 
 impl ApiBackend {
@@ -5276,6 +5365,18 @@ impl ApiBackend {
                 return Err(Problem::internal(
                     "the change was saved but couldn't be applied; the server log says why",
                 ));
+            }
+            // REQ: API-014 (T23.2, ADR-167 §4) — an admin sent a credential somewhere new: its
+            // own audit record (the `credential_redirected` alert reads it), made here where the
+            // change is applied, so a change forwarded from a replica gets one too. The change's
+            // `<kind>.put` record says how its author signed in.
+            if let (Some(detail), Some(auth)) = (&plan.redirect, src.auth.get()) {
+                auth.record(
+                    &telltale_api::auth::Actor::system(&w.by),
+                    crate::credential_rules::REDIRECT_ACTION,
+                    &plan.name,
+                    detail,
+                );
             }
             Ok(change(true, version))
         })

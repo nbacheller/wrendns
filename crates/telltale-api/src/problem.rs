@@ -93,8 +93,13 @@ pub enum Code {
     /// that needs it (a write with an `Idempotency-Key` that sets a credential) can be done.
     SecretsLocked,
     /// REQ: API-014, CLU-010 (ADR-167 §4) — the change needs a newer primary: it sends
-    /// `<redacted>` back, which an older primary would store as the value.
+    /// `<redacted>` back, which an older primary would store as the value; or (T23.2) it
+    /// touches a credential and was forwarded by a node too old to say who made it.
     UpgradeRequired,
+    /// REQ: API-014 (T23.2, ADR-167 §4) — a path set through the API points where none may
+    /// (under `/proc`, `/sys`, `/dev`, the data directory, or a key file), or a file holding a
+    /// credential isn't under `[node] secret_file_dirs`.
+    PathNotAllowed,
 }
 
 impl Code {
@@ -140,6 +145,7 @@ impl Code {
             }
             Self::SecretsLocked => "https://telltaledns.dev/problems/secrets_locked",
             Self::UpgradeRequired => "https://telltaledns.dev/problems/upgrade_required",
+            Self::PathNotAllowed => "https://telltaledns.dev/problems/path_not_allowed",
         }
     }
 
@@ -182,7 +188,8 @@ impl Code {
             Self::NodeIsUp => "The node is up",
             Self::CredentialReentryRequired => "Enter the credential again",
             Self::SecretsLocked => "Secrets key unavailable",
-            Self::UpgradeRequired => "Upgrade the primary first",
+            Self::UpgradeRequired => "Upgrade needed",
+            Self::PathNotAllowed => "Path not allowed",
         }
     }
 
@@ -219,7 +226,8 @@ impl Code {
             | Self::HeatmapWindow
             | Self::PrivacyLevel
             | Self::DrillTargets
-            | Self::CredentialReentryRequired => StatusCode::UNPROCESSABLE_ENTITY,
+            | Self::CredentialReentryRequired
+            | Self::PathNotAllowed => StatusCode::UNPROCESSABLE_ENTITY,
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
         }
     }
