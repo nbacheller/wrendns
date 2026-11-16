@@ -2255,6 +2255,35 @@ test('obs_029 heatmap', async () => {
   await page.unroute('**/api/v1/stats/heatmap*');
 });
 
+// REQ: OBS-029 — a refused grain doesn't loop: hiding the grid after an error once flipped the
+// grain to hours (its width read 0), which succeeded, showed the grid, flipped back and failed
+// again, endlessly. Now one request, the error alone, and the prompt comes back for a device.
+test('obs_029 heatmap error does not loop', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const grains: string[] = [];
+  await page.route('**/api/v1/stats/heatmap*', (route) => {
+    const grain = new URL(route.request().url()).searchParams.get('grain') ?? '';
+    grains.push(grain);
+    if (grain === 'minute') {
+      return route.fulfill({ status: 422, json: { type: 'about:blank', title: 'too many slots', status: 422, detail: 'too many slots', code: 'heatmap_window' } });
+    }
+    return route.fulfill({
+      json: { from: new Date().toISOString(), to: new Date().toISOString(), grain, slotSeconds: grain === 'hour' ? 3600 : 900, kind: 'network', measure: 'queries', starts: [], values: [], precision: 'exact' },
+    });
+  });
+  await page.goto('/#/heatmap?grain=minute');
+  await expect(page.getByRole('alert')).toBeVisible();
+  await page.waitForTimeout(1000);
+  expect(grains).toEqual(['minute']);
+  await expect(page.getByText('Loading…')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Device', exact: true }).click();
+  await expect(page.getByText('Enter one above.')).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.unroute('**/api/v1/stats/heatmap*');
+  // The refusal above is expected: not a page problem.
+  for (let i = problems.length - 1; i >= 0; i--) if (problems[i].includes('status of 422')) problems.splice(i, 1);
+});
+
 // REQ: OBS-030 (T14.4) — the latency heatmap: the Dashboard's tab draws the grid from the real
 // server; then stubbed bands and one exemplar: the dot opens its query by trace ID, the
 // objective's line is named, and the table view toggles.

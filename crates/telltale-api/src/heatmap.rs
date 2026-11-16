@@ -124,6 +124,19 @@ fn grain_secs(g: &str) -> Option<u64> {
     }
 }
 
+/// REQ: OBS-029 — the slots of `[from, to)` aligned to `slot` (first start, count), or `None`
+/// past `max`. Aligning both ends can add one partial slot (`-7d` of minutes is 10,081); that
+/// one, the oldest, is dropped, so the answer still ends now. Anything longer is refused.
+fn span(from: u64, to: u64, slot: u64, max: u64) -> Option<(u64, usize)> {
+    let from_s = from - from % slot;
+    let n = (to - from_s).div_ceil(slot);
+    let drop = n.saturating_sub(max);
+    if drop > 1 {
+        return None;
+    }
+    Some((from_s + drop * slot, usize::try_from(n - drop).ok()?))
+}
+
 /// Sums `(start, value)` pairs into the slots of `[from_s, from_s + n × slot)`.
 pub fn slots(
     points: impl IntoIterator<Item = (u64, u64)>,
@@ -239,18 +252,13 @@ pub(crate) async fn stats_heatmap(
         return Err(Problem::invalid("`from` must be before `to`"));
     }
     let max_days = if slot == 3600 { 400 } else { 7 };
-    if to - from > max_days * 86_400 + 3600 {
+    // The days a grain reaches plus an hour of slack, in slots; minutes stop at MAX_SLOTS.
+    let max = ((max_days * 86_400 + 3600) / slot).min(MAX_SLOTS as u64);
+    let Some((from_s, n)) = span(from, to, slot, max) else {
         return Err(window_problem(format!(
             "a {grain} heatmap covers at most {max_days} days"
         )));
-    }
-    let from_s = from - from % slot;
-    let n = usize::try_from((to - from_s).div_ceil(slot)).unwrap_or(usize::MAX);
-    if n > MAX_SLOTS {
-        return Err(window_problem(format!(
-            "{n} slots is more than {MAX_SLOTS}"
-        )));
-    }
+    };
     let starts: Vec<u64> = (0..n as u64).map(|i| from_s + i * slot).collect();
     let mut out = Heatmap {
         from: crate::time::format_us(from_s.saturating_mul(1_000_000)),
@@ -306,6 +314,36 @@ pub(crate) async fn stats_heatmap(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // REQ: OBS-029 — `-7d` of minutes (to = now + 1, from unaligned) spans 10,081 slots once
+    // aligned; only the oldest, partial one is dropped, and the current minute stays. A longer
+    // window is refused rather than cut; coarser grains keep their hour of slack.
+    #[test]
+    fn obs_029_seven_days_of_minutes_fit_the_cap() {
+        let cap = MAX_SLOTS as u64;
+        let now = 1_791_072_000 + 37;
+        let (from_s, n) = span(now - 7 * 86_400, now + 1, 60, cap).unwrap_or_default();
+        assert_eq!(n, MAX_SLOTS);
+        assert_eq!(from_s % 60, 0);
+        assert!(
+            from_s + 60 * n as u64 > now,
+            "the current minute is in the answer"
+        );
+        // Aligned already: nothing dropped.
+        let day0 = 1_791_072_000;
+        assert_eq!(
+            span(day0, day0 + 7 * 86_400, 60, cap),
+            Some((day0, MAX_SLOTS))
+        );
+        // Half an hour more of minutes is refused, not silently cut.
+        assert_eq!(span(day0, day0 + 7 * 86_400 + 1800, 60, cap), None);
+        // 15 minutes: 7 days plus the partial slot, within the hour of slack (676).
+        assert_eq!(
+            span(now - 7 * 86_400, now + 1, 900, 676).map(|x| x.1),
+            Some(673)
+        );
+        assert!(span(day0, day0 + 7 * 86_400 + 3600, 900, 676).is_some());
+    }
 
     // REQ: OBS-029 — points sum into their slots; points outside are dropped.
     #[test]
