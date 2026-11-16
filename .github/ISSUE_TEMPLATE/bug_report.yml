@@ -1,0 +1,41 @@
+name: Bug report
+description: Something doesn't work as documented, or TelltaleDNS behaves oddly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. A **support package** saves a lot of back and forth: it has the
+        facts a maintainer needs, with addresses and names replaced by pseudonyms and secrets removed.
+        It is made on your machine and nothing is uploaded; you look it over and attach it yourself.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "Settings → System, or `telltale --version`. Say how you run it (native, container, Helm)."
+      placeholder: "0.7.0, Helm on k3s"
+    validations:
+      required: true
+  - type: textarea
+    id: package
+    attributes:
+      label: Support package
+      description: |
+        Settings → System → Support package, or `telltale support-package` on the machine
+        (`--offline` if the node won't start). The default level (`strict`) replaces addresses and
+        names and keeps only warnings and errors from the log. Look it over, then drag the
+        `.tar.gz` here. Log lines are redacted by pattern, which is best effort. Don't attach the
+        pseudonym map (`--keep-map`): it holds your real names.
+      placeholder: Drag the file here, or say why you can't share one.
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Screenshots, what changed recently, what you already tried.

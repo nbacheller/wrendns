@@ -49,7 +49,6 @@ pub(crate) enum Files {
 
 /// What the support package reads.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // read by the support package (ADR-156), the next phase
 pub(crate) struct Snapshot {
     /// Oldest first; the previous run's last lines come first when the files are on.
     pub(crate) lines: Vec<String>,
@@ -110,7 +109,7 @@ impl SupportLog {
     }
 
     /// Keeps `line`: in the ring, and on its way to the files when they are on.
-    fn push(&self, line: String) {
+    pub(crate) fn push(&self, line: String) {
         let mut ring = lock(&self.ring);
         // Sent under the ring's lock so `attach` (which takes it too) sees every line exactly once.
         if let Some(tx) = self.tx.get() {
@@ -187,7 +186,6 @@ impl SupportLog {
     }
 
     /// The lines kept, how many were dropped, and whether the files are on.
-    #[allow(dead_code)] // used by tests and the support package (ADR-156), the next phase
     pub(crate) fn snapshot(&self) -> Snapshot {
         Snapshot {
             lines: lock(&self.ring).iter().cloned().collect(),

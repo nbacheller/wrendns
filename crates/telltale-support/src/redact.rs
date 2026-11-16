@@ -666,11 +666,39 @@ impl Redactor {
             Some(i) => (&after[..i], &after[i..]),
             None => (after, ""),
         };
-        let path = self.pieces(path);
+        let path = if self.level == Level::Off {
+            self.pieces(path)
+        } else {
+            self.path_words(path)
+        };
         Some(format!(
             "{scheme}://{creds}{hostport}{path}{}",
             self.url_query(query)
         ))
+    }
+
+    /// A URL path at `strict` and `standard`: words stay (`/dns-query`, `/api/v1`), and anything
+    /// with a digit or a capital (an ID, a token, a profile, a user) becomes `<id>`.
+    fn path_words(&mut self, path: &str) -> String {
+        path.split('/')
+            .map(|seg| {
+                let word = seg.len() <= 32
+                    && seg
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || matches!(b, b'-' | b'_' | b'.'));
+                let version = seg.len() <= 4
+                    && seg
+                        .strip_prefix('v')
+                        .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()));
+                if seg.is_empty() || word || version {
+                    seg.to_owned()
+                } else {
+                    self.counts.bump("url-path");
+                    "<id>".to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("/")
     }
 
     fn url_host(&mut self, hostport: &str) -> String {

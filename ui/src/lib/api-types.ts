@@ -346,6 +346,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/anomaly-mutes/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Mute kinds of device anomaly for some devices or groups (OBS-038).
+         * @description The body has the same fields as `[[anomaly_mute]]` (the name comes from the path):
+         *     `devices` (device names, IPs or CIDRs) and/or `groups`, `kinds` (`rate_spike`,
+         *     `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, `dga`, `chatty_loop`), and optionally
+         *     `expires` (RFC 3339) and `note`, e.g. `{"devices": ["lg-tv-living"], "kinds":
+         *     ["nxdomain_storm"], "expires": "2026-12-31T00:00:00Z", "note": "hourly PTR sweep"}`. A finding
+         *     a mute matches when it is created is still recorded and listed (`GET
+         *     /analytics/anomalies?muted=true`, with `mutedBy`), but isn't counted in
+         *     `telltale_anomalies_total`, the badge, the `anomaly` alert rule, or the health level
+         *     (`telltale_anomalies_muted_total` counts it). The same kind still counts for every other
+         *     device. The mute is shared: it applies on every node. There is no mute for everyone: name at
+         *     least one device or group.
+         */
+        put: operations["put_anomaly_mute"];
+        post?: never;
+        /**
+         * Remove an anomaly mute (OBS-038).
+         * @description Findings created from now on count again; ones recorded while the mute held stay muted.
+         */
+        delete: operations["delete_anomaly_mute"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/audit": {
         parameters: {
             query?: never;
@@ -2576,6 +2610,68 @@ export interface paths {
          *     cluster; one that doesn't answer is in `missingNodes`.
          */
         get: operations["system_probes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/support-package": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Make a support package.
+         * @description One `.tar.gz` for an issue report: build and platform facts, the effective configuration
+         *     without secrets, the cluster view and timeline, health checks, upstream and listener state,
+         *     list names and counts (no domains), a metrics snapshot, aggregate statistics, and the node's
+         *     recent log lines, with a manifest that lists every file and counts what was removed or
+         *     replaced. Secrets (passwords and hashes, tokens, keys, credentials) are removed at every
+         *     level. Nothing is uploaded: the response is the archive.
+         *
+         *     **`level`** decides how much is obfuscated. `strict` (the default): addresses, MAC
+         *     addresses, host, device, group, node and pod names, e-mail addresses, URL hosts, and home
+         *     paths become pseudonyms that are stable inside the package and can't be reversed from it,
+         *     no query names, no free text, warnings and errors only in the log. `standard`: also INFO
+         *     log lines, top lists with pseudonymized names, and (with `querySample`) a query-log sample.
+         *     `none`: values as they are (secrets still removed). `reveal` keeps the named values readable.
+         *
+         *     With `keepMap`, the answer carries `X-Support-Package-Id`, and `GET
+         *     /system/support-package/{id}/map` returns the pseudonyms and the real values behind them once,
+         *     within ten minutes: it is not for attaching. `?dryRun=true` answers with the manifest only.
+         *     Free text is redacted by pattern, which is best effort: look the package over before you
+         *     attach it. Admin only; audit-logged as `support.package`. Not an MCP tool.
+         */
+        post: operations["make"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/support-package/{id}/map": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The pseudonym map of the package just made.
+         * @description The pseudonyms and the real values behind them, one `pseudonym<TAB>original` line each, so you
+         *     can tell a maintainer what `device-3` was. It holds the real names and addresses: it isn't for
+         *     attaching to an issue. The node keeps it in memory only (never on disk), for the package that
+         *     asked for it (`keepMap`), and gives it out once, within ten minutes; a newer package replaces
+         *     it. Admin only; audit-logged as `support.package.map`.
+         */
+        get: operations["map"];
         put?: never;
         post?: never;
         delete?: never;
@@ -7390,6 +7486,23 @@ export interface components {
             /** Format: int64 */
             toUnixSeconds: number;
         };
+        /** @description REQ: OPS-011 (ADR-156) — `POST /system/support-package`: what the package should hold. */
+        SupportPackageRequest: {
+            /** @description Keep the pseudonym map in memory for one download (`GET /system/support-package/{id}/map`). */
+            keepMap?: boolean;
+            /**
+             * @description `strict` (the default), `standard`, or `none`: how much is obfuscated.
+             * @example strict
+             */
+            level?: string | null;
+            /**
+             * Format: int32
+             * @description Rows of the query log to include, newest first (0 to 1,000; `standard` and `none` only).
+             */
+            querySample?: number;
+            /** @description Names (a device, a group, a node, a host) to keep readable. At most 50. */
+            reveal?: string[];
+        };
         /** @description Node and build information. */
         SystemInfo: {
             /** @description Exactly which build this is (ADR-046). */
@@ -8576,6 +8689,113 @@ export interface operations {
             };
             /** @description `annotation_text`: empty, over 200 characters, or several lines; `annotation_time`: ahead of now, or more than 7 days back. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_anomaly_mute: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong (no device or group, an unknown kind, a name that matches nothing, a MAC address), or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_anomaly_mute: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description No entry by that name. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13017,6 +13237,87 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_ProbeResult"];
+                };
+            };
+        };
+    };
+    make: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Collect everything and answer with the manifest only: what the package would hold, how big
+                 *     each file is, and what was removed or replaced (counts, never values). Nothing is written.
+                 */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Optional: the defaults make a strict package. */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SupportPackageRequest"];
+            };
+        };
+        responses: {
+            /** @description The package, as an attachment named `telltale-support-<node>-<time>.tar.gz`. With dryRun: the manifest as JSON. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/gzip": number[];
+                };
+            };
+            /** @description Another package is being made on this node (`conflict`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong: problem+json says which. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    map: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description `X-Support-Package-Id` of the package. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The map, as an attachment. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description There is no map for that package: it was given out, expired, or was never asked for. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

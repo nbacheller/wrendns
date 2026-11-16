@@ -11,6 +11,7 @@
   import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
   import TabPanel from '../lib/components/TabPanel.svelte';
   import WallDisplays from '../lib/components/WallDisplays.svelte';
+  import SupportPackage from '../lib/components/SupportPackage.svelte';
 
   const tabs = $derived<TabItem[]>(
     [
@@ -861,6 +862,8 @@
           <code>telltale backup create --include-qlog</code> on the server.
         </p>
       </section>
+      <!-- REQ: OPS-011 (ADR-156) — one redacted file for a bug report. -->
+      <SupportPackage />
     {/if}
   {:else if tab === 'queries'}
     <!-- REQ: DNS-006 (T6.15) — the cache has its own page now. -->

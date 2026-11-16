@@ -736,6 +736,38 @@ test('obs_038 mute a kind of finding for a device', async () => {
   await page.unroute('**/api/v1/anomaly-mutes/*');
 });
 
+// REQ: OPS-011 (ADR-156) — Settings → System → Support package: a preview of what it would hold, a
+// download that is a real gzip, and a pseudonym map that can be fetched once.
+test('ops_011 support package', async () => {
+  await page.goto('/#/settings?tab=system');
+  const card = page.getByTestId('support-package');
+  await expect(card).toBeVisible();
+  await expect(card.getByTestId('level-strict')).toBeChecked();
+  // The sample of queries is offered above strict only.
+  await expect(card.getByLabel('Query sample')).toHaveCount(0);
+  await card.getByTestId('level-standard').check();
+  await expect(card.getByLabel('Query sample')).toBeVisible();
+  await card.getByTestId('level-strict').check();
+  await card.getByTestId('support-preview').click();
+  const files = card.getByTestId('support-file');
+  await expect(files.filter({ hasText: 'config/effective.json' })).toBeVisible();
+  await expect(files.filter({ hasText: 'logs/node.log' })).toBeVisible();
+  await expect(files.filter({ hasText: 'node/host.json' })).toBeVisible();
+  await expect(card.getByTestId('support-manifest')).toContainText('nothing was saved');
+  // Make it: a download that is a gzip, then the map once.
+  await card.getByTestId('keep-map').check();
+  const [pkg] = await Promise.all([page.waitForEvent('download'), card.getByTestId('support-make').click()]);
+  expect(pkg.suggestedFilename()).toMatch(/^telltale-support-.+\.tar\.gz$/);
+  const bytes = readFileSync(await pkg.path());
+  expect([bytes[0], bytes[1]]).toEqual([0x1f, 0x8b]);
+  await expect(card.getByTestId('support-made')).toContainText('telltale-support-');
+  await expect(files.filter({ hasText: 'MANIFEST' })).toHaveCount(0);
+  await expect(files.filter({ hasText: 'config/effective.json' })).toBeVisible();
+  const [map] = await Promise.all([page.waitForEvent('download'), card.getByTestId('support-map').click()]);
+  expect(map.suggestedFilename()).toBe('telltale-support-map.txt');
+  await expect(card.getByTestId('support-map')).toBeDisabled();
+});
+
 // The header's icon buttons match: the pause button (its own component) is the same round,
 // borderless button as the theme toggle, on the same line (owner report 2026-10-06).
 test('header icon buttons are the same size and aligned', async () => {

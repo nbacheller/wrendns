@@ -263,3 +263,25 @@ fn ops_011_arbitrary_text_never_panics_and_a_planted_secret_never_survives() {
         }
     }
 }
+
+#[test]
+fn ops_011_url_paths_keep_words_and_lose_ids() {
+    let line =
+        "GET https://dns.acme-dns.net/dns-query/abc123secretprofile/v1/lists/42/Hosts.txt done";
+    let mut strict = red(Level::Strict);
+    let out = strict.text(line);
+    assert!(
+        out.contains("/dns-query/<id>/v1/lists/<id>/<id> done"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("abc123secretprofile") && !out.contains("acme-dns"),
+        "{out}"
+    );
+    // At none the path is as it is (tokens aside).
+    let mut open = red(Level::Off);
+    assert!(
+        open.text(line)
+            .contains("/dns-query/abc123secretprofile/v1/lists/42/Hosts.txt")
+    );
+}

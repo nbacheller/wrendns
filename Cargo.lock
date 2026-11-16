@@ -3489,6 +3489,7 @@ dependencies = [
  "telltale-policy",
  "telltale-proto",
  "telltale-store",
+ "telltale-support",
  "telltale-telemetry",
  "telltale-upstream",
  "tempfile",

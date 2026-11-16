@@ -910,6 +910,164 @@
         }
       }
     },
+    "/api/v1/anomaly-mutes/{name}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Mute kinds of device anomaly for some devices or groups (OBS-038).",
+        "description": "The body has the same fields as `[[anomaly_mute]]` (the name comes from the path):\n`devices` (device names, IPs or CIDRs) and/or `groups`, `kinds` (`rate_spike`,\n`domain_volume`, `drift`, `beacon`, `nxdomain_storm`, `dga`, `chatty_loop`), and optionally\n`expires` (RFC 3339) and `note`, e.g. `{\"devices\": [\"lg-tv-living\"], \"kinds\":\n[\"nxdomain_storm\"], \"expires\": \"2026-12-31T00:00:00Z\", \"note\": \"hourly PTR sweep\"}`. A finding\na mute matches when it is created is still recorded and listed (`GET\n/analytics/anomalies?muted=true`, with `mutedBy`), but isn't counted in\n`telltale_anomalies_total`, the badge, the `anomaly` alert rule, or the health level\n(`telltale_anomalies_muted_total` counts it). The same kind still counts for every other\ndevice. The mute is shared: it applies on every node. There is no mute for everyone: name at\nleast one device or group.",
+        "operationId": "put_anomaly_mute",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong (no device or group, an unknown kind, a name that matches nothing, a MAC address), or the configuration wouldn't be valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove an anomaly mute (OBS-038).",
+        "description": "Findings created from now on count again; ones recorded while the mute held stay muted.",
+        "operationId": "delete_anomaly_mute",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No entry by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/audit": {
       "get": {
         "tags": [
@@ -7125,6 +7283,118 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Items_ProbeResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/support-package": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Make a support package.",
+        "description": "One `.tar.gz` for an issue report: build and platform facts, the effective configuration\nwithout secrets, the cluster view and timeline, health checks, upstream and listener state,\nlist names and counts (no domains), a metrics snapshot, aggregate statistics, and the node's\nrecent log lines, with a manifest that lists every file and counts what was removed or\nreplaced. Secrets (passwords and hashes, tokens, keys, credentials) are removed at every\nlevel. Nothing is uploaded: the response is the archive.\n\n**`level`** decides how much is obfuscated. `strict` (the default): addresses, MAC\naddresses, host, device, group, node and pod names, e-mail addresses, URL hosts, and home\npaths become pseudonyms that are stable inside the package and can't be reversed from it,\nno query names, no free text, warnings and errors only in the log. `standard`: also INFO\nlog lines, top lists with pseudonymized names, and (with `querySample`) a query-log sample.\n`none`: values as they are (secrets still removed). `reveal` keeps the named values readable.\n\nWith `keepMap`, the answer carries `X-Support-Package-Id`, and `GET\n/system/support-package/{id}/map` returns the pseudonyms and the real values behind them once,\nwithin ten minutes: it is not for attaching. `?dryRun=true` answers with the manifest only.\nFree text is redacted by pattern, which is best effort: look the package over before you\nattach it. Admin only; audit-logged as `support.package`. Not an MCP tool.",
+        "operationId": "make",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Collect everything and answer with the manifest only: what the package would hold, how big\neach file is, and what was removed or replaced (counts, never values). Nothing is written.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Optional: the defaults make a strict package.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupportPackageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The package, as an attachment named `telltale-support-<node>-<time>.tar.gz`. With dryRun: the manifest as JSON.",
+            "content": {
+              "application/gzip": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another package is being made on this node (`conflict`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong: problem+json says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/support-package/{id}/map": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "The pseudonym map of the package just made.",
+        "description": "The pseudonyms and the real values behind them, one `pseudonym<TAB>original` line each, so you\ncan tell a maintainer what `device-3` was. It holds the real names and addresses: it isn't for\nattaching to an issue. The node keeps it in memory only (never on disk), for the package that\nasked for it (`keepMap`), and gives it out once, within ten minutes; a newer package replaces\nit. Admin only; audit-logged as `support.package.map`.",
+        "operationId": "map",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "`X-Support-Package-Id` of the package.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The map, as an attachment.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "There is no map for that package: it was given out, expired, or was never asked for.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -19058,6 +19328,38 @@
             "minimum": 0
           }
         }
+      },
+      "SupportPackageRequest": {
+        "type": "object",
+        "description": "REQ: OPS-011 (ADR-156) — `POST /system/support-package`: what the package should hold.",
+        "properties": {
+          "keepMap": {
+            "type": "boolean",
+            "description": "Keep the pseudonym map in memory for one download (`GET /system/support-package/{id}/map`)."
+          },
+          "level": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`strict` (the default), `standard`, or `none`: how much is obfuscated.",
+            "example": "strict"
+          },
+          "querySample": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rows of the query log to include, newest first (0 to 1,000; `standard` and `none` only).",
+            "minimum": 0
+          },
+          "reveal": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names (a device, a group, a node, a host) to keep readable. At most 50."
+          }
+        },
+        "additionalProperties": false
       },
       "SystemInfo": {
         "type": "object",

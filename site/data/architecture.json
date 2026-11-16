@@ -129,6 +129,15 @@
       "reqs": [],
       "code": "crates/telltale-git/src"
     },
+    "telltale-support": {
+      "layer": "control",
+      "summary": "The support package's pure core: a tar.gz writer, pseudonyms, redaction, and settings classification.",
+      "detail": "Everything the support package does that needs no running server, so it can be tested hard: a small tar and gzip writer, keyed pseudonyms that keep subnets and private ranges, a two-pass redactor (the names and secrets your settings hold, then the shapes of addresses, e-mail, URLs, host names, home paths and tokens), and a classification of every settings field that drops anything it doesn't know. The binary decides what goes into a package and when.",
+      "types": ["Package", "Redactor", "Pseudonyms", "Manifest", "Level"],
+      "adrs": ["ADR-156"],
+      "reqs": ["OPS-011"],
+      "code": "crates/telltale-support/src"
+    },
     "telltale": {
       "layer": "bin",
       "summary": "The binary: wires every crate together, plus the CLI.",

@@ -214,6 +214,12 @@ upstream_group = "lan"</code></pre>
       <p>Yes. <code>/metrics</code> is served on port 9153 by default, limited to your allowed networks. It covers queries per transport, the cache, upstream latency and health, blocks per list and group, and where the time goes inside each answer. The Helm chart has an optional ServiceMonitor, alert rules, and a Grafana dashboard, and metrics can be pushed to an OpenTelemetry collector instead. See <a href="guide-monitoring.html">Monitoring and alerts</a>.</p>
     </dd>
 
+    <dt id="q-support">How do I report a problem without sharing my network?</dt>
+    <dd>
+      <p>Make a <b>support package</b>: one file with your build, your settings without secrets, health, upstream state, a metrics snapshot, and the node's recent log. By default every address and name in it is replaced by a pseudonym (<code>device-1</code>, <code>10.4.7.9</code>) that is the same all through the file, a subnet stays a subnet, and nothing you searched for is included. It's made on your machine and nothing is uploaded: you read it, then attach it to your issue.</p>
+      <p>In the web UI it's <b>Settings → System → Support package</b>. From a shell it's <code>telltale support-package</code>, or <code>telltale support-package --offline</code> when the node won't start. The page lists every file and what was replaced before you make it. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#support-package">Details</a>.</p>
+    </dd>
+
     <dt id="q-breaker">Why do upstream health labels say "open", "closed", and "half_open"?</dt>
     <dd>
       <p>They come from the circuit-breaker pattern, named after an electrical circuit: <b>closed</b> means current flows, so requests go through and the upstream is healthy. After enough failures the breaker trips <b>open</b> and the upstream is benched for a while. <b>Half-open</b> lets a trial query through to see whether it has recovered. The same names appear in the API and in the <code>telltale_upstream_breaker_state</code> metric. Plainer labels for the web UI are <a href="https://github.com/paimonsoror/telltaledns/issues/9">planned</a>.</p>

@@ -223,6 +223,42 @@ The file is zstd-compressed tar with a manifest of BLAKE3 checksums, written own
 - Files are given the data directory's owner, so a restore run as root works for the `telltale` service user.
 - If you restore into a different data directory, the restored config still names the old one: restore says so, and you set `data_dir` (or add a small file that does).
 
+## Support package
+When something goes wrong, the most useful thing to attach to an issue is a **support package**: one `.tar.gz` with what a maintainer needs to see, and nothing that identifies you. It holds build and platform facts; your settings without secrets; the cluster view and its timeline; health checks and listener checks; upstream state; list names and counts (no domains); a snapshot of the metrics; aggregate statistics; and this node's recent log. Nothing is uploaded: you make it, look it over, and attach it yourself.
+
+**Making one**
+- In the web UI: **Settings → System → Support package** (admins). **Preview what it holds** lists every file with its size and what would be replaced; **Make the package** downloads it.
+- From a shell: `telltale support-package` (it asks the running node, with an admin's API token in `TELLTALE_TOKEN` or `--token-file`). Add `--list` to see what it would hold and write nothing.
+- With no token, or with `--offline`, it is made from the configuration files and the log files instead, without asking a running node: use that when the node won't start. It has no live state (no cluster, health, upstreams, or metrics), and says so.
+- Over the API: `POST /api/v1/system/support-package` with `{"level": "strict"}` (admin; `?dryRun=true` answers with the manifest only). It isn't an MCP tool and no agent scope covers it.
+
+```sh
+telltale support-package                               # strict (the default): ./telltale-support-<node>-<time>.tar.gz
+telltale support-package --level standard --query-sample 200 --reveal pi
+telltale support-package --keep-map map.txt            # also write what each pseudonym stands for (keep it private)
+telltale support-package --offline -c /etc/telltale/telltale.toml
+```
+
+**Levels** (`--level`, or the choice on the page)
+| Level | What it does |
+|---|---|
+| `strict` (default) | IP and MAC addresses, host, device, client, group, node, pod and namespace names, e-mail addresses, URL hosts, and home paths become pseudonyms (`device-1`, `group-2`, `10.4.7.9`). No query names, no local zone contents, no free text; the log has warnings and errors only. |
+| `standard` | As strict, plus the log's INFO lines, top lists with pseudonymized names, and (with `--query-sample N`, up to 1,000) a sample of recent queries with their names pseudonymized. |
+| `none` | Real values. Secrets are still removed. Read it before you share it. |
+
+In every level **secrets are removed**: passwords and hashes, API and session tokens, two-factor secrets, OIDC client secrets, private keys, the bootstrap secret, and credentials in URLs. A setting that holds a secret (an OIDC `client_secret`, an upstream's extra headers) is dropped, a `*_file` setting keeps its path and never the file's content, and a setting nobody classified is dropped and named in the manifest. `--reveal NAME` (repeat for several) keeps one name readable.
+
+**Pseudonyms** are the same inside one package (`device-3` is one device in every file) and can't be turned back into the real value from the package. They keep what triage needs: two addresses on one /24 (or /64) stay on one, a private address stays private and a public one stays public, loopback, link-local and the well-known public resolvers (1.1.1.1, 8.8.8.8, 9.9.9.9, ...) stay as they are, and a MAC keeps its maker (its first three bytes) unless it is a randomized one. A public domain name keeps its last label (`site-4.com`); URL paths keep their words (`/dns-query`) and lose anything with a digit or a capital. `--keep-map FILE` writes the pseudonym map (`pseudonym<TAB>real value`) to a file only you hold; in the web UI **Let me download the key to the pseudonyms** keeps it in the node's memory for one download within ten minutes (never on disk). It has your real names: don't attach it.
+
+**What's inside**
+- `MANIFEST.json` lists every file, which part wrote it, whether it is whole (`ok`, `truncated`, or `missing`, with the reason), and how many values of each kind were replaced or removed (counts, never the values); `README.txt` says what the level means.
+- A part that is slow or fails (each has five seconds; the whole run, 30) is marked `missing` and the rest is complete. The package is at most 20 MiB: over that, the largest files are cut first (the newest log lines are kept). It runs on a worker thread and never touches the query path.
+- Free text (log lines, error messages) is redacted by pattern: the names and secrets your settings hold are replaced wherever they appear, then addresses, MACs, e-mail addresses, URLs, host names, home paths, PEM blocks and long token-looking strings are caught by shape. That is best effort, not a guarantee: look it over.
+
+**The log.** No platform lets a process read its own stderr back (a systemd unit has no journal access, a container's log is outside it, the Helm chart's root file system is read-only), so TelltaleDNS keeps its own small log: the last 2,000 lines at INFO and above in memory from the first line it logs, whatever `TELLTALE_LOG` says, and two rotating files of about 1 MiB under `<data_dir>/logs/` (directory `0750`, files `0640`), so lines from before a restart reach the package. About 21 KB a day on a quiet node. The files are **not** redacted (they hold client addresses): the package redacts when it is made. `[support] persist_logs = false` keeps only the in-memory lines (read at start); a read-only data directory does the same on its own and the manifest says so. Writing the log never blocks DNS: a full queue drops the line and counts it.
+
+**Who can, and the record.** Admins only. Each package is recorded in the audit log as `support.package` (the level and counts, never the content) and each map download as `support.package.map`. One package at a time per node (a second request gets 409).
+
 ## Kubernetes (Helm)
 The chart is published with every release as an OCI artifact (k8s 1.26+, amd64 and arm64).
 Use a release version, or `0.1.0-edge.<n>` builds that follow `main`. Its source is in

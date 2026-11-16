@@ -1071,6 +1071,18 @@ impl Backend for Federated {
     fn backup(&self) -> Result<(String, Vec<u8>), Problem> {
         self.local.backup()
     }
+    // REQ: OPS-011 (ADR-156) — a support package is of this node: its own log and state, redacted on
+    // it (a `--cluster` package, asking each node, is a later phase).
+    fn support_package(
+        &self,
+        req: &telltale_api::model::SupportPackageRequest,
+        dry_run: bool,
+    ) -> Result<telltale_api::SupportPackageOutput, Problem> {
+        self.local.support_package(req, dry_run)
+    }
+    fn support_map(&self, id: &str) -> Option<String> {
+        self.local.support_map(id)
+    }
     // REQ: OBS-016 — the objectives are configuration, the same on every node; the status is
     // worked out from the federated time buckets.
     fn slo_settings(&self) -> telltale_api::slo::Settings {

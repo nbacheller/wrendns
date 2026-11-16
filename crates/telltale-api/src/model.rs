@@ -1968,6 +1968,24 @@ pub struct AnomalyFinding {
     pub muted_by: Option<String>,
 }
 
+/// REQ: OPS-011 (ADR-156) — `POST /system/support-package`: what the package should hold.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SupportPackageRequest {
+    /// `strict` (the default), `standard`, or `none`: how much is obfuscated.
+    #[schema(example = "strict")]
+    pub level: Option<String>,
+    /// Names (a device, a group, a node, a host) to keep readable. At most 50.
+    #[serde(default)]
+    pub reveal: Vec<String>,
+    /// Rows of the query log to include, newest first (0 to 1,000; `standard` and `none` only).
+    #[serde(default)]
+    pub query_sample: u32,
+    /// Keep the pseudonym map in memory for one download (`GET /system/support-package/{id}/map`).
+    #[serde(default)]
+    pub keep_map: bool,
+}
+
 /// REQ: OBS-014 (ADR-103) — a finding's stable ID: its window start (Unix seconds, 8 hex
 /// digits) then an FNV-1a hash of its kind, device, domain, and window length (8 hex digits).
 /// Every node that sees the same finding gives it the same ID, and the ID alone says how old the

@@ -851,6 +851,19 @@ impl Backend for ApiBackend {
         Ok((name.display().to_string(), bytes))
     }
 
+    // REQ: OPS-011 (ADR-156) — a support package, and its map for one download.
+    fn support_package(
+        &self,
+        req: &telltale_api::model::SupportPackageRequest,
+        dry_run: bool,
+    ) -> Result<telltale_api::SupportPackageOutput, Problem> {
+        crate::support::build(self, req, dry_run)
+    }
+
+    fn support_map(&self, id: &str) -> Option<String> {
+        crate::support::take_map(id)
+    }
+
     // REQ: AGT-002 — the promotion checks without promoting.
     fn promote_plan(
         &self,

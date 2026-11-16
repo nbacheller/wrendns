@@ -588,6 +588,9 @@ mod tests {
             (Method::POST, "/api/v1/tokens"),
             (Method::GET, "/api/v1/tokens"),
             (Method::GET, "/api/v1/backup"),
+            // REQ: OPS-011 (ADR-156) — a support package reads logs and state: for people.
+            (Method::POST, "/api/v1/system/support-package"),
+            (Method::GET, "/api/v1/system/support-package/abc/map"),
             (Method::GET, "/api/v1/audit"),
             (Method::POST, "/api/v1/auth/password"),
             (Method::PUT, "/api/v1/clients"),

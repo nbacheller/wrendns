@@ -155,19 +155,21 @@ impl Package {
 
     /// Records that a collector gave nothing (slow, failed, or not available), so the manifest says so.
     pub fn add_missing(&mut self, path: &str, collector: &str, why: &str) {
+        let why = self.red.text(why);
         self.missing.push(FileEntry {
             path: path.to_owned(),
             collector: collector.to_owned(),
             bytes: 0,
             status: Status::Missing,
-            note: Some(why.to_owned()),
+            note: Some(why),
             redactions: std::collections::BTreeMap::new(),
         });
     }
 
-    /// A line for the manifest's notes.
+    /// A line for the manifest's notes (redacted: a path or a name may be in it).
     pub fn note(&mut self, text: &str) {
-        self.notes.push(text.to_owned());
+        let t = self.red.text(text);
+        self.notes.push(t);
     }
 
     /// Cuts the largest files until the content fits the cap.

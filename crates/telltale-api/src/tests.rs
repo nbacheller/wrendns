@@ -15,6 +15,8 @@ struct Fake {
     acks: Mutex<Vec<String>>,
     /// REQ: OBS-033 — markers written.
     notes: Mutex<Vec<crate::model::Annotation>>,
+    /// REQ: OPS-011 — the fake's one pseudonym map has been handed out.
+    map_taken: std::sync::atomic::AtomicBool,
 }
 
 /// The one finding the fake reports.
@@ -288,6 +290,29 @@ impl Backend for Fake {
     fn upstreams(&self) -> Vec<UpstreamInfo> {
         Vec::new()
     }
+    fn support_package(
+        &self,
+        req: &crate::model::SupportPackageRequest,
+        dry_run: bool,
+    ) -> Result<crate::SupportPackageOutput, Problem> {
+        Ok(crate::SupportPackageOutput {
+            file_name: "telltale-support-node-1-20261016T000000Z.tar.gz".into(),
+            id: (req.keep_map && !dry_run).then(|| "abc123".to_owned()),
+            manifest: serde_json::json!({ "level": req.level.clone().unwrap_or_else(|| "strict".into()), "dryRun": dry_run }),
+            archive: if dry_run {
+                Vec::new()
+            } else {
+                vec![0x1f, 0x8b, 8, 0]
+            },
+        })
+    }
+    fn support_map(&self, id: &str) -> Option<String> {
+        (id == "abc123"
+            && !self
+                .map_taken
+                .swap(true, std::sync::atomic::Ordering::SeqCst))
+        .then(|| "device-1\tlg-tv\n".to_owned())
+    }
     fn anomalies(&self, _: u64) -> Vec<AnomalyFinding> {
         let mut v = vec![AnomalyFinding {
             id: fake_finding_id(),
@@ -551,6 +576,135 @@ fn app() -> (TestApp, Arc<Fake>) {
 }
 // REQ: OBS-014, OBS-015 — acknowledging anomalies over HTTP: an operator's change, audited,
 // reflected in the list and its filter; a viewer can't; health is a plain read.
+/// REQ: OPS-011 (ADR-156) — a support package is an admin's: a viewer is refused; an admin gets the
+/// archive as an attachment (and the map's ID), a dry run gets the manifest, the map comes once, a
+/// wrong request is refused with a hint, and each is in the audit log without its content.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one flow: viewer, admin, dry run, map, errors, audit
+async fn ops_011_a_support_package_is_an_admins() {
+    let (app, _) = app();
+    let vic = app
+        .auth
+        .create_user("vic", "a viewer password", auth::Role::Viewer, false, NOW)
+        .unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            vic.id,
+            "ro",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let viewer = format!("tt_{tid}_{secret}");
+    let make = |bearer: &str, uri: &str, body: serde_json::Value| {
+        Request::post(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let url = "/api/v1/system/support-package";
+    let (s, _, _) = send(&app, make(&viewer, url, serde_json::json!({}))).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "a viewer can't");
+    let req = Request::get("/api/v1/system/support-package/abc123/map")
+        .header("authorization", format!("Bearer {viewer}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(send(&app, req).await.0, StatusCode::FORBIDDEN);
+
+    // An admin: the archive as an attachment, with the map's ID when asked.
+    let (s, h, _) = send(
+        &app,
+        make(
+            &app.bearer,
+            url,
+            serde_json::json!({"level": "standard", "keepMap": true}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(h["content-type"], "application/gzip");
+    assert!(
+        h["content-disposition"]
+            .to_str()
+            .unwrap()
+            .starts_with("attachment; filename=\"telltale-support-")
+    );
+    assert_eq!(h["x-support-package-id"], "abc123");
+    assert_eq!(h["cache-control"], "no-store");
+    // No body at all is a strict package.
+    let empty = Request::post(url)
+        .header("authorization", format!("Bearer {}", app.bearer))
+        .body(Body::empty())
+        .unwrap();
+    let (s, h, _) = send(&app, empty).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(h.get("x-support-package-id").is_none());
+    // A dry run answers with the manifest.
+    let (s, _, v) = send(
+        &app,
+        make(
+            &app.bearer,
+            &format!("{url}?dryRun=true"),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, v["dryRun"].as_bool(), v["level"].as_str()),
+        (StatusCode::OK, Some(true), Some("strict"))
+    );
+    // The map: once.
+    let map = |bearer: &str| {
+        Request::get("/api/v1/system/support-package/abc123/map")
+            .header("authorization", format!("Bearer {bearer}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (s, h, _) = send(&app, map(&app.bearer)).await;
+    assert_eq!(
+        (s, h["content-type"].to_str().unwrap()),
+        (StatusCode::OK, "text/plain; charset=utf-8")
+    );
+    assert_eq!(
+        send(&app, map(&app.bearer)).await.0,
+        StatusCode::NOT_FOUND,
+        "once"
+    );
+    // A wrong request names the field and says what to do.
+    let (s, _, v) = send(
+        &app,
+        make(&app.bearer, url, serde_json::json!({"level": "loose"})),
+    )
+    .await;
+    assert!(s.is_client_error(), "{s}");
+    assert!(v["detail"].as_str().unwrap().contains("level"), "{v}");
+    let (s, _, _) = send(
+        &app,
+        make(&app.bearer, url, serde_json::json!({"querySample": 5})),
+    )
+    .await;
+    assert!(s.is_client_error(), "no query names at strict");
+    // The audit log has the package and the map, with counts and no content.
+    let audit = app
+        .auth
+        .state()
+        .audit_page(None, 20, Some("support.package"), None)
+        .unwrap();
+    assert_eq!(audit.len(), 3, "{audit:?}");
+    let audit = app
+        .auth
+        .state()
+        .audit_page(None, 20, Some("support.package.map"), None)
+        .unwrap();
+    assert_eq!(audit.len(), 1, "{audit:?}");
+}
+
 /// REQ: OBS-038 (ADR-161) — a finding a mute matched is left out of the list unless `muted=true`,
 /// and then says which mute.
 #[tokio::test]
@@ -1404,7 +1558,9 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 108 with FLT-017's /kubernetes/workloads, /kubernetes/status and /kubernetes/map/{key}.
     // 112 with CLU-014's /nodes/{id}/drill, /drills, /drills/{id} and /clients/affinity.
     // 113 with CLU-001's /cluster/nodes/{id}.
-    assert_eq!(paths.len(), 113);
+    // 114 with OBS-038's /anomaly-mutes/{name}; 116 with OPS-011's /system/support-package and
+    // /system/support-package/{id}/map.
+    assert_eq!(paths.len(), 116);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

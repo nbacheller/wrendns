@@ -61,6 +61,7 @@ telltale-api = { version = "0.7.0", path = "../telltale-api" }
 telltale-cache = { version = "0.7.0", path = "../telltale-cache" }
 telltale-cluster = { version = "0.7.0", path = "../telltale-cluster" }
 telltale-config.workspace = true
+telltale-support = { path = "../telltale-support" }
 telltale-filter = { version = "0.7.0", path = "../telltale-filter" }
 telltale-store = { version = "0.7.0", path = "../telltale-store" }
 telltale-net = { version = "0.7.0", path = "../telltale-net" }
