@@ -1,0 +1,66 @@
+# TelltaleDNS from this fork on Docker Desktop (Windows or macOS), for trying the router,
+# Home Assistant, and device-name features (M22) before running it for real.
+#
+#   1. Put your UniFi API key and Home Assistant token in ./secrets (README.md).
+#   2. Edit telltale.toml: your Cloud Gateway's and Home Assistant's addresses.
+#   3. docker compose up -d --build            # the first build takes a while
+#   4. docker compose exec telltale telltale auth setup-token
+#      then open http://localhost:8053/ and create the admin.
+#
+# Optional: a throwaway Home Assistant with the TelltaleDNS integration mounted, so your real
+# one stays untouched:  docker compose --profile test-ha up -d   (http://localhost:8124/)
+#
+# Docker Desktop runs containers in a VM: DNS queries arrive from the VM's address, and the
+# container can't see your LAN's ARP table or mDNS, so per-device statistics need a Pi or a
+# Linux host with host networking (deploy/compose). The router and Home Assistant reads are
+# outgoing HTTPS and work as they will anywhere.
+name: telltale-dev
+services:
+  telltale:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        # Thin LTO: about half the build time of a release build, nearly the same speed.
+        PROFILE: bench-fast
+        TELLTALE_BUILD_CHANNEL: dev
+    image: telltale:fork-dev
+    command: ["run", "-c", "/etc/telltale/telltale.toml"]
+    restart: unless-stopped
+    # The image's unprivileged user; DNS listens on 1053 inside, so it needs no capability.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    ports:
+      - "1053:1053/udp"   # DNS: nslookup -port=1053 nas.home.arpa 127.0.0.1
+      - "1053:1053/tcp"
+      - "8053:8053"       # the web UI and API
+    volumes:
+      - ./telltale.toml:/etc/telltale/telltale.toml:ro
+      - ./secrets:/run/secrets:ro
+      - telltale-data:/var/lib/telltale
+    environment:
+      TELLTALE_LOG: info
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/telltale", "health", "--url", "http://127.0.0.1:8053/readyz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+
+  # A test Home Assistant with the integration from integrations/home-assistant mounted.
+  homeassistant:
+    profiles: ["test-ha"]
+    image: ghcr.io/home-assistant/home-assistant:stable
+    restart: unless-stopped
+    ports:
+      - "8124:8123"
+    volumes:
+      - ha-test-config:/config
+      - ../../integrations/home-assistant/custom_components/telltale:/config/custom_components/telltale:ro
+    environment:
+      TZ: America/New_York
+    depends_on: [telltale]
+
+volumes:
+  telltale-data:
+  ha-test-config:
