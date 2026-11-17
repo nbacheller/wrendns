@@ -58,11 +58,17 @@
       .join(' · ');
 
   // REQ: API-002 (T7.5) — add and change upstreams and upstream groups here.
+  // REQ: API-014 (T24.16, ADR-926) — an address that runs a program (exec://, unix://) is an
+  // admin's, and so is any change to an upstream that keeps a credential (its headers, its
+  // arguments or a password in its address): the entry's `redacted` paths say which it keeps.
+  const isProgram = (u: unknown) => /^(exec|unix):\/\//i.test(String(u ?? '').trim());
+  const keepsCredential = (_d: Record<string, unknown>, redacted: string[]) => redacted.length > 0;
   const upstreamFields: Field[] = [
     { key: 'url', label: 'Address', type: 'text', placeholder: 'tls://9.9.9.9 or https://dns.quad9.net/dns-query',
-      help: 'udp://, tcp://, tls:// (DNS over TLS), https:// (DNS over HTTPS), or quic://.' },
+      help: 'udp://, tcp://, tls:// (DNS over TLS), https:// (DNS over HTTPS), or quic://. An exec:// or unix:// address runs a program: only an admin sets one.',
+      admin: (d, r) => keepsCredential(d, r) || isProgram(d.url) },
     { key: 'tls_server_name', label: 'TLS server name', type: 'text', placeholder: 'dns.quad9.net', advanced: true,
-      help: 'The name on the server certificate, for tls:// and quic:// addresses given by IP.' },
+      help: 'The name on the server certificate, for tls:// and quic:// addresses given by IP.', admin: keepsCredential },
     { key: 'timeout_ms', label: 'Timeout (ms)', type: 'number', placeholder: '2000', advanced: true },
   ];
   const names = $derived(upstreams.map((u) => u.name).filter((n) => !n.startsWith('forward:')));
@@ -212,7 +218,8 @@
     {/each}
   </section>
   <ConfigEditor kind="upstream" path="upstreams" title="Upstream servers" noun="upstream" fields={upstreamFields}
-    summary={(d) => String(d.url ?? '')} onchanged={reload} formAction={tryUpstream} />
+    summary={(d) => String(d.url ?? '')} onchanged={reload} formAction={tryUpstream}
+    adminOnly={(d) => (isProgram(d.url) ? 'Only an admin can set an address that runs a program (exec:// or unix://).' : null)} />
   <ConfigEditor kind="upstream_group" path="upstream-groups" title="Upstream groups" noun="upstream group" fields={groupFields}
     summary={(d) => `${String(d.strategy ?? 'failover')}: ${((d.members as string[]) ?? []).join(', ')}`} onchanged={reload} />
   <p class="muted small">

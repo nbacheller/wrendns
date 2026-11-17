@@ -6,13 +6,53 @@ import type { components } from './api-types';
 export type S = components['schemas'];
 export type Problem = S['Problem'];
 
-/** An API error (RFC 9457 problem+json). */
+/** The first `code` names a field the server's detail quotes in backticks (`token_file`). */
+const fieldIn = (detail: string): string => {
+  const f = /`([^`]+)`/.exec(detail)?.[1];
+  return f ? ` \`${f}\`` : '';
+};
+
+/**
+ * REQ: API-015, API-014 (T24.16, ADR-926) — the sentence a person reads for a problem code. The
+ * server's own detail stays on `ApiError.detail` (a check of what it said). A code not listed here
+ * reads as the server's detail.
+ */
+const READABLE: Record<string, (detail: string) => string> = {
+  path_not_allowed: (d) =>
+    `That file path can't be used${fieldIn(d)}: TelltaleDNS won't read from there. Pick another path, or set it in the configuration file on this node.`,
+  set_by_file: (d) =>
+    `The configuration file sets${fieldIn(d) || ' this credential'}, and it wins over the UI and the API. Change it in the file.`,
+  credential_reentry_required: (d) =>
+    `The stored credential${fieldIn(d)} isn't kept, because this entry now points somewhere else. ${
+      // Headers and arguments have no field in this form: the form can't enter them.
+      /`(headers|args)/.test(d)
+        ? "This form can't enter it: change it with telltale ctl, or in the configuration file."
+        : 'Enter it again on this form (an admin does this).'
+    }`,
+  upgrade_required: () =>
+    'This change touches a credential, and this node is too old to send it to the primary. Upgrade this node, or make the change on the primary.',
+  secret_missing: (d) =>
+    `A reference names a secret this node doesn't store${fieldIn(d)}. Store the secret first under Settings → Integrations & secrets, or pick one that exists.`,
+  // The server's detail names the entries and nodes that use it, so it stays in the sentence.
+  secret_in_use: (d) => `The secret is still in use, so it isn't deleted: ${d}`,
+  secrets_locked: () =>
+    "The secrets on this node can't be read, so they can't be changed. Check the secrets key under Settings → Integrations & secrets.",
+  insecure_transport: () =>
+    'A secret is only sent over HTTPS, or from this node itself. Open this page over HTTPS to change it.',
+  lists_not_here: () => "This node doesn't download lists. Ask a node that does.",
+};
+
+/** An API error (RFC 9457 problem+json). `message` reads as a sentence; `detail` is the server's text. */
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
   readonly hint?: string;
+  readonly detail: string;
   constructor(p: Partial<Problem> & { status: number }) {
-    super(p.detail ?? p.title ?? `HTTP ${p.status}`);
+    const detail = p.detail ?? p.title ?? `HTTP ${p.status}`;
+    const readable = p.code ? READABLE[p.code] : undefined;
+    super(readable ? readable(detail) : detail);
+    this.detail = detail;
     this.status = p.status;
     this.code = p.code ?? 'internal';
     this.hint = p.hint ?? undefined;

@@ -3,7 +3,7 @@
   // and Home Assistant as sources of device names. Each router shows its status (its last read on
   // this node, what it reported, the error if any) and where each credential comes from. Admins
   // add, change, check and remove routers; operators and viewers read. Credentials are entered
-  // through CredentialInput (write-only, stored by name); the certificate is fetched from the
+  // through SecretField (write-only, stored by name); the certificate is fetched from the
   // console and trusted only when the admin chooses it.
   import { api, ApiError, type S } from '../lib/api';
   import { poll } from '../lib/poll';
@@ -11,7 +11,8 @@
   import { dateTime } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
-  import CredentialInput from '../lib/components/CredentialInput.svelte';
+  import SecretField from '../lib/components/SecretField.svelte';
+  import { href } from '../lib/router.svelte';
 
   type Kind = 'unifi' | 'opnsense' | 'home_assistant';
   type Entry = S['RouterEntry'];
@@ -239,7 +240,7 @@
   }
   const refOf = (f: Form, field: string): string | undefined =>
     field === 'api_key' ? f.api_key_ref : field === 'api_secret' ? f.api_secret_ref : f.password_ref;
-  function setRef(f: Form, field: string, name: string) {
+  function setRef(f: Form, field: string, name: string | undefined) {
     if (field === 'api_key') f.api_key_ref = name;
     else if (field === 'api_secret') f.api_secret_ref = name;
     else f.password_ref = name;
@@ -301,14 +302,17 @@
       </div>
 
       <h3>Credentials</h3>
-      <p class="small muted">Entered once, stored encrypted on the node, and never shown again. The form keeps the stored name.</p>
+      <!-- REQ: API-015 (T24.16, ADR-903 §9) — a router's credentials are entered through SecretField, like every other. -->
+      <p class="small muted">Entered once, stored encrypted on the node, and never shown again. The form keeps the stored name. <a href={href('/settings', { tab: 'secrets' })}>Stored secrets</a> lists them.</p>
       {#if form.name.trim() && !nameTaken}
         {#each fieldsOf(form.kind) as field (field)}
-          <CredentialInput
+          <SecretField
             label={keyLabel(form.kind, field)}
-            secretName={secretName(form, field)}
-            stored={refOf(form, field)}
-            onsaved={(n) => form && setRef(form, field, n)}
+            testid={`router-secret-${field}`}
+            reference={refOf(form, field)}
+            defaultName={secretName(form, field)}
+            canSet={isAdmin}
+            onreference={(n) => form && setRef(form, field, n)}
           />
         {/each}
       {:else if !nameTaken}

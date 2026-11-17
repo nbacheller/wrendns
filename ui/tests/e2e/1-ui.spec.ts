@@ -856,6 +856,8 @@ test('admins add users; viewers see less', async () => {
   await page.getByRole('tab', { name: 'Users' }).click();
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+  // The form is ready before its first submit (a click that lands while it mounts does nothing).
+  await expect(page.getByRole('button', { name: 'Sign in' })).toBeEnabled();
   await signIn(VIEWER.user, 'wrong password!!');
   await expect(page.getByRole('alert')).toContainText('wrong username or password');
   await signIn(VIEWER.user, VIEWER.pass);
@@ -1847,6 +1849,154 @@ test('api_014 alerts page: operators see credential fields read-only', async () 
   } finally {
     await op.close();
     await r.delete('/api/v1/alerts/destinations/ui-ntfy', { headers: h });
+  }
+});
+
+// A test that expects a refusal (a 4xx or 5xx the form shows) removes the browser's note of it, as the
+// suite's other refusal tests do.
+function forgetRefusals() {
+  for (let i = problems.length - 1; i >= 0; i--) if (/status of [45]\d\d \(/.test(problems[i])) problems.splice(i, 1);
+}
+
+// REQ: API-014 (T24.16, ADR-926) — the credential rules in every form. An operator sees the fields only an
+// admin changes read-only (with the reason), a credential kept on the node says so, and a change the
+// server refuses for a kept credential says which one to enter again.
+async function operatorPage(user: string, pass: string) {
+  const r = page.request;
+  const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const made = await r.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: user, password: pass, role: 'operator' } });
+  expect([200, 201, 409]).toContain(made.status());
+  const ctx = await page.context().browser()!.newContext({ baseURL: page.url().split('/#/')[0] });
+  const p = await ctx.newPage();
+  await p.goto('/#/');
+  await p.getByLabel('Username', { exact: true }).fill(user);
+  await p.getByLabel('Password', { exact: true }).fill(pass);
+  await p.getByRole('button', { name: 'Sign in' }).click();
+  return { p, close: () => ctx.close() };
+}
+
+test('api_014 upstream url is admin-only when it holds a credential', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const put = await r.put('/api/v1/upstreams/ui-cred-up', { headers: h, data: { url: 'https://dns.e2e.test/dns-query', headers: { Authorization: 'Bearer cred-5521' } } });
+  expect(put.status(), await put.text()).toBe(200);
+  const op = await operatorPage('operator1', 'operator long password');
+  try {
+    await op.p.goto('/#/upstreams');
+    const row = op.p.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'ui-cred-up' });
+    await expect(row.getByTestId('kept-badge')).toHaveText('kept: re-enter to change', { timeout: 20_000 });
+    // The value itself never reaches the page.
+    await expect(op.p.locator('body')).not.toContainText('cred-5521');
+    await row.getByRole('button', { name: 'Edit' }).click();
+    await expect(op.p.getByRole('textbox', { name: 'Address', exact: true })).toHaveAttribute('readonly', '');
+    await expect(op.p.getByTestId('admin-only').first()).toContainText('Only an admin can change this.');
+  } finally {
+    await op.close();
+    await r.delete('/api/v1/upstreams/ui-cred-up', { headers: h });
+  }
+});
+
+test('api_014 alert type is admin-only when it holds a credential', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const put = await r.put('/api/v1/alerts/destinations/ui-type-cred', {
+    headers: h,
+    data: { type: 'ntfy', url: 'https://ntfy.e2e.test/topic', token_file: '/run/secrets/ntfy-token' },
+  });
+  expect(put.status(), await put.text()).toBe(200);
+  const op = await operatorPage('operator1', 'operator long password');
+  try {
+    await op.p.goto('/#/alerts');
+    await op.p.getByRole('button', { name: 'Advanced', exact: true }).click();
+    const row = op.p.getByTestId('editor-alert_destination').getByTestId('entry-row').filter({ hasText: 'ui-type-cred' });
+    await row.getByRole('button', { name: 'Edit' }).click();
+    await expect(op.p.getByLabel('Type', { exact: true })).toBeDisabled();
+    await expect(op.p.getByTestId('admin-only').first()).toBeVisible();
+  } finally {
+    await op.close();
+    await r.delete('/api/v1/alerts/destinations/ui-type-cred', { headers: h });
+  }
+});
+
+test("api_014 changing a header upstream's url says which credential to re-enter", async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const put = await r.put('/api/v1/upstreams/ui-hdr-up', { headers: h, data: { url: 'https://dns.e2e.test/dns-query', headers: { Authorization: 'Bearer hdr-6612' } } });
+  expect(put.status(), await put.text()).toBe(200);
+  try {
+    await page.goto('/#/upstreams');
+    const row = page.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'ui-hdr-up' });
+    await row.getByRole('button', { name: 'Edit' }).click();
+    await page.getByRole('textbox', { name: 'Address', exact: true }).fill('https://other.e2e.test/dns-query');
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    const alert = page.getByRole('alert').filter({ hasText: "isn't kept" });
+    await expect(alert).toContainText('headers.Authorization');
+    await expect(alert).toContainText('telltale ctl');
+    await expect(alert).not.toContainText('credential_reentry_required');
+  } finally {
+    forgetRefusals();
+    await r.delete('/api/v1/upstreams/ui-hdr-up', { headers: h });
+    // The drawer stays open after a refusal: reload, so it doesn't cover the next test's page.
+    await page.reload();
+  }
+});
+
+test('api_014 forward to exec is admin-only', async () => {
+  const r = page.request;
+  const csrf = await csrfOf(r);
+  await r.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: 'operator1', password: 'operator long password', role: 'operator' } });
+  const op = await operatorPage('operator1', 'operator long password');
+  try {
+    await op.p.goto('/#/local-dns');
+    await op.p.getByRole('button', { name: 'Send a domain to another server', exact: true }).click();
+    await op.p.getByLabel('Domain', { exact: true }).fill('lab.e2e.test');
+    await op.p.getByLabel('Server address', { exact: true }).fill('exec:///usr/bin/true');
+    await expect(op.p.getByTestId('admin-only-forward')).toContainText('Only an admin can send names to a program');
+    await expect(op.p.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    await op.p.getByLabel('Server address', { exact: true }).fill('10.0.0.53');
+    await expect(op.p.getByTestId('admin-only-forward')).toHaveCount(0);
+  } finally {
+    await op.close();
+  }
+});
+
+// REQ: API-015, API-014 (T24.16, ADR-926) — each problem code a form can meet reads as a sentence: the
+// code is mocked, the Check shows what it means, and the code's own name is not shown.
+test('api_015 errors read as sentences', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const cases: [number, string, string, RegExp][] = [
+    [422, 'path_not_allowed', '`token_file`: under /proc, which TelltaleDNS never reads', /can't be used/],
+    [409, 'set_by_file', '`url` is set by the configuration file', /The configuration file sets/],
+    [422, 'credential_reentry_required', '`headers.Authorization` is `<redacted>`, and there is no stored value to keep', /headers\.Authorization.*telltale ctl/],
+    [409, 'upgrade_required', 'a newer primary is needed', /too old/],
+    [422, 'secret_missing', '`token_ref` names no stored secret', /doesn't store/],
+    [409, 'secret_in_use', "`alert.ui-used.token` is used by alert ui-used", /still in use/],
+    [503, 'secrets_locked', 'the secrets key is missing', /can't be read, so/],
+    [403, 'insecure_transport', 'a secret needs HTTPS', /over HTTPS/],
+    [409, 'lists_not_here', 'this node is a resolver', /doesn't download lists/],
+  ];
+  let current = cases[0];
+  await page.route('**/api/v1/upstreams/ui-err-up*', (route) => {
+    const [status, code, detail] = current;
+    return route.fulfill({ status, json: { status, code, title: code, detail } });
+  });
+  try {
+    await page.goto('/#/upstreams');
+    await page.reload();
+    await page.getByRole('button', { name: 'Add upstream', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-err-up');
+    await page.getByRole('textbox', { name: 'Address', exact: true }).fill('https://err.e2e.test/dns-query');
+    for (const c of cases) {
+      current = c;
+      await page.getByRole('button', { name: 'Check', exact: true }).click();
+      const alert = page.getByRole('alert').filter({ hasText: c[3] });
+      await expect(alert, c[1]).toBeVisible();
+      await expect(alert, c[1]).not.toContainText(c[1]);
+    }
+  } finally {
+    forgetRefusals();
+    await page.unroute('**/api/v1/upstreams/ui-err-up*');
+    await page.reload();
   }
 });
 
@@ -4307,11 +4457,13 @@ const ROUTER_CERT = {
   suggestedTlsServerName: 'unifi.local',
 };
 
+// REQ: API-015 (T24.16) — a router's credential goes through SecretField: the value is typed into the
+// field, saved as a stored secret, and the field then says it is set (never the value).
 async function fillCredential(label: string, value: string) {
-  const box = page.getByTestId('credential-input').filter({ hasText: label });
-  await box.getByRole('textbox', { name: `${label}: new value` }).fill(value);
-  await box.getByRole('button', { name: 'Store the value' }).click();
-  await expect(box.getByTestId('credential-name')).toBeVisible({ timeout: 10_000 });
+  const field = page.getByTestId(`router-secret-${({ 'API key': 'api_key', 'Long-lived access token': 'api_key', 'API secret': 'api_secret', Password: 'password' } as Record<string, string>)[label]}`);
+  await field.getByLabel(label, { exact: true }).fill(value);
+  await field.getByRole('button', { name: 'Save secret' }).click();
+  await expect(field).toHaveAttribute('data-mode', 'set', { timeout: 10_000 });
 }
 
 test('api_016 add a UniFi router from the UI', async () => {
@@ -4324,7 +4476,9 @@ test('api_016 add a UniFi router from the UI', async () => {
   await fillCredential('API key', 'unifi-e2e-key-7781');
   // Write-only: the value is never shown again, in the DOM or in the field.
   await expect(page.locator('body')).not.toContainText('unifi-e2e-key-7781');
-  await expect(page.getByRole('textbox', { name: 'API key: new value' })).toHaveValue('');
+  // Stored: the field says so, and offers no input for the value.
+  await expect(page.getByTestId('router-secret-api_key')).toHaveAttribute('data-mode', 'set');
+  await expect(page.getByTestId('router-secret-api_key').getByRole('textbox')).toHaveCount(0);
   await page.getByRole('button', { name: 'Save the router' }).click();
   const card = page.getByTestId('router-card').filter({ hasText: 'lab-udm' });
   await expect(card).toBeVisible({ timeout: 10_000 });
@@ -4463,7 +4617,7 @@ test('api_016 a name in use is refused when adding', async () => {
   await page.getByRole('textbox', { name: 'Name', exact: true }).fill('lab-udm');
   await expect(page.getByTestId('routers-name-taken')).toContainText('A router named lab-udm exists');
   await expect(page.getByRole('button', { name: 'Save the router' })).toBeDisabled();
-  await expect(page.getByTestId('credential-input')).toHaveCount(0);
+  await expect(page.locator('[data-testid^="router-secret-"]')).toHaveCount(0);
   await page.getByRole('button', { name: 'Cancel' }).click();
   await expect(page.getByTestId('routers-editor')).toHaveCount(0);
 });
@@ -4618,6 +4772,21 @@ test('api_012 discovered devices name the router that named them', async () => {
     await expect(page.getByTestId('discovered')).toContainText('Home Assistant');
   } finally {
     await page.unroute('**/api/v1/dhcp/leases');
+  }
+});
+
+// REQ: API-012 (T24.14, T23.7) — a router's name shows its type (UniFi, Home Assistant) once GET /routers says.
+test('api_012 discovered devices name the type of their router', async () => {
+  const items = [{ ip: '10.20.2.51', mac: 'aa:bb:cc:dd:ee:51', hostname: 'hall', source: 'router', router: 'udm', expiresUnixSeconds: 0 }];
+  await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items } }));
+  await page.route('**/api/v1/routers', (route) => route.fulfill({ json: { items: [{ name: 'udm', kind: 'unifi' }] } }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/clients?tab=discovered');
+    await expect(page.getByRole('row').filter({ hasText: '10.20.2.51' }).getByTestId('named-by')).toHaveText('router: udm (UniFi)');
+  } finally {
+    await page.unroute('**/api/v1/dhcp/leases');
+    await page.unroute('**/api/v1/routers');
   }
 });
 

@@ -44,7 +44,7 @@
     }
   }
   const forceable = (e: unknown) =>
-    e instanceof ApiError && e.code === 'secret_in_use' && /can't be read now/.test(e.message);
+    e instanceof ApiError && e.code === 'secret_in_use' && /can't be read now/.test(e.detail);
 
   const stores: Record<string, [string, string]> = {
     ready: ['ready', 'ok'],
