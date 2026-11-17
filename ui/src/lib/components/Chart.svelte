@@ -5,6 +5,7 @@
   import { onDestroy, untrack } from 'svelte';
   import { clock, num } from '../format';
   import type { Marker } from '../annotations.svelte';
+  import { visibleMarkers } from '../markers';
 
   export interface Series {
     label: string;
@@ -58,9 +59,10 @@
     const w = wrap.getBoundingClientRect();
     box = { left: o.left - w.left, top: o.top - w.top, width: o.width, height: o.height };
     // The last bucket covers a step past its start: a change made this minute is shown at the
-    // right edge.
+    // right edge, and so is one made since the last load (a note saved just after the minute
+    // turned has no bucket yet; GitHub issue #39).
     const step = times.length > 1 ? times[times.length - 1] - times[times.length - 2] : 60;
-    const shown = markers.filter((m) => m.time >= min && m.time < max + step);
+    const shown = visibleMarkers(markers, min, max + step, Date.now() / 1000);
     const col = shown.length > MAX_SINGLE ? 8 : 1;
     const cols = new Map<number, { x: number; marks: Marker[] }>();
     for (const m of shown) {
