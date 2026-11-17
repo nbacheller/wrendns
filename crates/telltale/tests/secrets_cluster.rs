@@ -174,14 +174,18 @@ fn request(
     let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) else {
         return (0, String::new(), String::new());
     };
-    s.set_read_timeout(Some(Duration::from_secs(20))).expect("timeout");
+    s.set_read_timeout(Some(Duration::from_secs(20)))
+        .expect("timeout");
     let payload = body.map(Value::to_string).unwrap_or_default();
     let mut req = format!(
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Length: {}\r\n",
         payload.len()
     );
     for (k, v) in headers {
-        req.push_str(&format!("{k}: {v}\r\n"));
+        req.push_str(k);
+        req.push_str(": ");
+        req.push_str(v);
+        req.push_str("\r\n");
     }
     if body.is_some() {
         req.push_str("Content-Type: application/json\r\n");
@@ -287,18 +291,28 @@ fn clu_015_two_processes_set_on_replica_replicates_back() {
     // The primary creates the cluster on its first start; a token then brings the replica in.
     let _pr = start(&p);
     let ps = wait_for(60, "the primary's sign-in", || sign_in(p.api));
-    let text = run_cli(&p, &["cluster", "token", "create", "--eligible", "--ttl", "30m"]);
+    let text = run_cli(
+        &p,
+        &["cluster", "token", "create", "--eligible", "--ttl", "30m"],
+    );
     let token = text
         .split_whitespace()
         .find(|w| w.starts_with("tt_join_"))
         .expect("a join token")
         .to_owned();
-    run_cli(&r, &["cluster", "join", &token, "--site", "pi", "--eligible"]);
+    run_cli(
+        &r,
+        &["cluster", "join", &token, "--site", "pi", "--eligible"],
+    );
     let mut rr = start(&r);
     let rs = wait_for(60, "the replica's sign-in", || sign_in(r.api));
     wait_for(90, "the replica to join and be seen", || {
         let v = get_json(&ps, "/api/v1/cluster")?;
-        let up = v["nodes"].as_array()?.iter().filter(|n| n["up"] == true).count();
+        let up = v["nodes"]
+            .as_array()?
+            .iter()
+            .filter(|n| n["up"] == true)
+            .count();
         (up >= 2).then_some(())
     });
     // Set on the replica: the primary stores it.
@@ -323,7 +337,11 @@ fn clu_015_two_processes_set_on_replica_replicates_back() {
     // The primary sees the replica in sync with its head.
     wait_for(60, "the replica in sync on the Cluster page", || {
         let v = get_json(&ps, "/api/v1/cluster")?;
-        let node = v["nodes"].as_array()?.iter().find(|n| n["site"] == "pi")?.clone();
+        let node = v["nodes"]
+            .as_array()?
+            .iter()
+            .find(|n| n["site"] == "pi")?
+            .clone();
         (node["secrets"]["inSync"] == true).then_some(())
     });
     // Nothing of the value is on the replica's disk.
@@ -347,8 +365,8 @@ fn clu_015_two_processes_set_on_replica_replicates_back() {
     // A deleted name answers 404 (or a record that isn't set): the replica has lost it.
     wait_for(90, "the replica to lose it", || {
         let (status, text) = call(&rs, "GET", "/api/v1/secrets/unifi", None);
-        let gone = status == 404
-            || serde_json::from_str::<Value>(&text).is_ok_and(|v| v["set"] != true);
+        let gone =
+            status == 404 || serde_json::from_str::<Value>(&text).is_ok_and(|v| v["set"] != true);
         gone.then_some(())
     });
     drop(rr);

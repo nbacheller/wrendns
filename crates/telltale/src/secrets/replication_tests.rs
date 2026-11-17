@@ -534,7 +534,10 @@ fn clu_015_replicates_while_pinned() {
     let (p, r) = (node(pd.path()), node(rd.path()));
     put(&p, "pinned.secret", "pinned-value-5521", 1);
     assert_eq!(sync(&p, &r, 1).changed, 1);
-    assert_eq!(read(&r, "pinned.secret").as_deref(), Some("pinned-value-5521"));
+    assert_eq!(
+        read(&r, "pinned.secret").as_deref(),
+        Some("pinned-value-5521")
+    );
 }
 
 /// REQ: CLU-015 (AC14) — a replica is ready once its listeners are bound. Readiness reads no
