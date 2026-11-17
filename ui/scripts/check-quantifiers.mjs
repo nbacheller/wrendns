@@ -1,7 +1,8 @@
 // REQ: UI-AUTH (upstream #64) - Svelte 5 parses a bare {n} inside a quoted
 // attribute value as an expression, so pattern="[0-9]{6}" reaches the browser
-// as "[0-9]6". This guard fails if any quoted attribute in ui/src contains a
-// regex quantifier in braces. Use pattern={"[0-9]{6}"} instead.
+// as "[0-9]6". This guard fails if any quoted attribute (double or single
+// quoted, on one line or split across lines) in ui/src contains a regex
+// quantifier in braces. Use pattern={"[0-9]{6}"} instead.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -16,19 +17,21 @@ const walk = (dir) => {
 };
 walk(root);
 
-// name="...{digits}..." or name='...{digits}...' where the value is a literal string.
-const attr = /\s[\w:-]+="([^"]*)"/g;
+// name="..." or name='...' matched against the whole file, so values that span lines are caught.
+const attr = /\s[\w:-]+=(?:"([^"]*)"|'([^']*)')/g;
 const quant = /\{\d+(,\d*)?\}/;
 const bad = [];
 for (const file of files) {
   const text = readFileSync(file, 'utf8');
-  text.split('\n').forEach((line, i) => {
-    let m;
-    attr.lastIndex = 0;
-    while ((m = attr.exec(line))) {
-      if (quant.test(m[1])) bad.push(`${file}:${i + 1}: ${m[0].trim()}`);
+  let m;
+  attr.lastIndex = 0;
+  while ((m = attr.exec(text))) {
+    const value = m[1] ?? m[2];
+    if (quant.test(value)) {
+      const line = text.slice(0, m.index).split('\n').length;
+      bad.push(`${file}:${line}: ${m[0].trim().replace(/\s+/g, ' ')}`);
     }
-  });
+  }
 }
 if (bad.length) {
   console.error('Quantifier swallowed by Svelte attribute parsing (use {"..."}):');

@@ -1,7 +1,8 @@
+import { DNS_PORT } from './ports';
 import dgram from 'node:dgram';
 
 /** Sends one DNS query over UDP to the test server; resolves with the response code. */
-export function query(name: string, qtype = 1, port = 15354, from?: string): Promise<number> {
+export function query(name: string, qtype = 1, port = DNS_PORT, from?: string): Promise<number> {
   const id = Math.floor(Math.random() * 0xffff);
   const qname = name.split('.').flatMap((l) => [l.length, ...Buffer.from(l)]);
   const msg = Buffer.from([id >> 8, id & 0xff, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, ...qname, 0, qtype >> 8, qtype & 0xff, 0, 1]);

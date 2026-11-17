@@ -671,6 +671,7 @@
   {:else if tab === 'users' && can('admin')}
     <section class="card">
       <h2>Users<HelpButton id="users" /></h2>
+      <p class="muted">Password sign-in can be limited by the server's <code>[auth.oidc]</code> settings. Without <code>allowed_admin_networks</code>, break-glass sign-in is from this computer only.<HelpButton id="break-glass" /></p>
       <ErrorNote error={userError} />
       <div class="table-wrap">
         <table>

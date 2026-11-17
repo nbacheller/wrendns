@@ -8,6 +8,10 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
+// REQ: E2E ports follow tests/e2e/ports.ts (E2E_HTTP_PORT, E2E_DNS_PORT, E2E_MDNS_PORT).
+const HTTP_PORT = process.env.E2E_HTTP_PORT ?? '18054';
+const DNS_PORT = process.env.E2E_DNS_PORT ?? '15354';
+const MDNS_PORT = process.env.E2E_MDNS_PORT ?? '15353';
 const root = resolve(here, '../../.e2e');
 rmSync(root, { recursive: true, force: true });
 mkdirSync(resolve(root, 'data'), { recursive: true });
@@ -21,7 +25,7 @@ name = "home-dns"
 
 [[listen]]
 proto = "udp"
-addr = "127.0.0.1:15354"
+addr = "127.0.0.1:${DNS_PORT}"
 
 # Nothing listens here: tests use only blocked and local names.
 [[upstream]]
@@ -93,13 +97,13 @@ listen = "127.0.0.1:19154"
 # T8.6 — mDNS naming on a test port (the test sends an announcement there).
 [clients]
 mdns = true
-mdns_port = 15353
+mdns_port = ${MDNS_PORT}
 
 [telemetry.qlog]
 flush_interval_secs = 1
 
 [api]
-listen = "127.0.0.1:18054"
+listen = "127.0.0.1:${HTTP_PORT}"
 
 # REQ: AGT-007 — agents' plans wait for an operator (the Agent changes test).
 [agents]
@@ -171,7 +175,7 @@ if (oidc.length) {
     keycloak: [`http://${host}:8080/realms/telltale`, 'Keycloak'],
     authentik: [`http://${host}:9000/application/o/telltale/`, 'Authentik'],
   };
-  let extra = '\n[auth.oidc]\npublic_url = "http://127.0.0.1:18054"\n';
+  let extra = `\n[auth.oidc]\npublic_url = "http://127.0.0.1:${HTTP_PORT}"\n`;
   for (const id of oidc) {
     const [issuer, name] = issuers[id];
     extra += `

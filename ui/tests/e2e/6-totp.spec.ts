@@ -76,8 +76,23 @@ test.beforeAll(async ({ browser, request }) => {
     data: { username: TOTP_USER.user, password: TOTP_USER.pass, role: 'admin' },
     headers: { 'x-csrf-token': csrfToken },
   });
-  // 409 is fine when a retry already created the user.
-  expect([200, 201, 409]).toContain(created.status());
+  // A retry finds the user from an earlier run, with two-factor already on (the enrolment
+  // button would be missing): delete it and create it again, so the run starts clean (L2).
+  if (created.status() === 409) {
+    const listed = (await (await api.get('/api/v1/users')).json()) as { items: { id: number; username: string }[] };
+    const old = listed.items.find((u) => u.username === TOTP_USER.user);
+    if (old) {
+      const removed = await api.delete(`/api/v1/users/${old.id}`, { headers: { 'x-csrf-token': csrfToken } });
+      expect(removed.status()).toBe(204);
+    }
+    const again = await api.post('/api/v1/users', {
+      data: { username: TOTP_USER.user, password: TOTP_USER.pass, role: 'admin' },
+      headers: { 'x-csrf-token': csrfToken },
+    });
+    expect([200, 201]).toContain(again.status());
+  } else {
+    expect([200, 201]).toContain(created.status());
+  }
 });
 
 test.afterAll(async () => {
@@ -103,6 +118,8 @@ test('UI-AUTH: TOTP enrolment accepts a real six-digit code and turns two-factor
   await expect(input).toHaveAttribute('pattern', '[0-9]{6}');
   const secret = (await page.locator('.key').first().innerText()).replace(/\s/g, '');
   const code = totpAt(secret, Date.now());
+  enrolledSecret = secret;
+  enrolCode = code;
   await input.fill(code);
   await page.getByRole('button', { name: 'Turn on' }).click();
   await expect(page.getByText('Save these recovery codes now.')).toBeVisible({ timeout: 15_000 });
@@ -125,4 +142,19 @@ test('UI-AUTH: sign-in asks for a code and accepts the current one', async () =>
   await code.fill(await nextStepCode(enrolledSecret, enrolCode));
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 30_000 });
+});
+
+// REQ: API-004 (ADR-944) — the Users tab says where break-glass sign-in is allowed, and its
+// help topic explains the loopback default.
+test('UI-AUTH: Users tab names the break-glass default and its help topic', async () => {
+  test.setTimeout(60_000);
+  await page.goto('/#/settings');
+  await page.getByRole('tab', { name: 'Users' }).click();
+  await expect(
+    page.getByText('Without allowed_admin_networks, break-glass sign-in is from this computer only.'),
+  ).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('button', { name: 'Help: Signing in when the provider is down' }).click();
+  const panel = page.getByTestId('help-panel');
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText('Break-glass sign-in');
 });
