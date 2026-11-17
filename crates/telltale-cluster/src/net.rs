@@ -373,6 +373,14 @@ pub fn peer_node_id(cert: &CertificateDer<'_>) -> Option<String> {
     })
 }
 
+/// This node's own (main) stream: the URL it dialed and the node ID the server's certificate
+/// names, if it named one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MainLink {
+    url: String,
+    node: Option<String>,
+}
+
 /// What this node knows about a peer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)] // a record of independent flags
@@ -636,8 +644,9 @@ pub struct Cluster {
     joins: Mutex<std::collections::VecDeque<u64>>,
     /// The newest manifest received from a peer (verified by whoever applies it).
     incoming: watch::Sender<Option<Arc<Signed>>>,
-    /// The primary URL of the stream that's up (blobs are fetched from there).
-    connected: Mutex<Option<String>>,
+    /// This node's own stream to the primary (or to the node it fell back to), while it's up.
+    /// Blobs are fetched over it only while it's to the primary ([`Cluster::fetch_urls`]).
+    connected: Mutex<Option<MainLink>>,
     /// Replication state, for the API and the Cluster page.
     sync: Mutex<SyncStatus>,
     /// Bumped when the applied version changes, so the next heartbeat goes out at once.
@@ -1466,20 +1475,62 @@ impl Cluster {
         self.members().iter().any(|m| m.primary && m.connected)
     }
 
-    /// The URL to fetch blobs from: the current primary's, else the connected stream's.
-    ///
-    /// The URL this node's stream to the primary uses comes first: it's the one known to work
-    /// from here. The primary's first advertised URL can be one only some nodes reach (an
-    /// in-cluster Service name, unknown to a node outside Kubernetes), so it's the fallback.
-    fn primary_url(&self) -> Option<String> {
-        self.connected_primary().or_else(|| {
-            let mut members = self.members();
-            members.sort_by_key(|m| std::cmp::Reverse(m.epoch));
-            members
-                .iter()
-                .find(|m| m.primary && m.connected)
-                .and_then(|m| m.advertise.first().cloned())
-        })
+    /// REQ: CLU-001 (GitHub issue #43) — the URLs to fetch blobs from, in order. Only the
+    /// primary serves them, so this node's own stream is first only while it's to the primary
+    /// (it's the URL known to work from here); a stream to another replica is never used. Then
+    /// every URL the primary is believed to be at ([`Self::primary_urls`]): its first advertised
+    /// URL can be one only some nodes reach (an in-cluster Service name, unknown to a node
+    /// outside Kubernetes), so each is tried in turn.
+    fn fetch_urls(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        if self.main_link_to_primary() {
+            out.extend(self.connected_primary());
+        }
+        for u in self.primary_urls() {
+            if !out.contains(&u) {
+                out.push(u);
+            }
+        }
+        out
+    }
+
+    /// A TLS connection to fetch blobs over: the first of [`Self::fetch_urls`] that answers
+    /// with a certificate of a node not known to be a replica.
+    async fn connect_for_fetch(
+        &self,
+        cfg: &Arc<ClientConfig>,
+    ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
+        let urls = self.fetch_urls();
+        if urls.is_empty() {
+            return Err("not connected to the primary".into());
+        }
+        let mut errors = Vec::new();
+        for url in &urls {
+            let tls = match tls_connect(url, Arc::clone(cfg)).await {
+                Ok(t) => t,
+                Err(e) => {
+                    errors.push(e);
+                    continue;
+                }
+            };
+            let id = tls
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|c| c.first())
+                .and_then(peer_node_id);
+            let replica = id.as_ref().is_some_and(|id| {
+                self.members()
+                    .iter()
+                    .any(|m| &m.node_id == id && !m.primary)
+            });
+            if replica {
+                errors.push(format!("{url}: not the primary"));
+                continue;
+            }
+            return Ok(tls);
+        }
+        Err(errors.join("; "))
     }
 
     /// Changes the role (persisted in `cluster.json`) and tells every stream and task.
@@ -1720,11 +1771,31 @@ impl Cluster {
         self.connected
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+            .as_ref()
+            .map(|l| l.url.clone())
     }
 
-    /// Fetches the blobs in `refs` that `store` lacks from the connected primary; returns how
-    /// many were fetched. Each is checked against its hash before it's stored.
+    /// REQ: CLU-001 (GitHub issue #43) — whether this node's own stream, the one blobs are
+    /// fetched over, is to the primary. A stream the primary opened to this node doesn't count:
+    /// the primary dials eligible nodes too, so a replica that fell back to another replica would
+    /// otherwise look attached and never move back, and every fetch would go to the replica. If
+    /// the stream's server didn't name itself, any open stream to the primary counts (as before).
+    pub fn main_link_to_primary(&self) -> bool {
+        let node = self
+            .connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|l| l.node.clone());
+        match node {
+            None => false,
+            Some(Some(id)) => self.members().iter().any(|m| m.primary && m.node_id == id),
+            Some(None) => self.connected_to_primary(),
+        }
+    }
+
+    /// Fetches the blobs in `refs` that `store` lacks from the primary; returns how many were
+    /// fetched. Each is checked against its hash before it's stored.
     pub async fn fetch(&self, refs: &[BlobRef], store: &BlobStore) -> Result<usize, String> {
         let mut missing: Vec<BlobRef> = refs.iter().filter(|b| !store.has(b)).cloned().collect();
         missing.sort_by(|a, b| a.hash.cmp(&b.hash));
@@ -1732,9 +1803,10 @@ impl Cluster {
         if missing.is_empty() {
             return Ok(0);
         }
-        let url = self.primary_url().ok_or("not connected to the primary")?;
         // The current certificate and trusted CAs: they change with renewals and CA rotations.
-        let tls = tls_connect(&url, client_config(&self.identity.reload())?).await?;
+        let tls = self
+            .connect_for_fetch(&client_config(&self.identity.reload())?)
+            .await?;
         let (send, conn) =
             hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
                 .await
@@ -2866,7 +2938,8 @@ async fn primary_is_back(cluster: &Cluster, cfg: &Arc<ClientConfig>, current: &s
         let jitter = 0.5 + f64::from(rand::random::<u16>()) / f64::from(u16::MAX) / 2.0;
         tokio::time::sleep(wait.mul_f64(jitter)).await;
         wait = (wait * 2).min(REPROBE_MAX);
-        if cluster.is_primary() || cluster.connected_to_primary() {
+        // REQ: CLU-001 (GitHub issue #43) — only this node's own stream says it's attached.
+        if cluster.is_primary() || cluster.main_link_to_primary() {
             continue;
         }
         for url in cluster.primary_urls() {
@@ -2924,12 +2997,21 @@ async fn stream_once(
         writer.abort();
         return Err(format!("{url}: {}", r.status()));
     }
-    // Only the main link (to the primary) is what replication fetches from.
+    // The main link is the one replication follows (and fetches over while it's to the
+    // primary). REQ: CLU-001 (GitHub issue #43) — logged, so where it went can be seen.
     if main {
+        info!(
+            %url,
+            node = server_id.as_deref().unwrap_or("unknown"),
+            "cluster: linked to a peer"
+        );
         *cluster
             .connected
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(url.to_owned());
+            .unwrap_or_else(PoisonError::into_inner) = Some(MainLink {
+            url: url.to_owned(),
+            node: server_id.clone(),
+        });
     }
     let result = tokio::select! {
         done = read_frames(&cluster, r.into_body(), server_id, "outbound", &echo) => done,
@@ -2940,7 +3022,7 @@ async fn stream_once(
         .connected
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .take_if(|u| u == url);
+        .take_if(|l| l.url == url);
     result
 }
 
