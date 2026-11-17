@@ -5464,6 +5464,59 @@ test('t8_2 offline clients days in the UniFi form', async () => {
   await expect(page.getByTestId('router-card').filter({ hasText: 'lab-offline' })).toHaveCount(0);
 });
 
+// REQ: T8.2 (ADR-942) — the leases list an offline client, marked offline, with no DNS name; the
+// Discovered list and a network's device list show the marker (the e2e node has no router, so the
+// leases are mocked with page.route).
+test('t8_2 offline leases show the marker', async () => {
+  const lease = (ip: string, offline: boolean, extra: Record<string, unknown>) => ({
+    mac: `02:00:00:00:00:${ip.endsWith('53') ? '04' : '02'}`,
+    ip,
+    expiresUnixSeconds: 0,
+    source: 'router',
+    router: 'udm',
+    offline,
+    ...extra,
+  });
+  const items = [
+    lease('192.168.1.31', false, { hostname: 'Living room Roku', dnsName: 'living-room-roku.home.arpa' }),
+    lease('192.168.1.53', true, { hostname: 'Old iPad' }),
+  ];
+  const network = {
+    name: 'Home',
+    subnet: '192.168.1.0/24',
+    addresses: 254,
+    devices: 2,
+    outsidePool: 0,
+    source: 'router',
+    router: 'udm',
+    usedPercent: 1,
+  };
+  await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items } }));
+  await page.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: [network] } }));
+  try {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto('/#/clients?tab=discovered');
+    const section = page.getByTestId('discovered');
+    await expect(section).toBeVisible({ timeout: 20_000 });
+    const offlineRow = section.locator('tr').filter({ hasText: '192.168.1.53' });
+    await expect(offlineRow.getByTestId('offline-badge')).toHaveText('offline');
+    await expect(offlineRow.getByTestId('dns-name')).toContainText('none');
+    const connectedRow = section.locator('tr').filter({ hasText: '192.168.1.31' });
+    await expect(connectedRow.getByTestId('offline-badge')).toHaveCount(0);
+    await expect(connectedRow.getByTestId('dns-name')).toContainText('living-room-roku.home.arpa');
+
+    await page.goto('/#/networks');
+    await page.getByTestId('network-open').filter({ hasText: 'Home' }).click();
+    const devices = page.getByTestId('network-devices');
+    await expect(devices).toBeVisible({ timeout: 20_000 });
+    await expect(devices.locator('tr').filter({ hasText: '192.168.1.53' }).getByTestId('offline-badge')).toHaveText('offline');
+    await expect(devices.locator('tr').filter({ hasText: '192.168.1.31' }).getByTestId('offline-badge')).toHaveCount(0);
+  } finally {
+    await page.unroute('**/api/v1/dhcp/leases');
+    await page.unroute('**/api/v1/networks');
+  }
+});
+
 // REQ: API-007 (T24.18, ADR-940) — importing a Pi-hole export from the admin page: the preview
 // lists what would change and writes nothing; applying needs the typed confirmation, writes the plan,
 // and is undone here by deleting what it added. The fixture is a small Teleporter (v5) archive.

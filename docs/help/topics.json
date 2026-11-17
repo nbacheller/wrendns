@@ -963,10 +963,20 @@
       "id": "router-offline-clients",
       "title": "Keep the names of offline devices",
       "term": "Offline clients",
-      "summary": "A UniFi console remembers the devices that have left the network. TelltaleDNS keeps their names for this many days, so a phone that is off Wi-Fi still shows its name in the query log and the top lists. Those devices don't count as seen: they don't make a device look present on the network, they give no address to the device inventory, they aren't published as DNS names, and they aren't counted in a network's device totals or in the leases list.",
+      "summary": "A UniFi console remembers the devices that have left the network. TelltaleDNS keeps their names for this many days, so a phone that is off Wi-Fi still shows its name in the query log and the top lists. Those devices don't count as seen: they don't make a device look present on the network, they give no address to the device inventory, they aren't published as DNS names, and they aren't counted in a network's device totals. They are listed in the leases with an \"offline\" marker (see Offline devices in the leases).",
       "when": "A device you know by name shows as a bare address once it has left, and the log's names for it disappear with it.",
       "example": "With 30 days (the default), a laptop asleep since last Tuesday still shows as \"Kitchen laptop\" in the query log; a guest's phone last seen 90 days ago shows as an address again.",
       "caution": "0 keeps only the connected devices and the ones with a fixed address (a DHCP reservation, which always keeps its name). The window is at most 365 days, and the console still has to keep its history: an older Network application without it gives the connected devices only.",
+      "docs": "routers"
+    },
+    {
+      "id": "offline-leases",
+      "title": "Offline devices in the leases",
+      "term": "Offline",
+      "summary": "The leases (the Clients page's Discovered list and a network's device list) include the devices the router remembers but doesn't see now, marked offline. They show the address and the name the router gave, but no DNS name, and they don't count in a network's device total.",
+      "when": "You want to see a device that has left the network, or check why a known device has no DNS name.",
+      "example": "A phone marked offline in Discovered still shows its name in the query log, but asking DNS for its name gets no answer until it is back on the network.",
+      "caution": "An offline row is the router's memory, not a live answer. Its address may belong to another device by now, which is why it gives no DNS name and no binding to the device inventory.",
       "docs": "routers"
     },
     {

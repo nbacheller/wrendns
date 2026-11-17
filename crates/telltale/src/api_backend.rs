@@ -2491,9 +2491,8 @@ impl Backend for ApiBackend {
             .router_leases
             .load()
             .values()
-            // REQ: T8.2 (ADR-166) — an offline client isn't a current lease. The API has no
-            // offline marker yet (owner decision, see spec/10 T8.2), so it is left out here.
-            .filter(|l| !l.offline)
+            // REQ: T8.2 (ADR-166, ADR-942) — an offline client is listed, marked `offline`; it
+            // names no DNS name here (device_dns), gives no binding (discovery) and isn't a device.
             .map(|l| telltale_api::model::DhcpLease {
                 mac: l.mac.clone(),
                 ip: l.ip.to_string(),
@@ -2502,7 +2501,8 @@ impl Backend for ApiBackend {
                 expires_unix_seconds: l.expires,
                 source: "router".to_owned(),
                 router: l.router.clone(),
-                dns_name: dns_name(&l.ip),
+                dns_name: if l.offline { None } else { dns_name(&l.ip) },
+                offline: l.offline,
             })
             .collect();
         // REQ: T8.3, T8.6 — and the names devices announce over mDNS (routers win).
@@ -2520,6 +2520,7 @@ impl Backend for ApiBackend {
                 source: "mdns".to_owned(),
                 router: None,
                 dns_name: dns_name(&l.ip),
+                offline: false,
             });
         }
         v.sort_by_key(|l| l.ip.parse::<std::net::Ipv4Addr>().map_or(0, u32::from));

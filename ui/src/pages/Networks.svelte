@@ -164,7 +164,8 @@
     {@const net = open}
     <Drawer title={`${net.name} · ${net.subnet}`} onclose={() => (open = null)}>
       <p class="muted small">
-        The devices on this network, from the routers' DHCP and mDNS, with the DNS name each one answers as.
+        The devices on this network, from the routers' DHCP and mDNS, with the DNS name each one answers as. A device marked
+        <em>offline</em> is one the router remembers but doesn't see now; it has no DNS name and isn't counted in the device count.<HelpButton id="offline-leases" />
         {#if net.outsidePool}{num(net.outsidePool)} of {num(net.devices)} are outside the DHCP pool (fixed addresses).{/if}
       </p>
       <ErrorNote error={leaseError} />
@@ -175,7 +176,9 @@
             <tbody>
               {#each devices as d (d.ip + d.mac)}
                 <tr>
-                  <td class="mono">{d.ip}</td>
+                  <td class="mono">{d.ip}{#if d.offline}
+                      <span class="badge warn" data-testid="offline-badge" title="The router remembers this client but doesn't see it now">offline</span>
+                    {/if}</td>
                   <td class="mono small" data-testid="network-dns-name">{d.dnsName ?? 'none'}</td>
                   <td>{d.hostname ?? ''}</td>
                   <td class="small">{d.source === 'router' && d.router ? `router: ${d.router}` : d.source}</td>

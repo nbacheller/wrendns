@@ -182,15 +182,17 @@ assert items["127.0.0.1"]["hostname"] == "Desk laptop" and items["127.0.0.1"]["s
 # REQ: T8.2 (ADR-166) — the connected device keeps its address; a name given to an offline client
 # (the stale one, if any) does not take it.
 assert items["192.168.1.31"]["mac"] == "02:00:00:00:00:02" and items["192.168.1.31"]["hostname"] != "stale", items["192.168.1.31"]
-# REQ: T8.2 (ADR-166) — an offline client is remembered by the console, not a current lease: it is
-# left out of the leases list (its name still answers in the query log).
-assert "192.168.1.53" not in items, "an offline client is not a current lease"
+# REQ: T8.2 (ADR-166, ADR-942) — an offline client is listed, marked offline, and names nothing in
+# DNS (checked below); its name still answers in the query log. Connected rows are marked offline false.
+assert items["192.168.1.53"]["offline"] is True, "an offline client is listed, marked offline"
+assert "dnsName" not in items["192.168.1.53"], "an offline client has no DNS name"
+assert items["192.168.1.31"]["offline"] is False and items["127.0.0.1"]["offline"] is False, "connected rows"
 assert items["192.168.1.51"]["hostname"] == "Garage camera", "a reserved camera (rest/user)"
 assert "192.168.1.52" not in items, "a client last seen 90 days ago is outside offline_days (30)"
 assert items["192.168.1.40"]["hostname"] == "printer", "Kea leases from OPNsense"
 # T22.2: a reservation names an offline device; a known client without one does not.
 assert items["192.168.1.50"]["hostname"] == "Office printer" and items["192.168.1.50"]["router"] == "udm", items
-assert "192.168.1.60" not in items, "no reservation, no name"
+assert items["192.168.1.60"]["offline"] is True and "dnsName" not in items["192.168.1.60"], "no reservation, no DNS name (listed offline)"
 # T22.3: the name given in Home Assistant wins over the router host name; the HA tracker
 # gives the plug its address; a registry device without an address anywhere is skipped.
 roku = items["192.168.1.31"]
