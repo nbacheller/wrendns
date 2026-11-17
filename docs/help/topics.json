@@ -545,6 +545,16 @@
       "docs": "clusters"
     },
     {
+      "id": "primary-unreachable",
+      "title": "A replica can't reach its primary",
+      "term": "Primary unreachable",
+      "summary": "A replica that hasn't heard from its primary for a minute is split off: it keeps answering DNS from its last copy, but it gets no configuration changes until it reconnects. It can still reach other members, which relay its state to this page, so a silent split shows here.",
+      "when": "A replica shows this after a network change, or when its primary was moved or stopped. The alert fires once it has held for the rule's threshold (60 seconds by default) and its 'For at least' time.",
+      "example": "The Pi shows \"no contact with the primary for 3m\" while the pod still reaches it. Changes made on the primary won't reach the Pi until the link is back.",
+      "caution": "DNS on the replica keeps working. Check the network path between the replica and the primary; the alert clears by itself once they reconnect.",
+      "docs": "clusters"
+    },
+    {
       "id": "cache-page",
       "title": "The Cache page",
       "term": "DNS cache",

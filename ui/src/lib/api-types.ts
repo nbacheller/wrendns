@@ -98,7 +98,7 @@ export interface paths {
          * @description The body has the same fields as `[[alerts.rule]]` (the name comes from the path):
          *     `{"when": "upstream_down", "for_secs": 60, "to": ["phone"]}`. `when` is one of
          *     `upstream_down`, `node_down`, `list_failing`, `anomaly`, `servfail_rate`,
-         *     `update_available`, `sync_lag`, `new_device`, `disk_full`, `plan_pending`.
+         *     `update_available`, `sync_lag`, `primary_unreachable`, `new_device`, `disk_full`, `plan_pending`.
          */
         put: operations["put_alert_rule"];
         post?: never;
@@ -4456,6 +4456,13 @@ export interface components {
             nodeId: string;
             pod?: string | null;
             /**
+             * Format: int64
+             * @description REQ: OBS-010 (T24.5, fork #2) — a replica's time without reaching its primary, in seconds
+             *     (the `primary_unreachable` alert and the health icon read it). Absent when it reaches the
+             *     primary, is the primary, or isn't heard from.
+             */
+            primarySilentSeconds?: number | null;
+            /**
              * Format: int32
              * @description The cluster protocol it speaks (CLU-010); nodes within one version work together.
              */
@@ -5562,7 +5569,7 @@ export interface components {
         HealthReason: {
             /**
              * @description Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,
-             *     `sync_lag`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
+             *     `sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
              *     `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
              *     `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`.
              * @example upstream_down

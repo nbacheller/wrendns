@@ -329,6 +329,34 @@ fn observe(
                 (node_label(&n), s)
             })
             .collect(),
+        // REQ: OBS-010 (T24.5, fork #2) — a replica that hasn't reached its primary for
+        // `threshold` seconds (default 60). Witnesses and resolver pods are left out; so are
+        // nodes in maintenance.
+        AlertWhen::PrimaryUnreachable => {
+            let limit = rule.threshold.unwrap_or(60.0);
+            b.cluster()
+                .nodes
+                .into_iter()
+                .filter(|n| {
+                    !n.this_node
+                        && !n.ephemeral
+                        && !n.witness
+                        && n.up
+                        && n.role == "replica"
+                        && !Paused::node(n)
+                })
+                .filter_map(|n| {
+                    let silent = n.primary_silent_seconds?;
+                    (f64::from(u32::try_from(silent).unwrap_or(u32::MAX)) >= limit).then(|| {
+                        let name = node_label(&n);
+                        let s = format!(
+                            "replica {name} hasn't reached its primary for {silent} s: it may be split off from the cluster"
+                        );
+                        (name, s)
+                    })
+                })
+                .collect()
+        }
         AlertWhen::NewDevice => {
             // REQ: OBS-025 — say what it looks like, when that's known.
             let ids: std::collections::HashMap<String, telltale_api::model::DeviceIdentity> = b
@@ -1336,6 +1364,116 @@ mod tests {
         fn upstreams(&self) -> Vec<telltale_api::model::UpstreamInfo> {
             Vec::new()
         }
+    }
+
+    // REQ: OBS-010 (T24.5, fork #2) — a replica that hasn't reached its primary for `threshold`
+    // seconds (default 60) raises one alert after `for_secs`; the boundary is exact; witnesses,
+    // resolver pods and nodes out of contact are left out; the alert clears on reconnect and
+    // doesn't repeat while the silence goes on.
+    #[test]
+    #[allow(clippy::too_many_lines)] // one scenario, step by step
+    fn obs_010_t24_5_primary_unreachable_alert() {
+        use telltale_api::model::{ClusterNode, ClusterView};
+        let node = |id: &str, silent: Option<u64>| ClusterNode {
+            node_id: id.into(),
+            site: id.into(),
+            role: "replica".into(),
+            connected: true,
+            up: true,
+            primary_silent_seconds: silent,
+            ..ClusterNode::default()
+        };
+        let mut primary = node("primary", None);
+        primary.role = "primary".into();
+        primary.this_node = true;
+        let stub = |nodes: Vec<ClusterNode>| Stub {
+            view: ClusterView {
+                enabled: true,
+                cluster_id: None,
+                name: None,
+                this_node: None,
+                newest_config_seq: 0,
+                healthy: true,
+                checks: Vec::new(),
+                nodes,
+                events: Vec::new(),
+                authority: None,
+                conflicts: Vec::new(),
+                failover: None,
+                source: None,
+                rollout: None,
+                host: None,
+            },
+            probes: Vec::new(),
+            findings: Vec::new(),
+        };
+        let mut witness = node("witness", Some(600));
+        witness.witness = true;
+        let mut pod = node("pod", Some(600));
+        pod.ephemeral = true;
+        let mut away = node("away", Some(600));
+        away.up = false;
+        let rule = AlertRule {
+            threshold: None,
+            ..rule(AlertWhen::PrimaryUnreachable, 30)
+        };
+        let seen = |nodes: Vec<ClusterNode>| {
+            observe(&stub(nodes), &rule, 1000, &[], &[], &Paused::default())
+        };
+        // One second short of the default 60 s: nothing. Exactly 60 s: raised.
+        assert!(
+            seen(vec![primary.clone(), node("r1", Some(59))]).is_empty(),
+            "one second short"
+        );
+        let at = seen(vec![primary.clone(), node("r1", Some(60))]);
+        assert_eq!(
+            at.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(),
+            ["r1"]
+        );
+        assert!(
+            at[0].1.contains("hasn't reached its primary for 60 s"),
+            "{}",
+            at[0].1
+        );
+        // Witnesses, resolver pods and nodes out of contact never raise it.
+        assert!(
+            seen(vec![primary.clone(), witness, pod, away]).is_empty(),
+            "left out"
+        );
+        // The rule's threshold replaces the default.
+        let tight = AlertRule {
+            threshold: Some(15.0),
+            ..rule.clone()
+        };
+        let tight_seen = observe(
+            &stub(vec![primary.clone(), node("r1", Some(15))]),
+            &tight,
+            1000,
+            &[],
+            &[],
+            &Paused::default(),
+        );
+        assert_eq!(tight_seen.len(), 1);
+        // Held for for_secs before it goes out, once; still silent later: no repeat; contact
+        // again: it clears.
+        let mut engine = Engine::default();
+        let rules = vec![rule.clone()];
+        let obs = |silent: Option<u64>| vec![seen(vec![primary.clone(), node("r1", silent)])];
+        assert!(engine.step(0, &rules, &obs(Some(60))).is_empty(), "not yet");
+        assert!(
+            engine.step(29, &rules, &obs(Some(89))).is_empty(),
+            "for_secs not yet"
+        );
+        let fired = engine.step(30, &rules, &obs(Some(90)));
+        assert_eq!(fired.len(), 1);
+        assert!(fired[0].firing);
+        assert!(
+            engine.step(60, &rules, &obs(Some(120))).is_empty(),
+            "no repeat"
+        );
+        let cleared = engine.step(65, &rules, &obs(None));
+        assert_eq!(cleared.len(), 1);
+        assert!(!cleared[0].firing, "reconnected: the alert clears");
     }
 
     /// REQ: OPS-010 (ADR-118) — a node in maintenance raises no `node_down` or probe alert;

@@ -201,6 +201,11 @@ pub struct Heartbeat {
     /// REQ: CLU-015 — names its node-local fields reference (at most 128), so `DELETE` checks them.
     #[prost(string, repeated, tag = "38")]
     pub secret_refs: Vec<String>,
+    /// REQ: OBS-010 (T24.5, fork #2) — for a replica: how long it has gone without a heartbeat
+    /// from its primary, in seconds (absent when it reaches the primary or is the primary, and
+    /// from older nodes, which ignore the tag).
+    #[prost(uint64, optional, tag = "40")]
+    pub primary_silent_s: Option<u64>,
     /// REQ: CLU-005 (ADR-051) — whether the sender is the primary now. A Hello says it only when a
     /// stream opens, so a promotion after that is seen only here. Absent from older nodes (`None`):
     /// the flag a peer already holds stays.

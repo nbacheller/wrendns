@@ -2067,6 +2067,85 @@ fn clu_001_the_removed_list_keeps_the_newest() {
     );
 }
 
+// REQ: OBS-010 (T24.5, fork #2) — a replica's silence about its primary: no report inside the
+// `up` window (three heartbeats), whole seconds after it, and the process start counts while no
+// primary has been heard at all.
+#[test]
+fn obs_010_t24_5_primary_silence_counts_from_the_last_heartbeat() {
+    let started = 1_000_000;
+    // Heard just now, or within the window: nothing to report, so nothing flaps.
+    assert_eq!(
+        primary_silence_secs(5_000_000, started, [5_000_000].into_iter()),
+        None
+    );
+    assert_eq!(
+        primary_silence_secs(5_015_000, started, [5_000_000].into_iter()),
+        None,
+        "exactly the window"
+    );
+    // One millisecond past it, the silence is reported in whole seconds.
+    assert_eq!(
+        primary_silence_secs(5_015_001, started, [5_000_000].into_iter()),
+        Some(15)
+    );
+    assert_eq!(
+        primary_silence_secs(5_059_999, started, [5_000_000].into_iter()),
+        Some(59)
+    );
+    assert_eq!(
+        primary_silence_secs(5_060_000, started, [5_000_000].into_iter()),
+        Some(60)
+    );
+}
+
+#[test]
+fn obs_010_t24_5_primary_silence_uses_the_newest_primary_and_clears_on_contact() {
+    // Two primaries known (a failover in progress): the newest heartbeat decides.
+    assert_eq!(
+        primary_silence_secs(6_000_000, 0, [1_000_000, 5_990_000].into_iter()),
+        None,
+        "the newer primary was heard 10 s ago"
+    );
+    // Silent for 90 s; then a heartbeat from the primary arrives and the report clears.
+    let silent = primary_silence_secs(5_090_000, 0, [5_000_000].into_iter());
+    assert_eq!(silent, Some(90));
+    assert_eq!(
+        primary_silence_secs(5_090_500, 0, [5_090_000].into_iter()),
+        None,
+        "reconnected"
+    );
+}
+
+// REQ: OBS-010 (T24.5, fork #2) — a primary heard at 1_000_000 that has since left the member list
+// (the heard value is kept): the silence counts from when it was last heard, not from start.
+#[test]
+fn obs_010_t24_5_primary_silence_after_the_primary_left_counts_from_when_last_heard() {
+    let started = 0;
+    let heard = Some(10_000_000);
+    assert_eq!(
+        primary_silence_secs(10_045_000, started, heard.into_iter()),
+        Some(45),
+        "45 s since the primary was last heard, not 10 000 s since start"
+    );
+    assert_eq!(
+        primary_silence_secs(10_010_000, started, heard.into_iter()),
+        None
+    );
+}
+
+#[test]
+fn obs_010_t24_5_primary_silence_counts_from_start_when_none_was_heard() {
+    // A replica that has never heard a primary since it started: the time since start.
+    assert_eq!(
+        primary_silence_secs(1_000_000 + 45_000, 1_000_000, std::iter::empty()),
+        Some(45)
+    );
+    assert_eq!(
+        primary_silence_secs(1_000_000 + 15_000, 1_000_000, std::iter::empty()),
+        None
+    );
+}
+
 /// REQ: CLU-005 (ADR-051) — a replica that connected before an election learns the new primary
 /// from the heartbeats: the Hello's flag is stale after a promotion, so its URL was left out of the
 /// fetch list and a replica followed a dead primary (found by the 3-node failover run). An older

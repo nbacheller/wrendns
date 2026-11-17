@@ -86,6 +86,7 @@
         <tbody>
           <tr><th scope="row"><code>upstream_down</code></th><td>an upstream is benched after failures (its circuit breaker opens)</td></tr>
           <tr><th scope="row"><code>node_down</code>, <code>sync_lag</code></th><td>a cluster node drops out, or falls behind the configuration</td></tr>
+          <tr><th scope="row"><code>primary_unreachable</code></th><td>a replica hasn't reached its primary for a minute: a silent split</td></tr>
           <tr><th scope="row"><code>list_failing</code></th><td>a blocklist stops updating</td></tr>
           <tr><th scope="row"><code>servfail_rate</code></th><td>failures climb above a share of queries</td></tr>
           <tr><th scope="row"><code>slo_burn</code></th><td>an objective spends its monthly error budget too fast</td></tr>
