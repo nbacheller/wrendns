@@ -21,6 +21,7 @@
 >   - more UniFi reads;
 >   - importing results from a scanner you run yourself.
 > - **M26, live network map (planned):** an animated map of your network and of where its lookups go, coloured green, yellow or red by health. A world view is optional.
+> - **A three-node test cluster (T21.5, [`deploy/cluster3`](deploy/cluster3/README.md)):** a primary and two replicas in containers, checked in CI on every change to the cluster code; it found and fixed a replica that followed a dead primary after a promotion.
 > - **M27, UI for everything (planned):** a UI control for every older setting too, with guarded admin controls for listeners, TLS, keys and cluster setup ([ADR-914](spec/11-decisions.md)).
 >
 > **Every feature gets a UI control**, not only config, API or MCP. Fork issues are tracked [here](https://github.com/nbacheller/telltaledns/issues). Changes from upstream are merged regularly.

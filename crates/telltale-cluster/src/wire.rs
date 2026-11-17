@@ -201,6 +201,11 @@ pub struct Heartbeat {
     /// REQ: CLU-015 — names its node-local fields reference (at most 128), so `DELETE` checks them.
     #[prost(string, repeated, tag = "38")]
     pub secret_refs: Vec<String>,
+    /// REQ: CLU-005 (ADR-051) — whether the sender is the primary now. A Hello says it only when a
+    /// stream opens, so a promotion after that is seen only here. Absent from older nodes (`None`):
+    /// the flag a peer already holds stays.
+    #[prost(bool, optional, tag = "39")]
+    pub primary: Option<bool>,
 }
 
 /// REQ: CLU-015 (ADR-903 §6) — a secrets head on the wire: the highest stamp and the BLAKE3
@@ -412,6 +417,36 @@ mod tests {
         // A huge length is refused before any allocation.
         let mut bad = (u32::MAX).to_be_bytes().to_vec();
         assert!(decode_all(&mut bad).is_err());
+    }
+
+    /// REQ: CLU-005 (ADR-051) — the heartbeat's primary flag is optional both ways: an older node's
+    /// heartbeat decodes with no flag (so a peer keeps the one it holds), and an older node skips it.
+    #[test]
+    fn clu_005_the_heartbeat_primary_flag_is_optional_both_ways() {
+        let old = Heartbeat {
+            epoch: 2,
+            ..Heartbeat::default()
+        }
+        .encode_to_vec();
+        assert_eq!(Heartbeat::decode(&old[..]).unwrap().primary, None);
+        let new = Heartbeat {
+            epoch: 2,
+            primary: Some(true),
+            ..Heartbeat::default()
+        };
+        let back = Heartbeat::decode(&new.encode_to_vec()[..]).unwrap();
+        assert_eq!(back.primary, Some(true));
+        // A flag set to false is still sent (present, not the default): it says "stepped down".
+        let stepped = Heartbeat {
+            primary: Some(false),
+            ..Heartbeat::default()
+        };
+        assert_eq!(
+            Heartbeat::decode(&stepped.encode_to_vec()[..])
+                .unwrap()
+                .primary,
+            Some(false)
+        );
     }
 
     /// REQ: CLU-010 (T6.14) — a heartbeat from an older node (no pod, start time, or cache
