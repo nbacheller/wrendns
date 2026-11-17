@@ -1293,6 +1293,34 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-932 — Credential file open: no followed symlink, no FIFO block, and the `libc` constants (Accepted 2026-11-17)
+**Context:** The m25-snmp review (2026-11-17) found two races in `telltale-snmp`'s credential read. The path was canonicalized and then opened by name, so a link swapped in between pointed outside the secret directories. A FIFO was opened before its metadata was checked, so the open could block.
+**Decision:**
+- The file is opened with `O_NOFOLLOW | O_NONBLOCK` (`libc` 0.2, the constants only, through `OpenOptionsExt::custom_flags`, which is safe code). A final symlink fails the open, and a FIFO does not block.
+- The metadata is read from the handle, and only a regular file of at most 4096 bytes is read.
+- The canonical path is canonicalized again after the open. Its device and inode must match the handle's (Unix; off Unix the canonical path alone is the check).
+- The read buffer is allocated for the cap (4097 bytes) up front, so a read never reallocates and leaves no unzeroized copy.
+- The decoded v2c community is held in `Zeroizing`.
+**Alternatives rejected:** a `std`-only check (`symlink_metadata` before the open) leaves the same race; an `openat` walk of each path component is more code than the risk needs for admin-owned secret directories.
+**Consequences:**
+- A swap of a directory on the path between the last identity check and the read is not detected. The secret directories are admin-owned (`[node] secret_file_dirs`), so this is accepted.
+- `libc` is a dependency of `telltale-snmp` only. The lock already has it, so no new package enters the tree. The image delta is 0 bytes until T25.6 links the crate into `telltale`.
+- Owner decision: accept or reject the `libc` constants.
+
+## ADR-931 — SNMPv3 time window: only authenticated Reports move the clock; an authNoPriv Report answers an authPriv request (Accepted 2026-11-17)
+**Context:** The m25-snmp review (2026-11-17) found that the ADR-908 amendment of the same day moved the one-per-minute resync limit from unauthenticated to authenticated Reports, and that an authPriv request could not be resynced at all. RFC 3414 §3.2.7a says a notInTimeWindow Report is sent at authNoPriv, and the agent checks the time before it decrypts the scopedPDU. The agent's Report therefore arrived at a level the client dropped, and it often carried request-ID 0. An agent that answers discovery with boots and time 0/0 (RFC 3414 §4 allows this) never worked at authPriv.
+**Decision (proposed):**
+- An unauthenticated Report never sets the agent's clock. Only a Report whose MAC verifies may.
+- For an authPriv request, a Report at authNoPriv is accepted if its MAC verifies, and its request ID is 0 or the request's ID. Any other reply at authNoPriv is dropped.
+- At most one authenticated time resync per agent per minute. The request is sent once more, with the new boots and time.
+- The window follows RFC 3414 §3.2.7b: boots at 2^31 - 1 are stale, and equal boots more than 150 s behind are stale.
+**Alternatives rejected:**
+- Downgrading the request to authNoPriv after a failure: weakens the level the owner configured.
+- Keeping an unauthenticated resync with a per-minute limit: a spoofed Report could still move the clock once a minute.
+**Consequences:**
+- The ADR-908 amendment (2026-11-17) that describes the resync is kept as written, and this ADR governs the rule. Owner decision: accept this ADR, which then supersedes the one-per-minute wording of ADR-908.
+- Interop with the owner's net-snmp v3 agents is Open until the `TT_SNMPD_*` values are supplied.
+
 ## ADR-925 — Inventory thread and its inputs before `[discovery]`: off by default, the Home Assistant feed deferred (Accepted 2026-11-17)
 **Context:** T25.1 builds the inventory thread (`telltale-inventory`) and its read-only sources. The switch that starts them is `[discovery]`, which is T25.2. Nothing in the server reads Home Assistant's raw answer after `routers.rs` folds it into the lease view, and the owner has not yet decided how a discovery node is chosen.
 **Decision:**
@@ -1846,7 +1874,9 @@ The repo has no SNMP code. Constraints:
   - It is off the hot path and not on the AGENTS.md bench-smoke list.
 - **PDUs.** It sends GET, GETNEXT and GETBULK, and receives Response and Report. The encoder has no SetRequest type, and no other write PDU type or tag constant. A CI grep test checks this.
 - **v3 USM** (RFC 3414, RFC 7860, RFC 3826).
-  - Engine discovery uses Report messages. Replies must match `msgID` and `requestID`. At most one unauthenticated time resync per agent per minute.
+  - Engine discovery uses Report messages. Replies must match `msgID` and `requestID`. At most one unauthenticated time resync per agent per minute. *Superseded in part by the 2026-11-17 amendment below and ADR-931 (Proposed): only an authenticated Report moves the clock.*
+  - *Amended 2026-11-17 (m25-snmp review):* unauthenticated Reports are never used for the clock. Discovery accepts only a noAuthNoPriv Report whose varbind is `usmStatsUnknownEngineIDs`. An authenticated notInTimeWindow Report takes the agent's clock, at most once per agent per minute, and the request is sent once more. Message and request IDs start at a random value on separate counters, so a spoofed datagram cannot guess them. A v3 reply must match the request's security level, engine ID and user. The cached engine is dropped after a failed exchange, so a forged engine ID cannot stay in place. The MAC is compared in constant time, and the community is compared the same way. *Credential files (2026-11-17, m25-snmp review):* the file is opened no-follow and non-blocking, and its identity is checked against the canonical path (ADR-932, Proposed). An authPriv request accepts an authNoPriv time-window Report with request ID 0 or the request's ID, when its MAC verifies (ADR-931, Proposed).
+  - *Key handling (amended 2026-11-17):* Ku and Kul are held in `Zeroizing`, and the privacy key is zeroized, with `aes` built with its `zeroize` feature. `ring`'s digest and HMAC contexts keep password-derived state that cannot be zeroized; this is accepted, because they are dropped at the end of the round and never cached. The privacy salt is eight random octets per message (64 bits from `SystemRandom`), not RFC 3826's seeded counter: no counter state is kept across restarts, and the repeat chance under one key is negligible.
   - Ku is the 1 MiB password-to-key expansion. It is computed once per credential per poll round with `ring::digest`, held in a `Zeroizing` buffer, and dropped at the end of the round.
   - Kul, the key localised per engine, is one short hash. It is computed on demand and never cached.
   - Authentication: HMAC-SHA-96, and HMAC-SHA-256/384/512 truncated per RFC 7860 (`ring::hmac`).
