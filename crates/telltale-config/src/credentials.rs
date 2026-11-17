@@ -4,8 +4,9 @@
 //! a change in Git, forward logging, `telltale config check --print`, the pin and version diffs,
 //! and so every MCP read tool and resource, which read those routes.
 //!
-//! A credential comes back as [`MARKER`]; a URL keeps its user and host, with only the password
-//! replaced (`https://me:<redacted>@doh.example/dns-query`). A write that sends the marker back
+//! A credential comes back as [`MARKER`]; a URL keeps its host, with only its credentials replaced
+//! (`https://me:<redacted>@doh.example/dns-query`; a password-less user name, and the values of
+//! query parameters such as `token`, are replaced too). A write that sends the marker back
 //! keeps the stored value, but only while the entry's destination is unchanged
 //! ([`restore_markers`]): a credential is never sent to a new place without being typed again.
 
@@ -187,7 +188,7 @@ pub fn holds_credential(kind: &str, entry: &Value) -> bool {
         visit(&mut probe, &segments(path), "", &mut |_, leaf| {
             found |= match (part, &*leaf) {
                 (Part::Whole, Value::String(s)) => !s.is_empty(),
-                (Part::UrlPassword, Value::String(s)) => password_span(s).is_some(),
+                (Part::UrlPassword, Value::String(s)) => !url_edits(s).is_empty(),
                 _ => false,
             };
         });
@@ -364,12 +365,91 @@ fn password_span(url: &str) -> Option<(usize, usize)> {
     (colon + 1 < at).then_some((colon + 1, at))
 }
 
-/// REQ: API-014 — `url` with the password of its user information replaced by [`MARKER`]; `None`
-/// when it has no password.
+/// `(from, to)` of the user name of `url` when it has no password: a token can be the user name
+/// (`https://ghp_…@github.com/org/repo.git`).
+fn user_span(url: &str) -> Option<(usize, usize)> {
+    let start = url.find("://")? + 3;
+    let stop = url[start..]
+        .find(['?', '#'])
+        .map_or(url.len(), |i| start + i);
+    let at = start + url[start..stop].rfind('@')?;
+    let end = match url[start..at].find(':') {
+        Some(i) => start + i,
+        None => at,
+    };
+    (end > start).then_some((start, end))
+}
+
+/// Query parameters whose values are credentials (ADR-903 §4, amended): a list URL can carry its
+/// token there (`https://lists.example/ads.txt?token=…`).
+const SECRET_QUERY_PARAMS: &[&str] = &[
+    "token",
+    "key",
+    "apikey",
+    "api_key",
+    "access_token",
+    "auth",
+    "sig",
+    "signature",
+    "password",
+];
+
+/// `(from, to)` of each secret query value in `url` (the name is kept).
+fn secret_query_spans(url: &str) -> Vec<(usize, usize)> {
+    let end = url.find('#').unwrap_or(url.len());
+    let Some(q) = url[..end].find('?') else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut pos = q + 1;
+    for seg in url[q + 1..end].split('&') {
+        let seg_start = pos;
+        pos += seg.len() + 1;
+        let Some(eq) = seg.find('=') else {
+            continue;
+        };
+        let name = &seg[..eq];
+        if eq + 1 < seg.len()
+            && SECRET_QUERY_PARAMS
+                .iter()
+                .any(|p| name.eq_ignore_ascii_case(p))
+        {
+            out.push((seg_start + eq + 1, seg_start + seg.len()));
+        }
+    }
+    out
+}
+
+/// The spans of `url` that are credentials, in order: the password, else the user name, and each
+/// secret query value.
+fn url_edits(url: &str) -> Vec<(usize, usize)> {
+    let mut edits = Vec::new();
+    match password_span(url) {
+        Some(span) => edits.push(span),
+        None => edits.extend(user_span(url)),
+    }
+    edits.extend(secret_query_spans(url));
+    edits.sort_unstable();
+    edits
+}
+
+/// REQ: API-014 — `url` with its credentials replaced by [`MARKER`]: the password (or, without
+/// one, the user name) and the secret query values. `None` when it holds none.
 #[must_use]
 pub fn redact_url(url: &str) -> Option<String> {
-    let (from, to) = password_span(url)?;
-    Some(format!("{}{MARKER}{}", &url[..from], &url[to..]))
+    let edits = url_edits(url);
+    if edits.is_empty() {
+        return None;
+    }
+    let mut out = String::with_capacity(url.len());
+    let mut last = 0;
+    for (from, to) in edits {
+        out.push_str(&url[last..from]);
+        out.push_str(MARKER);
+        last = to;
+    }
+    out.push_str(&url[last..]);
+    Some(out)
 }
 
 /// `url` with any password replaced by [`MARKER`] (unchanged when it has none).
@@ -379,7 +459,7 @@ pub fn url_shown(url: &str) -> String {
 }
 
 fn url_has_marker(url: &str) -> bool {
-    password_span(url).is_some_and(|(a, b)| &url[a..b] == MARKER)
+    url_edits(url).iter().any(|&(a, b)| &url[a..b] == MARKER)
 }
 
 /// Redacts the leaf `v`; true when it held a credential (or already the marker).
@@ -569,7 +649,7 @@ fn holds_value(v: &Value, part: Part) -> bool {
     };
     match part {
         Part::Whole => !s.is_empty() && s != MARKER,
-        Part::UrlPassword => password_span(s).is_some() && !url_has_marker(s),
+        Part::UrlPassword => !url_edits(s).is_empty() && !url_has_marker(s),
     }
 }
 
@@ -769,8 +849,34 @@ mod tests {
             Some("https://me:<redacted>@doh.example/q?x=1")
         );
         assert_eq!(redact_url("https://doh.example/q"), None);
-        assert_eq!(redact_url("https://me@doh.example/q"), None, "no password");
-        assert_eq!(redact_url("https://me:@doh.example/q"), None, "empty");
+        // REQ: API-014 (ADR-903 §4, amended) — without a password the user name is the credential
+        // (a token can be the user name).
+        assert_eq!(
+            redact_url("https://me@doh.example/q").as_deref(),
+            Some("https://<redacted>@doh.example/q"),
+            "no password: the user name is redacted"
+        );
+        assert_eq!(
+            redact_url("https://ghp_xxx@github.com/org/repo.git").as_deref(),
+            Some("https://<redacted>@github.com/org/repo.git")
+        );
+        assert_eq!(
+            redact_url("https://me:@doh.example/q").as_deref(),
+            Some("https://<redacted>:@doh.example/q"),
+            "empty password: the user name is still the credential"
+        );
+        // REQ: API-014 — secret query values, whatever the URL's other parts.
+        assert_eq!(
+            redact_url("https://lists.example/ads.txt?token=SECRET&x=1").as_deref(),
+            Some("https://lists.example/ads.txt?token=<redacted>&x=1")
+        );
+        assert_eq!(
+            redact_url("https://h.example/a?x=1&API_KEY=k#frag").as_deref(),
+            Some("https://h.example/a?x=1&API_KEY=<redacted>#frag"),
+            "parameter names are case-insensitive"
+        );
+        assert_eq!(redact_url("https://h.example/a?tokens=1&q=token"), None);
+        assert_eq!(redact_url("https://h.example/a?token="), None, "empty");
         // A stray `/` in a password is still covered.
         assert_eq!(
             redact_url("https://me:a/b@h.example/").as_deref(),

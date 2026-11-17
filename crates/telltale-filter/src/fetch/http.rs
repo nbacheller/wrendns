@@ -267,14 +267,14 @@ impl Client {
         let host = uri
             .host()
             .ok_or_else(|| HttpError::fatal("URL has no host"))?;
+        refuse_user_info(uri)?;
         let bare_host = host.trim_start_matches('[').trim_end_matches(']');
         let port = uri.port_u16().unwrap_or(if https { 443 } else { 80 });
         let tcp = self.connect(bare_host, port).await?;
 
         let path = uri.path_and_query().map_or("/", |p| p.as_str());
-        let authority = uri.authority().map_or(host, |a| a.as_str());
         let mut req = Request::get(path)
-            .header(HOST, authority)
+            .header(HOST, host_header(uri, host))
             .header(USER_AGENT, &self.user_agent)
             // Lists are text; asking for identity keeps the size cap meaningful.
             .header(ACCEPT_ENCODING, "identity");
@@ -546,6 +546,26 @@ fn resolve_location(base: &Uri, location: &str) -> Result<Uri, HttpError> {
     format!("{scheme}://{authority}{path}")
         .parse()
         .map_err(|e| bad(&e))
+}
+
+
+/// REQ: FLT-004, API-014 — user information is never sent: no Basic auth is built, and a URL that
+/// has some is refused. The URL is not quoted, so its password can't reach a log or an error.
+fn refuse_user_info(uri: &Uri) -> Result<(), HttpError> {
+    if uri.authority().is_some_and(|a| a.as_str().contains('@')) {
+        return Err(HttpError::fatal(
+            "the list URL has user information, which is not sent: remove it from the URL",
+        ));
+    }
+    Ok(())
+}
+
+/// REQ: FLT-004 — the `Host` header: the host, and the port when the URL names one.
+fn host_header(uri: &Uri, host: &str) -> String {
+    match uri.port_u16() {
+        Some(p) => format!("{host}:{p}"),
+        None => host.to_owned(),
+    }
 }
 
 #[cfg(test)]

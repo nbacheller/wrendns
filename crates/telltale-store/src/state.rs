@@ -7,6 +7,7 @@
 
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
@@ -149,6 +150,31 @@ const MIGRATIONS: &[&str] = &[
 /// REQ: API-014 — the migration that purges the old idempotency records.
 const PURGE_IDEMPOTENCY: usize = 10;
 
+/// REQ: OPS-014 — serializes `State::init` across threads of this process.
+static FIRST_OPEN: Mutex<()> = Mutex::new(());
+
+/// REQ: OPS-014 — `journal_mode=WAL` needs the write lock, and SQLite does not always run the
+/// busy handler for it, so a busy answer is retried with a bounded backoff (50 × 20 ms).
+fn enable_wal(conn: &Connection) -> Result<()> {
+    const TRIES: u32 = 50;
+    for attempt in 1..=TRIES {
+        match conn.pragma_update(None, "journal_mode", "WAL") {
+            Ok(()) => return Ok(()),
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if attempt < TRIES
+                    && matches!(
+                        e.code,
+                        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                    ) =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
 /// REQ: OBS-035 (T14.13) — the pseudo agent scope that marks a display token. An older node
 /// reads it as an agent scope that allows nothing, so a display token can't act as a token there.
 pub const DISPLAY_SCOPE: &str = "display";
@@ -281,14 +307,18 @@ impl State {
     }
 
     fn init(mut conn: Connection) -> Result<Self> {
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+        // REQ: OPS-014 — one first open at a time in this process (the secrets store and the user
+        // database open the same file from different threads at start). The busy timeout is set
+        // before any statement: a journal-mode change can return SQLITE_BUSY without the handler.
+        let _first_open = FIRST_OPEN.lock().unwrap_or_else(PoisonError::into_inner);
+        conn.busy_timeout(Duration::from_secs(5))?;
+        enable_wal(&conn)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         // ADR-124 — no temp files (read-only root filesystems have nowhere to put them).
         conn.pragma_update(None, "temp_store", "MEMORY")?;
         // REQ: API-014 (ADR-903 §4) — deleted rows are overwritten, not left in free pages.
         conn.pragma_update(None, "secure_delete", "ON")?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
             [],

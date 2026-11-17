@@ -1082,3 +1082,66 @@ async fn api_014_replica_write_through_an_older_primary() {
     assert_eq!(older.got.lock().unwrap().len(), 1, "not forwarded");
     let _ = older.stop.send(true);
 }
+
+/// REQ: API-014, FLT-004, AGT-003 — a refresh through a real list fetcher: the list's URL password
+/// (its download fails: nothing listens on 127.0.0.1:9) is in no list read, the 202 answer, the
+/// `lists.refresh` audit row, or the idempotency record of the request.
+#[tokio::test]
+async fn api_014_refresh_with_real_fetcher_keeps_password_out() {
+    let h = harness_from(
+        "",
+        None,
+        vec![telltale_config::Cidr::parse("127.0.0.0/8").unwrap()],
+    );
+    let scratch = tempfile::tempdir().unwrap();
+    let data = scratch.path().join("data");
+    let conf = config(&format!(
+        "[node]
+data_dir = {:?}
+[[list]]
+name = \"local\"
+url = \"https://l:{URL_PASSWORD}@127.0.0.1:9/x\"
+",
+        data.to_string_lossy()
+    ));
+    h.src.config.store(Arc::new(conf.clone()));
+    let lists = crate::lists::Lists::start(&conf, &h.src.pipeline).unwrap();
+    h.src.lists.store(Some(Arc::clone(&lists.shared)));
+
+    let (s, _, listed) = h.call("GET", "/api/v1/lists", None).await;
+    assert_eq!(s, StatusCode::OK, "{listed}");
+    assert!(
+        listed.to_string().contains("local"),
+        "the list is there: {listed}"
+    );
+    assert!(!listed.to_string().contains(URL_PASSWORD), "{listed}");
+
+    let mut req = h.request("POST", "/api/v1/lists/refresh", Some(&json!({})));
+    req.headers_mut()
+        .insert("idempotency-key", "refresh-1".parse().unwrap());
+    let (s, _, answer) = h.send(req).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{answer}");
+    assert!(!answer.contains(URL_PASSWORD), "{answer}");
+    assert!(!h.audit_text().contains(URL_PASSWORD), "the audit row");
+    let key = format!("{}:refresh-1", h.admin_id);
+    let record = h
+        .auth
+        .state()
+        .idempotent(&key, crate::pipeline::unix_now())
+        .unwrap()
+        .expect("the refresh is remembered");
+    let kept = format!(
+        "{} {}",
+        String::from_utf8_lossy(&record.request),
+        record.response
+    );
+    assert!(
+        !kept.contains(URL_PASSWORD),
+        "the idempotency record: {kept}"
+    );
+    assert!(
+        !kept.contains("lists/refresh"),
+        "a keyed hash, not the text"
+    );
+    lists.stop();
+}

@@ -1640,7 +1640,8 @@ impl Backend for ApiBackend {
         // the cluster's (`list_hits`); a caller that reads this directly, like the support
         // package, still gets this node's.
         let decided = self.src.shadow.decided();
-        cfg.list
+        let mut out = cfg
+            .list
             .iter()
             .map(|l| {
                 let meta = status.iter().find(|(n, _)| *n == *l.name).map(|(_, m)| m);
@@ -1725,7 +1726,11 @@ impl Backend for ApiBackend {
                     stale_days: stale_days(&cfg.filter, l, meta.and_then(|m| m.last_changed)),
                 }
             })
-            .collect()
+            .collect::<Vec<_>>();
+        // REQ: API-014 — the same word-by-word pass a replica applies (`redact::lists`), so a
+        // URL written or normalised differently from the configured one is covered too.
+        crate::redact::lists(&mut out);
+        out
     }
 
     // REQ: OBS-009 (T7.14) — this node's blocks and allows by list name, counted on the

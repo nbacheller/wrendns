@@ -187,6 +187,7 @@ const TABLE: &[(&str, Class)] = &[
     ("schedule[].window[].end", Plain),
     ("schedule[].window[].start", Plain),
     ("simulate.default_window", Plain),
+    ("special.ddr_name", Scan),
     ("telemetry.anomaly.ignore_domains[]", Free),
     ("telemetry.dnstap.address", Scan),
     ("telemetry.dnstap.socket", Scan),
