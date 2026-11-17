@@ -209,7 +209,7 @@ fn ops_014_missing_key_with_rows_locks_not_generates() {
     state.put_secret_row(&row, 1).unwrap();
     let replica = store(&c, &none);
     assert_eq!(replica.status_loaded().state, StoreState::Locked);
-    assert_eq!(replica.heal_as_replica().unwrap(), 1);
+    assert_eq!(replica.heal_as_replica().unwrap().rows, 1);
     assert_eq!(replica.status().state, StoreState::Ready);
     assert_eq!(replica.status().live(), 0);
     put(&replica, "unifi", "fetched again");
@@ -1001,4 +1001,89 @@ fn api_014_idempotency_digest_is_keyed() {
         blake3::hash(req).to_hex().to_string()
     );
     assert_ne!(*a.subkey(AEAD_CONTEXT), *a.subkey(IDEMPOTENCY_CONTEXT));
+}
+
+/// A cluster row as a primary lists it, for a test that displaces a local row.
+fn cluster_row(name: &str, v: &str, epoch: u64) -> super::store::Remote {
+    super::store::Remote {
+        name: name.into(),
+        kind: "text".into(),
+        stamp: telltale_store::state::Stamp { epoch, seq: 1 },
+        deleted: false,
+        held: false,
+        updated: 100,
+        updated_by: "root".into(),
+        value: Some(value(v)),
+    }
+}
+
+/// REQ: OPS-014 (AC6; CLU-015 ADR-917 point 4) — a shadow row is sealed under the node key like a
+/// row: a rotation re-encrypts it, nothing under the old key stays in the file, and the purge
+/// that restores it reads the same value.
+#[test]
+fn ops_014_shadow_rows_follow_key_rotation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let c = cfg_in(tmp.path());
+    let none = env(&[]);
+    let s = store(&c, &none);
+    put(&s, "sh", "shadow-value-44");
+    s.apply_remote(&[cluster_row("sh", "cluster-over-shadow", 1)], 1, true, 100)
+        .unwrap();
+    assert_eq!(s.status().shadows, vec!["sh".to_owned()]);
+    let state = State::open(&tmp.path().join("state.db")).unwrap();
+    let before = state.secret_shadows().unwrap().remove(0);
+    drop(state);
+    drop(s);
+    rotate_key(&c, &none, Until::Done).unwrap();
+    let state = State::open(&tmp.path().join("state.db")).unwrap();
+    let after = state.secret_shadows().unwrap().remove(0);
+    drop(state);
+    assert_ne!(
+        after.key_id, before.key_id,
+        "re-encrypted under the new key"
+    );
+    assert_eq!(after.stamp, before.stamp, "the stamp is kept");
+    let bytes = db_bytes(tmp.path());
+    assert!(!contains(&bytes, &before.ciphertext), "old ciphertext left");
+    assert!(!contains(&bytes, &before.key_id), "old key_id left");
+    let s = store(&c, &none);
+    assert_eq!(s.purge_cluster().unwrap(), (0, 1));
+    assert_eq!(read(&s, "sh"), "shadow-value-44");
+}
+
+/// REQ: OPS-014 (AC6; CLU-015 ADR-917 point 4) — a previous key re-encrypts the shadow rows at
+/// the start too, in the same step as the rows.
+#[test]
+fn ops_014_shadow_reencrypted_at_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    let c = cfg_in(tmp.path());
+    let k1 = NodeKey::generate().unwrap();
+    let k2 = NodeKey::generate().unwrap();
+    let s = store(&c, &env(&[(KEY_VAR, k1.as_str())]));
+    put(&s, "sh", "shadow-value-45");
+    s.apply_remote(&[cluster_row("sh", "cluster-under-k1", 1)], 1, true, 100)
+        .unwrap();
+    drop(s);
+    let state = State::open(&tmp.path().join("state.db")).unwrap();
+    let old = state.secret_shadows().unwrap().remove(0);
+    drop(state);
+    let rotated = store(
+        &c,
+        &env(&[(KEY_VAR, k2.as_str()), (PREVIOUS_KEY_VAR, k1.as_str())]),
+    );
+    let _ = rotated.keys().unwrap();
+    let state = State::open(&tmp.path().join("state.db")).unwrap();
+    let new = state.secret_shadows().unwrap().remove(0);
+    drop(state);
+    assert_eq!(
+        hex(&new.key_id),
+        key_id(k2.as_str()),
+        "under the current key"
+    );
+    assert_eq!(new.stamp, old.stamp, "the stamp is kept");
+    let bytes = db_bytes(tmp.path());
+    assert!(!contains(&bytes, &old.ciphertext), "old ciphertext left");
+    assert!(!contains(&bytes, &old.key_id), "old key_id left");
+    assert_eq!(rotated.purge_cluster().unwrap(), (0, 1));
+    assert_eq!(read(&rotated, "sh"), "shadow-value-45");
 }

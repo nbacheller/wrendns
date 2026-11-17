@@ -438,6 +438,8 @@ pub struct Member {
     /// REQ: CLU-014 — it understands drills (older nodes: no), and the drill it runs.
     pub drills: bool,
     pub drill: Option<DrillMark>,
+    /// REQ: CLU-015 — its stored secrets, from its heartbeats (empty from older nodes).
+    pub secrets: SecretsMark,
 }
 
 /// REQ: CLU-014 (ADR-151) — a drill as heartbeats carry it.
@@ -476,6 +478,47 @@ impl MaintenanceWindow {
     pub fn active(&self, now_ms: u64) -> bool {
         now_ms < self.until_ms
     }
+}
+
+/// REQ: CLU-015 (ADR-903 §6) — a secrets head as heartbeats carry it: the newest stamp and the
+/// digest of the sorted `(name, kind, stamp, deleted)` list. It holds no value.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecretsHead {
+    pub epoch: u64,
+    pub seq: u64,
+    pub digest: Vec<u8>,
+}
+
+/// REQ: CLU-015 — what a node reports about its stored secrets, from its heartbeats.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecretsMark {
+    /// The head of the node's store (the primary's is the cluster's).
+    pub head: Option<SecretsHead>,
+    /// The head after it applied the primary's rows (a replica's copy of the head).
+    pub applied: Option<SecretsHead>,
+    /// Live secrets it can't read, and secrets the primary holds but couldn't decrypt.
+    pub unreadable: u32,
+    pub held: u32,
+    /// Configuration paths it refuses to read as credentials (at most 32).
+    pub credential_issues: Vec<String>,
+    /// Names its node-local fields reference (at most 128).
+    pub secret_refs: Vec<String>,
+}
+
+fn head_of_wire(h: Option<crate::wire::SecretsHeadMsg>) -> Option<SecretsHead> {
+    h.map(|h| SecretsHead {
+        epoch: h.epoch,
+        seq: h.seq,
+        digest: h.digest,
+    })
+}
+
+fn head_to_wire(h: Option<&SecretsHead>) -> Option<crate::wire::SecretsHeadMsg> {
+    h.map(|h| crate::wire::SecretsHeadMsg {
+        epoch: h.epoch,
+        seq: h.seq,
+        digest: h.digest.clone(),
+    })
 }
 
 impl Member {
@@ -526,6 +569,8 @@ pub struct LocalState {
     pub canary_of: u64,
     /// REQ: CLU-014 — the drill this node runs (heartbeats carry it).
     pub drill: Option<DrillMark>,
+    /// REQ: CLU-015 — this node's stored secrets (heartbeats carry them).
+    pub secrets: SecretsMark,
 }
 
 /// REQ: CLU-013 (T13.2, ADR-116) — the canary head: a version sent only to these peers (node
@@ -1840,6 +1885,17 @@ impl Cluster {
         }
     }
 
+    /// REQ: CLU-015 — sets this node's secrets mark and sends a heartbeat at once, so a changed
+    /// head reaches the members without waiting for the next period.
+    pub fn set_secrets(&self, mark: SecretsMark) {
+        let mut l = self.local.lock().unwrap_or_else(PoisonError::into_inner);
+        if l.secrets != mark {
+            l.secrets = mark;
+            drop(l);
+            self.local_changed.send_modify(|n| *n += 1);
+        }
+    }
+
     /// Appends a peer's host sample to its history, once per sample (heartbeats repeat it).
     fn record_host(&self, node_id: &str, h: &crate::wire::HostStats) {
         let mut all = self
@@ -1948,6 +2004,12 @@ impl Cluster {
                 drill_id: l.drill.as_ref().map(|d| d.id.clone()).unwrap_or_default(),
                 drill_since_ms: l.drill.as_ref().map_or(0, |d| d.since_ms),
                 drill_until_ms: l.drill.as_ref().map_or(0, |d| d.until_ms),
+                secrets_head: head_to_wire(l.secrets.head.as_ref()),
+                secrets_applied: head_to_wire(l.secrets.applied.as_ref()),
+                secrets_unreadable: l.secrets.unreadable,
+                secrets_held: l.secrets.held,
+                credential_issues: l.secrets.credential_issues.clone(),
+                secret_refs: l.secrets.secret_refs.clone(),
             })),
         }
     }
@@ -2045,6 +2107,7 @@ impl Cluster {
                         canary_of: prev.as_ref().map_or(0, |p| p.canary_of),
                         drills: prev.as_ref().is_some_and(|p| p.drills),
                         drill: prev.as_ref().and_then(|p| p.drill.clone()),
+                        secrets: prev.as_ref().map(|p| p.secrets.clone()).unwrap_or_default(),
                     },
                 );
                 drop(members);
@@ -2105,6 +2168,15 @@ impl Cluster {
                         since_ms: hb.drill_since_ms,
                         until_ms: hb.drill_until_ms,
                     });
+                    // REQ: CLU-015 — its secrets (an older node sends none: an empty mark).
+                    m.secrets = SecretsMark {
+                        head: head_of_wire(hb.secrets_head.take()),
+                        applied: head_of_wire(hb.secrets_applied.take()),
+                        unreadable: hb.secrets_unreadable,
+                        held: hb.secrets_held,
+                        credential_issues: std::mem::take(&mut hb.credential_issues),
+                        secret_refs: std::mem::take(&mut hb.secret_refs),
+                    };
                     m.rollouts = hb.rollouts;
                     m.sync_error = std::mem::take(&mut hb.sync_error);
                     m.probe_failing = hb.probe_failing;

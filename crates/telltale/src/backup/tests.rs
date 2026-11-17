@@ -248,6 +248,14 @@ fn ops_014_backup_excludes_secret_rows() {
     let state = telltale_store::state::State::open(&data.join("state.db")).unwrap();
     let row = state.secret_row("unifi").unwrap().unwrap();
     assert_eq!(state.secret_row_count().unwrap(), 2);
+    // REQ: CLU-015 (ADR-917 point 4) — a shadow row (an older cluster copy) is sealed the same
+    // way, so a backup holds none of it either.
+    let mut shadow = row.clone();
+    shadow.origin = "cluster".into();
+    state
+        .apply_secret_batch(&[], std::slice::from_ref(&shadow), &[], 2)
+        .unwrap();
+    assert_eq!(state.secret_shadows().unwrap().len(), 1);
     drop(state);
     let out = tmp.path().join("b.ttbk");
     create(&[conf], &cfg, false, &out).unwrap();
@@ -270,7 +278,10 @@ fn ops_014_backup_excludes_secret_rows() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!((n, stamp), (0, 0));
+    let shadows: i64 = db
+        .query_row("SELECT count(*) FROM secrets_shadow", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!((n, stamp, shadows), (0, 0, 0));
     drop(db);
     let bytes = fs::read(new.join("data/state.db")).unwrap();
     assert!(

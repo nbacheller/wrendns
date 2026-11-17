@@ -33,6 +33,26 @@ Prefer 2 for anything beyond a single box: the key then lives apart from the dat
 
 **Resolver pods** (ephemeral cluster members) hold no stored secrets, need no key and never make one. **In a cluster**, every full member has its own key, and one member's key opens nothing on another's `state.db`.
 
+## Replication in a cluster
+
+Full members share stored secrets; resolver pods and witnesses never hold one. The design is ADR-903 section 6.
+
+- **Stamps.** Every change is stamped `(epoch, seq)`: the cluster's epoch and a counter within it, taken under the primary's lease. A stamp is never reused. A higher stamp is a later change.
+- **Head.** A member's secrets head is its newest stamp and a BLAKE3 digest over the sorted `(name, kind, stamp, deleted)` list. It holds no value and no value hash. It travels in heartbeats, not in configuration versions, so pins and canary rollouts neither hold it back nor bump a version.
+- **Fetch.** A replica whose head differs from the primary's (the primary of the highest epoch it has heard of) pulls the primary's rows: a page at a time, each page under 900 KiB, over the mTLS cluster channel. It checks that every page carries the same head and that the rows recompute it, and discards the whole answer otherwise. A fetch is tried at most once per head and backs off from 30 seconds to 10 minutes after a failure. Nothing about it gates manifest application, readiness or DNS.
+- **Re-encryption.** A replica encrypts each value under its own key with the same stamp. Its files hold no plaintext, which the tests check.
+- **Deletes** are tombstones, which replicate like values.
+- **Held rows.** A row the primary holds but can't decrypt is sent without a value. The replica keeps its own copy as it is, and the Cluster page counts it as held.
+- **Orphans.** A failover can strand a write: an old primary may have stamped a change that never reached the new one. When a replica holds such a row (from an earlier epoch) and the current primary doesn't list it, the row is kept, marked orphaned, and never used (the integration reports "not configured", and the message says to enter the secret again on the current primary). Nothing is deleted by absence. The one exception is a heal: a replica that has lost its key drops an orphan it can't decrypt, and the audit record `secrets.heal` names it (a readable orphan refuses the heal).
+- **Shadows.** A row a cluster row displaces is kept in a shadow table, one slot per name and origin, and never used. A standalone node's own row (`local`) and an older cluster copy (or a deletion that a later live write displaced) each have their slot, so a stale copy never replaces a local one. A local shadow comes back when the cluster's rows are purged; the purge drops the cluster copies. Shadows are encrypted like rows: rotation and the start-up re-encryption cover them, and no backup holds them.
+- **Reverse heal.** A primary whose data-directory key went missing (its rows are all the cluster's) takes its rows back from a replica that holds every one of them at the same stamp, and refuses a partial answer. A replica answers it only for the primary of the highest epoch, since a replica's registry lists only itself.
+- **Deletions and conflicts.** A newer primary that lists a deleted name as live, with a stamp older than the deletion, is a value the deletion superseded: the replica keeps the deletion, reports the name as a conflict and audits it as `secret.conflict`. A listing stamped after the deletion is a later write (possibly a re-creation in a later epoch), and it replaces the deletion.
+- **Emergency primary.** Its answer is marked `authoritative: false`. A replica fills missing or older cluster rows from it by stamp and changes nothing else; the emergency primary's own sync pass hands nothing over and refills nothing (ADR-903 section 4).
+- **Joining.** A joining node offers its rows once per primary epoch. Each name the primary takes is audited as `secret.adopt`. A name the cluster holds (live or deleted), or a row it can't accept, is a conflict, audited as `secret.adopt_conflict`.
+- **Removal.** A member the cluster removes purges the cluster's rows, and its own shadowed rows come back. The purge is audited as `secrets.purge`.
+
+Only `secrets.fetch` and `secrets.adopt` carry values, and only over the cluster channel: between full members, in memory. Nothing is written to a blob, a file or a log line.
+
 ## Rotation
 
 **The data-directory key** (`secrets.key`): stop TelltaleDNS, then
@@ -70,7 +90,8 @@ What to do:
 | `secrets_key_file` not mounted yet, or unreadable | Mount it (or fix its permissions); the node picks it up within 30 seconds. |
 | `secrets.key` deleted or lost | Put the saved copy back. TelltaleDNS never makes a new key while secrets are stored, so nothing is overwritten. |
 | The wrong key is configured | Configure the right one; or, if the old key is known, give it as the previous key and the node re-encrypts under the new one. |
-| The key is gone for good | The stored secrets can't be recovered. A cluster replica whose secrets all came from the primary drops them and makes a new key by itself, to receive them again. Elsewhere the store stays locked while it holds secrets nothing can read (it never discards them on its own); file-based credentials keep working meanwhile. Keep a copy of the key so this never happens. |
+| The key is gone for good | The stored secrets can't be recovered. A cluster member whose secrets all came from the primary drops them and makes a new key by itself, to receive them again; it drops the orphans it can't read too, and names them in the audit record `secrets.heal`. A primary in that state takes them back from a replica that holds every one of them at the same stamp (its store stays locked until one does). Elsewhere the store stays locked while it holds secrets nothing can read (it never discards them on its own); file-based credentials keep working meanwhile. Keep a copy of the key so this never happens. |
+| The key is gone for good, and the node holds a **local shadow** (the value it had before it joined a cluster, displaced by the cluster's copy) | A heal never drops a local value, so it stays locked until the shadow is removed by hand. The local value can't be read without the lost key, so nothing is recovered by keeping it. Stop TelltaleDNS, copy `state.db` (with its `-wal` file) aside, then run `DELETE FROM secrets_shadow WHERE origin = 'local';` against `state.db` with any SQLite client, and start it again. Then the node heals as usual: it drops the rows it can't read and fetches the cluster's secrets again (audited as `secrets.heal`). The deletion itself isn't audited, so note it in your own records. Enter the local secret again if it is still needed. |
 | One secret `unreadable` or `corrupt` | Set it again; nothing else is affected. |
 | Data directory not kept (Helm `persistence.enabled: false`) | Health says `secrets_ephemeral` while secrets are stored: they're lost at every restart. Turn persistence on, or use files. |
 

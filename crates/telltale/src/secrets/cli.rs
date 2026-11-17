@@ -165,7 +165,11 @@ pub(crate) fn rotate_key(cfg: &Config, var: &EnvFn, until: Until) -> Result<Rota
     let db = paths.data_dir.join("state.db");
     let state = State::open(&db).map_err(|e| format!("{}: {e}", db.display()))?;
     let rows = state.secret_rows().map_err(|e| e.to_string())?;
-    if let Some(note) = recover_rotation(&paths.data_dir, &rows) {
+    // REQ: CLU-015 (ADR-917 point 4) — shadows are sealed under the same key: they are rotated
+    // with the rows, and count when a rotation is recovered.
+    let shadows = state.secret_shadows().map_err(|e| e.to_string())?;
+    let all: Vec<SecretRow> = rows.iter().chain(shadows.iter()).cloned().collect();
+    if let Some(note) = recover_rotation(&paths.data_dir, &all) {
         eprintln!("note: {note}");
     }
     let old = read_key(&key_path)?;
@@ -175,23 +179,26 @@ pub(crate) fn rotate_key(cfg: &Config, var: &EnvFn, until: Until) -> Result<Rota
     sync_dir(&paths.data_dir)?;
     let new = NodeKey::parse(&text, KeySource::DataDir(new_path.clone()))?;
     let mut redone: Vec<SecretRow> = Vec::new();
+    let mut redone_shadows: Vec<SecretRow> = Vec::new();
     let mut skipped = 0;
     if until != Until::NewKeyWritten {
-        for r in rows.iter().filter(|r| !r.deleted) {
-            let Ok(v) = open(&old, r) else {
-                skipped += 1;
-                continue;
-            };
-            let s = seal(&new, &r.kind, &r.name, r.stamp, &v)?;
-            redone.push(SecretRow {
-                key_id: s.key_id,
-                nonce: s.nonce,
-                ciphertext: s.ciphertext,
-                ..r.clone()
-            });
+        for (src, out) in [(&rows, &mut redone), (&shadows, &mut redone_shadows)] {
+            for r in src.iter().filter(|r| !r.deleted) {
+                let Ok(v) = open(&old, r) else {
+                    skipped += 1;
+                    continue;
+                };
+                let s = seal(&new, &r.kind, &r.name, r.stamp, &v)?;
+                out.push(SecretRow {
+                    key_id: s.key_id,
+                    nonce: s.nonce,
+                    ciphertext: s.ciphertext,
+                    ..r.clone()
+                });
+            }
         }
         let clean = state
-            .replace_secret_rows(&redone)
+            .replace_secret_rows(&redone, &redone_shadows)
             .map_err(|e| e.to_string())?;
         if !clean {
             eprintln!(

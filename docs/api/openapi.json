@@ -11626,6 +11626,17 @@
             "description": "Round-trip time over the cluster link.",
             "minimum": 0
           },
+          "secrets": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClusterSecrets",
+                "description": "REQ: CLU-015 (ADR-903 §6) — its stored secrets: stamps and counts, never a value. Absent\nfrom older nodes and from nodes not heard from."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "servfailPercent": {
             "type": "number",
             "format": "double",
@@ -11825,6 +11836,47 @@
               "null"
             ],
             "description": "The version baking, `epoch.seq`."
+          }
+        }
+      },
+      "ClusterSecrets": {
+        "type": "object",
+        "description": "REQ: CLU-015 (ADR-903 §6) — one member's stored secrets. Stamps are `epoch.seq`; a value is\nnever here.",
+        "required": [
+          "inSync",
+          "unreadable",
+          "held"
+        ],
+        "properties": {
+          "applied": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The head it has applied from the primary (the primary's own, on the primary)."
+          },
+          "head": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The newest stamp in its secrets head."
+          },
+          "held": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Secrets the primary holds but couldn't decrypt to send: this node keeps its own copy.",
+            "minimum": 0
+          },
+          "inSync": {
+            "type": "boolean",
+            "description": "Its applied head is the primary's head: same stamps and digest."
+          },
+          "unreadable": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Live secrets it can't read here (encrypted under a key it doesn't have, or damaged).",
+            "minimum": 0
           }
         }
       },

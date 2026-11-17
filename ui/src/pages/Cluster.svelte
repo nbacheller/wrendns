@@ -441,6 +441,8 @@ telltale cluster join tt_join_…</pre>
                 <th>Node</th>
                 <th>Status</th>
                 <th>Configuration</th>
+                <!-- REQ: CLU-015 (ADR-903 §6) — each member's stored secrets: its head, what it has applied, and what it can't read. -->
+                <th>Secrets<HelpButton id="cluster-secrets" /></th>
                 <th>Serving DNS</th>
                 <th>Version</th>
                 <th>Uptime</th>
@@ -499,6 +501,19 @@ telltale cluster join tt_join_…</pre>
                       {#if n.configLag}{n.configLag} behind{#if n.behindSeconds != null} for {duration(n.behindSeconds)}{/if}{:else}in sync{/if}
                     </div>
                   </td>
+                  <td class="small" data-testid="cluster-node-secrets">
+                    {#if n.secrets}
+                      {@const sec = n.secrets}
+                      <span class="badge {n.role.includes('primary') || sec.inSync ? 'ok' : sec.applied ? 'warn' : ''}" data-testid="cluster-node-secrets-state">
+                        {n.role.includes('primary') ? 'primary' : sec.inSync ? 'in sync' : sec.applied ? 'behind' : 'not reported'}
+                      </span>
+                      <div class="muted">head {sec.head ?? '–'} · applied {sec.applied ?? '–'}</div>
+                      {#if sec.unreadable}<div class="warn-text" data-testid="cluster-node-unreadable">{sec.unreadable} unreadable here</div>{/if}
+                      {#if sec.held}<div class="muted" data-testid="cluster-node-held">{sec.held} held by the primary</div>{/if}
+                    {:else}
+                      <span class="muted">not reported</span>
+                    {/if}
+                  </td>
                   <td>
                     <span class="badge {n.ready ? 'ok' : 'bad'}">{n.ready ? 'ready' : 'not ready'}</span>
                     <div class="muted small">
@@ -517,7 +532,7 @@ telltale cluster join tt_join_…</pre>
                 </tr>
                 {#if maintFor === n.nodeId}
                   <tr class="maint-row">
-                    <td colspan="6">
+                    <td colspan="7">
                       <MaintenanceForm
                         node={apiNode(n)}
                         label={n.thisNode ? 'this node' : (n.pod ?? n.site)}
@@ -531,7 +546,7 @@ telltale cluster join tt_join_…</pre>
                 {/if}
                 {#if removeFor === n.nodeId}
                   <tr class="maint-row">
-                    <td colspan="6">
+                    <td colspan="7">
                       <NodeRemoveForm
                         nodeId={n.nodeId}
                         site={n.site}
@@ -545,7 +560,7 @@ telltale cluster join tt_join_…</pre>
                 {/if}
                 {#if drillFor === n.nodeId}
                   <tr class="maint-row">
-                    <td colspan="6">
+                    <td colspan="7">
                       <DrillForm
                         node={apiNode(n)}
                         label={n.thisNode ? 'this node' : (n.pod ?? n.site)}
@@ -559,7 +574,7 @@ telltale cluster join tt_join_…</pre>
               {#each fixed as n (n.nodeId)}{@render row(n)}{/each}
               {#each podSites as [site, pods] (site)}
                 <tr class="pods" data-testid="cluster-pods">
-                  <td colspan="6">
+                  <td colspan="7">
                     <button class="link" onclick={() => toggleSite(site)} aria-expanded={openSites.includes(site)}>
                       {openSites.includes(site) ? '▾' : '▸'} <strong>{site}</strong>: {pods.length} resolver pod{pods.length === 1 ? '' : 's'}
                     </button>

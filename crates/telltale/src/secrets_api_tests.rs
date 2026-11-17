@@ -1268,3 +1268,441 @@ async fn api_015_bad_body_never_quotes_value() {
     }
     assert!(!h.src.secrets.exists("pin"));
 }
+
+/// Every byte under `dir` (the database, its WAL and anything else a node writes).
+fn bytes_under(dir: &std::path::Path) -> Vec<u8> {
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                out.extend(bytes_under(&p));
+            } else if let Ok(b) = std::fs::read(&p) {
+                out.extend(b);
+            }
+        }
+    }
+    out
+}
+
+/// Runs one sync pass on each node until `done` holds (heartbeats carry the heads between them).
+async fn sync_until(
+    pairs: (&Harness, &Harness),
+    clusters: (&Arc<Cluster>, &Arc<Cluster>),
+    mut done: impl FnMut() -> bool,
+) {
+    for _ in 0..200 {
+        crate::secrets::sync::run_once(&pairs.0.src, clusters.0).await;
+        crate::secrets::sync::run_once(&pairs.1.src, clusters.1).await;
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// REQ: CLU-015 (AC17) — over the real mTLS channel of two nodes: a secret set on the replica is
+/// forwarded to the primary (as `secret.put`), the replica's own standalone row is offered to the
+/// primary when the replica joins, and the primary's rows come back to the replica re-encrypted
+/// under its key. A deletion on the primary reaches the replica as a tombstone. No plaintext is
+/// written under the replica's data directory.
+#[tokio::test]
+async fn clu_015_set_on_replica_replicates_back() {
+    use crate::secrets::value::{Kind, SecretValue};
+    let p = pair(crate::build_info::VERSION, crate::build_info::VERSION).await;
+    let ph = harness_in("", Some(Arc::clone(&p.primary)));
+    crate::http::serve_peers(&ph.src);
+    let rh = harness_in("", Some(Arc::clone(&p.replica)));
+    crate::http::serve_peers(&rh.src);
+    // A row the replica made before it joined: offered to the primary, then shadowed.
+    let own =
+        SecretValue::new(Kind::Text, zeroize::Zeroizing::new("own-local-7713".into())).unwrap();
+    rh.src
+        .secrets
+        .put("local.one", Kind::Text, &own, 0, "root", "local", 50)
+        .unwrap();
+    // Set on the replica: forwarded to the primary.
+    let (s, _, v) = rh
+        .call("PUT", "/api/v1/secrets/unifi", Some(&put_body(VALUE)))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(ph.src.secrets.exists("unifi"), "stored on the primary");
+    // Replicated back.
+    sync_until((&ph, &rh), (&p.primary, &p.replica), || {
+        rh.src.secrets.get("unifi").is_ok() && ph.src.secrets.exists("local.one")
+    })
+    .await;
+    assert_eq!(rh.src.secrets.get("unifi").unwrap().expose(), VALUE);
+    assert_eq!(
+        rh.src
+            .secrets
+            .status()
+            .secrets
+            .iter()
+            .find(|s| s.name == "unifi")
+            .map(|s| s.origin.clone()),
+        Some("cluster".to_owned())
+    );
+    assert!(
+        ph.src.secrets.exists("local.one"),
+        "the joiner's row was adopted"
+    );
+    // The replica's own row is shadowed by the cluster's, and still there.
+    assert!(
+        rh.src
+            .secrets
+            .status()
+            .shadows
+            .iter()
+            .any(|n| n == "local.one"),
+        "the replica's own row is shadowed"
+    );
+    // No plaintext under the replica's data directory.
+    let rdir = rh.src.config.load().node.data_dir.as_str().to_owned();
+    let on_disk = bytes_under(std::path::Path::new(&rdir));
+    assert!(
+        !on_disk.windows(VALUE.len()).any(|w| w == VALUE.as_bytes()),
+        "no value on disk"
+    );
+    // A deletion on the primary reaches the replica by tombstone.
+    let (s, _, v) = ph.call("DELETE", "/api/v1/secrets/unifi", None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    sync_until((&ph, &rh), (&p.primary, &p.replica), || {
+        rh.src.secrets.get("unifi").is_err()
+    })
+    .await;
+    assert!(
+        rh.src.secrets.get("unifi").is_err(),
+        "deleted on the replica too"
+    );
+    let _ = p.stop.send(true);
+}
+
+/// REQ: CLU-015 (AC2) — the primary answers a secrets read only for a member its registry lists as
+/// full: a stranger (or a member that calls itself full) gets nothing.
+#[tokio::test]
+async fn clu_015_stranger_refused() {
+    let p = pair(crate::build_info::VERSION, crate::build_info::VERSION).await;
+    let ph = harness_in("", Some(Arc::clone(&p.primary)));
+    let r = crate::secrets::sync::answer_fetch(
+        Arc::clone(&ph.src),
+        Arc::clone(&p.primary),
+        "not-a-member".into(),
+        Vec::new(),
+    )
+    .await;
+    assert!(r.is_err(), "{r:?}");
+    let _ = p.stop.send(true);
+}
+
+/// Joins one more node to the pair's primary as a witness or an ephemeral member (a registry
+/// entry that isn't full), and returns its node ID.
+async fn join_other(p: &Pair, witness: bool, ephemeral: bool) -> String {
+    use telltale_cluster::net::join;
+    use telltale_cluster::node::{JoinRequest, TokenGrants};
+    let urls = p.primary.identity.meta.advertise.clone();
+    let token = p
+        .primary
+        .identity
+        .create_token_for(
+            600,
+            Some(urls),
+            TokenGrants {
+                eligible: !witness,
+                witness,
+            },
+        )
+        .unwrap();
+    let key = telltale_cluster::pki::new_node_key().unwrap();
+    let req = JoinRequest {
+        witness,
+        ephemeral,
+        secret: token.secret.clone(),
+        csr_pem: key.csr_pem.clone(),
+        advertise: vec![],
+        site: "extra".into(),
+        eligible: !witness,
+        version: crate::build_info::VERSION.into(),
+    };
+    join(&token, &req).await.unwrap().node_id
+}
+
+/// Writes the pin or the canary bake a node's cluster directory holds (`rollout.json`).
+fn write_rollout(h: &Harness, state: &crate::rollout::State) {
+    let data = h.src.config.load().node.data_dir.as_str().to_owned();
+    let cdir = telltale_cluster::node::dir_of(std::path::Path::new(&data));
+    std::fs::create_dir_all(&cdir).unwrap();
+    state.save(&cdir).unwrap();
+}
+
+/// REQ: CLU-015 (AC2; M5) — a witness and an ephemeral member, both registered with the primary,
+/// get no secrets over the channel: a stranger's refusal. A full member gets its answer.
+#[tokio::test]
+async fn clu_015_witness_and_ephemeral_refused_over_the_channel() {
+    let p = pair(crate::build_info::VERSION, crate::build_info::VERSION).await;
+    let ph = harness_in("", Some(Arc::clone(&p.primary)));
+    crate::http::serve_peers(&ph.src);
+    let witness = join_other(&p, true, false).await;
+    let ephemeral = join_other(&p, false, true).await;
+    for peer in [witness, ephemeral] {
+        let r = crate::secrets::sync::answer_fetch(
+            Arc::clone(&ph.src),
+            Arc::clone(&p.primary),
+            peer.clone(),
+            Vec::new(),
+        )
+        .await;
+        assert!(r.is_err(), "{peer} is not a full member: {r:?}");
+    }
+    let full = p.replica.identity.meta.node_id.clone();
+    let r = crate::secrets::sync::answer_fetch(
+        Arc::clone(&ph.src),
+        Arc::clone(&p.primary),
+        full,
+        Vec::new(),
+    )
+    .await;
+    assert!(r.is_ok(), "{r:?}");
+    let _ = p.stop.send(true);
+}
+
+/// REQ: CLU-015 (ADR-917 point 11; M1; ADR-903 §4) — an emergency primary answers with its rows
+/// marked non-authoritative, so a replica only fills by stamp from it; its sync pass changes
+/// nothing it holds.
+#[tokio::test]
+async fn clu_015_emergency_primary_answers_non_authoritatively() {
+    let p = pair(crate::build_info::VERSION, crate::build_info::VERSION).await;
+    let ph = harness_in("", Some(Arc::clone(&p.primary)));
+    crate::http::serve_peers(&ph.src);
+    let (s, _, v) = ph
+        .call(
+            "PUT",
+            "/api/v1/secrets/emergency.one",
+            Some(&put_body(VALUE)),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let epoch = p.primary.role().1;
+    p.primary
+        .set_role(telltale_cluster::node::Role::Emergency, epoch)
+        .unwrap();
+    let full = p.replica.identity.meta.node_id.clone();
+    let raw = crate::secrets::sync::answer_fetch(
+        Arc::clone(&ph.src),
+        Arc::clone(&p.primary),
+        full,
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    let ans: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(ans["authoritative"], json!(false), "{ans}");
+    assert_eq!(ans["items"].as_array().map(Vec::len), Some(1), "{ans}");
+    // The emergency primary's own sync pass refills nothing and hands nothing over.
+    crate::secrets::sync::run_once(&ph.src, &p.primary).await;
+    assert_eq!(ph.src.secrets.get("emergency.one").unwrap().expose(), VALUE);
+    let _ = p.stop.send(true);
+}
+
+/// REQ: CLU-015 (ADR-903 §6; ADR-917 points 10, 12; M3) — a joining node's offer: a fresh name is
+/// taken and audited as `secret.adopt`; a name the cluster holds (a deletion too) and an unusable
+/// row are conflicts, audited as `secret.adopt_conflict`, and no deleted name comes back.
+#[tokio::test]
+async fn clu_015_adopt_audited_and_tombstones_conflict() {
+    let p = pair(crate::build_info::VERSION, crate::build_info::VERSION).await;
+    let ph = harness_in("", Some(Arc::clone(&p.primary)));
+    crate::http::serve_peers(&ph.src);
+    let (s, _, v) = ph
+        .call("PUT", "/api/v1/secrets/gone", Some(&put_body(VALUE)))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _, v) = ph
+        .call("DELETE", "/api/v1/secrets/gone?force=true", None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let body = json!({ "secrets": [
+        { "name": "fresh.one", "kind": "text", "value": "fresh-value-8891" },
+        { "name": "gone", "kind": "text", "value": "gone-value-8892" },
+        { "name": "bad.kind", "kind": "bogus", "value": "bogus-value-8893" },
+    ]});
+    let peer = p.replica.identity.meta.node_id.clone();
+    let raw = crate::secrets::sync::answer_adopt(
+        Arc::clone(&ph.src),
+        Arc::clone(&p.primary),
+        peer,
+        serde_json::to_vec(&body).unwrap(),
+    )
+    .await
+    .unwrap();
+    let ans: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(ans["adopted"], json!(["fresh.one"]), "{ans}");
+    assert_eq!(ans["conflicts"], json!(["gone", "bad.kind"]), "{ans}");
+    assert!(
+        ph.src.secrets.get("gone").is_err(),
+        "a deleted name isn't re-created"
+    );
+    assert!(ph.src.secrets.exists("fresh.one"));
+    let log = audit(&ph);
+    assert!(log.contains("cluster | secret.adopt | fresh.one"), "{log}");
+    assert!(
+        log.contains("cluster | secret.adopt_conflict | gone"),
+        "{log}"
+    );
+    assert!(!log.contains("fresh-value-8891"), "no value in the audit");
+    let _ = p.stop.send(true);
+}
+
+/// REQ: CLU-015 (AC9; M5) — over the real channel: a primary whose data-directory key is lost
+/// (its store is locked, and every row is the cluster's) refills from a replica holding every row
+/// at its stamp, and its reads work again.
+#[tokio::test]
+async fn clu_015_reverse_heal_over_mtls() {
+    let p = pair(crate::build_info::VERSION, crate::build_info::VERSION).await;
+    let ph = harness_in("", Some(Arc::clone(&p.primary)));
+    crate::http::serve_peers(&ph.src);
+    let rh = harness_in("", Some(Arc::clone(&p.replica)));
+    crate::http::serve_peers(&rh.src);
+    let (s, _, v) = ph
+        .call("PUT", "/api/v1/secrets/heal.one", Some(&put_body(VALUE)))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    sync_until((&ph, &rh), (&p.primary, &p.replica), || {
+        rh.src.secrets.get("heal.one").is_ok()
+    })
+    .await;
+    assert!(
+        rh.src.secrets.get("heal.one").is_ok(),
+        "the replica holds it"
+    );
+    // The primary loses its key file; the store reloads locked.
+    let data = ph.src.config.load().node.data_dir.as_str().to_owned();
+    std::fs::remove_file(std::path::Path::new(&data).join(crate::secrets::KEY_FILE)).unwrap();
+    ph.src.secrets.load_now();
+    assert!(ph.src.secrets.get("heal.one").is_err(), "locked");
+    // Its sync pass refills from the replica over the channel.
+    for _ in 0..50 {
+        crate::secrets::sync::run_once(&ph.src, &p.primary).await;
+        if ph.src.secrets.get("heal.one").is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(ph.src.secrets.get("heal.one").unwrap().expose(), VALUE);
+    let _ = p.stop.send(true);
+}
+
+/// REQ: CLU-015 (AC12; M5) — a pinned manifest doesn't hold a secret back: the replica is pinned,
+/// and a primary's new secret still reaches it through the sync pass.
+#[tokio::test]
+async fn clu_015_replicates_while_pinned() {
+    use telltale_cluster::sync::PinInfo;
+    let p = pair(crate::build_info::VERSION, crate::build_info::VERSION).await;
+    let ph = harness_in("", Some(Arc::clone(&p.primary)));
+    crate::http::serve_peers(&ph.src);
+    let rh = harness_in("", Some(Arc::clone(&p.replica)));
+    crate::http::serve_peers(&rh.src);
+    write_rollout(
+        &rh,
+        &crate::rollout::State {
+            active: None,
+            pinned: Some(PinInfo {
+                to: (1, 2),
+                since_ms: 1,
+                by: "root".into(),
+                reason: "hold".into(),
+            }),
+        },
+    );
+    let (s, _, v) = ph
+        .call(
+            "PUT",
+            "/api/v1/secrets/pinned.secret",
+            Some(&put_body(VALUE)),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    sync_until((&ph, &rh), (&p.primary, &p.replica), || {
+        rh.src.secrets.get("pinned.secret").is_ok()
+    })
+    .await;
+    assert_eq!(rh.src.secrets.get("pinned.secret").unwrap().expose(), VALUE);
+    let _ = p.stop.send(true);
+}
+
+/// REQ: CLU-015 (AC12; M5) — a canary bake doesn't hold a secret back: the replica is in the
+/// middle of a bake, and a primary's new secret still reaches it through the sync pass.
+#[tokio::test]
+async fn clu_015_not_gated_by_canary_bake() {
+    let p = pair(crate::build_info::VERSION, crate::build_info::VERSION).await;
+    let ph = harness_in("", Some(Arc::clone(&p.primary)));
+    crate::http::serve_peers(&ph.src);
+    let rh = harness_in("", Some(Arc::clone(&p.replica)));
+    crate::http::serve_peers(&rh.src);
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap_or(0);
+    write_rollout(
+        &rh,
+        &crate::rollout::State {
+            active: Some(crate::rollout::Active {
+                version: (2, 1),
+                stable: (1, 1),
+                started_ms: now,
+                bake_secs: 3600,
+                canaries: vec![p.replica.identity.meta.node_id.clone()],
+                before_pct: None,
+            }),
+            pinned: None,
+        },
+    );
+    let (s, _, v) = ph
+        .call(
+            "PUT",
+            "/api/v1/secrets/baking.secret",
+            Some(&put_body(VALUE)),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    sync_until((&ph, &rh), (&p.primary, &p.replica), || {
+        rh.src.secrets.get("baking.secret").is_ok()
+    })
+    .await;
+    assert_eq!(rh.src.secrets.get("baking.secret").unwrap().expose(), VALUE);
+    let _ = p.stop.send(true);
+}
+
+/// REQ: CLU-015 (AC14; M5) — the sync never gates readiness: a replica whose pulls fail (the
+/// primary's store is locked, so it answers "unavailable") is exactly as ready as before its passes.
+#[tokio::test]
+async fn clu_015_fetch_never_gates_readiness() {
+    let p = pair(crate::build_info::VERSION, crate::build_info::VERSION).await;
+    let ph = harness_in("", Some(Arc::clone(&p.primary)));
+    crate::http::serve_peers(&ph.src);
+    let rh = harness_in("", Some(Arc::clone(&p.replica)));
+    crate::http::serve_peers(&rh.src);
+    rh.src.readiness.set_bound();
+    rh.src.readiness.set_synced();
+    let (s, _, v) = ph
+        .call("PUT", "/api/v1/secrets/ready.one", Some(&put_body(VALUE)))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // The primary loses its key file: its store is locked and its answers say unavailable.
+    let data = ph.src.config.load().node.data_dir.as_str().to_owned();
+    std::fs::remove_file(std::path::Path::new(&data).join(crate::secrets::KEY_FILE)).unwrap();
+    ph.src.secrets.load_now();
+    let before = rh.src.readiness.ready();
+    assert!(before, "the replica is ready before its pass");
+    for _ in 0..3 {
+        crate::secrets::sync::run_once(&rh.src, &p.replica).await;
+    }
+    assert!(
+        rh.src.secrets.get("ready.one").is_err(),
+        "the pull failed (the primary is locked)"
+    );
+    assert_eq!(rh.src.readiness.ready(), before, "readiness is unchanged");
+    let _ = p.stop.send(true);
+}
