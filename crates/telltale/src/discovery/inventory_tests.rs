@@ -736,6 +736,32 @@ fn dsc_008_expired_lease_is_skipped() {
     assert!(out.iter().all(|o| o.ip != Some(ip("192.168.1.201"))));
 }
 
+/// REQ: T8.2 (ADR-166) — an offline client (its router remembers it, doesn't see it now) gives
+/// no current address binding: it isn't an observation, so its last address isn't refreshed.
+#[test]
+fn t8_2_offline_lease_is_not_an_observation() {
+    let mut view: Leases = HashMap::new();
+    let mut add = |n: u8, offline: bool| {
+        let addr = Ipv4Addr::new(192, 168, 1, n);
+        view.insert(
+            addr,
+            Lease {
+                mac: "AA:BB:CC:DD:EE:FF".to_owned(),
+                ip: addr,
+                hostname: Some("old-ipad".to_owned()),
+                expires: 0,
+                router: None,
+                offline,
+            },
+        );
+    };
+    add(53, true); // remembered, not connected
+    add(54, false); // connected
+    let out = lease_observations(&view, Source::Router, 100);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out.first().and_then(|o| o.ip), Some(ip("192.168.1.54")));
+}
+
 /// REQ: DSC-008 — the containment tests cover every discovery module, not only the model.
 #[test]
 fn dsc_008_never_in_neighbors_or_leases() {

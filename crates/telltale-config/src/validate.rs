@@ -313,11 +313,9 @@ fn special_names(cfg: &Config, r: &mut Report<'_>) {
     }
 }
 
-// REQ: API-016 (T23.7, ADR-921) — the certificate as text: one source of trust, at most 16 KiB, and
-// a PEM certificate.
+// REQ: API-016 (T23.7, ADR-921) — the certificate as text: one source of trust, at most
+// 16 KiB, and a PEM certificate.
 fn router_pem(p: &str, x: &crate::schema::RouterConfig, r: &mut Report<'_>) {
-    // REQ: API-016 (T23.7, ADR-921) — the certificate as text: one source of trust, at most
-    // 16 KiB, and a PEM certificate.
     if let Some(pem) = &x.tls_ca_pem {
         if x.tls_ca.is_some() {
             r.err(

@@ -5435,7 +5435,7 @@ test('api_005 the UI is served gzipped, and plain to a client that does not acce
 });
 
 // REQ: T8.2 (ADR-166) — a UniFi router's offline window is on its form: 30 days by default, a value
-// past a year is refused, and 0 (connected clients only) is accepted.
+// past a year is refused, and the value saved is the value reopened (0 keeps connected clients only).
 test('t8_2 offline clients days in the UniFi form', async () => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto('/#/routers');
@@ -5444,12 +5444,22 @@ test('t8_2 offline clients days in the UniFi form', async () => {
   await page.getByRole('combobox', { name: 'Kind' }).selectOption('unifi');
   await page.getByRole('textbox', { name: 'Name', exact: true }).fill('lab-offline');
   await page.getByRole('textbox', { name: 'Address', exact: true }).fill('https://127.0.0.1:9');
-  const days = page.getByRole('spinbutton', { name: 'Offline clients (days)', exact: true });
+  await fillCredential('API key', 'unifi-e2e-key-7782');
+  const days = page.getByRole('spinbutton', { name: "Keep offline clients' names (days)", exact: true });
   await expect(days).toHaveValue('30');
   await days.fill('400');
-  await page.getByTestId('routers-save').click();
+  await page.getByRole('button', { name: 'Save the router' }).click();
   await expect(page.getByRole('alert')).toContainText('Keep offline clients for 0 to 365 days');
   await days.fill('0');
-  await expect(days).toHaveValue('0');
+  const put = page.waitForRequest((r) => r.method() === 'PUT' && r.url().includes('/api/v1/routers/lab-offline'));
+  await page.getByRole('button', { name: 'Save the router' }).click();
+  expect((await put).postDataJSON().offline_days).toBe(0);
+  const card = page.getByTestId('router-card').filter({ hasText: 'lab-offline' });
+  await expect(card).toBeVisible({ timeout: 10_000 });
+  await card.getByTestId('router-edit').click();
+  await expect(page.getByRole('spinbutton', { name: "Keep offline clients' names (days)", exact: true })).toHaveValue('0');
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await card.getByTestId('router-delete').click();
+  await card.getByTestId('router-delete-confirm').click();
+  await expect(page.getByTestId('router-card').filter({ hasText: 'lab-offline' })).toHaveCount(0);
 });

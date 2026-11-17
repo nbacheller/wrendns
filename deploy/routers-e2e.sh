@@ -179,8 +179,12 @@ curl -sf -b "$E/jar" "$API/api/v1/dhcp/leases" | python3 -c '
 import json, sys
 items = {x["ip"]: x for x in json.load(sys.stdin)["items"]}
 assert items["127.0.0.1"]["hostname"] == "Desk laptop" and items["127.0.0.1"]["source"] == "router", items
-assert items["192.168.1.31"]["hostname"] == "roku", "an offline client must not take the address of a connected one"
-assert items["192.168.1.53"]["hostname"] == "Old iPad", "offline clients from the v2 history"
+# REQ: T8.2 (ADR-166) — the connected device keeps its address; a name given to an offline client
+# (the stale one, if any) does not take it.
+assert items["192.168.1.31"]["mac"] == "02:00:00:00:00:02" and items["192.168.1.31"]["hostname"] != "stale", items["192.168.1.31"]
+# REQ: T8.2 (ADR-166) — an offline client is remembered by the console, not a current lease: it is
+# left out of the leases list (its name still answers in the query log).
+assert "192.168.1.53" not in items, "an offline client is not a current lease"
 assert items["192.168.1.51"]["hostname"] == "Garage camera", "a reserved camera (rest/user)"
 assert "192.168.1.52" not in items, "a client last seen 90 days ago is outside offline_days (30)"
 assert items["192.168.1.40"]["hostname"] == "printer", "Kea leases from OPNsense"
@@ -207,9 +211,9 @@ nets = {n["name"]: n for n in json.load(sys.stdin)["items"]}
 assert set(nets) == {"Default", "IoT"}, nets
 d, iot = nets["Default"], nets["IoT"]
 assert (d["subnet"], d["gateway"], d["dhcpStart"], d["dhcpEnd"], d["domain"]) == ("192.168.1.0/24", "192.168.1.1", "192.168.1.6", "192.168.1.49", "home.arpa"), d
-assert (d["addresses"], d["devices"], d["outsidePool"], d["router"]) == (254, 3, 1, "udm"), d
+assert (d["addresses"], d["devices"], d["outsidePool"], d["router"]) == (254, 4, 2, "udm"), d
 assert (iot["vlan"], iot["devices"]) == (20, 1), iot
-print("networks: Default 3 devices (1 outside the pool), IoT 1")
+print("networks: Default 4 devices (2 outside the pool), IoT 1")
 ' || fail "networks API"
 
 # REQ: DNS-023 (T22.1) — device names and their PTRs answer in DNS.
@@ -218,6 +222,8 @@ ask() { dig +short -p 25992 @127.0.0.1 "$@"; }
 [ "$(ask office-printer.home.arpa)" = "192.168.1.50" ] || fail "a reservation in DNS"
 [ "$(ask shelly-plug-s.home.arpa)" = "192.168.20.9" ] || fail "a tracker address in DNS"
 [ "$(ask -x 192.168.1.31)" = "living-room-roku.home.arpa." ] || fail "the PTR"
+# REQ: T8.2 (ADR-166) — an offline client's last address names nothing in DNS.
+[ -z "$(ask old-ipad.home.arpa)" ] || fail "an offline client's name in DNS"
 [ "$(ask nas.routers.test)" = "10.0.0.8" ] || fail "configured records still answer"
 echo "dns: device names and PTRs answer"
 

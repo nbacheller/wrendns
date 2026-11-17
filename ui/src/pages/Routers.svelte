@@ -310,7 +310,7 @@
           <!-- REQ: T8.2 (ADR-166) — offline clients' names come from the console's history, this many days back. -->
           <label>
             <span>Keep offline clients' names (days) <HelpButton id="router-offline-clients" /></span>
-            <input type="number" min="0" max="365" step="1" bind:value={form.offline_days} aria-label="Offline clients (days)" />
+            <input type="number" min="0" max="365" step="1" bind:value={form.offline_days} aria-label="Keep offline clients' names (days)" />
           </label>
         {/if}
         <label>

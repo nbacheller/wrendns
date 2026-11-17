@@ -1296,9 +1296,10 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 ## ADR-942 — UniFi offline clients on the fork's router model: `offline_days` 0 keeps the reservations (Proposed)
 **Context:** The upstream merge brought T8.2's offline clients (ADR-166): the console's client history and the configured clients, named by their last address, for `offline_days` (30 by default, 0 for connected clients only). The fork had already made a DHCP reservation (T22.2, ADR-902) name its device while it is offline, whatever the history says. Both can't hold at `offline_days = 0`.
 **Decision (proposed; the conservative reading of both):**
-- The history and the configured clients without a reservation are read only while `offline_days` > 0, and only the dated rows inside the window name a device. A configured client with no reservation is not named from `rest/user` (the fork's test: its last address may belong to someone else by now).
+- The history and the configured clients (`rest/user`) are read only while `offline_days` > 0. A dated row names a device only inside the window; an undated row can't be judged against it, so it is kept (`unifi_known` keeps it), as in ADR-166. The configured clients are read like the history rows: an alias without a reservation names its offline device too. The fork's earlier worry (a configured client's last address may belong to someone else by now) applies equally to the history rows, which are kept; the window and `offline_days` are the control for both.
 - A reservation names its device at any `offline_days`, including 0. It is the router's configuration, not a history, and the fork's T22.2 behaviour is kept. The Routers form's help topic (`router-offline-clients`) says so.
 - Offline devices stay out of "seen" (ADR-166), and the fork's reservations still count as seen (the T22.2 decision); a reservation is therefore not an offline device here.
+- An offline client is not a current answer anywhere else either (sync review, 2026-11-17): it gives no address binding to discovery (ADR-910, ADR-924), publishes no DNS name, isn't counted in a network's devices, and is left out of `/dhcp/leases`, which has no offline marker yet (an owner decision, Open in spec/10 T8.2). It still names the device in the query log.
 **Consequences:** `offline_days` = 0 means "no history names", not "no offline names". The owner may prefer the stricter reading (0 also drops reservations); that is a change to `unifi_reserved` in `routers.rs`, one line, and a test.
 
 ## ADR-937 — Per-list "Update now" and a Confirmed current column on the Lists page (Accepted 2026-11-17)
@@ -2699,6 +2700,23 @@ Non-secret settings that exist only in files are phased with the forms that need
 - A client that doesn't accept gzip costs one inflate of at most about 700 KB per request (rare: browsers always accept gzip).
 - `spec/08` §2 no longer lists a CA bundle in the image.
 
+## ADR-915 — Image size: optimize cold code for size, embed only the gzip UI, and ship only the tz database the code reads (Accepted 2026-11-16)
+**Status note (upstream sync, 2026-11-17):** partly superseded by ADR-168 and ADR-169. The zoneinfo step described here (the fork's own tz database, shipped whole) is replaced by upstream's `zic -b fat` build, and the CA bundle that ADR-168 drops is no longer copied. The other cuts stand.
+**Context:** NFR-001 (`01`, `00 §5`) caps the compressed image at 15 MiB per architecture (`deploy/image/size.py`). At 7db1908 the amd64 image measured 15.13 MiB, up from 14.76 MiB at a708f7f. The new code (secrets, credential rules, lists refresh, federated paths, ctl, OpenAPI schemas) grew the stripped binary by 0.91 MiB. The dependency and UI changes added almost nothing. The binary is already at `opt-level = 3`, fat LTO, one codegen unit and `panic = "abort"`, so the remaining savings come from what is compiled at a lower opt-level and from what is embedded.
+
+**Decision:** Reduce the image in the order of saving against risk, without dropping a feature and without touching the DNS hot path (`02 §3`):
+1. **API and MCP code at `opt-level = "s"`.** `[profile.release.package.telltale-api]` takes opt-level `s`; the rest of the workspace keeps opt-level 3. `telltale-api` holds the handlers, OpenAPI and MCP code, which are cold next to the DNS path. Measured: amd64 15.13 to 14.58 MiB.
+2. **Tz database without `right/`.** The image ships the TZif zones that `jiff` reads (schedules, FLT-010), without the `right/` leap-second zones, `tzdata.zi`, `*.tab` and `leap*` files. Measured: 14.58 to 14.39 MiB. Known effect: a schedule that names a `right/...` zone no longer resolves. Schedules use the ordinary zone names.
+3. **Embed only the gzip of each text UI file.** `ui/scripts/postbuild.mjs` removes the raw copy of a text file once its `.gz` is written. The binary embeds the `.gz`. A client that accepts gzip gets it as before. Any other client gets the same bytes inflated on the request, with `miniz_oxide` (already in the lock file, so no new package). Binary files (PNG, ICO, WOFF2) stay raw. Measured: 14.39 to 14.16 MiB. The postbuild script also resolves its `dist` path on Windows, where it failed before.
+
+Final amd64 image: 14.16 MiB (headroom 0.84 MiB under NFR-001, 0.69 MiB under the 14.85 MiB target).
+
+**Consequences:**
+- The API and MCP handlers run as size-optimized code. The DNS path crates keep opt-level 3, and their code is unchanged, so `make bench-smoke` is not required by rule 4 for these changes. The API latency at opt-level `s` was not benchmarked here and is a follow-up.
+- A `right/...` zone name stops resolving in a schedule, with an error that names the zone. No feature is lost.
+- The UI's raw text files are no longer in `ui/dist`. Tools that read `dist` directly (for example `vite preview`) must use `ui/dist/*.gz`, or run `npm run build` without the postbuild step.
+- Not taken, recorded here for the owner: `telltale-config` at opt-level `s` (about 0.2 MiB more, with per-query helpers in the policy path, so it needs a benchmark first), `opt-level = "z"` (about 0.5 MiB more, slower API handling), dropping the system CA bundle (0.12 MiB, needs its own ADR because the spec says the image ships one), and trimming serde code for `Config` (0.1 to 0.2 MiB, a refactor).
+
 ## ADR-167 — Domain icons: a brand tile or a monogram, drawn locally and never fetched (Accepted)
 **Context:** A user asked for icons left of domain names, from `https://icons.duckduckgo.com/ip3/<domain>.ico`. The owner declined any dependency on a third-party icon service (2026-11-16). Measured that day: the endpoint is unofficial (no published terms, uptime, or rate limit), serves ICO only, and answers a 404 with a grey placeholder for a subdomain or a name with no site (`api.github.com`, `time.nist.gov`); and every icon request tells the service which names are in the query log, which shows work names, internal names, and trackers. The UI's content security policy allows images only from `'self'` and `data:`, and at privacy level 1 and up names are hashed (ADR-102), so there would be nothing to look up. Fetching from the sites themselves, from the server, would connect a resolver host to names any client chooses, many of them blocked or malicious (an SSRF and egress risk; review 06-02 fixed one of this kind). A lab on a synthetic demo network, in light and dark and at 390 px, showed the design below on the real lists.
 **Decision (the owner chose it on that lab, with rounded shapes, 2026-11-16):**
@@ -3939,22 +3957,6 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - Assistants connect with SSO and the user's consent, and no long-lived token is stored in the assistant.
 - Each request verifies a signature (keys cached with discovery, refreshed on rotation); no per-token cache is kept.
 - Providers that only issue opaque access tokens need a token per agent instead, until introspection is added.
-
-## ADR-915 — Image size: optimize cold code for size, embed only the gzip UI, and ship only the tz database the code reads (Accepted 2026-11-16)
-**Context:** NFR-001 (`01`, `00 §5`) caps the compressed image at 15 MiB per architecture (`deploy/image/size.py`). At 7db1908 the amd64 image measured 15.13 MiB, up from 14.76 MiB at a708f7f. The new code (secrets, credential rules, lists refresh, federated paths, ctl, OpenAPI schemas) grew the stripped binary by 0.91 MiB. The dependency and UI changes added almost nothing. The binary is already at `opt-level = 3`, fat LTO, one codegen unit and `panic = "abort"`, so the remaining savings come from what is compiled at a lower opt-level and from what is embedded.
-
-**Decision:** Reduce the image in the order of saving against risk, without dropping a feature and without touching the DNS hot path (`02 §3`):
-1. **API and MCP code at `opt-level = "s"`.** `[profile.release.package.telltale-api]` takes opt-level `s`; the rest of the workspace keeps opt-level 3. `telltale-api` holds the handlers, OpenAPI and MCP code, which are cold next to the DNS path. Measured: amd64 15.13 to 14.58 MiB.
-2. **Tz database without `right/`.** The image ships the TZif zones that `jiff` reads (schedules, FLT-010), without the `right/` leap-second zones, `tzdata.zi`, `*.tab` and `leap*` files. Measured: 14.58 to 14.39 MiB. Known effect: a schedule that names a `right/...` zone no longer resolves. Schedules use the ordinary zone names.
-3. **Embed only the gzip of each text UI file.** `ui/scripts/postbuild.mjs` removes the raw copy of a text file once its `.gz` is written. The binary embeds the `.gz`. A client that accepts gzip gets it as before. Any other client gets the same bytes inflated on the request, with `miniz_oxide` (already in the lock file, so no new package). Binary files (PNG, ICO, WOFF2) stay raw. Measured: 14.39 to 14.16 MiB. The postbuild script also resolves its `dist` path on Windows, where it failed before.
-
-Final amd64 image: 14.16 MiB (headroom 0.84 MiB under NFR-001, 0.69 MiB under the 14.85 MiB target).
-
-**Consequences:**
-- The API and MCP handlers run as size-optimized code. The DNS path crates keep opt-level 3, and their code is unchanged, so `make bench-smoke` is not required by rule 4 for these changes. The API latency at opt-level `s` was not benchmarked here and is a follow-up.
-- A `right/...` zone name stops resolving in a schedule, with an error that names the zone. No feature is lost.
-- The UI's raw text files are no longer in `ui/dist`. Tools that read `dist` directly (for example `vite preview`) must use `ui/dist/*.gz`, or run `npm run build` without the postbuild step.
-- Not taken, recorded here for the owner: `telltale-config` at opt-level `s` (about 0.2 MiB more, with per-query helpers in the policy path, so it needs a benchmark first), `opt-level = "z"` (about 0.5 MiB more, slower API handling), dropping the system CA bundle (0.12 MiB, needs its own ADR because the spec says the image ships one), and trimming serde code for `Config` (0.1 to 0.2 MiB, a refactor).
 
 ## ADR-926 — Credential rules in the forms: judged from the saved entry, and a draft that needs an admin is held (Accepted 2026-11-17)
 

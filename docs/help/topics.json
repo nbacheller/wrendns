@@ -963,7 +963,7 @@
       "id": "router-offline-clients",
       "title": "Keep the names of offline devices",
       "term": "Offline clients",
-      "summary": "A UniFi console remembers the devices that have left the network. TelltaleDNS keeps their names for this many days, so a phone that is off Wi-Fi still shows its name in the query log and the top lists. Those devices don't count as seen: they never make a device look present on the network.",
+      "summary": "A UniFi console remembers the devices that have left the network. TelltaleDNS keeps their names for this many days, so a phone that is off Wi-Fi still shows its name in the query log and the top lists. Those devices don't count as seen: they don't make a device look present on the network, they give no address to the device inventory, they aren't published as DNS names, and they aren't counted in a network's device totals or in the leases list.",
       "when": "A device you know by name shows as a bare address once it has left, and the log's names for it disappear with it.",
       "example": "With 30 days (the default), a laptop asleep since last Tuesday still shows as \"Kitchen laptop\" in the query log; a guest's phone last seen 90 days ago shows as an address again.",
       "caution": "0 keeps only the connected devices and the ones with a fixed address (a DHCP reservation, which always keeps its name). The window is at most 365 days, and the console still has to keep its history: an older Network application without it gives the connected devices only.",

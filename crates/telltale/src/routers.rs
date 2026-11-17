@@ -506,6 +506,12 @@ async fn read_unifi(
         ) {
             known.extend(unifi_known(&v, not_before));
         }
+        // REQ: T8.2 (ADR-942) — the names the console's configured clients (rest/user) carry,
+        // by their dated last-seen window like the history rows, so an alias without a
+        // reservation names an offline device too.
+        if let Some(v) = &user_rows {
+            known.extend(unifi_known(v, not_before));
+        }
     }
     let mut seen = unifi_merge(active, reserved);
     unifi_fill_names(&mut seen, &known);
@@ -793,15 +799,19 @@ fn rebuild(order: &[String], parts: &HashMap<String, Polled>, view: &ArcSwap<Lea
         }
     }
     // REQ: T8.2 (ADR-166) — an offline client only names an address no router reports as
-    // connected, and is marked, so it isn't "seen".
-    for p in parts.values() {
-        for (mac, ip, name) in &p.offline {
+    // connected, and is marked, so it isn't "seen". Routers in configuration order (ADR-902), so
+    // two routers' offline clients on one address always give the same name.
+    for name in order {
+        let Some(p) = parts.get(name) else {
+            continue;
+        };
+        for (mac, ip, hostname) in &p.offline {
             m.entry(*ip).or_insert_with(|| Lease {
                 mac: mac.clone(),
                 ip: *ip,
-                hostname: name.clone(),
+                hostname: hostname.clone(),
                 expires: 0,
-                router: None,
+                router: Some(name.clone()),
                 offline: true,
             });
         }
@@ -1120,7 +1130,7 @@ fn finish(slots: &mut HashMap<String, Slot>, d: Done, now: Instant) {
     match d.result {
         Ok(Read::Routed(p)) => {
             if s.failing || !s.read_once {
-                info!(router = %name, devices = p.seen.len(), networks = p.networks.len(), "router integration: devices read");
+                info!(router = %name, devices = p.seen.len(), offline = p.offline.len(), networks = p.networks.len(), "router integration: devices read");
             }
             if !p.notes.is_empty() && p.notes != s.part.notes {
                 info!(router = %name, skipped = %p.notes.join("; "), "router integration: some optional reads didn't work (names of connected devices still come through)");
@@ -1838,6 +1848,44 @@ mod tests {
             (phone.hostname.as_deref(), phone.offline),
             (Some("Old phone"), true)
         );
+    }
+
+    /// REQ: T8.2 (ADR-166, ADR-902) — two routers' offline clients on one address: the router
+    /// earlier in configuration order names it, every time, and the lease says which router.
+    #[test]
+    fn t8_2_offline_name_follows_configuration_order() {
+        let dev = |mac: &str, name: &str| -> Entry {
+            (
+                mac.to_owned(),
+                Ipv4Addr::new(10, 0, 0, 77),
+                Some(name.to_owned()),
+            )
+        };
+        let mut parts = HashMap::new();
+        parts.insert(
+            "ha".to_owned(),
+            Polled {
+                offline: vec![dev("aa:00:00:00:00:0a", "From ha")],
+                ..Polled::default()
+            },
+        );
+        parts.insert(
+            "udm".to_owned(),
+            Polled {
+                offline: vec![dev("aa:00:00:00:00:0b", "From udm")],
+                ..Polled::default()
+            },
+        );
+        let order = ["udm".to_owned(), "ha".to_owned()];
+        for _ in 0..16 {
+            let view = ArcSwap::from_pointee(Leases::new());
+            rebuild(&order, &parts, &view);
+            let leases = view.load_full();
+            let l = &leases[&Ipv4Addr::new(10, 0, 0, 77)];
+            assert_eq!(l.hostname.as_deref(), Some("From udm"));
+            assert_eq!(l.router.as_deref(), Some("udm"));
+            assert!(l.offline);
+        }
     }
 }
 
