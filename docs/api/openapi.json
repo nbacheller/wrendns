@@ -13518,7 +13518,8 @@
           "mac",
           "ip",
           "expiresUnixSeconds",
-          "source"
+          "source",
+          "offline"
         ],
         "properties": {
           "clientName": {
@@ -13553,6 +13554,10 @@
           },
           "mac": {
             "type": "string"
+          },
+          "offline": {
+            "type": "boolean",
+            "description": "REQ: T8.2 (ADR-166, ADR-942) — a client the router remembers but doesn't see now (UniFi's\noffline clients). It is listed so the admin can see it, but it names no DNS name, gives\nno discovery binding and isn't counted in a network's devices."
           },
           "router": {
             "type": [
@@ -16282,7 +16287,8 @@
                 "mac",
                 "ip",
                 "expiresUnixSeconds",
-                "source"
+                "source",
+                "offline"
               ],
               "properties": {
                 "clientName": {
@@ -16317,6 +16323,10 @@
                 },
                 "mac": {
                   "type": "string"
+                },
+                "offline": {
+                  "type": "boolean",
+                  "description": "REQ: T8.2 (ADR-166, ADR-942) — a client the router remembers but doesn't see now (UniFi's\noffline clients). It is listed so the admin can see it, but it names no DNS name, gives\nno discovery binding and isn't counted in a network's devices."
                 },
                 "router": {
                   "type": [

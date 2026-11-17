@@ -4937,6 +4937,12 @@ export interface components {
             ip: string;
             mac: string;
             /**
+             * @description REQ: T8.2 (ADR-166, ADR-942) — a client the router remembers but doesn't see now (UniFi's
+             *     offline clients). It is listed so the admin can see it, but it names no DNS name, gives
+             *     no discovery binding and isn't counted in a network's devices.
+             */
+            offline: boolean;
+            /**
              * @description REQ: API-012 (T22.3) — the `[[router]]` whose answer named it (`udm`,
              *     `home-assistant`); absent for mDNS.
              */
@@ -6052,6 +6058,12 @@ export interface components {
                 hostname?: string | null;
                 ip: string;
                 mac: string;
+                /**
+                 * @description REQ: T8.2 (ADR-166, ADR-942) — a client the router remembers but doesn't see now (UniFi's
+                 *     offline clients). It is listed so the admin can see it, but it names no DNS name, gives
+                 *     no discovery binding and isn't counted in a network's devices.
+                 */
+                offline: boolean;
                 /**
                  * @description REQ: API-012 (T22.3) — the `[[router]]` whose answer named it (`udm`,
                  *     `home-assistant`); absent for mDNS.

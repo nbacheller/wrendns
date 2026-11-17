@@ -283,11 +283,12 @@
     </section>
   {:else}
     <section class="card" data-testid="discovered">
-      <h2>Discovered on your network</h2>
+      <h2>Discovered on your network<HelpButton id="offline-leases" /></h2>
       <p class="muted small">
         Names your routers know (UniFi, OPNsense, and Home Assistant, on the <a href="#/routers">Routers</a> page), or that
         devices announced themselves over mDNS (<code>[clients] mdns</code>). Unnamed devices already show these names; click an address to keep
-        one, change it, or put the device in a group.
+        one, change it, or put the device in a group. A client marked <em>offline</em> is one the router remembers but doesn't see now: it
+        names nothing in DNS and isn't counted as a device, so this list (and its count) can be longer than the device counts on the Networks page.
       </p>
       {#if found.length === 0}
         <p class="empty">Nothing discovered yet. Add a router on the <a href="#/routers">Routers</a> page, or set <code>[clients] mdns = true</code>.</p>
@@ -298,7 +299,9 @@
             <tbody>
               {#each found as l (l.ip)}
                 <tr>
-                  <td class="mono"><ClientChip ip={l.ip} onchanged={load} /></td>
+                  <td class="mono"><ClientChip ip={l.ip} onchanged={load} />{#if l.offline}
+                      <span class="badge warn" data-testid="offline-badge" title="The router remembers this client but doesn't see it now">offline</span>
+                    {/if}</td>
                   <td>{l.hostname ?? ''}</td>
                   <td class="mono small" data-testid="dns-name">
                     {#if l.dnsName}

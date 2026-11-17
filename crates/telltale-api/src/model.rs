@@ -1943,6 +1943,10 @@ pub struct DhcpLease {
     /// with `[local] device_domain` set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dns_name: Option<String>,
+    /// REQ: T8.2 (ADR-166, ADR-942) — a client the router remembers but doesn't see now (UniFi's
+    /// offline clients). It is listed so the admin can see it, but it names no DNS name, gives
+    /// no discovery binding and isn't counted in a network's devices.
+    pub offline: bool,
 }
 
 /// REQ: API-013 (T22.2) — a network: a LAN or VLAN a router reported, or a client group's
@@ -3777,4 +3781,30 @@ pub struct RouterCertificate {
     /// address.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggested_tls_server_name: Option<String>,
+}
+
+#[cfg(test)]
+mod dhcp_lease_tests {
+    use super::DhcpLease;
+
+    /// REQ: T8.2 (ADR-942) — every lease carries `offline`, true for a client the router only
+    /// remembers and false for a connected one, so a client can show the marker either way.
+    #[test]
+    fn t8_2_dhcp_lease_offline_is_always_serialized() {
+        let lease = |offline| DhcpLease {
+            mac: "02:00:00:00:00:04".into(),
+            ip: "192.168.1.53".into(),
+            hostname: None,
+            client_name: None,
+            expires_unix_seconds: 0,
+            source: "router".into(),
+            router: Some("udm".into()),
+            dns_name: None,
+            offline,
+        };
+        let on = serde_json::to_value(lease(true)).expect("serializes");
+        let off = serde_json::to_value(lease(false)).expect("serializes");
+        assert_eq!(on["offline"], serde_json::json!(true));
+        assert_eq!(off["offline"], serde_json::json!(false));
+    }
 }

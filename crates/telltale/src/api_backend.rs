@@ -2491,9 +2491,8 @@ impl Backend for ApiBackend {
             .router_leases
             .load()
             .values()
-            // REQ: T8.2 (ADR-166) — an offline client isn't a current lease. The API has no
-            // offline marker yet (owner decision, see spec/10 T8.2), so it is left out here.
-            .filter(|l| !l.offline)
+            // REQ: T8.2 (ADR-166, ADR-942) — an offline client is listed, marked `offline`; it
+            // names no DNS name here (device_dns), gives no binding (discovery) and isn't a device.
             .map(|l| telltale_api::model::DhcpLease {
                 mac: l.mac.clone(),
                 ip: l.ip.to_string(),
@@ -2502,11 +2501,17 @@ impl Backend for ApiBackend {
                 expires_unix_seconds: l.expires,
                 source: "router".to_owned(),
                 router: l.router.clone(),
-                dns_name: dns_name(&l.ip),
+                dns_name: if l.offline { None } else { dns_name(&l.ip) },
+                offline: l.offline,
             })
             .collect();
-        // REQ: T8.3, T8.6 — and the names devices announce over mDNS (routers win).
-        let known: std::collections::HashSet<String> = v.iter().map(|l| l.ip.clone()).collect();
+        // REQ: T8.3, T8.6 — and the names devices announce over mDNS (routers win). An offline
+        // client doesn't hold its address now (UniFi reuses it), so it doesn't hide a live device.
+        let known: std::collections::HashSet<String> = v
+            .iter()
+            .filter(|l| !l.offline)
+            .map(|l| l.ip.clone())
+            .collect();
         for l in self.src.pipeline.mdns_names.load().values() {
             if known.contains(&l.ip.to_string()) {
                 continue;
@@ -2520,6 +2525,7 @@ impl Backend for ApiBackend {
                 source: "mdns".to_owned(),
                 router: None,
                 dns_name: dns_name(&l.ip),
+                offline: false,
             });
         }
         v.sort_by_key(|l| l.ip.parse::<std::net::Ipv4Addr>().map_or(0, u32::from));
@@ -7262,5 +7268,49 @@ mod settings_keep_in_git_tests {
         let s = keep_in_git(ManagedKind::Local, "default", Some(&on), Some(&on));
         assert!(s.contains("device_domain = \"home.arpa\""), "{s}");
         toml::from_str::<toml::Table>(&s).unwrap_or_else(|e| panic!("{e}: {s}"));
+    }
+}
+
+#[cfg(test)]
+mod dhcp_lease_tests {
+    use super::*;
+
+    /// REQ: T8.2 (ADR-945) — an offline router client is listed with its mark, but it doesn't
+    /// hold its address now, so a live mDNS device at that address is still listed too.
+    #[test]
+    fn t8_2_offline_lease_does_not_hide_an_mdns_device() {
+        let src = Arc::new(crate::http::tests::sources());
+        let ip = std::net::Ipv4Addr::new(192, 168, 1, 50);
+        let offline = crate::devices::Lease {
+            mac: "aa:bb:cc:00:00:50".into(),
+            ip,
+            hostname: Some("old-tv".into()),
+            expires: 0,
+            router: None,
+            offline: true,
+        };
+        src.pipeline
+            .router_leases
+            .store(Arc::new([(ip, offline)].into_iter().collect()));
+        let mdns = crate::devices::Lease {
+            mac: String::new(),
+            ip,
+            hostname: Some("printer".into()),
+            expires: 0,
+            router: None,
+            offline: false,
+        };
+        src.pipeline
+            .mdns_names
+            .store(Arc::new([(ip, mdns)].into_iter().collect()));
+        let api = ApiBackend { src };
+        let rows = api.dhcp_leases();
+        let at: Vec<_> = rows.iter().filter(|l| l.ip == "192.168.1.50").collect();
+        assert_eq!(at.len(), 2, "{rows:?}");
+        assert!(
+            at.iter()
+                .any(|l| l.source == "router" && l.offline && l.dns_name.is_none())
+        );
+        assert!(at.iter().any(|l| l.source == "mdns" && !l.offline));
     }
 }
