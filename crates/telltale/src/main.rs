@@ -495,6 +495,22 @@ enum ImportCommand {
         /// Write the TOML here instead of to stdout.
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Resolve a sample of names (A and AAAA) through this Pi-hole (`ip` or `ip:port`)
+        /// and through TelltaleDNS (`--telltale`), and report where the answers differ.
+        #[arg(long, value_name = "ADDR")]
+        compare: Option<String>,
+        /// The TelltaleDNS to compare with: the node's resolver (run it with the imported
+        /// configuration first, or the comparison shows what it answers now).
+        #[arg(
+            long,
+            value_name = "ADDR",
+            default_value = "127.0.0.1:53",
+            requires = "compare"
+        )]
+        telltale: String,
+        /// Names to add to the sample (repeat the flag).
+        #[arg(long = "sample", value_name = "NAME", requires = "compare")]
+        samples: Vec<String>,
     },
     /// Read a running Technitium DNS Server through its API (forwarders, zones and records,
     /// forwarder zones, block lists, allowed/blocked names, Advanced Blocking groups, DHCP
@@ -1193,7 +1209,19 @@ fn run_import(command: ImportCommand) -> ExitCode {
             origin,
             output,
         } => run_import_zone(&file, origin.as_deref(), output.as_deref()),
-        ImportCommand::Pihole { path, output } => run_import_pihole(&path, output.as_deref()),
+        ImportCommand::Pihole {
+            path,
+            output,
+            compare,
+            telltale,
+            samples,
+        } => run_import_pihole(
+            &path,
+            output.as_deref(),
+            compare
+                .as_deref()
+                .map(|p| (p, telltale.as_str(), samples.as_slice())),
+        ),
         ImportCommand::Technitium {
             url,
             token_file,
@@ -1229,17 +1257,67 @@ fn run_import_technitium(url: &str, token_file: Option<&Path>, output: Option<&P
     }
 }
 
-// REQ: API-007 (T6.3, ADR-061)
-fn run_import_pihole(path: &Path, output: Option<&Path>) -> ExitCode {
-    match pihole::Source::load(path)
+// REQ: API-007 (T6.3, ADR-061; T24.6, ADR-941)
+fn run_import_pihole(
+    path: &Path,
+    output: Option<&Path>,
+    compare: Option<(&str, &str, &[String])>,
+) -> ExitCode {
+    let im = match pihole::Source::load(path)
         .and_then(|src| pihole::convert(&src, &path.display().to_string()))
     {
-        Ok(im) => write_import(&im, output, &format!("Pi-hole {}", im.version)),
+        Ok(im) => im,
         Err(e) => {
             eprintln!("error: {e}");
-            ExitCode::FAILURE
+            return ExitCode::FAILURE;
         }
+    };
+    if write_import(&im, output, &format!("Pi-hole {}", im.version)) != ExitCode::SUCCESS {
+        return ExitCode::FAILURE;
     }
+    let Some((pihole_addr, telltale_addr, extra)) = compare else {
+        return ExitCode::SUCCESS;
+    };
+    let parsed = pihole::compare::parse_server(pihole_addr)
+        .and_then(|p| Ok((p, pihole::compare::parse_server(telltale_addr)?)));
+    let (p, t) = match parsed {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut names = im.samples.clone();
+    names.extend(extra.iter().cloned());
+    let rep = pihole::compare::compare(p, t, &names);
+    eprint!("{}", compare_report(&rep, p, t));
+    ExitCode::SUCCESS
+}
+
+/// The comparison as text: the counts, each difference, and what stopped it.
+fn compare_report(
+    rep: &pihole::compare::Report,
+    p: std::net::SocketAddr,
+    t: std::net::SocketAddr,
+) -> String {
+    use std::fmt::Write as _;
+    let mut s = format!(
+        "compared {} names through Pi-hole {p} and TelltaleDNS {t}: {} agree, {} differ\n",
+        rep.names,
+        rep.agree,
+        rep.names - rep.agree
+    );
+    for d in &rep.differences {
+        let _ = writeln!(
+            s,
+            "  - {} {}: Pi-hole {} {:?}, TelltaleDNS {} {:?}",
+            d.name, d.qtype, d.pihole.rcode, d.pihole.values, d.telltale.rcode, d.telltale.values
+        );
+    }
+    for e in &rep.errors {
+        let _ = writeln!(s, "  ! {e}");
+    }
+    s
 }
 
 /// Checks an importer's output loads as config, writes it, and prints the summary and notes.

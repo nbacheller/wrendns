@@ -64,11 +64,28 @@ const JSON_TABLES: &[(&str, &str, Option<i64>)] = &[
 #[derive(Debug, Default)]
 pub(crate) struct Source {
     pub files: BTreeMap<String, Vec<u8>>,
+    /// REQ: API-007 (T24.6) — the `dnsmasq.d/*.conf` files, by base name.
+    pub dnsmasq: BTreeMap<String, Vec<u8>>,
     pub tables: BTreeMap<String, Vec<Row>>,
 }
 
 fn base(name: &str) -> &str {
     name.rsplit('/').next().unwrap_or(name)
+}
+
+/// Whether `name` is a `conf` file in a `dnsmasq.d` directory (dnsmasq's `conf-dir`, where
+/// Pi-hole keeps its generated and custom dnsmasq lines).
+fn is_dnsmasq(name: &str) -> bool {
+    let mut parts = name.rsplit('/');
+    let file = parts.next().unwrap_or("");
+    parts.next() == Some("dnsmasq.d") && is_conf(file)
+}
+
+/// Whether `file` ends in `.conf`.
+fn is_conf(file: &str) -> bool {
+    Path::new(file)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("conf"))
 }
 
 impl Source {
@@ -87,7 +104,10 @@ impl Source {
         }
         let entries = archive::read(&data, |n| {
             let b = base(n);
-            FILES.contains(&b) || b == "gravity.db" || JSON_TABLES.iter().any(|t| t.0 == b)
+            is_dnsmasq(n)
+                || FILES.contains(&b)
+                || b == "gravity.db"
+                || JSON_TABLES.iter().any(|t| t.0 == b)
         })
         .map_err(|e| format!("{shown}: {e}"))?;
         Self::from_entries(entries)
@@ -98,6 +118,9 @@ impl Source {
         let mut json: BTreeMap<String, Vec<u8>> = BTreeMap::new();
         for (name, data) in entries {
             let b = base(&name).to_owned();
+            if is_dnsmasq(&name) {
+                s.dnsmasq.entry(b.clone()).or_insert_with(|| data.clone());
+            }
             if b == "gravity.db" {
                 let tmp = TempFile::write(&data)?;
                 s.tables = sqlite_tables(&tmp.0)?;
@@ -132,6 +155,25 @@ impl Source {
                     } else {
                         s.files.entry((*f).to_owned()).or_insert(data);
                     }
+                }
+            }
+        }
+        // REQ: API-007 (T24.6) — every `conf` file in dnsmasq.d beside the directory (or in
+        // /etc/dnsmasq.d for /etc/pihole), each within the entry size limit.
+        for d in [dir.join("dnsmasq.d"), dir.join("../dnsmasq.d")] {
+            let Ok(list) = std::fs::read_dir(&d) else {
+                continue;
+            };
+            for e in list.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let small = e
+                    .metadata()
+                    .is_ok_and(|m| m.is_file() && m.len() <= archive::ENTRY_LIMIT as u64);
+                if small
+                    && is_conf(&name)
+                    && let Ok(data) = std::fs::read(e.path())
+                {
+                    s.dnsmasq.entry(name).or_insert(data);
                 }
             }
         }
@@ -304,8 +346,75 @@ struct Settings {
     blocking_off: bool,
     dhcp_hosts: Vec<String>,
     dhcp_active: bool,
+    /// REQ: API-007 (T24.6) — dnsmasq's `address=/name/ip` values (`/name/target`).
+    dnsmasq_addresses: Vec<String>,
+    /// `server=/domain/ip[#port]` values (`/domain/target`): conditional forwarding.
+    dnsmasq_servers: Vec<String>,
+    /// `host-record=` values: names and addresses, in any order.
+    dnsmasq_hosts: Vec<String>,
     /// Settings with no TelltaleDNS equivalent (names only: values may be secrets).
     unmapped: Vec<String>,
+}
+
+/// dnsmasq directives Pi-hole writes for itself, or that describe the old install's
+/// plumbing (ports, interfaces, caches); they carry nothing to import, so they aren't named.
+const DNSMASQ_PLUMBING: &[&str] = &[
+    "addn-hosts",
+    "bind-interfaces",
+    "bogus-priv",
+    "cache-size",
+    "conf-dir",
+    "except-interface",
+    "expand-hosts",
+    "group",
+    "interface",
+    "listen-address",
+    "local-service",
+    "localise-queries",
+    "log-facility",
+    "log-queries",
+    "no-hosts",
+    "no-resolv",
+    "pid-file",
+    "port",
+    "user",
+];
+
+/// Maps one dnsmasq line (`key=value` or a bare flag) onto the settings it configures.
+/// `server=ip` (a plain upstream) is left out: the upstreams come from the setup files, which
+/// Pi-hole also writes into dnsmasq.
+fn apply_dnsmasq(line: &str, s: &mut Settings) {
+    let l = line.trim();
+    if l.is_empty() || l.starts_with('#') {
+        return;
+    }
+    let (key, value) = l
+        .split_once('=')
+        .map_or((l, ""), |(k, v)| (k.trim(), v.trim()));
+    match key {
+        "cname" => s.cnames.push(value.to_owned()),
+        "address" => s.dnsmasq_addresses.push(value.to_owned()),
+        "host-record" => s.dnsmasq_hosts.push(value.to_owned()),
+        "server" if value.starts_with('/') => s.dnsmasq_servers.push(value.to_owned()),
+        "server" => {}
+        // REQ: DNS-019 (ADR-904): the same switch as Pi-hole's domain-needed setting.
+        "domain-needed" => s.domain_needed = true,
+        k if k.starts_with("dhcp") || DNSMASQ_PLUMBING.contains(&k) => {}
+        k => s.unmapped.push(format!("dnsmasq: {}", one_line(k))),
+    }
+}
+
+/// dnsmasq's `/a/b/target` form (`address=`, `server=`): the names, and the target after the
+/// last slash (empty for a bare `/name/`).
+fn dnsmasq_names(v: &str) -> Option<(Vec<String>, String)> {
+    let parts: Vec<&str> = v.strip_prefix('/')?.split('/').collect();
+    let (target, names) = parts.split_last()?;
+    let names = names
+        .iter()
+        .map(|n| n.trim().trim_end_matches('.').to_ascii_lowercase())
+        .filter(|n| !n.is_empty())
+        .collect();
+    Some((names, target.trim().to_owned()))
 }
 
 /// v6 keys the importer maps.
@@ -324,6 +433,7 @@ const V6_MAPPED: &[&str] = &[
     "dns.domainNeeded",
     "dns.specialDomains.iCloudPrivateRelay",
     "dns.specialDomains.mozillaCanary",
+    "misc.dnsmasq_lines",
 ];
 
 fn strings(v: Option<&toml::Value>) -> Vec<String> {
@@ -369,6 +479,10 @@ fn v6_settings(text: &str) -> Result<Settings, String> {
     };
     if let (Some(c), Some(i)) = (num("dns.rateLimit.count"), num("dns.rateLimit.interval")) {
         s.rate_limit = Some((c, i));
+    }
+    // Pi-hole v6's own dnsmasq lines (its "custom dnsmasq" box).
+    for line in strings(get("misc.dnsmasq_lines")) {
+        apply_dnsmasq(&line, &mut s);
     }
     // Pi-hole marks every setting that differs from its default with `### CHANGED`.
     // The marker ends the value, so for a multi-line array it's on the closing line.
@@ -616,24 +730,36 @@ struct Client {
     groups: Vec<String>,
 }
 
+/// Exact deny entries sampled for `--compare`.
+const SAMPLE_DOMAINS: usize = 20;
+
 /// The result: a TOML configuration and what didn't carry over.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct Imported {
     pub toml: String,
     pub version: &'static str,
     pub notes: Vec<String>,
     pub counts: String,
+    /// Names to resolve through both servers with `--compare` (REQ: API-007, T24.6).
+    pub samples: Vec<String>,
 }
 
 /// Maps a Pi-hole setup onto TelltaleDNS configuration (ADR-061).
 pub(crate) fn convert(src: &Source, source_name: &str) -> Result<Imported, String> {
-    let (version, settings) = match src.text("pihole.toml") {
+    let (version, mut settings) = match src.text("pihole.toml") {
         Some(t) => ("v6", v6_settings(&t)?),
         None if src.files.contains_key("setupVars.conf") || !src.tables.is_empty() => {
             ("v5", v5_settings(src))
         }
         None => return Err("no Pi-hole settings or group tables found".into()),
     };
+    // REQ: API-007 (T24.6) — the dnsmasq.d files (`address=`, `server=/…/`, `cname=`,
+    // `host-record=`); a line that repeats another is dropped when the records are built.
+    for text in src.dnsmasq.values() {
+        for line in String::from_utf8_lossy(text).lines() {
+            apply_dnsmasq(line, &mut settings);
+        }
+    }
     let mut b = Builder::new(src, settings);
     let upstreams = b.upstreams();
     let forwards = b.forwards();
@@ -641,6 +767,7 @@ pub(crate) fn convert(src: &Source, source_name: &str) -> Result<Imported, Strin
     b.groups();
     b.adlists();
     b.domains();
+    b.address_blocks_list();
     b.write_lists();
     let none_group = b.write_groups();
     b.clients(none_group.as_deref());
@@ -671,7 +798,21 @@ pub(crate) fn convert(src: &Source, source_name: &str) -> Result<Imported, Strin
         version,
         notes: b.notes,
         counts,
+        samples: b.samples,
     })
+}
+
+/// A domain as a list rule that also matches its subdomains (dnsmasq's `address=` does).
+fn subtree_rule(domain: &str) -> Result<String, String> {
+    let opts = ListOptions {
+        kind: ListKind::Block,
+        match_mode: ListMatch::Subtree,
+    };
+    let mut parsed = Vec::new();
+    match parse_line(domain, opts, &mut parsed) {
+        LineKind::Rules(_) => Ok(domain.to_owned()),
+        other => Err(format!("{other:?}")),
+    }
 }
 
 /// The conversion's state: each step appends TOML to `body` and notes to `notes`.
@@ -689,6 +830,10 @@ struct Builder<'a> {
     clients: Vec<Client>,
     client_names: HashSet<String>,
     keys_seen: HashSet<String>,
+    /// Names to resolve through both servers in `--compare` (local records, a few domains).
+    samples: Vec<String>,
+    /// REQ: API-007 (T24.6) — `address=/name/0.0.0.0`-style blocks, one rule each.
+    address_blocks: Vec<String>,
 }
 
 fn kind_of(t: i64) -> ListKind {
@@ -715,6 +860,8 @@ impl<'a> Builder<'a> {
             clients: Vec::new(),
             client_names: HashSet::new(),
             keys_seen: HashSet::new(),
+            samples: Vec::new(),
+            address_blocks: Vec::new(),
         }
     }
 
@@ -756,12 +903,12 @@ impl<'a> Builder<'a> {
     /// Conditional forwarding ("rev servers"): `enabled,network,target[#port],domain`.
     fn forwards(&mut self) -> usize {
         let mut n = 0;
-        for r in &self.s.rev_servers {
+        for r in self.s.rev_servers.clone() {
             let f: Vec<&str> = r.split(',').map(str::trim).collect();
             let [on, net, target, rest @ ..] = f.as_slice() else {
                 self.notes.push(format!(
                     "Conditional forwarding `{}` isn't in a known form.",
-                    one_line(r)
+                    one_line(&r)
                 ));
                 continue;
             };
@@ -800,18 +947,51 @@ impl<'a> Builder<'a> {
                 continue;
             }
             n += 1;
-            let _ = writeln!(
-                self.body,
-                "\n[[upstream]]\nname = {g}\nurl = {u}\n\n[[upstream_group]]\nname = {g}\nmembers = [{g}]\n\n[[route]]\nmatch_suffix = {s}\nupstream_group = {g}\ndnssec_nta = true",
-                g = toml_str(&format!("pihole-forward-{n}")),
-                u = toml_str(&url),
-                s = toml_array(&suffixes)
-            );
+            self.route(n, &url, &suffixes);
+        }
+        // REQ: API-007 (T24.6) — dnsmasq's `server=/domain/ip` is the same forwarding.
+        for v in self.s.dnsmasq_servers.clone() {
+            let Some((names, target)) = dnsmasq_names(&v) else {
+                continue;
+            };
+            if target.is_empty() {
+                self.notes.push(format!(
+                    "dnsmasq `server={}` names no server; not imported.",
+                    one_line(&v)
+                ));
+                continue;
+            }
+            let Some((url, _)) = upstream_url(&target) else {
+                self.notes.push(format!(
+                    "dnsmasq `server={}`: `{}` isn't an IP address; not imported.",
+                    one_line(&v),
+                    one_line(&target)
+                ));
+                continue;
+            };
+            if names.is_empty() {
+                continue;
+            }
+            n += 1;
+            self.route(n, &url, &names);
         }
         n
     }
 
+    /// One conditional forward: an upstream, its group, and the route for `suffixes`.
+    fn route(&mut self, n: usize, url: &str, suffixes: &[String]) {
+        let _ = writeln!(
+            self.body,
+            "\n[[upstream]]\nname = {g}\nurl = {u}\n\n[[upstream_group]]\nname = {g}\nmembers = [{g}]\n\n[[route]]\nmatch_suffix = {s}\nupstream_group = {g}\ndnssec_nta = true",
+            g = toml_str(&format!("pihole-forward-{n}")),
+            u = toml_str(url),
+            s = toml_array(suffixes)
+        );
+    }
+
     /// Local DNS (`IP name...`) and CNAME (`alias[,alias...],target[,ttl]`) records.
+    // One block per record source: local DNS, dnsmasq, CNAMEs.
+    #[allow(clippy::too_many_lines)]
     fn records(&mut self) -> usize {
         let mut records: Vec<(String, &str, String, Option<u32>)> = Vec::new();
         let clean = |n: &str| n.trim_end_matches('.').to_ascii_lowercase();
@@ -826,6 +1006,64 @@ impl<'a> Builder<'a> {
             };
             let rtype = if ip.is_ipv4() { "A" } else { "AAAA" };
             records.extend(it.map(|name| (clean(name), rtype, ip.to_string(), None)));
+        }
+        // REQ: API-007 (T24.6) — `host-record=name[,name...],ip[,ip...]`.
+        for h in &self.s.dnsmasq_hosts {
+            let fields: Vec<&str> = h
+                .split(',')
+                .map(str::trim)
+                .filter(|f| !f.is_empty())
+                .collect();
+            let (ips, names): (Vec<&str>, Vec<&str>) = fields
+                .into_iter()
+                .partition(|f| f.parse::<IpAddr>().is_ok());
+            if ips.is_empty() || names.is_empty() {
+                self.notes.push(format!(
+                    "dnsmasq `host-record={}` has no name or no address; not imported.",
+                    one_line(h)
+                ));
+                continue;
+            }
+            for name in &names {
+                for ip in &ips {
+                    if let Ok(ip) = ip.parse::<IpAddr>() {
+                        let rtype = if ip.is_ipv4() { "A" } else { "AAAA" };
+                        records.push((clean(name), rtype, ip.to_string(), None));
+                    }
+                }
+            }
+        }
+        // REQ: API-007 (T24.6) — `address=/name/ip` answers the exact name (and dnsmasq also
+        // answers its subdomains, which TelltaleDNS doesn't); `address=/name/0.0.0.0` blocks.
+        let mut subdomains_noted = false;
+        for a in &self.s.dnsmasq_addresses {
+            let Some((names, target)) = dnsmasq_names(a) else {
+                continue;
+            };
+            let blocked = matches!(target.as_str(), "" | "#" | "0.0.0.0" | "::");
+            for name in names {
+                if blocked {
+                    self.address_blocks.push(name);
+                    continue;
+                }
+                match target.parse::<IpAddr>() {
+                    Ok(ip) => {
+                        let rtype = if ip.is_ipv4() { "A" } else { "AAAA" };
+                        records.push((clean(&name), rtype, ip.to_string(), None));
+                        if !subdomains_noted {
+                            subdomains_noted = true;
+                            self.notes.push(
+                                "dnsmasq `address=` also answers subdomains of its names; TelltaleDNS answers the exact name only (add a record for each subdomain you use).".into(),
+                            );
+                        }
+                    }
+                    Err(_) => self.notes.push(format!(
+                        "dnsmasq `address={}`: `{}` isn't an IP address; not imported.",
+                        one_line(a),
+                        one_line(&target)
+                    )),
+                }
+            }
         }
         for c in &self.s.cnames {
             let mut f: Vec<&str> = c.split(',').map(str::trim).collect();
@@ -856,6 +1094,7 @@ impl<'a> Builder<'a> {
                 continue;
             }
             kept += 1;
+            self.samples.push(name.clone());
             let _ = writeln!(
                 self.body,
                 "\n[[record]]\nname = {}\ntype = \"{rtype}\"\nvalue = {}",
@@ -968,6 +1207,7 @@ impl<'a> Builder<'a> {
         let domain_groups = membership(self.src.rows("domainlist_by_group"), "domainlist_id");
         let mut buckets: BTreeMap<(i64, BTreeSet<i64>), Vec<String>> = BTreeMap::new();
         let (mut off, mut orphan) = (0, 0);
+        let mut picked = 0;
         for d in self.src.rows("domainlist") {
             let (Some(id), Some(t)) = (int(d, "id"), int(d, "type")) else {
                 continue;
@@ -981,6 +1221,11 @@ impl<'a> Builder<'a> {
                 continue;
             };
             let domain = one_line(&text(d, "domain"));
+            // A few exact deny entries as samples: `--compare` checks they're blocked alike.
+            if t == 1 && picked < SAMPLE_DOMAINS {
+                picked += 1;
+                self.samples.push(domain.clone());
+            }
             match domain_rule(&domain, t) {
                 Ok(rule) => buckets.entry((t, groups.clone())).or_default().push(rule),
                 Err(why) => self
@@ -1029,6 +1274,37 @@ impl<'a> Builder<'a> {
                 enabled: true,
             });
         }
+    }
+
+    /// REQ: API-007 (T24.6) — dnsmasq's blocking `address=` lines: one deny list in every
+    /// group, as dnsmasq applies them to every client.
+    fn address_blocks_list(&mut self) {
+        let mut rules = Vec::new();
+        for d in std::mem::take(&mut self.address_blocks) {
+            match subtree_rule(&d) {
+                Ok(r) => rules.push(r),
+                Err(why) => self.notes.push(format!(
+                    "dnsmasq block `{}` can't be used: {why}.",
+                    one_line(&d)
+                )),
+            }
+        }
+        if rules.is_empty() {
+            return;
+        }
+        let name = "pihole-dnsmasq-address".to_owned();
+        let all: BTreeSet<i64> = self.group_names.keys().copied().collect();
+        self.assign(&name, &all);
+        self.lists.push(List {
+            name,
+            note: "Pi-hole dnsmasq address= blocks (they apply to every client)".into(),
+            url: None,
+            path: None,
+            rules,
+            kind: ListKind::Block,
+            exact: false,
+            enabled: true,
+        });
     }
 
     fn write_lists(&mut self) {
@@ -1332,6 +1608,8 @@ pub(crate) fn toml_array(items: &[String]) -> String {
             .join(", ")
     )
 }
+
+pub(crate) mod compare;
 
 #[cfg(test)]
 mod tests;

@@ -469,3 +469,75 @@ fn api_007_not_a_pihole() {
         .is_err()
     );
 }
+
+// REQ: API-007 (T24.6) — dnsmasq.d lines: `address=` answers and blocks, `server=/domain/`
+// forwards, `host-record=` and `cname=` records; the rest is named in the report.
+#[test]
+fn api_007_pihole_dnsmasq_lines() {
+    let mut e = v5_entries();
+    e.insert(
+        "etc/dnsmasq.d/99-custom.conf".into(),
+        b"# a comment\naddress=/tv.lan/192.168.1.40\naddress=/ads.example/0.0.0.0\naddress=/v6.lan/fd00::40\nserver=/corp.example/10.9.0.53#5353\nserver=/bare.example/\nserver=192.168.1.1\nhost-record=printer.lan,192.168.1.70,fd00::70\ncname=alias.lan,nas.lan\ndomain-needed\nforeign-directive=1\n".to_vec(),
+    );
+    let src = Source::from_entries(e).unwrap();
+    let im = convert(&src, "teleporter.tar.gz").unwrap();
+    let cfg = load(&im.toml);
+
+    let recs: Vec<(&str, &str, &str)> = cfg
+        .record
+        .iter()
+        .map(|r| (r.name.as_str(), r.rtype.as_str(), r.value.as_str()))
+        .collect();
+    for want in [
+        ("tv.lan", "A", "192.168.1.40"),
+        ("v6.lan", "AAAA", "fd00::40"),
+        ("printer.lan", "A", "192.168.1.70"),
+        ("printer.lan", "AAAA", "fd00::70"),
+        ("alias.lan", "CNAME", "nas.lan"),
+    ] {
+        assert!(recs.contains(&want), "{want:?} missing from {recs:?}");
+    }
+
+    let route = cfg
+        .route
+        .iter()
+        .find(|r| strs(&r.match_suffix).contains(&"corp.example"))
+        .expect("the dnsmasq server= forward");
+    let group = cfg
+        .upstream_group
+        .iter()
+        .find(|g| g.name.as_str() == route.upstream_group.as_str())
+        .unwrap();
+    let up = cfg
+        .upstream
+        .iter()
+        .find(|u| group.members.iter().any(|m| m.as_str() == u.name.as_str()))
+        .unwrap();
+    assert_eq!(up.url.as_str(), "udp://10.9.0.53:5353");
+
+    // The blocking address= line is a deny list in the default group, which also covers
+    // every group Pi-hole had.
+    let block = cfg
+        .list
+        .iter()
+        .find(|l| l.name.as_str() == "pihole-dnsmasq-address")
+        .expect("the address= block list");
+    assert_eq!(strs(&block.rules), ["ads.example"]);
+    let default = cfg
+        .group
+        .iter()
+        .find(|g| g.name.as_str() == "default")
+        .unwrap();
+    let lists = default.lists.clone().unwrap_or_default();
+    assert!(
+        strs(&lists).contains(&"pihole-dnsmasq-address"),
+        "{default:?}"
+    );
+
+    assert!(im.samples.iter().any(|s| s == "tv.lan"), "{:?}", im.samples);
+    let notes = im.notes.join("\n");
+    assert!(notes.contains("server=/bare.example/"), "{notes}");
+    assert!(notes.contains("subdomains"), "{notes}");
+    assert!(notes.contains("foreign-directive"), "{notes}");
+    assert!(!notes.contains("domain-needed"), "{notes}");
+}
