@@ -11,8 +11,20 @@ async fn free_port() -> SocketAddr {
     l.local_addr().unwrap()
 }
 
+// Waits until a spawned `serve` accepts connections. A fixed sleep raced the bind (and its
+// certificate setup) when the suite runs in parallel on a busy runner.
+async fn listening(addr: SocketAddr) {
+    for _ in 0..400 {
+        if tokio::net::TcpStream::connect(addr).await.is_ok() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("nothing listens on {addr} after 10 s");
+}
+
 async fn wait_for(mut f: impl FnMut() -> bool) {
-    for _ in 0..200 {
+    for _ in 0..400 {
         if f() {
             return;
         }
@@ -23,7 +35,7 @@ async fn wait_for(mut f: impl FnMut() -> bool) {
 
 /// [`wait_for`] for a test with several waits: the panic says which one timed out.
 async fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
-    for _ in 0..200 {
+    for _ in 0..400 {
         if f() {
             return;
         }
@@ -45,7 +57,7 @@ async fn clu_009_bootstrap_secret_joins_ephemeral_members_that_expire() {
     primary.set_bootstrap_secret("s3cret-shared-by-helm".into());
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    listening(addr).await;
 
     // The wrong secret: the primary's proof doesn't match, so its CA isn't trusted.
     let e = bootstrap_token(&url, "guess").await.unwrap_err();
@@ -126,7 +138,7 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
     let primary = Cluster::new(primary, "0.1.0");
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    listening(addr).await;
 
     // The replica joins: the token pins the CA; the secret earns a certificate.
     let key = pki::new_node_key().unwrap();
@@ -267,7 +279,7 @@ async fn clu_001_a_token_for_another_ca_is_refused_before_the_secret_is_sent() {
     let token = other.create_token(600, Some(vec![url.clone()])).unwrap();
     let (_stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Cluster::new(real, "0.1.0"), addr, stop));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    listening(addr).await;
     let key = pki::new_node_key().unwrap();
     let req = JoinRequest {
         witness: false,
@@ -292,7 +304,7 @@ async fn clu_001_streams_need_a_cluster_certificate() {
     let token = id.create_token(600, Some(vec![url.clone()])).unwrap();
     let (_stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Cluster::new(id, "0.1.0"), addr, stop));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    listening(addr).await;
     // Connect with the join-time TLS (CA pinned, no client certificate) and ask for a stream.
     let mut fp = [0u8; 32];
     for (i, b) in fp.iter_mut().enumerate() {
@@ -458,7 +470,7 @@ async fn clu_003_replicas_fetch_only_changed_blobs_and_converge_fast_over_a_wan(
     let primary = Cluster::new(primary_id, "0.1.0");
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    listening(addr).await;
 
     let key = pki::new_node_key().unwrap();
     let req = JoinRequest {
@@ -718,7 +730,7 @@ async fn clu_009_a_pod_that_shuts_down_leaves_at_once() {
     primary.set_bootstrap_secret("s3cret-shared-by-helm".into());
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    listening(addr).await;
     let token = bootstrap_token(&url, "s3cret-shared-by-helm")
         .await
         .unwrap();
@@ -780,7 +792,7 @@ async fn clu_002_a_pod_that_left_is_not_asked_by_federated_reads() {
     primary.set_bootstrap_secret("s3cret-shared-by-helm".into());
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    listening(addr).await;
     let token = bootstrap_token(&url, "s3cret-shared-by-helm")
         .await
         .unwrap();
@@ -1266,7 +1278,7 @@ async fn clu_003_users_and_tokens_are_not_served_to_pods() {
     primary.set_bootstrap_secret("s3cret-shared-by-helm".into());
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    listening(addr).await;
     let token = bootstrap_token(&url, "s3cret-shared-by-helm")
         .await
         .unwrap();
@@ -2050,5 +2062,163 @@ fn clu_001_the_removed_list_keeps_the_newest() {
     assert_eq!(
         list.last().cloned(),
         Some(format!("n{}", crate::node::MAX_REMOVED + 4))
+    );
+}
+
+/// REQ: CLU-005 (ADR-051) — a replica that connected before an election learns the new primary
+/// from the heartbeats: the Hello's flag is stale after a promotion, so its URL was left out of the
+/// fetch list and a replica followed a dead primary (found by the 3-node failover run). An older
+/// node's heartbeat has no flag, and leaves the one the replica holds.
+#[test]
+fn clu_005_a_promotion_reaches_a_replica_in_the_heartbeats() {
+    let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let old = "https://127.0.0.1:1".to_owned();
+    let new = "https://127.0.0.1:2".to_owned();
+    let primary = Identity::init(pdir.path(), "home", vec![old.clone()], "k8s").unwrap();
+    let token = primary
+        .create_token_for(
+            60,
+            None,
+            crate::node::TokenGrants {
+                eligible: true,
+                witness: false,
+            },
+        )
+        .unwrap();
+    let key = pki::new_node_key().unwrap();
+    let req = JoinRequest {
+        witness: false,
+        ephemeral: false,
+        secret: token.secret.clone(),
+        csr_pem: key.csr_pem.clone(),
+        advertise: vec![],
+        site: "pi".into(),
+        eligible: true,
+        version: "0.1.0".into(),
+    };
+    let resp = primary.accept_join(&req, None).unwrap();
+    let replica =
+        Identity::save_joined(rdir.path(), &key.key_pem, &resp, "pi", true, vec![]).unwrap();
+    let replica = Cluster::new(replica, "0.1.0");
+    // A replica (epoch 1) that connected to the new primary before it was promoted: the Hello
+    // says it isn't primary.
+    let hello = Frame {
+        body: Some(Body::Hello(Hello {
+            protocol: PROTOCOL,
+            cluster_id: replica.identity.meta.cluster_id.clone(),
+            node_id: "new".into(),
+            version: "0.1.0".into(),
+            site: "k8s".into(),
+            eligible: true,
+            advertise: vec![new.clone()],
+            epoch: 1,
+            applied_seq: 0,
+            primary: false,
+            config_source: String::new(),
+            source_commit: String::new(),
+        })),
+    };
+    let beat = |primary: Option<bool>, epoch: u64| Frame {
+        body: Some(Body::Heartbeat(Heartbeat {
+            ts_ms: 1,
+            epoch,
+            primary,
+            ..Heartbeat::default()
+        })),
+    };
+    let mut peer = None;
+    replica
+        .on_frame(&mut peer, hello, "outbound", &EchoSlot::default())
+        .unwrap();
+    assert!(
+        !replica.primary_urls().contains(&new),
+        "a replica isn't a fetch target: {:?}",
+        replica.primary_urls()
+    );
+    // Promoted (epoch 2): its heartbeat says so, and its URL is the one to fetch from.
+    replica
+        .on_frame(
+            &mut peer,
+            beat(Some(true), 2),
+            "outbound",
+            &EchoSlot::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        replica.primary_urls().first().map(String::as_str),
+        Some(new.as_str())
+    );
+    assert!(
+        replica
+            .members()
+            .iter()
+            .any(|m| m.node_id == "new" && m.primary && m.epoch == 2)
+    );
+    // A heartbeat from an older node (no flag) keeps what the replica holds.
+    replica
+        .on_frame(&mut peer, beat(None, 2), "outbound", &EchoSlot::default())
+        .unwrap();
+    assert_eq!(
+        replica.primary_urls().first().map(String::as_str),
+        Some(new.as_str())
+    );
+    // Stepped down: the flag goes with it.
+    replica
+        .on_frame(
+            &mut peer,
+            beat(Some(false), 2),
+            "outbound",
+            &EchoSlot::default(),
+        )
+        .unwrap();
+    assert!(!replica.primary_urls().contains(&new));
+}
+
+/// REQ: CLU-005 (ADR-051) — the primary's key share is sent again after the resend interval, since a
+/// peer that refused it (it didn't yet know this node was primary) never acknowledges it.
+#[test]
+fn clu_005_a_key_share_is_sent_again_after_its_interval() {
+    let t = std::time::Instant::now();
+    assert!(key_share_due(None, t), "never sent: due");
+    assert!(!key_share_due(Some(t), t));
+    assert!(!key_share_due(
+        Some(t),
+        (t + KEY_SHARE_RESEND)
+            .checked_sub(Duration::from_secs(1))
+            .unwrap()
+    ));
+    assert!(key_share_due(Some(t), t + KEY_SHARE_RESEND));
+}
+
+/// REQ: CLU-005 (ADR-947) — the stream's decision to send the key share: a new frame goes at once,
+/// the same frame waits for its interval, and the interval counts from the last send.
+#[test]
+fn clu_005_c_the_key_share_is_sent_on_change_and_on_the_interval() {
+    let t = std::time::Instant::now();
+    let a = b"frame-a".as_slice();
+    let b = b"frame-b-with-the-next-key".as_slice();
+    assert!(key_share_send(None, None, a, t), "first send");
+    assert!(
+        key_share_send(Some(b), Some(t), a, t),
+        "a changed frame goes at once"
+    );
+    assert!(
+        !key_share_send(Some(a), Some(t), a, t),
+        "the same frame isn't repeated early"
+    );
+    assert!(
+        !key_share_send(
+            Some(a),
+            Some(t),
+            a,
+            (t + KEY_SHARE_RESEND)
+                .checked_sub(Duration::from_secs(1))
+                .unwrap()
+        ),
+        "not before the interval"
+    );
+    assert!(
+        key_share_send(Some(a), Some(t), a, t + KEY_SHARE_RESEND),
+        "the same frame is repeated once its interval has run (a refused share is sent again)"
     );
 }
