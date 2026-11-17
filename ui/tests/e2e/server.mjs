@@ -1,18 +1,16 @@
 // Starts a real TelltaleDNS for the Playwright suite (REQ: API-005, T3.9 AC): a fresh data
-// directory, DNS on 127.0.0.1:15354, the API and UI on 127.0.0.1:18054, an inline blocklist,
-// and a local record, so tests don't depend on the internet.
+// directory, DNS, the API and UI and every other e2e port from ports.ts (one base, E2E_HTTP_PORT),
+// an inline blocklist, and a local record, so tests don't depend on the internet.
 import { spawn } from 'node:child_process';
 import { createSocket } from 'node:dgram';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// REQ: T24.19: every port comes from ports.ts (one base, E2E_HTTP_PORT, and offsets).
+import { E2E_ROOT, HTTP_PORT, PORTS } from './ports.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
-// REQ: E2E ports follow tests/e2e/ports.ts (E2E_HTTP_PORT, E2E_DNS_PORT, E2E_MDNS_PORT).
-const HTTP_PORT = process.env.E2E_HTTP_PORT ?? '18054';
-const DNS_PORT = process.env.E2E_DNS_PORT ?? '15354';
-const MDNS_PORT = process.env.E2E_MDNS_PORT ?? '15353';
-const root = resolve(here, '../../.e2e');
+const root = E2E_ROOT;
 rmSync(root, { recursive: true, force: true });
 mkdirSync(resolve(root, 'data'), { recursive: true });
 
@@ -25,7 +23,7 @@ name = "home-dns"
 
 [[listen]]
 proto = "udp"
-addr = "127.0.0.1:${DNS_PORT}"
+addr = "127.0.0.1:${PORTS.dns}"
 
 # Nothing listens here: tests use only blocked and local names.
 [[upstream]]
@@ -39,7 +37,7 @@ members = ["nowhere"]
 # T6.13 — a stub (below) that answers every name with 192.0.2.7, so there's something to cache.
 [[upstream]]
 name = "router"
-url = "udp://127.0.0.1:15399"
+url = "udp://127.0.0.1:${PORTS.upstream}"
 
 [[upstream_group]]
 name = "router"
@@ -92,12 +90,12 @@ type = "A"
 value = "192.168.1.10"
 
 [telemetry.metrics]
-listen = "127.0.0.1:19154"
+listen = "127.0.0.1:${PORTS.metrics}"
 
 # T8.6 — mDNS naming on a test port (the test sends an announcement there).
 [clients]
 mdns = true
-mdns_port = ${MDNS_PORT}
+mdns_port = ${PORTS.mdns}
 
 [telemetry.qlog]
 flush_interval_secs = 1
@@ -117,7 +115,7 @@ interval_secs = 5
 [[alerts.destination]]
 name = "file-ntfy"
 type = "ntfy"
-url = "http://127.0.0.1:18997/file"
+url = "http://127.0.0.1:${PORTS.ntfy}/file"
 token_file = "/run/secrets/e2e-ntfy-token"
 
 # T11.3 — the listener probe runs every 5 s, so the System tab shows it soon.
@@ -209,7 +207,7 @@ stub.on('message', (q, from) => {
   const answer = Buffer.from([0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 1, 0x2c, 0, 4, 192, 0, 2, 7]);
   stub.send(Buffer.concat([head, q.subarray(12, end), answer]), from.port, from.address);
 });
-stub.bind(15399, '127.0.0.1');
+stub.bind(PORTS.upstream, '127.0.0.1');
 
 const bin = process.env.TELLTALE_BIN ?? resolve(here, '../../../target/debug/telltale');
 const child = spawn(bin, ['run', '-c', cfg], {

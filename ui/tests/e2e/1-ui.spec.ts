@@ -3,7 +3,7 @@
 // phone-width layout, and the masked-client-IP banner. Any CSP violation or page error fails the suite.
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { readFileSync } from 'node:fs';
-import { BASE_URL, DNS_PORT, MDNS_PORT } from './ports';
+import { BASE_URL, DNS_PORT, E2E_ROOT, MDNS_PORT, PORTS } from './ports';
 import { resolve } from 'node:path';
 import { query } from './dns';
 import { FrameHub, Loop, PANEL_MIN, Particles, Ticker, chooseLayout, dotBudget, lerpBoxes, motionAllowed, parseEvery, parseLayout, parsePanels, screenClass, screenClassStable, type Box } from '../../src/lib/wall';
@@ -55,7 +55,7 @@ test('first run: the setup token creates the admin', async () => {
     await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 30_000 });
     return;
   }
-  const token = readFileSync(resolve(import.meta.dirname, '../../.e2e/data/setup-token'), 'utf8').trim();
+  const token = readFileSync(resolve(E2E_ROOT, 'data/setup-token'), 'utf8').trim();
   await page.getByLabel('Setup token').fill(token);
   await page.getByLabel('Admin username').fill(ADMIN.user);
   await page.getByLabel('Password (at least 10 characters)').fill(ADMIN.pass);
@@ -212,7 +212,7 @@ test('obs_017 an exemplar opens its query in the log', async () => {
   expect(await query('nas.e2e.test')).toBe(0);
   let trace = '';
   await expect(async () => {
-    const r = await fetch('http://127.0.0.1:19154/metrics', { headers: { accept: 'application/openmetrics-text;version=1.0.0' } });
+    const r = await fetch(`http://127.0.0.1:${PORTS.metrics}/metrics`, { headers: { accept: 'application/openmetrics-text;version=1.0.0' } });
     expect(r.headers.get('content-type')).toContain('application/openmetrics-text');
     const text = await r.text();
     expect(text.endsWith('# EOF\n')).toBe(true);
@@ -526,7 +526,7 @@ test('obs_020 listener checks', async () => {
     route.fulfill({
       json: {
         items: [{
-          target: 'https://127.0.0.1:8053/livez', proto: 'api', listener: true, ok: true, latencyMs: 3.2,
+          target: `https://127.0.0.1:${PORTS.probeTarget}/livez`, proto: 'api', listener: true, ok: true, latencyMs: 3.2,
           consecutiveFailures: 0, checkedUnixSeconds: 1, certExpiresUnixSeconds: 67_000_000_000, certDaysLeft: 770_000,
           certSha256: sha, certNames: ['localhost', '10.30.3.2'], certSelfSigned: true,
         }],
@@ -1562,7 +1562,7 @@ test('api_002 lists and upstreams are edited from the UI', async () => {
   await expect(router).toContainText('config file');
   await router.getByRole('button', { name: 'Edit' }).click();
   await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('router');
-  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('udp://127.0.0.1:15399');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill(`udp://127.0.0.1:${PORTS.upstream}`);
   // The e2e fake upstream answers there (T9.12).
   await page.getByRole('button', { name: 'Test it' }).click();
   await expect(page.getByTestId('form-action-result')).toContainText('Works: answered NOERROR');
@@ -1754,7 +1754,7 @@ test('api_002 upstreams and lists can be added, overridden, and reverted', async
   expect(await overrides()).toEqual([]);
   // Added, and an override of the files' "router".
   expect((await r.put('/api/v1/upstreams/extra', { headers: h, data: { url: 'udp://127.0.0.1:9' } })).status()).toBe(200);
-  res = await r.put('/api/v1/upstreams/router', { headers: h, data: { url: 'udp://127.0.0.1:15399', timeout_ms: 900 } });
+  res = await r.put('/api/v1/upstreams/router', { headers: h, data: { url: `udp://127.0.0.1:${PORTS.upstream}`, timeout_ms: 900 } });
   expect(res.status()).toBe(200);
   expect(await overrides()).toEqual(['upstream:extra:added', 'upstream:router:override']);
   // Hiding the only upstream of the default group is refused, and says what to do.
@@ -1860,7 +1860,7 @@ test('obs_010 alerts page: destinations, test, rules', async () => {
       res.end('ok');
     });
   });
-  await new Promise<void>((r) => hook.listen(18998, '127.0.0.1', () => r()));
+  await new Promise<void>((r) => hook.listen(PORTS.webhook, '127.0.0.1', () => r()));
   try {
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto('/#/alerts');
@@ -1871,12 +1871,12 @@ test('obs_010 alerts page: destinations, test, rules', async () => {
     await dests.getByRole('button', { name: 'Add destination' }).click();
     await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-hook');
     await page.getByLabel('Type', { exact: true }).selectOption('webhook');
-    await page.getByRole('textbox', { name: 'Address', exact: true }).fill('http://127.0.0.1:18998/alert');
+    await page.getByRole('textbox', { name: 'Address', exact: true }).fill(`http://127.0.0.1:${PORTS.webhook}/alert`);
     await page.getByRole('button', { name: 'Check' }).click();
     await expect(page.getByTestId('entry-preview')).toBeVisible();
     await page.getByRole('button', { name: 'Apply' }).click();
     const row = dests.getByTestId('entry-row').filter({ hasText: 'ui-hook' });
-    await expect(row).toContainText('webhook: http://127.0.0.1:18998/alert');
+    await expect(row).toContainText(`webhook: http://127.0.0.1:${PORTS.webhook}/alert`);
     await row.getByRole('button', { name: 'Send test' }).click();
     await expect(dests.getByTestId('row-action-result')).toContainText('sent');
     expect(got.some((b) => b.includes('This is a test alert'))).toBe(true);
@@ -2254,7 +2254,7 @@ test('api_015 secret field is write-only', async () => {
   await dests.getByRole('button', { name: 'Add destination' }).click();
   await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-stored');
   await page.getByLabel('Type', { exact: true }).selectOption('ntfy');
-  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('http://127.0.0.1:18997/stored');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill(`http://127.0.0.1:${PORTS.ntfy}/stored`);
   const field = page.getByTestId('secret-token_ref');
   await expect(field).toHaveAttribute('data-mode', 'unset');
   await expect(field.getByRole('button', { name: 'Save secret' })).toBeDisabled();
@@ -2315,7 +2315,7 @@ test('api_015 an existing secret is offered to an entry, not deleted', async () 
     await dests.getByRole('button', { name: 'Add destination' }).click();
     await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-offer');
     await page.getByLabel('Type', { exact: true }).selectOption('ntfy');
-    await page.getByRole('textbox', { name: 'Address', exact: true }).fill('http://127.0.0.1:18996/offer');
+    await page.getByRole('textbox', { name: 'Address', exact: true }).fill(`http://127.0.0.1:${PORTS.ntfyAlt}/offer`);
     const field = page.getByTestId('secret-token_ref');
     await expect(field).toHaveAttribute('data-mode', 'exists');
     await expect(field.getByTestId('secret-exists')).toContainText('alert.ui-offer.token');
@@ -2343,7 +2343,7 @@ test('api_015 a typed secret that is not saved holds Check and Apply', async () 
   await dests.getByRole('button', { name: 'Add destination' }).click();
   await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-typed');
   await page.getByLabel('Type', { exact: true }).selectOption('ntfy');
-  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('http://127.0.0.1:18996/typed');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill(`http://127.0.0.1:${PORTS.ntfyAlt}/typed`);
   const field = page.getByTestId('secret-token_ref');
   await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('typed-unsaved-4410');
   await expect(page.getByRole('button', { name: 'Check' })).toBeDisabled();
@@ -2421,7 +2421,7 @@ test('api_015 alert destination with a stored token delivers', async () => {
       res.end('ok');
     });
   });
-  await new Promise<void>((r) => ntfy.listen(18997, '127.0.0.1', () => r()));
+  await new Promise<void>((r) => ntfy.listen(PORTS.ntfy, '127.0.0.1', () => r()));
   try {
     await page.goto('/#/alerts');
     await page.getByRole('button', { name: 'Advanced', exact: true }).click();
@@ -2429,7 +2429,7 @@ test('api_015 alert destination with a stored token delivers', async () => {
     await dests.getByRole('button', { name: 'Add destination' }).click();
     await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-ntfy-stored');
     await page.getByLabel('Type', { exact: true }).selectOption('ntfy');
-    await page.getByRole('textbox', { name: 'Address', exact: true }).fill('http://127.0.0.1:18997/topic');
+    await page.getByRole('textbox', { name: 'Address', exact: true }).fill(`http://127.0.0.1:${PORTS.ntfy}/topic`);
     const field = page.getByTestId('secret-token_ref');
     await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('stored-token-5521');
     await field.getByRole('button', { name: 'Save secret' }).click();
@@ -2456,7 +2456,7 @@ test('api_015 delete of a secret in use names its users', async () => {
   expect((await r.put('/api/v1/secrets/ui-in-use', { headers: h, data: { value: 'in-use-value-3311', kind: 'text' } })).status()).toBe(200);
   const used = await r.put('/api/v1/alerts/destinations/ui-used', {
     headers: h,
-    data: { type: 'ntfy', url: 'http://127.0.0.1:18997/used', token_ref: 'ui-in-use' },
+    data: { type: 'ntfy', url: `http://127.0.0.1:${PORTS.ntfy}/used`, token_ref: 'ui-in-use' },
   });
   expect(used.status(), await used.text()).toBe(200);
   try {
@@ -4812,7 +4812,7 @@ test('api_016 add a Home Assistant source from the UI', async () => {
   await page.getByTestId('routers-add').click();
   await page.getByRole('combobox', { name: 'Kind' }).selectOption('home_assistant');
   await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ha-e2e');
-  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('http://127.0.0.1:8123');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill(`http://127.0.0.1:${PORTS.haAdd}`);
   await fillCredential('Long-lived access token', 'ha-e2e-token-5520');
   await page.getByRole('button', { name: 'Save the router' }).click();
   const card = page.getByTestId('router-card').filter({ hasText: 'ha-e2e' });
@@ -4875,7 +4875,7 @@ test('api_016 a check says when a stored credential was not sent', async () => {
   await page.getByTestId('routers-add').click();
   await page.getByRole('combobox', { name: 'Kind' }).selectOption('home_assistant');
   await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ha-moved');
-  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('http://127.0.0.1:8125');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill(`http://127.0.0.1:${PORTS.haMoved}`);
   await page.getByTestId('routers-check-button').click();
   await expect(page.getByTestId('routers-check')).toContainText("A stored credential wasn't sent");
   await expect(page.getByTestId('routers-check')).toContainText('Nothing was saved.');
@@ -4944,7 +4944,7 @@ test('api_016 delete a router from the UI', async () => {
   const csrf = (await (await request.get('/api/v1/auth/status')).json()).csrfToken as string;
   const secret = await request.put('/api/v1/secrets/ha-e2e-token', { headers: { 'x-csrf-token': csrf }, data: { value: 'del-e2e-token-9', kind: 'text' } });
   expect(secret.status(), await secret.text()).toBe(200);
-  const made = await request.put('/api/v1/routers/del-e2e', { headers: { 'x-csrf-token': csrf }, data: { type: 'home_assistant', url: 'http://127.0.0.1:8124', api_key_ref: 'ha-e2e-token' } });
+  const made = await request.put('/api/v1/routers/del-e2e', { headers: { 'x-csrf-token': csrf }, data: { type: 'home_assistant', url: `http://127.0.0.1:${PORTS.haDelete}`, api_key_ref: 'ha-e2e-token' } });
   expect(made.status(), await made.text()).toBe(200);
   // The page is already on this route, and a hash change keeps its last mocked list: reload.
   await page.goto('/#/routers');
