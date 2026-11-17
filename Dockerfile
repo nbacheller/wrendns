@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1.7
-# REQ: OPS-001 — multi-arch image: FROM scratch + one static musl binary + CA bundle + tzdata,
-# running as 65532:65532 (spec/08 §2). The build stage runs on the build host's platform and
-# cross-compiles with cargo-zigbuild, so arm64/armv7 images never compile under QEMU.
+# REQ: OPS-001 — multi-arch image: FROM scratch + one static musl binary + tzdata, running as
+# 65532:65532 (spec/08 §2). There is no CA bundle: every TLS client verifies against the Mozilla
+# roots compiled in with webpki-roots, and none reads the system store (NFR-001, ADR-168). The
+# build stage runs on the build host's platform and cross-compiles with cargo-zigbuild, so
+# arm64/armv7 images never compile under QEMU.
 #
 #   docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t telltale:dev .
 #   docker buildx build --load -t telltale:dev .                       # host arch only
@@ -86,7 +88,7 @@ COPY --from=ui /ui/dist /src/ui/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target,id=telltale-target-${TARGETARCH}${TARGETVARIANT},sharing=locked \
     set -eu; t="$(cat /rust-target)"; \
-    mkdir -p /out/usr/local/bin /out/etc/ssl/certs /out/var/lib/telltale /out/etc/telltale /out/usr/share /debug; \
+    mkdir -p /out/usr/local/bin /out/var/lib/telltale /out/etc/telltale /out/usr/share /debug; \
     # REQ: OPS-013 (ADR-164) — link once with symbols and line tables, then split that one output:
     # the shipped binary is the stripped copy (what `strip = true` made before: the symbol table
     # and debug sections are gone, the dependency data stays; the line tables shift the layout by
@@ -101,7 +103,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     "$oc" --only-keep-debug "target/$t/${PROFILE}/telltale" /debug/telltale.debug; \
     "$oc" --strip-all --keep-section=.dep-v0 --add-gnu-debuglink=/debug/telltale.debug \
       "target/$t/${PROFILE}/telltale" /out/usr/local/bin/telltale; \
-    cp /etc/ssl/certs/ca-certificates.crt /out/etc/ssl/certs/; \
     cp -r /usr/share/zoneinfo /out/usr/share/zoneinfo; \
     printf 'root:x:0:0:root:/:/sbin/nologin\ntelltale:x:65532:65532:telltale:/var/lib/telltale:/sbin/nologin\n' > /out/etc/passwd; \
     printf 'root:x:0:\ntelltale:x:65532:\n' > /out/etc/group

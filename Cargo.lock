@@ -3513,6 +3513,7 @@ dependencies = [
  "blake3",
  "chrono",
  "futures-util",
+ "miniz_oxide",
  "openidconnect",
  "rand 0.10.3",
  "rust-embed",

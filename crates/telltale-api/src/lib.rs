@@ -1184,9 +1184,18 @@ impl utoipa::Modify for Security {
     }
 }
 
-/// The document as pretty JSON (what `GET /api/v1/openapi.json` serves and what the
-/// committed `docs/api/openapi.json` must equal).
-pub fn openapi_document() -> String {
+/// The document as pretty JSON, what `GET /api/v1/openapi.json` serves. REQ: API-001, NFR-001
+/// (ADR-168) — it is the committed `docs/api/openapi.json`, compiled in, and not built from
+/// [`ApiDoc`] while running: building it linked utoipa's whole document builder (about 0.6 MiB
+/// of the compressed image) and made a 677 KB document on every request. The test
+/// `api_001_committed_openapi_matches_the_code` keeps the file equal to what the code generates.
+pub fn openapi_document() -> &'static str {
+    include_str!("../../../docs/api/openapi.json").trim_end()
+}
+
+/// What the code generates (tests only: the drift check, and `UPDATE_OPENAPI=1`).
+#[cfg(test)]
+pub(crate) fn generated_openapi_document() -> String {
     ApiDoc::openapi().to_pretty_json().unwrap_or_default()
 }
 

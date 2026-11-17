@@ -3449,3 +3449,26 @@ test('obs_039 domain icons', async () => {
   await expect(icons.nth(0)).toHaveAttribute('data-kind', 'brand');
   await expect(icons.nth(0)).toHaveAttribute('data-size', '20');
 });
+
+// REQ: API-005, NFR-001 (ADR-168) — the UI is embedded gzipped only: a browser gets the stored
+// file with `Content-Encoding: gzip`, and a client that doesn't accept gzip gets the same file
+// inflated. Both are the page, and the page's script comes either way.
+test('api_005 the UI is served gzipped, and plain to a client that does not accept gzip', async () => {
+  const r = page.request;
+  const gz = await r.get('/', { headers: { 'accept-encoding': 'gzip' } });
+  expect(gz.status()).toBe(200);
+  expect(gz.headers()['content-encoding']).toBe('gzip');
+  const plain = await r.get('/', { headers: { 'accept-encoding': 'identity' } });
+  expect(plain.status()).toBe(200);
+  expect(plain.headers()['content-encoding']).toBeUndefined();
+  const html = await plain.text();
+  expect(html).toContain('<title>TelltaleDNS');
+  expect(await gz.text()).toBe(html);
+  const src = /src="(\/assets\/[^"]+\.js)"/.exec(html)?.[1];
+  expect(src, 'index.html names its script').toBeTruthy();
+  const js = await r.get(src as string, { headers: { 'accept-encoding': 'identity' } });
+  expect(js.status()).toBe(200);
+  expect(js.headers()['content-encoding']).toBeUndefined();
+  expect(js.headers()['content-type']).toContain('javascript');
+  expect((await js.body()).length).toBeGreaterThan(100_000);
+});

@@ -4,7 +4,7 @@
 **Decision (ADR-004):** the primary artifact is a multi-arch OCI image, used **both** in Kubernetes and on a Raspberry Pi (Docker/Podman). The static binary is a by-product of the same build and is published too, but its support tier is "secondary".
 
 Why this is the right path:
-- **One artifact, one test matrix.** The image is `FROM scratch` + one static musl binary + CA bundle + tzdata, about 10–15 MiB. A container adds roughly no runtime overhead for a network daemon (host networking on the Pi avoids NAT entirely).
+- **One artifact, one test matrix.** The image is `FROM scratch` + one static musl binary + tzdata (no CA bundle: every TLS client uses the compiled-in Mozilla roots, ADR-168), about 10–15 MiB. A container adds roughly no runtime overhead for a network daemon (host networking on the Pi avoids NAT entirely).
 - **Pi upgrades become `docker compose pull && up -d`**, with trivial rollback by tag. That avoids distro/glibc drift (the reason Pi-hole needs per-OS install scripts, and Technitium needs a matching .NET runtime).
 - The Pi joins the same cluster as the k8s pods with the same image version, which is required for CLU-010 compatibility.
 - Native install remains possible for people who want it (no Docker on a Pi Zero, or appliance builds), at almost no maintenance cost, because the binary is static.
