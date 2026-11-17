@@ -2001,9 +2001,40 @@ test('api_015 set by file is read-only', async () => {
   const field = page.getByTestId('secret-token_ref');
   await expect(field).toHaveAttribute('data-mode', 'file');
   await expect(field.getByTestId('secret-file')).toContainText('/run/secrets/e2e-ntfy-token');
+  // The file is not on this node, so the field says so (the server's readability, per field).
+  await expect(field.getByTestId('secret-file')).toContainText("can't read it");
   await expect(field.getByRole('textbox')).toHaveCount(0);
   await expect(field.getByRole('button', { name: /Save|Replace|Clear|Delete/ })).toHaveCount(0);
   await page.getByRole('button', { name: 'Close' }).click();
+});
+
+// REQ: API-015 (T23.6, ADR-919) — a path the API set (not the configuration file) can be removed from
+// the entry; the stored-secret controls take its place.
+test('api_015 an API-set file path can be removed', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const put = await r.put('/api/v1/alerts/destinations/ui-apipath', {
+    headers: h,
+    data: { type: 'ntfy', url: 'https://ntfy.e2e.test/apipath', token_file: '/run/secrets/ui-apipath-token' },
+  });
+  expect(put.status(), await put.text()).toBe(200);
+  try {
+    // The destination was written over the API: reload, so the list is read again (a hash change
+    // keeps the list the previous test loaded).
+    await page.goto('/#/alerts');
+    await page.reload();
+    await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+    const dests = page.getByTestId('editor-alert_destination');
+    await dests.getByTestId('entry-row').filter({ hasText: 'ui-apipath' }).getByRole('button', { name: 'Edit' }).click();
+    const field = page.getByTestId('secret-token_ref');
+    await expect(field.getByTestId('secret-api-file')).toContainText('/run/secrets/ui-apipath-token');
+    await field.getByRole('button', { name: 'Remove the path' }).click();
+    await expect(field.getByTestId('secret-api-file')).toHaveCount(0);
+    await expect(field).toHaveAttribute('data-mode', 'unset');
+    await page.getByRole('button', { name: 'Close' }).click();
+  } finally {
+    await r.delete('/api/v1/alerts/destinations/ui-apipath', { headers: h });
+  }
 });
 
 test('api_015 alert destination with a stored token delivers', async () => {

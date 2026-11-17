@@ -32,6 +32,7 @@
   import { untrack } from 'svelte';
   import { ApiError, api, type S } from '../api';
   import ErrorNote from './ErrorNote.svelte';
+  import { secretsHead } from '../secrets-head.svelte';
   import HelpButton from './HelpButton.svelte';
 
   type Mode = 'file' | 'inline' | 'clear' | 'unreadable' | 'exists' | 'set' | 'replace' | 'missing' | 'unset';
@@ -97,9 +98,10 @@
   // The stored secrets as this node knows them (names, stamps and users; never values), the
   // secrets head's etag (sent as If-Match on a write) and this node's name.
   let all = $state<S['SecretMeta'][]>([]);
-  let head = $state<string | undefined>(undefined);
   let here = $state('');
   let loaded = $state(false);
+  // The head this field last read (the shared head moving past it means a sibling wrote).
+  let seenHead: string | undefined = undefined;
   let loadError = $state<unknown>(null);
   // The name typed in the name input; undefined until it's typed (the default shows).
   let typedName = $state<string | undefined>(undefined);
@@ -120,7 +122,8 @@
     try {
       const r = await api.secrets();
       all = r.items;
-      head = r.head.etag;
+      secretsHead.etag = r.head.etag;
+      seenHead = r.head.etag;
       here = r.store.node;
       loaded = true;
       loadError = null;
@@ -132,6 +135,11 @@
   // elsewhere since), so the field says whether the name is already stored.
   $effect(() => {
     void reload();
+  });
+  // A sibling field wrote (the shared head moved): this field's list is stale, so it reloads too.
+  $effect(() => {
+    const e = secretsHead.etag;
+    if (loaded && e !== seenHead) void reload();
   });
 
   const shownName = $derived(typedName ?? defaultName);
@@ -192,7 +200,7 @@
     refused = false;
     const name = target;
     try {
-      await api.putSecret(name, value, kind, false, head);
+      await api.putSecret(name, value, kind, false, secretsHead.etag);
       value = '';
       replacing = false;
       typedName = undefined;
@@ -227,7 +235,7 @@
     error = null;
     forceable = false;
     try {
-      const r = await api.deleteSecret(target, force, head);
+      const r = await api.deleteSecret(target, force, secretsHead.etag);
       await reload();
       onremoved?.(r.secret.name);
     } catch (e) {

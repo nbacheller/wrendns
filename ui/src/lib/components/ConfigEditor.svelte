@@ -343,7 +343,7 @@
           {#if f.type === 'secret'}
             <!-- REQ: API-015 (T23.6) — a credential is entered only through SecretField. -->
             {@const fileKey = f.fileKey ?? ''}
-            {@const fileCred = credentials.find((c) => c.kind === kind && c.entry === editing!.name && c.field === fileKey)}
+            {@const fileCred = credentials.find((c) => c.kind === kind && c.entry === editing!.name && c.source === 'file' && c.field === f.key.replace(/_ref$/, ''))}
             {@const inlineCred = credentials.find((c) => c.kind === kind && c.entry === editing!.name && c.source === 'inline' && c.field === f.key.replace(/_ref$/, ''))}
             <SecretField
               label={f.label}
