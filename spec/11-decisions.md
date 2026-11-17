@@ -1293,6 +1293,16 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-937 — Per-list "Update now" and a Confirmed current column on the Lists page (Accepted 2026-11-17)
+**Context:** T24.17 (FLT-004, ADR-905) asks for an "Update now" in each row of the Lists status table, and a per-list freshness display. The API already takes `names` (ADR-905), so no server change is needed. The task doesn't say what an off list's row does (the server reports an off list as `skipped` and queues nothing), or what freshness an inline list has (inline rules have no download to confirm).
+**Decision:**
+- A row's **Update now** sends `POST /api/v1/lists/refresh` with `{"names": ["<that list>"]}`, the same request as the page-wide button. It shows for operators only (`can('operator')`), and is disabled while that list is refreshing, while any row's request is in flight, and when the list is off. The off row's tooltip says to turn the list on; the server is not asked.
+- A refresh of one list reads "<name> updated" in the status line; the whole-set sentence ("every enabled list confirmed current …") stays for a refresh of every enabled list.
+- **Confirmed current** (for every role) shows `ago(lastSuccessUnixSeconds)`, which reads "never" for an enabled download list that never downloaded. An off download list that never downloaded reads a muted "off" instead (nothing to confirm, and "never" would suggest a fault). An inline list reads "inline", since it has no download to confirm.
+- The status line says "Downloading <name>…" from the click until the answer, so a row's request is never reported as done before it is answered. The whole-set wording is chosen by the refresh's scope (every enabled list, or one row), not by counting the lists.
+- No dry-run control: `dryRun` stays for agents and `telltale ctl`.
+**Consequences:** no API, OpenAPI, MCP or config change; the help topic `list-update-now` covers per-row updates. The per-row request is audited as `lists.refresh` with its names, like the page-wide one.
+
 ## ADR-934 — Worker spawn and filter hardening under the systemd unit: no ambient capability, no capset call without one, a non-dumpable parent, and the x32 and io_uring calls refused (Accepted 2026-11-17)
 **Context:** The review of the T25.3 fixes (8738440) found four gaps in ADR-908's worker hardening.
 - **N1 (HIGH).** The unit sets `AmbientCapabilities=CAP_NET_BIND_SERVICE` and `SystemCallFilter=~@privileged`. A child inherits the ambient set, so the worker held `CAP_NET_BIND_SERVICE`, and `drop_worker_capabilities` called `capset`, which `@privileged` contains. A filtered call with no error number kills the process (SIGSYS), so every worker died on every systemd install.

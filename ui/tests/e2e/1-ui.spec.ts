@@ -1625,6 +1625,118 @@ test('flt_004 update lists now', async () => {
   await viewer.close();
 });
 
+// REQ: FLT-004 (T24.17) — each list's row has its own "Update now" (names: [that list]), disabled
+// while the list downloads or is off, and "Confirmed current" shows when it last downloaded fine.
+test('flt_004 update one list now', async () => {
+  await page.goto('/#/lists');
+  const row = page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: /^e2e-block$/ }) });
+  const rowBtn = row.getByTestId('list-update-now');
+  await expect(rowBtn).toHaveText('Update now');
+  await expect(rowBtn).toBeEnabled();
+  const queued = page.waitForResponse((r) => r.url().endsWith('/api/v1/lists/refresh') && r.request().method() === 'POST');
+  await rowBtn.click();
+  const res = await queued;
+  expect(res.status()).toBe(202);
+  expect(res.request().postDataJSON()).toEqual({ names: ['e2e-block'] });
+  const body = await res.json();
+  expect(body.queued).toEqual(['e2e-block']);
+  await expect(page.getByTestId('lists-refresh-status')).toContainText('e2e-block updated', { timeout: 15_000 });
+  await expect(rowBtn).toHaveText('Update now');
+  await expect(rowBtn).toBeEnabled();
+
+  // While a list downloads, its row's button says so and is disabled; the others stay enabled.
+  let downloading = true;
+  await page.route('**/api/v1/lists', async (route) => {
+    const r = await route.fetch();
+    const json = await r.json();
+    if (downloading) json.items = json.items.map((l: { name: string }) => (l.name === 'e2e-block' ? { ...l, refreshing: true } : l));
+    await route.fulfill({ response: r, json });
+  });
+  await page.reload();
+  await expect(rowBtn).toBeDisabled();
+  await expect(rowBtn).toHaveText('Updating…');
+  await expect(page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: /^e2e-shadow$/ }) }).getByTestId('list-update-now')).toBeEnabled();
+  downloading = false;
+  await page.unroute('**/api/v1/lists');
+  await page.reload();
+  await expect(rowBtn).toBeEnabled();
+
+  // "Confirmed current" reads the last successful download; an inline list has none to confirm.
+  await page.route('**/api/v1/lists', async (route) => {
+    const r = await route.fetch();
+    const json = await r.json();
+    const now = Date.now() / 1000;
+    json.items = json.items.map((l: { name: string }) =>
+      l.name === 'e2e-block' ? { ...l, source: 'https://lists.e2e.test/block.txt', lastSuccessUnixSeconds: Math.floor(now - 7260) } : l,
+    );
+    await route.fulfill({ response: r, json });
+  });
+  await page.reload();
+  await expect(row.getByTestId('list-confirmed')).toContainText('2h 1m ago');
+  await expect(page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: /^e2e-shadow$/ }) }).getByTestId('list-confirmed')).toHaveText('inline');
+  await page.unroute('**/api/v1/lists');
+  await page.reload();
+});
+
+// REQ: FLT-004 (T24.17) — a viewer sees the lists and when each was confirmed, with no update button.
+test('flt_004 viewer sees no update buttons', async ({ browser }) => {
+  const viewer = await browser.newContext({ baseURL: page.url().split('/#')[0] || 'http://127.0.0.1:18054' });
+  const vpage = await viewer.newPage();
+  await vpage.goto('/');
+  await vpage.getByLabel('Username', { exact: true }).fill(VIEWER.user);
+  await vpage.getByLabel('Password', { exact: true }).fill(VIEWER.pass);
+  await vpage.getByRole('button', { name: 'Sign in' }).click();
+  await expect(vpage.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 30_000 });
+  await vpage.goto('/#/lists');
+  await expect(vpage.getByRole('heading', { name: /^Lists/ })).toBeVisible();
+  await expect(vpage.locator('table:not(.compact) tbody tr').filter({ has: vpage.locator('strong', { hasText: /^e2e-block$/ }) })).toBeVisible();
+  await expect(vpage.getByRole('columnheader', { name: 'Confirmed current' })).toBeVisible();
+  await expect(vpage.getByTestId('list-update-now')).toHaveCount(0);
+  await expect(vpage.getByTestId('lists-update-now')).toHaveCount(0);
+  await viewer.close();
+});
+
+// REQ: FLT-004 (T24.17) — while a row's request is in flight, the status says it is downloading and
+// the page-wide "Update now" is disabled, so two refreshes can't start at once.
+test('flt_004 a row update says it is downloading before the answer', async () => {
+  await page.goto('/#/lists');
+  const row = page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: /^e2e-block$/ }) });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  await page.route('**/api/v1/lists/refresh', async (route) => {
+    await gate;
+    await route.continue();
+  });
+  try {
+    await row.getByTestId('list-update-now').click();
+    await expect(page.getByTestId('lists-refresh-status')).toContainText('Downloading e2e-block', { timeout: 10_000 });
+    await expect(row.getByTestId('list-update-now')).toHaveText('Updating…');
+    await expect(row.getByTestId('list-update-now')).toBeDisabled();
+    await expect(page.getByTestId('lists-update-now')).toBeDisabled();
+    release();
+    await expect(page.getByTestId('lists-refresh-status')).toContainText('e2e-block updated', { timeout: 15_000 });
+    await expect(row.getByTestId('list-update-now')).toBeEnabled();
+  } finally {
+    release();
+    await page.unroute('**/api/v1/lists/refresh');
+  }
+});
+
+// REQ: FLT-004 (T24.17) — the lists table fits a phone (375 px): the page itself doesn't scroll sideways.
+test('flt_004 lists fit a phone width (375 px)', async () => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  try {
+    await page.goto('/#/lists');
+    await expect(page.getByRole('heading', { name: /^Lists/ })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Confirmed current' })).toBeAttached();
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+    await expect(page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: /^e2e-block$/ }) }).getByRole('button', { name: 'Update e2e-block now' })).toBeVisible();
+  } finally {
+    await page.setViewportSize({ width: 1280, height: 800 });
+  }
+});
+
 test('api_002 upstreams and lists can be added, overridden, and reverted', async () => {
   const r = page.request;
   const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
