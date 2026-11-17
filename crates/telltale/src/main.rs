@@ -65,6 +65,9 @@ mod secrets_api;
 mod secrets_api_tests;
 mod selfupdate;
 mod server;
+mod settings_kinds;
+#[cfg(test)]
+mod settings_kinds_tests;
 mod shadow;
 mod ship;
 mod simulate;

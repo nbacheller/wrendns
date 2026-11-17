@@ -49,6 +49,13 @@ pub(crate) const SIMULATE: &str = "simulate";
 pub(crate) const ROLLOUT: &str = "rollout";
 /// REQ: FLT-017 (T15.1) — `[[kubernetes.map]]` rules, by key (`namespace/kind/name`).
 pub(crate) const KUBERNETES_MAP: &str = "kubernetes_map";
+/// REQ: DNS-019 (T24.12, ADR-904, ADR-914) — `[special]`: one entry, `default`, whose fields
+/// the files win over (see `settings_kinds`).
+pub(crate) const SPECIAL: &str = "special";
+/// REQ: DNS-023 (T24.13, ADR-901, ADR-914) — `[local]` without `hosts_files`.
+pub(crate) const LOCAL: &str = "local";
+/// REQ: DNS-023 (T24.13, ADR-914) — `[clients]`, which takes only `mdns` in M24.
+pub(crate) const CLIENTS: &str = "clients";
 
 /// An API entry for a kind that can override the files (ADR-069): a definition, or the
 /// files' entry of that name left out.
@@ -154,6 +161,13 @@ pub(crate) struct Entries {
     pub(crate) rollout: Option<telltale_config::RolloutConfig>,
     /// REQ: FLT-017 — `[[kubernetes.map]]` rules by key; they come before the files' rules.
     pub(crate) kubernetes_map: Vec<(String, Ovr<telltale_config::KubernetesMapRule>)>,
+    /// REQ: DNS-019 (T24.12) — the stored `[special]` section (every editable key), if the API
+    /// or UI set one. The files' fields win over it (ADR-914).
+    pub(crate) special: Option<serde_json::Value>,
+    /// REQ: DNS-023 (T24.13) — the stored `[local]` fields, likewise.
+    pub(crate) local: Option<serde_json::Value>,
+    /// REQ: DNS-023 (T24.13) — the stored `[clients]` fields (`mdns`), likewise.
+    pub(crate) clients_settings: Option<serde_json::Value>,
 }
 
 /// Where the state database lives.
@@ -248,6 +262,18 @@ pub(crate) fn entries(state: &State) -> Entries {
             .next()
             .map(|(_, x)| x),
         kubernetes_map: decode_ovr(state, KUBERNETES_MAP),
+        special: decode::<serde_json::Value>(state, SPECIAL)
+            .into_iter()
+            .next()
+            .map(|(_, v)| v),
+        local: decode::<serde_json::Value>(state, LOCAL)
+            .into_iter()
+            .next()
+            .map(|(_, v)| v),
+        clients_settings: decode::<serde_json::Value>(state, CLIENTS)
+            .into_iter()
+            .next()
+            .map(|(_, v)| v),
     }
 }
 
@@ -384,7 +410,7 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
             cfg.rule.push(r.clone());
         }
     }
-    let mut errs = Vec::new();
+    let mut errs = crate::settings_kinds::apply_stored(&mut cfg, own, e);
     for (name, recs) in &e.records {
         if file
             .record

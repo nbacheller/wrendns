@@ -294,6 +294,7 @@ impl Backend for Fake {
                 workload: None,
             },
             outcome: "resolved".into(),
+            special: None,
             summary: "no rule applies; resolved normally".into(),
             block: None,
             paused_until_unix_seconds: None,
@@ -1624,8 +1625,9 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 114 with OBS-038's /anomaly-mutes/{name}; 116 with OPS-011's /system/support-package and
     // /system/support-package/{id}/map.
     // 117 with API-013's /networks; 118 with FLT-004's /lists/refresh; 120 with API-015's
-    // /secrets and /secrets/{name}.
-    assert_eq!(paths.len(), 120);
+    // /secrets and /secrets/{name}; 123 with DNS-019's /special-names/default and DNS-023's
+    // /local-settings/default and /clients-settings/default.
+    assert_eq!(paths.len(), 123);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

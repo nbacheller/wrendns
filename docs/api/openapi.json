@@ -2125,6 +2125,166 @@
         }
       }
     },
+    "/api/v1/clients-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set the `[clients]` setting this API changes (DNS-023, T24.13, ADR-914).",
+        "description": "Only `mdns` is here: when on, TelltaleDNS listens for mDNS announcements on every node, which\nnames devices that announce themselves (`[local] device_mdns` answers for them). `mdns_port`\nstays in the file. This is admin-only: an operator's change is 403 naming `mdns`, and no agent\ncan change it.",
+        "operationId": "put_clients_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin may change `mdns`; agents never.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files set `mdns`, and they win.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is unknown (`mdns_port` is set in the file).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Go back to the config file's `[clients]` mdns setting (DNS-023).",
+        "description": "Removes what the API stored, so the file's `mdns` applies again on every node. Only an admin may\ndo this, and no agent can.",
+        "operationId": "delete_clients_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin may change `mdns`; agents never.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing was changed through the API: the file's setting is in effect already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/clients/affinity": {
       "get": {
         "tags": [
@@ -4839,6 +4999,156 @@
         }
       }
     },
+    "/api/v1/local-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set the device-name settings (DNS-023, ADR-901).",
+        "description": "The body has the fields of `[local]` that name devices: `device_domain` (a domain such as\n`home.arpa`; `local` is refused), `device_ttl` (seconds), `device_mdns` (names devices announce\nover mDNS, which needs `[clients] mdns`), `auto_ptr`, and `default_ttl`. `hosts_files` is set in\nthe file only. Like `PUT /special-names/default`, the file's fields win (409 `set_by_file`).\nNames change within about 10 seconds on every node, with no restart.",
+        "operationId": "put_local",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files set that field, and they win.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong or unknown (a domain `local`, for one), or the configuration wouldn't be valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Go back to the config file's device-name settings (DNS-023).",
+        "description": "Removes what the API or UI stored: the fields the config files don't set go back to the file's\nvalues (or the defaults), and the names change within about 10 seconds. Needs the operator role.",
+        "operationId": "delete_local",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing was changed through the API: the file's settings are in effect already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/networks": {
       "get": {
         "tags": [
@@ -6839,6 +7149,176 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing was changed through the API: the file's settings are in effect already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/special-names/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set the special-name handling (DNS-019, ADR-904).",
+        "description": "The body has the fields of `[special]` in `telltale.toml`: `block_firefox_canary`, `localhost`,\n`private_ptr_nxdomain`, `refuse_chaos`, `block_icloud_private_relay`, `single_label_nxdomain`,\nand `ddr_name` (the name the encrypted listeners' certificates carry, for DDR). It replaces the\nwhole section (fields left out take the defaults), except fields the config files set: those\nwin, and a body that sets one to another value is 409 `set_by_file`. Applies on the next query,\nwith no restart. `ddr_name` is admin-only: an operator's change is 403 naming the field, and\nno agent changes it.",
+        "operationId": "put_special",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "An operator changes `ddr_name` (admin-only), or an agent does.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files set that field, and they win.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong or unknown, or the configuration wouldn't be valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Go back to the config file's special-name handling (DNS-019).",
+        "description": "Removes what the API or UI stored, so `[special]` in the config files (or the defaults) applies\nagain. 404 when nothing was stored.",
+        "operationId": "delete_special",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The change would switch `ddr_name` off, and only an admin may.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -11770,6 +12250,15 @@
           "source"
         ],
         "properties": {
+          "answering": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "REQ: DNS-023 (T24.13) — how many names this entry answers right now (the device names\nfor `local`).",
+            "minimum": 0
+          },
           "credentialIssues": {
             "type": "array",
             "items": {
@@ -11797,6 +12286,13 @@
               "type": "string"
             },
             "description": "REQ: API-014 — the fields of `definition` that hold a credential and read `<redacted>`\n(`headers.Authorization`, `args[1]`, `url` for a URL's password). Send them back as they\nare to keep the values."
+          },
+          "setByFile": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "REQ: DNS-019, DNS-023 (ADR-914) — the fields of a shared settings section (`special`,\n`local`, `clients`) that the config files set: the API can't change them, and the UI\nshows them as \"set by file\"."
           },
           "source": {
             "type": "string",
@@ -13184,6 +13680,13 @@
                 "type": "null"
               }
             ]
+          },
+          "special": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: DNS-019 (T24.12, ADR-914) — for `special`, the special-name rule that answered:\n`private_relay`, `single_label`, `resolver_arpa`, `ddr`, `firefox_canary`, `private_ptr`,\n`chaos`, or `localhost`. A rule's name, not a field of `[special]`: the UI maps it to the\nswitch that controls it."
           },
           "summary": {
             "type": "string",
@@ -14674,6 +15177,15 @@
                 "source"
               ],
               "properties": {
+                "answering": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "REQ: DNS-023 (T24.13) — how many names this entry answers right now (the device names\nfor `local`).",
+                  "minimum": 0
+                },
                 "credentialIssues": {
                   "type": "array",
                   "items": {
@@ -14701,6 +15213,13 @@
                     "type": "string"
                   },
                   "description": "REQ: API-014 — the fields of `definition` that hold a credential and read `<redacted>`\n(`headers.Authorization`, `args[1]`, `url` for a URL's password). Send them back as they\nare to keep the values."
+                },
+                "setByFile": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "REQ: DNS-019, DNS-023 (ADR-914) — the fields of a shared settings section (`special`,\n`local`, `clients`) that the config files set: the API can't change them, and the UI\nshows them as \"set by file\"."
                 },
                 "source": {
                   "type": "string",

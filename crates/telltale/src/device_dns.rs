@@ -151,8 +151,11 @@ pub(crate) fn build(names: &[(String, Ipv4Addr)], ttl: u32) -> DeviceNames {
 
 /// Rebuilds the table every [`EVERY`] until `stop`, storing it only when it changed. Reads the
 /// settings from the live policy, so a reload that sets or clears the domain takes effect.
+/// `mdns_listening` is the `[clients] mdns` the node started with: the listener starts once
+/// (`restart_only_changes`), so device names follow mDNS only while it runs (REQ: DNS-023, H1).
 pub(crate) async fn run(
     pipeline: Arc<crate::pipeline::Pipeline>,
+    mdns_listening: bool,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) {
     let mut last: Option<(Settings, Vec<(String, Ipv4Addr)>)> = None;
@@ -164,13 +167,14 @@ pub(crate) async fn run(
             _ = tick.tick() => {}
         }
         let state = pipeline.current();
-        let Some(settings) = state.policy.device_dns.clone() else {
+        let Some(mut settings) = state.policy.device_dns.clone() else {
             if last.take().is_some() {
                 pipeline.device_names.store(Arc::default());
                 info!("device names in DNS: off");
             }
             continue;
         };
+        settings.mdns &= mdns_listening;
         let routers = pipeline.router_leases.load();
         let peers = pipeline.peer_names.load();
         let mdns = pipeline.mdns_names.load();
