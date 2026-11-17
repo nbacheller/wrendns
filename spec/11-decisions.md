@@ -1325,11 +1325,13 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 
 **Options:**
 - (a) Keep `openidconnect` and accept `chrono`. Rejected: the ignore stays and the unmaintained crate stays in the tree.
-- (b) An in-tree ID-token verifier on `rsa`, `p256` and `ecdsa`, with the existing `hyper` and `rustls` client for discovery, JWKS and the token exchange. No new runtime dependency. `rsa` stays for RS256, so RUSTSEC-2023-0071 stays ignored (ADR-952).
+- (b) An in-tree ID-token verifier, with the existing `hyper` and `rustls` client for discovery, JWKS and the token exchange. No new runtime dependency. Two sub-options:
+  - (b-ring) Verify signatures with `ring`, which is already a normal runtime dependency (pulled in by `rustls`, `quinn-proto`, `hickory-proto`, `hickory-net` and `rcgen`). `ring` verifies RS256 (`RSA_PKCS1_2048_8192_SHA256`) and ES256 (`ECDSA_P256_SHA256_FIXED`). This drops `rsa` from the tree, so RUSTSEC-2023-0071 can be removed (ADR-952). `cargo tree -i rsa` shows `rsa` arriving only through `openidconnect`.
+  - (b-p256) Verify signatures with `rsa`, `p256` and `ecdsa`. `rsa` stays for RS256, so RUSTSEC-2023-0071 stays ignored (ADR-952).
 - (c) Add `jsonwebtoken` as a new runtime dependency for ID-token verification, with a one-line justification and a measured image delta (gate 25 MiB/arch, ADR-916). It needs `rsa` or `ring` for signatures, so the RUSTSEC-2023-0071 question stays.
 - (d) Another OIDC client library. Rejected until its tree is checked for `chrono`.
 
-**Recommendation (for owner decision):** (b) or (c), chosen by a spike that measures both dependency trees and the image delta, gated by `cargo deny`. Either way the `chrono` ignore and the `telltale-api` `chrono` uses go.
+**Recommendation (for owner decision):** (b-ring), chosen by a spike that measures the dependency tree and image delta of (b-ring), (b-p256) and (c), gated by `cargo deny`. (b-ring) needs no new dependency and removes `rsa`. Whichever is chosen, the `chrono` ignore and the `telltale-api` `chrono` uses go.
 
 **Current behaviour to carry over exactly** (`crates/telltale-api/src/auth/oidc.rs`):
 - `groups_claim` dotted-path lookup (`:595-613`) and `username_claim`.
@@ -1339,10 +1341,10 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - `mcp_provider`, `disable_local_login`, and multiple providers.
 
 **Scoping questions (the owner's answers are pending; the question tool was unavailable in the implementing session, so these are recorded here with the review's recommended answers):**
-1. Library: (b), (c), or a spike to choose between them.
+1. Library: (b-ring), (b-p256), (c), or a spike to choose between them. (b-ring) is the review's recommended answer; it uses `ring`, which is already in the tree, and removes `rsa`.
 2. Parity: match current behaviour exactly. Refresh tokens, logout and userinfo are Open and not part of this change.
 3. A spike first, measuring dependency trees, so the image delta is a real number.
-4. A new runtime dependency is acceptable inside ADR-916 plus `cargo deny`, with a one-line justification.
+4. Dependencies: (b-ring) adds no new runtime dependency, so the question is only needed for (b-p256) or (c). A new runtime dependency is acceptable inside ADR-916 plus `cargo deny`, with a one-line justification.
 5. Token-check defaults, plus these rules:
    - `aud` must contain `client_id`; `azp` is required when there are multiple audiences.
    - The token `iss` must equal the discovery `issuer` exactly, and the discovery `issuer` must equal the configured issuer.
@@ -1353,16 +1355,16 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 
 **Checks the implementation must make:** `iss`, `aud`, `azp`, `exp`, `iat`, `nbf` (with a skew), `nonce`, `state`, PKCE `code_verifier`, the algorithm allow-list, `kid` lookup against JWKS, discovery over `https://` only, and token-endpoint client authentication.
 
-**Negative tests (each must be rejected):** wrong `iss`; missing `aud`; multiple audiences without `azp`; expired token; future `nbf`; future `iat` beyond the skew; nonce mismatch or replay; state mismatch; `alg=none`; HS256 signed with the RSA public key; unknown `kid` (JWKS refetch rate-limited); tampered signature; `http://` discovery URL; discovery `issuer` not matching the configured issuer; missing `code_verifier`.
+**Negative tests (each must be rejected):** wrong `iss`; missing `aud`; `aud` present but not containing `client_id`; multiple audiences without `azp`; a token signed with a key whose `kid` is new until the JWKS is refetched, which must be accepted after the refetch (JWKS key rotation); a bad signature; expired token; future `nbf`; future `iat` beyond the skew; nonce mismatch or replay; state mismatch; `alg=none`; HS256 signed with the RSA public key; unknown `kid` (JWKS refetch rate-limited); tampered signature; `http://` discovery URL; discovery `issuer` not matching the configured issuer; missing `code_verifier`.
 
 **Verification:** the existing `3-oidc` e2e passes unchanged; `cargo deny check` passes with the `chrono` ignore removed; the image delta is recorded. `make bench-smoke` is not needed unless a hot-path crate changes, which this does not do.
 
-**Consequences:** Accepting this ADR removes `chrono` and the RUSTSEC-2026-0543 ignore. The RUSTSEC-2023-0071 ignore stays while `rsa` is in the tree (ADR-952).
+**Consequences:** Accepting this ADR removes `chrono` and the RUSTSEC-2026-0543 ignore. The RUSTSEC-2023-0071 ignore goes too if (b-ring) is chosen, and stays under (b-p256) or (c) (ADR-952).
 
 ## ADR-952 — The rsa advisory (RUSTSEC-2023-0071) under the OIDC change (Proposed 2026-11-17)
 **Context:** `deny.toml:14` ignores RUSTSEC-2023-0071 for `rsa`, reached through `openidconnect`. The reason given is that TelltaleDNS only verifies ID-token signatures and holds no RSA private key.
 
-**Decision (proposed):** ADR-951 decides the library. While `rsa` is in the tree, the ignore stays and its reason is restated as verify-only. If a chosen option removes `rsa`, the ignore is removed in the same change. An RS256 provider keeps `rsa`, so the ignore stays by default. Owner acceptance is required before the ignore changes.
+**Decision (proposed):** ADR-951 decides the library. If (b-ring) is chosen, `rsa` leaves the tree and the RUSTSEC-2023-0071 ignore is removed in the same change, with `cargo deny check` passing. If (b-p256) or (c) is chosen, `rsa` stays for RS256 and the ignore stays, with its reason restated as verify-only (TelltaleDNS holds no RSA private key). Owner acceptance is required before the ignore changes.
 
 ## ADR-943 — Svelte attribute quantifiers: `{n}` in a quoted attribute is written as a JS expression, and a guard keeps it that way (Accepted 2026-11-17, owner decision)
 **Context:** Upstream issue #64, "2FA can't be enabled". Svelte 5 reads `{6}` inside a quoted attribute value as an expression, so `pattern="[0-9]{6}"` reached the browser as `[0-9]6` and no six-digit code matched. The TOTP enrolment (Settings) and the sign-in code (Login) both had the bug.
