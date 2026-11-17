@@ -18,6 +18,7 @@ use utoipa::IntoParams;
 
 use crate::auth::Auth;
 use crate::auth::routes::{body, principal, reason, remote};
+use crate::blocking;
 use crate::model::{ClientChange, ClientInput, ConfigChange, ForwardInput, RecordsInput};
 use crate::problem::{Code, Problem};
 use crate::{Backend, ClientWrite, ManagedKind, ManagedWrite, SimulateOpts};
@@ -640,10 +641,11 @@ pub(crate) async fn backup_download(
 }
 
 /// REQ: AGT-004 — an agent restricted to a group changes only that group's devices, and
-/// only into that group (ADR-064).
+/// only into that group (ADR-064). `existing` is the device `name` names, if any: the caller
+/// reads it off the runtime (CLU-004), because a replica's read waits on the cluster.
 fn group_guard(
     p: &crate::auth::Principal,
-    backend: &dyn Backend,
+    existing: Option<&crate::model::ClientInfo>,
     name: &str,
     op: &Op,
 ) -> Result<(), Problem> {
@@ -654,8 +656,7 @@ fn group_guard(
         Err(Problem::new(Code::Forbidden, why)
             .hint(format!("This token is restricted to group `{g}`.")))
     };
-    let existing = backend.clients().into_iter().find(|c| c.name == name);
-    if let Some(c) = &existing
+    if let Some(c) = existing
         && !c.groups.iter().any(|x| x == g)
     {
         return refuse(format!("`{name}` isn't in group `{g}`"));
@@ -2289,7 +2290,19 @@ async fn write(
     }
     // `simulate=auto` from a token that can't read the log: no simulation, not an error.
     let simulate = simulate.filter(|_| crate::simulate_api::agent_may_simulate(&p, None).is_ok());
-    if let Err(e) = group_guard(&p, backend.as_ref(), &name, &op) {
+    // REQ: CLU-004 (upstream #7) — only a group-restricted agent's check reads the devices;
+    // that read waits on the cluster on a replica, so it runs off the runtime.
+    let existing = if p.agent.as_ref().is_some_and(|a| a.group.is_some()) {
+        let bk = Arc::clone(&backend);
+        let device = name.clone();
+        match blocking(move || Ok(bk.clients().into_iter().find(|c| c.name == device))).await {
+            Ok(existing) => existing,
+            Err(e) => return e.into_response(),
+        }
+    } else {
+        None
+    };
+    if let Err(e) = group_guard(&p, existing.as_ref(), &name, &op) {
         return e.into_response();
     }
     let expect = match expected_version(&headers) {
@@ -2400,7 +2413,11 @@ async fn write(
     match result {
         Ok(c) => {
             let mut r = Json(c).into_response();
-            if let Ok(v) = HeaderValue::from_str(&format!("\"{}\"", backend.config_version())) {
+            // The version after the write, read off the runtime (CLU-004).
+            let bk = Arc::clone(&backend);
+            if let Ok(version) = blocking(move || Ok(bk.config_version())).await
+                && let Ok(v) = HeaderValue::from_str(&format!("\"{version}\""))
+            {
                 r.headers_mut().insert(axum::http::header::ETAG, v);
             }
             r
