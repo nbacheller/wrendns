@@ -1,0 +1,19 @@
+# REQ: T24.21 — a throwaway Home Assistant for the TelltaleDNS Home Assistant source test.
+# A separate Compose project (not the Docker Desktop bundle's), so bringing it up or down never
+# touches the bundle's running containers. Used by e2e.sh, which sets the host port and tears it
+# down with `down -v`. Nothing here is the owner's Home Assistant.
+name: telltale-hatest
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    ports:
+      - "127.0.0.1:${HA_TEST_PORT:-18124}:8123"
+    volumes:
+      - ha-config:/config
+      # The integration under test, and the fixture that seeds the fake devices.
+      - ../../integrations/home-assistant/custom_components/telltale:/config/custom_components/telltale:ro
+      - ./fixtures/telltale_seed:/config/custom_components/telltale_seed:ro
+    environment:
+      TZ: UTC
+volumes:
+  ha-config:
