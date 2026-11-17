@@ -79,7 +79,9 @@ telltale-proto = { version = "0.8.0", path = "../telltale-proto" }
 telltale-telemetry = { version = "0.8.0", path = "../telltale-telemetry" }
 telltale-upstream = { version = "0.8.0", path = "../telltale-upstream" }
 # io-std/io-util: `telltale mcp --stdio` (AGT-006).
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "signal", "macros", "time", "io-std", "io-util"] }
+# REQ: API-007 (T24.18, ADR-939) — the import worker runs as a child process (the "process"
+# feature of tokio, already in the tree).
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "signal", "macros", "time", "io-std", "io-util", "process"] }
 toml = "1.1.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "ansi"] }

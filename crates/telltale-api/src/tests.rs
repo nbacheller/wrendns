@@ -1627,8 +1627,9 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 117 with API-013's /networks; 118 with FLT-004's /lists/refresh; 120 with API-015's
     // /secrets and /secrets/{name}; 123 with DNS-019's /special-names/default and DNS-023's
     // /local-settings/default and /clients-settings/default; 127 with API-016's /routers,
-    // /routers/{name}, /checks/router and /checks/router-certificate.
-    assert_eq!(paths.len(), 127);
+    // /routers/{name}, /checks/router and /checks/router-certificate; 130 with API-007's
+    // /import/pihole, /import/pihole/plans/{id}/apply and /import/pihole/plans/{id}.
+    assert_eq!(paths.len(), 130);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -3336,4 +3337,77 @@ async fn flt_004_update_lists_now_over_http() {
         last.starts_with("lists_refresh None by agent:lists"),
         "{last}"
     );
+}
+
+// REQ: API-007 (T24.18, ADR-940) — importing a Pi-hole export is an admin's: a viewer is refused
+// on every import route, an agent is refused whatever its scopes, and an admin gets past the
+// role check (the test backend has no import, so it answers unavailable, not forbidden).
+#[tokio::test]
+async fn api_007_pihole_import_admin_only() {
+    let (app, _) = app();
+    let vic = app
+        .auth
+        .create_user("vic", "a viewer password", auth::Role::Viewer, false, NOW)
+        .unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            vic.id,
+            "ro",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let viewer = format!("tt_{tid}_{secret}");
+    let raw = |method: &str, uri: &str, bearer: &str| {
+        let b = match method {
+            "DELETE" => Request::delete(uri),
+            _ => Request::post(uri),
+        };
+        b.header("authorization", format!("Bearer {bearer}"))
+            .body(Body::from(b"PK\x03\x04 a file".to_vec()))
+            .unwrap()
+    };
+    for (method, uri) in [
+        ("POST", "/api/v1/import/pihole"),
+        ("POST", "/api/v1/import/pihole/plans/abc/apply"),
+        ("DELETE", "/api/v1/import/pihole/plans/abc"),
+    ] {
+        let (s, _, v) = send(&app, raw(method, uri, &viewer)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "a viewer, {method} {uri}: {v}");
+    }
+
+    // An agent with a scope for the same write, still refused.
+    let (s, _, v) = send(
+        &app,
+        app.signed_in(
+            "POST",
+            "/api/v1/tokens",
+            serde_json::json!({"name": "helper", "kind": "agent",
+                "scopes": ["config:write:clients", "config:write:special"], "ratePerMinute": 600}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let agent = v["token"].as_str().unwrap().to_owned();
+    let (s, _, v) = send(&app, raw("POST", "/api/v1/import/pihole", &agent)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    // The auth layer refuses agent tokens on this path, before the handler runs.
+    assert_eq!(v["code"], "forbidden", "{v}");
+
+    // An admin passes the role check; the test backend has no import.
+    let (s, _, _) = send(
+        &app,
+        app.signed_in(
+            "POST",
+            "/api/v1/import/pihole/plans/abc/apply",
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
 }

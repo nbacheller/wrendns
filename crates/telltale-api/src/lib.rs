@@ -30,6 +30,7 @@ pub mod lists_api;
 pub mod maintenance_api;
 pub mod mcp;
 pub mod model;
+mod pihole_import_api;
 pub mod plans;
 pub mod problem;
 pub mod rhythm_api;
@@ -528,6 +529,39 @@ pub trait Backend: Send + Sync + 'static {
             ))
         })
     }
+    /// REQ: API-007 (T24.18, ADR-940) — reads a Pi-hole export and keeps the plan it makes;
+    /// changes nothing. The answer is the plan (see `pihole_import_api`).
+    fn pihole_import_preview(
+        &self,
+        req: PiholeImportRequest,
+    ) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        let _ = req;
+        Box::pin(async {
+            Err(Problem::unavailable(
+                "importing a Pi-hole configuration isn't available on this node",
+            ))
+        })
+    }
+    /// REQ: API-007 (T24.18, ADR-940) — applies a previewed plan as one configuration change.
+    fn pihole_import_apply(
+        &self,
+        id: String,
+        by: String,
+    ) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        let _ = (id, by);
+        Box::pin(async {
+            Err(Problem::unavailable(
+                "importing a Pi-hole configuration isn't available on this node",
+            ))
+        })
+    }
+    /// REQ: API-007 (T24.18) — discards a previewed plan.
+    fn pihole_import_discard(&self, id: &str) -> Result<serde_json::Value, Problem> {
+        let _ = id;
+        Err(Problem::unavailable(
+            "importing a Pi-hole configuration isn't available on this node",
+        ))
+    }
     fn config_version(&self) -> u64 {
         0
     }
@@ -942,6 +976,21 @@ pub struct ManagedWrite {
     pub agent: Option<String>,
 }
 
+/// REQ: API-007 (T24.18, ADR-940) — an uploaded Pi-hole export to preview.
+#[derive(Debug, Clone)]
+pub struct PiholeImportRequest {
+    /// The export's bytes (a Teleporter zip or tar.gz, or a gravity.db).
+    pub data: Vec<u8>,
+    /// A Pi-hole address (`ip` or `ip:port`) to compare a sample with (ADR-941).
+    pub compare: Option<String>,
+    /// The TelltaleDNS to compare with (`ip` or `ip:port`; default `127.0.0.1:53`).
+    pub telltale: Option<String>,
+    /// Names to add to the comparison's sample.
+    pub samples: Vec<String>,
+    /// Who asked (the audit actor's name).
+    pub by: String,
+}
+
 /// REQ: OBS-024 (T13.1) — a dry run's `simulate` and `simulateUntil` parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SimulateOpts {
@@ -1206,6 +1255,11 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
             support_api::admin_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_admin)),
         )
+        // REQ: API-007 (T24.18, ADR-940) — importing a Pi-hole export: admins only, never agents.
+        .merge(
+            pihole_import_api::admin_routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_admin)),
+        )
         // REQ: API-015 (ADR-903 §4) — stored secrets: operators read metadata, admins set and
         // clear values (never agents); each route checks its own role.
         .merge(secrets_api::routes(Arc::clone(&backend), Arc::clone(&auth)))
@@ -1261,7 +1315,7 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule, config_api::put_router, config_api::delete_router, routers_api::list_routers, routers_api::check_router, routers_api::check_router_certificate,
+        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, pihole_import_api::preview, pihole_import_api::apply, pihole_import_api::discard, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule, config_api::put_router, config_api::delete_router, routers_api::list_routers, routers_api::check_router, routers_api::check_router_certificate,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(

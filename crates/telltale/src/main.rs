@@ -47,6 +47,7 @@ mod mdns;
 mod node_removal;
 mod otlp;
 mod pihole;
+mod pihole_import;
 mod pipeline;
 mod privacy;
 mod probes;
@@ -209,6 +210,14 @@ enum Command {
     Import {
         #[command(subcommand)]
         command: ImportCommand,
+    },
+    /// REQ: API-007 (T24.18, ADR-939) — internal: parses one uploaded Pi-hole export and prints
+    /// the conversion as JSON. The API runs it as a short-lived child process with an empty
+    /// environment, so a hostile file can't reach the server's state or secrets.
+    #[command(hide = true)]
+    PiholeImportWorker {
+        /// The uploaded file (a Teleporter archive, a gravity.db, or a directory).
+        path: PathBuf,
     },
     /// Serve MCP to an AI agent over stdin/stdout (the `stdio` transport), relaying to a
     /// running node's `/mcp` with an API token (`TELLTALE_TOKEN`, or `--token-file`).
@@ -816,6 +825,7 @@ fn main() -> ExitCode {
             restart,
         } => Ok(run_self_update(channel, check, restart)),
         Command::Import { command } => Ok(run_import(command)),
+        Command::PiholeImportWorker { path } => Ok(pihole_import::run_worker(&path)),
         Command::Backup { command } => Ok(run_backup(command)),
         Command::Mcp {
             stdio,

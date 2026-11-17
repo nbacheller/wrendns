@@ -4532,6 +4532,222 @@
         }
       }
     },
+    "/api/v1/import/pihole": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Preview a Pi-hole import.",
+        "description": "The body is the export: a Teleporter zip (v6) or tar.gz (v5), or a gravity.db. Nothing\nchanges. The answer is a plan (what would be added, changed or skipped) that an admin applies\nwith its `planId`, and with `compare` a sample resolved through both servers.",
+        "operationId": "preview",
+        "parameters": [
+          {
+            "name": "compare",
+            "in": "query",
+            "description": "REQ: API-007 (ADR-941) — resolve a sample through this Pi-hole (`ip` or `ip:port`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "telltale",
+            "in": "query",
+            "description": "The TelltaleDNS to compare with (default `127.0.0.1:53`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "samples",
+            "in": "query",
+            "description": "Extra names for the sample, comma-separated.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The Pi-hole export: a Teleporter zip (v6) or tar.gz (v5), or a gravity.db.",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The plan: what would be added, changed or skipped, and the comparison when asked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admins only; agents can't import.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The upload is larger than 64 MiB."
+          },
+          "422": {
+            "description": "The file isn't a Pi-hole export the import can read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/import/pihole/plans/{id}": {
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Discard a previewed Pi-hole import.",
+        "description": "The plan is forgotten and nothing is written. Plans also expire after ten minutes.",
+        "operationId": "discard",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The plan's ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Discarded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admins only; agents can't import.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such plan.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/import/pihole/plans/{id}/apply": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Apply a previewed Pi-hole import.",
+        "description": "The plan's entries are written as one configuration change, audited as `import.pihole`. The\nconfiguration must be the one the preview saw; otherwise the answer is 409 and the preview\nruns again.",
+        "operationId": "apply",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The plan's ID, from the preview.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Applied: counts of what was added, changed and skipped.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admins only; agents can't import.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such plan (it expired, or was applied or discarded).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The configuration changed since the preview.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The plan no longer loads with the configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/kubernetes/map/{key}": {
       "put": {
         "tags": [
