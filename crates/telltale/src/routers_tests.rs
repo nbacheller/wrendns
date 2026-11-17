@@ -303,6 +303,31 @@ async fn api_016_router_references_and_paths() {
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 }
 
+/// REQ: API-016 (T23.7) — the configuration entries list routers by kind, with their source, and a
+/// router the files define shows as the files' (`config_entries` kind `router`).
+#[tokio::test]
+async fn api_016_routers_are_config_entries() {
+    let h = with_secret("");
+    let (s, _, _) = h
+        .call(
+            "PUT",
+            "/api/v1/routers/lab",
+            Some(&ha_body("http://127.0.0.1:9")),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, list) = h
+        .call("GET", "/api/v1/config/entries?kind=router", None)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let items = list["items"].as_array().cloned().unwrap_or_default();
+    assert_eq!(items.len(), 1, "{list}");
+    assert_eq!(items[0]["kind"], "router");
+    assert_eq!(items[0]["name"], "lab");
+    assert_eq!(items[0]["source"], "added");
+    assert!(!list.to_string().contains("tok-planted"));
+}
+
 /// REQ: API-016 (T23.7) — `DELETE` of an API router drops it; its leases go with it at the next
 /// read, and the routers that stay keep their names.
 #[tokio::test]
@@ -502,6 +527,48 @@ fn api_016_unchanged_router_keeps_state() {
     );
     assert!(slots.is_empty());
     assert!(board.snapshot().is_empty());
+}
+
+/// REQ: API-016 (T23.7, ADR-903 §1, ADR-922) — a router whose credential is stored is read on the
+/// primary (or a standalone node) only; a replica waits for the primary's names, and the read starts
+/// as soon as the node becomes the primary (failover).
+#[tokio::test]
+async fn api_016_stored_credential_router_polls_on_primary_only() {
+    let stored = crate::router_settings::parse("lab", &ha_body("http://127.0.0.1:9")).unwrap();
+    let board = super::Board::default();
+    let mut slots = HashMap::new();
+    let mut order = Vec::new();
+    let mut generation = 0;
+    let now = Instant::now();
+    super::reconcile(
+        &mut slots,
+        &mut order,
+        std::slice::from_ref(&stored),
+        false,
+        now,
+        &mut generation,
+        &board,
+    );
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let resolver: Arc<dyn telltale_filter::fetch::Resolve> =
+        Arc::new(telltale_filter::fetch::SystemResolver);
+    let store = Arc::new(crate::secrets::SecretStore::read_only(
+        &telltale_config::Config::default(),
+        Arc::new(|_: &str| None),
+    ));
+    // A replica: skipped, reported as the primary's to read.
+    super::start_due(&mut slots, now, false, false, &resolver, &store, &tx);
+    assert_eq!(slots["lab"].skipped, Some("primary"));
+    assert!(!slots["lab"].in_flight);
+    super::publish(&slots, &board);
+    assert_eq!(board.snapshot()["lab"].polled_by, "the primary");
+    // Failover: this node is the primary now, and the router is due at once.
+    super::start_due(&mut slots, now, false, true, &resolver, &store, &tx);
+    assert_eq!(slots["lab"].skipped, None);
+    assert!(
+        slots["lab"].in_flight,
+        "a new primary didn't start the read"
+    );
 }
 
 /// REQ: API-016 (T23.7, ADR-921) — a resolver pod reads no router, and a router with a stored

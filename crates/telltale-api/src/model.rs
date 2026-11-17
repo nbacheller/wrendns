@@ -3685,8 +3685,8 @@ pub struct RouterStatus {
 #[serde(rename_all = "camelCase")]
 pub struct RouterList {
     pub items: Vec<RouterEntry>,
-    /// The node that answered, and whether another node holds the settings (a replica that
-    /// couldn't ask the primary answers with `stale`).
+    /// Whether the answer is stale (a replica that couldn't ask the primary); the list itself is the
+    /// replicated configuration.
     pub stale: bool,
 }
 

@@ -872,6 +872,36 @@
       "example": "Set home.arpa: a router lease for kitchen-tablet answers kitchen-tablet.home.arpa within about 10 seconds, and the reverse lookup gives the name back.",
       "caution": "local is refused: mDNS owns it. mDNS names need the mDNS switch, which only an admin turns on, because it opens multicast listening on every node. That switch takes effect after a restart on every node.",
       "docs": "device-names-in-dns"
+    },
+    {
+      "id": "routers",
+      "title": "Name devices from your routers",
+      "term": "Router integration",
+      "summary": "A UniFi console, an OPNsense firewall, or Home Assistant that TelltaleDNS reads, read-only, to learn the names and addresses of the devices on your network.",
+      "when": "Devices show as bare addresses, or your router already names them and you want TelltaleDNS to use those names too.",
+      "example": "A UniFi console named home-gateway reports a laptop called laptop at 192.168.1.20: its queries then show that name.",
+      "caution": "Give it a read-only account or a key that can only read. Only an admin adds, changes, or removes a router. Each stored credential is encrypted on the node and never shown again.",
+      "docs": "routers"
+    },
+    {
+      "id": "router-unifi",
+      "title": "Connect a UniFi console",
+      "term": "UniFi API key or local user",
+      "summary": "A UniFi OS console (UDM, UCG) or the Network application, read with an API key (UniFi Network 9 and later) or with a local user that can read clients and networks.",
+      "when": "You want the devices your UniFi console knows, by the names it gives them.",
+      "example": "Address https://192.168.1.1, an API key stored as unifi.home-gateway.api_key, and the console's certificate fetched and trusted.",
+      "caution": "Trust the console's own certificate (Fetch the console's certificate). Skipping verification lets anything on the LAN pose as the console. The certificate changes when the console renews it: fetch it again then.",
+      "docs": "routers"
+    },
+    {
+      "id": "router-home-assistant",
+      "title": "Name devices from Home Assistant",
+      "term": "Long-lived access token",
+      "summary": "Home Assistant names devices by the MAC addresses in its registry. TelltaleDNS reads them with a long-lived access token, which must come from an administrator's account, because the template it renders needs one.",
+      "when": "Your devices (Shelly, ESPHome, Sonos, TVs) have names in Home Assistant you'd like TelltaleDNS to use.",
+      "example": "Address http://homeassistant.local:8123 and a token stored as home-assistant.ha.api_key.",
+      "caution": "The token is an administrator's: anyone holding it can read your Home Assistant. Keep it stored, never in a file in Git.",
+      "docs": "routers"
     }
   ]
 }

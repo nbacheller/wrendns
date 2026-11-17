@@ -255,12 +255,12 @@
     <section class="card" data-testid="discovered">
       <h2>Discovered on your network</h2>
       <p class="muted small">
-        Names your router's DHCP knows (<code>[[router]]</code>: UniFi, OPNsense), or that devices announced
-        themselves over mDNS (<code>[clients] mdns</code>). Unnamed devices already show these names; click an address to keep
+        Names your routers know (UniFi, OPNsense, and Home Assistant, on the <a href="#/routers">Routers</a> page), or that
+        devices announced themselves over mDNS (<code>[clients] mdns</code>). Unnamed devices already show these names; click an address to keep
         one, change it, or put the device in a group.
       </p>
       {#if found.length === 0}
-        <p class="empty">Nothing discovered yet. Connect your router (<code>[[router]]</code>) or set <code>[clients] mdns = true</code>.</p>
+        <p class="empty">Nothing discovered yet. Add a router on the <a href="#/routers">Routers</a> page, or set <code>[clients] mdns = true</code>.</p>
       {:else}
         <div class="table-wrap">
           <table>

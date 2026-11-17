@@ -3094,6 +3094,10 @@ impl Backend for ApiBackend {
                 &mut out,
             );
         }
+        // REQ: API-016 (T23.7) — the routers in effect, with the files' and the API's sources.
+        if want("router") {
+            rows("router", &cfg.router, &file.router, &e.routers, &mut out);
+        }
         // REQ: DNS-014 (review 01 q1) — the one rate limit in effect, and whether the API or UI
         // replaced the files'.
         if want("ratelimit") {

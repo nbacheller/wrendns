@@ -93,7 +93,8 @@ pub(crate) async fn check_router(
     responses(
         (status = 200, body = RouterCertificate, description = "The certificate."),
         (status = 403, body = Problem, description = "Only an admin can check a router (agents never)."),
-        (status = 422, body = Problem, description = "The URL is not an https address, or no certificate could be read."),
+        (status = 400, body = Problem, description = "The URL is not an https address."),
+        (status = 503, body = Problem, description = "The console didn't answer, or presented no certificate."),
     ))]
 pub(crate) async fn check_router_certificate(
     State(b): State<Shared>,

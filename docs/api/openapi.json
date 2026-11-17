@@ -2142,6 +2142,16 @@
               }
             }
           },
+          "400": {
+            "description": "The URL is not an https address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
             "description": "Only an admin can check a router (agents never).",
             "content": {
@@ -2152,8 +2162,8 @@
               }
             }
           },
-          "422": {
-            "description": "The URL is not an https address, or no certificate could be read.",
+          "503": {
+            "description": "The console didn't answer, or presented no certificate.",
             "content": {
               "application/json": {
                 "schema": {
@@ -20348,7 +20358,7 @@
           },
           "stale": {
             "type": "boolean",
-            "description": "The node that answered, and whether another node holds the settings (a replica that\ncouldn't ask the primary answers with `stale`)."
+            "description": "Whether the answer is stale (a replica that couldn't ask the primary); the list itself is the\nreplicated configuration."
           }
         }
       },

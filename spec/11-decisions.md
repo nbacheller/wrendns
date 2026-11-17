@@ -1293,6 +1293,33 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-921 — Router integrations as a managed kind: admin-only, file-read-only, named secrets, no file paths through the API (Proposed)
+**Context:** T23.7 makes `[[router]]` a kind the API and UI change (ADR-903 §2, §7; API-016). ADR-903 §2 says `router` follows ADR-040 (names the files define are read-only through the API) and §9 says every credential is entered through `SecretField`. It doesn't settle three details: who may write a router, whether an API body may name a file path, and how a certificate is entered, since `tls_ca` is a file and ADR-903 §1 says the router's CA "becomes an inline `tls_ca_pem` (T23.8)" without a field.
+**Decision:**
+- **Admin only.** Creating, changing, or removing a router is an admin's (403 for operators; agents never, by their forbidden list and scopes). A forwarded write without a role (an older node) is 409 `upgrade_required`, as credential writes are (ADR-903 §4).
+- **Files win.** A name the files define is read-only here: `PUT` and `DELETE` are 409 `set_by_file` (ADR-040). The files' entry shows as `source: file`.
+- **Named secrets only.** `api_key_ref`, `api_secret_ref`, and `password_ref` name stored secrets (422 `secret_missing` when none has the name). A body that names `api_key_file`, `api_secret_file`, `password_file`, or `tls_ca` is 422 `invalid_config`: the API takes no file paths for a router, because a path the API can set is a path an admin can point at any readable file (ADR-903 §4, the path rules). The files keep their paths.
+- **The certificate as text.** `tls_ca_pem` holds a PEM certificate (16 KiB at most, a PEM certificate, exclusive with `tls_ca`). The console's certificate is then the only trusted one: a router client trusts the certificate in its settings, not the public roots (ADR-120).
+- **Ephemeral pods read no router** (ADR-903 §7 and the Helm resolver pods' note in ADR-120): the controller, or the primary for a stored credential, reads them.
+**Consequences:**
+- A router made in the UI can't use a file: an operator who wants a file adds it to the configuration file (the UI says so).
+- `tls_insecure_skip_verify` is not offered by the UI and is still file-only.
+- The MCP surface gets `list_routers` (read-only). No MCP tool, and no agent scope, writes or checks a router (ADR-903 §5).
+
+## ADR-922 — Router hot reload: the live list, per-router state, debounced reads, and checks that never send a stored key to a new address (Proposed)
+**Context:** `routers::run` took the `[[router]]` list at start-up and returned at once when it was empty (T8.2). T23.7 needs a router added, changed, or removed through the API to take effect without a restart, with the others' names kept (CLU-004, 02 §8), and T23.8 needs a check of a draft that reads a router once.
+**Decision:**
+- **The live list.** The poll loop reads `Sources.config` each round. A reload (any node's configuration change, or a secret the store changes) wakes it at once (`Sources.routers_changed`).
+- **Per-router state.** A router keeps its last answer while its settings are unchanged. A changed router drops its answer and is read again, debounced to at least 5 s after its last read. A removed router drops its answer, so its leases go with the next round. A router whose stored credential may have changed is read again, debounced the same way. The store is not asked on the loop (a lock held at start-up delayed the runtime's workers).
+- **Failure isolation.** Each read runs on its own task and reports through a channel. A router that fails (refused, timed out, malformed, oversized) keeps its last answer and is retried within 15 s; the others are not delayed. DNS is never on this path.
+- **Who reads.** A stored credential is read on the primary or a standalone node only; a replica gets its names through the peer leases (ADR-125). A file credential is read as before on every full member, and a resolver pod reads nothing.
+- **Status.** Each router's last read (state, time, error without any password, devices, networks, and where it's read) is kept for `GET /api/v1/routers`.
+- **Checks.** `POST /api/v1/checks/router` reads a draft once and saves nothing. It sends a stored credential only when the draft's address and TLS settings equal the saved router's; otherwise the check runs without it and says so (`credentialSent: false`). Both checks are admin-only and refused to agents. `POST /api/v1/checks/router-certificate` makes one TLS handshake and returns the names, fingerprint, and PEM; it trusts nothing, and the PEM is saved only by the form.
+**Consequences:**
+- A stored key never goes to an address the admin didn't save it for, even by an admin's check.
+- A router whose console renews its certificate fails until the new certificate is saved (ADR-120).
+- The poll loop, its reads, and its failures are tested with local fake routers only (HTTP, and TLS on 127.0.0.1).
+
 ## ADR-918 — Shared settings sections: field-level file precedence, what a request may leave out, and admin-only fields (Proposed)
 **Context:** T24.12 (`[special]`) and T24.13 (`[local]`, and `[clients]` with `mdns` only) make three one-entry sections changeable from the UI and API under ADR-914's tiers. The one-entry kinds so far (rate limit, exclusions, simulation) replace the file's whole section. For these, that would let an API value override a field the files set, which ADR-040 and ADR-914 forbid. ADR-914 didn't settle three details: which fields the files win over, what a request that leaves out a file-set field means, and what an empty `device_domain` means.
 **Decision:**
