@@ -561,7 +561,7 @@ pub const LEAVE: &str = "cluster.leave";
 /// Events kept in memory.
 const MAX_EVENTS: usize = 200;
 
-/// REQ: CLU-015 (ADR-167 §4) — why [`Cluster::as_primary`] didn't run: this node is a replica,
+/// REQ: CLU-015 (ADR-167 §4) — why [`Cluster::primary_epoch`] gave no epoch: this node is a replica,
 /// an emergency primary (it coordinates but changes nothing), or a primary whose lease lapsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotPrimary {
@@ -1714,18 +1714,20 @@ impl Cluster {
         true
     }
 
-    /// REQ: CLU-015, CLU-005 (ADR-167 §2, §4) — runs `f` with this node's epoch while holding
-    /// the lock role changes take, if this node is the primary (not an emergency one) and its
-    /// lease holds: a stored secret is stamped in an epoch no step-down can overtake meanwhile.
-    /// The reason otherwise.
-    pub fn as_primary<T>(&self, f: impl FnOnce(u64) -> T) -> Result<T, NotPrimary> {
+    /// REQ: CLU-015, CLU-005 (ADR-167 §2, §4) — this node's epoch, if it is the primary (not an
+    /// emergency one) and its lease holds, read under the lock role changes take (so role and
+    /// epoch are one consistent pair); the reason otherwise. Nothing else runs under the lock:
+    /// the caller stamps a stored secret in this epoch afterwards (disk I/O stays outside the
+    /// role-change lock). A step-down in between leaves a row of the old epoch, which the new
+    /// primary's newer epoch outranks (§2's orphans), as with [`Cluster::publish_as`].
+    pub fn primary_epoch(&self) -> Result<u64, NotPrimary> {
         let _fence = self.fence.lock().unwrap_or_else(PoisonError::into_inner);
         let (role, epoch) = self.role();
         match role {
             Role::Replica => Err(NotPrimary::Replica),
             Role::Emergency => Err(NotPrimary::Emergency),
             Role::Primary if !self.may_publish() => Err(NotPrimary::NoLease),
-            Role::Primary => Ok(f(epoch)),
+            Role::Primary => Ok(epoch),
         }
     }
 

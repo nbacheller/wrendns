@@ -428,9 +428,14 @@ pub(crate) fn rpc_handler(
             if ephemeral && changes_state(&read) {
                 return Err("an ephemeral member can't change this node's state".into());
             }
-            tokio::task::spawn_blocking(move || answer(local.as_ref(), read))
-                .await
-                .map_err(|e| format!("read worker failed: {e}"))?
+            // The caller's log dispatcher goes along, so the blocking thread logs where the
+            // request does.
+            let log = tracing::dispatcher::get_default(Clone::clone);
+            tokio::task::spawn_blocking(move || {
+                tracing::dispatcher::with_default(&log, || answer(local.as_ref(), read))
+            })
+            .await
+            .map_err(|e| format!("read worker failed: {e}"))?
         })
     })
 }

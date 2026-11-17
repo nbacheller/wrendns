@@ -26,7 +26,7 @@ use telltale_store::state::Replay;
 use utoipa::{IntoParams, ToSchema};
 use zeroize::Zeroizing;
 
-use crate::auth::routes::{is_https, principal, reason, remote};
+use crate::auth::routes::{OnBehalfOf, TlsConnection, is_https, principal, reason, remote};
 use crate::auth::{Auth, Principal, Role};
 use crate::config_api::{IDEMPOTENCY_KEY, IF_MATCH};
 use crate::problem::{Code, Problem};
@@ -410,21 +410,52 @@ fn transport_ok(
     ext: &axum::http::Extensions,
     headers: &HeaderMap,
 ) -> Result<(), Problem> {
-    if is_https(auth, ext, headers) || backend.secrets_over_http_allowed() {
+    if ext.get::<TlsConnection>().is_some() || backend.secrets_over_http_allowed() {
         return Ok(());
     }
-    let forwarded = headers.contains_key("x-forwarded-for") || headers.contains_key("forwarded");
-    let loopback = ext
+    // In-process MCP calls: their outer request decided (`is_https`); they have no peer.
+    if ext.get::<OnBehalfOf>().is_some() {
+        return if is_https(auth, ext, headers) {
+            Ok(())
+        } else {
+            Err(insecure())
+        };
+    }
+    let peer = ext
         .get::<ConnectInfo<SocketAddr>>()
-        .is_some_and(|c| c.0.ip().is_loopback());
-    if loopback && !forwarded {
+        .map(|c| c.0.ip().to_canonical());
+    // A request some proxy forwarded: its `X-Forwarded-Proto` counts only from a proxy listed in
+    // `[api] trusted_proxies` — loopback isn't one here, since a plain-HTTP proxy or a relay on
+    // the same host would pass a remote client's `X-Forwarded-Proto: https` through.
+    let forwarded = ["x-forwarded-for", "forwarded", "x-real-ip"]
+        .iter()
+        .any(|h| headers.contains_key(*h));
+    let says_https = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("https"));
+    let listed = peer.is_some_and(|ip| {
+        auth.settings()
+            .trusted_proxies
+            .iter()
+            .any(|(n, l)| crate::auth::in_network(ip, *n, *l))
+    });
+    if says_https && listed {
         return Ok(());
     }
-    Err(Problem::new(
+    // The node itself: the loopback interface, no proxy in between.
+    if peer.is_some_and(|ip| ip.is_loopback()) && !forwarded {
+        return Ok(());
+    }
+    Err(insecure())
+}
+
+fn insecure() -> Problem {
+    Problem::new(
         Code::InsecureTransport,
-        "a secret's value would cross the network unencrypted: this request came over plain HTTP from another host",
+        "a secret's value would cross the network unencrypted: this request came over plain HTTP from another host (or through a proxy not listed in [api] trusted_proxies)",
     )
-    .hint("Use HTTPS: turn on [api] tls = { self_signed = true } (or your own certificate), or put a TLS proxy in front and list it in [api] trusted_proxies. On the node itself, http://127.0.0.1 works. [api] allow_secrets_over_http = true lifts this check (not recommended)."))
+    .hint("Use HTTPS: turn on [api] tls = { self_signed = true } (or your own certificate), or put a TLS proxy in front and list it in [api] trusted_proxies (a proxy on the same host too: 127.0.0.1/32). On the node itself, http://127.0.0.1 works. [api] allow_secrets_over_http = true lifts this check (not recommended).")
 }
 
 /// Who may write: admins, never agent tokens.
@@ -516,11 +547,22 @@ pub(crate) async fn put_secret(
     }
     let body: SecretPut = match serde_json::from_slice(&raw) {
         Ok(b) => b,
-        // The parser's message never quotes the value (it names the field or the position).
+        // REQ: API-015 — the parser's own message can quote the input (`invalid type: integer
+        // `12345678``, a numeric PIN), so only its category and position are told.
         Err(e) => {
+            let what = match e.classify() {
+                serde_json::error::Category::Syntax => "isn't valid JSON",
+                serde_json::error::Category::Eof => "ended early",
+                serde_json::error::Category::Data => {
+                    "has a missing, unknown or wrongly typed field (`value` and `kind` are strings)"
+                }
+                serde_json::error::Category::Io => "couldn't be read",
+            };
             return no_store(
                 Problem::invalid(format!(
-                    "the body isn't {{\"value\": \"...\", \"kind\": \"text\"}}: {e}"
+                    "the body {what} (line {}, column {}); it should be {{\"value\": \"...\", \"kind\": \"text\"}}",
+                    e.line(),
+                    e.column()
                 ))
                 .into_response(),
                 None,
@@ -606,16 +648,20 @@ async fn write(
 ) -> Response {
     // REQ: AGT-003 (ADR-167 §4) — the record keeps `PUT /secrets/<name> ` and a keyed hash of
     // the value, never the value: the same key with another value is another request (409).
+    // An empty header is no key.
     let key = headers
         .get(IDEMPOTENCY_KEY)
         .and_then(|v| v.to_str().ok())
-        .map(|k| format!("{}:{}", p.user_id, k.trim()))
-        .filter(|k| !dry_run && k.len() > 2);
+        .map(str::trim)
+        .filter(|k| !dry_run && !k.is_empty())
+        .map(|k| format!("{}:{k}", p.user_id));
     let fingerprint = if key.is_some() {
         let r = match &op {
-            SecretOp::Put { value, .. } => {
-                backend.secret_idempotency(&format!("PUT /secrets/{name}"), Some(value))
-            }
+            // The kind is part of the request: the same key and value as another kind is 409.
+            SecretOp::Put { value, kind } => backend.secret_idempotency(
+                &format!("PUT /secrets/{name} kind={}", kind.trim()),
+                Some(value),
+            ),
             SecretOp::Delete { force } => backend.secret_idempotency(
                 &format!(
                     "DELETE /secrets/{name}{}",

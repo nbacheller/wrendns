@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use telltale_api::auth;
 use telltale_cluster::net::Cluster;
 
-use crate::credential_tests::{Harness, harness, harness_from, harness_in, leaks};
+use crate::credential_tests::{Harness, harness, harness_from, harness_in, harness_with, leaks};
 
 /// The value planted: it must never come back.
 const VALUE: &str = "planted-secret-value-61f0";
@@ -271,7 +271,7 @@ async fn api_015_dry_run_stores_nothing() {
 }
 
 /// REQ: API-015, AGT-003 (AC4) — an `Idempotency-Key` retry gets the first answer back; the same
-/// key with another value is 409; the record holds `PUT /secrets/<name> ` and a keyed hash,
+/// key with another value is 409; the record holds `PUT /secrets/<name> kind=<kind> ` and a keyed hash,
 /// never the value, and its stored answer neither.
 #[tokio::test]
 async fn api_015_idempotency_replay_without_body() {
@@ -308,12 +308,37 @@ async fn api_015_idempotency_replay_without_body() {
     let request = String::from_utf8_lossy(&row.request).into_owned();
     no_value(&request);
     no_value(&row.response);
-    let digest = request.strip_prefix("PUT /secrets/hook ").unwrap();
+    let digest = request
+        .strip_prefix("PUT /secrets/hook kind=text ")
+        .unwrap();
     assert_eq!(digest.len(), 64, "{request}");
     assert_ne!(
         digest,
         blake3::hash(VALUE.as_bytes()).to_hex().as_str(),
         "keyed, not a plain hash of the value"
+    );
+    // The kind is part of the request: the same key and value as another kind is 409.
+    let mut r = h.request(
+        "PUT",
+        "/api/v1/secrets/hook",
+        Some(&json!({"value": VALUE, "kind": "pem"})),
+    );
+    r.headers_mut()
+        .insert("idempotency-key", "secret-1".parse().unwrap());
+    let (s, _, v) = h.send(r).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    // An empty header is no key: nothing is recorded under it.
+    let mut r = h.request("PUT", "/api/v1/secrets/spare", Some(&put_body(VALUE)));
+    r.headers_mut()
+        .insert("idempotency-key", "".parse().unwrap());
+    let (s, _, v) = h.send(r).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(
+        h.auth
+            .state()
+            .idempotent(&format!("{}:", h.admin_id), crate::pipeline::unix_now())
+            .unwrap()
+            .is_none()
     );
 }
 
@@ -578,6 +603,8 @@ async fn api_015_replica_forward_logs_no_value() {
         no_value(&log);
         if log.contains("forwarding a secret write to the primary")
             && log.contains("a forwarded secret write")
+            && log.contains("stored secret set")
+            && log.contains("stored secret deleted")
         {
             break;
         }
@@ -590,6 +617,12 @@ async fn api_015_replica_forward_logs_no_value() {
     assert!(
         log.contains("a forwarded secret write"),
         "the primary's side: {log}"
+    );
+    // The primary's blocking thread (the rules, the encryption, the store) logs into the same
+    // capture: the dispatcher goes along with it.
+    assert!(
+        log.contains("stored secret set") && log.contains("stored secret deleted"),
+        "the primary's store: {log}"
     );
     assert!(log.contains("unifi"), "the name is logged");
     let _ = p.stop.send(true);
@@ -840,6 +873,7 @@ async fn api_015_delete_in_use_refused() {
 /// 403 `insecure_transport` (a forwarded request from loopback too, and a client's own
 /// `X-Forwarded-Proto` isn't believed); HTTPS (the API's own TLS), loopback, or
 /// `[api] allow_secrets_over_http` let it through.
+#[allow(clippy::too_many_lines)] // AC13's cases, one after another
 #[tokio::test]
 async fn api_015_plain_http_refused_unless_loopback_or_allowed() {
     let open = || vec![telltale_config::Cidr::parse("0.0.0.0/0").unwrap()];
@@ -884,7 +918,69 @@ async fn api_015_plain_http_refused_unless_loopback_or_allowed() {
         StatusCode::FORBIDDEN,
         "forwarded from afar"
     );
+    // A plain-HTTP proxy or relay on the same host passing a remote client's headers through:
+    // loopback isn't a trusted proxy for this check, whatever `X-Forwarded-Proto` says.
+    for fwd in ["x-forwarded-for", "forwarded", "x-real-ip"] {
+        let mut r = req_from(
+            &h.bearer,
+            [127, 0, 0, 1],
+            "PUT",
+            "/api/v1/secrets/a",
+            Some(&put_body(VALUE)),
+        );
+        let v = if fwd == "forwarded" {
+            "for=192.168.1.50"
+        } else {
+            "192.168.1.50"
+        };
+        r.headers_mut().insert(fwd, v.parse().unwrap());
+        r.headers_mut()
+            .insert("x-forwarded-proto", "https".parse().unwrap());
+        let (s, _, v) = json_of(&h, r).await;
+        assert_eq!(
+            (s, v["code"].clone()),
+            (StatusCode::FORBIDDEN, json!("insecure_transport")),
+            "{fwd} + X-Forwarded-Proto from loopback: {v}"
+        );
+    }
     assert!(!h.src.secrets.exists("a"));
+    // `[::]` listener: `::ffff:127.0.0.1` is the node itself.
+    let mut r = req_from(
+        &h.bearer,
+        lan,
+        "PUT",
+        "/api/v1/secrets/mapped",
+        Some(&put_body(VALUE)),
+    );
+    r.extensions_mut().insert(axum::extract::ConnectInfo(
+        "[::ffff:127.0.0.1]:40000".parse::<SocketAddr>().unwrap(),
+    ));
+    let (s, _, v) = json_of(&h, r).await;
+    assert_eq!(s, StatusCode::OK, "IPv4-mapped loopback: {v}");
+    // A proxy listed in `[api] trusted_proxies` saying HTTPS is believed (and only it).
+    let proxy = auth::Settings {
+        trusted_proxies: vec![("192.168.1.2".parse().unwrap(), 32)],
+        ..auth::Settings::default()
+    };
+    let h3 = harness_with("", None, open(), proxy);
+    for (peer, want) in [
+        ([192, 168, 1, 2], StatusCode::OK),
+        ([192, 168, 1, 3], StatusCode::FORBIDDEN),
+    ] {
+        let mut r = req_from(
+            &h3.bearer,
+            peer,
+            "PUT",
+            "/api/v1/secrets/p",
+            Some(&put_body(VALUE)),
+        );
+        r.headers_mut()
+            .insert("x-forwarded-for", "192.168.1.50".parse().unwrap());
+        r.headers_mut()
+            .insert("x-forwarded-proto", "https".parse().unwrap());
+        let (s, _, v) = json_of(&h3, r).await;
+        assert_eq!(s, want, "proxy {peer:?}: {v}");
+    }
     // The API's own TLS.
     let mut r = req_from(
         &h.bearer,
@@ -1157,4 +1253,18 @@ async fn api_015_new_ref_warns_older_members() {
         .await;
     assert!(!v["warnings"].to_string().contains("0.8.0"), "{v}");
     let _ = p.stop.send(true);
+}
+
+/// REQ: API-015 (AC15) — a body the parser refuses is answered with its category and position,
+/// never the parser's own text, which can quote the input (a numeric PIN).
+#[tokio::test]
+async fn api_015_bad_body_never_quotes_value() {
+    let h = harness("");
+    for body in [json!({"value": 12_345_678}), json!({"value": [12_345_678]})] {
+        let (s, _, v) = h.call("PUT", "/api/v1/secrets/pin", Some(&body)).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+        assert!(!v.to_string().contains("12345678"), "{v}");
+        assert!(v["detail"].as_str().unwrap().contains("line 1"), "{v}");
+    }
+    assert!(!h.src.secrets.exists("pin"));
 }

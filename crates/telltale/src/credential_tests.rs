@@ -127,6 +127,16 @@ pub(crate) fn harness_from(
     cluster: Option<Arc<telltale_cluster::net::Cluster>>,
     allowed: Vec<telltale_config::Cidr>,
 ) -> Harness {
+    harness_with(extra, cluster, allowed, auth::Settings::default())
+}
+
+/// [`harness_from`] with these auth settings (`[api] trusted_proxies` and the like).
+pub(crate) fn harness_with(
+    extra: &str,
+    cluster: Option<Arc<telltale_cluster::net::Cluster>>,
+    allowed: Vec<telltale_config::Cidr>,
+    settings: auth::Settings,
+) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = config(&planted_toml(extra));
     cfg.node.data_dir = telltale_config::SafeString::new(dir.path().to_str().unwrap()).unwrap();
@@ -140,7 +150,7 @@ pub(crate) fn harness_from(
     src.config.store(Arc::new(cfg.clone()));
     src.file_config.store(Arc::new(cfg));
     let state = Arc::new(telltale_store::state::State::open(&dir.path().join("state.db")).unwrap());
-    let auth = Arc::new(Auth::new(state, auth::Settings::default()));
+    let auth = Arc::new(Auth::new(state, settings));
     let now = crate::pipeline::unix_now();
     let admin = auth
         .create_user(

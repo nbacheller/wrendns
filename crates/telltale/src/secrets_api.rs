@@ -321,6 +321,15 @@ fn refuse_role(w: &SecretWrite) -> Option<Problem> {
     }
 }
 
+/// The epoch a write is stamped in: the primary's (checked again just before the write), 0 when
+/// standalone.
+fn primary_epoch(src: &Sources) -> Result<u64, Problem> {
+    match &src.cluster {
+        Some(c) => c.primary_epoch().map_err(not_primary),
+        None => Ok(0),
+    }
+}
+
 fn not_primary(n: NotPrimary) -> Problem {
     match n {
         NotPrimary::Replica => Problem::new(Code::Conflict, "this node isn't the primary any more")
@@ -413,10 +422,10 @@ pub(crate) fn apply(
     // REQ: CLU-015 (ADR-167 §4) — only a primary whose lease holds (dry runs too); a GitOps
     // authority, a pin and a rollout don't matter: secrets aren't configuration versions.
     if let Some(c) = &src.cluster {
-        c.as_primary(|_| ()).map_err(not_primary)?;
+        c.primary_epoch().map_err(not_primary)?;
     }
     // One secret write at a time, so `If-Match` and the in-use check hold until the change is
-    // made (taken before the role-change lock inside `as_primary`, never after it).
+    // made. The role-change lock is never held with it (`primary_epoch` takes and drops it).
     let _one = WRITES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -502,15 +511,13 @@ pub(crate) fn apply(
                     warnings,
                 });
             }
-            let store = |epoch: u64| {
-                src.secrets
-                    .put(&name, kind, &value, epoch, &w.by, origin, now)
-            };
-            let info = match &src.cluster {
-                Some(c) => c.as_primary(store).map_err(not_primary)?,
-                None => store(0),
-            }
-            .map_err(|e| e.problem())?;
+            // REQ: CLU-015 (ADR-167 §2) — the epoch read under the role-change lock; the stamp
+            // and the write (SQLite, an fsync) happen after it, outside that lock.
+            let epoch = primary_epoch(src)?;
+            let info = src
+                .secrets
+                .put(&name, kind, &value, epoch, &w.by, origin, now)
+                .map_err(|e| e.problem())?;
             drop(value);
             tracing::info!(name = %name, stamp = ?info.stamp, "stored secret set");
             Ok(SecretChange {
@@ -569,13 +576,12 @@ pub(crate) fn apply(
                     warnings,
                 });
             }
-            let store = |epoch: u64| src.secrets.delete(&name, epoch, &w.by, now);
-            let info = match &src.cluster {
-                Some(c) => c.as_primary(store).map_err(not_primary)?,
-                None => store(0),
-            }
-            .map_err(|e| e.problem())?
-            .ok_or_else(|| Problem::not_found(format!("no secret named `{name}` is stored")))?;
+            let epoch = primary_epoch(src)?;
+            let info = src
+                .secrets
+                .delete(&name, epoch, &w.by, now)
+                .map_err(|e| e.problem())?
+                .ok_or_else(|| Problem::not_found(format!("no secret named `{name}` is stored")))?;
             tracing::info!(name = %name, stamp = ?info.stamp, "stored secret deleted");
             Ok(SecretChange {
                 applied: true,
@@ -655,9 +661,14 @@ pub(crate) async fn write_here(src: Arc<Sources>, w: SecretWrite) -> Result<Secr
         (Some(c), SecretOp::Delete { .. }) if c.is_primary() => peer_refs(c).await,
         _ => PeerRefs::default(),
     };
-    tokio::task::spawn_blocking(move || apply(&src, w, &peers))
-        .await
-        .unwrap_or_else(|e| Err(Problem::internal(format!("request worker failed: {e}"))))
+    // The caller's log dispatcher goes along (one `Arc`), so the blocking thread logs where the
+    // request does (a scoped subscriber included: AC8's capture sees the store's lines too).
+    let log = tracing::dispatcher::get_default(Clone::clone);
+    tokio::task::spawn_blocking(move || {
+        tracing::dispatcher::with_default(&log, || apply(&src, w, &peers))
+    })
+    .await
+    .unwrap_or_else(|e| Err(Problem::internal(format!("request worker failed: {e}"))))
 }
 
 /// REQ: AGT-003 (ADR-167 §4) — an `Idempotency-Key` record's request: the request line, then the
@@ -755,14 +766,16 @@ pub(crate) async fn forward(
         role: w.role,
         agent: w.agent.as_deref(),
     };
-    let body = zeroize::Zeroizing::new(
-        serde_json::to_vec(&out).map_err(|e| Problem::internal(e.to_string()))?,
-    );
+    // Sized up front (a JSON escape is at most 6 bytes per input byte), so serialising never
+    // grows the buffer and leaves a partial copy behind. If it fails, the buffer is wiped here;
+    // otherwise it moves into the channel, whose buffers aren't wiped (ADR-167 §2's limit).
+    let room = 6 * value.map_or(0, str::len) + 6 * w.name.len() + 6 * w.by.len() + 1024;
+    let mut body = zeroize::Zeroizing::new(Vec::with_capacity(room));
+    serde_json::to_writer(&mut *body, &out).map_err(|e| Problem::internal(e.to_string()))?;
     tracing::debug!(%primary, op, name = %w.name, "forwarding a secret write to the primary");
     let reply = cluster
-        .call(&primary, kind_rpc, body.to_vec(), DEADLINE)
+        .call(&primary, kind_rpc, std::mem::take(&mut *body), DEADLINE)
         .await;
-    drop(body);
     match reply {
         Ok(r) => crate::forward::decode_answer(&r),
         Err(e) if e.contains("unknown call") => {

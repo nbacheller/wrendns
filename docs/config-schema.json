@@ -51,7 +51,6 @@
       "description": "The REST API (and, later, the web UI).",
       "$ref": "#/$defs/ApiConfig",
       "default": {
-        "allow_secrets_over_http": false,
         "enabled": true,
         "listen": "0.0.0.0:8053",
         "trusted_proxies": []
@@ -1032,9 +1031,8 @@
       "type": "object",
       "properties": {
         "allow_secrets_over_http": {
-          "description": "REQ: API-015 (ADR-167 §4) — accept stored secrets' values (`PUT /api/v1/secrets`) over\nplain HTTP from other hosts. Off (the default): a value is taken only over HTTPS (`tls`\nabove, or a proxy in `trusted_proxies` saying `X-Forwarded-Proto: https`) or from the node\nitself (loopback), since over plain HTTP it would cross the network in clear. Read from\nthis node's own files; the API can't set it.",
-          "type": "boolean",
-          "default": false
+          "description": "REQ: API-015 (ADR-167 §4) — accept stored secrets' values (`PUT /api/v1/secrets`) over\nplain HTTP from other hosts. Off (the default): a value is taken only over HTTPS (`tls`\nabove, or a proxy in `trusted_proxies` saying `X-Forwarded-Proto: https`) or from the node\nitself (loopback, with no `X-Forwarded-For`/`Forwarded`/`X-Real-IP`), since over plain\nHTTP it would cross the network in clear. A forwarded request's `X-Forwarded-Proto` counts\nonly from `trusted_proxies` here, loopback included: list `127.0.0.1/32` for a TLS proxy\non the same host. Read from this node's own files; the API can't set it.",
+          "type": "boolean"
         },
         "enabled": {
           "type": "boolean",
@@ -1057,7 +1055,7 @@
           ]
         },
         "trusted_proxies": {
-          "description": "Reverse proxies or ingress controllers in front of the API (e.g. the pod network,\n`10.0.0.0/8`). For requests from them, the client address comes from\n`X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log), and\n`X-Forwarded-Proto: https` counts as HTTPS (HTTP Basic, the `Secure` cookie flag); from\nanyone else that header is ignored. Loopback always counts for `X-Forwarded-Proto`, so\na TLS terminator on the same host needs nothing here. Default: none (the connection's\naddress is the client).",
+          "description": "Reverse proxies or ingress controllers in front of the API (e.g. the pod network,\n`10.0.0.0/8`). For requests from them, the client address comes from\n`X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log), and\n`X-Forwarded-Proto: https` counts as HTTPS (HTTP Basic, the `Secure` cookie flag); from\nanyone else that header is ignored. Loopback always counts for `X-Forwarded-Proto`, so\na TLS terminator on the same host needs nothing here (except to take stored secrets'\nvalues, see `allow_secrets_over_http`). Default: none (the connection's\naddress is the client).",
           "type": "array",
           "default": [],
           "items": {

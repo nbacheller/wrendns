@@ -2672,7 +2672,8 @@ pub struct ApiConfig {
     /// `X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log), and
     /// `X-Forwarded-Proto: https` counts as HTTPS (HTTP Basic, the `Secure` cookie flag); from
     /// anyone else that header is ignored. Loopback always counts for `X-Forwarded-Proto`, so
-    /// a TLS terminator on the same host needs nothing here. Default: none (the connection's
+    /// a TLS terminator on the same host needs nothing here (except to take stored secrets'
+    /// values, see `allow_secrets_over_http`). Default: none (the connection's
     /// address is the client).
     pub trusted_proxies: Vec<Cidr>,
     /// REQ: API-003 (ADR-149) — serve the web UI and API over HTTPS on `listen`: with
@@ -2686,8 +2687,11 @@ pub struct ApiConfig {
     /// REQ: API-015 (ADR-167 §4) — accept stored secrets' values (`PUT /api/v1/secrets`) over
     /// plain HTTP from other hosts. Off (the default): a value is taken only over HTTPS (`tls`
     /// above, or a proxy in `trusted_proxies` saying `X-Forwarded-Proto: https`) or from the node
-    /// itself (loopback), since over plain HTTP it would cross the network in clear. Read from
-    /// this node's own files; the API can't set it.
+    /// itself (loopback, with no `X-Forwarded-For`/`Forwarded`/`X-Real-IP`), since over plain
+    /// HTTP it would cross the network in clear. A forwarded request's `X-Forwarded-Proto` counts
+    /// only from `trusted_proxies` here, loopback included: list `127.0.0.1/32` for a TLS proxy
+    /// on the same host. Read from this node's own files; the API can't set it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub allow_secrets_over_http: bool,
 }
 

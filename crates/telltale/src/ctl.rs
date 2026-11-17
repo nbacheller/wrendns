@@ -301,6 +301,10 @@ fn secret_value(file: Option<&std::path::Path>) -> Result<zeroize::Zeroizing<Str
                 .map_err(|e| format!("{}: {e}", p.display()))?;
         }
         _ => {
+            // A terminal would echo the value and keep it in the scrollback.
+            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                return Err("standard input is a terminal, which would show the value: give it with --from-file FILE, or pipe it in (`... | telltale ctl secrets set NAME`)".into());
+            }
             std::io::stdin()
                 .read_to_string(&mut text)
                 .map_err(|e| format!("standard input: {e}"))?;
