@@ -35,14 +35,20 @@
   // not the bare word "router". Its type (UniFi, Home Assistant) comes from GET /api/v1/routers (T23.7).
   const sourceLabel = (l: S['DhcpLease']) => (l.source === 'router' && l.router ? `router: ${l.router}` : (sourceText[l.source] ?? l.source));
   // REQ: DNS-023 (T24.14) — copy a device's DNS name.
-  let copiedName = $state('');
-  async function copyName(n: string) {
+  // Per row (keyed by address, so two rows with the same name don't share a status); cleared after 1.5 s.
+  let copied = $state<{ ip: string; ok: boolean } | null>(null);
+  let copyTimer: ReturnType<typeof setTimeout> | undefined;
+  async function copyName(ip: string, n: string) {
+    let ok = true;
     try {
       await navigator.clipboard.writeText(n);
-      copiedName = n;
     } catch {
-      copiedName = '';
+      // No clipboard here (plain HTTP on the LAN): the name is selectable, so say so.
+      ok = false;
     }
+    copied = { ip, ok };
+    clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => (copied = null), 1500);
   }
   const named = (ip: string) => configured.some((c) => c.match.includes(ip));
   // REQ: OBS-025 — what each device looks like, by address.
@@ -286,7 +292,8 @@
                   <td class="mono small" data-testid="dns-name">
                     {#if l.dnsName}
                       {l.dnsName}
-                      <button type="button" class="link small" onclick={() => copyName(l.dnsName ?? '')}>{copiedName === l.dnsName ? 'Copied' : 'Copy'}</button>
+                      <button type="button" class="link small copy-btn" aria-label={'Copy ' + l.dnsName} onclick={() => copyName(l.ip, l.dnsName ?? '')}>Copy</button>
+                      <span class="small muted" role="status" aria-live="polite" data-testid="copy-status">{copied?.ip === l.ip ? (copied.ok ? 'Copied' : 'Select to copy') : ''}</span>
                     {:else}<span class="muted">none</span>{/if}
                   </td>
                   <td><span class="badge info" data-testid="named-by">{sourceLabel(l)}</span></td>
@@ -327,6 +334,11 @@
 </div>
 
 <style>
+  /* A larger tap target for the row's Copy button (it sits in a table cell). */
+  .copy-btn {
+    min-height: 32px;
+    padding: 6px 8px;
+  }
   /* REQ: FLT-017 — a workload's name on one line (the table scrolls instead). */
   .nowrap {
     white-space: nowrap;

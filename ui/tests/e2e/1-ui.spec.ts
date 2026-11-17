@@ -3542,13 +3542,39 @@ test('dns_023 discovered devices show their DNS name', async () => {
     { ip: '10.20.2.32', mac: '', hostname: 'printer', source: 'mdns', expiresUnixSeconds: 0 },
   ];
   await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items } }));
-  await page.goto('/#/clients?tab=discovered');
-  const row = page.getByRole('row').filter({ hasText: '10.20.2.31' });
-  await expect(row.getByTestId('dns-name')).toContainText('kitchen-tablet.home.arpa');
-  await expect(page.getByRole('row').filter({ hasText: '10.20.2.32' }).getByTestId('dns-name')).toContainText('none');
-  await row.getByRole('button', { name: 'Copy', exact: true }).click();
-  await expect(row.getByRole('button', { name: 'Copied', exact: true })).toBeVisible();
-  await page.unroute('**/api/v1/dhcp/leases');
+  try {
+    await page.goto('/#/clients?tab=discovered');
+    const row = page.getByRole('row').filter({ hasText: '10.20.2.31' });
+    await expect(row.getByTestId('dns-name')).toContainText('kitchen-tablet.home.arpa');
+    await expect(page.getByRole('row').filter({ hasText: '10.20.2.32' }).getByTestId('dns-name')).toContainText('none');
+    await row.getByRole('button', { name: /^Copy/ }).click();
+    await expect(row.getByTestId('copy-status')).toHaveText('Copied');
+  } finally {
+    await page.unroute('**/api/v1/dhcp/leases');
+    await page.context().clearPermissions();
+  }
+});
+
+// REQ: DNS-023 (T24.14) — without a clipboard (plain HTTP on the LAN) the Copy button says the name is selectable.
+test('dns_023 copy falls back to select-to-copy when the clipboard is refused', async () => {
+  const items = [{ ip: '10.20.2.33', mac: 'aa:bb:cc:dd:ee:33', hostname: 'hall', dnsName: 'hall.home.arpa', source: 'mdns', expiresUnixSeconds: 0 }];
+  await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items } }));
+  try {
+    // Leave the page first: a hash-only goto to the same URL doesn't re-fetch the leases.
+    await page.goto('/#/');
+    await page.goto('/#/clients?tab=discovered');
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText: () => Promise.reject(new Error('denied')) }, configurable: true });
+    });
+    const row = page.getByRole('row').filter({ hasText: '10.20.2.33' });
+    await row.getByRole('button', { name: /^Copy/ }).click();
+    await expect(row.getByTestId('copy-status')).toHaveText('Select to copy');
+  } finally {
+    await page.unroute('**/api/v1/dhcp/leases');
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+    });
+  }
 });
 
 // REQ: API-012 (T24.14) — the discovered table names the router that named each device, not the bare "router".
@@ -3559,10 +3585,14 @@ test('api_012 discovered devices name the router that named them', async () => {
     { ip: '10.20.2.43', mac: '', hostname: 'speaker', source: 'mdns', expiresUnixSeconds: 0 },
   ];
   await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items } }));
-  await page.goto('/#/clients?tab=discovered');
-  await expect(page.getByRole('row').filter({ hasText: '10.20.2.41' }).getByTestId('named-by')).toHaveText('router: home-assistant');
-  await expect(page.getByRole('row').filter({ hasText: '10.20.2.42' }).getByTestId('named-by')).toHaveText('router: udm');
-  await expect(page.getByRole('row').filter({ hasText: '10.20.2.43' }).getByTestId('named-by')).toHaveText('mDNS');
-  await expect(page.getByTestId('discovered')).toContainText('Home Assistant');
-  await page.unroute('**/api/v1/dhcp/leases');
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/clients?tab=discovered');
+    await expect(page.getByRole('row').filter({ hasText: '10.20.2.41' }).getByTestId('named-by')).toHaveText('router: home-assistant');
+    await expect(page.getByRole('row').filter({ hasText: '10.20.2.42' }).getByTestId('named-by')).toHaveText('router: udm');
+    await expect(page.getByRole('row').filter({ hasText: '10.20.2.43' }).getByTestId('named-by')).toHaveText('mDNS');
+    await expect(page.getByTestId('discovered')).toContainText('Home Assistant');
+  } finally {
+    await page.unroute('**/api/v1/dhcp/leases');
+  }
 });
