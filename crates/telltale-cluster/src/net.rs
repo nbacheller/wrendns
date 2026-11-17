@@ -757,6 +757,10 @@ pub struct Cluster {
     /// REQ: CLU-005 (ADR-154) — since when this node has left the election to a Git-managed node
     /// with no primary up (Unix ms; 0: it isn't). See [`bounded_deference`].
     defer_since_ms: AtomicU64,
+    /// REQ: OBS-010 (T24.5, fork #2) — the newest heartbeat this node has heard from a primary
+    /// (Unix ms; 0: none yet). Kept after the primary leaves the member list, so a silence counts
+    /// from when the primary was last heard, not from process start. See `primary_silent_secs`.
+    primary_heard_ms: AtomicU64,
 }
 
 /// What this node has applied from the primary (replica) or published (primary).
@@ -819,6 +823,7 @@ impl Cluster {
             started_ms: now_ms(),
             handover_since_ms: AtomicU64::new(0),
             defer_since_ms: AtomicU64::new(0),
+            primary_heard_ms: AtomicU64::new(0),
         })
     }
 
@@ -1742,16 +1747,27 @@ impl Cluster {
     /// REQ: OBS-010 (T24.5, fork #2) — how long this node has gone without a heartbeat from its
     /// primary, in seconds, read from the heartbeats it already exchanges (never from the DNS
     /// path). `None` when a primary was heard within the `up` window or this node is the
-    /// primary. Before any primary has been heard, the time counts from this process's start.
+    /// primary. Before any primary has been heard, the time counts from this process's start; once one
+    /// has been heard, it counts from the newest heartbeat from any primary, even after that primary has
+    /// left the member list (a removed or replaced primary is not "silent since boot").
     pub fn primary_silent_secs(&self, now_ms: u64) -> Option<u64> {
         if self.is_primary() {
             return None;
         }
         let members = self.members();
+        if let Some(seen) = members
+            .iter()
+            .filter(|m| m.primary)
+            .map(|m| m.last_seen_ms)
+            .max()
+        {
+            self.primary_heard_ms.fetch_max(seen, Ordering::AcqRel);
+        }
+        let heard = self.primary_heard_ms.load(Ordering::Acquire);
         primary_silence_secs(
             now_ms,
             self.started_ms,
-            members.iter().filter(|m| m.primary).map(|m| m.last_seen_ms),
+            (heard > 0).then_some(heard).into_iter(),
         )
     }
 

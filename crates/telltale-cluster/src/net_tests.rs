@@ -2102,6 +2102,23 @@ fn obs_010_t24_5_primary_silence_uses_the_newest_primary_and_clears_on_contact()
     );
 }
 
+// REQ: OBS-010 (T24.5, fork #2) — a primary heard at 1_000_000 that has since left the member list
+// (the heard value is kept): the silence counts from when it was last heard, not from start.
+#[test]
+fn obs_010_t24_5_primary_silence_after_the_primary_left_counts_from_when_last_heard() {
+    let started = 0;
+    let heard = Some(10_000_000);
+    assert_eq!(
+        primary_silence_secs(10_045_000, started, heard.into_iter()),
+        Some(45),
+        "45 s since the primary was last heard, not 10 000 s since start"
+    );
+    assert_eq!(
+        primary_silence_secs(10_010_000, started, heard.into_iter()),
+        None
+    );
+}
+
 #[test]
 fn obs_010_t24_5_primary_silence_counts_from_start_when_none_was_heard() {
     // A replica that has never heard a primary since it started: the time since start.

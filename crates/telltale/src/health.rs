@@ -353,12 +353,11 @@ pub(crate) fn cluster_reasons(view: &ClusterView) -> Vec<HealthReason> {
         return out;
     }
     // REQ: OBS-010 (T24.5, fork #2) — a replica that hasn't reached its primary for a minute
-    // (a silent split). Witnesses and resolver pods are left out, as the alert leaves them out.
-    for n in view
-        .nodes
-        .iter()
-        .filter(|n| n.role == "replica" && n.up && !n.witness && !n.ephemeral)
-    {
+    // (a silent split). Witnesses, resolver pods and nodes in maintenance are left out, as the
+    // alert leaves them out.
+    for n in view.nodes.iter().filter(|n| {
+        n.role == "replica" && n.up && !n.witness && !n.ephemeral && n.maintenance.is_none()
+    }) {
         if let Some(s) = n
             .primary_silent_seconds
             .filter(|s| *s >= PRIMARY_UNREACHABLE_SECONDS)
@@ -805,6 +804,16 @@ mod tests {
         let mut away = node("away", Some(600));
         away.up = false;
         assert!(codes(vec![primary.clone(), witness, pod, away]).is_empty());
+        // A replica in a maintenance window: no reason either (as the alert leaves it out).
+        let mut maint = node("m", Some(600));
+        maint.maintenance = Some(telltale_api::model::NodeMaintenance {
+            until: "2026-10-09T14:00:00Z".into(),
+            reason: "disk swap".into(),
+            by: "alice".into(),
+            seconds_left: 600,
+            ..telltale_api::model::NodeMaintenance::default()
+        });
+        assert!(codes(vec![primary.clone(), maint]).is_empty());
         // Reconnected: the value is absent, so the reason clears.
         assert!(codes(vec![primary, node("r", None)]).is_empty());
     }

@@ -1366,9 +1366,6 @@ mod tests {
         }
     }
 
-    /// REQ: OPS-010 (ADR-118) — a node in maintenance raises no `node_down` or probe alert;
-    /// one that was firing resolves with "(maintenance)"; the `maintenance` rule fires while
-    /// it lasts; after the window, `for_secs` counts from zero again.
     // REQ: OBS-010 (T24.5, fork #2) — a replica that hasn't reached its primary for `threshold`
     // seconds (default 60) raises one alert after `for_secs`; the boundary is exact; witnesses,
     // resolver pods and nodes out of contact are left out; the alert clears on reconnect and
@@ -1479,6 +1476,9 @@ mod tests {
         assert!(!cleared[0].firing, "reconnected: the alert clears");
     }
 
+    /// REQ: OPS-010 (ADR-118) — a node in maintenance raises no `node_down` or probe alert;
+    /// one that was firing resolves with "(maintenance)"; the `maintenance` rule fires while
+    /// it lasts; after the window, `for_secs` counts from zero again.
     #[test]
     #[allow(clippy::too_many_lines)] // one scenario, step by step
     fn ops_010_alerts_skip_nodes_in_maintenance() {
