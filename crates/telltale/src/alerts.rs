@@ -347,7 +347,7 @@ fn observe(
                 })
                 .filter_map(|n| {
                     let silent = n.primary_silent_seconds?;
-                    (silent as f64 >= limit).then(|| {
+                    (f64::from(u32::try_from(silent).unwrap_or(u32::MAX)) >= limit).then(|| {
                         let name = node_label(&n);
                         let s = format!(
                             "replica {name} hasn't reached its primary for {silent} s: it may be split off from the cluster"
@@ -1424,7 +1424,10 @@ mod tests {
             observe(&stub(nodes), &rule, 1000, &[], &[], &Paused::default())
         };
         // One second short of the default 60 s: nothing. Exactly 60 s: raised.
-        assert!(seen(vec![primary.clone(), node("r1", Some(59))]).is_empty());
+        assert!(
+            seen(vec![primary.clone(), node("r1", Some(59))]).is_empty(),
+            "one second short"
+        );
         let at = seen(vec![primary.clone(), node("r1", Some(60))]);
         assert_eq!(
             at.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(),
@@ -1436,7 +1439,10 @@ mod tests {
             at[0].1
         );
         // Witnesses, resolver pods and nodes out of contact never raise it.
-        assert!(seen(vec![primary.clone(), witness, pod, away]).is_empty());
+        assert!(
+            seen(vec![primary.clone(), witness, pod, away]).is_empty(),
+            "left out"
+        );
         // The rule's threshold replaces the default.
         let tight = AlertRule {
             threshold: Some(15.0),
@@ -1456,7 +1462,7 @@ mod tests {
         let mut engine = Engine::default();
         let rules = vec![rule.clone()];
         let obs = |silent: Option<u64>| vec![seen(vec![primary.clone(), node("r1", silent)])];
-        assert!(engine.step(0, &rules, &obs(Some(60))).is_empty());
+        assert!(engine.step(0, &rules, &obs(Some(60))).is_empty(), "not yet");
         assert!(
             engine.step(29, &rules, &obs(Some(89))).is_empty(),
             "for_secs not yet"
