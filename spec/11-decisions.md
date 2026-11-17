@@ -1293,6 +1293,33 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-947 — A promotion reaches every replica in the heartbeats; a key share repeats every 30 s (Accepted 2026-11-17)
+**Context:** the three-node run (`deploy/cluster3`, T21.5) killed the primary. The replica elected in its place became primary, and the other replica followed the dead old primary (its configuration fetch went to `primary:8443`) and missed every later version. Two causes in `telltale-cluster`:
+- a member's `primary` flag came only from its Hello, at connect time. A replica that connected before the election kept the old view, and `primary_urls` left the new primary's URL out as a replica's;
+- the primary sent its key share once per stream. A peer that refused it (the flag was stale, so the sender wasn't "the primary" yet) never got another, so it could not be promoted later.
+
+**Decision:**
+- The heartbeat carries the sender's primary flag as an optional field (tag 39). A sender sets it at every heartbeat, and the receiver updates the member's flag. An older node sends no flag, and the flag a peer holds stays. Both directions are compatible without a protocol bump (CLU-010).
+- The primary sends its key share to an eligible peer again every 30 s (`KEY_SHARE_RESEND`), unchanged. The acceptance check is unchanged: the sender must be the primary in the receiver's view, at the same epoch or a newer one.
+
+**Alternatives rejected:**
+- *A protocol version bump.* The field is optional both ways, so a bump would only force a mixed cluster to upgrade together.
+- *Deriving the primary from the epoch.* A node's epoch alone doesn't say whether it holds the role now, and a former primary keeps the epoch it had.
+- *Acknowledging key shares.* A wire change for a refusal that a resend already covers.
+
+**Consequences:** a primary's heartbeat grows by two bytes, and an eligible peer gets about 2 KiB every 30 s. A replica takes a new primary from the next heartbeat after the promotion. Tests: `clu_005_a_promotion_reaches_a_replica_in_the_heartbeats`, `clu_005_a_key_share_is_sent_again_after_its_interval`, `clu_005_the_heartbeat_primary_flag_is_optional_both_ways`.
+
+## ADR-948 — The `[discovery]` first write, and members that are stopped or run a dev build (Proposed)
+**Context:** ADR-928's title says "the first write waits for N−1 members". Its decision says the first write is refused with 409 `members_too_old` while a member runs a version older than `DISCOVERY_SINCE` (0.8.0), or one that can't be read. The three-node run checked both readings. With all three up, the first write passes when the replicas report 0.8.0. With replica-b stopped, the real first write also passes: the gate reads the version the cluster recorded for it, and a stopped member is neither older nor unreadable. A cluster of `dev` builds does refuse the first write, since a peer's `dev` is unreadable to the gate, and the refusal names both replicas. The run's image therefore stamps the release version (0.8.0), the way CI stamps a release build.
+
+**Decision (proposed):** keep the gate as ADR-928's decision states it: members are judged by the version the cluster recorded for them, not by whether they are up. The test follows that. The title of ADR-928 says "waits", which this doesn't do.
+
+**Open for the owner:**
+- Should a stopped member block the first write until it is back (the title's reading)? That is a new rule: a member that's down would hold up a setting, and the first write has no later retry.
+- Should a `dev` build report a readable version to its peers, so a dev cluster can use `[discovery]`? Today it can't, and the refusal is correct for the decision as written.
+
+**Consequences:** no code change until the owner decides. The test pins the current behaviour (`deploy/cluster3/e2e.sh`, check e).
+
 ## ADR-946 — Federated reads run off the runtime workers: `block_in_place` under the blocking helper (Accepted 2026-11-17)
 **Context:** upstream #7. `call_one` and `gather` in `crates/telltale/src/federated.rs` run a plain thread that blocks on the runtime. Called from a worker, the worker is held while the cluster stream's writer and reader tasks need workers to finish the call, so two concurrent reads to a peer that doesn't answer wedged a two-worker runtime. Several async handlers called a federated read directly on a worker.
 

@@ -2230,6 +2230,8 @@ replica that holds every one of them at the same stamp. Until then it reports th
 and refuses secret writes, and DNS is unaffected.
 
 
+**Testing a cluster.** `deploy/cluster3/` runs a primary and two replicas in containers and checks joining, replication, forwarding, secrets, routers, the network-inventory settings, federated reads, failover, and rolling restarts. It's a throwaway test cluster, separate from any node you run (see its README). CI runs it on every change to the cluster code.
+
 ## Taking a node down for maintenance
 Swapping a Pi's SD card, moving a box, or upgrading a node by hand: put the node in maintenance
 first. For a bounded time (an hour by default, a day at most) it:
