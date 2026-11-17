@@ -49,6 +49,11 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+# NFR-001 (ADR-915): the API and MCP handlers are cold code next to the DNS path, so they are
+# optimized for size. Measured: -0.55 MiB of the compressed image, the rest of the binary keeps
+# opt-level 3 (the hot path lives in telltale-net, telltale-cache, telltale-filter, ...).
+[profile.release.package.telltale-api]
+opt-level = "s"
 
 # Fast local benchmarking builds without fat LTO.
 [profile.bench-fast]

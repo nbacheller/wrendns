@@ -3625,3 +3625,19 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - Assistants connect with SSO and the user's consent, and no long-lived token is stored in the assistant.
 - Each request verifies a signature (keys cached with discovery, refreshed on rotation); no per-token cache is kept.
 - Providers that only issue opaque access tokens need a token per agent instead, until introspection is added.
+
+## ADR-915 — Image size: optimize cold code for size, embed only the gzip UI, and ship only the tz database the code reads (Accepted 2026-11-16)
+**Context:** NFR-001 (`01`, `00 §5`) caps the compressed image at 15 MiB per architecture (`deploy/image/size.py`). At 7db1908 the amd64 image measured 15.13 MiB, up from 14.76 MiB at a708f7f. The new code (secrets, credential rules, lists refresh, federated paths, ctl, OpenAPI schemas) grew the stripped binary by 0.91 MiB. The dependency and UI changes added almost nothing. The binary is already at `opt-level = 3`, fat LTO, one codegen unit and `panic = "abort"`, so the remaining savings come from what is compiled at a lower opt-level and from what is embedded.
+
+**Decision:** Reduce the image in the order of saving against risk, without dropping a feature and without touching the DNS hot path (`02 §3`):
+1. **API and MCP code at `opt-level = "s"`.** `[profile.release.package.telltale-api]` takes opt-level `s`; the rest of the workspace keeps opt-level 3. `telltale-api` holds the handlers, OpenAPI and MCP code, which are cold next to the DNS path. Measured: amd64 15.13 to 14.58 MiB.
+2. **Tz database without `right/`.** The image ships the TZif zones that `jiff` reads (schedules, FLT-010), without the `right/` leap-second zones, `tzdata.zi`, `*.tab` and `leap*` files. Measured: 14.58 to 14.39 MiB. Known effect: a schedule that names a `right/...` zone no longer resolves. Schedules use the ordinary zone names.
+3. **Embed only the gzip of each text UI file.** `ui/scripts/postbuild.mjs` removes the raw copy of a text file once its `.gz` is written. The binary embeds the `.gz`. A client that accepts gzip gets it as before. Any other client gets the same bytes inflated on the request, with `miniz_oxide` (already in the lock file, so no new package). Binary files (PNG, ICO, WOFF2) stay raw. Measured: 14.39 to 14.16 MiB. The postbuild script also resolves its `dist` path on Windows, where it failed before.
+
+Final amd64 image: 14.16 MiB (headroom 0.84 MiB under NFR-001, 0.69 MiB under the 14.85 MiB target).
+
+**Consequences:**
+- The API and MCP handlers run as size-optimized code. The DNS path crates keep opt-level 3, and their code is unchanged, so `make bench-smoke` is not required by rule 4 for these changes. The API latency at opt-level `s` was not benchmarked here and is a follow-up.
+- A `right/...` zone name stops resolving in a schedule, with an error that names the zone. No feature is lost.
+- The UI's raw text files are no longer in `ui/dist`. Tools that read `dist` directly (for example `vite preview`) must use `ui/dist/*.gz`, or run `npm run build` without the postbuild step.
+- Not taken, recorded here for the owner: `telltale-config` at opt-level `s` (about 0.2 MiB more, with per-query helpers in the policy path, so it needs a benchmark first), `opt-level = "z"` (about 0.5 MiB more, slower API handling), dropping the system CA bundle (0.12 MiB, needs its own ADR because the spec says the image ships one), and trimming serde code for `Config` (0.1 to 0.2 MiB, a refactor).
