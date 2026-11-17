@@ -3675,15 +3675,14 @@ test('api_013 viewer cannot make a group', async () => {
   expect([200, 201, 409]).toContain(made.status());
   const view = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
   try {
-    await view.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: NETWORKS } }));
+    // No mock: the viewer's /networks comes from the real server (the node's group networks).
     const p = await view.newPage();
     await p.goto('/#/networks');
     await p.getByLabel('Username', { exact: true }).fill(VIEWER.user);
     await p.getByLabel('Password', { exact: true }).fill(VIEWER.pass);
     await p.getByRole('button', { name: 'Sign in' }).click();
-    await expect(p.getByTestId('network-open').first()).toBeVisible({ timeout: 30_000 });
+    await expect(p.getByRole('row').filter({ hasText: '127.0.0.0/8' }).getByTestId('group-only')).toBeVisible({ timeout: 30_000 });
     await expect(p.getByTestId('make-group')).toHaveCount(0);
-    await expect(p.getByRole('row').filter({ hasText: '192.168.20.0/24' })).toContainText('192.168.20.100 – 192.168.20.200');
     // And the server refuses the write a viewer's form would send.
     const vcsrf = (await (await view.request.get('/api/v1/auth/status')).json()).csrfToken as string;
     const put = await view.request.put('/api/v1/groups/viewer-try', { headers: { 'x-csrf-token': vcsrf }, data: { networks: ['10.77.0.0/24'] } });
@@ -3710,4 +3709,75 @@ test('api_013 the node lists its group networks as group only', async () => {
   await page.goto('/#/');
   await page.goto('/#/networks');
   await expect(page.getByRole('row').filter({ hasText: '127.0.0.0/8' }).getByTestId('group-only')).toBeVisible({ timeout: 15_000 });
+});
+
+// REQ: API-013 (T24.15) — on a phone the secondary columns step aside and the page does not scroll sideways.
+test('api_013 networks fit a phone width', async () => {
+  const before = page.viewportSize();
+  await page.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: NETWORKS } }));
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#/');
+    await page.goto('/#/networks');
+    await expect(page.getByTestId('network-open').first()).toBeVisible();
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+    await expect(page.getByRole('columnheader', { name: 'Gateway', exact: true })).toBeHidden();
+    await expect(page.getByRole('columnheader', { name: 'Subnet', exact: true })).toBeVisible();
+  } finally {
+    await page.unroute('**/api/v1/networks');
+    if (before) await page.setViewportSize(before);
+  }
+});
+
+// REQ: API-013 (T24.15) — an IPv6 network's device list is IPv4 only, so the drawer says so rather than "no devices".
+test('api_013 an IPv6 network says its device list is IPv4 only', async () => {
+  const v6 = [{ name: 'v6-lan', subnet: 'fd00:1::/64', source: 'router', router: 'udm', addresses: 0, devices: 3, usedPercent: 0, outsidePool: 0 }];
+  await page.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: v6 } }));
+  await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items: DEVICES_ON_NETWORKS } }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/networks');
+    await page.getByTestId('network-open').click();
+    await expect(page.getByTestId('network-no-devices')).toContainText('IPv4 addresses only');
+  } finally {
+    await page.unroute('**/api/v1/networks');
+    await page.unroute('**/api/v1/dhcp/leases');
+  }
+});
+
+// REQ: FLT-005 (T24.15) — a group name already in use is not reused: the made group takes the next free name.
+test('api_013 a made group takes a name no group uses', async () => {
+  await page.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: NETWORKS } }));
+  await page.route(/\/api\/v1\/config\/entries/, (route) => {
+    if (new URL(route.request().url()).searchParams.get('kind') !== 'group') return route.fallback();
+    return route.fulfill({ json: { items: [{ kind: 'group', name: 'iot', source: 'file', definition: { networks: ['10.9.0.0/24'] } }] } });
+  });
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/networks');
+    await page.getByRole('row').filter({ hasText: '192.168.20.0/24' }).getByTestId('make-group').click();
+    await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('iot-2');
+    await expect(page.getByRole('textbox', { name: 'Networks', exact: true })).toHaveValue('192.168.20.0/24');
+  } finally {
+    await page.unroute('**/api/v1/networks');
+    await page.unroute(/\/api\/v1\/config\/entries/);
+  }
+});
+
+// REQ: FLT-005 (T24.15) — the draft opens once: the URL is cleaned, so a reload does not reopen the editor.
+test('api_013 a made group draft does not reopen on reload', async () => {
+  await page.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: NETWORKS } }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/networks');
+    await page.getByRole('row').filter({ hasText: '192.168.20.0/24' }).getByTestId('make-group').click();
+    await expect(page.getByRole('dialog', { name: 'Add group' })).toBeVisible();
+    await expect(page).toHaveURL(/#\/groups$/);
+    await page.reload();
+    await expect(page.getByRole('heading', { name: /^Groups/ })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: 'Add group' })).toHaveCount(0);
+  } finally {
+    await page.unroute('**/api/v1/networks');
+  }
 });

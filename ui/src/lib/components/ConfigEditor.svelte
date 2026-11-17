@@ -72,8 +72,9 @@
     /** A sentence about the draft, under the fields (CLU-013: who gets a change first). */
     note?: (values: Record<string, unknown>) => string;
     /** REQ: FLT-005 (T24.15) — open a new entry with these values filled in ("Make a group from
-     *  this network"). A new object each time it should open; operators only. */
-    draft?: { name?: string; values: Record<string, unknown> } | null;
+     *  this network"). A new object each time it should open; operators only. `onused` runs once it
+     *  has been taken (the page clears the URL so a reload or Back doesn't reopen it). */
+    draft?: { name?: string; values: Record<string, unknown>; onused?: () => void } | null;
   } = $props();
   let formOut = $state<{ ok: boolean; text: string } | null>(null);
   async function runFormAction() {
@@ -97,6 +98,7 @@
   }
 
   let entries = $state<S['ConfigEntry'][]>([]);
+  let entriesLoaded = $state(false);
   let error = $state<unknown>(null);
   let editing = $state<{ name: string; isNew: boolean; values: Record<string, unknown> } | null>(null);
   // The entry as it was read, for fields only an admin changes (T23.2).
@@ -122,6 +124,8 @@
       error = null;
     } catch (e) {
       error = e;
+    } finally {
+      entriesLoaded = true;
     }
   }
   $effect(() => {
@@ -147,12 +151,31 @@
     editing = { name: e?.name ?? name, isNew: !e, values: { ...initial, ...def, ...fill } };
     texts = Object.fromEntries(fields.filter((f) => f.toText).map((f) => [f.key, f.toText!(editing!.values[f.key])]));
   }
-  // REQ: FLT-005 (T24.15) — a draft from another page opens a new entry, once per draft.
+  // REQ: FLT-005 (T24.15) — a draft from another page opens a new entry, once per draft object. The
+  // name is made unused among the loaded entries (`iot` becomes `iot-2` when `iot` exists).
+  let draftTaken: unknown = null;
+  function freeName(base: string): string {
+    const taken = new Set(entries.map((e) => e.name.toLowerCase()));
+    if (!base || !taken.has(base.toLowerCase())) return base;
+    for (let i = 2; ; i++) {
+      const candidate = `${base}-${i}`;
+      if (!taken.has(candidate)) return candidate;
+    }
+  }
   $effect(() => {
     const d = draft;
-    if (!d || !writable) return;
-    untrack(() => open(undefined, d.values, d.name ?? ''));
+    if (!d || !entriesLoaded || d === draftTaken) return;
+    draftTaken = d;
+    untrack(() => {
+      if (writable) open(undefined, d.values, freeName(d.name ?? ''));
+      d.onused?.();
+    });
   });
+  // REQ: FLT-005 (T24.15) — a new entry never replaces an existing one of the same name.
+  function nameTaken(name: string): boolean {
+    const n = name.trim().toLowerCase();
+    return !!editing?.isNew && entries.some((e) => e.name.toLowerCase() === n);
+  }
 
   // The body: the fields shown, with empty ones left out (the defaults apply); other fields of
   // an existing entry are kept as they were.
@@ -167,9 +190,17 @@
     return v;
   }
 
+  function sameNameError(): Error {
+    return new Error(`A ${noun} called ${editing!.name.trim()} already exists. Pick another name.`);
+  }
   async function check(e: SubmitEvent) {
     e.preventDefault();
     if (!editing) return;
+    if (nameTaken(editing.name)) {
+      formError = sameNameError();
+      preview = null;
+      return;
+    }
     busy = true;
     formError = null;
     try {
@@ -183,6 +214,10 @@
   }
   async function apply() {
     if (!editing) return;
+    if (nameTaken(editing.name)) {
+      formError = sameNameError();
+      return;
+    }
     busy = true;
     try {
       result = await api.putEntry(path, editing.name.trim(), body(), false);
@@ -190,6 +225,8 @@
       await load();
       onchanged?.();
       if (!result.keepInGit) editing = null;
+      // Saved and kept for Git: it exists now, so a second save is an update, not a new name.
+      else if (editing) editing = { ...editing, isNew: false };
     } catch (err) {
       formError = err;
     } finally {

@@ -13,7 +13,6 @@
 
   type Net = S['NetworkInfo'];
   let networks = $state<Net[]>([]);
-  let missingNodes = $state<string[]>([]);
   let error = $state<unknown>(null);
   let loaded = $state(false);
   let leases = $state<S['DhcpLease'][]>([]);
@@ -27,7 +26,6 @@
       .networks()
       .then((r) => {
         networks = r.items;
-        missingNodes = r.missingNodes ?? [];
         error = null;
       })
       .catch((e) => (error = e))
@@ -58,6 +56,14 @@
 
   // The devices on the open network, from the routers' DHCP leases and mDNS (fetched when opened).
   const devices = $derived(open ? leases.filter((l) => inSubnet(l.ip, open!.subnet)) : []);
+  // The device list is IPv4 only (the DHCP and mDNS addresses it is built from), so an IPv6 network
+  // has no rows here even when its row counts devices. Say so, rather than "no devices".
+  const noDevicesText = $derived.by(() => {
+    if (!open) return '';
+    if (open.subnet.includes(':')) return 'This is an IPv6 network. The device list shows IPv4 addresses only, so its devices are not listed here.';
+    if (open.devices > 0) return `${num(open.devices)} devices are counted on this network, but none of them has a DHCP or mDNS address in the list.`;
+    return 'No devices known on this network yet.';
+  });
   function show(n: Net) {
     open = n;
     leaseError = null;
@@ -86,7 +92,6 @@
   <p class="muted small">
     The LANs and VLANs your routers report, and any client group's networks no router reported. Each shows the group that covers
     it and how many devices are in it, so you can see which networks are filling up.
-    {#if missingNodes.length}<span data-testid="networks-missing">Not answering: {missingNodes.join(', ')}.</span>{/if}
   </p>
 
   <section class="card">
@@ -101,18 +106,18 @@
           <thead>
             <tr>
               <th>Name</th>
-              <th>Purpose</th>
+              <th class="wide">Purpose</th>
               <th>Subnet</th>
               <th class="num">VLAN</th>
-              <th>Gateway</th>
-              <th>DHCP pool</th>
-              <th>Domain</th>
+              <th class="wide">Gateway</th>
+              <th class="wide">DHCP pool</th>
+              <th class="wide">Domain</th>
               <th>Router</th>
               <th>Group</th>
-              <th class="num">Size</th>
+              <th class="num wide">Size</th>
               <th class="num">Devices</th>
               <th>Share used</th>
-              <th class="num">Outside pool</th>
+              <th class="num wide">Outside pool</th>
               {#if operator}<th></th>{/if}
             </tr>
           </thead>
@@ -120,29 +125,28 @@
             {#each networks as n (n.subnet + n.source + (n.router ?? ''))}
               <tr data-testid="network-row">
                 <td><button type="button" class="link" onclick={() => show(n)} data-testid="network-open">{n.name}</button></td>
-                <td class="small">{n.purpose ?? '–'}</td>
+                <td class="small wide">{n.purpose ?? '–'}</td>
                 <td class="mono">{n.subnet}</td>
                 <td class="num">{n.vlan ?? '–'}</td>
-                <td class="mono small">{n.gateway ?? '–'}</td>
-                <td class="mono small">{dhcp(n)}</td>
-                <td class="mono small">{n.domain ?? '–'}</td>
+                <td class="mono small wide">{n.gateway ?? '–'}</td>
+                <td class="mono small wide">{dhcp(n)}</td>
+                <td class="mono small wide">{n.domain ?? '–'}</td>
                 <td class="small">{n.router ?? '–'}</td>
                 <td class="small">
                   {#if n.group}{n.group}{:else}<span class="muted">none</span>{/if}
                   {#if groupOnly(n)}<span class="badge info" data-testid="group-only">group only</span>{/if}
                 </td>
-                <td class="num">{num(n.addresses)}</td>
+                <td class="num wide">{num(n.addresses)}</td>
                 <td class="num">{num(n.devices)}</td>
                 <td>
                   <span class="meter" role="img" aria-label="{pct(n.usedPercent, 0)} used"><span style:width="{Math.min(100, Math.max(0, n.usedPercent))}%"></span></span>
                   <span class="small">{pct(n.usedPercent, 0)}</span>
                 </td>
-                <td class="num">{num(n.outsidePool)}</td>
+                <td class="num wide">{num(n.outsidePool)}</td>
                 {#if operator}
                   <td class="actions">
                     {#if !n.group}
                       <button type="button" class="link small" onclick={() => makeGroup(n)} data-testid="make-group">Make a group from this network</button>
-                      <HelpButton id="network-group" />
                     {/if}
                   </td>
                 {/if}
@@ -181,10 +185,13 @@
           </table>
         </div>
       {:else if leasesLoaded && !leaseError}
-        <p class="empty" data-testid="network-no-devices">No devices known on this network yet.</p>
+        <p class="empty" data-testid="network-no-devices">{noDevicesText}</p>
       {/if}
       {#if operator && !net.group}
-        <button type="button" onclick={() => makeGroup(net)}>Make a group from this network</button>
+        <div class="row-actions">
+          <button type="button" onclick={() => makeGroup(net)}>Make a group from this network</button>
+          <HelpButton id="network-group" />
+        </div>
       {/if}
     </Drawer>
   {/if}
@@ -204,9 +211,21 @@
   .meter > span {
     display: block;
     height: 100%;
-    background: var(--accent, #4f8cff);
+    background: var(--accent);
   }
   .actions {
     white-space: nowrap;
+  }
+  .row-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  /* Phone width: the secondary columns (purpose, gateway, pool, domain, sizes) are left to the drawer. */
+  @media (max-width: 720px) {
+    .wide {
+      display: none;
+    }
   }
 </style>

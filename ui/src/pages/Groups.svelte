@@ -2,7 +2,7 @@
   // REQ: API-005, FLT-005 (ADR-050) — groups as categories of devices: each group's networks,
   // what its devices did in the last 24 hours, its heaviest names this hour, and its settings.
   import { api, type S } from '../lib/api';
-  import { href, route } from '../lib/router.svelte';
+  import { href, navigate, route } from '../lib/router.svelte';
   import { dateTime, num, pct } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
@@ -122,10 +122,15 @@
   const advanced = $derived(currentMode() === 'advanced');
   const total = $derived(groups.reduce((a, g) => a + g.queries24h, 0));
   // REQ: FLT-005 (T24.15) — "Make a group from this network" on the Networks page opens the editor
-  // with the network filled in (`/groups?draft=network&name=…&networks=…`).
+  // with the network filled in (`/groups?draft=network&name=…&networks=…`). Once taken, the URL is
+  // replaced with a clean `/groups`, so a reload or Back/Forward doesn't reopen it.
   const networkDraft = $derived(
     route.path === '/groups' && route.params.get('draft') === 'network'
-      ? { name: route.params.get('name') ?? '', values: { networks: [route.params.get('networks') ?? ''].filter(Boolean) } }
+      ? {
+          name: route.params.get('name') ?? '',
+          values: { networks: [route.params.get('networks') ?? ''].filter(Boolean) },
+          onused: () => navigate('/groups', undefined, true),
+        }
       : null,
   );
 </script>
