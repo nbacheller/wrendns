@@ -1,0 +1,79 @@
+# A throwaway 3-node TelltaleDNS cluster for the cluster acceptance run (deploy/cluster3/README.md).
+# It never touches the single-node Docker Desktop bundle (deploy/docker-desktop, project telltale-dev,
+# ports 1053/8053): its own project name, its own volumes, and host ports 2153-2353 / 8153-8353.
+#
+#   primary      creates the cluster ([cluster.init]) and serves the UI and API
+#   replica-a    joins with a token, eligible for promotion; 2 CPUs, to check the 2-CPU behaviour
+#   replica-b    joins with a token, eligible for promotion
+#
+# e2e.sh generates the join tokens, the admin password and the secret it writes; nothing secret is
+# kept in this file or in the repository. Run it: deploy/cluster3/e2e.sh (see the README).
+name: telltale-cluster3
+
+x-telltale: &telltale
+  image: telltale:cluster3-test
+  pull_policy: never
+  restart: "no"
+  # The image's unprivileged user; the same hardening as the Docker Desktop bundle.
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  read_only: true
+  command: ["run", "-c", "/etc/telltale/telltale.toml"]
+  environment:
+    TELLTALE_LOG: info
+  healthcheck:
+    test: ["CMD", "/usr/local/bin/telltale", "health", "--url", "http://127.0.0.1:8053/readyz"]
+    interval: 5s
+    timeout: 5s
+    retries: 30
+    start_period: 10s
+
+services:
+  primary:
+    <<: *telltale
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        # The same build as deploy/docker-desktop/compose.yaml (thin LTO), with the version CI stamps
+        # into a release build. A dev build reports `dev`, which its peers can't read, so the cluster's
+        # version gates (the [discovery] first write, ADR-928) would refuse it for every member.
+        PROFILE: bench-fast
+        TELLTALE_BUILD_CHANNEL: dev
+        TELLTALE_BUILD_VERSION: "0.8.0"
+    volumes:
+      - ./config/primary.toml:/etc/telltale/telltale.toml:ro
+      - primary-data:/var/lib/telltale
+    ports:
+      - "2153:2153/udp"   # DNS
+      - "2153:2153/tcp"
+      - "8153:8053"       # the web UI and API
+      - "9163:9153"       # /metrics (its own listener)
+
+  replica-a:
+    <<: *telltale
+    cpus: 2
+    volumes:
+      - ./config/replica-a.toml:/etc/telltale/telltale.toml:ro
+      - replica-a-data:/var/lib/telltale
+    ports:
+      - "2253:2153/udp"
+      - "2253:2153/tcp"
+      - "8253:8053"
+      - "9263:9153"
+
+  replica-b:
+    <<: *telltale
+    volumes:
+      - ./config/replica-b.toml:/etc/telltale/telltale.toml:ro
+      - replica-b-data:/var/lib/telltale
+    ports:
+      - "2353:2153/udp"
+      - "2353:2153/tcp"
+      - "8353:8053"
+      - "9363:9153"
+
+volumes:
+  primary-data:
+  replica-a-data:
+  replica-b-data:
