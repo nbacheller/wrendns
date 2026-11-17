@@ -847,6 +847,11 @@ async fn start_http(
 // The startup sequence and the main loop read best in one place.
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
+    // REQ: OPS-007 — before any listener binds: a SIGTERM that comes once the node answers is
+    // held until the loop below and drained, instead of ending the process at once.
+    let mut term = signal(SignalKind::terminate())?;
+    let mut hup = signal(SignalKind::hangup())?;
+    let mut usr1 = signal(SignalKind::user_defined1())?;
     // spec/04 §7: tag outbound queries so a forwarding loop back to us is detectable.
     telltale_upstream::set_node_tag(rand::random());
     let workers = workers(&cfg);
@@ -1222,9 +1227,6 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         );
     }
 
-    let mut term = signal(SignalKind::terminate())?;
-    let mut hup = signal(SignalKind::hangup())?;
-    let mut usr1 = signal(SignalKind::user_defined1())?;
     let mut current = cfg;
     loop {
         tokio::select! {

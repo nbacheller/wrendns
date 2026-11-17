@@ -12,6 +12,10 @@ ignore = [
     # provider's public keys: it holds no RSA private key to leak. No fixed version exists
     # yet. Revisit when one does (ADR-034).
     { id = "RUSTSEC-2023-0071", reason = "rsa is used for public-key signature verification only (OIDC ID tokens); no private keys" },
+    # RUSTSEC-2026-0543 (chrono, unmaintained): an "unmaintained" notice, not a vulnerability.
+    # `chrono` arrives through `openidconnect` and `oauth2` (OIDC sign-in, API-004); dropping
+    # it means replacing the OIDC library. Tracked in fork issue #17; revisit at each upstream sync.
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, not vulnerable; required by openidconnect (fork #17)" },
 ]
 
 [licenses]
