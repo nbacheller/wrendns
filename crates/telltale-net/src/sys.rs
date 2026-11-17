@@ -7,7 +7,11 @@
 // FFI glue: casts convert small compile-time sizes (struct sizes, batch caps <= 1024) and
 // AF_* constants into C types. Some casts look redundant on glibc but are required on musl,
 // where msghdr/cmsghdr field types differ (u32 vs usize).
-#![allow(clippy::cast_possible_truncation, clippy::unnecessary_cast)]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_lossless,
+    clippy::unnecessary_cast
+)]
 
 use std::io;
 use std::mem::{self, MaybeUninit};
@@ -751,10 +755,15 @@ struct CapData {
 /// `_LINUX_CAPABILITY_VERSION_3`: two data words, so all 64 capability bits.
 const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
 
-/// REQ: DSC-002 (ADR-908) — the discovery worker holds no capability: the ambient set is cleared,
+/// REQ: DSC-002 (ADR-908, ADR-934) — the discovery worker holds no capability: the ambient set is cleared,
 /// the permitted, effective and inheritable sets are emptied, and `no_new_privs` is set, so no exec
 /// can gain one. Dropping a capability needs no privilege. The worker needs none: it reads stdin,
 /// writes stdout, and lowers its own limits; its OOM score is raised before this runs.
+///
+/// `capset` is called only when the worker holds a permitted or effective capability. Under the
+/// systemd unit the worker is a non-root process whose parent cleared the ambient set before exec
+/// ([`clear_ambient_before_exec`]), so it holds none, and `capset` is in systemd's `@privileged` group:
+/// a call there is a SIGSYS kill, not an error (N1). A root worker still drops its capabilities.
 pub(crate) fn drop_worker_capabilities() -> io::Result<()> {
     // SAFETY: PR_CAP_AMBIENT with PR_CAP_AMBIENT_CLEAR_ALL takes no pointers.
     if unsafe {
@@ -769,15 +778,17 @@ pub(crate) fn drop_worker_capabilities() -> io::Result<()> {
     {
         return Err(io::Error::last_os_error());
     }
-    let header = CapHeader {
-        version: LINUX_CAPABILITY_VERSION_3,
-        pid: 0,
-    };
-    let data = [CapData::default(); 2];
-    // SAFETY: capset reads the header and the two data words, both of which live for the call. A
-    // pid of 0 is the calling thread's process; empty sets are always a legal new value.
-    if unsafe { libc::syscall(libc::SYS_capset, &raw const header, data.as_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
+    if thread_holds_capabilities()? {
+        let header = CapHeader {
+            version: LINUX_CAPABILITY_VERSION_3,
+            pid: 0,
+        };
+        let data = [CapData::default(); 2];
+        // SAFETY: capset reads the header and the two data words, both of which live for the call. A
+        // pid of 0 is the calling thread's process; empty sets are always a legal new value.
+        if unsafe { libc::syscall(libc::SYS_capset, &raw const header, data.as_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
     }
     // SAFETY: PR_SET_NO_NEW_PRIVS takes an integer flag and no pointers.
     if unsafe {
@@ -795,32 +806,84 @@ pub(crate) fn drop_worker_capabilities() -> io::Result<()> {
     Ok(())
 }
 
-/// The architecture this build's syscall numbers and filter are for (`AUDIT_ARCH_*`).
+/// Whether the calling thread has a non-empty permitted or effective capability set
+/// (`CapPrm`/`CapEff` in `/proc/thread-self/status`). An inheritable bit alone grants nothing: no
+/// exec file capability and no ambient capability can turn it into a permitted one.
+fn thread_holds_capabilities() -> io::Result<bool> {
+    let status = std::fs::read_to_string("/proc/thread-self/status")?;
+    Ok(status
+        .lines()
+        .filter(|l| l.starts_with("CapPrm:") || l.starts_with("CapEff:"))
+        .any(|l| l.split_whitespace().nth(1) != Some("0000000000000000")))
+}
+
+/// REQ: DSC-002 (ADR-934) — the child of a spawn clears its ambient capability set before it execs.
+/// A child inherits the ambient set across exec, so a worker started by a unit that grants
+/// `CAP_NET_BIND_SERVICE` (`AmbientCapabilities=`) would start holding it. The prctl runs in the
+/// forked child, takes no pointers, and is async-signal-safe.
+pub(crate) fn clear_ambient_before_exec(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure runs in the child between fork and exec and calls only prctl, which is
+    // async-signal-safe and allocates nothing. Its error (if any) aborts the spawn.
+    unsafe {
+        cmd.pre_exec(|| {
+            // SAFETY: PR_CAP_AMBIENT with PR_CAP_AMBIENT_CLEAR_ALL takes no pointers.
+            if libc::prctl(
+                libc::PR_CAP_AMBIENT,
+                libc::PR_CAP_AMBIENT_CLEAR_ALL as libc::c_ulong,
+                0 as libc::c_ulong,
+                0 as libc::c_ulong,
+                0 as libc::c_ulong,
+            ) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+/// The architecture this build's syscall numbers and filter are for (`AUDIT_ARCH_*`). A 32-bit ARM
+/// build uses the ARM EABI table, whose `bind`, `listen` and friends are direct calls (ADR-934).
 #[cfg(target_arch = "x86_64")]
 const AUDIT_ARCH_NATIVE: u32 = 0xC000_003E;
 #[cfg(target_arch = "aarch64")]
 const AUDIT_ARCH_NATIVE: u32 = 0xC000_00B7;
+#[cfg(target_arch = "arm")]
+const AUDIT_ARCH_NATIVE: u32 = 0x4000_0028;
 
 /// The syscalls a discovery worker never makes: a listening socket (`bind`, `listen`), a tracer
-/// (`ptrace`), and another process's memory (`process_vm_readv`, `process_vm_writev`). A compromised
-/// worker could otherwise take a share of the DNS port (`SO_REUSEPORT`) or read the parent (ADR-908).
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-const WORKER_DENIED_SYSCALLS: [libc::c_long; 5] = [
+/// (`ptrace`), another process's memory (`process_vm_readv`, `process_vm_writev`), and `io_uring`,
+/// whose bind and listen operations skip the syscall filter on kernels 6.11 and later (ADR-934).
+/// A compromised worker could otherwise take a share of the DNS port (`SO_REUSEPORT`) or read the
+/// parent (ADR-908).
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm"))]
+const WORKER_DENIED_SYSCALLS: [libc::c_long; 8] = [
     libc::SYS_bind,
     libc::SYS_listen,
     libc::SYS_ptrace,
     libc::SYS_process_vm_readv,
     libc::SYS_process_vm_writev,
+    libc::SYS_io_uring_setup,
+    libc::SYS_io_uring_enter,
+    libc::SYS_io_uring_register,
 ];
 
-/// REQ: DSC-002 (ADR-908) — installs the worker's seccomp filter: the denied syscalls fail with
-/// EPERM, every other syscall is allowed, and a call from another architecture (a 32-bit syscall
-/// entry, say) kills the process. Needs `no_new_privs` (set by [`drop_worker_capabilities`]). On an
-/// architecture with no filter the worker refuses to run (fail closed, see the other definition).
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+/// The first syscall number of the x32 ABI (`__X32_SYSCALL_BIT`). On `x86_64` a call with this bit set
+/// (`nr | 0x40000000`) reaches the same handlers as the native call without matching the native
+/// number, so the filter refuses the whole range (ADR-934). No other architecture uses it.
+const X32_SYSCALL_BIT: u32 = 0x4000_0000;
+
+/// REQ: DSC-002 (ADR-908, ADR-934) — installs the worker's seccomp filter: the denied syscalls fail with
+/// EPERM, every syscall in the x32 range fails with EPERM, every other syscall is allowed, and a call
+/// from another architecture (a 32-bit syscall entry, say) kills the process. Needs `no_new_privs`
+/// (set by [`drop_worker_capabilities`]). On an architecture with no filter the worker refuses to run
+/// (fail closed, see the other definition).
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm"))]
 pub(crate) fn install_worker_seccomp() -> io::Result<()> {
     const BPF_LD_W_ABS: u16 = 0x20;
     const BPF_JMP_JEQ_K: u16 = 0x15;
+    const BPF_JMP_JGE_K: u16 = 0x35;
     const BPF_RET_K: u16 = 0x06;
     const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
     const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
@@ -836,8 +899,10 @@ pub(crate) fn install_worker_seccomp() -> io::Result<()> {
     };
     let denied = &WORKER_DENIED_SYSCALLS;
     let n = denied.len();
-    let mut prog: Vec<libc::sock_filter> = Vec::with_capacity(n + 6);
-    // 0: the architecture; 1: when it is ours, skip the kill at 2.
+    // Layout: 0 arch, 1 (ours: skip 2), 2 kill, 3 nr, 4 x32 range -> EPERM, 5..5+n one test per denied
+    // call (a match jumps to EPERM), 5+n allow, 6+n EPERM.
+    let eperm_at = n + 6;
+    let mut prog: Vec<libc::sock_filter> = Vec::with_capacity(n + 7);
     prog.push(stmt(BPF_LD_W_ABS, OFFSET_ARCH));
     prog.push(libc::sock_filter {
         code: BPF_JMP_JEQ_K,
@@ -846,9 +911,13 @@ pub(crate) fn install_worker_seccomp() -> io::Result<()> {
         k: AUDIT_ARCH_NATIVE,
     });
     prog.push(stmt(BPF_RET_K, SECCOMP_RET_KILL_PROCESS));
-    // 3: the syscall number. 4..4+n: one test per denied call, which jumps to the EPERM return
-    // (4 + n + 1) on a match; otherwise it falls through to the allow return (4 + n).
     prog.push(stmt(BPF_LD_W_ABS, OFFSET_NR));
+    prog.push(libc::sock_filter {
+        code: BPF_JMP_JGE_K,
+        jt: u8::try_from(eperm_at - 5).map_err(|_| io::Error::other("seccomp: filter too long"))?,
+        jf: 0,
+        k: X32_SYSCALL_BIT,
+    });
     for (i, nr) in denied.iter().enumerate() {
         let jt = u8::try_from(n - i).map_err(|_| io::Error::other("seccomp: filter too long"))?;
         let k = u32::try_from(*nr).map_err(|_| io::Error::other("seccomp: bad syscall number"))?;
@@ -861,6 +930,7 @@ pub(crate) fn install_worker_seccomp() -> io::Result<()> {
     }
     prog.push(stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
     prog.push(stmt(BPF_RET_K, SECCOMP_RET_ERRNO_EPERM));
+    debug_assert_eq!(prog.len(), eperm_at + 1);
     let len =
         u16::try_from(prog.len()).map_err(|_| io::Error::other("seccomp: filter too long"))?;
     let fprog = libc::sock_fprog {
@@ -886,7 +956,7 @@ pub(crate) fn install_worker_seccomp() -> io::Result<()> {
 }
 
 /// Fails: this architecture has no worker filter, so the worker refuses to run (ADR-908).
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm")))]
 pub(crate) fn install_worker_seccomp() -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -922,7 +992,7 @@ pub(crate) fn ptrace_probe() -> io::Result<()> {
     let rc = unsafe {
         libc::syscall(
             libc::SYS_ptrace,
-            libc::c_long::from(libc::PTRACE_TRACEME),
+            0 as libc::c_long, // PTRACE_TRACEME
             0 as libc::c_long,
             0 as libc::c_long,
             0 as libc::c_long,

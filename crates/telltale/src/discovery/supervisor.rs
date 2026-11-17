@@ -306,6 +306,11 @@ async fn run_once(spec: &Spec, board: &Board, requests: &Requests, stop: &Atomic
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // REQ: DSC-002 (ADR-934) — the worker starts with no ambient capability, and this process is not
+    // dumpable, so a worker can't read our memory. Before any spawn, and a failure is a crash.
+    if let Err(e) = telltale_net::worker::prepare_spawn(cmd.as_std_mut()) {
+        return Outcome::Crashed(format!("cannot prepare the worker: {e}"));
+    }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return Outcome::Crashed(format!("cannot start the worker: {e}")),

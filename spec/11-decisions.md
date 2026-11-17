@@ -1293,6 +1293,35 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-934 — Worker spawn and filter hardening under the systemd unit: no ambient capability, no capset call without one, a non-dumpable parent, and the x32 and io_uring calls refused (Proposed)
+**Context:** The review of the T25.3 fixes (8738440) found four gaps in ADR-908's worker hardening.
+- **N1 (HIGH).** The unit sets `AmbientCapabilities=CAP_NET_BIND_SERVICE` and `SystemCallFilter=~@privileged`. A child inherits the ambient set, so the worker held `CAP_NET_BIND_SERVICE`, and `drop_worker_capabilities` called `capset`, which `@privileged` contains. A filtered call with no error number kills the process (SIGSYS), so every worker died on every systemd install.
+- **N2 (MEDIUM).** The filter checked the native syscall numbers only. An x32 call (`nr | 0x40000000`) reached `bind` and bound a loopback port (demonstrated on WSL2, kernel 6.6). io_uring's bind and listen skip the filter on kernels 6.11 and later. A worker of the same uid could open `/proc/<parent>/mem` under Yama ptrace scope 0, because the parent is dumpable.
+- **N3 (MEDIUM)** is ADR-933.
+
+**Decision:**
+- **Ambient cleared before exec.** `telltale_net::worker::prepare_spawn` makes every discovery worker spawn clear the child's ambient capability set between fork and exec. The call is `prctl(PR_CAP_AMBIENT_CLEAR_ALL)`, which takes no pointers. A non-root worker then execs with no capability.
+- **`capset` only when a capability is held.** `drop_worker_capabilities` reads `CapPrm` and `CapEff` from `/proc/thread-self/status` and calls `capset` only when either is non-zero. A worker with none never calls it. A root worker (tests, or a container run as root) still drops its capabilities. An inheritable bit alone grants nothing, since there is no exec file capability and no ambient one.
+- **Parent not dumpable.** `prepare_spawn` also makes the parent not dumpable (`PR_SET_DUMPABLE` 0), so a worker of the same uid can't open its `/proc/<pid>/mem` (EACCES without `CAP_SYS_PTRACE`). It is called before each spawn, so only a process that runs discovery changes. The costs: this process refuses core dumps and debugger attach. The supervisor is the only caller.
+- **Filter.** The seccomp filter refuses every number at or above `0x40000000` (the x32 range) with EPERM, and also refuses `io_uring_setup`, `io_uring_enter` and `io_uring_register` with EPERM. The arch check and the native deny-list are unchanged, plus `arm` (ADR-933).
+- **Tests** (`telltale-net` `worker::tests`): `dsc_002_worker_refuses_x32_and_io_uring`; `dsc_002_worker_without_capabilities_never_calls_capset` (the filter kills a `capset` call, and a worker with none survives; the control dies with SIGSYS); `dsc_002_worker_cannot_read_its_parent` (refused after `prepare_spawn`; the dumpable control is asserted only under Yama scope 0, because scope 1 refuses a worker that ptraces its parent anyway); `dsc_002_spawn_clears_ambient_capabilities` (as root: the raised ambient set is inherited without `prepare_spawn` and cleared with it).
+
+**Alternatives rejected:**
+- `SystemCallErrorNumber=EPERM` in the unit: the worker would get EPERM for `capset`, and `harden` fails closed. It would also change what every other filtered call in the unit returns. The capset skip fixes the cause and keeps the unit as it is.
+- A second uid for the worker: the image, the chart and the unit run one user (ADR-908), and a second one adds deployment work for a read this kernel setting already blocks.
+- Leaving the parent dumpable and relying on Yama: Yama 0 is common on hosts and in containers, and it is the case that was open.
+
+**Consequences:** the systemd unit is not yet run on a systemd host (the review ran none either), so the `@privileged` claim rests on `systemd-analyze syscall-filter @privileged` listing `capset`, and on the kill test. The ambient and capset tests need root (they skip otherwise). The worker's `CapInh` can be non-zero under the unit, since systemd sets an inheritable bit for ambient capabilities; it grants nothing, and the test asserts the permitted, effective and ambient sets only.
+
+## ADR-933 — The worker's seccomp filter covers 32-bit ARM, so a discovery worker runs on armv7 (Proposed)
+**Context:** `install_worker_seccomp` covered x86_64 and aarch64, and returned `Unsupported` elsewhere (fail closed, ADR-908). The image ships `linux/arm/v7` (`.github/workflows/image.yml`) and the release ships `telltale-armv7-linux`. On a 32-bit Pi, enabling discovery crash-looped the worker (`discovery_worker_failing`) and left the feature unusable. The review (N3) asked for a recorded decision.
+
+**Decision:** write the filter for 32-bit ARM. `AUDIT_ARCH_ARM` (`0x40000028`) is the architecture check. The deny-list uses the ARM EABI numbers from `libc` (`bind` 282, `listen` 284, `ptrace` 26, the `process_vm_*` and io_uring calls at their generic numbers), and the x32 range check (ADR-934) applies to it too, where it does nothing. Everything else is as on the other architectures: the worker holds no capability, sets `no_new_privs`, and a call from another architecture kills it.
+
+**Alternatives rejected:** keeping the refusal and naming the architecture in the health reason (leaves the feature unusable on the 32-bit Pi the image ships); a worker without a filter on armv7 (drops the "cannot share the DNS port" guarantee that the other architectures keep).
+
+**Consequences:** the armv7 filter is type-checked and clippy-checked for `armv7-unknown-linux-gnueabihf` (the test binary included), and the filter's numbers come from `libc`'s ARM table. It has not run on armv7 hardware here. The owner's Pi check is an Open item in `spec/10` (T25.3).
+
 ## ADR-930 — The designated node, its names, and the audit of `[discovery]` (Proposed)
 **Context:** ADR-907 says `[discovery] node` names the node that runs discovery, else the primary or the standalone node, and never an ephemeral pod or a witness. It doesn't say what a name is matched against, or when the section is audited. T25.2 settles both.
 **Decision:**
