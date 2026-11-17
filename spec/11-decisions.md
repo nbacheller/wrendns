@@ -1380,7 +1380,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - `SecretField` is reusable: the routers (T23.8) and the other forms (T24.16) pass the draft's `*_ref`, the `*_file` path and the role, and get the same states.
 - Operators see status only: the Integrations & secrets tab and the field show the same states, with the controls left out.
 - The image gate is unaffected unless the bundle grows past the budget (400 KiB gzipped; now about 252 KiB).
-## ADR-917 — Replication details for stored secrets: orphans by epoch, a joining node's hand-over, the shadow table, and the reverse heal (Accepted 2026-11-17)
+## ADR-917 — Replication details for stored secrets: orphans by epoch, a joining node's hand-over, the shadow table, and the reverse heal (Proposed)
 
 **Context:** ADR-903 §6 fixes what replicates (stamped rows over the cluster channel, tombstones, orphans, re-encryption under each member's key, the reverse heal). Building it left points it doesn't settle, which T23.5 had to decide.
 
