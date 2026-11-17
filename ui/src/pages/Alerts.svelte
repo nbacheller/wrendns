@@ -28,7 +28,7 @@
   // REQ: API-014 (T23.2) — a destination holds a credential when a file gives it one or its
   // address carries a password: then only an admin changes where it goes.
   const holdsCredential = (d: Record<string, unknown>) =>
-    Boolean(d.token_file || d.password_file || /:\/\/[^/?#]*:[^/?#@]*@/.test(String(d.url ?? '')));
+    Boolean(d.token_file || d.password_file || d.token_ref || d.password_ref || /:\/\/[^/?#]*:[^/?#@]*@/.test(String(d.url ?? '')));
   const destinationFields: Field[] = [
     { key: 'type', label: 'Type', type: 'select', options: kinds, initial: 'email',
       help: 'email (any provider’s SMTP), ntfy or Gotify (phone push), slack (Slack, Mattermost, Discord), or a JSON webhook.' },
@@ -37,9 +37,14 @@
     { key: 'from', label: 'From (email)', type: 'text', placeholder: 'you@gmail.com' },
     { key: 'to', label: 'To (email, one per line)', type: 'lines', placeholder: 'you@gmail.com' },
     { key: 'username', label: 'Account (email)', type: 'text', placeholder: 'you@gmail.com' },
-    { key: 'password_file', label: 'Password file (email)', type: 'text', placeholder: '/run/secrets/smtp-password',
-      help: 'A file on the node holding the password (a Gmail app password, for example), in /run/secrets or another of [node] secret_file_dirs. The password itself never goes through the UI.', admin: true },
-    { key: 'token_file', label: 'Token file (ntfy, Gotify)', type: 'text', placeholder: '/run/secrets/ntfy-token', advanced: true, admin: true },
+    // REQ: API-015 (T23.6, ADR-903 §9) — the password and token are stored secrets (or a file the
+    // configuration sets, shown read-only); only an admin sets or clears them.
+    { key: 'password_ref', label: 'Password (email)', type: 'secret', fileKey: 'password_file', admin: true,
+      secretName: (e) => `alert.${e}.password`,
+      help: 'The password (a Gmail app password, for example), kept encrypted on this node and never shown again. A password_file in the configuration wins over it.' },
+    { key: 'token_ref', label: 'Token (ntfy, Gotify)', type: 'secret', fileKey: 'token_file', advanced: true, admin: true,
+      secretName: (e) => `alert.${e}.token`,
+      help: 'The access token of your ntfy or Gotify server, kept encrypted on this node and never shown again. A token_file in the configuration wins over it.' },
     { key: 'tls_ca', label: 'Private CA (email)', type: 'text', placeholder: '/etc/telltale/mail-ca.pem', advanced: true, admin: holdsCredential },
   ];
   const conditions = [

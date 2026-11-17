@@ -12,11 +12,14 @@
   import TabPanel from '../lib/components/TabPanel.svelte';
   import WallDisplays from '../lib/components/WallDisplays.svelte';
   import SupportPackage from '../lib/components/SupportPackage.svelte';
+  import SecretsPanel from '../lib/components/SecretsPanel.svelte';
 
   const tabs = $derived<TabItem[]>(
     [
       { id: 'account', label: 'Account' },
       { id: 'tokens', label: 'API tokens' },
+      // REQ: API-015 (T23.6) — stored secrets: operators see them, admins set them.
+      ...(can('operator') ? [{ id: 'secrets', label: 'Integrations & secrets' }] : []),
       ...(can('admin') ? [{ id: 'users', label: 'Users' }, { id: 'audit', label: 'Audit log' }] : []),
       { id: 'system', label: 'System' },
       // REQ: API-005 (ADR-121) — how queries are handled (cache, rate limit, what's kept out of
@@ -205,8 +208,26 @@
     ['config:write:clients', 'Name and regroup devices'],
     ['config:write:records', 'Change names on my network'],
     ['config:write:forwards', 'Send domains to other servers'],
+    ['ops:pause', 'Pause and resume blocking'],
+    ['ops:anomalies', 'Acknowledge device anomalies (and take it back)'],
     ['cluster:admin', 'Promote a node; staged rollouts and pins'],
   ];
+  // REQ: API-005 (T22.4, AGT-004) — scope presets: the scopes an integration's README asks for.
+  const agentPresets: Record<string, { label: string; name: string; scopes: string[] }> = {
+    'home-assistant': {
+      label: 'Home Assistant',
+      name: 'home-assistant',
+      scopes: ['analytics:read', 'config:read', 'ops:pause', 'ops:anomalies', 'config:write:clients'],
+    },
+  };
+  let tokenPreset = $state('');
+  function applyPreset(id: string) {
+    tokenPreset = id;
+    const p = agentPresets[id];
+    if (!p) return;
+    tokenScopes = [...p.scopes];
+    if (!tokenName.trim()) tokenName = p.name;
+  }
   let tokenScopes = $state<string[]>(['analytics:read', 'config:read']);
   let tokenGroup = $state('');
   let newToken = $state('');
@@ -544,6 +565,12 @@
       {#if tokenKind === 'agent'}
         <fieldset class="agent-scopes">
           <legend>What the agent may do<HelpButton id="agent-tokens" /></legend>
+          <label>Preset:
+            <select aria-label="Scope preset" value={tokenPreset} onchange={(e) => applyPreset((e.currentTarget as HTMLSelectElement).value)}>
+              <option value="">Custom</option>
+              {#each Object.entries(agentPresets) as [id, p] (id)}<option value={id}>{p.label}</option>{/each}
+            </select>
+          </label>
           {#each agentScopes as [id, label] (id)}
             <label><input type="checkbox" value={id} bind:group={tokenScopes} /> {label} <code class="small">{id}</code></label>
           {/each}
@@ -591,6 +618,16 @@
         </div>
       {/if}
     </section>
+  {:else if tab === 'secrets' && can('operator')}
+    <!-- REQ: API-015 (T23.6, ADR-903 §9) — the Integrations & secrets tab. -->
+    <section class="card" data-testid="secrets-tab">
+      <h2>Integrations &amp; secrets</h2>
+      <p class="muted">
+        Passwords and tokens that integrations use (a router's API key, an alert's token, an OIDC client secret), kept encrypted on
+        this node. They are never shown again after they're saved.
+      </p>
+    </section>
+    <SecretsPanel />
   {:else if tab === 'users' && can('admin')}
     <section class="card">
       <h2>Users<HelpButton id="users" /></h2>

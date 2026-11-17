@@ -5,7 +5,7 @@
   export type Field = {
     key: string;
     label: string;
-    type: 'text' | 'number' | 'select' | 'multi' | 'lines' | 'bool';
+    type: 'text' | 'number' | 'select' | 'multi' | 'lines' | 'bool' | 'secret';
     options?: string[];
     /** How `select`/`multi` options read (CLU-013: node IDs by their site or pod). */
     optionLabels?: Record<string, string>;
@@ -23,6 +23,11 @@
      *  one is sent): shown read-only to others. A function decides from the entry as it was
      *  read (`{}` for a new one). */
     admin?: boolean | ((original: Record<string, unknown>) => boolean);
+    /** REQ: API-015 (T23.6) — a `secret` field: `key` is the `*_ref` it writes, `fileKey` the
+     *  `*_file` it replaces (read-only when the configuration files set it), `secretName` the
+     *  name a new secret is saved under for this entry. */
+    fileKey?: string;
+    secretName?: (entry: string) => string;
   };
 </script>
 
@@ -35,6 +40,7 @@
   import KeepInGit from './KeepInGit.svelte';
   import HelpButton from './HelpButton.svelte';
   import SimulationCard from './SimulationCard.svelte';
+  import SecretField from './SecretField.svelte';
 
   let {
     kind,
@@ -275,6 +281,26 @@
           <input class="mono" bind:value={editing.name} required readonly={!editing.isNew} aria-label="Name" />
         </label>
         {#each shown as f (f.key)}
+          {#if f.type === 'secret'}
+            <!-- REQ: API-015 (T23.6) — a credential is entered only through SecretField. -->
+            {@const fileKey = f.fileKey ?? ''}
+            <SecretField
+              label={f.label}
+              help={f.help}
+              testid={`secret-${f.key}`}
+              reference={(editing.values[f.key] as string | undefined) || undefined}
+              defaultName={f.secretName?.(editing.name.trim()) ?? ''}
+              filePath={(editing.values[fileKey] as string | undefined) || undefined}
+              fileFromConfig={fileSet.includes(fileKey)}
+              canSet={!locked(f)}
+              onreference={(n) => {
+                // A stored secret replaces an API-set file path (never one the configuration sets).
+                if (!fileSet.includes(fileKey)) delete editing!.values[fileKey];
+                if (n) editing!.values[f.key] = n;
+                else delete editing!.values[f.key];
+              }}
+            />
+          {:else}
           <label>
             {f.label}
             {#if f.type === 'select'}
@@ -328,6 +354,7 @@
             {#if fileSet.includes(f.key)}<span class="muted small" data-testid="set-by-file">Set by the configuration file: change it there.</span>{:else if locked(f)}<span class="muted small" data-testid="admin-only">Only an admin can change this.</span>{/if}
             {#if f.help}<span class="muted small">{f.help}</span>{/if}
           </label>
+          {/if}
         {/each}
         {#if note}<p class="small" data-testid="editor-note">{note(editing.values)}</p>{/if}
         <ErrorNote error={formError} />

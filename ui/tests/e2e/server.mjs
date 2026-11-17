@@ -109,6 +109,13 @@ require_approval = true
 [alerts]
 interval_secs = 5
 
+# T23.6 — a destination whose token file the configuration sets: the UI shows it read-only.
+[[alerts.destination]]
+name = "file-ntfy"
+type = "ntfy"
+url = "http://127.0.0.1:18997/file"
+token_file = "/run/secrets/e2e-ntfy-token"
+
 # T11.3 — the listener probe runs every 5 s, so the System tab shows it soon.
 [probe]
 interval_secs = 5

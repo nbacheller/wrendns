@@ -19,7 +19,8 @@ test.beforeAll(async ({ browser }) => {
   page = await browser.newPage();
   page.on('pageerror', (e) => problems.push(`page error: ${e.message}`));
   page.on('console', (m) => {
-    if (m.type() === 'error' && !/status of 40[13]/.test(m.text())) problems.push(`console: ${m.text()}`);
+    // Expected refusals (401 sign-in, 409 secret in use, ...) are logged by the browser as resource errors.
+    if (m.type() === 'error' && !/status of 4\d\d \(/.test(m.text())) problems.push(`console: ${m.text()}`);
   });
 });
 
@@ -1768,7 +1769,8 @@ test('obs_010 alerts page: destinations, test, rules', async () => {
     await rules.getByRole('button', { name: 'Add rule' }).click();
     await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-disk');
     await page.getByLabel('When', { exact: true }).selectOption('disk_full');
-    await page.getByRole('group', { name: 'Send to' }).getByLabel('ui-hook').check();
+    // exact: the config file's destination (file-ntfy) is listed too, and its name contains no ui-hook.
+    await page.getByRole('group', { name: 'Send to' }).getByRole('checkbox', { name: 'ui-hook', exact: true }).check();
     await page.getByRole('spinbutton', { name: 'For at least (seconds)' }).fill('0');
     await page.getByRole('spinbutton', { name: 'Threshold (%)' }).fill('0.1');
     await page.getByRole('button', { name: 'Check' }).click();
@@ -1819,8 +1821,10 @@ test('api_014 alerts page: operators see credential fields read-only', async () 
     await p.getByRole('button', { name: 'Advanced', exact: true }).click();
     const dests = p.getByTestId('editor-alert_destination');
     await dests.getByTestId('entry-row').filter({ hasText: 'ui-ntfy' }).getByRole('button', { name: 'Edit' }).click();
-    await expect(p.getByRole('textbox', { name: 'Token file (ntfy, Gotify)' })).toHaveAttribute('readonly', '');
-    await expect(p.getByRole('textbox', { name: 'Password file (email)' })).toHaveAttribute('readonly', '');
+    // REQ: API-015 (T23.6) — the token and password are secret fields: an operator sees no input.
+    await expect(p.getByTestId('secret-token_ref').getByRole('textbox')).toHaveCount(0);
+    await expect(p.getByTestId('secret-password_ref').getByRole('textbox')).toHaveCount(0);
+    await expect(p.getByTestId('secret-token_ref')).toContainText('Only an admin can set a stored secret.');
     await expect(p.getByRole('textbox', { name: 'Address', exact: true })).toHaveAttribute('readonly', '');
     await expect(p.getByRole('textbox', { name: 'Private CA (email)' })).toHaveAttribute('readonly', '');
     await expect(p.getByRole('textbox', { name: 'From (email)' })).not.toHaveAttribute('readonly', '');
@@ -1829,7 +1833,7 @@ test('api_014 alerts page: operators see credential fields read-only', async () 
     // drawer of the entry above is still open (a hash change doesn't reload), so reload first.
     await p.reload();
     await p.getByTestId('editor-alert_destination').getByRole('button', { name: 'Add destination' }).click();
-    await expect(p.getByRole('textbox', { name: 'Token file (ntfy, Gotify)' })).toHaveAttribute('readonly', '');
+    await expect(p.getByTestId('secret-token_ref').getByRole('textbox')).toHaveCount(0);
     await expect(p.getByRole('textbox', { name: 'Address', exact: true })).not.toHaveAttribute('readonly', '');
     // And the server says no whatever the form does.
     const ocsrf = (await (await op.request.get('/api/v1/auth/status')).json()).csrfToken as string;
@@ -1843,6 +1847,250 @@ test('api_014 alerts page: operators see credential fields read-only', async () 
     await op.close();
     await r.delete('/api/v1/alerts/destinations/ui-ntfy', { headers: h });
   }
+});
+
+// REQ: API-015, API-014 (T23.6, ADR-903 §9) — stored secrets from the UI: the field is write-only,
+// a file the configuration sets is read-only, replace and clear work, an operator sees status only,
+// a plain-HTTP refusal is explained, a locked store links to the secrets tab, and a stored token is
+// what an alert sends.
+async function csrfOf(r: import('@playwright/test').APIRequestContext) {
+  return (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
+}
+
+test('api_015 secret field is write-only', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/alerts');
+  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+  const dests = page.getByTestId('editor-alert_destination');
+  await dests.getByRole('button', { name: 'Add destination' }).click();
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-stored');
+  await page.getByLabel('Type', { exact: true }).selectOption('ntfy');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('http://127.0.0.1:18997/stored');
+  const field = page.getByTestId('secret-token_ref');
+  await expect(field).toHaveAttribute('data-mode', 'unset');
+  await expect(field.getByRole('button', { name: 'Save secret' })).toBeDisabled();
+  await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('write-only-token-7731');
+  await field.getByRole('button', { name: 'Save secret' }).click();
+  await expect(field).toHaveAttribute('data-mode', 'set');
+  await expect(field.getByTestId('secret-status')).toContainText('alert.ui-stored.token');
+  // Never pre-filled, and never in the page after the save.
+  await expect(field.getByLabel('Token (ntfy, Gotify)', { exact: true })).toHaveCount(0);
+  expect(await page.content()).not.toContain('write-only-token-7731');
+  await page.getByRole('button', { name: 'Check' }).click();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(dests.getByTestId('entry-row').filter({ hasText: 'ui-stored' })).toContainText('ntfy');
+});
+
+test('api_015 replace and clear', async () => {
+  const dests = page.getByTestId('editor-alert_destination');
+  await dests.getByTestId('entry-row').filter({ hasText: 'ui-stored' }).getByRole('button', { name: 'Edit' }).click();
+  const field = page.getByTestId('secret-token_ref');
+  await expect(field).toHaveAttribute('data-mode', 'set');
+  await field.getByRole('button', { name: 'Replace' }).click();
+  await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('replaced-token-9914');
+  await field.getByRole('button', { name: 'Save new value' }).click();
+  await expect(field).toHaveAttribute('data-mode', 'set');
+  expect(await page.content()).not.toContain('replaced-token-9914');
+  await field.getByRole('button', { name: 'Clear' }).click();
+  await expect(field).toHaveAttribute('data-mode', 'clear');
+  await expect(field.getByTestId('secret-cleared')).toContainText('alert.ui-stored.token');
+  await field.getByRole('button', { name: 'Undo' }).click();
+  await expect(field).toHaveAttribute('data-mode', 'set');
+  await field.getByRole('button', { name: 'Clear' }).click();
+  await page.getByRole('button', { name: 'Check' }).click();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  // The drawer closes once the change is applied; only then is the list read again.
+  await expect(page.locator('.drawer')).toHaveCount(0);
+  // The entry no longer names the secret; the value stays on Integrations & secrets until deleted.
+  await page.goto('/#/settings?tab=secrets');
+  const row = page.getByTestId('secret-row').filter({ hasText: 'alert.ui-stored.token' });
+  await expect(row).toContainText('nothing');
+  await row.getByRole('button', { name: 'Delete' }).click();
+  await expect(row).toHaveCount(0);
+});
+
+test('api_015 set by file is read-only', async () => {
+  await page.goto('/#/alerts');
+  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+  const dests = page.getByTestId('editor-alert_destination');
+  await dests.getByTestId('entry-row').filter({ hasText: 'file-ntfy' }).getByRole('button', { name: 'Edit' }).click();
+  const field = page.getByTestId('secret-token_ref');
+  await expect(field).toHaveAttribute('data-mode', 'file');
+  await expect(field.getByTestId('secret-file')).toContainText('/run/secrets/e2e-ntfy-token');
+  await expect(field.getByRole('textbox')).toHaveCount(0);
+  await expect(field.getByRole('button', { name: /Save|Replace|Clear|Delete/ })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Close' }).click();
+});
+
+test('api_015 alert destination with a stored token delivers', async () => {
+  const { createServer } = await import('node:http');
+  const got: { auth?: string; body: string }[] = [];
+  const ntfy = createServer((req, res) => {
+    let b = '';
+    req.on('data', (c) => (b += c));
+    req.on('end', () => {
+      got.push({ auth: req.headers.authorization, body: b });
+      res.end('ok');
+    });
+  });
+  await new Promise<void>((r) => ntfy.listen(18997, '127.0.0.1', () => r()));
+  try {
+    await page.goto('/#/alerts');
+    await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+    const dests = page.getByTestId('editor-alert_destination');
+    await dests.getByRole('button', { name: 'Add destination' }).click();
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-ntfy-stored');
+    await page.getByLabel('Type', { exact: true }).selectOption('ntfy');
+    await page.getByRole('textbox', { name: 'Address', exact: true }).fill('http://127.0.0.1:18997/topic');
+    const field = page.getByTestId('secret-token_ref');
+    await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('stored-token-5521');
+    await field.getByRole('button', { name: 'Save secret' }).click();
+    await expect(field).toHaveAttribute('data-mode', 'set');
+    await page.getByRole('button', { name: 'Check' }).click();
+    await page.getByRole('button', { name: 'Apply' }).click();
+    const row = dests.getByTestId('entry-row').filter({ hasText: 'ui-ntfy-stored' });
+    await row.getByRole('button', { name: 'Send test' }).click();
+    await expect(dests.getByTestId('row-action-result')).toContainText('sent');
+    expect(got.some((g) => g.auth === 'Bearer stored-token-5521')).toBe(true);
+    await row.getByRole('button', { name: 'Remove' }).click();
+    await expect(row).toHaveCount(0);
+    const r = page.request;
+    const del = await r.delete('/api/v1/secrets/alert.ui-ntfy-stored.token', { headers: { 'x-csrf-token': await csrfOf(r) } });
+    expect(del.status()).toBe(200);
+  } finally {
+    ntfy.close();
+  }
+});
+
+test('api_015 delete of a secret in use names its users', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  expect((await r.put('/api/v1/secrets/ui-in-use', { headers: h, data: { value: 'in-use-value-3311', kind: 'text' } })).status()).toBe(200);
+  const used = await r.put('/api/v1/alerts/destinations/ui-used', {
+    headers: h,
+    data: { type: 'ntfy', url: 'http://127.0.0.1:18997/used', token_ref: 'ui-in-use' },
+  });
+  expect(used.status(), await used.text()).toBe(200);
+  try {
+    await page.goto('/#/settings?tab=secrets');
+    const row = page.getByTestId('secret-row').filter({ hasText: 'ui-in-use' });
+    await expect(row).toContainText('ui-used');
+    await row.getByRole('button', { name: 'Delete' }).click();
+    await expect(page.getByTestId('secrets-stored').getByRole('alert')).toContainText('ui-used');
+    await expect(row).toBeVisible();
+  } finally {
+    await r.delete('/api/v1/alerts/destinations/ui-used', { headers: h });
+    await r.delete('/api/v1/secrets/ui-in-use', { headers: h });
+  }
+});
+
+test('api_015 operator sees stored secrets, not the controls', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  expect((await r.put('/api/v1/secrets/ui-visible', { headers: h, data: { value: 'operator-must-not-see-1', kind: 'text' } })).status()).toBe(200);
+  const OPERATOR = { user: 'operator1', pass: 'operator long password' };
+  const op = await page.context().browser()!.newContext({ baseURL: page.url().split('/#/')[0] });
+  try {
+    const p = await op.newPage();
+    await p.goto('/#/settings?tab=secrets');
+    await p.getByLabel('Username', { exact: true }).fill(OPERATOR.user);
+    await p.getByLabel('Password', { exact: true }).fill(OPERATOR.pass);
+    await p.getByRole('button', { name: 'Sign in' }).click();
+    await expect(p.getByTestId('secrets-read-only')).toBeVisible({ timeout: 30_000 });
+    const row = p.getByTestId('secret-row').filter({ hasText: 'ui-visible' });
+    await expect(row).toBeVisible();
+    await expect(p.getByRole('button', { name: 'Delete' })).toHaveCount(0);
+    await expect(p.getByRole('button', { name: 'Replace' })).toHaveCount(0);
+    await expect(p.getByTestId('secret-form')).toHaveCount(0);
+    expect(await p.content()).not.toContain('operator-must-not-see-1');
+    const ocsrf = (await (await op.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+    const put = await op.request.put('/api/v1/secrets/ui-visible', {
+      headers: { 'x-csrf-token': ocsrf },
+      data: { value: 'changed-by-operator', kind: 'text' },
+    });
+    expect(put.status()).toBe(403);
+  } finally {
+    await op.close();
+    await r.delete('/api/v1/secrets/ui-visible', { headers: h });
+  }
+});
+
+test('api_015 plain HTTP refusal is explained', async () => {
+  await page.route('**/api/v1/secrets/ui-refused', (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: 'application/problem+json',
+      json: {
+        type: 'https://telltaledns.dev/problems/insecure_transport',
+        title: 'Forbidden',
+        status: 403,
+        code: 'insecure_transport',
+        detail: 'secrets are taken only over HTTPS',
+      },
+    }),
+  );
+  try {
+    await page.goto('/#/settings?tab=secrets');
+    const form = page.getByTestId('secret-form');
+    await form.getByLabel('Value name', { exact: true }).fill('ui-refused');
+    await form.getByLabel('Value', { exact: true }).fill('refused-value-1');
+    await form.getByRole('button', { name: 'Save secret' }).click();
+    await expect(page.getByTestId('secret-refused')).toContainText('HTTPS');
+    await expect(page.getByTestId('secret-refused')).toContainText('allow_secrets_over_http');
+  } finally {
+    await page.unroute('**/api/v1/secrets/ui-refused');
+  }
+});
+
+test('api_015 locked store links to the secrets tab', async () => {
+  await page.route('**/api/v1/system/health', (route) =>
+    route.fulfill({
+      json: {
+        level: 'degraded',
+        checkedAt: '2026-10-08T12:00:00.000Z',
+        reasons: [
+          {
+            level: 'degraded',
+            code: 'secrets_locked',
+            summary: "stored secrets can't be used on this node: no key (DNS is unaffected)",
+            node: 'home-dns',
+            link: '#/settings?tab=secrets',
+          },
+        ],
+      },
+    }),
+  );
+  try {
+    await page.goto('/#/');
+    await page.reload();
+    const icon = page.getByTestId('health-icon');
+    await expect(icon).toHaveAttribute('data-level', 'degraded');
+    await icon.click();
+    await page.getByTestId('health-panel').getByRole('link', { name: 'Look' }).first().click();
+    await expect(page).toHaveURL(/tab=secrets/);
+    await expect(page.getByRole('tab', { name: 'Integrations & secrets' })).toHaveAttribute('aria-selected', 'true');
+  } finally {
+    await page.unroute('**/api/v1/system/health');
+  }
+});
+
+// REQ: API-005 (T23.6, AGT-004) — the Home Assistant scope preset fills an agent token's scopes
+// with the README's list; the token is then revoked.
+test('api_015 the Home Assistant preset fills the agent scopes', async () => {
+  await page.goto('/#/settings?tab=tokens');
+  await page.getByLabel('Kind', { exact: true }).selectOption('agent');
+  await page.getByLabel('Scope preset').selectOption('home-assistant');
+  await expect(page.getByLabel('Token name')).toHaveValue('home-assistant');
+  for (const id of ['analytics:read', 'config:read', 'ops:pause', 'ops:anomalies', 'config:write:clients']) {
+    await expect(page.locator(`fieldset.agent-scopes input[value="${id}"]`)).toBeChecked();
+  }
+  await expect(page.locator('fieldset.agent-scopes input[value="querylog:read"]')).not.toBeChecked();
+  await page.getByRole('button', { name: 'Create token' }).click();
+  await expect(page.locator('code.token')).toContainText('tt_');
+  const row = page.getByRole('row').filter({ hasText: 'home-assistant' });
+  await expect(row).toContainText('ops:pause');
+  await row.getByRole('button', { name: 'Revoke' }).click();
+  await expect(row).toHaveCount(0);
 });
 
 // REQ: FLT-010 (T9.7) — schedules from the UI: a bad window is explained, a good one saved;

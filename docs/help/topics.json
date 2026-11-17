@@ -624,7 +624,7 @@
       "summary": "Messages to ntfy, Gotify, Slack-compatible channels, or a webhook when an upstream is down, a node drops out, a list fails, SERVFAILs climb, a device behaves oddly, or an update is out.",
       "when": "You want to hear about problems without watching the dashboard.",
       "example": "An ntfy push to your phone when Quad9 has been unreachable for a minute, and another when it's back.",
-      "caution": "Set for_secs long enough that short blips stay quiet. Keep tokens in token_file, not in the config.",
+      "caution": "Set for_secs long enough that short blips stay quiet. Keep tokens in a stored secret (the token field keeps it encrypted), not in the config file.",
       "docs": "alerts",
       "general": true
     },
@@ -836,12 +836,21 @@
       "id": "stored-secrets",
       "title": "Keep a password or token on the node, encrypted",
       "term": "Stored secret",
-      "summary": "A credential (a router's API key, an alert token, an OIDC client secret) kept in TelltaleDNS's own database, encrypted with the node's key, and never shown again once saved.",
-      "when": "You'd rather enter a credential in the UI than put a file on the machine.",
+      "summary": "A password or token (a router's API key, an alert's token, an OIDC client secret) kept in TelltaleDNS's own database, encrypted with the node's key, and never shown again once saved. Settings → Integrations & secrets lists them and shows where each one is used.",
+      "when": "You'd rather type a password or token into the UI than put a file on the machine.",
       "example": "api_key_ref = \"unifi\" uses the stored secret named unifi as the UniFi console's API key.",
       "caution": "A credential set in the config file wins and can't be changed in the UI. Keep a copy of the node's key: without it, stored secrets can't be read. Backups never include them.",
-      "docs": "stored-secrets",
-      "general": true
+      "docs": "stored-secrets"
+    },
+    {
+      "id": "secret-field",
+      "title": "A password or token you type once",
+      "term": "Secret field",
+      "summary": "A box for a password or token. Saved, it is kept encrypted on this node and never shown again: the field only says it's set. Replace it to change it, or clear it to stop the entry using it.",
+      "when": "An integration needs a password or token, such as an alert's ntfy token or a router's API key.",
+      "example": "Type the ntfy access token once; the destination then says it is stored as alert.phone.token.",
+      "caution": "A file the configuration sets wins over a stored secret and can only be changed there. Over plain HTTP the server refuses the value: turn on HTTPS first.",
+      "docs": "stored-secrets"
     },
     {
       "id": "special-names",
