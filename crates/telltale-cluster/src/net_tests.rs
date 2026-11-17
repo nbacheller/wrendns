@@ -1479,9 +1479,11 @@ async fn replica_with_a_dead_primary_url(start: Start) {
         }
         serve_primary(&c);
         let (r, p) = (Arc::clone(&replica), p_url.clone());
+        // The stream's URL is set before the primary's membership marks it as the primary, so
+        // wait for both: the assertion below reads the membership (a CI flake on the base too).
         wait_until(
             "the replica's own stream goes back to the primary",
-            move || r.connected_primary().as_ref() == Some(&p),
+            move || r.connected_primary().as_ref() == Some(&p) && r.main_link_to_primary(),
         )
         .await;
         assert!(replica.main_link_to_primary());
