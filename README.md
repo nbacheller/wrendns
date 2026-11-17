@@ -13,12 +13,13 @@
 >   - Pi-hole's special names: iCloud Private Relay blocked by default, `resolver.arpa` with encrypted DNS discovery (DDR), and domain-needed;
 >   - **Update lists now** (Pi-hole's "Update Gravity");
 >   - still to come: keepalived failover, importer gaps, IPv6 device names.
-> - **M23, secrets and integrations in the UI (in progress):** anything set up through a secret file can also be entered in the UI. Values are write-only and encrypted on each node, and the files still win.
+> - **M23, secrets and integrations in the UI (wave 1 done):** secrets store, write-only API, no credential on any read surface; UI next. Once the UI lands (T23.6), anything set up through a secret file can also be entered there, and the files still win.
 > - **M25, network inventory beyond the gateway (planned):**
 >   - SNMP from your gateway and switches (which device is on which port);
 >   - more UniFi reads;
 >   - importing results from a scanner you run yourself.
 > - **M26, live network map (planned):** an animated map of your network and of where its lookups go, coloured green, yellow or red by health. A world view is optional.
+> - **M27, UI for everything (planned):** a UI control for every older setting too, with guarded admin controls for listeners, TLS, keys and cluster setup ([ADR-914](spec/11-decisions.md)).
 >
 > **Every feature gets a UI control**, not only config, API or MCP. Fork issues are tracked [here](https://github.com/nbacheller/telltaledns/issues). Changes from upstream are merged regularly.
 

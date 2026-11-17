@@ -2,6 +2,8 @@
 
 Ordering reflects the owner's priorities: **performance → observability → Kubernetes + Pi deployability → clustering/HA → breadth**. Each task lists the requirement IDs it satisfies and objective acceptance criteria (AC). A task is done only when its AC pass in CI. Tick boxes as you go and keep this file current.
 
+**Every surface ships with its UI (owner rule 2026-11-16; API-901, ADR-914).** Every task that adds a setting, route or tool ships its UI control, help topic and Playwright test in the same task; a task without them isn't done. Exceptions are inherently offline commands, each with a one-line reason. The control is a form field, page, card or action. Role gating matches the API and is enforced by the server: viewers read, and operators or admins change. Each control has a `?` help topic that passes `check:help`, and at least one Playwright test names it (mocking API answers with `page.route` where the e2e server has no such source). A credential is only ever entered through `SecretField` (write-only, never shown or pre-filled; ADR-903 §9), and a `<redacted>` value is never shown as if it were the value. Security gates and bootstrap settings (keys, listeners, API address and TLS, trusted proxies, cluster init and join) get admin controls with the guardrails of ADR-914: admin only on the server, never agents, a typed confirmation, audit, and an automatic rollback for address changes; a key is never typed into the store it protects. A node-local section (`shared.rs` `NODE_LOCAL`) becomes editable only through `node_managed` (T23.10), as an entry for the node it applies to. The file wins over every UI value and is shown as "set by file". A task that adds no setting, route or tool (a deploy bundle, a benchmark, an internal fix, an outside integration) says "No UI: <reason>". This applies to all wave work, including tasks already ticked in M22 and M24, which T24.12–T24.18 catch up; M27 catches up the pre-fork features.
+
 ## M0 — Foundations (week 1)
 - [x] **T0.1 Workspace scaffold.** Crates per `02 §2`, `#![forbid(unsafe_code)]` where required, rust-toolchain pinned, CI (fmt, clippy, test, cargo-deny), `LICENSE` (Apache-2.0 OR MIT). *AC:* CI is green on an empty skeleton; `cargo deny check` passes. *Done 2026-10-02: local gate green (fmt/clippy/test/deny); GitHub Actions run pending until a remote exists.*
 - [x] **T0.2 Config skeleton.** `telltale-config` with the TOML schema for listeners/upstreams/cache/telemetry, env overrides, `telltale config check`, JSON Schema output. *(OPS-005)* *AC:* unknown keys error with path; env override test. *Done 2026-10-02. Deferred: node.toml key allow-list (T5.5/CLU-006), GitOps mode (OPS-005, with API in M3), CLI-flag layer (with `telltale run`), config migrations (none needed at v1).*
@@ -689,16 +691,444 @@ Two tasks from the design session of 2026-10-18, built in order T15.1 → T15.2 
   - *Done 2026-11-16:* (1) the e2e suite (74 tests) passes on the VM and in CI, with the tests that found cards by class moved to the new hooks; (2)–(4) `SmoothChart`, `TopList` and `names.ts` as in ADR-157, looked at on the demo network and on the live cluster's name shapes (read-only); (5) the e2e test `api_005 the previous dashboard is reachable and remembered`; (6) `npm run check` clean, bundle 229.9 KiB gzipped. The contributor's #31 (per-device status split, issue #30, ADR-159), #34 (lists follow the range, ADR-160), #36 (legend width) and #42 (rolling last hour, ADR-158) were ported onto it (the split also rides on range reads), and the PRs closed with a note.
   - *Open:* the owner's acceptance of ADR-157 to ADR-160; when to remove the previous dashboard; a server-side option to fold pods' search suffixes in the top lists; the rolling hour (ADR-158) has no per-device status split.
 
+## M27 — UI for everything (pre-fork features) (owner request 2026-11-16)
+
+Settings, routes and actions that came from upstream before the fork and still have no UI control (the 2026-11-16 UI audit). Listed in owner-priority order: the cheapest fix first, then cache, upstreams, groups, tuning, auth and agents, then the rest. The last tasks give admins guarded controls for the security and bootstrap settings (ADR-914, owner decision 2026-11-16: admin controls, not a read-only view). Every task follows the standing rule at the top of this file. Role checks are on the server; node-local sections (`NODE_LOCAL`) go through `node_managed` (T23.10), so T27.2, T27.5, T27.6, T27.11 and T27.13 onward depend on T23.10. Each task records its bundle size (under 400 KiB) and updates `docs/` and the matching `site/` page (DOC-006).
+
+- [ ] **T27.1 Every alert condition in the Alerts form.** *(OBS-010, API-901)* The `conditions` list in `Alerts.svelte` offers every `AlertWhen` value: `slo_burn`, `probe_failing`, `cert_expiring`, `rollout_failed`, `cluster_pinned`, `chatty_loop` and `drill_report`, next to the ones it has. A unit test fails when `AlertWhen` gains a value the list lacks.
+  - *AC:* (1) Playwright `obs_010 every alert condition can be chosen`; (2) `obs_010_alert_conditions_match_ui` (the list against the enum); (3) help topic `alert-conditions` lists each with one line; `check:help` clean.
+- [ ] **T27.2 Cache settings.** *(DNS-006, DNS-009, CLU-006, API-901; ADR-914)* `[cache]` (15 fields, node-local) becomes an operator-editable `node_managed` kind `cache` per node. The card on `Cache.svelte` (read-only today, around lines 225-239) becomes a form; fields that apply only after a restart say so and show "pending restart".
+  - *AC:* (1) `dns_006_cache_settings_node_managed` (applies to the named node only; the file wins); (2) Playwright `dns_006 change cache size from the cache page`, `dns_006 restart-only field says pending restart`, `dns_006 viewer sees cache settings read-only`; (3) help topics per field group (`cache-size`, `cache-ttl`, `cache-persistence`).
+- [ ] **T27.3 Upstream weight, headers and the remaining upstream fields.** *(UPS-005, API-014, API-901; ADR-903 §9)* The Upstreams form gains `weight` (shown when the group's strategy is `weighted`, which is offered but unusable today), `headers` (values through `SecretField`-backed `header_refs`; T24.16's re-entry message), `bootstrap`, `ecs`, `doh_method`, `spki_pins`, `proxy`, `labels`, `tls_ca`, `tls_client_cert` and `tls_client_key` (with T24.16's admin rules: `tls_client_key` and `spki_pins` admin-only, `tls_ca` admin-only when the entry holds a credential), and the group form gains `parallel_fanout`.
+  - *AC:* (1) Playwright `ups_005 weighted group with weights`, `api_014 upstream header from a stored secret`, `api_014 operator cannot set a client key`; (2) `ups_005_weight_needs_weighted_strategy` (server); (3) help topics `upstream-weight`, `upstream-headers`, `upstream-tls`, `parallel-fanout`.
+- [ ] **T27.4 Group rewrites and the missing group fields.** *(FLT-014, API-901)* An editor for `rewrite[]` (the `rewrites` help topic exists), and the fields `block_ips`, `block_ttl`, `ede`, `ede_text` and `rebinding_allow` in the Groups form (`device_classes` is T23.13's).
+  - *AC:* (1) Playwright `flt_014 add a rewrite to a group` (then explain shows it), `flt_014 group block ttl and ede`; (2) help topics `rewrites` (wired), `block-response`, `rebinding`.
+- [ ] **T27.5 Tuning: SLO, probes, upstream checks, anomalies, query log and metrics.** *(OBS-020, OBS-013, OBS-003, API-901; ADR-914)* Forms for `[slo]`, `[probe]`, `[upstream_check]` (shared kinds, operators), and `[telemetry.anomaly]`, `[telemetry.qlog]` (retention, privacy level) and `[telemetry.metrics]` (`per_client`, cap) as `node_managed` kinds (admins, since privacy and retention are at stake). Shown where the data is: the SLO card, the Probes page, Upstreams, Anomalies, Query log and Settings → System.
+  - *AC:* (1) a server test per kind (`obs_020_probe_settings_apply_on_reload`, `obs_013_anomaly_settings_node_managed`, `obs_003_qlog_retention_node_managed`); (2) Playwright `obs_020 change probe interval`, `obs_003 operator cannot change privacy level`; (3) help topics `slo`, `probes`, `upstream-checks`, `anomaly-settings`, `qlog-settings`, `metrics-settings`.
+- [ ] **T27.6 Auth policy and the agents kill switch.** *(API-003, AGT-009, API-901; ADR-914)* `session_ttl_hours`, `session_idle_hours`, `audit_retention_days` and `totp_required_roles` as an admin-only `node_managed` kind `auth-policy` on Settings → Users (OIDC providers are T23.10). The `agents` shared kind (ADR-914) on Settings → API tokens: `enabled` (operators may turn agents off, only admins on; the server compares old and new), `rate_per_minute` and `require_approval` (admin-only). No agent scope writes either kind.
+  - *AC:* (1) `agt_009_operator_can_only_turn_agents_off`, `agt_009_agent_cannot_write_agents_kind`, `api_003_auth_policy_admin_only`, `api_003_auth_policy_refuses_admin_lockout`; (2) Playwright `agt_009 operator turns agents off`, `agt_009 operator cannot turn agents on`, `api_003 session lifetime from settings`; (3) help topics `agents-switch`, `session-policy`.
+- [ ] **T27.7 Routes, zones and records.** *(DNS-010, API-901)* The route form gains `match_group`, `match_qtype`, `dnssec_nta` and `node_only`; zones become editable on `LocalDns.svelte` (read-only today, around lines 209-225; `[[zone]] file` is a guarded path, T27.17); records gain `ttl` and `node_only`.
+  - *AC:* (1) Playwright `dns_010 route by group and type`, `dns_010 add a zone`, `dns_010 record ttl`; (2) help topics `routes`, `zones` updated.
+- [ ] **T27.8 Kubernetes: un-map and settings.** *(FLT-017, API-901)* An "Un-map" action for each mapped workload (`DELETE /kubernetes/map/{key}`, `api.ts` gains the wrapper), and a `[kubernetes]` form (`enabled`, `default_group`, `namespaces`, `exclude_namespaces`, `label`) for operators.
+  - *AC:* (1) Playwright `flt_017 un-map a workload`, `flt_017 kubernetes settings` (cluster API mocked); (2) help topic `kubernetes-workloads` updated.
+- [ ] **T27.9 The rest of `[clients]`.** *(API-010, API-901; ADR-914)* The `clients` kind (T24.13 brings `mdns`, admin-only) gains `infrastructure`, `neighbor_table`, `neighbor_refresh_secs` and `trust_edns_mac_from` for operators, on the Clients page. `mdns_port` stays file-only and is shown read-only.
+  - *AC:* (1) Playwright `api_010 mark infrastructure clients`, `api_010 neighbor table settings`; (2) help topics `infrastructure-clients`, `edns-mac`.
+- [ ] **T27.10 Heatmap scope and lease expiry.** *(OBS-029, API-013, API-901)* A scope control on `Heatmap.svelte` (cluster, `site:`, `node:`), and the lease's `expiresUnixSeconds` as a column in the Clients "Discovered" table (from `/dhcp/leases` joined by MAC, or the inventory entry's router source).
+  - *AC:* (1) Playwright `obs_029 heatmap scope per node` (cluster mocked), `api_013 lease expiry shown`; (2) help topic `heatmap` updated.
+- [ ] **T27.11 Small settings.** *(CLU-014, DNS-011, FLT-004, OPS-012, API-901)* Controls for `[drill]` schedule (Cluster page), `updates.check` and `support.persist_logs` (Settings → System; node-local through `node_managed`, admins), `[dnssec] mode` and negative trust anchors (Settings → Query handling), `list[].max_bytes` and `list[].stale_after_days` (the Lists form), `filter.refresh_secs` and `filter.stale_after_days` (Lists page settings), and an "include query history" choice on the backup page (T23.9) for `--include-qlog`.
+  - *AC:* (1) Playwright one test per control (`clu_014 drill schedule`, `dns_011 add a negative trust anchor`, `flt_004 list size limit`, `api_007 backup with query history`); (2) help topics `drill-schedule`, `dnssec-mode`, `list-limits`, `update-check`, `backup-query-history`.
+- [ ] **T27.12 Configuration viewer.** *(API-002, API-014, API-901)* A read-only, redacted view of the configuration in effect (`GET /config`, MCP `get_config`) under Settings → System, by section, with each value's source (file, UI, `node_managed`) and the "set by file" mark.
+  - *AC:* (1) Playwright `api_002 configuration viewer shows sources`, `api_014 configuration viewer never shows a credential` (a planted header); (2) help topic `config-viewer`.
+- [ ] **T27.13 Guarded changes: the framework.** *(API-902, API-006, AGT-009; ADR-914)* The guarded tier of ADR-914: a server check that the role is admin and the token is not an agent's (403 `agent_not_allowed`, the spec/13 §3 list); the dry run with its confirmation phrase and the `confirm` check; weakening changes needing a recent sign-in (`reauth_required`, T23.9); pending changes with a confirmation window (`[api] confirm_window_secs`, default 120 s, file-only), confirmation through the new address, automatic rollback, a restart inside the window starting with the previous values; `node_managed` entries per node; audit `settings.guarded` and `settings.guarded_rolled_back`; the alert condition `guarded_setting_changed`. The UI: one `GuardedChange` component (the dry run, a red "weakens security" mark, the phrase to type, the countdown, the confirm step on the new address, the rollback message).
+  - *AC:* (1) `api_902_guarded_change_needs_admin_and_refuses_agents`; (2) `api_902_confirmation_phrase_checked_on_server`; (3) `api_902_weakening_change_needs_recent_sign_in`, `api_902_tokens_refused_for_guarded_changes`; (4) `api_902_unconfirmed_change_rolls_back` and `api_902_restart_inside_window_keeps_previous`; (5) `api_902_guarded_change_audited_and_alerted`; (6) `api_902_file_wins_over_guarded_value`; (7) Playwright `api_902 guarded change asks for the phrase`, `api_902 rollback countdown`; (8) help topic `guarded-settings`.
+- [ ] **T27.14 Listeners, API address and TLS, trusted proxies.** *(API-902, CLU-006, CLU-004, DNS-001; ADR-914)* Guarded forms for `[[listen]]` (address, port, protocol, TLS), `api.listen`, `api.tls` and `api.trusted_proxies` on Settings → System, per node. New sockets bound alongside the old ones for the whole window, the old ones closed only on confirmation; a failed bind changes nothing; the confirmation comes through the new address (and, for a DNS listener, the node's own probe answers); 409 `would_disconnect_you` for a change that would leave no DNS or no API listener once confirmed, or that removes the API listener the request came in on in the confirming request. Adding a trusted proxy is weakening.
+  - *AC:* (1) `api_902_listener_change_binds_before_release`, `api_902_old_listener_kept_until_confirmed`; (2) `api_902_bad_listener_rolls_back_and_dns_keeps_answering`; (3) `api_902_api_listen_change_confirmed_from_new_address`; (4) `api_902_would_disconnect_refused`; (5) `api_902_trusted_proxy_add_is_weakening`; (6) Playwright `api_902 move the api to a new port and confirm` (the e2e server on two ports), `api_902 listener change rolls back without confirmation`; (7) help topics `listeners`, `api-address`, `trusted-proxies`; `make bench-smoke` (listener code is `telltale-net`).
+- [ ] **T27.15 Secrets key, secret file directories and insecure transports.** *(API-902, OPS-014, API-014, API-015; ADR-914, ADR-903)* On Settings → Integrations & secrets (T23.6): the key status card (source, `key_id`, previous key, rows under it, locked, ephemeral), and rotation by pointing at a new key file (the steps and the offline `telltale secrets rotate-key` shown; the server checks the file's type, mode, owner and key without returning it, then sets `secrets_previous_key_file` and `secrets_key_file` for that node; the offer to clear the previous key when no rows remain). An environment key shows "set by environment". Guarded forms for `secret_file_dirs` (a widening is weakening; a narrowing lists the references it would refuse), `allow_secrets_over_http` and `allow_insecure_basic` (weakening).
+  - *AC:* (1) `api_902_key_never_accepted_in_a_body` (no route takes key material); (2) `api_902_rotate_by_key_file_path` (re-encrypted, crash-safe, the previous key cleared after); (3) `api_902_key_file_checks` (mode, owner, not a key, a symlink); (4) `api_902_secret_file_dirs_widening_needs_recent_sign_in`; (5) `api_902_narrowing_lists_refused_references`; (6) Playwright `api_902 key status and rotation steps`, `api_902 allow secrets over http is flagged as weakening`, `api_902 operator sees key status only`; (7) help topics `secrets-key`, `secret-file-dirs`, `insecure-transports`.
+- [ ] **T27.16 Cluster wizard: init, join, leave, Git source.** *(API-902, CLU-001, CLU-003; ADR-914, ADR-049)* A Cluster page wizard with one guarded step each: "Make this node a primary" (`cluster.init`), "Join a cluster" (`cluster.join_url`; the bootstrap secret entered write-only over HTTPS or loopback, used once, never stored; a failed join leaves the node as it was; the dry run says the configuration will be replaced), "Leave the cluster", and `[cluster.git]` (repository, branch, path, authority; T23.12's credentials stay a `SecretField`; the dry run says when authority moves to Git).
+  - *AC:* (1) `api_902_join_secret_never_stored` (state.db, audit, logs); (2) `api_902_failed_join_leaves_node_unchanged`; (3) `api_902_git_source_change_guarded`; (4) Playwright `api_902 join a cluster from the wizard` (a second e2e node), `api_902 init asks for the phrase`; (5) help topics `cluster-wizard`, `git-source`.
+- [ ] **T27.17 Node identity and storage, the watchdog, file paths.** *(API-902, OPS-012, DNS-011, OBS-025; ADR-914)* Guarded controls for `node.*` identity and storage (staged for the next restart and shown "pending restart"; a node ID change refused while a cluster member; a data-directory change never moves data), the watchdog (turning it off is weakening), and the paths `trust_anchors_file`, `signatures_file`, `hosts_files` and `[[zone]] file` (T23.2's path rules; the dry run gives counts and line numbers, never content). `config_version` is shown read-only, the one setting without a control (ADR-914).
+  - *AC:* (1) `api_902_node_id_change_refused_while_clustered`; (2) `api_902_watchdog_off_is_weakening`; (3) `api_902_file_paths_confined` (a key file, `/proc`, a credential file, `secret_file_dirs`); (4) `api_902_path_dry_run_never_shows_content`; (5) Playwright `api_902 change hosts files path`, `api_902 node id pending restart`; (6) help topics `node-identity`, `watchdog`, `file-paths`.
+- [ ] **T27.18 Closing.** *(API-901, DOC-006)* A check that walks the configuration schema, the OpenAPI document and the MCP catalog and fails on any field, route or tool that has neither a UI control (by its help topic or a `data-setting` mark) nor a listed "No UI" reason; `docs/running.md` (which tier each setting is in), `site/guide-settings.html`; the README fork block.
+  - *AC:* (1) `api_901_every_setting_has_a_control` passes in CI; (2) the bundle under 400 KiB; (3) every M27 box ticked, with *Open* items listed.
+
 ## M26 — Live network map (owner request 2026-11-16) [fork #14]
 
 An animated, live map of the network and of where its lookups go, coloured by health: green healthy, yellow warnings, red errors. It has two views: the **network map** (gateway → networks/VLANs → devices, the TelltaleDNS nodes and their upstreams, with query flows animated along the links) and the **world view** (arcs to where answers point, using an optional IP-to-country database downloaded at runtime, never in the image). Flows are DNS lookups, not packets. It is built only on existing streams and counters, so nothing is added to the query path. Every control is in the UI. Topology gets richer once M25's SNMP/LLDP data exists, but the first version runs on M22's inventory.
 
-- [ ] **T26.1 Design ADR.** *(OBS-901, OBS-902)* A Proposed ADR: the data sources (query tail, time buckets, upstream and cluster health, inventory), server-side sampling with a cap per second, the health classification (green/yellow/red from the SLO and health settings), the map API (snapshot + stream) and MCP read tool, the GeoIP source, licence, download, verification and updates, the rendering approach (SVG/Canvas, no heavy library, within the 400 KiB UI budget), and cluster behaviour.
-- [ ] **T26.2 Map data API and health classification.** *(OBS-901, AGT-001..005, CLU-002)* Snapshot and stream routes, OpenAPI, an MCP `network_health` read tool, the federated cluster read. *AC:* unit tests of the classification; `bench-smoke` shows no regression; OpenAPI and MCP snapshots regenerated.
-- [ ] **T26.3 Network map page.** *(OBS-901, API-005)* Gateway, VLANs, devices, nodes and upstreams; animated flows with width by rate; colour states; filters by VLAN, group and device; click-through to queries, Explain and anomalies; animation pauses when the tab is hidden and honours `prefers-reduced-motion`. *AC:* Playwright tests for the layout, colour states, filters and reduced motion; help topics.
-- [ ] **T26.4 GeoIP database, controlled from the UI.** *(OBS-902, NFR-001)* An optional download at runtime (a toggle, the source, status and last update in the UI; admin-only), verified, stored in the data directory, refreshed in the background, never on the query path. *AC:* tests for download, verification failure and the off state; the image size is unchanged.
-- [ ] **T26.5 World view.** *(OBS-902)* Animated arcs from the network to where answers point, coloured by health, with the same filters; without a database it says so. *AC:* Playwright tests for both states.
-- [ ] **T26.6 Thresholds and sampling in the UI; docs.** *(OBS-901, DOC-006)* Warning and error thresholds and the event rate in the map's settings; `docs/running.md` and a site page; README fork block.
+- [ ] **T26.1 Design ADR.** *(OBS-901, OBS-902)* No UI: a design record. A Proposed ADR: the data sources (query tail, time buckets, upstream and cluster health, inventory), server-side sampling with a cap per second, the health classification (green/yellow/red from the SLO and health settings), the map API (snapshot + stream) and MCP read tool, the GeoIP source, licence, download, verification and updates, the rendering approach (SVG/Canvas, no heavy library, within the 400 KiB UI budget), and cluster behaviour.
+- [ ] **T26.2 Map data API and health classification.** *(OBS-901, AGT-001..005, CLU-002)* Snapshot and stream routes, OpenAPI, an MCP `network_health` read tool, the federated cluster read. UI: the map pages (T26.3, T26.5); T26.2 isn't ticked before their Playwright tests pass against it. *AC:* unit tests of the classification; `bench-smoke` shows no regression; OpenAPI and MCP snapshots regenerated.
+- [ ] **T26.3 Network map page.** *(OBS-901, API-005)* Gateway, VLANs, devices, nodes and upstreams; animated flows with width by rate; colour states; filters by VLAN, group and device; click-through to queries, Explain and anomalies; animation pauses when the tab is hidden and honours `prefers-reduced-motion`. *AC:* Playwright tests for the layout, colour states, filters and reduced motion; help topic `network-map`.
+- [ ] **T26.4 GeoIP database, controlled from the UI.** *(OBS-902, NFR-001)* An optional download at runtime (a toggle, the source, status and last update in the UI; admin-only), verified, stored in the data directory, refreshed in the background, never on the query path. *AC:* tests for download, verification failure and the off state; Playwright `obs_902 geoip toggle and status` and `obs_902 operator sees geoip read-only`; help topic `geoip`; the image size is unchanged.
+- [ ] **T26.5 World view.** *(OBS-902)* Animated arcs from the network to where answers point, coloured by health, with the same filters; without a database it says so. *AC:* Playwright tests for both states; help topic `world-view`.
+- [ ] **T26.6 Thresholds and sampling in the UI; docs.** *(OBS-901, DOC-006)* Warning and error thresholds and the event rate in the map's settings; `docs/running.md` and a site page; README fork block. *AC:* Playwright `obs_901 change map thresholds` and `obs_901 viewer sees map settings read-only`; help topic `map-thresholds`.
+
+## M25 — Network inventory: SNMP, gateway reads and imported scans (owner request 2026-11-16)
+
+This milestone gathers what the network already knows, and what the owner's own scans found. It follows on from M22 ("Network inventory and home integrations"):
+- a read-only SNMP poller of listed gateways and switches, plus identity reads of hosts that routers or L2 tables already see;
+- more read-only UniFi and Home Assistant reads;
+- uploads of the owner's nmap or CSV results;
+- one inventory keyed by MAC across every source.
+
+TelltaleDNS itself never probes (ADR-907): no sweeps, no ICMP, TCP, ARP or mDNS solicitation, no scheduled scans. Everything is off by default and runs on one designated node. SNMP runs in a separate worker process, and import parsing in another, so neither can take DNS down (CLU-004). The inventory never feeds policy or DNS names (ADR-910).
+
+Each task:
+- ships its own UI controls, help topics and Playwright tests (the standing rule at the top of this file); T25.14 is the walk-through and help review;
+- updates `docs/` and `site/guide-devices.html` for whatever it makes visible (DOC-006);
+- regenerates OpenAPI, `ui/src/api-types.ts` and `docs/config-schema.json` when its schema changes;
+- records its image delta with `deploy/image/size.py --oci` on amd64, arm64 and arm/v7.
+
+The deltas are summed per architecture against a milestone stop line of 0.08 MiB. T25.0 records the measured per-architecture image size from the image job, so the headroom after M23 is a measured number, not an estimate.
+
+Order:
+1. T25.0 first.
+2. T25.1, T25.2 and T25.3 can start at once.
+3. `SecretValue` and `Credential::resolve` land in T23.3, so T25.4 needs T23.1–T23.3, or defines `SecretValue` itself.
+4. `*_ref` and the UI fields need T23.3–T23.6. Replicated refs need T23.5.
+
+- [ ] **T25.0 Bookkeeping.** *(DSC-001..015; ADR-907..913)*
+  - ADR-907 to ADR-913 as Proposed, inserted newest first above ADR-906.
+  - The DSC rows. DSC-002 and DSC-007 land as P1, and the tasks that add their tests raise them to P0.
+  - The DNS-023, API-013, API-014 and AGT-004 amendments. *(Written 2026-11-16 with ADR-907..913, the DSC rows and the amendments; the rest of T25.0 is open.)*
+  - `spec/02`: `telltale-snmp` in the §2 crate table (`forbid(unsafe)`, off the hot path), and `aes` in §7.
+  - `spec/12`: a note on the `[discovery]` designated node.
+  - `spec/13`: the §3.1/§3.2 rows and the new scopes.
+  - Extend ADR-906's sync check to cover requirement prefixes (DSC) and milestone numbers (M25), as a Proposed amendment.
+  - A cross-reference from M22, and a note that T25.1 closes T22.3's neighbour-table *Open* item.
+  - `docs/design/network-inventory.md`.
+  - `docs/v1-requirements.md` regenerated.
+  - The measured per-architecture image baseline recorded.
+  - **UI.** No UI: bookkeeping.
+  - *AC:*
+    - `spec/trace.py --check` passes;
+    - every DSC row names its task;
+    - the owner has reviewed the ADRs.
+- [ ] **T25.1 Inventory type and merge.** *(DSC-008, DSC-015; ADR-910)* Depends on T25.0.
+  - `crates/telltale/src/discovery/inventory.rs`:
+    - the MAC entry and the IP-only class, with their caps;
+    - the import-ID bitmask and the 8,192-row import cap;
+    - `merge()` with the precedence, conflict, randomised-MAC and retention rules;
+    - the class 1–3 eligibility flag used by SNMP;
+    - findings, per-entry mutes and the empty-start learning period;
+    - `inventory.json`: 0600, atomic, at most once per 15 min, once a minute after an import or `public` pass, left out of backups;
+    - the `telltale-inventory` OS thread (`background_thread()`, current-thread runtime);
+    - read-only sources from the router leases, Home Assistant and passive mDNS tables.
+  - The neighbour-table source:
+    - `telltale-net`'s `Neighbor` gains `ifindex` from `ndm_ifindex`, a safe parser change with no new `unsafe`;
+    - interface names come from `/sys/class/net/*/ifindex`;
+    - container and overlay interfaces are skipped.
+  - Module lints as in ADR-908.
+  - **UI.** No UI: an internal type with no setting or route; its data is shown by T25.12's Clients → Discovered tab.
+  - *AC:*
+    - `dsc_008_mac_keyed_precedence`;
+    - `dsc_008_same_ip_two_macs_flags_conflict`;
+    - `dsc_008_import_never_overrides_l2`;
+    - `dsc_008_ip_only_merges_when_mac_arrives`;
+    - `dsc_008_randomized_mac_flagged`;
+    - `dsc_008_caps_and_retention` (including 16 imports × 4,096 rows staying ≤ 8,192 rows);
+    - `dsc_008_only_class_1_3_snmp_eligible`;
+    - `dsc_008_empty_start_learning_period`;
+    - `dsc_008_neighbor_skips_container_interfaces`;
+    - `dsc_008_never_in_neighbors_or_leases`;
+    - `dsc_008_inventory_file_not_in_backup`;
+    - `dsc_015_device_strings_sanitized`;
+    - fuzz target `inventory_merge`;
+    - `make bench-smoke` (telltale-net changed).
+- [ ] **T25.2 `[discovery]` section and its write path.** *(DSC-001, DSC-013; ADR-907)* Depends on T25.0.
+  - Schema with `deny_unknown_fields`, serialized only when set.
+  - The `validate.rs` rules in (D), including:
+    - the refused ranges and the IPv6 refusal;
+    - inline secrets as an error;
+    - privacy level ≥ 2 as an error;
+    - the overlap warnings for container, CNI and Kubernetes ranges.
+  - The designated-node gate: `node`, else the primary or the standalone node; never ephemeral pods or witnesses.
+  - The managed kind `discovery` in the config entries API:
+    - admin only, and agents get 403;
+    - dry run and `If-Match`;
+    - audit with secrets redacted;
+    - "set by file".
+  - 409 `members_too_old` while any member runs N−1.
+  - The `discovery.config_changed (source=file)` audit at startup and reload.
+  - Docs: `docs/configuration.md` and the schema.
+  - **UI.** The Settings → Network inventory page lands here, as a lazy-loaded chunk with a nav entry: enable, node and subnets (admin; operators and viewers read; agents have no write). Playwright `dsc_001 network inventory settings are admin-only` and `dsc_001 file-set discovery shows set by file`; help topic `network-inventory`.
+  - *AC:*
+    - `dsc_001_off_by_default_starts_nothing`;
+    - `dsc_001_only_designated_node_runs`;
+    - `dsc_001_never_on_ephemeral_or_witness`;
+    - `dsc_001_addresses_must_be_private_ip_literals`;
+    - `dsc_001_refused_ranges` (including 100.64/10, IPv6 and the host's own addresses);
+    - `dsc_001_privacy_level_2_refuses_enable`;
+    - `dsc_001_write_is_admin_only_and_audited`;
+    - `dsc_001_agents_cannot_write_kind`;
+    - `dsc_001_file_edit_audited_at_start`;
+    - `dsc_001_n1_member_refuses_first_write`.
+- [ ] **T25.3 Discovery worker processes.** *(DSC-002, DSC-014; ADR-908, ADR-913)* Depends on T25.0. It is wired to T25.2's gate when that lands.
+  - `telltale discovery-worker` and `telltale discovery-worker --import`:
+    - re-exec of `/proc/self/exe` with `env_clear()`;
+    - the build-ID and protocol-version handshake;
+    - the framed stdin/stdout protocol: JSON frames ≤ 1 MiB, binary chunk frames ≤ 512 KiB;
+    - stderr captured with a rate limit;
+    - `RLIMIT_DATA` = `worker_memory_mib`, `oom_score_adj` 1000, `PR_SET_DUMPABLE=0` and `RLIMIT_CORE=0`, through one safe wrapper in `telltale-net` with a `// SAFETY:` comment;
+    - `background_thread()`;
+    - exit on stdin EOF.
+  - A supervisor with backoff and the health reasons `discovery_worker_failing` and `discovery_worker_version_mismatch`.
+  - The bounded main-side frame reader on the inventory thread.
+  - `deploy/systemd/telltale.service` gains `OOMPolicy=continue`.
+  - A `cfg(feature = "bench")` override that lifts the pacing floor and the import rate limit for the bench only.
+  - Metrics: `telltale_discovery_worker_up{worker}` and `telltale_discovery_worker_restarts_total{worker}`.
+  - **UI.** The workers' state (up, restarts, version mismatch) on the Network inventory page's status card, and the two health reasons linking to it. Playwright `dsc_002 failing worker shows on the inventory page` (status mocked); help topic `discovery-workers`.
+  - *AC:*
+    - `dsc_002_worker_panic_keeps_dns_answering` (inject a panic; a concurrent DNS client gets every answer);
+    - `dsc_002_worker_hang_times_out`;
+    - `dsc_002_worker_rlimit_aborts_alone` (a worker that allocates past its limit dies while DNS keeps answering);
+    - `dsc_002_worker_oom_is_preferred` (checks `oom_score_adj`);
+    - `dsc_002_worker_not_dumpable`;
+    - `dsc_002_version_mismatch_refused`;
+    - `dsc_002_oversized_frame_refused`;
+    - `dsc_002_worker_env_is_empty`;
+    - `dsc_002_bench_override_absent_in_release`;
+    - an e2e under systemd: the unit survives a kernel OOM kill of the worker;
+    - fuzz target `worker_frames`;
+    - `make bench-smoke` with the bench feature: an SNMP walk loops against `snmpd` in a container on an RFC 1918 Docker network (never loopback), and an import repeats every 5 s, compared with discovery off. The p50/p99 cache-miss deltas are reported and must be within 5%.
+    - DSC-002 raised to P0.
+- [ ] **T25.4 `telltale-snmp`: BER and v2c.** *(DSC-003; ADR-908)* Depends on T25.2, T25.3, T23.1–T23.3 (or a local `SecretValue`).
+  - The crate and its lints.
+  - The BER codec with its caps.
+  - GET, GETNEXT and GETBULK.
+  - The bounded walker: row, time and timeout caps, and pacing.
+  - Credentials from `*_file`, confined to `secret_file_dirs`. Inline values are refused.
+  - `telltale snmp walk --agent <name>`.
+  - **UI.** No UI for `telltale snmp walk`: a local diagnostic on the node; T25.6's **Test** is its UI counterpart. `*_file` credential paths are shown read-only on the credential form (T25.8 adds `SecretField`).
+  - *AC:*
+    - `dsc_003_ber_roundtrip`;
+    - `dsc_003_no_write_pdu` (grep test: no `SetRequest`, no write tag constant);
+    - `dsc_003_reply_from_other_address_dropped`;
+    - `dsc_003_walk_caps`;
+    - `dsc_003_walk_cli_takes_agent_name_only`;
+    - fuzz targets `snmp_ber` and `snmp_walk`;
+    - e2e against net-snmp `snmpd` in a container on an RFC 1918 Docker network in CI;
+    - image delta recorded.
+- [ ] **T25.5 SNMPv3 USM and AES.** *(DSC-003; ADR-908, ADR-911)* Depends on T25.4.
+  - Engine discovery and the time window.
+  - The `msgID`/`requestID` checks and the resync limit.
+  - Ku per credential per round, zeroized. Kul per engine, never cached.
+  - HMAC-SHA-96 and the SHA-2 variants.
+  - `aes` 0.8 with hand-written CFB-128.
+  - The refused protocols.
+  - **UI.** The v3 fields on the credential form (auth and privacy choices; the refused protocols listed with their reason). Playwright `dsc_003 refused protocols are explained in the form`; help topic `snmp-v3`.
+  - *AC:*
+    - `dsc_003_rfc3414_a3_key_vectors`;
+    - `dsc_003_rfc7860_vectors`;
+    - `dsc_003_rfc3826_aes_cfb_vectors` (on amd64, arm64 and arm/v7);
+    - `dsc_003_refused_protocols_explained`;
+    - `dsc_003_spoofed_report_resync_limited`;
+    - interop with net-snmp at authNoPriv and authPriv, for SHA and SHA-256;
+    - fuzz target `snmp_usm`;
+    - `cargo deny` and `cargo tree -d` clean;
+    - image delta on all three architectures (stop and ask the owner if the M25 sum goes over 0.08 MiB).
+- [ ] **T25.6 Infrastructure poller.** *(DSC-004, DSC-014; ADR-908)* Depends on T25.1, T25.4.
+  - The ARP, IF-MIB, Q-BRIDGE/BRIDGE and LLDP tables into the inventory:
+    - Q-BRIDGE FDB ID mapped to VLAN ID through `dot1qVlanCurrentTable`;
+    - bridge ports mapped to ifIndex through `dot1dBasePortIfIndex`.
+  - The uplink/trunk rule.
+  - Capability records.
+  - Interval and pacing.
+  - `POST /api/v1/discovery/snmp/test`:
+    - admin; agents need `ops:discovery_test`;
+    - body `{agent}` only;
+    - `dryRun` lists the OIDs;
+    - `Idempotency-Key`;
+    - 60 s cooldown;
+    - audited as `discovery.snmp_test`.
+  - Metrics.
+  - **The owner's network** (owner question 13, answered by a test 2026-11-16; ADR-907):
+    - the gateway (a UniFi gateway) serves `ipNetToPhysicalTable` over SNMPv3 with SHA and AES (108 IPv4 + 81 IPv6 entries, 179 with a MAC; `ipNetToMediaTable` 108), so it is polled for `arp` (and `ifmib` if its capability record shows IF-MIB); the IPv6 rows are counted and ignored (M25 is IPv4 only);
+    - it has no BRIDGE, Q-BRIDGE or LLDP MIB, and the switches and APs are not UniFi. Port mapping (`bridge`, `lldp`) therefore needs SNMP agents on the switches themselves, configured as their own `[[discovery.snmp_agent]]` entries; it never comes through the UniFi API (ADR-912's `devices` read covers UniFi devices only).
+  - Docs: an SNMP setup page with UniFi's gateway v3 settings, switch SNMPv3 settings, and an access list limited to the DNS host. On Kubernetes outside the host network, that is the node IP after SNAT. The page flags a gateway that still answers v1/v2c `public` as a finding to turn off once v3 works.
+  - **UI.** The agents list on Settings → Network inventory (admin; others read): add, edit, delete, **Test** with its dry run (the OIDs) and the capability record. Playwright `dsc_004 add an agent and test it` (test mocked) and `dsc_004 operator sees agents read-only`; help topics `snmp-agents`, `snmp-setup`.
+  - *AC:*
+    - `dsc_004_arp_physical_then_media_fallback`;
+    - `dsc_004_bridge_ports_per_vlan` (an FDB ID that differs from the VLAN ID);
+    - `dsc_004_uplink_ports_give_no_location`;
+    - `dsc_004_lldp_neighbors`;
+    - `dsc_004_capabilities_probed_not_assumed`;
+    - `dsc_004_pacing_limits` (≤ 20/s, ≥ 50 ms gap, 30 s cap);
+    - `dsc_004_snmp_test_dry_run_and_cooldown`;
+    - e2e with a fake `snmpd` serving recorded UniFi gateway and switch walks;
+    - the owner's gateway (`arp`, `ifmib`) and one switch (`bridge`, `lldp`) walked with `telltale snmp walk`, with the results recorded under *Done*; if no switch has SNMP enabled by then, its capability record is recorded instead and the walk stays *Open*.
+- [ ] **T25.7 Host identity reads and the vendor preset.** *(DSC-005, DSC-015; ADR-907, ADR-908)* Depends on T25.1, T25.4; v3 host credentials also need T25.5.
+  - Identity passes over class 1–3 inventory addresses in subnets with a `host_credential`.
+  - The Printer MIB follow-up.
+  - Limits.
+  - `presets/pen.bin`: at most 300 IANA PEN entries and 8 KiB compressed, built by `presets/build-pen.py` like `build-oui.py`.
+  - Docs: the host-credential risk text.
+  - **UI.** Each subnet's `host_credential` and `identity_interval_hours`, the identity counts per subnet, and the identity fields on a device row (device-supplied text rendered as text). Playwright `dsc_005 subnet host credential and identity counts`; help topic `snmp-identity`.
+  - *AC:*
+    - `dsc_005_only_inventory_addresses_queried` (an address in the subnet but not in the inventory gets no packet);
+    - `dsc_005_import_only_addresses_never_queried` (upload a 4,096-row CSV covering the subnet; no packet goes out);
+    - `dsc_005_history_only_addresses_never_queried`;
+    - `dsc_005_never_iterates_subnet`;
+    - `dsc_005_interval_and_rate`;
+    - `dsc_005_infra_credential_refused_for_hosts`;
+    - `dsc_005_printer_mib_only_for_printers`;
+    - preset size recorded.
+- [ ] **T25.8 SNMP credentials through M23.** *(DSC-007, API-014; ADR-903, ADR-908)* Depends on T25.4, T23.3–T23.6.
+  - `community_ref`, `auth_password_ref` and `priv_password_ref`, named `discovery.<credential>.<field>`.
+  - 422 `secret_missing` on a write with a missing ref.
+  - The `PATHS`/`API_PATHS` entries.
+  - `SecretField` in the UI.
+  - Credentials sent to the SNMP worker over stdin only, never to the import worker.
+  - **UI.** The credential form's secrets through `SecretField` (write-only, never shown or pre-filled; file-set ones read-only). Playwright `dsc_007 credentials write-only in ui`; help topic `snmp-credentials`.
+  - *AC:*
+    - `api_014_planted_credential_never_returned`: a community and both v3 passwords, checked across entries, audit, idempotency, `config check --print`, the support package, backups without a passphrase and MCP;
+    - `api_014_file_path_confined` (for `auth_password_file`);
+    - `dsc_007_inline_secret_refused`;
+    - `dsc_007_secret_debug_redacted`;
+    - `dsc_007_missing_ref_warns_and_skips_agent`;
+    - `dsc_007_missing_ref_on_write_422`;
+    - `dsc_007_only_admin_sets_credentials_or_addresses`;
+    - `dsc_007_import_worker_gets_no_credentials`;
+    - DSC-007 raised to P0.
+- [ ] **T25.9 The `public` opt-in.** *(DSC-006; ADR-909)* Depends on T25.7.
+  - The validation errors, without `public_ids_acknowledged` or without a gateway agent or UniFi router.
+  - Class 1–3 addresses only.
+  - The 7-day cache keyed by MAC, else IP, and the 7-day hold after an empty start.
+  - The circuit breaker (`sysUpTime` every 10 s or the UniFi poll, plus `upstream_down`/`upstream_group_down`).
+  - The per-pass audit summary.
+  - The `default_community` finding.
+  - The `config check` warning and the `GET /discovery` flag.
+  - Docs: the IDS risk text and the UniFi allow-list steps. A network printer that answers v2c `public` with the Printer MIB is the case this opt-in is for.
+  - **UI.** The per-subnet `public` switch with its risk text and the acknowledgement (admin), and the banner on every page while any subnet has it on. Playwright `dsc_006 public banner and ack`; help topic `snmp-public`.
+  - *AC:*
+    - `dsc_006_off_by_default_sends_no_public`;
+    - `dsc_006_requires_ids_acknowledgement`;
+    - `dsc_006_requires_gateway_agent_or_unifi`;
+    - `dsc_006_only_public_ever_sent` (a codec-level test over all paths);
+    - `dsc_006_only_after_credential_fails`;
+    - `dsc_006_import_only_addresses_never_tried`;
+    - `dsc_006_seven_day_cache_survives_ip_change`;
+    - `dsc_006_empty_start_holds_seven_days`;
+    - `dsc_006_breaker_stops_and_audits`;
+    - `dsc_006_breaker_sends_no_icmp_or_tcp`;
+    - `dsc_006_answer_raises_finding`.
+- [ ] **T25.10 Extra UniFi and Home Assistant reads.** *(DSC-009; ADR-912)* Depends on T25.1, T25.2.
+  - `unifi_reads` (`client_fields`, `all_users`, `devices`) on the designated node, run on the inventory thread with the router's shared session.
+  - Answer and row caps.
+  - The Home Assistant template for devices without entities (1 MiB cap).
+  - Inventory only.
+  - **UI.** The UniFi read toggles, the `stat/alluser` window and the Home Assistant switch on the Network inventory page (admin). Playwright `dsc_009 unifi read toggles`; help topic `inventory-unifi-reads`.
+  - *AC:*
+    - `dsc_009_alluser_history_never_current`;
+    - `dsc_009_device_mac_table_locations`;
+    - `dsc_009_refused_read_reported_once`;
+    - `dsc_009_never_in_router_leases_or_device_dns`;
+    - `dsc_009_ha_entityless_inventory_only`;
+    - `dsc_009_reads_off_main_runtime`;
+    - `deploy/routers-e2e.sh`: the fake console covers each new path, including the refused cases.
+- [ ] **T25.11 Scan-result import.** *(DSC-010, DSC-015; ADR-913)* Depends on T25.1–T25.3.
+  - The restricted XML tokenizer and the nmap subset reader. The CSV reader.
+  - Parsing in the `--import` worker.
+  - The import route: an explicit `DefaultBodyLimit`, a streamed, counted body, and ≤ 512 KiB chunk frames.
+  - Limits, subnet filtering, provenance, retention and `keep`.
+  - The import-row cap.
+  - Plan staging (≤ 2 open plans, 4,096 rows each).
+  - Idempotency records that store a SHA-256 of the body and the response, never the body.
+  - Endpoints: `POST`/`GET /api/v1/discovery/imports` and `DELETE /api/v1/discovery/imports/{id}`.
+  - Forwarding of uploads up to 768 KiB.
+  - `telltale ctl discovery import FILE [--format nmap-xml|csv] [--dry-run] [--reason]` and `ctl discovery imports [delete ID]`.
+  - Docs: an import guide with example nmap command lines for the owner to run.
+  - **UI.** Imports on the Network inventory page (operators): upload, dry-run preview (the summary and first 20 rows), list and delete. Playwright `dsc_010 import preview and apply` and `dsc_010 viewer cannot import`; help topic `scan-import`.
+  - *AC:*
+    - `dsc_010_nmap_xml_hosts_macs_ports`;
+    - `dsc_010_csv_rows`;
+    - `dsc_010_doctype_subset_and_entities_refused` (XXE and billion-laughs samples);
+    - `dsc_010_cdata_encoding_and_bad_char_refs_refused`;
+    - `dsc_010_script_output_and_truncated_file`;
+    - `dsc_010_limits` (bytes, hosts, depth, elements, 10 s);
+    - `dsc_010_body_streamed_not_buffered`;
+    - `dsc_010_rows_outside_subnets_dropped`;
+    - `dsc_010_dry_run_keeps_nothing`;
+    - `dsc_010_idempotency_and_rate_limit`;
+    - `dsc_010_idempotency_stores_hash_not_body`;
+    - `dsc_010_plan_store_bounded`;
+    - `dsc_010_delete_removes_rows`;
+    - `dsc_010_forward_size_cap`;
+    - `dsc_010_audited_with_reason`;
+    - fuzz targets `import_nmap_xml` and `import_csv`;
+    - a real `nmap -sn -oX` sample, a `-sS` sample and a `--script ssl-cert` sample in `tests/fixtures`.
+- [ ] **T25.12 Inventory API, federation and scopes.** *(DSC-011, DSC-013, DSC-014, API-013; ADR-910)* Depends on T25.1, T25.2.
+  - Endpoints:
+    - `GET /api/v1/discovery`;
+    - `GET /api/v1/discovery/devices`, with filters and a cursor;
+    - `GET /api/v1/discovery/devices/{id}`;
+    - `PUT`/`DELETE /api/v1/discovery/devices/{id}/mutes/{kind}`.
+  - `Read::Discovery`: pages ≤ 500 rows and ≤ 256 KiB, trimmed server-side, with `missingNodes`.
+  - Scopes:
+    - `discovery:read` (Viewer);
+    - `ops:discovery` (Operator, through the default `ops:` mapping);
+    - `ops:discovery_test` (Admin, a special case in `scope_role`, `agent.rs:104`);
+    - none of them default, and none matched by `config:write:*` or any wildcard.
+  - Field gating.
+  - Privacy level 1 hashing.
+  - `ctl discovery status|devices`.
+  - OpenAPI and `api-types.ts`.
+  - **UI.** Clients → Discovered reads `/discovery/devices`, keyed by inventory ID: source chips (router, Home Assistant, mDNS, neighbour, SNMP, import, history); vendor, name with its source label, addresses with aliases, MAC with a randomised badge, VLAN, port or AP, last seen, findings; a "Silent devices" filter; the existing "Name this device", "Add to group" and quarantine-by-MAC flows; stale data marked when `missingNodes` is set. Playwright `dsc_011 discovered tab sources and filters` and `dsc_011 duplicate ip rows render` (no keyed-each collision); help topic `discovered-devices`.
+  - *AC:*
+    - `dsc_013_sensitive_fields_need_discovery_read`;
+    - `dsc_013_wildcard_does_not_grant_discovery_scopes`;
+    - `dsc_013_ops_discovery_test_needs_admin_owner`;
+    - `dsc_013_mutations_dry_run_idempotent_reasoned`;
+    - `dsc_011_replica_reads_designated_node`;
+    - `dsc_011_n1_peer_in_missing_nodes`;
+    - `dsc_011_page_under_quarter_max_rpc` (a full-capacity projection);
+    - `dsc_008_privacy_level_1_hashes_names`;
+    - `dsc_014_status_reports_workers_agents_subnets`.
+- [ ] **T25.13 MCP tools.** *(DSC-013, AGT-004..006; ADR-907, ADR-913)* Depends on T25.6, T25.11, T25.12.
+  - Reads: `get_discovery_status` and `list_discovered_devices`, with device-supplied fields marked.
+  - Plan: `plan_import_scan` (`content` ≤ 768 KiB, `format`; parsed at plan time, raw content never stored) → `apply_plan`/`discard_plan`. As for `plan_failover_drill`, `apply_plan`'s config-version check doesn't apply.
+  - Immediate ops, each with `dryRun` and a reason:
+    - `test_snmp_agent` (`ops:discovery_test`);
+    - `delete_scan_import` and `mute_discovery_finding` (`ops:discovery`).
+  - `spec/13`: the §3.1/§3.2 rows, the three ops added to the §3.2 immediate-ops list, and the MCP snapshot.
+  - **UI.** No UI of its own: the tools' UI counterparts are T25.6 (**Test**), T25.11 (imports) and T25.12/T25.15 (devices and mutes).
+  - *AC:*
+    - `dsc_013_mcp_tools_match_openapi`;
+    - `dsc_013_plan_import_scan_preview_then_apply`;
+    - `dsc_013_list_plans_has_no_raw_content`;
+    - `dsc_015_mcp_descriptions_mark_device_strings`;
+    - the snapshot updated.
+- [ ] **T25.14 UI pass and help.** *(DSC-011, DSC-006, API-011, API-901, DOC-006)* Depends on T25.2–T25.13, T25.15 and T25.16 (each of which ships its own controls, Playwright tests and help topics under the standing rule).
+  - One walk-through across Settings → Network inventory and Clients → Discovered with every control in place.
+  - The lazy-loaded chunk's size, recorded in the milestone sum.
+  - A help review: every M25 topic wired to its control, the risk texts (`public`, host credentials, v2c) consistent with the docs.
+  - **UI.** The pages above (built by the tasks named).
+  - *AC:*
+    - Playwright `dsc_011 network inventory walk-through` (agents, subnets, credentials, an import, the Discovered tab; API mocked where the e2e server has no source);
+    - `check:help` clean, with no M25 topic left `general: true`;
+    - the chunk size recorded in the milestone sum, and the bundle under 400 KiB.
+- [ ] **T25.15 Networks utilisation, alerts and findings.** *(DSC-011, API-013, OBS-010; ADR-910)* Depends on T25.12.
+  - `networks()` adds inventory addresses on the designated node. On other nodes, a `note` says the count covers router devices only.
+  - The new-device alert with `source = "inventory"`. It has a 24 h learning period after first enable and after an empty start, and is off at privacy level ≥ 1 (ADR-102).
+  - `telltale_discovery_findings{kind}`.
+  - `AnomalyKind` and `/dhcp/leases` stay unchanged.
+  - **UI.** The Networks page (T24.15) counts inventory addresses on the designated node and shows the `note` elsewhere; the Alerts form offers the new-device alert's `inventory` source; findings and per-entry mutes on a device row (operators). Playwright `dsc_011 mute a finding` and `dsc_011 networks count note on a replica`; help topic `inventory-findings`.
+  - *AC:*
+    - `dsc_011_networks_count_inventory`;
+    - `dsc_011_new_device_alert_after_learning_period`;
+    - `dsc_011_no_alert_flood_after_failover`;
+    - `dsc_011_alert_off_at_privacy_level_1`;
+    - `dsc_011_mute_per_entry_and_kind`;
+    - `dsc_011_dhcp_leases_unchanged`.
+- [ ] **T25.16 Device addresses from the inventory (opt-in).** *(DSC-012, DNS-023; ADR-910, amends ADR-901 and ADR-125)* Depends on T25.6.
+  - `[local] device_inventory_addresses`, serialized only when set.
+  - The `Names.inventory` projection (`#[serde(default)]`, ≤ 1,024 rows).
+  - The lowest rank in `device_dns`.
+  - The freshness, conflict and randomised-MAC exclusions.
+  - **UI.** A `device_inventory_addresses` switch on the T24.13 "Device names in DNS" card, admin-only on the server (it lets inventory data reach DNS answers; ADR-914). Playwright `dsc_012 inventory addresses switch is admin-only`; help topic `device-names-dns` updated.
+  - *AC:*
+    - `dsc_012_discovered_never_names_device`;
+    - `dsc_012_address_only_for_named_mac`;
+    - `dsc_012_conflict_or_randomized_gives_no_address`;
+    - `dsc_012_n1_peer_ignores_field`;
+    - `make bench-smoke` and `bench.py --devices 1000` before and after (the query path stays one lock-free load).
+- [ ] **T25.17 Deploy and closing.** *(DSC-001, DOC-006, OPS-004)* Depends on every M25 task.
+  - Compose, Helm and systemd notes:
+    - no new capabilities; the workers run under the same unit and sandbox;
+    - `OOMPolicy=continue`;
+    - the Helm designated node must be a full member;
+    - on Kubernetes, `memory.oom.group` kills the whole container, so the worker `RLIMIT_DATA` is what protects DNS;
+    - outside the host network, the SNMP source is the node IP after SNAT, and `use_neighbor_table` gives nothing.
+  - The IDS and gateway checklist.
+  - The `site/` pages: guide-devices, and standards (the SNMP RFCs supported).
+  - A final per-architecture image-size sum.
+  - The milestone bench-smoke on the homelab. Docker Desktop numbers don't count.
+  - **UI.** No UI: deploy notes and closing.
+  - *AC:*
+    - `size.py --oci` passes on amd64, arm64 and arm/v7, with the M25 sum ≤ 0.08 MiB recorded against the T25.0 baseline;
+    - homelab bench-smoke within 5% with discovery on;
+    - docs and site reviewed;
+    - every M25 box ticked, with *Open* items listed: per-VLAN SNMP contexts, the UniFi fingerprint map, identity feeding identify, and import replication.
 
 ## M24 — Replacing Pi-hole (owner request 2026-11-16)
 
@@ -707,22 +1137,36 @@ What a home running a Pi-hole pair behind a keepalived VIP needs to switch to Te
 - [x] **T24.1 Pi-hole's special names.** *(DNS-019, DNS-002, API-007; ADR-904)* `[special] block_icloud_private_relay` (on), `single_label_nxdomain` (off), `ddr_name` (RFC 9462 SVCB for `_dns.resolver.arpa`, one per reachable DoT/DoH/DoH3/DoQ listener); `resolver.arpa` never forwarded; a TLD-dispatch classifier without allocation; explain, simulate and the query log (`special`); the Pi-hole importer maps the matching v5 and v6 settings.
   - *AC:* (1) `mask.icloud.com`, `mask-h2.icloud.com` → NXDOMAIN before local data and the filter; (2) `resolver.arpa` is never forwarded, even with `private_ptr_nxdomain` off; (3) `_dns.resolver.arpa` SVCB lists the encrypted listeners, without loopback or PROXY-protocol ones, byte-exact; (4) bare names → NXDOMAIN only when enabled, and local data or a route still answers them; (5) the importer maps the settings; (6) explain and simulate show `special`; (7) `nfr_002` passes.
   - *Done 2026-11-16:* `dns_019_icloud_private_relay`, `dns_019_resolver_arpa_stays_local`, `dns_019_single_label_names`, `dns_019_ddr_records_encode_the_listeners`, `dns_019_ddr_answers_advertise_encrypted_listeners`, `dns_019_single_label_names_stay_local`, `dns_019_special_names_in_pipeline`, `dns_019_special_names_are_explained`, `dns_019_pihole_special_names`; docs/running.md (Special names), site standards (RFC 9462 supported), guide-encrypted.
-  - *Open:* `bench-smoke` on quiet hardware (Docker Desktop gave qps +7.9% with p99 noise of 2–3×, so no verdict); nothing checks that the certificate covers `ddr_name`. Fork #9.
+  - *Open:* `bench-smoke` on quiet hardware (Docker Desktop gave qps +7.9% with p99 noise of 2–3×, so no verdict); nothing checks that the certificate covers `ddr_name` (T24.12 warns in the UI); UI: T24.12. Fork #9.
 - [x] **T24.2 Update lists now.** *(FLT-004, CLU-003, AGT-001..006, API-005; ADR-905)* `POST /api/v1/lists/refresh`, `Fetcher::request_refresh_of`/`is_refreshing`, `refreshing` and `lastSuccessUnixSeconds` on `GET /lists`, replica forwarding and the primary's list state on replicas, MCP `refresh_lists`, `telltale ctl lists refresh`, the Lists page **Update now**, help topic `list-update-now`.
   - *AC:* (1) 202 with the lists queued: every enabled list by default, the named ones otherwise, disabled ones skipped, an unknown name 404; (2) a dry run queues nothing and isn't audited; an Idempotency-Key replays, and a reused key for another body is 409; (3) operator role; agents need `config:write:lists` and a reason; audited as `lists.refresh`; (4) `refreshing` holds from the request to the end of the download, and a request during a download runs one more round; (5) a replica forwards to the primary, which queues and audits (`<user> via <site>`, with the reason), and a replica's list view is the primary's, with every node's hits added up, naming an unanswering primary in `missingNodes`; (6) the UI button is for operators, follows the downloads and names the lists that failed.
   - *Done 2026-11-16:* `flt_004_refresh_now_of_some_lists`, `flt_004_refresh_asked_during_a_download_runs_once_more`, `flt_004_refresh_plans_the_lists_named`, `flt_004_refresh_names_are_checked`, `flt_004_refresh_answer_queues_unless_dry_run`, `flt_004_list_refresh_needs_the_lists_scope`, `flt_004_update_lists_now_over_http`, `flt_004_list_refresh_round_trips`, `flt_004_primary_queues_and_audits_a_forwarded_refresh`, `flt_004_replica_lists_merge_the_primarys_state_with_own_hits`, `flt_004_primary_answers_the_lists_read`, `flt_004_update_lists_now_on_the_node_that_downloads_them`, `flt_004_ctl_refresh_text`; OpenAPI, the MCP snapshot and the UI types regenerated.
-  - *Open:* the e2e `flt_004 update lists now` (written; the dev container has no browser libraries); a live two-node forwarding test; per-row Update buttons.
+  - *Open:* a live two-node forwarding test; recording the e2e run, the per-row buttons and per-list freshness are T24.17.
 - [x] **T24.3 Device-names benchmark.** *(DNS-023, NFR-001)* `bench.py --devices N` (N named clients and `[local] device_domain`, up to 64,000), `--no-device-domain` (the same clients without names in DNS: the fair "before"), `--extra` (TOML added to the server config), the `device-names` corpus (10% PTR), a readiness wait that checks the A and PTR answers, and `compare` warnings when the corpus or N differ.
-  - *Done 2026-11-16:* smoke on Docker Desktop, medians of 3 runs. Names in DNS for 1,000 devices, against the same devices without them: qps +31.7%, p99 −5.0%, RSS +4.2–5.0 MiB (about 4–5 KiB a device, steady over all rounds). The noise is far above 5%, so there is no verdict.
+  - *Done 2026-11-16:* smoke on Docker Desktop, medians of 3 runs. Names in DNS for 1,000 devices, against the same devices without them: qps +31.7%, p99 −5.0%, RSS +4.2–5.0 MiB (about 4–5 KiB a device, steady over all rounds). The noise is far above 5%, so there is no verdict. No UI: a benchmark.
   - *Open:* rerun on the homelab with at least 5 alternating rounds; check the per-device RSS with `bench/memprobe.py`; `parse_dnsperf` fails on a non-numeric StdDev at very high qps, and the p99 overflow bucket (1.8e19 µs) leaks into `compare`. Fork #9.
-- [ ] **T24.4 Failover like keepalived.** [fork #1] *(CLU-004, OPS-001)* A `deploy/compose` example with keepalived for a two-node pair with a VIP, the listener on the wildcard address so the VIP answers, and a runbook for moving a Pi-hole pair's VIP; a witness package for two-node clusters.
-- [ ] **T24.5 Primary-unreachable alert.** [fork #2] An alert and a health reason when a replica hasn't reached its primary for a set time, so a silent split is seen.
-- [ ] **T24.6 Importer gaps.** [fork #3] `dnsmasq.d` files (`address=`, `server=/domain/`, `cname=`, `host-record=`), and `telltale import pihole --compare`, which resolves a sample through both and reports the differences.
-- [ ] **T24.7 Offline password reset.** [fork #4] `telltale auth reset-password` on the node, with no running API needed.
-- [ ] **T24.8 IPv6 device names.** [fork #5] *(DNS-023)* AAAA and `ip6.arpa` PTR for devices the gateway reports with IPv6 addresses.
-- [ ] **T24.9 Client names by hostname.** [fork #6] *(API-010)* Rules and groups that match a client by the name a router gave it, not only by IP or MAC.
-- [ ] **T24.10 Pi-hole API compatibility: decide.** [fork #7] A Proposed ADR on whether to answer a subset of Pi-hole's API for tools that only speak it, or point them at the MCP and REST APIs.
-- [ ] **T24.11 Shared missing-set race.** [fork #8] *(CLU-003, OBS-009)* `Federated::missing` is one shared mutex, so two `GET /lists` requests at the same time can overwrite each other's `missingNodes`. Give each request its own missing set (or compute it per call) so a replica's answer names only the nodes its own reads missed. Also: `GET /lists` on a replica makes two serial reads (`Read::Lists` then `Read::ListHits`), up to 2 s each, so one request can take about 4 s; run both in one round.
+- [ ] **T24.4 Failover like keepalived.** [fork #1] *(CLU-004, OPS-001)* A `deploy/compose` example with keepalived for a two-node pair with a VIP, the listener on the wildcard address so the VIP answers, and a runbook for moving a Pi-hole pair's VIP; a witness package for two-node clusters. No UI: a deploy example and runbook (a witness already shows on the Cluster page).
+- [ ] **T24.5 Primary-unreachable alert.** [fork #2] An alert and a health reason when a replica hasn't reached its primary for a set time, so a silent split is seen. UI: `primary_unreachable` in the Alerts condition list (`Alerts.svelte`), the health reason linking to `#/cluster`, and the replica flagged on the Cluster page. *AC:* Playwright `clu_004 primary unreachable shows on the cluster page` (cluster mocked); help topic `primary-unreachable`.
+- [ ] **T24.6 Importer gaps.** [fork #3] `dnsmasq.d` files (`address=`, `server=/domain/`, `cname=`, `host-record=`), and `telltale import pihole --compare`, which resolves a sample through both and reports the differences. No UI in this task: the importer is a CLI (`telltale import pihole`, with `--compare`), run once on the node during migration; its admin page, with the same preview and an apply as a plan, is T24.18.
+- [ ] **T24.7 Offline password reset.** [fork #4] `telltale auth reset-password` on the node, with no running API needed. No UI: an inherently offline command (it is for when nobody can sign in).
+- [ ] **T24.8 IPv6 device names.** [fork #5] *(DNS-023)* AAAA and `ip6.arpa` PTR for devices the gateway reports with IPv6 addresses. The owner's gateway serves 81 IPv6 neighbours over SNMP `ipNetToPhysicalTable` (2026-11-16, ADR-907), a possible source once M25's poller exists. UI: IPv6 addresses beside the DNS name on the Clients and Networks tables (T24.14, T24.15). *AC:* Playwright `dns_023 discovered device shows its ipv6 address`.
+- [ ] **T24.9 Client names by hostname.** [fork #6] *(API-010)* Rules and groups that match a client by the name a router gave it, not only by IP or MAC. UI: a "router name" match option in ClientChip, the Groups form and QuickRuleForm. *AC:* Playwright `api_010 match a client by router name`; help topic `device-name` updated.
+- [ ] **T24.10 Pi-hole API compatibility: decide.** [fork #7] A Proposed ADR on whether to answer a subset of Pi-hole's API for tools that only speak it, or point them at the MCP and REST APIs. If it is answered, its switch and token are a Settings control in the same task.
+- [ ] **T24.11 Shared missing-set race.** [fork #8] *(CLU-003, OBS-009)* `Federated::missing` is one shared mutex, so two `GET /lists` requests at the same time can overwrite each other's `missingNodes`. Give each request its own missing set (or compute it per call) so a replica's answer names only the nodes its own reads missed. Also: `GET /lists` on a replica makes two serial reads (`Read::Lists` then `Read::ListHits`), up to 2 s each, so one request can take about 4 s; run both in one round. No UI: an internal fix.
+- [ ] **T24.12 Special names in the UI.** *(DNS-019, API-002, API-011, AGT-001..005; ADR-904, ADR-914)* A shared singleton managed kind `special` (`PUT/DELETE /api/v1/special-names/default`, files win under ADR-040, `config_entries` kind `special`, agent scope `config:write:special` implying operator, MCP `plan_set_special_names`, spec/13 catalog row), applied on reload like `ratelimit`. `ddr_name` is admin-only on the server (an operator's change is 403 naming the field; agents never). `Explanation` gains `special` (`private_relay`, `single_label`, `resolver_arpa`, `ddr`, `firefox_canary`, `private_ptr`, `chaos`, `localhost`). Settings → Query handling gains a "Special names" card (`ConfigEditor singleton`; `kind`/`path`/`EntryPath` extended): switches for `block_icloud_private_relay`, `single_label_nxdomain`, `block_firefox_canary`, `private_ptr_nxdomain`, `refuse_chaos`, `localhost`, and `ddr_name` (field `admin: true`), whose hint lists every member's encrypted listeners and warns when a listener's `certNames` (probe results) don't cover the name, or says it can't check with probes off. The explain view links the `special` outcome to the switch, and to the Query log filtered to `special`.
+  - *AC:* (1) `dns_019_special_names_put_applies_without_restart`, `dns_019_file_special_wins`; (2) `dns_019_operator_cannot_set_ddr_name` (server); (3) `dns_019_explain_names_the_special_rule`; (4) Playwright `dns_019 special names card switches private relay off` (then `mask.icloud.com` resolves in explain), `dns_019 operator sees ddr_name read-only`, `dns_019 viewer sees special names read-only`, `dns_019 ddr name warns when not on the certificate` (probe results mocked); (5) help topics `special-names`, `ddr`; `check:help` clean; (6) OpenAPI, MCP snapshot (`agt_006_committed`), UI types regenerated; `docs/running.md` (Special names), `site/guide-settings.html`, `site/guide-encrypted.html` updated; bundle under 400 KiB.
+- [ ] **T24.13 Device-name settings in the UI.** *(DNS-023, DNS-010, API-002, API-011, AGT-001..005; ADR-901, ADR-914)* A shared singleton managed kind `local` (`/api/v1/local-settings/default`: `device_domain`, `device_ttl`, `device_mdns`, `auto_ptr`, `default_ttl`; `hosts_files` is shown read-only until its guarded control in T27.17), agent scope `config:write:local` implying operator, MCP `plan_set_device_names`, spec/13 row. The Local DNS page gains a "Device names in DNS" card: domain (refuses `local`, suggests `home.arpa`), TTL, `auto_ptr`, `default_ttl`, the mDNS switch (disabled with a note and a link while `[clients] mdns` is off), and the count of names answered. On the same card, an admin-only `[clients] mdns` switch (owner decision 2026-11-16; ADR-914) through a shared singleton kind `clients` that takes only `mdns` in M24 (an operator's change is 403 naming the field; `mdns_port` stays in the file and is shown read-only; no agent scope writes `mdns`; the other `[clients]` fields are T27.9). DSC-012's `device_inventory_addresses` switch joins the card in T25.16.
+  - *AC:* (1) `dns_023_local_settings_put_rebuilds_table` (names within one 10 s rebuild, no restart); (2) `dns_023_local_settings_refuses_local`, `dns_023_operator_cannot_switch_clients_mdns` (server); (3) Playwright `dns_023 turn on device names from the local DNS page`, `dns_023 mdns switch needs clients mdns`, `dns_023 admin turns on clients mdns`, `dns_023 operator sees clients mdns read-only`, `dns_023 viewer sees device-name settings read-only`; (4) help topic `device-names-dns`; `check:help` clean; (5) OpenAPI, MCP snapshot, UI types regenerated; `docs/running.md`, `site/guide-devices.html` updated.
+- [ ] **T24.14 DNS names and naming sources on the Clients page.** *(DNS-023, API-010, API-012, API-011)* The "Discovered on your network" table (`Clients.svelte:255-280`) shows `dnsName` (copyable) and names the source by `router` (its name; its type from `GET /api/v1/routers` once T23.7 lands) instead of the bare "router". The text and empty state at `:258-263` name Home Assistant and link to the Routers page (T23.8) instead of `[[router]]`.
+  - *AC:* (1) Playwright `dns_023 discovered devices show their DNS name` and `api_012 discovered devices name the router that named them` (leases mocked); (2) help topic `devices` updated; `check:help` clean.
+- [ ] **T24.15 Networks page.** *(API-013, API-010, API-011, FLT-005)* `api.networks()`; `ui/src/pages/Networks.svelte` in `App.svelte` (Devices section, beside Clients; an icon): name, purpose, subnet, VLAN, gateway, DHCP pool, domain, router, group, size, devices, share used, outside pool; group-only networks badged; a row opens its devices with their DNS names (`/dhcp/leases`). Operators get "Make a group from this network" (the T22.2 open item): `ConfigEditor` gains a prop to open a new entry with given values, and the Groups editor opens with `networks` filled. Viewers read.
+  - *AC:* (1) Playwright `api_013 networks page lists router networks` (`/networks` and `/dhcp/leases` mocked; the end-to-end feed stays in `deploy/routers-e2e.sh`); (2) `api_013 make a group from a network`; (3) `api_013 viewer cannot make a group`; (4) help topic `networks`; `check:help` clean; (5) `site/guide-devices.html` updated; bundle under 400 KiB.
+- [ ] **T24.16 Credential rules in every form.** [fork #13] *(API-014, API-015, API-011; ADR-903 §4, §9)* Follows the merged T23.1–T23.4 (M23 wave 1) outside the Alerts credential fields. `admin` field flags: Upstreams `url` and `tls_server_name` when the entry holds a credential, and any `exec://`/`unix://` URL; Alerts `type` when the destination holds a credential; LocalDns forwards to `exec://`/`unix://`. (The Upstreams form has no `tls_ca`/`tls_client_*` fields; when added, `tls_client_key` is `admin: true` and `tls_ca` `admin: holdsCredential`.) `ApiError` gives readable messages for 422 `path_not_allowed`, 409 `set_by_file`, 422 `credential_reentry_required` (naming the field, who can re-enter it and where; or that the form can't, so use `ctl` or the file), 409 `upgrade_required`, 422 `secret_missing`, 409 `secret_in_use`, 503 `secrets_locked`, 403 `insecure_transport`, 409 `lists_not_here`. A badge for `ConfigEntry.redacted` ("kept: re-enter to change"). The 422 an admin gets changing the URL of an upstream with stored headers is resolvable from the UI (a headers field whose values are `SecretField`-backed references, or the message above).
+  - *AC:* (1) Playwright `api_014 upstream url is admin-only when it holds a credential`; (2) `api_014 alert type is admin-only when it holds a credential`; (3) `api_014 changing a header upstream's url says which credential to re-enter`; (4) `api_014 forward to exec is admin-only`; (5) `api_015 errors read as sentences` (each code above mocked); (6) help topic `credentials-in-forms`; `check:help` clean.
+- [ ] **T24.17 Lists: update one list now, and freshness per list.** *(FLT-004, API-005; ADR-905)* The T24.2 open items: an "Update now" button in each row of the Lists status table (not `ConfigEditor` `rowAction`, which shows for every role), under `can('operator')`, sending `names: [name]`, disabled while `refreshing`; a "Confirmed current" column from `lastSuccessUnixSeconds`. No UI for `dryRun` (an agent's and `ctl`'s preview).
+  - *AC:* (1) Playwright `flt_004 update one list now`, `flt_004 viewer sees no update buttons`; (2) `flt_004 update lists now` passes in CI and the run is recorded; (3) help topic `list-update-now` mentions per-row updates.
+- [ ] **T24.18 Pi-hole import page.** [fork #3] *(API-007, API-002, API-011, API-901; ADR-914)* After T24.6. An admin-only "Import from Pi-hole" page under Settings: upload a Teleporter export or a `gravity.db` (a body limit; parsed as untrusted input in a short-lived, credential-free worker process, the ADR-913 pattern), a preview with `--compare` (what would be added, changed or skipped, and, when a Pi-hole address is given, a sample resolved through both with the differences), and apply as a plan that an admin reviews and applies (the same plan the CLI's dry run shows). Agents can't import (spec/13 §3's list): an import replaces configuration in bulk. Audited as `import.pihole`.
+  - *AC:* (1) `api_007_pihole_import_preview_changes_nothing`; (2) `api_007_pihole_import_applies_as_plan` and `api_007_pihole_import_admin_only` (operators and agents refused); (3) `api_007_pihole_import_worker_limits` (a malformed zip and a malformed `gravity.db` answer 422, DNS keeps answering); (4) Playwright `api_007 import from pi-hole with preview` (a Teleporter fixture), `api_007 operator cannot see the import page`; (5) help topic `pihole-import`; `docs/migrating.md` or `docs/running.md` and `site/` migration page updated.
 
 ## M23 — Secrets and integrations in the UI (owner request 2026-11-16) [fork #13]
 
@@ -843,7 +1287,7 @@ Order:
   - **Heartbeats.** `Heartbeat` gains `secrets_head`, `secrets_applied`, `secrets_unreadable`, `credential_issues` and `secret_refs`.
   - **RPCs.** `secrets.fetch` (the registry `!ephemeral && !witness` rule, primary of the highest epoch only, head and digest check, `held` rows, `secrets_unavailable`, paged under 900 KiB) and the reverse heal.
   - **Applying.** Upsert by stamp, tombstones, orphans under Conflicts, origin rules at init and join, purge on removal or leave, and fetch backoff.
-  - **UI.** A Cluster page column.
+  - **UI.** A Cluster page column: each member's secrets head, applied, unreadable and held counts, read by every role. AC adds Playwright `clu_015 cluster page shows each member's secret state` (cluster mocked).
   - **Docs.** `docs/running.md` (cluster) and `site/guide-kubernetes.html`.
   - *AC:*
     1. `clu_015_replica_gets_secret_reencrypted`.
@@ -869,7 +1313,10 @@ Order:
   - **Page.** Settings → "Integrations & secrets".
   - **Component.** `SecretField.svelte`, with every state from §9, the autocomplete and password-manager attributes, and no show toggle.
   - **Alerts.** The path inputs (`Alerts.svelte:36-39`) become `SecretField` writing `token_ref`/`password_ref`. File-set values are shown read-only.
-  - **Help** topics.
+  - **Who sees it.** The "Integrations & secrets" tab shows to operators and admins; only admins set or clear.
+  - **Status.** Key status (current or previous key, `key_id`, locked, ephemeral), a "used by" column (`usedBy`) and the nodes holding each secret, `secret_in_use` explained on delete with `force` offered when only unknown members block it; the `secrets_locked` and `secrets_ephemeral` health reasons link to this tab instead of `#/settings`. Key rotation from this tab is T27.15 (ADR-914).
+  - **Tokens.** Settings → API tokens gains scope presets, starting with "Home Assistant" (the T22.4 README's scopes).
+  - **Help** topics: `stored-secrets` (exists, `general: true`: wire it to the page and drop `general`), `secret-field`; the Alerts `password_file` help no longer says "The password itself never goes through the UI".
   - *AC:*
     1. Playwright `api_015 secret field is write-only`: never in the DOM after save, never pre-filled.
     2. `api_015 set by file is read-only`.
@@ -877,7 +1324,7 @@ Order:
     4. `api_015 alert destination with a stored token delivers` (fake ntfy).
     5. An operator sees status only.
     6. Over plain HTTP the field explains the refusal.
-    7. `npm run check` and `check:help` are clean, and the bundle stays under 400 KiB.
+    7. `npm run check` and `check:help` are clean, and the bundle stays under 400 KiB; Playwright `api_015 delete of a secret in use names its users` and `api_015 locked store links to the secrets tab`.
     8. `docs/running.md`, `site/guide-monitoring.html` and `site/guide-settings.html` are updated.
     9. The size delta is recorded.
 
@@ -888,6 +1335,7 @@ Order:
   - **Code rules.** `unwrap_used`, `expect_used` and `indexing_slicing` are denied in `routers.rs`.
   - **Inline certificate.** `tls_ca_pem` (16 KiB, exclusive with `tls_ca`).
   - **Docs.** `docs/running.md` and the API reference.
+  - **UI.** The Routers page is T23.8; T23.7 isn't ticked before T23.8's Playwright tests pass against it.
   - *AC:*
     1. `api_016_router_put_applies_without_restart`.
     2. `api_016_router_delete_drops_leases`.
@@ -906,8 +1354,9 @@ Order:
 - [ ] **T23.8 Routers page.** *(API-016, API-011, API-010; ADR-120, ADR-903 §9)*
   - **Form per kind.**
     - UniFi: URL, site, key or user and password, `tls_server_name`, certificate, interval.
-    - OPNsense: key and secret.
-    - Home Assistant: token, with the administrator note from ADR-902.
+    - OPNsense: URL, `api_key_ref` and `api_secret_ref`, `tls_server_name`, certificate, interval.
+    - Home Assistant: URL and token (`api_key_ref`, a long-lived token), interval, with the administrator note from ADR-902.
+    - Every credential is entered through `SecretField` (UniFi `api_key_ref`, or `username` plus `password_ref`; OPNsense `api_key_ref`/`api_secret_ref`; Home Assistant `api_key_ref`); file-set ones read-only; `tls_ca`/`tls_ca_pem`; `tls_insecure_skip_verify` shown, never offered. Operators and viewers see the entries and status cards read-only. The page sits in `App.svelte`'s Devices section beside Clients and Networks (T24.15).
   - **Check routes**, both admin-only, both on the agent forbidden list, no MCP tool:
     - `POST /api/v1/checks/router` makes one read-only poll. It resolves a `_ref` only when the body's URL and TLS fields equal the stored entry's, unless the caller is admin, and error text follows AGT-009.
     - `POST /api/v1/checks/router-certificate {url}` returns the subject names, fingerprint and PEM, plus a suggested `tls_server_name`.
@@ -920,7 +1369,11 @@ Order:
     5. `api_016_router_checks_need_admin_and_refuse_agents`.
     6. `api_016_check_does_not_send_ref_to_new_url`.
     7. `site/guide-devices.html`, `site/guide-kubernetes.html` and `Clients.svelte:258-263` are updated.
-    8. The bundle stays under its cap, and the size delta is recorded.
+    8. The bundle stays under 400 KiB, and the size delta is recorded.
+    9. Playwright `api_016 add a Home Assistant source from the UI` and `api_016 add an OPNsense router from the UI`.
+    10. `api_016 operator sees routers read-only` (status card included).
+    11. `api_016 router with an unreadable credential shows the issue`, and `api_016 delete a router from the UI`.
+    12. Help topics `routers`, `router-unifi`, `router-home-assistant`; `check:help` clean.
 
 - [ ] **T23.9 Backups with passphrase-encrypted secrets.** *(API-007, API-015; ADR-903 §8, amends ADR-063)*
   - **Format.** `data/secrets.enc`; Argon2id (m = 19 MiB, t = 2, p = 1, recorded, bounded on restore to m ≤ 256 MiB and t ≤ 10, one at a time); ChaCha20-Poly1305; the manifest's `secrets {...}`; `VERSION` 2 only with secrets; the head stripped.
@@ -944,9 +1397,10 @@ Order:
     11. `api_007_restore_restamps`.
     12. `api_007_passphrase_backup_needs_recent_sign_in`: a token gets 403.
     13. `api_007_backup_post_refused_for_agents`.
-    14. The Pi 4 KDF time and peak RSS are measured and recorded, with parameters tuned to at most 1.5 s.
-    15. spec/08 §8, `docs/running.md`, `docs/secrets.md` and `site/guide-settings.html` are updated.
-    16. The size delta is recorded.
+    14. Playwright `api_007 passphrase backup from settings` (confirmation, the recent-sign-in prompt on 403 `reauth_required`, the omitted-secrets notice) and `secrets_exported` in the Alerts condition list; help topic `backup` updated.
+    15. The Pi 4 KDF time and peak RSS are measured and recorded, with parameters tuned to at most 1.5 s.
+    16. spec/08 §8, `docs/running.md`, `docs/secrets.md` and `site/guide-settings.html` are updated.
+    17. The size delta is recorded.
 
 - [ ] **T23.10 Node-managed entries, and OIDC providers in the UI applied without a restart.** *(API-016, API-004, CLU-010; ADR-903 §6–7, corrects ADR-045's implementation note)*
   - **Manifest.** `ClusterManifest.node_managed` (optional `BlobRef`, references only). It is persisted on every member, validated and merged separately, inherited and seeded at promotion, carried unchanged under a Git source.
@@ -965,12 +1419,12 @@ Order:
     10. `clu_015_node_managed_refs_only`.
     11. `clu_010_node_managed_ignored_by_n_minus_1`.
     12. `clu_004_bad_node_managed_keeps_shared_part`.
-    13. Playwright for the provider form.
+    13. Playwright in `ui/tests/e2e/3-oidc.spec.ts`: `api_016 add an OIDC provider from the UI` (a new admin-only Settings → Sign-in tab; `client_secret_ref` through `SecretField`; a file provider read-only), `api_016 provider without public_url shows inactive`, `api_016 operator cannot see the sign-in tab`; help topic `oidc-providers`.
     14. `site/guide-users.html`, Helm `values.yaml` notes and spec/08 §6 are updated.
     15. The size delta is recorded.
 
 - [ ] **T23.11 Sink and OTLP credentials, and sinks reloaded without a restart.** *(API-016, OBS-010, OBS-006, NFR-007; ADR-903 §7)*
-  - **Config.** `telemetry.sink[].token_ref` and `telemetry.otlp.header_refs`, plus the admin-only `sink` kind through `node_managed`.
+  - **Config.** `telemetry.sink[].token_ref` and `telemetry.otlp.header_refs`, plus the admin-only `sink` kind and, by owner decision (2026-11-16, ADR-914), an admin-only `otlp` kind (endpoint and headers) through `node_managed`.
   - **Reload.** The drainer-owned `EventSinks` takes a new `Vec<Out>` by `try_recv` once per batch (`ring.rs:301`, `tail.rs:115-146`, `sinks.rs:66-72`). `DROPS` becomes swappable. Spill files are keyed by name and URL hash, a removed sink's thread is joined (2 s) and its spill deleted.
   - **OTLP** headers are resolved per batch.
   - **Ephemeral** members skip sinks that need stored secrets, with an info log.
@@ -982,12 +1436,12 @@ Order:
     5. `obs_006_otlp_header_ref_sent`.
     6. `nfr_007_sink_drops_counted_across_reload`.
     7. `make bench-smoke` shows no regression against the previous commit (five alternating rounds, `--baseline`), and the NFR-002 zero-allocation test still passes.
-    8. The Settings → Telemetry form uses `SecretField`.
+    8. A new admin-only Settings → Telemetry tab: a Sinks `ConfigEditor` on the `sink` kind (type, address or URL, format, batch, `token_ref` through `SecretField`, file-set ones read-only) and an OTLP card on the `otlp` kind (endpoint, headers whose values are `header_refs` through `SecretField`; a header in `headers` shown as `<redacted>` with a re-enter path). Playwright `api_016 add a sink from the UI`, `obs_006 otlp header from a stored secret`, `api_016 operator sees telemetry read-only`; help topics `sinks`, `otlp`; bundle under 400 KiB.
     9. `docs/running.md` and `site/guide-monitoring.html` are updated.
     10. The size delta is recorded.
 
 - [ ] **T23.12 Git credentials and webhook secret from the UI.** *(API-016, CLU-003; ADR-049, ADR-903)*
-  - **Config.** `[cluster.git] credentials_ref` and `webhook_secret_ref`, node-local in the file or Helm values. The values are stored and replicated. `[cluster.git]` itself stays file-only.
+  - **Config.** `[cluster.git] credentials_ref` and `webhook_secret_ref`, node-local in the file or Helm values. The values are stored and replicated. `[cluster.git]` itself stays file-only in this task; its guarded wizard step is T27.16 (ADR-914).
   - **UI.** The Cluster page's Git card shows credential status with a `SecretField`.
   - *AC:*
     1. `clu_003_git_poll_uses_stored_credentials` (fake forge).
@@ -995,16 +1449,17 @@ Order:
     3. `clu_003_git_credentials_survive_primary_move`.
     4. `clu_003_webhook_secret_minimum_length`.
     5. Under GitOps authority the secret can be set and the entry can't.
-    6. `docs/running.md` and `site/guide-settings.html` are updated.
-    7. The size delta is recorded.
+    6. Playwright `clu_003 set git credentials from the cluster page` (refuses a webhook secret under 16 characters; GitOps authority shows the entry read-only and the secret settable); help topic `git-credentials`.
+    7. `docs/running.md` and `site/guide-settings.html` are updated.
+    8. The size delta is recorded.
 
 - [ ] **T23.13 Identification settings and group device classes in the UI.** *(API-016, OBS-025; ADR-111 pattern)*
-  - **Settings.** An `identify-settings` singleton kind, admin-only with no agent scope (owner decision 2026-11-16; revisit after T23.8): `enabled` and `max_clients`. `signatures_file` stays a file.
+  - **Settings.** An `identify-settings` singleton kind, admin-only with no agent scope (owner decision 2026-11-16; revisit after T23.8): `enabled` and `max_clients`, as a card on the Clients page (admins edit, others read). `signatures_file` stays a file and is shown read-only (its guarded path control is T27.17).
   - **Groups.** A `device_classes` multi-select in `Groups.svelte`, checked against the raw group body (`config_api.rs:403-426`).
   - *AC:*
     1. `obs_025_identify_settings_apply_on_reload`.
     2. `obs_025_device_classes_from_groups_form`: two groups claiming one class give a 422 naming the field.
-    3. Playwright for both forms.
+    3. Playwright `obs_025 identify settings card`, `obs_025 device classes on a group`, `obs_025 operator sees identify settings read-only`; help topics `identify-settings`, `device-classes`.
     4. `site/groups.html:78` matches the UI, and `docs/running.md` and help topics are updated.
     5. The size delta is recorded.
 
@@ -1023,29 +1478,30 @@ Order:
     4. Helm `ct` lint and template tests pass with persistence on and off.
     5. Site link and Lighthouse checks pass.
     6. Every ADR-903 amendment is written into the ADRs and specs it names, including spec/13 §3's admin-only kinds.
+  - **UI.** No UI: deploy bundles, docs and the size gate.
 
 ---
 
 ## M22 — Network inventory and home integrations (fork owner request 2026-11-16)
-In the fork `nbacheller/telltaledns`: the IP and DNS side of a small network, without a DHCP server (ADR-091 stands). The routers and Home Assistant already know the devices; TelltaleDNS names them in DNS, shows the networks they sit in, and stays read-only toward both. Off by default; nothing new on the query path but one branch (and, when on, one lock-free load). A Home Assistant custom integration that reads this API lives outside the binary (`integrations/home-assistant/` in the fork's bundle), so it never touches the DNS path.
+In the fork `nbacheller/telltaledns`: the IP and DNS side of a small network, without a DHCP server (ADR-091 stands). The routers and Home Assistant already know the devices; TelltaleDNS names them in DNS, shows the networks they sit in, and stays read-only toward both. Off by default; nothing new on the query path but one branch (and, when on, one lock-free load). A Home Assistant custom integration that reads this API lives outside the binary (`integrations/home-assistant/` in the fork's bundle), so it never touches the DNS path. M25 continues it with SNMP, more gateway reads and imported scans (ADR-907).
 
 - [x] **T22.1 Device names in DNS.** *(DNS-023, DNS-010, API-010, CLU-002; ADR-901)* `[local] device_domain`, `device_ttl` (60), `device_mdns`; `device_label`; the device-name table (`device_dns.rs`, rebuilt every 10 s off the query path, follows reloads); the pipeline answers it after local records and a zone's own records, before a zone's NXDOMAIN; explain; `dnsName` on leases.
   - *AC:* (1) a router's, Home Assistant's, or named device's name answers A and PTR, authoritatively; (2) a `[[record]]` and a zone's own record for the same name win; (3) a device name inside a zone answers, other names in the zone are still NXDOMAIN; (4) off, the table is ignored; (5) two devices with one label: the named device, then router, then mDNS, then the lowest address keeps it; a CIDR client's name never becomes a device name; (6) `local` is refused as the domain; (7) `wpad`, `isatap`, and `localhost` are never device names.
   - *Done 2026-11-16:* `telltale_policy::{device_label, LocalData::from_device_names}`, `ClientTable::{by_exact_ip, by_exact_mac, exact_ips}`, `crates/telltale/src/device_dns.rs`, `Pipeline::device_names`, `Policy::device_dns`, the `local_answer`/`zone_answer` order, `answered_early` (explain; simulation passes none: device names follow the routers, not the simulated configuration). Tests: `dns_023_*` (label, table, settings, names from every source, the pipeline order), config validation; `deploy/routers-e2e.sh` asks real DNS for three device names and a PTR.
-  - *Open:* IPv6 (the routers' leases are IPv4; T24.8); `bench-smoke` on quiet hardware (T24.3 has Docker Desktop numbers, which can't give a verdict).
+  - *Open:* IPv6 (the routers' leases are IPv4; T24.8); `bench-smoke` on quiet hardware (T24.3 has Docker Desktop numbers, which can't give a verdict); UI: the settings are T24.13 and `dnsName` on the Clients page is T24.14.
 - [x] **T22.2 UniFi reservations and networks.** *(API-010, API-013; ADR-902)* Known clients with a fixed IP (`rest/user`: offline reserved devices keep their name; known clients without one are left out), the networks (`rest/networkconf`: subnet from the gateway's address, VLAN when enabled, DHCP pool when on, domain; no WAN or VPN); both optional reads, reported once when they don't work; `GET /api/v1/networks`; MCP `list_networks`.
   - *AC:* a connected device's address wins over its reservation; a network lists its group, size, devices, share used, and devices outside the pool; group networks no router reported are listed too; agents with `config:read` read networks and leases.
   - *Done 2026-11-16:* `unifi_reserved`, `unifi_merge`, `unifi_networks`, `Network`, `Pipeline::router_networks`, `NetworkInfo`, the backend's `networks`, the agent scope, the OpenAPI and MCP catalogs. Tests: `t22_2_unifi_reservations`, `api_013_unifi_networks`; e2e: the networks API against a fake console.
-  - *Open:* OPNsense networks (its interfaces API); the networks on the Groups page and a "make a group from this network" action (the T3.14 deferral "router VLAN import").
+  - *Open:* OPNsense networks (its interfaces API); UI: the Networks page and "make a group from this network" are T24.15 (the T3.14 deferral "router VLAN import"); routers in the UI are T23.8.
 - [x] **T22.3 Home Assistant as a naming source.** *(API-012; ADR-902)* `type = "home_assistant"` (a token file only), the registry template, MACs matched to addresses from the routers' answers, else Home Assistant's trackers; rank-ordered leases (a name given in Home Assistant, then routers in configuration order, then an integration's name); `router` on leases.
   - *AC:* a curated name beats a router's host name; an integration's default name doesn't; a device whose MAC has no address anywhere is skipped; a token error says the token is wrong or not an administrator's.
   - *Done 2026-11-16:* `HA_TEMPLATE`, `ha_devices`, `ha_seen`, `rebuild` by rank; config validation; tests `api_012_*`, `adr_902_lease_precedence`; e2e with a fake Home Assistant. The template was rendered by a real Home Assistant core in the companion integration's tests.
-  - *Open:* areas (Home Assistant's rooms) as group suggestions; the neighbor table as a MAC → address source; reading the registry over Home Assistant's WebSocket API instead of a template, if an administrator token is a problem.
+  - *Open:* UI: Home Assistant as a router kind is T23.8, and naming the source on the Clients page is T24.14; areas (Home Assistant's rooms) as group suggestions; the neighbor table as a MAC → address source (M25: T25.1 closes it, inventory only); reading the registry over Home Assistant's WebSocket API instead of a template, if an administrator token is a problem.
 - [x] **T22.4 Home Assistant integration (companion, outside the binary).** *(API-002, AGT-004, AGT-009, OBS-013)* `integrations/home-assistant/custom_components/telltale`: a config flow (address and API token, reauth), sensors (24-hour queries, blocked, blocked share, cache hits, active devices, upstream p90, health, open anomalies, known devices, networks, version), a problem binary sensor, blocking switches for everyone and per group (off = pause for the configured minutes; the pause API's answer updates them at once), actions (pause, resume, quarantine, release, acknowledge), and a `telltale_anomaly` event per new, unmuted finding. Every change sends `X-Telltale-Reason`; a missing scope or an older build disables only that feature.
   - *Done 2026-11-16:* 10 tests (`pytest-homeassistant-custom-component`, Home Assistant 2026.2): against the real debug binary (config flow, entities, pausing a group, the audit reason, quarantine answering a blocked name and release deleting the entry), with mocks (anomaly events once, muted skipped, an upstream build's 403/404, reauth), and the registry template through Home Assistant's real `/api/template` (needs an administrator) plus a TelltaleDNS process reading a Home Assistant test server and answering `porch-light.home.arpa`. CI: `.github/workflows/home-assistant.yml`.
-  - *Open:* its own repository for HACS; a diagnostics download; per-device sensors (opt-in).
+  - *Open:* its own repository for HACS; a diagnostics download; per-device sensors (opt-in). No UI: it lives in Home Assistant; Settings → API tokens gains a "Home Assistant" scope preset (T23.6), and the README's "Settings → Users → API tokens" becomes "Settings → API tokens".
 - [x] **T22.5 Docker Desktop bundle.** *(OPS-004)* `deploy/docker-desktop/`: Compose (the fork built with `PROFILE=bench-fast`, DNS on 1053 as the unprivileged user, the API on 8053, secrets read-only, named volumes; an optional test Home Assistant with the integration mounted), a starter configuration for a UniFi gateway and Home Assistant with device names and a quarantine group, and a step-by-step README with what Docker Desktop can't show.
-  - *Done 2026-11-16:* `telltale config check` passes; the configuration starts and serves with both sources unreachable; `docker compose config` validates. *Open:* the image build itself wasn't run here (Docker Hub refused anonymous pulls with 429).
+  - *Done 2026-11-16:* `telltale config check` passes; the configuration starts and serves with both sources unreachable; `docker compose config` validates. No UI: a deploy bundle. *Open:* the image build itself wasn't run here (Docker Hub refused anonymous pulls with 429).
 
 ## M21 — Hangs: a watchdog and debug files (GitHub issue #7)
 The owner held 0.7.0 for this (2026-11-16): the reply on #7 promised "debug symbols with 0.7.0, and a watchdog so a wedged node restarts itself and leaves a dump".

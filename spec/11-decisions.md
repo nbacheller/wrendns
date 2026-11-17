@@ -1293,6 +1293,621 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-914 — Which settings the UI may change, and how risky ones are guarded (Proposed)
+**Context:** On 2026-11-16 the owner made a standing rule: every setting, route and tool gets a UI control (spec/10, API-901). An audit of the fork against the UI found settings with no control at all:
+- `[special]` (M24, ADR-904) and most of `[local]` (M22, ADR-901). Both are shared sections, not node-local (`telltale-config/src/shared.rs` `NODE_LOCAL`).
+- `[clients] mdns`, which `[local] device_mdns` needs before it does anything.
+- OTLP export (`[telemetry.otlp]`), which is node-local.
+- `[agents] enabled`, the agents kill switch (AGT-009).
+- The security gates and bootstrap settings: the secrets key files, `secret_file_dirs`, `allow_secrets_over_http`, `allow_insecure_basic`, the listeners and their TLS, `api.listen`/`api.tls`, `api.trusted_proxies`, cluster init, join and bootstrap, `[cluster.git]`, `node.*` identity and storage, the watchdog, and the file paths `trust_anchors_file`, `signatures_file`, `hosts_files` and `zone.file`.
+
+The audit recommended showing the last group read-only. The owner chose admin controls instead (2026-11-16), on condition that the design is safe. The risks are concrete:
+- a wrong listener, API address, TLS or proxy change locks every admin out of the UI, and a wrong DNS listener change takes the LAN's DNS down;
+- a key typed into the store it protects is protected by nothing;
+- a widened `secret_file_dirs` would undo T23.2's path rules, and `allow_secrets_over_http` or `allow_insecure_basic` puts credentials on the wire in clear;
+- a cluster init or join replaces a node's configuration.
+
+**Decision:**
+- **Three tiers.** Every setting is in exactly one:
+  1. **Ordinary:** a managed kind with the role the area already has (viewers read; operators or admins change), as for groups and upstreams.
+  2. **Admin-only fields:** a field inside an ordinary kind that only an admin may change, enforced by the server. An operator's change is 403 naming the field, and the UI marks the field `admin: true` (the T23.2 pattern).
+  3. **Guarded:** the security gates and bootstrap settings below. Admin role only, with the guardrails in the next point.
+- **Rules for every tier.**
+  - The file still wins over every UI value (ADR-040). A value set in a file is shown as "set by file" with the file's path, and an API write of it is 409 `set_by_file`. Removing it from the file uncovers the UI value, and the UI says so before that happens.
+  - Role checks are on the server. The UI only hides or disables what the server would refuse.
+  - A section that is node-local (`NODE_LOCAL`) becomes editable only through `node_managed` (T23.10), as an entry for the node it applies to (`node/<node-id>/<kind>`). Only that node applies it. An N−1 node ignores `node_managed`, so its own file stays in force.
+  - A change that fails to apply keeps the previous configuration, and DNS keeps answering (CLU-004).
+  - A change to `auth-policy` or the sign-in settings is refused (409 `would_lock_out_admins`) if no admin could still sign in afterwards (for example, TOTP made required for admins while no admin has enrolled).
+- **Ordinary and admin-only kinds this ADR adds.**
+  - `special`: a shared singleton kind (`/api/v1/special-names/default`) for all `[special]` fields. Operators change it. `ddr_name` is admin-only, because it is one name for the whole cluster tied to every member's certificates (T24.12).
+  - `local`: a shared singleton kind (`/api/v1/local-settings/default`) for `device_domain`, `device_ttl`, `device_mdns`, `auto_ptr` and `default_ttl`. Operators change it. `hosts_files` is a path and is guarded (below). `device_inventory_addresses` (DSC-012) is admin-only (T24.13, T25.16).
+  - `clients`: a shared singleton kind that takes only `mdns` in M24, admin-only, because turning it on opens multicast listening on every member. `mdns_port` stays file-only and is shown read-only. The other `[clients]` fields join the kind in T27.9 under the operator role.
+  - `otlp`: a `node_managed` kind for `[telemetry.otlp]` (endpoint, headers through `header_refs`), admin-only like `sink` (T23.11).
+  - `agents`: a shared singleton kind for `[agents]`. Turning agents **off** (`enabled = false`) needs the operator role; turning them **on** needs an admin. The server compares the old and new values, so an operator's write that turns agents on is 403. No agent scope writes this kind, so an agent can neither switch itself on nor off. `rate_per_minute` and `require_approval` are admin-only (T27.6).
+- **The guarded tier.** Every guarded change:
+  - is admin role only, checked on the server; agent tokens are refused whatever their scopes (403 `agent_not_allowed`, on the spec/13 §3 list), and there is no MCP tool, plan or `config:write:*` scope for it;
+  - needs an interactive admin session; API tokens of any kind get 403 `reauth_required` with a hint naming the file or CLI step (as ADR-903 §8 does for passphrase backups);
+  - has a dry run that says what the change does, which nodes it reaches and what it can break;
+  - needs a typed confirmation: the request carries `confirm`, which must equal a phrase the dry run returns (the node ID and the setting, for example `pi-a listen`). The server checks it, so a script or a forged request can't skip it;
+  - is audited as `settings.guarded` (who, node, setting, before and after with credentials redacted, the reason) and raises the one-off alert condition `guarded_setting_changed`;
+  - is a `node_managed` entry on the node it applies to when the setting is node-local. A change to one node never reaches another.
+- **Weakening changes.** These are flagged in red as weakening security, and need a sign-in within the last 10 minutes (403 `reauth_required`, T23.9) on top of the confirmation:
+  - adding a directory to `secret_file_dirs`;
+  - turning on `allow_secrets_over_http` or `allow_insecure_basic`;
+  - adding a `trusted_proxies` entry;
+  - turning off the watchdog;
+  - removing or downgrading TLS on the API or on a DoT/DoH/DoQ listener, or moving `api.listen` from loopback-only to a wider address;
+  - in `auth-policy` (T27.6), removing a role from `totp_required_roles`.
+
+  Narrowing `secret_file_dirs` is not weakening, but the dry run lists every `*_file` reference the change would refuse.
+- **Address and transport changes: confirm or roll back.** Changes to `[[listen]]` (addresses, ports, TLS), `api.listen`, `api.tls` and `api.trusted_proxies` are applied as pending:
+  - The node applies the change and starts a confirmation window, 120 s by default (`[api] confirm_window_secs`, 30 to 600, file-only).
+  - The change is kept only if the same admin confirms it within the window, with a request that arrives through the new address and transport. For a DNS listener change, the confirmation also needs the node's own probe of the new listener to answer.
+  - Otherwise the node restores the previous values, audits `settings.guarded_rolled_back`, and the UI says why.
+  - A restart inside the window starts with the previous values. A pending change is held in memory on the target node only. The `node_managed` entry is written and replicated only when the change is confirmed. For a change to another node, the primary forwards the pending change, and the confirmation must reach that node's new address directly. The response to the change carries a single-use `confirmToken`, bound to the admin, node and change and valid for the window, so the admin need not sign in again on the new origin.
+  - While a change is pending, the node keeps the previous API and DNS sockets bound alongside the new ones; the old ones close only when the change is confirmed, and stay if it rolls back. If a bind fails, nothing changes. The server refuses (409 `would_disconnect_you`) a change that would leave a node with no API listener or no DNS listener once confirmed, or that removes the API listener the request came in on in the same request that is meant to confirm it.
+- **The secrets key.** A key is never entered through the store it protects, or through any API body.
+  - The UI shows the key's status: its source (environment, `secrets_key_file`, or `secrets.key` in the data directory), `key_id`, whether a previous key is configured, how many rows are still under it, and whether the store is locked or ephemeral.
+  - **Rotation** is by pointing at a new key file the admin has already put on the node. The UI shows the steps (create the file with the format and permissions in `docs/secrets.md`, owned by the service user, mode 0600) and the offline alternative, `telltale secrets rotate-key` with the node stopped. The admin then enters the new file's path. The server checks that the file exists, is a regular file with mode 0600 owned by the service user, and holds a valid key, without ever returning its content. It then writes a guarded entry for that node: `secrets_previous_key_file` = the current key's path, `secrets_key_file` = the new path. Re-encryption runs as at start-up (`ops_014_previous_key_reencrypts_at_start`, crash-safe). When no rows remain under the previous key, the UI offers to clear `secrets_previous_key_file`.
+  - A key from the environment is shown as "set by environment" and can't be rotated from the UI.
+- **Cluster init, join and bootstrap.** These are explicit steps in a Cluster page wizard, each its own guarded change, never a field in a form:
+  - "Make this node a primary" (`cluster.init`);
+  - "Join a cluster" (`cluster.join_url` and the bootstrap secret). The secret is entered write-only, over HTTPS or loopback (the API-015 rule), used for that join and never stored. A failed join leaves the node as it was. The dry run says that the node's configuration will be replaced by the primary's;
+  - "Leave the cluster";
+  - `[cluster.git]` (repository, branch, path, authority). The dry run says when configuration authority moves to Git. The credentials stay T23.12's `SecretField`.
+- **Other guarded settings.**
+  - `node.*` identity and storage (node ID, data directory): staged for the node's next restart and shown as "pending restart". A node ID change is refused while the node is a cluster member. A data-directory change never moves data, and the dry run says so.
+  - The watchdog (`[watchdog]`): guarded; turning it off is weakening.
+  - The file paths `trust_anchors_file`, `signatures_file`, `hosts_files` and `[[zone]] file`: admin-only, confined by T23.2's path rules (the denied prefixes, the key files, every credential file the node uses, `secret_file_dirs`). The dry run parses the file and reports counts and line numbers, never its content.
+  - `config_version` is the schema version, not a choice. It is shown read-only and is the one setting with no control.
+
+**Alternatives rejected:**
+- Read-only display of the security and bootstrap settings, with the CLI step shown (the audit's recommendation): the owner chose admin controls.
+- Guarded changes for operators: each of these settings can lock people out, put credentials in clear, or replace a node's configuration.
+- Agent scopes for guarded changes: a plan's diff and an agent's transcript would carry the change, and a prompt injection could open the node.
+- Applying listener and API changes at once without a window: one typo locks every admin out until someone edits the file on the node.
+- Setting the key through the API or the secret store: the store would hold its own key, and the key would cross the network.
+- Confirmation in the UI only: a script or forged request would skip it. The phrase is checked by the server.
+
+**Consequences:**
+- Every setting but `config_version` has a UI control, and `docs/` and help topics say which tier each one is in.
+- An admin can change listeners, TLS and proxies from the UI, and a mistake undoes itself within the window.
+- Guarded changes need two requests (the change and the confirmation), and weakening ones need a recent sign-in, so they can't be done from a long-idle session.
+- The files keep the last word, so a node can always be recovered by editing its file and restarting.
+- On installs whose file (or environment) sets a guarded value, its control shows "set by file" and the command to hand it to the UI (remove the key from the file and restart); the docs say which install bundles set which guarded values. Key rotation from the UI works only when the key path is not set by file or environment.
+- Adds the problem codes `would_disconnect_you`, `would_lock_out_admins`, the audit actions `settings.guarded` and `settings.guarded_rolled_back`, and the alert condition `guarded_setting_changed`. `reauth_required` comes from T23.9.
+- Amends ADR-040 (UI values for the sections above) and AGT-009 (the kill switch's role rule). T23.12's "`[cluster.git]` itself stays file-only" becomes a guarded wizard step (T27.16).
+- Tasks: T24.12 (`special`), T24.13 (`local`, `clients` mdns), T24.18 (Pi-hole import, admin-only), T25.16 (`device_inventory_addresses`), T23.11 (`otlp`), T27.6 (`agents`), T27.13 to T27.17 (the guarded tier).
+
+## ADR-913 — Importing scan results the owner produced: nmap XML and a simple CSV (Proposed)
+**Context:** Only a scanner can find devices that no source sees. The owner runs one themselves, for example `nmap -sn -oX` or `nmap -sS -p … -oX` on a host on that VLAN.
+
+TelltaleDNS has no XML parser, and the uploaded file is untrusted input. The usual risks are XXE, entity expansion and very large files. Two existing stores would also hold whole bodies:
+- the plan store keeps up to 500 plans for 24 h with the whole body (`plans.rs:30`);
+- the idempotency table writes the full request into `state.db` (`managed.rs:186`).
+
+**Decision:**
+- **Formats.** Nothing else is accepted:
+  - nmap XML (`-oX`, nmaprun 1.0x);
+  - CSV with the header `ip,mac,hostname`. `mac` and `hostname` are optional, each field may have one optional pair of double quotes, and the file is UTF-8.
+- **Parser.** A hand-written restricted XML tokenizer in `crates/telltale/src/discovery/import/`, under the ADR-908 lints.
+  - **Accepted:** the XML declaration, processing instructions (ignored), comments, and a `<!DOCTYPE …>` without an internal subset.
+  - **Refused:**
+    - a `[` internal subset, and external IDs;
+    - CDATA;
+    - a declared encoding other than UTF-8 (an optional BOM is allowed).
+  - **Entities.** Only the five predefined entities and numeric character references are allowed. A numeric reference must be an XML `Char`, so `&#0;` and C0 controls other than tab, LF and CR are refused. No entity is ever defined or expanded.
+  - **Limits:** depth 16, 200,000 elements, 32 attributes per element.
+  - **Attribute values.** The 4 KiB cap applies to the attributes the reader uses. Over-long values on ignored elements, such as `--script` output, are skipped and counted, and they still count toward `max_bytes`.
+  - **Truncation.** A file that ends before `</nmaprun>` (an interrupted scan) answers 422.
+- **What is read.** Everything else is ignored.
+  - `host/status[@state="up"]`;
+  - `address` (`ipv4`, and `mac` with `vendor`);
+  - `hostnames/hostname`: up to 4, each at most 253 B;
+  - `ports/port[@protocol="tcp"]/state[@state="open"]`: up to 16 port numbers;
+  - the top `osmatch@name`, cut to 64 B;
+  - `nmaprun@start`, the scan time.
+- **Where parsing runs.** In a separate, short-lived `telltale discovery-worker --import` process. It never receives credentials and exits after one parse.
+  - It gets the same hardening as ADR-908: `/proc/self/exe`, the version handshake, `env_clear()`, `RLIMIT_DATA`, `PR_SET_DUMPABLE=0`, `RLIMIT_CORE=0`, `oom_score_adj` 1000.
+  - The body arrives as binary chunk frames of at most 512 KiB, and the parse has 10 s of wall clock.
+  - A parse failure answers 422. A worker crash or timeout answers 503. DNS is unaffected.
+- **Limits.**
+  - The body is at most `max_bytes` (default 8 MiB, maximum 32 MiB) and at most `max_hosts` host rows (default 4,096).
+  - The import route sets an explicit `DefaultBodyLimit` equal to `max_bytes`, and reads the body as a counted stream that is forwarded chunk by chunk. It never buffers the body as `Bytes`.
+  - One import in progress per node.
+  - At most 10 imports per hour (429 with `Retry-After`).
+  - The last `keep` imports are kept (default 16).
+- **What is merged.**
+  - Rows whose address is in a configured `[[discovery.subnet]]` become source `import`, tagged with the import ID. A row with a MAC goes into class 4. A row without one goes into the IP-only class.
+  - Rows outside every subnet, or at a refused address (ADR-907), are counted as dropped.
+  - Imports never override class 1–3 bindings, never feed DNS or policy, and never make an address an SNMP destination (ADR-907, ADR-910).
+  - Device strings are sanitised as in ADR-908.
+- **Provenance.**
+  - Each import records:
+    - its ID and time;
+    - the user or agent, and the reason;
+    - the format and the scan's own start time;
+    - counts: merged, IP-only, dropped, skipped over-long values.
+  - `DELETE` removes an import's rows.
+- **API and surfaces.**
+  - `POST /api/v1/discovery/imports`:
+    - `Content-Type: application/xml` or `text/csv`;
+    - `?dryRun=true` parses and returns the summary and the first 20 rows, and keeps nothing;
+    - `Idempotency-Key` and `X-Telltale-Reason`.
+  - For imports, the idempotency replay record stores a SHA-256 of the body and the response, never the body.
+  - On a non-designated node, an upload of at most 768 KiB is forwarded to the designated node. A larger one answers 413 `import_too_large_to_forward`, naming the node to upload to.
+  - Humans need the operator role. Agents need `ops:discovery` and a reason. When `[agents] require_approval` is on, agent imports go through the plan.
+  - Audited as `discovery.import` and `discovery.import_deleted`.
+  - Also available in the UI, `ctl` and MCP (`plan_import_scan` → `apply_plan`).
+- **Plans.**
+  - `plan_import_scan` (content at most 768 KiB) parses in the import worker when the plan is made.
+  - The plan stores only the parsed summary and at most 20 preview rows. The parsed rows sit in a separate bounded staging area: at most 2 open import plans per node, at most 4,096 rows each, dropped on apply, discard or expiry.
+  - The raw content is never stored and never appears in `list_plans`.
+- **Storage.** Parsed rows only, never the raw file. They live in the inventory file on the designated node, as the import-ID bitmask on each entry plus per-import counts. At most 8,192 import-derived rows in total; the oldest import is dropped first.
+
+**Alternatives rejected:**
+- `quick-xml` or `roxmltree`: a new dependency for a small, fixed subset of XML.
+- Parsing in the SNMP worker: credentials and untrusted XML would share one process.
+- Keeping raw bodies in plans or idempotency records: up to about 375 MiB in memory, above `MemoryMax=256M`, and agents could read the raw scan.
+- Running nmap or scheduling scans: out of scope (ADR-907).
+- Keeping raw uploads: size, and data that was never needed.
+- Replicating imports to all full members: left as an owner question.
+
+**Consequences:**
+- The owner's scans show up within seconds and can be removed again.
+- Results from a routed scanner have no MAC until another source binds the address.
+- Imported addresses get no SNMP identity reads until a class 1–3 source sees them.
+- Imports are lost when the designated node changes.
+
+## ADR-912 — Extra read-only UniFi reads for the inventory (Proposed)
+**Context:** ADR-080 and ADR-902 read `stat/sta`, `rest/user` (reservations only) and `rest/networkconf`. UniFi also knows:
+- offline and historical clients (`stat/alluser`);
+- switch-port MAC tables with VLAN, and LLDP (`stat/device`);
+- per-client `is_wired`, `sw_mac`, `sw_port`, `ap_mac`, `vlan`, `first_seen` and `last_seen`.
+
+UniFi has no ARP endpoint. ADR-902 rejected known clients without a reservation as DNS names, because a stale address names the wrong device. `routers.rs` runs as `tokio::spawn` on the main multi-thread runtime (`server.rs:1100`), the same runtime that serves TCP, DoH and cache misses.
+
+**Decision:**
+- With `[discovery] unifi_reads` set, the designated discovery node makes these extra reads for each UniFi `[[router]]`, with the same key or session:
+  - `client_fields`: more fields from the existing `stat/sta`/`rest/user` answers, at no extra request cost;
+  - `all_users`: `POST stat/alluser` with `within = unifi_all_users_within_hours` (default 720, maximum 8,760);
+  - `devices`: `GET stat/device`, for infrastructure identity, the port `mac_table` (VLAN, `static`, `age`), `lldp_table` and `uplink`.
+- **Where they run.** The `all_users` and `devices` reads, and the parsing of the extra `client_fields`, run on the `telltale-inventory` thread's runtime. They reuse the router's session and credentials. `routers.rs` only shares the session and a copy of the raw answers it already holds. None of this work runs on the main runtime.
+- Each read is optional. A refused or failed read is logged once per change.
+- Caps: 4 MiB and 8,192 rows per read.
+- Results go only into the inventory (ADR-910):
+  - as class 1 (current clients), class 5 (history) and port locations;
+  - never into `router_leases`, `peer_names` or `device_dns`;
+  - counted against the 4,096-entry cap.
+
+  Ports whose `mac_table` holds more than 8 MACs, or that are UniFi uplinks, give no location.
+- **Home Assistant.** With `home_assistant_all_devices = true` (default true when discovery is on), a second fixed, read-only template runs on the inventory thread. It lists registry devices that have a `mac` connection and no entity (`name_by_user`, `name`, area). The answer is capped at 1 MiB. These names go into the inventory only. ADR-902's DNS-name template is unchanged.
+- Amends the "Not done" of ADR-080 and ADR-902.
+
+**Alternatives rejected:**
+- Running the extra reads inside `routers.rs` on the main runtime: up to 4 MiB of JSON parsed next to DNS work.
+- The Integration API: a second code path with fewer fields.
+- The fingerprint map (`/v2/api/fingerprint_devices`): numeric IDs and an unofficial endpoint. Left Open.
+- `stat/alluser` as DNS names: ADR-902's stale-address reasoning.
+
+**Consequences:**
+- One or two more requests per UniFi poll, on one node.
+- On UniFi switches, wired static devices show their switch port without SNMP.
+- The field names come from reverse-engineered docs and are checked against the owner's console in e2e.
+
+## ADR-911 — Dependency `aes` 0.8 for SNMPv3 privacy (Proposed)
+**Context:** The owner asked for authPriv. RFC 3826 needs AES-128 in CFB-128 mode. `ring` exposes AES only inside AEADs and QUIC header protection. `cipher` 0.4.4, `inout`, `crypto-common` and `cpufeatures` 0.2.17 are already in `Cargo.lock`, pulled in through `crypto_box` and `chacha20`.
+
+**Decision:**
+- Add RustCrypto `aes` 0.8 (MIT/Apache-2.0) to `telltale-snmp` only.
+- Write CFB-128 by hand, about 20 lines, instead of adding `cfb-mode`. The IV is engineBoots ‖ engineTime ‖ salt.
+- PR justification line: "aes 0.8: SNMPv3 AES-128-CFB privacy (RFC 3826); ring exposes no raw AES block; cipher/cpufeatures already in tree; +12.4 KiB measured (x86_64 probe crate)."
+- Gates:
+  - `cargo deny check` passes, and `cargo tree -d` shows no duplicate versions;
+  - the size delta is measured with `deploy/image/size.py --oci` on amd64, arm64 and arm/v7 (armv7 builds the software fixslice path, arm64 the ARMv8 path);
+  - the RFC 3826 test vectors pass on all three.
+- `aes` uses `unsafe` CPU intrinsics internally. As with `ring`, third-party crates fall outside AGENTS rule 7, which applies to workspace code.
+
+**Alternatives rejected:**
+- Hand-written AES: table lookups leak through cache timing, and hand-rolled crypto needs its own review.
+- authNoPriv only: the owner asked for privacy. It stays the fallback if the size gate fails.
+- `cfb-mode`: one more crate for 20 lines.
+
+**Consequences:**
+- About 12–20 KiB per architecture, to be measured.
+- A Pi 4 has no AES instructions, so it uses constant-time software AES. At SNMP rates the cost is negligible.
+
+## ADR-910 — Inventory merge model: keyed by MAC, address bindings with a time limit, never DNS policy (Proposed)
+**Context:** Sources disagree, and each has its own trust:
+- UniFi current clients and reservations;
+- OPNsense leases;
+- Home Assistant names by MAC;
+- the local neighbour table;
+- SNMP ARP and bridge tables;
+- SNMP identity;
+- imported scans, which are claims from a file;
+- passive mDNS.
+
+Constraints:
+- `devices::Names` is IPv4-keyed, and every peer pulls it every 60 s. A full inventory there would exceed `MAX_RPC` and silently break router-name sharing.
+- `telltale_policy::Neighbors` decides MAC-based client matching.
+- ADR-117 bounds `identify.rs` to 1,024 devices for 1 day.
+- ADR-102 sets what is kept and shown at each privacy level. At level 2, nothing that identifies a client is kept.
+
+**Decision:**
+- **Model.**
+  - The MAC is the key. An entry has:
+    - `mac`;
+    - up to 4 addresses, each with its source and `lastSeen`;
+    - display names, each with source and rank;
+    - the OUI vendor;
+    - VLAN and network;
+    - switch port and AP (from UniFi or the SNMP bridge table);
+    - LLDP neighbours (up to 4);
+    - an identity record: sysName, sysDescr, a vendor index into the PEN preset, and the printer name;
+    - up to 16 open TCP ports, from imports;
+    - a source bitmask;
+    - an import-ID bitmask (16 bits, one per kept import);
+    - `firstSeen` and `lastSeen`;
+    - findings and mutes.
+  - A result with no MAC goes into a separate IP-only class, keyed `ip:<addr>`. Examples: an import from a routed scanner, or an identity answer before any MAC is known.
+    - Capped at 1,024 entries, oldest dropped first.
+    - A MAC is never invented.
+    - When a MAC source binds the address, the entry merges into the MAC entry.
+  - Caps:
+    - 4,096 MAC entries;
+    - at most 8,192 import-derived rows in total, with the oldest import dropped first;
+    - per-entry caps as in ADR-908.
+
+    About 600 B per entry at worst.
+- **Which address is current.** Precedence for a MAC's current address:
+  1. UniFi `stat/sta`, OPNsense leases and UniFi reservations (ADR-902 rules).
+  2. The local neighbour table, in states REACHABLE, STALE, DELAY or PROBE. A row is accepted only if the address lies in a configured subnet and `Neighbor.ifindex` is not a container or overlay interface: `lo`, `docker*`, `br-*`, `veth*`, `cni*`, `flannel*`, `cali*`, `vxlan*`, `tun*`, `tap*`, `wg*`, `tailscale*`, `zt*`.
+  3. SNMP ARP from listed infrastructure agents.
+  4. Imports.
+  5. UniFi `stat/alluser` `last_ip`. This is history only, never current.
+
+  Rules:
+  - The most recent binding from the best class is primary. The others are kept as aliases and shown.
+  - **Same address, different MAC:** the newest observation from classes 1–3 wins. An import or history never replaces a class 1–3 binding. The case is flagged `ip_conflict`.
+  - A MAC with the locally administered bit set is flagged `randomized`. No stable-identity finding is raised for it.
+  - Only class 1–3 bindings make an address an SNMP destination (ADR-907).
+- **Display names** (inventory only), in rank order:
+  1. the configured client name;
+  2. Home Assistant `name_by_user`;
+  3. the router alias or host name, in `[[router]]` order;
+  4. a Home Assistant integration's name;
+  5. passive mDNS;
+  6. SNMP sysName or printer name;
+  7. an import's host name.
+
+  Ranks 6 and 7 are labelled with their source.
+- **Containment.**
+  - Inventory data never enters any of these: `router_leases`, `peer_names.routers`, `mdns_names`, `telltale_policy::Neighbors`, client matching, or `identify.rs`'s seen chain. This covers SNMP, imports, `stat/alluser`, `stat/device`, entityless Home Assistant devices and the neighbour-table source.
+  - Device DNS names (ADR-901) are never created from it. The one exception is the opt-in below, which supplies an *address* and never a *name*.
+  - Feeding policy would need its own ADR, because ARP spoofing lands in the gateway's table.
+  - Passive mDNS naming under ADR-901 is unchanged.
+- **Device addresses in DNS (opt-in).** With `[local] device_inventory_addresses = true` (default false), a MAC can get an address from the inventory. This applies when the MAC already has a name in DNS-023's sources but no address there. The address comes from class 2 or class 3 only, and only if it was:
+  - seen in the last poll;
+  - not flagged `ip_conflict`;
+  - not flagged `randomized`.
+
+  These bindings, `{mac, ip, name}` with at most 1,024 rows, reach other nodes in a new `Names.inventory` field. The field is `#[serde(default)]`, so it is N−1 safe, and it amends ADR-125. The bindings rank below every existing source in the `device_dns` order, which amends ADR-901's source order.
+- **Findings.** Findings live on the entry, not in `AnomalyKind`, so ADR-161 is unchanged.
+  - `default_community` (ADR-909).
+  - `ip_conflict`.
+  - `new_device`: the first time any source sees a MAC, after a 24 h learning period from first enable. It is raised through the existing new-device alert with `source = "inventory"`, so ADR-102 applies (off at privacy level 1 and above).
+
+  When the inventory starts empty (a failover, or the file is missing), no `new_device` alerts are raised for 24 h. A mute applies to one entry and one kind, with an optional expiry, and is kept in the inventory file. Nothing blocks or moves a device.
+- **Retention.**
+  - Entries seen only by SNMP, the neighbour table or history age out `retention_days` after `lastSeen` (default 7).
+  - Import rows age out `[discovery.import] retention_days` after their import (default 30).
+  - An entry that another source still sees is never removed.
+  - A host counts as absent only after two polls in a row miss it.
+- **Storage.**
+  - Held in `ArcSwap` on the designated node.
+  - Persisted to `<data_dir>/inventory.json`: mode 0600, atomic rename. Written at most every 15 min and on shutdown. After a `public` pass or an import, at most once a minute.
+  - Left out of backups.
+  - Left out of support packages unless asked for with `--include-inventory`, which goes through ADR-156's pseudonymisation.
+  - Not replicated as configuration.
+- **Cluster read.** `Read::Discovery`, federated, with AGT-011 `missingNodes`:
+  - A non-designated node asks the designated node for a filtered page of at most 500 rows.
+  - Each answer is capped at 256 KiB (`MAX_RPC/4`). The server enforces the cap by trimming the page.
+  - An N−1 node answers "unknown call" and is listed in `missingNodes`.
+- **Privacy (ADR-102).**
+  - At level 1, sysName and host names are hashed like client names.
+  - At level 2 and above, `[discovery] enabled = true` is a validation error, because nothing that identifies a client may be kept. The other route, a Proposed amendment of ADR-102, is an owner question.
+
+**Alternatives rejected:**
+- Extending `Names` with the full inventory: it exceeds the RPC frame and spreads open ports to resolver pods.
+- An IP-keyed inventory: it loses devices that move addresses.
+- Feeding `Neighbors`: ARP spoofing would move devices between groups.
+- New `AnomalyKind` variants: they clash with ADR-161's mute model, OBS-014 IDs and N−1 deserialisation.
+- Feeding identify's seen chain: it breaks ADR-117's bounds.
+- Storing every import row separately: up to 65,536 rows outside the caps.
+
+**Consequences:**
+- Clients → Discovered and the Networks counts see devices the routers don't list.
+- After a failover to a new designated node, the inventory starts empty until the next polls, and imports must be uploaded again (ADR-913).
+- With DSC-012 on, a spoofed MAC could claim a named device's address. ADR-902 already accepts the same exposure for leases.
+- SNMP identity does not improve identify's class guesses in M25. Left Open.
+- Closes T22.3's *Open* item "the neighbor table as a MAC → address source".
+
+## ADR-909 — The `public` community for identity reads, by explicit per-subnet opt-in (Proposed)
+**Context:** Many printers and cheap devices answer v2c `public`. The owner approved trying it on 2026-11-16, with four conditions: an explicit per-subnet opt-in, off by default, audited, and with the IDS risk written down.
+
+An IDS reads this traffic as credential guessing. Snort 1:1411 "SNMP public access udp" and the ET SNMP rules fire on it. UniFi IPS with "Block Source IP" could block the DNS host itself, and the whole LAN would lose DNS.
+
+**Decision:**
+- **The switch.**
+  - `[[discovery.subnet]] snmp_try_public` defaults to `false`.
+  - Setting it to `true` is a validation error unless both of these hold:
+    - the same subnet sets `public_ids_acknowledged = true`, which confirms the DNS host is on the gateway's IPS allow list (UniFi: Security → Detection allow list);
+    - the gateway is covered by a listed `snmp_agent`, or by a UniFi `[[router]]` that the designated node polls. The circuit breaker needs one of them.
+  - Both fields are set through the admin-only `discovery` kind and audited. A setting made in a file shows as set by file and is covered by the startup audit (ADR-907).
+- **Which hosts.**
+  - Only addresses inside that subnet that have a current class 1–3 binding (ADR-907).
+  - Only when the subnet has no `host_credential`, or that credential has just failed for this host.
+  - Never infrastructure agents, which need a configured credential.
+- **What is sent.** One v2c GET of sysName, sysDescr, sysObjectID and sysLocation, with community `public`. The code has no other built-in community string. No walks, no SET.
+- **Limits.**
+  - At most 1 host per second, and at most 1 retry.
+  - One attempt per host per 7 days, and failed attempts count. The key is the MAC when known, otherwise the IP, so an address change doesn't reset it.
+  - The limit survives restarts in the inventory file. That file is written at most once a minute after a pass.
+- **Empty start.** When the inventory starts empty (a failover, or the file is missing), no `public` pass runs for 7 days.
+- **Circuit breaker.** All `public` attempts stop for 24 h, and the stop is audited, if during a pass either of these happens:
+  - three `sysUpTime` GETs in a row to the listed gateway agent go unanswered (they are sent every 10 s during the pass), or the UniFi poll fails;
+  - the health reason `upstream_down` or `upstream_group_down` appears.
+
+  The breaker never uses ICMP or TCP.
+- **Audit and visibility.**
+  - Each pass writes one audit summary: subnet, hosts tried, hosts that answered.
+  - While any subnet has the switch on:
+    - `config check` warns;
+    - the UI shows a banner;
+    - `GET /discovery` says so.
+  - Answers are tagged `identitySource = "snmp-default-community"`.
+  - A host that answers gets the `default_community` finding (ADR-910).
+
+**Alternatives rejected:**
+- A list of common communities: that is guessing.
+- On by default: IDS self-blocking.
+- Trying it on infrastructure agents: the owner configures those.
+- A warning instead of the acknowledgement error: the failure takes DNS down for the LAN.
+- A breaker based on reachability probes: that would be active probing (ADR-907).
+
+**Consequences:**
+- Printers and similar devices on an opted-in subnet are identified without per-device setup.
+- The gateway's IDS logs may still show the attempts. The docs carry:
+  - the risk text;
+  - how to allow-list the host;
+  - a note that a device answering `public` is itself a security finding.
+
+## ADR-908 — SNMP poller: v2c and v3 USM, read-only, in a worker process (Proposed)
+**Context:** On the owner's network, the most valuable SNMP data is the gateway's ARP table: `ipNetToPhysicalTable` (1.3.6.1.2.1.4.35), falling back to `ipNetToMediaTable` (1.3.6.1.2.1.4.22). It gives a MAC for every address on every VLAN. Next in value:
+- managed switches' forwarding tables per VLAN, mapped to ports;
+- LLDP neighbours;
+- the identity of printers and network gear.
+
+The repo has no SNMP code. Constraints:
+- The release build aborts on panic.
+- `ring` covers HMAC-SHA-1/SHA-2 and the digests, but has no raw AES block.
+- Many UniFi devices run Net-SNMP, and UniFi uses one v3 password for both auth and priv.
+- Whether the UniFi gateway serves its ARP table over SNMP was unconfirmed when this was written. A test on 2026-11-16 confirmed it does, over v3 with SHA and AES (ADR-907, owner decisions).
+- On systemd, the unit's default `OOMPolicy=stop` stops the whole unit when the kernel OOM-kills any process in it.
+- On Kubernetes with cgroup v2, kubelet 1.28 and later sets `memory.oom.group=1`, so an OOM kills every process in the container.
+
+**Decision:**
+- **Crate.** A new crate, `telltale-snmp`.
+  - Lints: `#![forbid(unsafe_code)]` and `#![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects, clippy::panic, clippy::unreachable)]`.
+  - A hand-written minimal BER codec. Definite lengths only, a depth cap of 8, a message cap of 64 KiB and a cap of 256 varbinds per PDU.
+  - Types: INTEGER, OCTET STRING, OID, NULL, IpAddress, Counter32, Gauge32, TimeTicks and Counter64, plus the noSuchObject, noSuchInstance and endOfMibView exceptions.
+  - It is off the hot path and not on the AGENTS.md bench-smoke list.
+- **PDUs.** It sends GET, GETNEXT and GETBULK, and receives Response and Report. The encoder has no SetRequest type, and no other write PDU type or tag constant. A CI grep test checks this.
+- **v3 USM** (RFC 3414, RFC 7860, RFC 3826).
+  - Engine discovery uses Report messages. Replies must match `msgID` and `requestID`. At most one unauthenticated time resync per agent per minute.
+  - Ku is the 1 MiB password-to-key expansion. It is computed once per credential per poll round with `ring::digest`, held in a `Zeroizing` buffer, and dropped at the end of the round.
+  - Kul, the key localised per engine, is one short hash. It is computed on demand and never cached.
+  - Authentication: HMAC-SHA-96, and HMAC-SHA-256/384/512 truncated per RFC 7860 (`ring::hmac`).
+  - Privacy: AES-128-CFB (ADR-911).
+  - Security levels: authNoPriv and authPriv. `priv_password_*` defaults to the auth password.
+  - Refused at config time, with a reason: MD5, SHA-224, DES, AES-192/256, and v3 noAuthNoPriv.
+- **Worker process.** The designated node runs the poller in `telltale discovery-worker`.
+  - **Binary.** The worker is started from `/proc/self/exe`, the inode that is actually running, not `current_exe()`. The image doesn't grow, and an upgraded file on disk is never started by mistake.
+  - **Version handshake.** The first frame is a handshake: build ID plus protocol version. On a mismatch the worker is refused and the health reason `discovery_worker_version_mismatch` is raised.
+  - **Environment.** Cleared with `env_clear()`. No arguments carry secrets. Jobs and credentials arrive on stdin only.
+  - **Frames.** Each frame is a u32 big-endian length, a type byte, then the payload:
+    - JSON control and result frames, at most 1 MiB, with large results split across frames;
+    - binary chunk frames, at most 512 KiB.
+
+    The main side reads frames on the `telltale-inventory` thread with a bounded, panic-free reader.
+  - **Stderr.** Captured and logged with a rate limit, never inherited.
+  - **Memory limit.** At start the worker sets `RLIMIT_DATA` to `worker_memory_mib` (default 64, range 32–128). An allocation failure then aborts only the worker, well below the cgroup limit. `RLIMIT_AS` is not used, because reserved virtual mappings would trip it.
+  - **Other hardening at start.**
+    - `oom_score_adj` is set to 1000.
+    - `PR_SET_DUMPABLE=0` and `RLIMIT_CORE=0` are set, so an abort never writes a core dump that holds Ku or passwords.
+    - All of these go through one safe wrapper in `telltale-net`, with a `// SAFETY:` comment (AGENTS rule 7).
+  - **Runtime.** It calls `background_thread()` and runs one current-thread runtime.
+  - **Sockets.** It holds no listening sockets, only connected UDP client sockets. It exits on stdin EOF.
+  - **Supervisor.** Restarts the worker with backoff: 1 s, doubling up to 5 min. Three crashes within 10 minutes raise `discovery_worker_failing` (degraded, never DNS). While the worker is down, results go stale and DNS is unaffected.
+  - **systemd.** `deploy/systemd/telltale.service` sets `OOMPolicy=continue`, so a kernel OOM kill of the worker never stops the unit.
+- **Infrastructure polling** (`[[discovery.snmp_agent]]`).
+  - **Interval.** Each agent is polled every `interval_secs` (default 300, minimum 60).
+  - **Pacing.**
+    - One request in flight per agent.
+    - At least 50 ms between requests and at most 20 requests/s per agent.
+    - Timeout 1.5 s, with 2 retries.
+    - A walk stops after 3 timeouts in a row or 30 s of wall clock.
+  - **Sizes.** GETBULK `max_repetitions` is 5–25 (default 10). Each table is capped at 5,000 rows. One 64 KiB receive buffer per agent is reused.
+  - **Replies.** A reply counts only if it comes from the address the request went to.
+  - **Tables.**
+    - `arp`: ipNetToPhysicalTable, else ipNetToMediaTable.
+    - `ifmib`: ifTable and ifXTable names, plus `ipAddressTable`/`ipAddrTable` for the agent's own addresses.
+    - `bridge`: `dot1qTpFdbTable`, else `dot1dTpFdbTable`, with ports mapped through `dot1dBasePortIfIndex`.
+      - `dot1qTpFdbTable` is indexed by `dot1qFdbId`, which is not the VLAN ID. It is mapped to the VLAN ID through `dot1qVlanCurrentTable`'s `dot1qVlanFdbId`.
+      - A port counts as an uplink or trunk, and its MACs give no location, if it has more than 8 learned MACs, or an LLDP neighbour that is itself a listed agent or a UniFi device.
+      - Per-VLAN contexts (`community@vlan`, v3 `contextName`) are left Open.
+    - `lldp`: the LLDP-MIB remote table (1.0.8802.1.1.2), at most 4 neighbours per port.
+- **Capability record.**
+  - On the first poll and on `snmp/test`, each listed table root gets one GETNEXT.
+  - The record is kept and shown: tables answered, security level reached, engine ID, sysObjectID.
+  - Capabilities are never assumed. A table that doesn't answer is skipped until the next test, and the skip is logged once.
+- **Host identity reads.**
+  - **Who.** An address inside a `[[discovery.subnet]]` that names a `host_credential`, and that has a current class 1–3 binding (ADR-907).
+  - **What.** One GET of sysName, sysDescr, sysObjectID and sysLocation. If sysObjectID or the device class says printer, also a GET of `prtGeneralPrinterName`. No walks.
+  - **How often.** At most once per host per `identity_interval_hours` (default 24, minimum 6). At most 5 hosts/s in total and 1,024 hosts per pass.
+  - **Replies.** An answer from any address other than the one asked is dropped.
+- **Credential roles.**
+  - `[[discovery.snmp_credential]]` has `role = "infrastructure" | "host"`.
+  - It is a validation error for a subnet to name an infrastructure credential, or for an agent to name a host credential. A device on the LAN therefore never receives the gateway's credential.
+  - A v2c host credential warns: every host in the subnet learns the community in cleartext.
+- **Untrusted strings.** Every string from a device:
+  - is cut: sysName and sysLocation to 64 B, sysDescr and the printer name to 255 B;
+  - has control characters removed (the `SafeString::new` rule);
+  - is rendered as text only.
+
+  MCP tool descriptions mark these fields as device-supplied data, not instructions.
+- **Credentials (ADR-903).**
+  - `community`, `auth_password` and `priv_password` each take either `*_file` or `*_ref`. Inline values are a validation error. Files win, as in ADR-903.
+  - Refs are named `discovery.<credential-name>.<field>`, for example `discovery.infra-v3.auth_password`.
+  - A missing ref on an API write answers 422 `secret_missing`. At load time a missing ref warns, and the agent or subnet is skipped.
+  - They are write-only, added to `credentials::PATHS` and `API_PATHS`, held as `SecretValue` (redacting `Debug`, zeroized), never as `SafeString`, and sent to the worker only over stdin.
+- **Diagnostic CLI.** `telltale snmp walk --agent <name> [--table arp|ifmib|bridge|lldp]`. It takes a configured agent name only, never an address, and prints rows with secrets redacted.
+
+**Alternatives rejected:**
+- An SNMP crate such as `snmp2` or `csnmp`: new dependencies with incomplete USM, and their panic behaviour isn't ours to control.
+- The codec in `telltale-proto`: that is a hot-path crate.
+- Polling in the main process, relying only on lints and fuzzing: one missed panic aborts DNS.
+- Relying on `oom_score_adj` alone: systemd's `OOMPolicy=stop` and Kubernetes' `memory.oom.group` kill DNS with the worker.
+- `current_exe()`: after an upgrade it can start a newer binary than the one running.
+- Caching Kul per engine: the cache grows with every v3 host.
+- MD5 and DES: weak, and `ring` has no MD5.
+- An address-based `snmp/test`: it would be a destination chosen at request time.
+
+**Consequences:**
+- About 3–6 MiB more RSS while discovery is on. The worker is capped by `worker_memory_mib`.
+- Sending v3 to a host exposes the password to offline guessing by that host: it chooses the engine ID and receives an HMAC over a known message. This is why credentials have roles. The docs say to give hosts a low-value, shared identity.
+- v2c host credentials are cleartext on the subnet.
+- When a switch shows a MAC on several ports at once (a loop, or a move in progress), the most recently seen port is recorded.
+- On Kubernetes outside the host network, the SNMP source address is the node IP after SNAT. Device access lists must allow that address.
+
+## ADR-907 — Network inventory scope: SNMP, gateway reads and imported scans; no built-in probing (Proposed)
+**Context:** On 2026-11-16 the owner asked what TelltaleDNS can learn about devices that never use DNS or DHCP. Some sources already exist:
+- the routers' leases and networks (ADR-080, ADR-902);
+- Home Assistant names by MAC (ADR-902);
+- passive mDNS (ADR-081);
+- the kernel neighbour table. Today it is used only for MAC client matching (`telltale_net::neighbors()`).
+
+These are missing:
+- the gateway's ARP table across VLANs;
+- which switch port each MAC is on;
+- the identity of printers and network gear;
+- devices with static addresses that UniFi doesn't list.
+
+Active probing is out of scope by owner decision (2026-11-16). That covers ICMP sweeps, TCP connect probes and ARP/mDNS solicitation. The owner's own scanner supplies that data, and TelltaleDNS imports its output.
+
+This ADR keeps the read-only router posture of ADR-080 and ADR-902. ADR-091 (no DHCP server) is a separate decision and is not affected. ADR-081 is not affected either: mDNS stays passive. M22 ("Network inventory and home integrations") was the first inventory milestone, and M25 builds on it.
+
+**Decision:**
+- **What M25 adds.** Four inputs, all read-only:
+  1. An SNMP poller (ADR-908) of infrastructure listed in the configuration. It reads:
+     - gateway and router ARP tables;
+     - IF-MIB;
+     - the switches' BRIDGE/Q-BRIDGE forwarding tables per VLAN;
+     - LLDP neighbours.
+
+     It also reads the identity of hosts already in the inventory (sysName, sysDescr, sysObjectID, Printer MIB), using per-subnet credentials. The `public` community is never tried unless the owner opts in for that subnet (ADR-909).
+  2. More read-only UniFi and Home Assistant API reads (ADR-912).
+  3. Uploaded results of a scan the owner runs: nmap XML, or a simple `ip,mac,hostname` CSV (ADR-913).
+  4. A merged inventory keyed by MAC across all sources (ADR-910).
+- **What TelltaleDNS never does.** It never generates discovery traffic of its own:
+  - no ICMP;
+  - no TCP connect probes;
+  - no ARP, NDP or mDNS solicitation;
+  - no SSDP, NBNS or WS-Discovery;
+  - no scheduling or launching of scans.
+
+  The code has no target planner and no range iterator.
+- **Where SNMP goes.** SNMP requests go to only two kinds of address:
+  - each `[[discovery.snmp_agent]].address`;
+  - addresses that have a current binding from class 1–3 and lie inside a configured `[[discovery.subnet]]` CIDR. Class 1–3 means router leases or UniFi current clients, the filtered local neighbour table, or SNMP ARP from a listed agent (ADR-910).
+
+  Entries known only from imports, from the IP-only class or from UniFi `stat/alluser` history are never SNMP destinations. An address range is never walked. A subnet CIDR is a filter on inventory addresses, never a list of targets.
+- **Destinations.** Every SNMP destination is an IPv4 literal inside RFC 1918. Host names are refused, so there is no resolution and no rebinding. Always refused:
+  - loopback, `0.0.0.0/8` and `169.254.0.0/16`;
+  - multicast, limited broadcast and subnet broadcast;
+  - `100.64.0.0/10` (RFC 6598, which Tailscale uses);
+  - every IPv6 address (M25 is IPv4 only, like the leases);
+  - the host's own addresses;
+  - anything outside RFC 1918.
+- **Placement.** `[discovery]` is a shared section with one designated node:
+  - `node = "<node-id>"`. If unset, the current primary, or the standalone node.
+  - Never ephemeral resolver pods or witnesses.
+  - Every other node reads the inventory through a federated `Read::Discovery` (ADR-910).
+- **Isolation (CLU-004).**
+  - Two worker processes re-executed from the running binary (ADR-908, ADR-913):
+    - `telltale discovery-worker` handles SNMP I/O and the BER/USM codec;
+    - `telltale discovery-worker --import` is a short-lived, credential-free process for import parsing.
+  - A worker panic, hang, allocation failure or OOM cannot abort the DNS process, which builds with `panic = "abort"`.
+  - The merge runs in the main process on one dedicated OS thread named `telltale-inventory`. It calls `telltale_net::background_thread()` and runs its own `new_current_thread()` runtime, like `kubernetes.rs`. The extra UniFi and Home Assistant reads also run there (ADR-912).
+  - Nothing in discovery is `tokio::spawn`ed on the main runtime.
+  - Results leave the thread only through `ArcSwap` stores.
+  - The thread and the workers are not created while `enabled = false`, or on a node that isn't the designated one. Reload starts or stops them.
+- **What remains in the main process.** The merge thread and the worker frame decoder still run in the main process, so a panic there aborts DNS. The only mitigations are:
+  - the ADR-908 module lints (`indexing_slicing`, `arithmetic_side_effects`, `panic`, `unreachable`);
+  - the `inventory_merge` and `worker_frames` fuzz targets.
+- **Writes and audit.**
+  - The section is edited through the config entries API as a managed kind, `discovery`: admin only, with dry run, `If-Match`, audit and secrets redacted.
+  - No agent scope writes the `discovery` kind. Agents get 403.
+  - A setting made in a file shows as "set by file" and can't be edited through the API.
+  - At startup and on reload, a change to the effective `[discovery]` hash is audited as `discovery.config_changed (source=file)`.
+  - These are audited too: scan imports, deleting an import, SNMP tests, finding mutes, and the `public` passes and circuit-breaker trips.
+  - Humans need the operator role for imports, deleting imports and mutes. Agents need `ops:discovery`, which is an Operator-role scope.
+  - `snmp/test` is admin only for humans. Agents need `ops:discovery_test`, an Admin-role scope.
+  - Discovery never writes router or gateway configuration, never sends an SNMP SET, and never blocks or moves a device. Quarantine stays an explicit action (`06` §7).
+- **N−1 (CLU-010).**
+  - `[discovery]` and `[local] device_inventory_addresses` are serialized only when set, like ADR-903's `_ref` fields.
+  - An N−1 replica refuses a version that holds them.
+  - The API refuses the first write of `[discovery]` with 409 `members_too_old` while any full member runs N−1.
+  - `config check` warns when the file sets the section in a mixed-version cluster.
+
+**Alternatives rejected:**
+- Built-in ICMP/TCP/ARP/mDNS probing: out of scope by owner decision. It also brings IDS self-blocking of the DNS host, neighbour-table overflow and conntrack pressure.
+- `[discovery]` as node-local configuration: there would be no audited write path. ADR-161 rejected the same thing for mutes.
+- SNMP on every node: each node has a different view of the network, and the traffic and IDS exposure would double.
+- Host names as SNMP addresses: anyone who can change DNS records could redirect a credential.
+- Identity reads to any inventory address: one CSV import could turn the reads into a sweep of a whole /16.
+
+**Consequences:**
+- TelltaleDNS now sends SNMP read requests on the LAN. They go to listed devices, and, with an identity credential, to hosts that a router, the neighbour table or a gateway ARP table currently sees.
+- Devices that no source sees stay unknown until the owner imports a scan. Imported devices get no identity reads until a class 1–3 source binds their address.
+- Amends ADR-080 and ADR-902: "read-only toward the gateway" now also covers SNMP reads. Nothing writes.
+- Proposed amendment of ADR-906: the upstream-sync collision check also covers requirement prefixes (DSC) and milestone numbers (M25).
+- ADR-081, ADR-091, ADR-117 and ADR-161 are unchanged.
+
+**Owner decisions (2026-11-16):** the owner accepted the recommendations for questions 1–12 and 14–16 of the M25 design, and answered question 13 by a test. These ADRs (ADR-907 to ADR-913) stay Proposed until the owner accepts the ADRs themselves.
+- **Accepted recommendations:**
+  - **1a:** SNMP credentials as `*_file` first, once T23.1–T23.3 are in; `*_ref` in T25.8.
+  - **2a:** The `aes` 0.8 crate with hand-written CFB-128 for v3 privacy (ADR-911).
+  - **3a:** A hand-written restricted nmap XML parser (ADR-913).
+  - **4a:** Imports kept on the scanning (designated) node; replication is a follow-up.
+  - **5c:** Retention configurable, defaults 7 days (SNMP, neighbour and history-only entries) and 30 days (imports).
+  - **6a:** Inventory addresses in DNS opt-in, off by default (DSC-012).
+  - **7a:** `public` is a validation error without `public_ids_acknowledged` and a gateway agent or UniFi router (ADR-909).
+  - **8a:** The primary is the designated node when `node` is unset.
+  - **9a:** 30 days of `stat/alluser` history.
+  - **10a:** Home Assistant devices without entities go in the inventory only.
+  - **11a:** Open ports and OS guesses from imports kept, capped at 16 ports, behind `discovery:read`.
+  - **12a:** No MD5 or DES.
+  - **14a:** Imported addresses never get identity reads; only class 1–3 bindings are SNMP destinations.
+  - **15a:** No discovery at privacy level 2 or above.
+  - **16a:** Split agent scopes: `ops:discovery` (Operator) and `ops:discovery_test` (Admin).
+- **Question 13, answered by a test (2026-11-16):**
+  - The gateway (a UniFi gateway) serves `ipNetToPhysicalTable` over SNMPv3 with SHA and AES: 108 IPv4 and 81 IPv6 entries, 179 of them with a MAC. `ipNetToMediaTable` has 108. T25.6 stays as written for ARP (option a). M25 is IPv4 only, so the IPv6 rows are counted and ignored; they are a possible source for T24.8 (IPv6 device names) later.
+  - The gateway has no BRIDGE, Q-BRIDGE or LLDP MIB. Some networks' switches and APs are not UniFi. Port mapping therefore needs SNMP agents on the switches themselves; the UniFi API (ADR-912's `devices` read) can't supply it on this network. T25.6 says so.
+  - A gateway may also answer v1/v2c `public`. The SNMP setup docs flag that as a finding to turn off once v3 works.
+  - A network printer that answers v2c `public` with the Printer MIB is the case the ADR-909 opt-in is for.
+
 ## ADR-906 — Fork ADR numbers: fork-only ADRs take the next free number from 901 up (Accepted 2026-11-16)
 **Context:** This fork (nbacheller/telltaledns) and upstream (paimonsoror/telltaledns) both record decisions as ADRs. Upstream's numbering ended at ADR-164, so the fork's first five decisions after it (numbers 165 to 169) sat where upstream's next decisions would go, and one number could mean two decisions once a sync brought them together.
 **Decision:**
