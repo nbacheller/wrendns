@@ -18,14 +18,14 @@ One list of the devices on the owner's networks, keyed by MAC, built from what t
 |---|---|---|
 | UniFi clients and reservations, OPNsense leases, `[[router]]` answers | 1 | MAC, IPv4, name |
 | Neighbour table (kernel), filtered | 2 | MAC, IPv4 (REACHABLE, STALE, DELAY, PROBE; configured subnets; container and overlay interfaces skipped) |
-| Home Assistant trackers and names | 2 | MAC, name (a person's name ranks above an integration's) |
-| Passive mDNS | 2 | IPv4, name (IP-only when no MAC) |
+| Home Assistant trackers and names | claim (no class, ADR-923) | MAC, name (a person's name ranks above an integration's); the address is a claim |
+| Passive mDNS | claim (no class, ADR-923) | IPv4, name (IP-only when no MAC; attached to the MAC entry that holds the address otherwise) |
 | SNMP ARP (T25.6) | 3 | MAC, IPv4 |
 | SNMP identity (T25.7) | — | sysName and printer names (no address) |
 | Imported scans (T25.11) | 4 | MAC or IPv4, host name, open TCP ports |
 | UniFi `stat/alluser` `last_ip` (T25.10) | 5 | IPv4, history only |
 
-A MAC's current address is the best class, then the newest. Classes 1–3 are current bindings; SNMP may only poll a class 1–3 address (ADR-907).
+A MAC's current address is the best class, then the newest. Classes 1–3 are current bindings; SNMP may only poll a class 1–3 address (ADR-907). Home Assistant and mDNS addresses are claims, never current, so they never make an address an SNMP destination.
 
 ## The merge
 

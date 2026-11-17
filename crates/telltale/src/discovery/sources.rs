@@ -120,10 +120,12 @@ pub(crate) fn neighbour_observations(
         if !subnets.iter().any(|s| s.contains(v4)) {
             continue;
         }
-        if names
-            .get(&n.ifindex)
-            .is_some_and(|name| is_container_or_overlay(name))
-        {
+        // Fails closed: a row whose interface has no known name (the table could not be read, or
+        // the index is missing) is not counted (ADR-910).
+        let Some(name) = names.get(&n.ifindex) else {
+            continue;
+        };
+        if is_container_or_overlay(name) {
             continue;
         }
         let mut o = Observation::new(Source::Neighbor, now);
@@ -142,11 +144,14 @@ pub(crate) fn lease_observations(view: &Leases, source: Source, now: u64) -> Vec
         _ => NameKind::RouterAlias,
     };
     view.values()
+        // REQ: DSC-008 — a lease past its expiry is not a current answer (ADR-902).
+        .filter(|lease| lease.expires == 0 || lease.expires >= now)
         .map(|lease| {
             let mut o = Observation::new(source, now);
             o.mac = parse_mac(&lease.mac);
             o.ip = Some(IpAddr::V4(lease.ip));
             o.name = lease.hostname.clone().map(|h| (name_kind, h));
+            o.name_origin.clone_from(&lease.router);
             o
         })
         .collect()

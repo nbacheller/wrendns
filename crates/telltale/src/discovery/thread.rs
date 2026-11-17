@@ -125,12 +125,20 @@ async fn run(
         if now >= next_poll {
             tick(&mut inv, &providers, now);
             next_poll = now.saturating_add(POLL_SECS);
-            shared.store(Arc::new(inv.clone()));
+            // Readers get a copy only when something changed; an unchanged poll publishes nothing.
+            if inv.is_dirty() {
+                shared.store(Arc::new(inv.clone()));
+            }
         }
-        let fast = fast_write.swap(false, Ordering::AcqRel);
+        // The fast-write request stays until a save has cleared the dirty flag, so a request
+        // made within the 15-minute gap is not lost when the save before it failed.
+        let fast = fast_write.load(Ordering::Acquire);
         if store::write_due(inv.is_dirty(), now, last_write, fast) {
             save(&data_dir, &mut inv);
             last_write = now;
+        }
+        if !inv.is_dirty() {
+            fast_write.store(false, Ordering::Release);
         }
         match stop.try_recv() {
             Ok(()) | Err(mpsc::TryRecvError::Disconnected) => {

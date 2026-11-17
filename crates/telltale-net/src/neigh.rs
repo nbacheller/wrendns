@@ -213,13 +213,13 @@ mod tests {
                 Neighbor {
                     ip: "192.168.1.20".parse().unwrap(),
                     mac,
-                    ifindex: 0,
+                    ifindex: 2,
                     state: 0x02,
                 },
                 Neighbor {
                     ip: "fe80::1".parse().unwrap(),
                     mac,
-                    ifindex: 0,
+                    ifindex: 2,
                     state: 0x04,
                 },
             ]

@@ -1,10 +1,11 @@
-//! The network inventory's data model and merge (DSC-008, ADR-910).
+//! The network inventory's data model and merge (DSC-008, ADR-910, ADR-923).
 //!
 //! One entry per MAC, with at most four address bindings, ranked names, a source mask and the
-//! import rows it holds. A result with no MAC goes to an IP-only entry keyed by its address.
-//! This module does no I/O and reads no clock: callers pass `now` in Unix seconds, so the
-//! merge can be tested and fuzzed. Nothing here reaches DNS, policy, client matching or
-//! `identify` (ADR-910; the test `dsc_008_never_in_neighbors_or_leases` guards that).
+//! import rows it holds. A claim with no MAC attaches to the MAC entry that holds its address as
+//! a current binding; otherwise it goes to an IP-only entry keyed by its address. This module does
+//! no I/O and reads no clock: callers pass `now` in Unix seconds, so the merge can be tested and
+//! fuzzed. Nothing here reaches DNS, policy, client matching or `identify` (ADR-910; the test
+//! `dsc_008_never_in_neighbors_or_leases` guards that).
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
@@ -27,6 +28,10 @@ pub(crate) const MAX_ADDRS: usize = 4;
 pub(crate) const MAX_NAMES: usize = 4;
 /// Open TCP ports per entry, from imports (ADR-910).
 pub(crate) const MAX_PORTS: usize = 16;
+/// LLDP neighbours per entry (ADR-910).
+pub(crate) const MAX_LLDP: usize = 4;
+/// Mutes kept at most; the oldest goes first (T25.1 review, fix 12).
+pub(crate) const MAX_MUTES: usize = 1_024;
 /// The learning period after the first enable or an empty start (ADR-910).
 pub(crate) const LEARNING_SECS: u64 = 24 * 3600;
 /// Names are cut to this many bytes (DSC-015).
@@ -34,40 +39,57 @@ pub(crate) const NAME_MAX: usize = 64;
 /// Other device strings are cut to this many bytes (DSC-015).
 pub(crate) const TEXT_MAX: usize = 255;
 
-/// Where an observation came from. The class decides which address a MAC currently uses.
+/// Where an observation came from. The class decides whether its address is a current binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Source {
     /// UniFi clients and reservations, OPNsense leases, and the `[[router]]` answers.
     Router,
-    /// Home Assistant's device registry and trackers.
+    /// Home Assistant's device registry and trackers (ADR-923: an address is a claim).
     HomeAssistant,
     /// The local kernel neighbour table, filtered (ADR-910).
     Neighbor,
     /// ARP from a listed infrastructure agent (DSC-004; not polled before T25.6).
     SnmpArp,
-    /// Passive mDNS announcements.
+    /// Passive mDNS announcements. Unauthenticated, so an address is a claim (ADR-923).
     Mdns,
-    /// SNMP identity (sysName and friends); carries names, not addresses.
+    /// SNMP identity (sysName and friends); carries names, not addresses (ADR-923).
     Snmp,
     /// A scan the owner uploaded (ADR-913).
     Import,
     /// UniFi `stat/alluser` `last_ip`: history only, never current (ADR-912).
     History,
-    /// The configured client name. Attaches to entries; never creates one.
+    /// The configured client name. Attaches to entries; never creates one (ADR-923).
     Config,
 }
 
 impl Source {
-    /// The precedence class of an address from this source (ADR-910). Lower is better; classes
-    /// 1–3 are current bindings, 4 and 5 are claims.
-    pub(crate) const fn class(self) -> u8 {
+    /// The precedence class of an address from this source (ADR-910, ADR-923). Classes 1–3 are
+    /// current bindings and 4–5 are claims. `None` marks a source whose addresses are never
+    /// current: Home Assistant and mDNS addresses are claims, and SNMP identity and the configured
+    /// name carry no address of their own.
+    pub(crate) const fn class(self) -> Option<u8> {
         match self {
-            Self::Router => 1,
-            Self::HomeAssistant | Self::Neighbor | Self::Mdns => 2,
-            Self::SnmpArp | Self::Snmp | Self::Config => 3,
-            Self::Import => 4,
-            Self::History => 5,
+            Self::Router => Some(1),
+            Self::Neighbor => Some(2),
+            Self::SnmpArp => Some(3),
+            Self::Import => Some(4),
+            Self::History => Some(5),
+            Self::HomeAssistant | Self::Mdns | Self::Snmp | Self::Config => None,
+        }
+    }
+
+    /// Whether an address from this source is a current binding (classes 1–3). Only those make an
+    /// address an SNMP destination (ADR-907), take part in conflicts, or count as an owner.
+    pub(crate) const fn is_current(self) -> bool {
+        matches!(self.class(), Some(1..=3))
+    }
+
+    /// The sort order of bindings: the class, with unclassed claims after the classed ones.
+    pub(crate) const fn order(self) -> u8 {
+        match self.class() {
+            Some(c) => c,
+            None => 4,
         }
     }
 
@@ -134,7 +156,8 @@ impl NameKind {
     }
 }
 
-/// One address a source reported for an entry.
+/// One address a source reported for an entry. A binding is kept per (address, source, import),
+/// so a source that stops reporting an address expires only its own record (ADR-924).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Binding {
     pub(crate) ip: IpAddr,
@@ -147,17 +170,34 @@ pub(crate) struct Binding {
 }
 
 impl Binding {
-    /// The precedence class of this binding.
-    pub(crate) const fn class(&self) -> u8 {
-        self.source.class()
+    /// Whether this binding is current (class 1–3).
+    pub(crate) const fn is_current(&self) -> bool {
+        self.source.is_current()
     }
 }
 
-/// A display name with its kind.
+/// A display name with its kind. A name is replaced when a source reports the same kind again
+/// from the same origin (a router, or none), so a rename shows the new name (DSC-008).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NameEntry {
     pub(crate) kind: NameKind,
     pub(crate) label: String,
+    /// The `[[router]]` that named it, for router aliases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) origin: Option<String>,
+}
+
+/// SNMP identity reads for a host (DSC-005, T25.7). Nothing fills it yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Identity {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) descr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) object_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) location: Option<String>,
 }
 
 /// The identity of an entry: its MAC, or its address when no MAC is known.
@@ -169,6 +209,8 @@ pub(crate) enum Key {
 }
 
 /// One device in the inventory.
+// The four flags are separate stored facts (ADR-910), not a state machine.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Entry {
     pub(crate) key: Key,
@@ -184,6 +226,25 @@ pub(crate) struct Entry {
     /// Open TCP ports from imports, at most [`MAX_PORTS`], sorted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) ports: Vec<u16>,
+    /// The OUI vendor from the preset (T25.7 fills it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) vendor: Option<String>,
+    /// The LAN or VLAN name the router reports (T25.10 fills it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) network: Option<String>,
+    /// The access point the client associates with (T25.10 fills it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ap: Option<String>,
+    /// LLDP neighbours, at most [`MAX_LLDP`] (T25.10 fills them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) lldp: Vec<String>,
+    /// SNMP identity (T25.7 fills it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) identity: Option<Identity>,
+    /// The host answered the `public` community (ADR-909), so the `default_community` finding
+    /// applies. T25.9 sets it.
+    #[serde(default)]
+    pub(crate) default_community: bool,
     /// The sources that currently back the entry (a [`Source::bit`] mask).
     pub(crate) sources: u16,
     /// One bit per import that holds a row for this entry.
@@ -212,6 +273,12 @@ impl Entry {
             vlan: None,
             port: None,
             ports: Vec::new(),
+            vendor: None,
+            network: None,
+            ap: None,
+            lldp: Vec::new(),
+            identity: None,
+            default_community: false,
             sources: 0,
             import_bits: 0,
             first_seen: seen,
@@ -241,7 +308,7 @@ impl Entry {
 
     /// Whether any current (class 1–3) binding exists, so SNMP may poll the entry (ADR-907).
     pub(crate) fn snmp_eligible(&self) -> bool {
-        self.addrs.iter().any(|b| b.class() <= 3)
+        self.addrs.iter().any(Binding::is_current)
     }
 
     /// Whether only weak sources (the neighbour table, SNMP, history) back the entry.
@@ -253,19 +320,32 @@ impl Entry {
         (self.sources & !weak) == 0
     }
 
+    /// The distinct addresses with a current binding.
+    fn current_ips(&self) -> Vec<IpAddr> {
+        let mut out: Vec<IpAddr> = Vec::new();
+        for b in self.addrs.iter().filter(|b| b.is_current()) {
+            if !out.contains(&b.ip) {
+                out.push(b.ip);
+            }
+        }
+        out
+    }
+
     fn normalize(&mut self) {
         self.addrs.sort_by(|a, b| {
-            a.class()
-                .cmp(&b.class())
+            a.source
+                .order()
+                .cmp(&b.source.order())
                 .then(b.seen.cmp(&a.seen))
                 .then(a.ip.cmp(&b.ip))
         });
-        let mut seen_ips: Vec<IpAddr> = Vec::new();
+        let mut kept: Vec<(IpAddr, Source, Option<u8>)> = Vec::new();
         self.addrs.retain(|b| {
-            if seen_ips.contains(&b.ip) {
+            let k = (b.ip, b.source, b.import_bit);
+            if kept.contains(&k) {
                 false
             } else {
-                seen_ips.push(b.ip);
+                kept.push(k);
                 true
             }
         });
@@ -276,6 +356,9 @@ impl Entry {
         self.ports.sort_unstable();
         self.ports.dedup();
         self.ports.truncate(MAX_PORTS);
+        self.lldp.sort();
+        self.lldp.dedup();
+        self.lldp.truncate(MAX_LLDP);
         let mut sources = 0u16;
         for b in &self.addrs {
             sources |= b.source.bit();
@@ -294,8 +377,14 @@ impl Entry {
         self.addrs.extend(other.addrs);
         self.names.extend(other.names);
         self.ports.extend(other.ports);
+        self.lldp.extend(other.lldp);
         self.vlan = self.vlan.or(other.vlan);
         self.port = self.port.take().or(other.port);
+        self.vendor = self.vendor.take().or(other.vendor);
+        self.network = self.network.take().or(other.network);
+        self.ap = self.ap.take().or(other.ap);
+        self.identity = self.identity.take().or(other.identity);
+        self.default_community |= other.default_community;
         self.import_bits |= other.import_bits;
         self.first_seen = self.first_seen.min(other.first_seen);
         self.last_seen = self.last_seen.max(other.last_seen);
@@ -344,6 +433,8 @@ pub(crate) struct Observation {
     pub(crate) ip: Option<IpAddr>,
     /// The raw device string; sanitised on merge (DSC-015).
     pub(crate) name: Option<(NameKind, String)>,
+    /// The `[[router]]` that named it, for router aliases.
+    pub(crate) name_origin: Option<String>,
     pub(crate) vlan: Option<u16>,
     pub(crate) port: Option<String>,
     /// Open TCP ports (imports).
@@ -360,6 +451,7 @@ impl Observation {
             mac: None,
             ip: None,
             name: None,
+            name_origin: None,
             vlan: None,
             port: None,
             ports: Vec::new(),
@@ -420,6 +512,18 @@ fn bit16(i: u8) -> u16 {
     1u16.checked_shl(u32::from(i)).unwrap_or(0)
 }
 
+/// Clears what an entry holds from imports that are no longer kept (`kept` is their mask).
+fn clear_unheld_imports(e: &mut Entry, kept: u16) {
+    e.import_bits &= kept;
+    e.addrs
+        .retain(|b| b.import_bit.is_none_or(|i| kept & bit16(i) != 0));
+    if e.import_bits == 0 {
+        e.ports.clear();
+        e.names.retain(|n| n.kind != NameKind::Import);
+    }
+    e.normalize();
+}
+
 impl Inventory {
     /// An empty inventory that starts its learning period at `now` (ADR-910).
     pub(crate) fn new(now: u64) -> Self {
@@ -429,21 +533,35 @@ impl Inventory {
         }
     }
 
-    /// Rebuilds an inventory from its stored parts. Caps are enforced by dropping the oldest.
+    /// Rebuilds an inventory from its stored parts. Caps are enforced by dropping the oldest, and
+    /// what an import no longer covers is cleared (a stored file is untrusted).
     pub(crate) fn restore(
         entries: Vec<Entry>,
         imports: Vec<ImportRecord>,
         mutes: Vec<Mute>,
         learning_until: u64,
     ) -> Self {
+        let mut kept: Vec<ImportRecord> = Vec::new();
+        for mut r in imports {
+            if usize::from(r.bit) >= MAX_IMPORTS || kept.iter().any(|k| k.bit == r.bit) {
+                continue;
+            }
+            r.label = sanitize(&r.label, NAME_MAX);
+            kept.push(r);
+        }
+        while kept.iter().map(|r| r.rows).sum::<usize>() > MAX_IMPORT_ROWS && kept.len() > 1 {
+            drop_oldest_record(&mut kept);
+        }
+        let skip = mutes.len().saturating_sub(MAX_MUTES);
         let mut inv = Self {
             learning_until,
-            mutes,
-            imports: imports.into_iter().take(MAX_IMPORTS).collect(),
+            mutes: mutes.into_iter().skip(skip).collect(),
+            imports: kept,
             ..Self::default()
         };
+        let mask = inv.kept_import_mask();
         for mut e in entries {
-            e.normalize();
+            clear_unheld_imports(&mut e, mask);
             inv.entries.insert(e.key, e);
         }
         while inv.mac_count() > MAX_MAC_ENTRIES {
@@ -508,6 +626,11 @@ impl Inventory {
     /// Rows held by all kept imports.
     pub(crate) fn import_rows(&self) -> usize {
         self.imports.iter().map(|r| r.rows).sum()
+    }
+
+    /// The mask of the kept imports' bits.
+    fn kept_import_mask(&self) -> u16 {
+        self.imports.iter().fold(0u16, |m, r| m | bit16(r.bit))
     }
 
     /// Merges observations from a poll or a stream of claims.
@@ -578,15 +701,9 @@ impl Inventory {
             return false;
         };
         self.imports.remove(pos);
-        let mask = bit16(bit);
+        let mask = self.kept_import_mask();
         for e in self.entries.values_mut() {
-            e.import_bits &= !mask;
-            e.addrs.retain(|b| b.import_bit != Some(bit));
-            if e.import_bits == 0 {
-                e.ports.clear();
-                e.names.retain(|n| n.kind != NameKind::Import);
-            }
-            e.normalize();
+            clear_unheld_imports(e, mask);
         }
         self.entries
             .retain(|_, e| !(e.addrs.is_empty() && e.import_bits == 0 && e.names.is_empty()));
@@ -613,8 +730,8 @@ impl Inventory {
     }
 
     /// The retention pass (ADR-910): imports past `import_retention_secs` go, entries with no
-    /// address or import that have not been seen for `retention_secs` go, and a conflict that
-    /// no longer holds is cleared.
+    /// address or import that have not been seen for `retention_secs` go, a conflict that no
+    /// longer holds is cleared, and mutes of gone entries or expired mutes are pruned.
     pub(crate) fn sweep(&mut self, now: u64, retention_secs: u64, import_retention_secs: u64) {
         let expired: Vec<u8> = self
             .imports
@@ -627,19 +744,22 @@ impl Inventory {
         }
         let mut owners: HashMap<IpAddr, usize> = HashMap::new();
         for e in self.entries.values() {
-            for b in e.addrs.iter().filter(|b| b.class() <= 3) {
-                let n = owners.entry(b.ip).or_insert(0);
+            for ip in e.current_ips() {
+                let n = owners.entry(ip).or_insert(0);
                 *n = n.saturating_add(1);
             }
         }
         let mut changed = false;
         for e in self.entries.values_mut() {
             if e.conflict {
-                e.conflict = e
-                    .addrs
+                let still = e
+                    .current_ips()
                     .iter()
-                    .any(|b| b.class() <= 3 && owners.get(&b.ip).copied().unwrap_or(0) > 1);
-                changed = true;
+                    .any(|ip| owners.get(ip).copied().unwrap_or(0) > 1);
+                if !still {
+                    e.conflict = false;
+                    changed = true;
+                }
             }
         }
         let before = self.entries.len();
@@ -648,7 +768,11 @@ impl Inventory {
                 && e.import_bits == 0
                 && e.last_seen.saturating_add(retention_secs) < now)
         });
-        if changed || self.entries.len() != before {
+        let entries = &self.entries;
+        let mutes_before = self.mutes.len();
+        self.mutes
+            .retain(|m| entries.contains_key(&m.key) && m.until.is_none_or(|u| u > now));
+        if changed || self.entries.len() != before || self.mutes.len() != mutes_before {
             self.dirty = true;
         }
     }
@@ -657,7 +781,7 @@ impl Inventory {
     pub(crate) fn snmp_eligible_address(&self, ip: IpAddr) -> bool {
         self.entries
             .values()
-            .any(|e| e.addrs.iter().any(|b| b.ip == ip && b.class() <= 3))
+            .any(|e| e.addrs.iter().any(|b| b.ip == ip && b.is_current()))
     }
 
     /// The findings on an entry that no mute hides at `now`.
@@ -672,6 +796,9 @@ impl Inventory {
         if e.new_device {
             out.push(FindingKind::NewDevice);
         }
+        if e.default_community {
+            out.push(FindingKind::DefaultCommunity);
+        }
         out.retain(|k| !self.muted(key, *k, now));
         out
     }
@@ -682,9 +809,13 @@ impl Inventory {
             .any(|m| m.key == *key && m.kind == kind && m.until.is_none_or(|u| u > now))
     }
 
-    /// Mutes one finding on one entry, replacing an earlier mute of the same finding.
+    /// Mutes one finding on one entry, replacing an earlier mute of the same finding. At most
+    /// [`MAX_MUTES`] are kept; the oldest goes first.
     pub(crate) fn mute(&mut self, key: Key, kind: FindingKind, until: Option<u64>) {
         self.mutes.retain(|m| !(m.key == key && m.kind == kind));
+        while self.mutes.len() >= MAX_MUTES {
+            self.mutes.remove(0);
+        }
         self.mutes.push(Mute { key, kind, until });
         self.dirty = true;
     }
@@ -727,6 +858,17 @@ impl Inventory {
         }
     }
 
+    /// The MAC entry that holds `a` as a current binding, if any (ADR-910: a claim with no MAC
+    /// names the device that already owns the address).
+    fn current_owner(&self, a: IpAddr) -> Option<Key> {
+        self.entries
+            .iter()
+            .find(|(k, e)| {
+                matches!(k, Key::Mac(_)) && e.addrs.iter().any(|b| b.ip == a && b.is_current())
+            })
+            .map(|(k, _)| *k)
+    }
+
     fn merge_one(
         &mut self,
         o: &Observation,
@@ -738,35 +880,37 @@ impl Inventory {
         let ip = o.ip.filter(|a| !a.is_unspecified());
         let key = match (mac, ip) {
             (Some(m), _) => Key::Mac(m),
-            (None, Some(a)) => Key::Ip(a),
+            // REQ: DSC-008 — a MAC-less claim for an address a MAC entry holds attaches to it.
+            (None, Some(a)) => self.current_owner(a).unwrap_or(Key::Ip(a)),
             (None, None) => {
                 report.dropped = report.dropped.saturating_add(1);
                 return;
             }
         };
-        if let Some(mut entry) = self.entries.remove(&key) {
-            self.fold(&mut entry, o, import_bit, ip);
-            self.entries.insert(key, entry);
-            report.merged = report.merged.saturating_add(1);
-            return;
-        }
-        let mut entry = Entry::new(key, o.seen);
-        // An IP-only entry becomes the MAC's entry when the MAC arrives.
+        let mac_kind = matches!(key, Key::Mac(_));
+        let existing = self.entries.remove(&key);
+        let created = existing.is_none();
+        let mut entry = if let Some(e) = existing {
+            e
+        } else {
+            if mac_kind && self.mac_count() >= MAX_MAC_ENTRIES {
+                self.evict_oldest(true);
+            }
+            if !mac_kind && self.ip_count() >= MAX_IP_ONLY_ENTRIES {
+                self.evict_oldest(false);
+            }
+            Entry::new(key, o.seen)
+        };
+        // REQ: DSC-008 — an IP-only entry is the same device once a MAC names its address,
+        // whether or not the MAC entry is new (ADR-910).
         if let (Key::Mac(_), Some(a)) = (key, ip)
             && let Some(ip_only) = self.entries.remove(&Key::Ip(a))
         {
             entry.absorb(ip_only);
         }
-        let mac_kind = matches!(key, Key::Mac(_));
-        if mac_kind && self.mac_count() >= MAX_MAC_ENTRIES {
-            self.evict_oldest(true);
-        }
-        if !mac_kind && self.ip_count() >= MAX_IP_ONLY_ENTRIES {
-            self.evict_oldest(false);
-        }
         // A MAC seen for the first time after the learning period raises new_device once.
         // Randomised MACs raise none (ADR-910: no stable-identity finding for them).
-        if mac_kind && !entry.randomized && !self.learning(now) && !entry.new_device {
+        if created && mac_kind && !entry.randomized && !self.learning(now) && !entry.new_device {
             entry.new_device = true;
             report.new_devices.push(key);
         }
@@ -784,29 +928,42 @@ impl Inventory {
         ip: Option<IpAddr>,
     ) {
         if let Some(a) = ip {
-            self.resolve_conflicts(entry, a, o);
-            let b = Binding {
-                ip: a,
-                source: o.source,
-                seen: o.seen,
-                import_bit,
-            };
-            if let Some(ex) = entry.addrs.iter_mut().find(|x| x.ip == a) {
-                if b.class() <= ex.class() {
-                    ex.source = b.source;
-                    ex.import_bit = b.import_bit;
-                }
-                ex.seen = ex.seen.max(b.seen);
-            } else {
-                entry.addrs.push(b);
+            // IP-only entries are not devices, so they take part in no conflict (DSC-008).
+            if matches!(entry.key, Key::Mac(_)) {
+                self.resolve_conflicts(entry, a, o);
+            }
+            // REQ: DSC-008 — a source refreshes only its own record of an address; another
+            // source's record of the same address keeps its own age, so it can expire.
+            match entry
+                .addrs
+                .iter_mut()
+                .find(|x| x.ip == a && x.source == o.source && x.import_bit == import_bit)
+            {
+                Some(ex) => ex.seen = ex.seen.max(o.seen),
+                None => entry.addrs.push(Binding {
+                    ip: a,
+                    source: o.source,
+                    seen: o.seen,
+                    import_bit,
+                }),
             }
         }
         if let Some((kind, raw)) = &o.name {
             let label = sanitize(raw, NAME_MAX);
             if !label.is_empty() {
-                let name = NameEntry { kind: *kind, label };
-                if !entry.names.contains(&name) {
-                    entry.names.push(name);
+                let origin = o.name_origin.as_deref().map(|s| sanitize(s, NAME_MAX));
+                // REQ: DSC-008 — a name from the same kind and origin replaces the old one.
+                match entry
+                    .names
+                    .iter_mut()
+                    .find(|n| n.kind == *kind && n.origin == origin)
+                {
+                    Some(n) => n.label = label,
+                    None => entry.names.push(NameEntry {
+                        kind: *kind,
+                        label,
+                        origin,
+                    }),
                 }
             }
         }
@@ -835,24 +992,44 @@ impl Inventory {
         self.dirty = true;
     }
 
-    /// Same address, different MAC: the newest class 1–3 claim wins, and both entries are
-    /// flagged. A claim of class 4 or 5 never displaces a class 1–3 binding (ADR-910).
+    /// Same address, different MAC: the newest current (class 1–3) claim wins, and both entries
+    /// are flagged. A claim of class 4 or 5, or from an unclassed source, never displaces a
+    /// current binding (ADR-910, ADR-923).
     fn resolve_conflicts(&mut self, entry: &mut Entry, a: IpAddr, o: &Observation) {
-        let class = o.source.class();
-        for (k, other) in &mut self.entries {
-            if *k == entry.key {
+        let current = o.source.is_current();
+        for other in self.entries.values_mut() {
+            // REQ: DSC-008 — only MAC entries are devices; IP-only entries take no part.
+            if !matches!(other.key, Key::Mac(_)) {
                 continue;
             }
-            let Some(pos) = other.addrs.iter().position(|b| b.ip == a && b.class() <= 3) else {
+            let Some(other_seen) = other
+                .addrs
+                .iter()
+                .filter(|b| b.ip == a && b.is_current())
+                .map(|b| b.seen)
+                .max()
+            else {
                 continue;
             };
-            let other_seen = other.addrs.get(pos).map_or(0, |b| b.seen);
             entry.conflict = true;
             other.conflict = true;
-            if class <= 3 && o.seen >= other_seen {
-                other.addrs.remove(pos);
+            if current && o.seen >= other_seen {
+                other.addrs.retain(|b| !(b.ip == a && b.is_current()));
+                other.normalize();
             }
         }
+    }
+}
+
+/// Drops the record of the import that was merged first.
+fn drop_oldest_record(imports: &mut Vec<ImportRecord>) {
+    if let Some(pos) = imports
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, r)| r.at)
+        .map(|(i, _)| i)
+    {
+        imports.remove(pos);
     }
 }
 

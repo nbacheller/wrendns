@@ -784,7 +784,7 @@ Order:
     - `spec/trace.py --check` passes;
     - every DSC row names its task;
     - the owner has reviewed the ADRs.
-- [ ] **T25.1 Inventory type and merge.** *(DSC-008, DSC-015; ADR-910)* Depends on T25.0.
+- [x] **T25.1 Inventory type and merge.** *(DSC-008, DSC-015; ADR-910)* Depends on T25.0.
   - `crates/telltale/src/discovery/inventory.rs`:
     - the MAC entry and the IP-only class, with their caps;
     - the import-ID bitmask and the 8,192-row import cap;
@@ -815,6 +815,15 @@ Order:
     - `dsc_015_device_strings_sanitized`;
     - fuzz target `inventory_merge`;
     - `make bench-smoke` (telltale-net changed).
+  - *Done 2026-11-17 (with the review fixes):* the merge, the sources and `inventory.json` are in `crates/telltale/src/discovery/` (`inventory.rs`, `sources.rs`, `store.rs`, `thread.rs`). Each AC passes: `dsc_008_mac_keyed_precedence`, `dsc_008_same_ip_two_macs_flags_conflict`, `dsc_008_import_never_overrides_l2`, `dsc_008_ip_only_merges_when_mac_arrives`, `dsc_008_randomized_mac_flagged`, `dsc_008_caps_and_retention`, `dsc_008_only_class_1_3_snmp_eligible`, `dsc_008_empty_start_learning_period`, `dsc_008_neighbor_skips_container_interfaces`, `dsc_008_never_in_neighbors_or_leases`, `dsc_008_inventory_file_not_in_backup` (a real backup), `dsc_015_device_strings_sanitized`. The review's regression tests also pass: `dsc_008_known_mac_absorbs_ip_only`, `dsc_008_mdns_ip_only_keeps_router_binding`, `dsc_008_routed_import_joins_known_device`, `dsc_008_mdns_and_ha_addresses_are_never_snmp_eligible`, `dsc_008_import_does_not_refresh_neighbour_record`, `dsc_008_rename_replaces_name`, `dsc_008_mutes_capped_and_pruned`, `dsc_008_restore_checks_import_bits`, `dsc_008_neighbor_unknown_interface_fails_closed`, `dsc_008_expired_lease_is_skipped`, `dsc_008_unreadable_file_is_quarantined`, `dsc_008_entry_size_at_caps`, `dsc_011_default_community_finding_is_muteable`. The `inventory_merge` fuzz target compiles (`cargo check`). ADR-923 is amended: Home Assistant and mDNS addresses are claims, not class 2. The neighbour-table *Open* item of T22.3 is closed (inventory only).
+  - *Image delta:* not measured for this task. It adds no dependency; the M25 image gate is measured by the image job (T25.0).
+  - *`make bench-smoke`:* it ran on this host and failed the loss gate. The base branch's binary fails the same way (about 30% loss on cache-hot, over 70% on miss-heavy), so the failure is the host's UDP bind cost, as `bench/README.md` warns. The hot-path crates' code is unchanged from the base (`telltale-net` differs only in a test expectation).
+  - *Open* (each with its reason):
+    - The Home Assistant feed: `sources::ha_observations` is a tested pure function, but nothing feeds it. `routers.rs` keeps no raw answer. Open until T25.10 (ADR-925).
+    - The `new_device` alert (`source = "inventory"`) and its privacy-level handling (ADR-102): the merge returns the report, and nothing consumes it yet. Open until T25.15 (DSC-011, OBS-010).
+    - DSC-008's "Level 1 hashes names": the names are kept as they are; hashing belongs to the API output. Open until T25.12.
+    - The `vendor`, `network`, `ap`, `lldp` and `identity` fields exist (`serde(default)`, so `inventory.json` stays version 1), but nothing fills them: T25.7 fills vendor and identity, T25.10 fills network, AP and LLDP. `default_community` is set by T25.9.
+    - Changes made outside the thread's tick must also publish. The thread publishes only what it changed in a tick. Open until T25.11 adds the first write path from the API.
 - [ ] **T25.2 `[discovery]` section and its write path.** *(DSC-001, DSC-013; ADR-907)* Depends on T25.0.
   - Schema with `deny_unknown_fields`, serialized only when set.
   - The `validate.rs` rules in (D), including:
