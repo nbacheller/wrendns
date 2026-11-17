@@ -56,6 +56,18 @@ pub(crate) const KEY_SHARE_RESEND: Duration = Duration::from_secs(30);
 pub(crate) fn key_share_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
     last.is_none_or(|t| now.saturating_duration_since(t) >= KEY_SHARE_RESEND)
 }
+
+/// REQ: CLU-005 (ADR-947) — whether the primary sends its key share frame (`bytes`, encoded) on
+/// this stream now: when the frame changed since the last send (a CA rotation adds the next key),
+/// or when the last send is due again ([`key_share_due`]). `shared` is the last frame sent.
+pub(crate) fn key_share_send(
+    shared: Option<&[u8]>,
+    last: Option<std::time::Instant>,
+    bytes: &[u8],
+    now: std::time::Instant,
+) -> bool {
+    shared != Some(bytes) || key_share_due(last, now)
+}
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// REQ: CLU-001 (ADR-051, GitHub issue #4) — how soon a replica whose stream is to another
@@ -2511,7 +2523,7 @@ async fn write_frames(
         if let Some(frame) = peer.as_deref().and_then(|p| cluster.key_share_for(p)) {
             let bytes = wire::encode(&frame);
             let now = std::time::Instant::now();
-            if key_shared.as_deref() != Some(bytes.as_slice()) || key_share_due(key_sent_at, now) {
+            if key_share_send(key_shared.as_deref(), key_sent_at, &bytes, now) {
                 if tx.send_data(Bytes::from(bytes.clone())).await.is_err() {
                     return;
                 }

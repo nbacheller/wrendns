@@ -26,6 +26,9 @@ import urllib.error
 import urllib.request
 
 HOST = "127.0.0.1"
+# REQ: CLU-005 — the failover probe's loss bound: the share of queries to a survivor that may go
+# unanswered while the cluster elects (ADR-051: DNS never waits for the election).
+MAX_LOSS = 0.01
 
 
 # --- DNS ----------------------------------------------------------------------------------------
@@ -269,23 +272,27 @@ def rolling(args):
             samples.append(up)
             time.sleep(0.2)
 
-    t = threading.Thread(target=monitor)
+    # A daemon thread, stopped in the finally: a failed restart must not leave the monitor running
+    # (the CI job would then wait for its time limit instead of failing).
+    t = threading.Thread(target=monitor, daemon=True)
     t.start()
     log = []
-    for name, port in nodes:
+    try:
+        for name, port in nodes:
+            time.sleep(1.0)
+            subprocess.run(compose + ["restart", name], check=True, stdout=subprocess.DEVNULL, timeout=120)
+            came_back = False
+            end = time.time() + per_node_wait
+            while time.time() < end:
+                if dns(port, "ok.cluster3.test", timeout=0.5)[0] == "NOERROR":
+                    came_back = True
+                    break
+                time.sleep(0.2)
+            log.append({"node": name, "back": came_back})
         time.sleep(1.0)
-        subprocess.run(compose + ["restart", name], check=True, stdout=subprocess.DEVNULL)
-        came_back = False
-        end = time.time() + per_node_wait
-        while time.time() < end:
-            if dns(port, "ok.cluster3.test", timeout=0.5)[0] == "NOERROR":
-                came_back = True
-                break
-            time.sleep(0.2)
-        log.append({"node": name, "back": came_back})
-    time.sleep(1.0)
-    stop.set()
-    t.join()
+    finally:
+        stop.set()
+        t.join()
     low = min(samples) if samples else 0
     print(json.dumps({"samples": len(samples), "min_answering": low, "restarts": log}, sort_keys=True))
     ok = low >= min_answering and all(x["back"] for x in log)
@@ -306,6 +313,9 @@ def failover(args):
     loops = {}
     primary_seen = {}
     first_primary = {"at": None, "who": None}
+    # The last poll status per survivor (0 when the connection failed): a survivor that never answers
+    # 200 is reported, not left to look like a survivor that isn't primary.
+    poll_status = {}
     start = time.time()
     stop = threading.Event()
 
@@ -316,6 +326,7 @@ def failover(args):
         while not stop.is_set():
             for s in survivors:
                 status, data = req(s["api"], s["jar"], "GET", "/api/v1/cluster")
+                poll_status[s["name"]] = status
                 if status != 200:
                     continue
                 try:
@@ -342,7 +353,18 @@ def failover(args):
         "loops": loops,
         "first_primary": first_primary,
         "primary_seen": primary_seen,
+        "poll_status": poll_status,
     }, sort_keys=True))
+    # REQ: CLU-005 — the survivors answer through the election: no query may time out, and no more
+    # than MAX_LOSS of the queries may go unanswered (SERVFAIL counts as unanswered).
+    sent = sum(v["sent"] for v in loops.values())
+    ok = sum(v["ok"] for v in loops.values())
+    timeouts = sum(v["timeout"] for v in loops.values())
+    loss = (sent - ok) / max(sent, 1)
+    if timeouts > 0 or loss > MAX_LOSS or len(loops) != len(survivors):
+        print(f"FAIL: {timeouts} timeouts, loss {loss:.2%} (bound {MAX_LOSS:.0%}), "
+              f"{len(loops)} of {len(survivors)} survivors measured", file=sys.stderr)
+        return 1
     return 0
 
 

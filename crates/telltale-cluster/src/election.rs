@@ -186,6 +186,14 @@ pub struct Elector {
 }
 
 impl Elector {
+    /// REQ: CLU-005 (ADR-947) — the first try waits until `until_ms`. A node that starts an election
+    /// (or sees its voters change) has no lease to go by: none was granted yet, so a candidate with
+    /// no wait stands at once, even against a primary that is up and about to renew (the three-node
+    /// run deposed a fresh primary 70 ms after the third voter joined).
+    pub fn defer_first_try(&mut self, until_ms: u64) {
+        self.next_try_ms = self.next_try_ms.max(until_ms);
+    }
+
     pub fn new(id: &str, voters: Vec<String>, eligible: bool, ballot: Ballot) -> Self {
         Self {
             id: id.to_owned(),
@@ -549,6 +557,27 @@ mod tests {
 
     // Two eligible nodes and a witness: the primary renews; when it dies, the other wins
     // only after the lease ran out.
+    /// REQ: CLU-005 (ADR-947) — a node that starts its election waits one lease before its first try,
+    /// so a primary that is up renews its lease first; after the wait it may stand.
+    #[test]
+    fn clu_005_d_a_new_candidate_waits_a_lease_before_its_first_try() {
+        let voters: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_owned()).collect();
+        let mut a = Elector::new("a", voters, true, Ballot::default());
+        a.defer_first_try(LEASE_MS);
+        let _ = a.tick(0, 0);
+        assert!(matches!(a.phase, Phase::Follower), "still waiting at 0");
+        let _ = a.tick(LEASE_MS - 1, 0);
+        assert!(
+            matches!(a.phase, Phase::Follower),
+            "still waiting just before the lease"
+        );
+        let _ = a.tick(LEASE_MS, 0);
+        assert!(
+            matches!(a.phase, Phase::PreCandidate { .. }),
+            "it may stand once the lease has been given its chance"
+        );
+    }
+
     #[test]
     fn clu_005_witness_failover_waits_for_the_lease() {
         let voters = vec!["a".to_owned(), "b".to_owned(), "w".to_owned()];

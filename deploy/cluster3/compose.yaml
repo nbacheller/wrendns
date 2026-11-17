@@ -45,10 +45,10 @@ services:
       - ./config/primary.toml:/etc/telltale/telltale.toml:ro
       - primary-data:/var/lib/telltale
     ports:
-      - "2153:2153/udp"   # DNS
-      - "2153:2153/tcp"
-      - "8153:8053"       # the web UI and API
-      - "9163:9153"       # /metrics (its own listener)
+      - "127.0.0.1:2153:2153/udp"   # DNS
+      - "127.0.0.1:2153:2153/tcp"
+      - "127.0.0.1:8153:8053"       # the web UI and API
+      - "127.0.0.1:9163:9153"       # /metrics (its own listener)
 
   replica-a:
     <<: *telltale
@@ -57,10 +57,10 @@ services:
       - ./config/replica-a.toml:/etc/telltale/telltale.toml:ro
       - replica-a-data:/var/lib/telltale
     ports:
-      - "2253:2153/udp"
-      - "2253:2153/tcp"
-      - "8253:8053"
-      - "9263:9153"
+      - "127.0.0.1:2253:2153/udp"
+      - "127.0.0.1:2253:2153/tcp"
+      - "127.0.0.1:8253:8053"
+      - "127.0.0.1:9263:9153"
 
   replica-b:
     <<: *telltale
@@ -68,10 +68,10 @@ services:
       - ./config/replica-b.toml:/etc/telltale/telltale.toml:ro
       - replica-b-data:/var/lib/telltale
     ports:
-      - "2353:2153/udp"
-      - "2353:2153/tcp"
-      - "8353:8053"
-      - "9363:9153"
+      - "127.0.0.1:2353:2153/udp"
+      - "127.0.0.1:2353:2153/tcp"
+      - "127.0.0.1:8353:8053"
+      - "127.0.0.1:9363:9153"
 
 volumes:
   primary-data:

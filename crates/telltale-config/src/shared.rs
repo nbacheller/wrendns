@@ -125,6 +125,17 @@ pub fn with_shared(local: &Config, shared: &Value) -> Result<Config, Vec<ConfigE
     if let (Some(r), Some(Value::Object(c))) = (rollout, merged.get_mut("cluster")) {
         c.insert("rollout".into(), r);
     }
+    // REQ: CLU-010 — `[discovery]` is left out of a serialization at its defaults, so a node at
+    // its defaults has no key for it. The merge needs the key for the primary's set section to
+    // replace (the three-node run refused the primary's configuration on every replica), and a
+    // section the primary doesn't send is at its default, as the other shared sections are.
+    if let Ok(d) = serde_json::to_value(crate::discovery::DiscoveryConfig::default()) {
+        if shared.contains_key("discovery") {
+            merged.entry("discovery".to_owned()).or_insert(d);
+        } else {
+            merged.insert("discovery".to_owned(), d);
+        }
+    }
     for (k, v) in shared {
         if NODE_LOCAL.contains(&k.as_str()) {
             continue;
@@ -266,6 +277,21 @@ name = \"pi\"
                 .load()
                 .is_err()
         );
+    }
+
+    // REQ: CLU-010 (found by the three-node run, deploy/cluster3) — a `[discovery]` the primary sets
+    // reaches a replica whose own section is at its defaults, and the primary going back to its
+    // defaults resets the replica.
+    #[test]
+    fn clu_010_a_discovery_section_is_shared_both_ways() {
+        let primary = load("[discovery]\nenabled = false\nworker_memory_mib = 48\n");
+        let shared = shared_part(&primary);
+        assert!(shared.as_object().unwrap().contains_key("discovery"));
+        let replica = load("[node]\nname = \"replica-b\"\n");
+        let merged = with_shared(&replica, &shared).unwrap();
+        assert_eq!(merged.discovery.worker_memory_mib, 48);
+        let back = with_shared(&merged, &shared_part(&load(""))).unwrap();
+        assert_eq!(back.discovery, crate::DiscoveryConfig::default());
     }
 
     // REQ: OBS-022, DNS-021, CLU-003 (regression 2026-10-09) — a replica whose own files leave

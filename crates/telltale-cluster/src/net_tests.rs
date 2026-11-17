@@ -2177,3 +2177,36 @@ fn clu_005_a_key_share_is_sent_again_after_its_interval() {
     ));
     assert!(key_share_due(Some(t), t + KEY_SHARE_RESEND));
 }
+
+/// REQ: CLU-005 (ADR-947) — the stream's decision to send the key share: a new frame goes at once,
+/// the same frame waits for its interval, and the interval counts from the last send.
+#[test]
+fn clu_005_c_the_key_share_is_sent_on_change_and_on_the_interval() {
+    let t = std::time::Instant::now();
+    let a = b"frame-a".as_slice();
+    let b = b"frame-b-with-the-next-key".as_slice();
+    assert!(key_share_send(None, None, a, t), "first send");
+    assert!(
+        key_share_send(Some(b), Some(t), a, t),
+        "a changed frame goes at once"
+    );
+    assert!(
+        !key_share_send(Some(a), Some(t), a, t),
+        "the same frame isn't repeated early"
+    );
+    assert!(
+        !key_share_send(
+            Some(a),
+            Some(t),
+            a,
+            (t + KEY_SHARE_RESEND)
+                .checked_sub(Duration::from_secs(1))
+                .unwrap()
+        ),
+        "not before the interval"
+    );
+    assert!(
+        key_share_send(Some(a), Some(t), a, t + KEY_SHARE_RESEND),
+        "the same frame is repeated once its interval has run (a refused share is sent again)"
+    );
+}

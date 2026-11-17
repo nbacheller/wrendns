@@ -13,7 +13,16 @@ on:
       - 'crates/telltale/src/secrets*'
       - 'crates/telltale/src/routers*'
       - 'crates/telltale/src/discovery/**'
+      - 'crates/telltale/src/cluster.rs'
+      - 'crates/telltale/src/forward.rs'
+      - 'crates/telltale/src/settings_kinds.rs'
+      - 'crates/telltale/src/managed.rs'
+      - 'crates/telltale/src/api_backend.rs'
+      - 'crates/telltale/src/main.rs'
       - 'crates/telltale-api/**'
+      - 'crates/telltale-store/**'
+      - 'crates/telltale-config/**'
+      - 'Cargo.lock'
       - 'Dockerfile'
       - 'deploy/cluster3/**'
       - '.github/workflows/cluster3.yml'
@@ -25,7 +34,16 @@ on:
       - 'crates/telltale/src/secrets*'
       - 'crates/telltale/src/routers*'
       - 'crates/telltale/src/discovery/**'
+      - 'crates/telltale/src/cluster.rs'
+      - 'crates/telltale/src/forward.rs'
+      - 'crates/telltale/src/settings_kinds.rs'
+      - 'crates/telltale/src/managed.rs'
+      - 'crates/telltale/src/api_backend.rs'
+      - 'crates/telltale/src/main.rs'
       - 'crates/telltale-api/**'
+      - 'crates/telltale-store/**'
+      - 'crates/telltale-config/**'
+      - 'Cargo.lock'
       - 'Dockerfile'
       - 'deploy/cluster3/**'
       - '.github/workflows/cluster3.yml'
@@ -38,9 +56,10 @@ permissions:
 jobs:
   three-node:
     runs-on: ubuntu-latest
-    # The first image build takes a few minutes (the build cache is empty on a new runner); the
-    # checks take about three.
-    timeout-minutes: 30
+    # A cold image build on a 4-vCPU runner (the UI, then the workspace with thin LTO, and an empty
+    # build cache) takes well over the README's 3 to 6 minutes, which was measured on a warm 24-core
+    # host; the checks take about five more. 60 minutes leaves room for both.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: "Three nodes: join, replicate, fail over, restart (deploy/cluster3)"

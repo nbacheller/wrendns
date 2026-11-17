@@ -5,17 +5,20 @@
 #   b. a config edit on the primary answers on all three nodes' DNS within 5 s;
 #   c. a write on a replica's API is forwarded to the primary and reaches the other replica;
 #   d. a secret set on the primary is readable on both replicas (a *_ref resolves), and no read
-#      surface on any node, nor a log line, shows its value;
+#      surface on any node (each answers 200), nor a log line, shows its value;
 #   e. a router added on the primary appears on all nodes; the [discovery] first write goes
-#      through with all three up, and a stopped member doesn't refuse it (ADR-928's rule);
+#      through with all three up, and a stopped member doesn't refuse it (ADR-928's rule); replica-b
+#      then reads back a non-default [discovery] value (48 MiB);
 #   f. queries sent to each node show up in the primary's query log, labelled by node, and in
 #      the per-node top clients;
 #   g. upstream #7 on the 2-CPU replica: with the primary paused, 20 concurrent reads each return
-#      within 15 s, and /livez, /metrics and DNS keep answering; the primary is unpaused after;
-#   h. failover with three nodes: the primary is killed, a survivor is promoted, the other follows,
-#      DNS on both survivors keeps answering (0 SERVFAIL), an edit on the new primary reaches the
-#      other survivor, and the old primary, started again, steps down and follows;
+#      within 15 s, and /livez, /metrics and DNS keep answering; replica-a's runtime starts with
+#      two workers; the primary is unpaused after;
+#   h. failover with three nodes: the node holding the lease is killed, a survivor is promoted 5 to
+#      40 s later, the other follows, DNS on both survivors keeps answering (0 SERVFAIL), an edit on
+#      the new primary reaches the other survivor, and the killed node, started again, steps down;
 #   i. a rolling restart of each node in turn keeps at least two nodes answering DNS throughout.
+# Automatic failover is on from the bring-up (before the replicas join; see docs/running.md).
 #
 # It never touches the single-node bundle (deploy/docker-desktop): its own compose project
 # (telltale-cluster3), its own volumes, and host ports 2153-2353 (DNS), 8153-8353 (API), 9163-9363
@@ -60,6 +63,8 @@ cleanup() {
       echo "::error title=deploy/cluster3/e2e.sh::the 3-node run failed (the logs above)"
     fi
   fi
+  # An interrupted check (g) can leave the primary paused: unpause first, then tear down.
+  "${COMPOSE[@]}" unpause >/dev/null 2>&1
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1
   if [ "${KEEP:-}" != 1 ]; then
     docker image rm "$IMAGE" >/dev/null 2>&1
@@ -75,6 +80,11 @@ step() { echo "== $1"; }
 pass() { echo "ok${1:+ ($1)}"; }
 bad() { echo "FAIL: $*"; exit 1; }
 now_ms() { date +%s%3N; }
+
+# The value of one unlabelled metric on a node's metrics port (empty when it isn't served).
+metric() { # metrics-port name
+  curl -s --max-time 2 "http://127.0.0.1:$1/metrics" | awk -v n="$2" '$1 == n {print $2}'
+}
 
 # The HTTP status and body of one API call on a node, as RS and RB. A session cookie per node.
 RS= RB=
@@ -156,6 +166,17 @@ step "bring-up: build the image and start the primary"
 "${COMPOSE[@]}" up -d --build --wait primary >"$E/up.log" 2>&1 || { cat "$E/up.log"; bad "the primary didn't come up healthy"; }
 pass
 
+step "bring-up: automatic failover on, before the replicas join (restart the primary to run it)"
+# The replicas adopt the mode from the signed records at once, but a primary still in manual mode
+# renews no lease, so turning it on under a running cluster lets a replica be elected within seconds
+# (the CLI warns about it). Here it is on before any replica exists; the restart makes the running
+# primary use it.
+"${COMPOSE[@]}" exec -T primary /usr/local/bin/telltale cluster set-failover auto -c /etc/telltale/telltale.toml >/dev/null \
+  || bad "couldn't turn automatic failover on"
+"${COMPOSE[@]}" restart primary >/dev/null 2>&1 || bad "the primary didn't restart"
+"${COMPOSE[@]}" up -d --wait primary >/dev/null 2>&1 || bad "the primary didn't come back healthy after the restart"
+pass
+
 step "a. the three nodes join; the primary lists three connected nodes"
 TOKEN=$(join_token)
 [ -n "$TOKEN" ] || bad "no join token from the primary"
@@ -223,7 +244,8 @@ done
 for n in "${NODES[@]}"; do
   for path in /api/v1/secrets /api/v1/secrets/cluster3-router-key /api/v1/config/entries \
       /api/v1/cluster /api/v1/system/info /api/v1/audit; do
-    call "$n" GET "$path" >/dev/null
+    call "$n" GET "$path"
+    [ "$RS" = 200 ] || bad "$n answered $RS on $path (a read surface that isn't served proves nothing)"
     has "$SECRET" && bad "$n shows the secret's value on $path"
   done
   metrics=$(curl -s "http://127.0.0.1:${MET[$n]}/metrics")
@@ -241,7 +263,7 @@ for n in "${NODES[@]}"; do
   for _ in $(seq 60); do call "$n" GET /api/v1/routers && has fake-unifi && break; sleep 0.5; done
   has fake-unifi || bad "the router isn't on $n"
 done
-put_json discovery.json '{"enabled":false}'
+put_json discovery.json '{"enabled":false,"worker_memory_mib":48}'
 call primary PUT "/api/v1/discovery-settings/default?dryRun=true" "$E/discovery.json"
 [ "$RS" = 200 ] || bad "the [discovery] first write (dry run, all three up) answered $RS: $RB"
 "${COMPOSE[@]}" stop replica-b >/dev/null 2>&1
@@ -251,9 +273,12 @@ call primary PUT /api/v1/discovery-settings/default "$E/discovery.json"
 for _ in $(seq 120); do primary_linked replica-b && break; sleep 0.5; done
 primary_linked replica-b || bad "replica-b doesn't see its primary again"
 for _ in $(seq 60); do login replica-b && break; sleep 0.5; done
-call replica-b GET /api/v1/discovery/status
-has '"enabled":false' || bad "replica-b doesn't read the [discovery] section ($RS: $RB)"
-pass "router on all three; first write accepted with all up and with replica-b stopped"
+# A value that isn't the default (48 MiB; the default is 64), read on a replica: the read is not
+# trivially true, since the default would not show 48.
+call replica-b GET "/api/v1/config/entries?kind=discovery"
+[ "$RS" = 200 ] || bad "replica-b's configuration read answered $RS: ${RB:0:300}"
+has '"worker_memory_mib":48' || bad "replica-b doesn't read the [discovery] value it was given (48 MiB)"
+pass "router on all three; first write accepted with all up and with replica-b stopped; replica-b reads 48 MiB"
 
 step "f. queries sent to each node show up on the primary, labelled by node"
 for n in "${NODES[@]}"; do
@@ -280,16 +305,15 @@ pass "queries from all three nodes; cluster $both, replica-a $own"
 
 step "g. upstream #7: the 2-CPU replica answers while the primary is paused"
 R_CID=$(container replica-a)
-# The runtime's workers take the container's CPU quota (available_parallelism reads cgroup cpu.max):
-# the log names the UDP workers, and the threads named telltale-rt (the runtime's workers and its
-# blocking pool) are far fewer on the 2-CPU replica than on the 24-CPU primary.
-threads=$(docker top "$R_CID" -eLo pid,lwp,comm 2>/dev/null | grep -c telltale-rt || true)
-threads_p=$(docker top "$(container primary)" -eLo pid,lwp,comm 2>/dev/null | grep -c telltale-rt || true)
+# The runtime's own worker count, logged at start (runtime_workers). Its default follows the
+# container's CPU quota (cgroup cpu.max), so the 2-CPU replica must start with two. The UDP workers
+# (workers=) are a different count and are not asserted here.
 logs=$("${COMPOSE[@]}" logs --no-color replica-a 2>&1)
-workers=$(grep -o 'workers=[0-9]*' <<<"$logs" | sed -n 1p || true)
-echo "   replica-a: $workers, $threads telltale-rt threads; the 24-CPU primary has $threads_p"
-[ "$workers" = workers=2 ] || bad "replica-a didn't start with 2 workers ($workers)"
-[ "$threads" -le 12 ] && [ "$threads_p" -ge 24 ]   || bad "the runtime doesn't follow the 2-CPU quota ($threads telltale-rt threads on replica-a, $threads_p on the primary)"
+workers=$(grep -o 'runtime_workers=[0-9]*' <<<"$logs" | sed -n 1p || true)
+logs_p=$("${COMPOSE[@]}" logs --no-color primary 2>&1)
+workers_p=$(grep -o 'runtime_workers=[0-9]*' <<<"$logs_p" | sed -n 1p || true)
+echo "   replica-a: $workers; the primary: $workers_p"
+[ "$workers" = runtime_workers=2 ] || bad "replica-a's runtime didn't start with 2 workers ($workers)"
 docker pause "$(container primary)" >/dev/null
 rc=0
 "${PY[@]}" regression "http://127.0.0.1:${API[replica-a]}" "$E_PY/jar-replica-a.json" "${DNS[replica-a]}" \
@@ -301,21 +325,51 @@ for _ in $(seq 120); do primary_linked replica-a && break; sleep 0.5; done
 primary_linked replica-a || bad "replica-a doesn't see the primary again after the unpause"
 pass
 
-step "h. failover with three nodes: a survivor is promoted, the other follows"
-"${COMPOSE[@]}" exec -T primary /usr/local/bin/telltale cluster set-failover auto -c /etc/telltale/telltale.toml >/dev/null \
-  || bad "couldn't turn automatic failover on"
+step "h. failover with three nodes: the lease holder is killed, a survivor is promoted, the other follows"
 for _ in $(seq 120); do
   call replica-a GET /api/v1/cluster
   [ "$(jget 'd["failover"]["reachableVoters"]')" = 3 ] && break; sleep 0.5
 done
 [ "$(jget 'd["failover"]["reachableVoters"]')" = 3 ] || bad "replica-a doesn't reach all three voters"
-docker kill "$(container primary)" >/dev/null
-election=$("${PY[@]}" failover 40 20 replica-a "http://127.0.0.1:8253" 2253 "$E_PY/jar-replica-a.json" \
-  replica-b "http://127.0.0.1:8353" 2353 "$E_PY/jar-replica-b.json")
+# The lease holder is whichever node the cluster has now: check (g) paused the primary for longer
+# than its lease, and with automatic failover on that is a promotion (the lease lapsed). Wait for
+# one node that is primary and holds its lease; the other two must not be primary.
+killed=
+for _ in $(seq 120); do
+  for n in "${NODES[@]}"; do
+    if [ "$(metric "${MET[$n]}" telltale_cluster_primary)" = 1 ] \
+      && [ "$(metric "${MET[$n]}" telltale_cluster_lease_held)" = 1 ]; then killed=$n; fi
+  done
+  [ -n "$killed" ] && break
+  sleep 0.5
+done
+[ -n "$killed" ] || bad "no node holds the lease before the kill"
+survivors=()
+fo=()
+for n in "${NODES[@]}"; do
+  [ "$n" = "$killed" ] && continue
+  [ "$(metric "${MET[$n]}" telltale_cluster_primary)" = 0 ] || bad "$n is primary before the kill"
+  survivors+=("$n")
+  fo+=("$n" "http://127.0.0.1:${API[$n]}" "${DNS[$n]}" "$E_PY/jar-$n.json")
+done
+# The kill takes the lease holder, so the election below is the lease running out (CLU-005), not a
+# replica dying.
+# A survivor's session from before may be gone (a node that stepped down in check g): sign in again,
+# so the poll reads the cluster's view and not a 401.
+for n in "${survivors[@]}"; do
+  login "$n" || bad "$n's administrator can't sign in before the kill"
+done
+docker kill "$(container "$killed")" >/dev/null
+election=$("${PY[@]}" failover 40 20 "${fo[@]}")
 echo "$election"
 new=$(printf '%s' "$election" | python3 -c "import json,sys; print(json.load(sys.stdin)['first_primary']['who'] or '')")
 [ -n "$new" ] || bad "no survivor was promoted"
-other=replica-a; [ "$new" = replica-a ] && other=replica-b
+first_at=$(printf '%s' "$election" | python3 -c "import json,sys; print(json.load(sys.stdin)['first_primary']['at'])")
+# The lease runs 15 s (renewed every 5 s), so a promotion can't come within a few seconds of the kill,
+# and it comes once the lease runs out, well inside the probe's window.
+python3 -c "import sys; a=float(sys.argv[1]); sys.exit(0 if 5 <= a <= 40 else 1)" "$first_at" \
+  || bad "the promotion came at $first_at s after the kill (expected 5 to 40 s, the lease running out)"
+other=${survivors[0]}; [ "$new" = "${survivors[0]}" ] && other=${survivors[1]}
 servfail=$(printf '%s' "$election" | python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(v['servfail'] for v in d['loops'].values()))")
 loss=$(printf '%s' "$election" | python3 -c "
 import json,sys
@@ -328,18 +382,18 @@ put_json rec-fo.json '{"records":[{"type":"A","value":"10.0.0.9"}]}'
 call "$new" PUT /api/v1/records/after-failover.cluster3.test "$E/rec-fo.json"
 [ "$RS" = 200 ] || bad "an edit on the new primary $new answered $RS: $RB"
 await_dns 10000 "$other" after-failover.cluster3.test 10.0.0.9 || bad "$other doesn't follow the new primary"
-"${COMPOSE[@]}" up -d --wait primary >/dev/null 2>&1 || bad "the old primary didn't come back"
+"${COMPOSE[@]}" up -d --wait "$killed" >/dev/null 2>&1 || bad "the old primary $killed didn't come back"
 # A session from before the kill may be gone: sign in again.
-for _ in $(seq 60); do login primary && break; sleep 0.5; done
+for _ in $(seq 60); do login "$killed" && break; sleep 0.5; done
 for _ in $(seq 120); do
-  call primary GET /api/v1/cluster
+  call "$killed" GET /api/v1/cluster
   [ "$(jget 'next((n["role"] for n in d["nodes"] if n["thisNode"]), "")')" = replica ] && break
   sleep 0.5
 done
 [ "$(jget 'next((n["role"] for n in d["nodes"] if n["thisNode"]), "")')" = replica ] \
-  || bad "the old primary didn't step down (status $RS: ${RB:0:300})"
-await_dns 30000 primary after-failover.cluster3.test 10.0.0.9 || bad "the old primary doesn't follow the new one"
-pass "promoted $new in $(printf '%s' "$election" | python3 -c "import json,sys; print(json.load(sys.stdin)['first_primary']['at'])") s; loss $loss; old primary follows"
+  || bad "the old primary $killed didn't step down (status $RS: ${RB:0:300})"
+await_dns 30000 "$killed" after-failover.cluster3.test 10.0.0.9 || bad "the old primary $killed doesn't follow the new one"
+pass "$killed (the lease holder) killed; $new promoted at $first_at s after the kill; loss $loss; the old primary follows"
 
 step "i. rolling restart: each node in turn, at least two nodes answer DNS throughout"
 "${PY[@]}" rolling 2 60 "${COMPOSE[@]}" -- primary:2153 replica-a:2253 replica-b:2353 >"$E/rolling.json" \
