@@ -101,6 +101,9 @@ const TABLE: &[(&str, Class)] = &[
     ("cluster.name", Name(C::Cluster)),
     ("cluster.rollout.canaries[]", Name(C::Node)),
     ("cluster.site", Name(C::Cluster)),
+    // REQ: DSC-002 — the designated node is a node name; a subnet is an address range.
+    ("discovery.node", Name(C::Node)),
+    ("discovery.subnet[].cidr", Scan),
     ("dnssec.negative_trust_anchors[]", Free),
     ("dnssec.trust_anchors_file", Scan),
     ("drill.clients[]", NameOrAddress(C::Device)),
