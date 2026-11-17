@@ -3384,6 +3384,12 @@
           "type": "string",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "offline_days": {
+          "description": "UniFi: also name the clients that are offline now, if UniFi saw them within this many\ndays (their queries then show a name, not a bare address); at most 1,024 of them, most\nrecently seen first. 0: only the connected clients.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
         "password_file": {
           "type": [
             "string",

@@ -49,10 +49,88 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
-# NFR-001 (ADR-915): the API and MCP handlers are cold code next to the DNS path, so they are
-# optimized for size. Measured: -0.55 MiB of the compressed image, the rest of the binary keeps
-# opt-level 3 (the hot path lives in telltale-net, telltale-cache, telltale-filter, ...).
+# REQ: NFR-001 (ADR-170) — crates off the DNS path are built for size, not speed: the HTTP API and
+# its OpenAPI, OIDC and certificate parts, cluster replication, the git source, the support
+# package, and the config-file parsers (which run at startup and on a reload, not per query). About
+# 0.35 MiB off the compressed image. The DNS path's functions are unchanged (a symbol comparison of
+# the release binaries) and the cache-hot benchmark is within its same-binary control. Not here, on
+# purpose: `telltale-config` (its client lookup is per query: about 10% less cache-hot throughput),
+# and `rusqlite` and SQLite's C code (the rollup store's queries were 10 to 38% slower at -Os).
+# crates/telltale-config/tests/profile.rs keeps this list off the hot path and in step with
+# Cargo.lock (an entry written name@version that no longer matches is only a cargo warning).
 [profile.release.package.telltale-api]
+opt-level = "s"
+
+[profile.release.package.telltale-support]
+opt-level = "s"
+
+[profile.release.package.telltale-git]
+opt-level = "s"
+
+[profile.release.package.telltale-cluster]
+opt-level = "s"
+
+[profile.release.package.openidconnect]
+opt-level = "s"
+
+[profile.release.package.oauth2]
+opt-level = "s"
+
+[profile.release.package.utoipa]
+opt-level = "s"
+
+[profile.release.package."schemars@0.9.0"]
+opt-level = "s"
+
+[profile.release.package."schemars@1.2.3"]
+opt-level = "s"
+
+[profile.release.package.clap_builder]
+opt-level = "s"
+
+[profile.release.package.toml]
+opt-level = "s"
+
+[profile.release.package.toml_parser]
+opt-level = "s"
+
+[profile.release.package.toml_writer]
+opt-level = "s"
+
+[profile.release.package.serde_path_to_error]
+opt-level = "s"
+
+[profile.release.package.x509-parser]
+opt-level = "s"
+
+[profile.release.package.asn1-rs]
+opt-level = "s"
+
+[profile.release.package.der-parser]
+opt-level = "s"
+
+[profile.release.package.rcgen]
+opt-level = "s"
+
+[profile.release.package.yasna]
+opt-level = "s"
+
+[profile.release.package.totp-rs]
+opt-level = "s"
+
+[profile.release.package.minisign-verify]
+opt-level = "s"
+
+[profile.release.package.url]
+opt-level = "s"
+
+[profile.release.package.chrono]
+opt-level = "s"
+
+[profile.release.package.rsa]
+opt-level = "s"
+
+[profile.release.package.num-bigint-dig]
 opt-level = "s"
 
 # Fast local benchmarking builds without fat LTO.

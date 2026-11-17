@@ -592,3 +592,31 @@ fn obs_025_a_pass_over_1024_devices_is_fast() {
         assert!(took.as_millis() < 50, "{took:?}");
     }
 }
+
+// REQ: T8.2, OBS-025 (ADR-166) — a router's offline clients name a device but aren't "seen":
+// only the connected clients and the mDNS names are announced as in use.
+#[test]
+fn t8_2_offline_router_clients_are_not_announced_as_seen() {
+    let lease = |ip: [u8; 4], offline: bool| crate::devices::Lease {
+        mac: String::new(),
+        ip: std::net::Ipv4Addr::from(ip),
+        hostname: Some("x".into()),
+        expires: 0,
+        router: None,
+        offline,
+    };
+    let table = |ls: &[crate::devices::Lease]| -> crate::devices::Leases {
+        ls.iter().map(|l| (l.ip, l.clone())).collect()
+    };
+    let routers = table(&[lease([10, 0, 0, 2], false), lease([10, 0, 0, 3], true)]);
+    let mdns = table(&[lease([10, 0, 0, 4], false)]);
+    let mut seen: Vec<_> = announced(&routers, &mdns).copied().collect();
+    seen.sort();
+    assert_eq!(
+        seen,
+        [
+            std::net::Ipv4Addr::new(10, 0, 0, 2),
+            std::net::Ipv4Addr::new(10, 0, 0, 4)
+        ]
+    );
+}

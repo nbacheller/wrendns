@@ -1,8 +1,9 @@
 // Precompresses dist/ for the embedded server and enforces the bundle budget: ≤ 400 KiB gzipped
-// in total (`spec/07` §3, API-005). A text file that gzip shrinks is kept only as `x.gz`: the
-// binary embeds that, serves it to browsers that accept gzip, and inflates it for the rest
-// (REQ: NFR-001, ADR-915), so the raw copy is removed. Binary files stay as they are.
-import { readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+// in total (`spec/07` §3, API-005). A text file is replaced by its `x.gz` (when that is smaller):
+// the binary embeds what dist/ holds, so a raw copy beside its `.gz` cost about the file's gzip
+// size again in the image (NFR-001, ADR-168). The server sends the `.gz` to a browser that accepts
+// gzip, and inflates it for any other client.
+import { readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { gzipSync, constants } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
@@ -30,7 +31,7 @@ for (const file of [...walk(DIST)]) {
     size = gz.length;
     if (gz.length < raw.length) {
       writeFileSync(`${file}.gz`, gz);
-      rmSync(file);
+      unlinkSync(file);
     }
   }
   total += size;

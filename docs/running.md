@@ -1323,6 +1323,7 @@ api_key_file = "/etc/telltale/unifi-key"   # UniFi Network 9+ (Settings → Cont
 # username = "telltale"                # or a local read-only user...
 # password_file = "/etc/telltale/unifi-pass"
 # site = "default"
+# offline_days = 30                    # also name clients that are offline now, if UniFi saw them this recently (0: only connected ones)
 tls_ca = "/etc/telltale/udm.pem"       # the console's own certificate (self-signed)
 tls_server_name = "unifi.local"        # the name in it (UniFi consoles name themselves unifi.local)
 # tls_ca_pem = "-----BEGIN CERTIFICATE-----…"   # the same certificate as text (the Routers page stores it this way); exclusive with tls_ca
@@ -1334,8 +1335,8 @@ url = "https://opnsense.lan"
 api_key_file = "/etc/telltale/opn-key"     # System → Access → Users → API keys
 api_secret_file = "/etc/telltale/opn-secret"
 ```
-- UniFi: the connected clients, named by the alias you gave them in UniFi, else their host name; devices with a fixed IP (a DHCP reservation) keep their name while they're offline; and the networks (see [Networks your routers report](#networks-your-routers-report)). OPNsense: the DHCP leases (Dnsmasq, Kea, or ISC, whichever is running).
-- A UniFi key or user that can read the client list but not the reservations or networks still names connected devices; the log says once which reads it skipped.
+- UniFi: the connected clients, plus the offline clients UniFi still knows (its client history, within `offline_days`: 30 by default, 0 for only the connected clients, at most 365), named by the alias you gave them in UniFi, else their host name. A device with a fixed IP (a DHCP reservation) keeps its name while it's offline, whatever `offline_days` says; and the networks (see [Networks your routers report](#networks-your-routers-report)). An offline client is listed only with a name, at its last address, and never over a connected client's address; at most the 1,024 most recently seen are kept. It names the device in the query log, but it doesn't count as seen for device identification, it gives no address to the device inventory, it isn't published as a DNS name, and it isn't counted in the networks' device totals or listed in `/dhcp/leases`. OPNsense: the DHCP leases (Dnsmasq, Kea, or ISC, whichever is running).
+- A UniFi key or user that can read the client list but not the reservations, the history or the networks still names connected devices; the log says once which reads it skipped.
 - A self-signed console: save its certificate (`openssl s_client -connect 192.168.1.1:443 </dev/null | openssl x509 > udm.pem`) as `tls_ca`. Its certificate names `unifi.local`, not the address you reach it at, so set `tls_server_name` to the name in it (`openssl x509 -in udm.pem -noout -ext subjectAltName` shows it): the console is then verified, and only that certificate is trusted. `tls_insecure_skip_verify = true` also works, but then anything on your network could pose as the console and receive the API key.
 - Read every `interval_secs` (300); a router that doesn't answer is asked again after 15 seconds and keeps its last list meanwhile.
 - Names you give devices in TelltaleDNS win; then the routers'. `GET /api/v1/dhcp/leases` lists them (`source = router`).
@@ -1819,7 +1820,11 @@ advertises; if none answers, it attaches to another eligible node, so it still g
 cluster's state. While it is attached to a node that isn't the primary, it looks for the
 primary again every 2 to 30 seconds (jittered, backing off) and moves back as soon as it
 answers, with `cluster: the primary answers again` in the log. It never moves to an address
-of a node it knows is not the primary.
+of a node it knows is not the primary. Only the node's own link counts: the primary also opens
+links to eligible nodes, and one of those doesn't stop the search. Configuration and blocklist
+files always come from the primary (another replica has none to give), over the node's own
+link when that's to the primary, else from the primary's addresses directly. Each time the
+link comes up the log says where: `cluster: linked to a peer` with its URL and node ID.
 
 **One view of the whole cluster.** Open any node's UI and the dashboard, top lists, latency,
 groups, query log, and live query stream cover every node:
@@ -3047,11 +3052,17 @@ Open `http://<server>:8053/` in a browser. On first start it asks for the setup 
 | Query log | search by name (contains, exact, subdomains, wildcard, regex), client, status, type, response code, slowness, and time; each row shows how long it took and how much of that was the upstream; **Why?** explains the decision. Filters live in the URL, so a search can be bookmarked or shared. **Live** streams new matching queries as they happen (the newest 500 stay on screen) |
 | Explain | why any name is or isn't blocked for any device |
 | Clients, Groups, Lists, Upstreams | devices seen and configured; groups and their lists; list download state and size; upstream health (Healthy, Benched, or Probing: the circuit breaker's closed, open, and half-open), traffic, failures by kind (timeouts, connection errors, SERVFAIL, ...), and latency |
-| Settings | your password and two-factor sign-in, API tokens, users and the audit log (admins), system information, and the cache ([Cache tools](#cache-tools)) |
+| Settings | your password and two-factor sign-in, how domain names are drawn ([Domain icons](#domain-icons)), API tokens, users and the audit log (admins), system information, and the cache ([Cache tools](#cache-tools)) |
 
 Every chart has a **Table** view. The UI follows the system's light or dark theme (or pick one in the header) and works on phones. Upstreams, lists, and groups can be added and changed on their pages ([Changing the configuration in the UI](#changing-the-configuration-in-the-ui)).
 
 The menu ends with the health icon ([Health](#health)), links to the project on GitHub and its site (plain links: the UI fetches nothing from the internet), then this node's name and version.
+
+### Domain icons
+A small mark sits left of each name in the dashboard's **Top domains** and **Top blocked** lists and in the query log. The page draws it from data it already has, so nothing is fetched and nothing about your queries is sent to anyone: no favicon service is involved, and the page's content security policy still allows images only from itself.
+- A **brand** TelltaleDNS knows gets its colour and logo mark: `netflix.com`, `www.youtube.com`, and a CDN name such as `nflxso.net` (Netflix). About a hundred brands are known, from [Simple Icons](https://simpleicons.org) (CC0; see the [third-party notices](third-party-notices.md)). Some large companies' marks aren't in that set (Microsoft, Amazon and AWS, LinkedIn, Slack, Disney+, Hulu, OpenAI, and a few more): their names get a monogram.
+- Every other name gets a **monogram**: its owner's first letter, in a colour that is always the same for that owner. A name of your own network (`.arpa`, `.lan`, `.local`, Kubernetes) gets a small house. A blocked name's mark is drained of most of its colour. When a privacy level hides names, there are no icons.
+- **Settings → Account → Domain icons** picks the style (**Brand and monogram**, **Monogram only**, or **Off**) and the size (**Default**, 20 px, or **Small**, 16 px). The choice is kept for you in this browser. With **Monogram only** or **Off**, the brand marks aren't even downloaded.
 
 ### Health
 The icon at the bottom of the menu says how TelltaleDNS is doing, for every node of a cluster, and changes shape as well as color:

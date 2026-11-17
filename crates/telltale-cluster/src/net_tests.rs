@@ -1338,7 +1338,16 @@ async fn clu_003_users_and_tokens_are_not_served_to_pods() {
 // the primary's URLs were never tried again.
 #[tokio::test(flavor = "multi_thread")]
 async fn clu_001_a_replica_on_a_peer_goes_back_to_the_primary() {
-    replica_with_a_dead_primary_url(false).await;
+    replica_with_a_dead_primary_url(Start::After).await;
+}
+
+// REQ: CLU-001 (GitHub issue #43) — the same, when the primary has opened its own stream to the
+// replica before it answers on its URL (the primary dials eligible nodes too). That stream
+// made the replica look attached to the primary, so it stayed on the peer and fetched every
+// blob from it: 404 on each new blocklist.
+#[tokio::test(flavor = "multi_thread")]
+async fn clu_001_a_replica_on_a_peer_goes_back_while_the_primary_dials_it() {
+    replica_with_a_dead_primary_url(Start::AfterDialingIn).await;
 }
 
 // The same cluster with the primary up from the start: the dead URL is skipped and the
@@ -1346,13 +1355,26 @@ async fn clu_001_a_replica_on_a_peer_goes_back_to_the_primary() {
 // it's the return to the primary that doesn't happen, not the set-up.
 #[tokio::test(flavor = "multi_thread")]
 async fn clu_001_a_replica_skips_a_dead_primary_url() {
-    replica_with_a_dead_primary_url(true).await;
+    replica_with_a_dead_primary_url(Start::First).await;
 }
 
-/// One replica, one peer replica, and a primary whose first advertised URL is dead. With
-/// `primary_first` the primary is up before the replica starts; otherwise it comes up after
-/// the replica has settled on the peer.
-async fn replica_with_a_dead_primary_url(primary_first: bool) {
+/// When the primary of [`replica_with_a_dead_primary_url`] comes up.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Start {
+    /// Before the replica starts.
+    First,
+    /// After the replica has settled on the peer.
+    After,
+    /// After the replica has settled on the peer, and only once the primary has opened its
+    /// own stream to the replica.
+    AfterDialingIn,
+}
+
+/// One replica, one peer replica, and a primary whose first advertised URL is dead; `start`
+/// says when the primary comes up.
+#[allow(clippy::too_many_lines)] // one scenario: join, settle on the peer, go back
+async fn replica_with_a_dead_primary_url(start: Start) {
+    let primary_first = start == Start::First;
     let (pdir, adir, bdir) = (
         tempfile::tempdir().unwrap(),
         tempfile::tempdir().unwrap(),
@@ -1360,6 +1382,8 @@ async fn replica_with_a_dead_primary_url(primary_first: bool) {
     );
     let (p_addr, b_addr, dead) = (free_port().await, free_port().await, free_port().await);
     let (p_url, b_url) = (format!("https://{p_addr}"), format!("https://{b_addr}"));
+    // Where the replica serves, for the primary's own stream to it.
+    let r_addr = free_port().await;
     let primary = Identity::init(
         pdir.path(),
         "home",
@@ -1392,7 +1416,7 @@ async fn replica_with_a_dead_primary_url(primary_first: bool) {
         let resp = primary.accept_join(&req, None).unwrap();
         Identity::save_joined(dir, &key.key_pem, &resp, site, eligible, advertise).unwrap()
     };
-    let peer = join_node(bdir.path(), "pi", true, vec![b_url]);
+    let peer = join_node(bdir.path(), "pi", true, vec![b_url.clone()]);
     let replica = join_node(adir.path(), "lxc", false, vec![]);
     // What replication gives a replica: the registry, with the peer in it.
     replica.save_registry(&primary.registry()).unwrap();
@@ -1401,13 +1425,28 @@ async fn replica_with_a_dead_primary_url(primary_first: bool) {
     let (peer, replica) = (Cluster::new(peer, "0.1.0"), Cluster::new(replica, "0.1.0"));
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Arc::clone(&peer), b_addr, stop.clone()));
+    tokio::spawn(serve(Arc::clone(&replica), r_addr, stop.clone()));
     let mut primary = Some(primary);
     let mut start_primary = || {
         let c = Cluster::new(primary.take().unwrap(), "0.1.0");
-        tokio::spawn(serve(Arc::clone(&c), p_addr, stop.clone()));
+        if start == Start::AfterDialingIn {
+            // The primary's stream to the replica comes up first; its URL answers later.
+            let cfg = client_config(&c.identity.reload()).unwrap();
+            let (c2, r_url) = (Arc::clone(&c), format!("https://{r_addr}"));
+            tokio::spawn(async move {
+                let _ = stream_once(c2, &r_url, cfg, true, Arc::new(Notify::new())).await;
+            });
+        }
         c
     };
-    let _primary = primary_first.then(&mut start_primary);
+    let serve_primary = |c: &Arc<Cluster>| {
+        tokio::spawn(serve(Arc::clone(c), p_addr, stop.clone()));
+    };
+    let _primary = primary_first.then(|| {
+        let c = start_primary();
+        serve_primary(&c);
+        c
+    });
     tokio::time::sleep(Duration::from_millis(100)).await;
     tokio::spawn(dial(Arc::clone(&replica), stop.clone()));
     let connected_to = |id: String| {
@@ -1420,12 +1459,33 @@ async fn replica_with_a_dead_primary_url(primary_first: bool) {
         // Nothing but the peer answers: the replica settles on it.
         wait_until("the replica attaches to the peer", connected_to(peer_id)).await;
         // The primary comes up. The replica must find its way back, not stay on the peer.
-        let _primary = start_primary();
+        let c = start_primary();
+        if start == Start::AfterDialingIn {
+            let r = Arc::clone(&replica);
+            let id = primary_id.clone();
+            wait_until("the primary's stream to the replica is up", move || {
+                r.members()
+                    .iter()
+                    .any(|m| m.node_id == id && m.primary && m.connected)
+            })
+            .await;
+            assert_eq!(replica.connected_primary(), Some(b_url.clone()));
+            // Its own stream is still to the peer, which serves no blobs: fetches go to the
+            // primary's URLs, never the peer's.
+            assert!(!replica.main_link_to_primary());
+            let urls = replica.fetch_urls();
+            assert!(!urls.contains(&b_url), "{urls:?}");
+            assert!(urls.contains(&p_url), "{urls:?}");
+        }
+        serve_primary(&c);
+        let (r, p) = (Arc::clone(&replica), p_url.clone());
         wait_until(
-            "the replica goes back to the primary",
-            connected_to(primary_id),
+            "the replica's own stream goes back to the primary",
+            move || r.connected_primary().as_ref() == Some(&p),
         )
         .await;
+        assert!(replica.main_link_to_primary());
+        let _primary = c;
     }
     assert_eq!(replica.connected_primary(), Some(p_url));
     let _ = stop_tx.send(true);

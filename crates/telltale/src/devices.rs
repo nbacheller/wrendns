@@ -21,6 +21,12 @@ pub(crate) struct Lease {
     /// older peers).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) router: Option<String>,
+    /// REQ: T8.2 (ADR-166) — a client the router remembers but doesn't see now (UniFi's offline
+    /// clients): it names an address in the query log, but it isn't "seen", so device
+    /// identification doesn't count it. Not written when false, so a node on an older build,
+    /// which doesn't know the field, reads the same form as before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) offline: bool,
 }
 
 /// Devices by address.
@@ -124,6 +130,7 @@ mod tests {
             hostname: Some(name.into()),
             expires: 0,
             router: None,
+            offline: false,
         }
     }
 
@@ -160,5 +167,23 @@ mod tests {
         let n = names(&[lease([10, 50, 5, 2], "k8s")], &[]);
         let back: Names = serde_json::from_slice(&serde_json::to_vec(&n).unwrap()).unwrap();
         assert_eq!(back, n);
+    }
+
+    // REQ: T8.2, CLU-002 (ADR-166) — the offline mark travels to peers that know it, and costs
+    // nothing on the wire for a connected device: its form is what older nodes already read, and
+    // an answer from an older node (no field) is a connected device.
+    #[test]
+    fn t8_2_offline_mark_is_compatible_on_the_wire() {
+        let connected = serde_json::to_string(&lease([10, 0, 0, 2], "k8s")).unwrap();
+        assert!(!connected.contains("offline"), "{connected}");
+        let gone = Lease {
+            offline: true,
+            ..lease([10, 0, 0, 3], "old phone")
+        };
+        let text = serde_json::to_string(&gone).unwrap();
+        assert!(text.contains("\"offline\":true"), "{text}");
+        assert_eq!(serde_json::from_str::<Lease>(&text).unwrap(), gone);
+        let older = r#"{"mac":"","ip":"10.0.0.2","hostname":"k8s","expires":0}"#;
+        assert!(!serde_json::from_str::<Lease>(older).unwrap().offline);
     }
 }

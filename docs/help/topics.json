@@ -395,6 +395,15 @@
       "docs": "users-and-sign-in"
     },
     {
+      "id": "domain-icons",
+      "title": "Icons beside domain names",
+      "term": "Domain icons",
+      "summary": "A small mark left of a name in the dashboard's lists and the query log: a brand's colour and glyph when TelltaleDNS knows the brand, otherwise a letter in a colour that is always the same for that owner. It is drawn here; nothing is fetched.",
+      "when": "Pick Monogram only if you'd rather not see brand marks, Small for denser lists, or Off for plain names.",
+      "example": "netflix.com shows Netflix's red tile, cdn.example.org a letter C, and nas.home.arpa, a name of your own network, a house.",
+      "caution": "The choice is kept per user in this browser, not on the server. When a privacy level hides names, there are no icons."
+    },
+    {
       "id": "two-factor",
       "title": "A second step when signing in",
       "term": "Two-factor authentication (TOTP)",
@@ -948,6 +957,16 @@
       "when": "Your devices (Shelly, ESPHome, Sonos, TVs) have names in Home Assistant you'd like TelltaleDNS to use.",
       "example": "Address http://homeassistant.local:8123 and a token stored as home_assistant.ha.api_key (the form names it `<kind>.<router name>.api_key`).",
       "caution": "The token is an administrator's: anyone holding it can read your Home Assistant. Keep it stored, never in a file in Git.",
+      "docs": "routers"
+    },
+    {
+      "id": "router-offline-clients",
+      "title": "Keep the names of offline devices",
+      "term": "Offline clients",
+      "summary": "A UniFi console remembers the devices that have left the network. TelltaleDNS keeps their names for this many days, so a phone that is off Wi-Fi still shows its name in the query log and the top lists. Those devices don't count as seen: they don't make a device look present on the network, they give no address to the device inventory, they aren't published as DNS names, and they aren't counted in a network's device totals or in the leases list.",
+      "when": "A device you know by name shows as a bare address once it has left, and the log's names for it disappear with it.",
+      "example": "With 30 days (the default), a laptop asleep since last Tuesday still shows as \"Kitchen laptop\" in the query log; a guest's phone last seen 90 days ago shows as an address again.",
+      "caution": "0 keeps only the connected devices and the ones with a fixed address (a DHCP reservation, which always keeps its name). The window is at most 365 days, and the console still has to keep its history: an older Network application without it gives the connected devices only.",
       "docs": "routers"
     },
     {

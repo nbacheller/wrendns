@@ -18,13 +18,13 @@ base64 = "0.23.1"
 # The live tail's SSE stream (already in the tree via axum).
 futures-util = { version = "0.3", default-features = false }
 blake3 = "1.8.7"
+# REQ: NFR-001 (ADR-168) — the embedded UI keeps only its `.gz` files; a client that doesn't accept
+# gzip gets them inflated. Already in the tree (telltale-git, telltale-support, telltale).
+miniz_oxide = "0.8.9"
 rand = "0.10.3"
 # REQ: API-004 — OIDC sign-in (02 §7). No bundled HTTP client: the binary supplies one.
 openidconnect = { version = "4.0.1", default-features = false }
 rust-embed = { version = "8.12.0", default-features = false }
-# REQ: NFR-001 (ADR-915) — inflates the embedded `.gz` UI for clients without gzip. Already in
-# the lock file (git packfiles, support bundles), so it adds no package to the image.
-miniz_oxide = "0.8.9"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # REQ: API-014 (ADR-903 §4) — the credential table, to show plans' write bodies redacted.

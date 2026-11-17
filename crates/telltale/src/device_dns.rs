@@ -100,6 +100,11 @@ pub(crate) fn names(inputs: &Inputs<'_>, domain: &str) -> (Vec<(String, Ipv4Addr
     }
     for table in inputs.routers {
         for l in table.values() {
+            // REQ: T8.2 (ADR-166) — an offline client's last address may belong to a device no
+            // router reports now, so its name isn't published (own and peer tables alike).
+            if l.offline {
+                continue;
+            }
             // A device named in TelltaleDNS by its MAC keeps that name at its new address.
             let named = parse_mac(&l.mac).and_then(|m| inputs.clients.by_exact_mac(m));
             match (named, &l.hostname) {
@@ -223,6 +228,7 @@ mod tests {
                 hostname: name.map(Into::into),
                 expires: 0,
                 router: Some("udm".into()),
+                offline: false,
             },
         )
     }
@@ -300,6 +306,40 @@ mod tests {
         assert_eq!(
             collisions, 1,
             "two Androids: the lower address keeps the name"
+        );
+    }
+
+    /// REQ: T8.2 (ADR-166) — an offline client (own or peer router) publishes no name at its
+    /// last address; a connected one at the same address does.
+    #[test]
+    fn t8_2_offline_clients_publish_no_name() {
+        let clients = table("");
+        let gone = |ip: [u8; 4], mac: &str, name: &str| {
+            let mut l = lease(ip, mac, Some(name));
+            l.1.offline = true;
+            l
+        };
+        let own: Leases = [gone([192, 0, 2, 53], "aa:bb:cc:00:00:53", "old-ipad")].into();
+        let peer: Leases = [gone([192, 0, 2, 54], "aa:bb:cc:00:00:54", "gone-tv")].into();
+        let empty = Leases::new();
+        let inputs = Inputs {
+            clients: &clients,
+            routers: [&own, &peer],
+            mdns: [&empty, &empty],
+        };
+        let (got, _) = names(&inputs, "home.arpa");
+        assert!(got.is_empty(), "offline names are not published: {got:?}");
+        let connected: Leases =
+            [lease([192, 0, 2, 53], "aa:bb:cc:00:00:53", Some("ipad"))].into();
+        let inputs = Inputs {
+            clients: &clients,
+            routers: [&connected, &empty],
+            mdns: [&empty, &empty],
+        };
+        let (got, _) = names(&inputs, "home.arpa");
+        assert_eq!(
+            got,
+            vec![("ipad.home.arpa".to_owned(), Ipv4Addr::new(192, 0, 2, 53))]
         );
     }
 

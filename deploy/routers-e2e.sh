@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # REQ: T8.2, T8.3 — router integrations against fake UniFi OS and OPNsense APIs, and mDNS: a UniFi login
-# (cookie) and its client list, OPNsense leases with an API key, the leases in the API, and a
-# device named from the router in the query log.
-# REQ: T22.1–T22.3 (DNS-023, API-012, API-013) — UniFi reservations and networks, a fake Home
-# Assistant's device registry (a name you gave wins over the router's; a tracker supplies an
-# address), the networks API, and the device names answered in DNS with their PTRs.
+# (cookie) and its client list (connected, then the offline clients it knows: the reserved ones and the
+# history within offline_days), OPNsense leases with an API key, the leases in the API, and a device named
+# from the router in the query log. REQ: T22.1–T22.3 (DNS-023, API-012, API-013) — UniFi reservations and
+# networks, a fake Home Assistant's device registry (a name you gave wins over the router's; a tracker
+# supplies an address), the networks API, and the device names answered in DNS with their PTRs.
 # Needs python3, dig, curl.
 # Usage: deploy/routers-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
@@ -33,7 +33,7 @@ API=http://127.0.0.1:26992
 field() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)"; }
 
 cat > "$E/fake.py" <<'EOF'
-import base64, http.server, json, sys, threading
+import base64, http.server, json, sys, threading, time
 class UniFi(http.server.BaseHTTPRequestHandler):
     def reply(self, code, obj, headers=()):
         body = json.dumps(obj).encode()
@@ -59,15 +59,26 @@ class UniFi(http.server.BaseHTTPRequestHandler):
                 {"mac": "02:00:00:00:00:01", "ip": "127.0.0.1", "hostname": "laptop-77", "name": "Desk laptop"},
                 {"mac": "02:00:00:00:00:02", "ip": "192.168.1.31", "hostname": "roku"}]})
         elif self.path == "/proxy/network/api/s/default/rest/user":
-            # T22.2: an offline printer with a reservation; a known client without one.
+            # T22.2: an offline printer with a reservation, a reserved camera, and a known client without one.
             self.reply(200, {"meta": {"rc": "ok"}, "data": [
                 {"mac": "02:00:00:00:00:05", "use_fixedip": True, "fixed_ip": "192.168.1.50", "name": "Office printer"},
-                {"mac": "02:00:00:00:00:06", "last_ip": "192.168.1.60", "hostname": "gone-phone"}]})
+                {"mac": "02:00:00:00:00:06", "use_fixedip": True, "fixed_ip": "192.168.1.51", "name": "Garage camera"},
+                {"mac": "02:00:00:00:00:09", "last_ip": "192.168.1.60", "hostname": "gone-phone"}]})
         elif self.path == "/proxy/network/api/s/default/rest/networkconf":
             self.reply(200, {"meta": {"rc": "ok"}, "data": [
                 {"name": "Default", "purpose": "corporate", "ip_subnet": "192.168.1.1/24", "dhcpd_enabled": True, "dhcpd_start": "192.168.1.6", "dhcpd_stop": "192.168.1.49", "domain_name": "home.arpa"},
                 {"name": "IoT", "purpose": "corporate", "ip_subnet": "192.168.20.1/24", "vlan_enabled": True, "vlan": 20},
                 {"name": "Internet", "purpose": "wan", "ip_subnet": "203.0.113.2/30"}]})
+        elif self.path.startswith("/proxy/network/v2/api/site/default/clients/history?"):
+            # What the console was asked for (its window), for the check below.
+            open(sys.argv[1] + "/history.path", "w").write(self.path)
+            now = int(time.time())
+            self.reply(200, [
+                {"mac": "02:00:00:00:00:04", "last_ip": "192.168.1.53", "name": "Old iPad", "last_seen": now - 3600},
+                # Its address is the connected roku's: an offline client never takes a connected one's address.
+                {"mac": "02:00:00:00:00:08", "last_ip": "192.168.1.31", "hostname": "stale", "last_seen": now - 7200},
+                # Outside the default 30 days: the console may still send it, TelltaleDNS doesn't use it.
+                {"mac": "02:00:00:00:00:07", "last_ip": "192.168.1.52", "name": "Long gone laptop", "last_seen": now - 90 * 86400}])
         else:
             self.reply(404, {"meta": {"rc": "error"}})
     def log_message(self, *a):
@@ -104,7 +115,7 @@ threading.Thread(target=s1.serve_forever, daemon=True).start()
 threading.Thread(target=s3.serve_forever, daemon=True).start()
 s2.serve_forever()
 EOF
-python3 "$E/fake.py" & H=$!
+python3 "$E/fake.py" "$E" & H=$!
 for _ in $(seq 50); do curl -s -o /dev/null http://127.0.0.1:26982/ && break; sleep 0.1; done
 echo -n s3cret > "$E/unifi-pass"
 echo -n key1 > "$E/opn-key"
@@ -168,6 +179,14 @@ curl -sf -b "$E/jar" "$API/api/v1/dhcp/leases" | python3 -c '
 import json, sys
 items = {x["ip"]: x for x in json.load(sys.stdin)["items"]}
 assert items["127.0.0.1"]["hostname"] == "Desk laptop" and items["127.0.0.1"]["source"] == "router", items
+# REQ: T8.2 (ADR-166) — the connected device keeps its address; a name given to an offline client
+# (the stale one, if any) does not take it.
+assert items["192.168.1.31"]["mac"] == "02:00:00:00:00:02" and items["192.168.1.31"]["hostname"] != "stale", items["192.168.1.31"]
+# REQ: T8.2 (ADR-166) — an offline client is remembered by the console, not a current lease: it is
+# left out of the leases list (its name still answers in the query log).
+assert "192.168.1.53" not in items, "an offline client is not a current lease"
+assert items["192.168.1.51"]["hostname"] == "Garage camera", "a reserved camera (rest/user)"
+assert "192.168.1.52" not in items, "a client last seen 90 days ago is outside offline_days (30)"
 assert items["192.168.1.40"]["hostname"] == "printer", "Kea leases from OPNsense"
 # T22.2: a reservation names an offline device; a known client without one does not.
 assert items["192.168.1.50"]["hostname"] == "Office printer" and items["192.168.1.50"]["router"] == "udm", items
@@ -182,6 +201,8 @@ assert roku["dnsName"] == "living-room-roku.home.arpa", roku
 assert items["127.0.0.1"]["dnsName"] == "desk-laptop.home.arpa", items["127.0.0.1"]
 print(f"leases: {len(items)} from the routers and Home Assistant")
 ' || fail "leases API"
+# REQ: T8.2 (ADR-166) — the console is asked only for the window (30 days = 720 hours).
+grep -q "withinHours=720" "$E/history.path" || fail "the history request didn't carry the window: $(cat "$E/history.path")"
 
 # REQ: API-013 (T22.2) — the networks, their sizes, and the devices in them.
 curl -sf -b "$E/jar" "$API/api/v1/networks" | python3 -c '
@@ -190,9 +211,9 @@ nets = {n["name"]: n for n in json.load(sys.stdin)["items"]}
 assert set(nets) == {"Default", "IoT"}, nets
 d, iot = nets["Default"], nets["IoT"]
 assert (d["subnet"], d["gateway"], d["dhcpStart"], d["dhcpEnd"], d["domain"]) == ("192.168.1.0/24", "192.168.1.1", "192.168.1.6", "192.168.1.49", "home.arpa"), d
-assert (d["addresses"], d["devices"], d["outsidePool"], d["router"]) == (254, 3, 1, "udm"), d
+assert (d["addresses"], d["devices"], d["outsidePool"], d["router"]) == (254, 4, 2, "udm"), d
 assert (iot["vlan"], iot["devices"]) == (20, 1), iot
-print("networks: Default 3 devices (1 outside the pool), IoT 1")
+print("networks: Default 4 devices (2 outside the pool), IoT 1")
 ' || fail "networks API"
 
 # REQ: DNS-023 (T22.1) — device names and their PTRs answer in DNS.
@@ -201,6 +222,8 @@ ask() { dig +short -p 25992 @127.0.0.1 "$@"; }
 [ "$(ask office-printer.home.arpa)" = "192.168.1.50" ] || fail "a reservation in DNS"
 [ "$(ask shelly-plug-s.home.arpa)" = "192.168.20.9" ] || fail "a tracker address in DNS"
 [ "$(ask -x 192.168.1.31)" = "living-room-roku.home.arpa." ] || fail "the PTR"
+# REQ: T8.2 (ADR-166) — an offline client's last address names nothing in DNS.
+[ -z "$(ask old-ipad.home.arpa)" ] || fail "an offline client's name in DNS"
 [ "$(ask nas.routers.test)" = "10.0.0.8" ] || fail "configured records still answer"
 echo "dns: device names and PTRs answer"
 

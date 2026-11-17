@@ -144,6 +144,9 @@ pub(crate) fn lease_observations(view: &Leases, source: Source, now: u64) -> Vec
         _ => NameKind::RouterAlias,
     };
     view.values()
+        // REQ: T8.2 (ADR-166) — an offline client is not a current answer: it gives no address
+        // binding and its `last_seen` isn't refreshed (ADR-910, ADR-924).
+        .filter(|lease| !lease.offline)
         // REQ: DSC-008 — a lease past its expiry is not a current answer (ADR-902).
         .filter(|lease| lease.expires == 0 || lease.expires >= now)
         .map(|lease| {

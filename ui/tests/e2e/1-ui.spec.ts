@@ -5363,6 +5363,107 @@ test('dsc_001 a poll keeps unsaved edits', async () => {
   await node.fill('');
 });
 
+// REQ: OBS-039 (ADR-167) — domain icons: a brand tile for a name the map knows (Netflix), a monogram
+// or a house for the rest. The Domain icons card (Settings → Account) picks Brand and monogram,
+// Monogram only (no brand tile) or Off, and Default (20 px) or Small (16 px); the choice is kept for
+// this user in this browser. The glyphs are a lazy chunk: loading it must not trip the CSP.
+test('obs_039 domain icons', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await query('www.netflix.com').catch(() => -1);
+  const row = () => page.locator('tbody tr').filter({ hasText: 'www.netflix.com' }).first();
+  const mark = () => row().getByTestId('domain-icon');
+  await page.goto('/#/queries?name=www.netflix.com');
+  await expect(async () => {
+    await page.reload();
+    await expect(mark()).toBeVisible({ timeout: 2000 });
+  }).toPass({ timeout: 20_000 });
+  await expect(mark()).toHaveAttribute('data-kind', 'brand');
+  await expect(mark()).toHaveAttribute('data-size', '20');
+  await expect(mark()).toHaveAttribute('title', 'Netflix');
+
+  await page.goto('/#/settings?tab=account');
+  const card = page.getByTestId('icons-card');
+  const icons = card.getByTestId('domain-icon');
+  await expect(icons).toHaveCount(3);
+  await expect(icons.nth(0)).toHaveAttribute('data-kind', 'brand');
+  await expect(icons.nth(1)).toHaveAttribute('data-kind', 'mono');
+  await expect(icons.nth(2)).toHaveAttribute('data-kind', 'house');
+  await card.getByRole('button', { name: 'Monogram only' }).click();
+  await expect(icons.nth(0)).toHaveAttribute('data-kind', 'mono');
+  await card.getByRole('button', { name: 'Small', exact: true }).click();
+  for (let i = 0; i < 3; i++) await expect(icons.nth(i)).toHaveAttribute('data-size', '16');
+  await card.getByRole('button', { name: 'Off', exact: true }).click();
+  await expect(icons).toHaveCount(0);
+  await expect(card.getByRole('button', { name: 'Small', exact: true })).toBeDisabled();
+
+  // Kept for this user in this browser, and drawn nowhere while it is Off.
+  await page.reload();
+  await expect(card.getByRole('button', { name: 'Off', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.goto('/#/queries?name=www.netflix.com');
+  await expect(row()).toBeVisible();
+  await expect(mark()).toHaveCount(0);
+
+  // Back to the defaults, for whatever runs next.
+  await page.goto('/#/settings?tab=account');
+  await card.getByRole('button', { name: 'Brand and monogram', exact: true }).click();
+  await card.getByRole('button', { name: 'Default', exact: true }).click();
+  await expect(icons.nth(0)).toHaveAttribute('data-kind', 'brand');
+  await expect(icons.nth(0)).toHaveAttribute('data-size', '20');
+});
+
+// REQ: API-005, NFR-001 (ADR-168) — the UI is embedded gzipped only: a browser gets the stored
+// file with `Content-Encoding: gzip`, and a client that doesn't accept gzip gets the same file
+// inflated. Both are the page, and the page's script comes either way.
+test('api_005 the UI is served gzipped, and plain to a client that does not accept gzip', async () => {
+  const r = page.request;
+  const gz = await r.get('/', { headers: { 'accept-encoding': 'gzip' } });
+  expect(gz.status()).toBe(200);
+  expect(gz.headers()['content-encoding']).toBe('gzip');
+  const plain = await r.get('/', { headers: { 'accept-encoding': 'identity' } });
+  expect(plain.status()).toBe(200);
+  expect(plain.headers()['content-encoding']).toBeUndefined();
+  const html = await plain.text();
+  expect(html).toContain('<title>TelltaleDNS');
+  expect(await gz.text()).toBe(html);
+  const src = /src="(\/assets\/[^"]+\.js)"/.exec(html)?.[1];
+  expect(src, 'index.html names its script').toBeTruthy();
+  const js = await r.get(src as string, { headers: { 'accept-encoding': 'identity' } });
+  expect(js.status()).toBe(200);
+  expect(js.headers()['content-encoding']).toBeUndefined();
+  expect(js.headers()['content-type']).toContain('javascript');
+  expect((await js.body()).length).toBeGreaterThan(100_000);
+});
+
+// REQ: T8.2 (ADR-166) — a UniFi router's offline window is on its form: 30 days by default, a value
+// past a year is refused, and the value saved is the value reopened (0 keeps connected clients only).
+test('t8_2 offline clients days in the UniFi form', async () => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto('/#/routers');
+  await expect(page.locator('h1', { hasText: 'Routers' })).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId('routers-add').click();
+  await page.getByRole('combobox', { name: 'Kind' }).selectOption('unifi');
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('lab-offline');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('https://127.0.0.1:9');
+  await fillCredential('API key', 'unifi-e2e-key-7782');
+  const days = page.getByRole('spinbutton', { name: "Keep offline clients' names (days)", exact: true });
+  await expect(days).toHaveValue('30');
+  await days.fill('400');
+  await page.getByRole('button', { name: 'Save the router' }).click();
+  await expect(page.getByRole('alert')).toContainText('Keep offline clients for 0 to 365 days');
+  await days.fill('0');
+  const put = page.waitForRequest((r) => r.method() === 'PUT' && r.url().includes('/api/v1/routers/lab-offline'));
+  await page.getByRole('button', { name: 'Save the router' }).click();
+  expect((await put).postDataJSON().offline_days).toBe(0);
+  const card = page.getByTestId('router-card').filter({ hasText: 'lab-offline' });
+  await expect(card).toBeVisible({ timeout: 10_000 });
+  await card.getByTestId('router-edit').click();
+  await expect(page.getByRole('spinbutton', { name: "Keep offline clients' names (days)", exact: true })).toHaveValue('0');
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await card.getByTestId('router-delete').click();
+  await card.getByTestId('router-delete-confirm').click();
+  await expect(page.getByTestId('router-card').filter({ hasText: 'lab-offline' })).toHaveCount(0);
+});
+
 // REQ: API-007 (T24.18, ADR-940) — importing a Pi-hole export from the admin page: the preview
 // lists what would change and writes nothing; applying needs the typed confirmation, writes the plan,
 // and is undone here by deleting what it added. The fixture is a small Teleporter (v5) archive.

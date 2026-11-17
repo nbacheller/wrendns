@@ -1677,7 +1677,7 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
 #[test]
 fn api_001_committed_openapi_matches_the_code() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/api/openapi.json");
-    let doc = openapi_document() + "\n";
+    let doc = generated_openapi_document() + "\n";
     if std::env::var_os("UPDATE_OPENAPI").is_some() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &doc).unwrap();
@@ -1687,6 +1687,15 @@ fn api_001_committed_openapi_matches_the_code() {
         committed == doc,
         "docs/api/openapi.json is out of date: run UPDATE_OPENAPI=1 cargo test -p telltale-api api_001_committed_openapi"
     );
+}
+
+/// REQ: API-001, NFR-001 (ADR-168) — `GET /api/v1/openapi.json` serves the committed file, byte
+/// for byte (the document is compiled in from it, not generated while running).
+#[test]
+fn api_001_the_served_openapi_is_the_committed_file() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/api/openapi.json");
+    let committed = std::fs::read_to_string(path).unwrap();
+    assert_eq!(openapi_document().to_owned() + "\n", committed);
 }
 
 /// API-003 over HTTP: setup, sign-in with cookie + CSRF, tokens, roles, sign-out.
