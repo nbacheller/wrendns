@@ -167,12 +167,12 @@ pub(crate) struct Window {
 }
 
 /// A window from `[simulate]` and a request: `window` (`24h`), ending at `until` (Unix
-/// seconds, default now). 422 past 7 days.
+/// seconds, default now: `now_ms`). 422 past 7 days.
 pub(crate) fn window(
     cfg: &telltale_config::SimulateConfig,
     window: Option<&str>,
     until_s: Option<u64>,
-    now_s: u64,
+    now_ms: u64,
 ) -> Result<Window, Problem> {
     let text = window.unwrap_or(&cfg.default_window);
     let secs = telltale_config::window_secs(text).ok_or_else(|| {
@@ -189,10 +189,17 @@ pub(crate) fn window(
         )
         .hint("Simulations replay at most the last 7 days."));
     }
-    let to_s = until_s.unwrap_or(now_s);
+    // REQ: OBS-024 (T10.7) — the window is `[from, to)`. An explicit `until` ends at that
+    // whole second; the default ends one microsecond after the request's instant. Truncating
+    // "now" to its second dropped every row logged in the current second (a fast test or a
+    // quiet node saw 0 newly blocked for rows logged a moment earlier).
+    let to_us = match until_s {
+        Some(s) => s.saturating_mul(1_000_000),
+        None => now_ms.saturating_mul(1_000).saturating_add(1),
+    };
     Ok(Window {
-        from_us: to_s.saturating_sub(secs).saturating_mul(1_000_000),
-        to_us: to_s.saturating_mul(1_000_000),
+        from_us: to_us.saturating_sub(secs.saturating_mul(1_000_000)),
+        to_us,
         max_rows: cfg.max_rows,
         max_secs: cfg.max_secs,
     })
@@ -1492,12 +1499,11 @@ pub(crate) async fn simulate(
         Mode::Full => false,
         Mode::DevicesOnly => true,
     };
-    let now_s = now_ms() / 1000;
     let w = window(
         &running.simulate,
         opts.window.as_deref(),
         opts.until_s,
-        now_s,
+        now_ms(),
     )?;
     // Peers run while this node does.
     let peers = src.cluster.as_ref().map(|cluster| {
