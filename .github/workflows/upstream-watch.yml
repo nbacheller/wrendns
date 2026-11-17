@@ -1,0 +1,32 @@
+# REQ: OPS-004, DOC-006. Daily watch on the upstream project; the report goes to the fork's "Upstream watch" issue.
+# Ledger: spec/upstream.md (read from feat/ipam-integrations). Nothing is written to the upstream repo.
+name: upstream-watch
+
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the fork's ledger branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/ipam-integrations
+          fetch-depth: 0
+
+      - name: Run the upstream watch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/upstream_watch.py
