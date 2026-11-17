@@ -130,17 +130,6 @@ mod accept_tests {
     }
 }
 
-/// Inflates a gzip member written by `ui/scripts/postbuild.mjs` (RFC 1952, no optional header
-/// fields: FLG is 0). `None` for anything else.
-fn gunzip(data: &[u8]) -> Option<Vec<u8>> {
-    const HEADER: usize = 10;
-    const TRAILER: usize = 8;
-    if data.len() < HEADER + TRAILER || data[..3] != [0x1f, 0x8b, 8] || data[3] != 0 {
-        return None;
-    }
-    miniz_oxide::inflate::decompress_to_vec(&data[HEADER..data.len() - TRAILER]).ok()
-}
-
 /// Serves a UI file (`/` is `index.html`); anything else is 404.
 pub fn serve(method: &Method, uri: &Uri, headers: &HeaderMap) -> Response {
     if method != Method::GET && method != Method::HEAD {
@@ -173,8 +162,6 @@ pub fn serve(method: &Method, uri: &Uri, headers: &HeaderMap) -> Response {
             None if path == "index.html" => (Cow::Borrowed(MISSING.as_bytes()), false),
             None => return StatusCode::NOT_FOUND.into_response(),
         },
-        (_, _, None) if path == "index.html" => (MISSING.as_bytes().to_vec(), false),
-        _ => return StatusCode::NOT_FOUND.into_response(),
     };
     let mut resp = body.into_response();
     let h = resp.headers_mut();

@@ -602,6 +602,7 @@ fn t8_2_offline_router_clients_are_not_announced_as_seen() {
         ip: std::net::Ipv4Addr::from(ip),
         hostname: Some("x".into()),
         expires: 0,
+        router: None,
         offline,
     };
     let table = |ls: &[crate::devices::Lease]| -> crate::devices::Leases {

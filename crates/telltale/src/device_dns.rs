@@ -223,6 +223,7 @@ mod tests {
                 hostname: name.map(Into::into),
                 expires: 0,
                 router: Some("udm".into()),
+                offline: false,
             },
         )
     }

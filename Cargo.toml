@@ -49,12 +49,6 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
-# NFR-001 (ADR-915): the API and MCP handlers are cold code next to the DNS path, so they are
-# optimized for size. Measured: -0.55 MiB of the compressed image, the rest of the binary keeps
-# opt-level 3 (the hot path lives in telltale-net, telltale-cache, telltale-filter, ...).
-[profile.release.package.telltale-api]
-opt-level = "s"
-
 # REQ: NFR-001 (ADR-170) — crates off the DNS path are built for size, not speed: the HTTP API and
 # its OpenAPI, OIDC and certificate parts, cluster replication, the git source, the support
 # package, and the config-file parsers (which run at startup and on a reload, not per query). About

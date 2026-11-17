@@ -724,6 +724,7 @@ fn dsc_008_expired_lease_is_skipped() {
                 hostname: None,
                 expires,
                 router: None,
+                offline: false,
             },
         );
     };
@@ -1028,6 +1029,7 @@ fn dsc_008_tick_reads_router_view() {
             hostname: Some("printer".to_owned()),
             expires: 0,
             router: Some("ucg".to_owned()),
+            offline: false,
         },
     );
     let providers = thread::Providers {
