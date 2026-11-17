@@ -128,6 +128,8 @@ enum Mode {
     /// Send one authenticated Report with usmStatsNotInTimeWindows at the given boots and time,
     /// then answer normally.
     TimeReportOnce { boots: u32, time: u32 },
+    /// After the time Report: answer only requests whose boots and time are inside the window.
+    InWindowOnly,
 }
 
 struct FakeV3 {
@@ -163,6 +165,13 @@ fn fake_v3(
                 Ok(s) => (s.boots, s.time, s.mode),
                 Err(_) => continue,
             };
+            // After the time Report, an agent answers only requests inside its own window, so a
+            // client that did not take the agent's clock gets no answer (RFC 3414 §3.2.7b).
+            if matches!(mode, Mode::InWindowOnly)
+                && (reply.boots != boots || reply.time.abs_diff(time) > 150)
+            {
+                continue;
+            }
             if reply.flags & usm::LEVEL_MASK == 0 {
                 // Engine discovery: a noAuthNoPriv Report that names the engine.
                 let Ok(scoped_in) = ber::expect_tag(&reply.scoped, 0x30) else {
@@ -223,7 +232,7 @@ fn fake_v3(
             {
                 if let Ok(mut s) = state.lock() {
                     // The agent's clock is the one its Report carried from now on.
-                    s.mode = Mode::Normal;
+                    s.mode = Mode::InWindowOnly;
                     s.boots = rb;
                     s.time = rt;
                 }
