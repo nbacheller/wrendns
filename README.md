@@ -1,5 +1,26 @@
 # TelltaleDNS
 
+> **This is a fork:** [`nbacheller/telltaledns`](https://github.com/nbacheller/telltaledns), based on [`paimonsoror/telltaledns`](https://github.com/paimonsoror/telltaledns). Everything below this box is upstream's README. The badges, releases, quick start and project site are upstream's too. The fork's work is on the [`feat/ipam-integrations`](https://github.com/nbacheller/telltaledns/tree/feat/ipam-integrations) branch and follows the same spec-driven process. Its decisions are numbered from ADR-901 in [`spec/11`](spec/11-decisions.md).
+>
+> **What the fork adds** (milestones in the [roadmap](spec/10-roadmap-and-tasks.md)):
+> - **M22, network inventory and home integrations (done):**
+>   - device names from a UniFi gateway and from Home Assistant;
+>   - those names answered in DNS (`kitchen-tablet.home.arpa`, with reverse lookups);
+>   - your networks and VLANs, with how full each one is;
+>   - a Home Assistant integration for TelltaleDNS;
+>   - a [Docker Desktop bundle](deploy/docker-desktop/README.md) to try it.
+> - **M24, replacing Pi-hole (in progress):**
+>   - Pi-hole's special names: iCloud Private Relay blocked by default, `resolver.arpa` with encrypted DNS discovery (DDR), and domain-needed;
+>   - **Update lists now** (Pi-hole's "Update Gravity");
+>   - still to come: keepalived failover, importer gaps, IPv6 device names.
+> - **M23, secrets and integrations in the UI (in progress):** anything set up through a secret file can also be entered in the UI. Values are write-only and encrypted on each node, and the files still win.
+> - **M25, network inventory beyond the gateway (planned):**
+>   - SNMP from your gateway and switches (which device is on which port);
+>   - more UniFi reads;
+>   - importing results from a scanner you run yourself.
+>
+> **Every feature gets a UI control**, not only config, API or MCP. Fork issues are tracked [here](https://github.com/nbacheller/telltaledns/issues). Changes from upstream are merged regularly.
+
 [![CI](https://github.com/paimonsoror/telltaledns/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/paimonsoror/telltaledns/actions/workflows/ci.yml?query=branch%3Amain)
 [![CodeQL](https://github.com/paimonsoror/telltaledns/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/paimonsoror/telltaledns/security/code-scanning?query=branch%3Amain)
 [![Release](https://img.shields.io/github/v/release/paimonsoror/telltaledns?sort=semver)](https://github.com/paimonsoror/telltaledns/releases/latest)
