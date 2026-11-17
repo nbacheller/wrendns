@@ -25,6 +25,7 @@ mod ctl;
 mod datadir;
 mod device_dns;
 mod devices;
+mod discovery;
 mod dnstap;
 mod drill;
 mod explain;

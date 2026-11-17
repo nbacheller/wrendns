@@ -1432,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-cache"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "parking_lot",
  "telltale-proto",
@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-config"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "jiff",
  "schemars",
@@ -1454,7 +1454,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-filter"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "blake3",
  "bytes",
@@ -1489,6 +1489,7 @@ dependencies = [
  "hickory-proto",
  "libfuzzer-sys",
  "regex-syntax",
+ "serde",
  "telltale-cache",
  "telltale-config",
  "telltale-filter",
@@ -1500,7 +1501,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-net"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "bytes",
  "h3",
@@ -1523,7 +1524,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-proto"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "thiserror",
  "xxhash-rust",
@@ -1531,7 +1532,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-store"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "blake3",
  "memchr",
@@ -1546,7 +1547,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-support"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "blake3",
  "miniz_oxide",
@@ -1559,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-telemetry"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "blake3",
  "hdrhistogram",
