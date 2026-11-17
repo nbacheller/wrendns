@@ -1293,6 +1293,18 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-954 — A replica reports how long it has been without its primary; `primary_unreachable` alerts on it (Proposed)
+**Context:** a replica that can't reach its primary keeps answering DNS from its last copy (CLU-004), but nothing said so: `node_down` only sees a node that's disconnected from the primary's view, and a replica that still reaches other members (after falling back to one of them) looks healthy while it is split off. Alerts are evaluated on the primary, so the primary has to learn the replica's view from the heartbeats it already receives (fork #2, T24.5).
+
+**Decision:**
+- A replica's heartbeat carries `primary_silent_s` (optional `uint64`, tag 39): how long it has gone without a heartbeat from its primary, when that is more than the `up` window (three heartbeats, 15 s); absent when it reaches the primary, is the primary, or is an older node. It is computed from the heartbeats already exchanged, on the cluster task, never on the DNS path. Older nodes ignore the tag (CLU-010).
+- The cluster view carries it as `primarySilentSeconds` on each replica (its own value, or the peer's while the peer is `up`).
+- The alert condition `primary_unreachable` fires for a replica whose silence is at least its rule's `threshold` in seconds (default 60; 15 to 86400), after `for_secs` as for every rule. One alert per replica; it clears when the replica reaches the primary again. Witnesses, resolver pods and nodes that aren't `up` are left out; so are nodes in maintenance.
+- The health level adds a degraded reason `primary_unreachable` (link `#/cluster`) for a replica silent for 60 s. The health icon uses the fixed 60 s, as ADR-104 fixes its thresholds; the alert's `threshold` doesn't change the icon. (Conservative choice: the health path has no access to the alert rules; making it follow the rule is a follow-up if the defaults don't fit.)
+- A replica that is disconnected from every member is `node_down`, not this condition; a replica that reaches another member is the silent split this condition exists for.
+
+**Consequences:** one optional heartbeat field and one `ClusterNode` field; no new configuration key (the threshold is the rule's own). The UI shows the condition in the Alerts form (threshold, in seconds, is the field's help), the replica flag on the Cluster page with the `primary-unreachable` help topic, and the health reason. The timing is unit-tested at the boundary (`obs_010_t24_5_*`), and `clu_004` is the Playwright test.
+
 ## ADR-946 — Federated reads run off the runtime workers: `block_in_place` under the blocking helper (Accepted 2026-11-17)
 **Context:** upstream #7. `call_one` and `gather` in `crates/telltale/src/federated.rs` run a plain thread that blocks on the runtime. Called from a worker, the worker is held while the cluster stream's writer and reader tasks need workers to finish the call, so two concurrent reads to a peer that doesn't answer wedged a two-worker runtime. Several async handlers called a federated read directly on a worker.
 
