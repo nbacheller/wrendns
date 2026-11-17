@@ -584,7 +584,6 @@ fn resolve_location(base: &Uri, location: &str) -> Result<Uri, HttpError> {
         .map_err(|e| bad(&e))
 }
 
-
 /// REQ: FLT-004, API-014 — user information is never sent: no Basic auth is built, and a URL that
 /// has some is refused. The URL is not quoted, so its password can't reach a log or an error.
 fn refuse_user_info(uri: &Uri) -> Result<(), HttpError> {
