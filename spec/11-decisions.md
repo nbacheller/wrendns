@@ -1293,7 +1293,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
-## ADR-925 — Inventory thread and its inputs before `[discovery]`: off by default, the Home Assistant feed deferred (Proposed)
+## ADR-925 — Inventory thread and its inputs before `[discovery]`: off by default, the Home Assistant feed deferred (Accepted 2026-11-17)
 **Context:** T25.1 builds the inventory thread (`telltale-inventory`) and its read-only sources. The switch that starts them is `[discovery]`, which is T25.2. Nothing in the server reads Home Assistant's raw answer after `routers.rs` folds it into the lease view, and the owner has not yet decided how a discovery node is chosen.
 **Decision:**
 - The thread's `spawn` exists and is tested through `tick`, but no startup path calls it. T25.2 wires it behind `[discovery] enabled` (default false) and the designated-node rule (DSC-001). `discovery/mod.rs` allows dead code for that reason.
@@ -1302,7 +1302,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 **Alternatives rejected:** starting the thread now (an off-by-default feature would then run on every node); a separate `telltale-inventory` crate (the module needs `devices` and `routers`, which live in the binary crate, and the merge is small).
 **Consequences:** the inventory is not visible to any API until T25.12. Nothing in `telltale` reads `inventory.json` yet. The Home Assistant feed is Open.
 
-## ADR-924 — Inventory retention and expiry: two missed polls, per-entry caps, and the import rules (Proposed)
+## ADR-924 — Inventory retention and expiry: two missed polls, per-entry caps, and the import rules (Accepted 2026-11-17)
 **Context:** ADR-910 fixes the caps and says a host counts as absent only after two polls in a row miss it, without saying how a poll interval maps to time, or what an entry with no address left should do.
 **Decision:**
 - A source's binding expires when `seen + max_age < now`. `max_age` is twice the source's poll interval: 120 s for the neighbour table (polled every 60 s), 900 s for the routers and mDNS (their cadence is "every few minutes", `devices.rs`).
@@ -1317,7 +1317,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 **Alternatives rejected:** a fixed per-source TTL with no link to the poll interval (it would drop hosts on a slow router poll); per-row import expiry (more state for the same effect).
 **Consequences:** a host the neighbour table drops for two minutes loses its neighbour binding, and it keeps its other bindings. A router that is slow to answer keeps its binding for 15 minutes.
 
-## ADR-923 — Source classes for the sources ADR-910 leaves open: Home Assistant, mDNS, configured names (Proposed)
+## ADR-923 — Source classes for the sources ADR-910 leaves open: Home Assistant, mDNS, configured names (Accepted 2026-11-17)
 **Context:** ADR-910 sets the precedence classes for UniFi and OPNsense (class 1), the neighbour table (class 2), SNMP ARP (class 3), imports (class 4) and UniFi history (class 5). It does not place Home Assistant, passive mDNS, SNMP identity or the configured client name. The first draft of this ADR put Home Assistant and mDNS at class 2. The T25.1 review (2026-11-17) found that an unauthenticated mDNS announcement would then make its address an SNMP destination (ADR-907), and that an identity answer would back its own eligibility.
 **Decision:**
 - Home Assistant trackers and passive mDNS announcements carry their addresses as claims with no class. They never make an address current, never make it an SNMP destination (ADR-907), and never win a conflict. They sort after the classed bindings, with imports. Both come from the device or its tracker, not from a router's own table.
@@ -1330,7 +1330,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - A randomised MAC (the locally administered bit set) gets `randomized` and never raises `new_device`.
 **Alternatives rejected:** Home Assistant at class 1 (its trackers come from a template, not a router's table, so a stale tracker would outrank a live neighbour entry). Home Assistant and mDNS at class 2 (the first draft: an unauthenticated mDNS announcement would make its address SNMP-eligible).
 **Consequences:** a device seen by Home Assistant and by the neighbour table has one current address, the neighbour's, and Home Assistant's stays a claim. The address that ADR-910's DNS opt-in (DSC-012) may use therefore comes only from classes 2 and 3; an mDNS-only address never supplies one. The owner confirms the classes at the T25.0 review. Until then this conservative choice stands.
-## ADR-922 — Router hot reload: the live list, per-router state, debounced reads, and checks that never send a stored key to a new address (Proposed)
+## ADR-922 — Router hot reload: the live list, per-router state, debounced reads, and checks that never send a stored key to a new address (Accepted 2026-11-17)
 **Context:** `routers::run` took the `[[router]]` list at start-up and returned at once when it was empty (T8.2). T23.7 needs a router added, changed, or removed through the API to take effect without a restart, with the others' names kept (CLU-004, 02 §8), and T23.8 needs a check of a draft that reads a router once.
 **Decision:**
 - **The live list.** The poll loop reads `Sources.config` each round. A reload (any node's configuration change, or a secret the store changes) wakes it at once (`Sources.routers_changed`).
@@ -1344,7 +1344,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Residual (review NEW-1): a new router that reuses the name of a deleted router can have that router's leftover named secret sent to its new address, since no saved entry under the name records the old address. Deleting a router does not remove its secret; the admin can delete the secret itself.
 - A router whose console renews its certificate fails until the new certificate is saved (ADR-120).
 - The poll loop, its reads, and its failures are tested with local fake routers only (HTTP, and TLS on 127.0.0.1).
-## ADR-921 — Router integrations as a managed kind: admin-only, file-read-only, named secrets, no file paths through the API (Proposed)
+## ADR-921 — Router integrations as a managed kind: admin-only, file-read-only, named secrets, no file paths through the API (Accepted 2026-11-17)
 **Context:** T23.7 makes `[[router]]` a kind the API and UI change (ADR-903 §2, §7; API-016). ADR-903 §2 says `router` follows ADR-040 (names the files define are read-only through the API) and §9 says every credential is entered through `SecretField`. It doesn't settle three details: who may write a router, whether an API body may name a file path, and how a certificate is entered, since `tls_ca` is a file and ADR-903 §1 says the router's CA "becomes an inline `tls_ca_pem` (T23.8)" without a field.
 **Decision:**
 - **Admin only.** Creating, changing, or removing a router is an admin's (403 for operators; agents never, by their forbidden list and scopes). A forwarded write without a role (an older node) is 409 `upgrade_required`, as credential writes are (ADR-903 §4).
@@ -1357,7 +1357,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - `tls_insecure_skip_verify` is not offered by the UI and is still file-only.
 - The MCP surface gets `list_routers` (read-only). No MCP tool, and no agent scope, writes or checks a router (ADR-903 §5).
 
-## ADR-919 — Secret fields in the UI: save writes the secret first, clear unlinks, and a file the configuration sets stays read-only (Proposed)
+## ADR-919 — Secret fields in the UI: save writes the secret first, clear unlinks, and a file the configuration sets stays read-only (Accepted 2026-11-17)
 **Context:** T23.6 adds the Integrations & secrets page and `SecretField`, the one control every credential is entered through (ADR-903 §9). The API has two rules that shape the form: a `*_ref` naming an unset secret is refused (422 `secret_missing`), and a delete of a secret a field still names is refused (409 `secret_in_use`). So a form can't save an entry and its new secret in one request, and can't delete a secret through an entry that still names it.
 **Decision:**
 - **Save writes the secret at once.** "Save secret" stores the value (`PUT /api/v1/secrets/{name}`) before the entry is applied, then sets the entry's `*_ref` in the draft. The stored value exists even if the entry is never applied; the Integrations & secrets page lists it as unused.
@@ -1380,8 +1380,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - `SecretField` is reusable: the routers (T23.8) and the other forms (T24.16) pass the draft's `*_ref`, the `*_file` path and the role, and get the same states.
 - Operators see status only: the Integrations & secrets tab and the field show the same states, with the controls left out.
 - The image gate is unaffected unless the bundle grows past the budget (400 KiB gzipped; now about 252 KiB).
-## ADR-917 — Replication details for stored secrets: orphans by epoch, a joining node's hand-over, the shadow table, and the reverse heal (Proposed)
-
+## ADR-917 — Replication details for stored secrets: orphans by epoch, a joining node's hand-over, the shadow table, and the reverse heal (Accepted 2026-11-17)
 **Context:** ADR-903 §6 fixes what replicates (stamped rows over the cluster channel, tombstones, orphans, re-encryption under each member's key, the reverse heal). Building it left points it doesn't settle, which T23.5 had to decide.
 
 **Decision:**
@@ -1407,7 +1406,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 
 **Status:** Accepted 2026-11-17. The owner accepted every ADR for the overnight run. Points 1 and 5 deviate from ADR-903 §6's wording. Points 10, 14 and 15 are the review fixes of 2026-11-17 (N1 to N3 of the second review), and point 10 supersedes the epoch-only rule of its first form.
 
-## ADR-918 — Shared settings sections: field-level file precedence, what a request may leave out, and admin-only fields (Proposed)
+## ADR-918 — Shared settings sections: field-level file precedence, what a request may leave out, and admin-only fields (Accepted 2026-11-17)
 **Context:** T24.12 (`[special]`) and T24.13 (`[local]`, and `[clients]` with `mdns` only) make three one-entry sections changeable from the UI and API under ADR-914's tiers. The one-entry kinds so far (rate limit, exclusions, simulation) replace the file's whole section. For these, that would let an API value override a field the files set, which ADR-040 and ADR-914 forbid. ADR-914 didn't settle three details: which fields the files win over, what a request that leaves out a file-set field means, and what an empty `device_domain` means.
 **Decision:**
 - **Files win field by field.** The loader records the dotted keys (`special.ddr_name`, `local.device_domain`, `clients.mdns`) that the configuration files and environment set explicitly (`Config.file_set`). At merge time a stored field whose key is in that set is ignored, so the file's value applies. The UI shows it as "set by file".
