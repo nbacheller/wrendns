@@ -2116,6 +2116,8 @@ test('api_015 a secret write sends the head it read, and a moved head is refused
     await form.getByRole('button', { name: 'Save secret' }).click();
     await expect(page.getByTestId('secrets-form').getByRole('alert')).toContainText('Someone else changed');
     expect(ifMatch).toMatch(/^"\d+\.\d+\./);
+    // The refusal is the point of this test: its 412 is expected, nothing else is.
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 412/.test(problems[i])) problems.splice(i, 1);
   } finally {
     await page.unroute('**/api/v1/secrets/ui-moved');
   }
