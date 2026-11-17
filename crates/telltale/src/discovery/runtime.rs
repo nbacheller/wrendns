@@ -5,7 +5,7 @@
 //! the node isn't designated, or the section is off, no thread and no worker exists.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use arc_swap::ArcSwap;
@@ -78,6 +78,10 @@ pub(crate) struct Runtime {
     /// Jobs queued for the SNMP worker (T25.4 queues its walks here).
     requests: Requests,
     running: Mutex<Option<Running>>,
+    /// The last generation handed out by [`Runtime::next_generation`].
+    generation: AtomicU64,
+    /// The newest generation applied so far. A reconcile that started earlier than it is skipped.
+    applied: Mutex<u64>,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -93,6 +97,8 @@ impl Default for Runtime {
             board: Arc::new(ArcSwap::from_pointee(Vec::new())),
             requests: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             running: Mutex::new(None),
+            generation: AtomicU64::new(0),
+            applied: Mutex::new(0),
         }
     }
 }
@@ -116,21 +122,40 @@ impl Runtime {
     }
 
     /// The jobs queue of the SNMP worker, for the tasks that queue jobs (T25.4) and for tests.
+    #[allow(dead_code)] // REQ: DSC-002 — the SNMP walks queue here (T25.4).
     pub(crate) fn requests(&self) -> Requests {
         Arc::clone(&self.requests)
+    }
+
+    /// REQ: DSC-001 — a new generation for one reconcile. It is taken where the reload is handled,
+    /// not where the reconcile runs, so reconciles that run late can be ordered (see [`reconcile`]).
+    pub(crate) fn next_generation(&self) -> u64 {
+        self.generation
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1)
     }
 
     /// Starts, stops or restarts the inventory so that it runs exactly when the configuration
     /// says this node should run it (DSC-001). `routers` and `mdns` are the lease views the thread
     /// reads; `None` leaves a source out.
+    ///
+    /// REQ: DSC-001 (ADR-928) — reconciles run one at a time, and a reconcile whose `generation` is
+    /// older than the newest applied one is skipped: two quick reloads (on, then off) can't leave
+    /// the inventory running when the configuration says off.
     pub(crate) fn reconcile(
         &self,
+        generation: u64,
         cfg: &Config,
         data_dir: &Path,
         own: &Own,
         routers: Option<Arc<ArcSwap<Leases>>>,
         mdns: Option<Arc<ArcSwap<Leases>>>,
     ) {
+        let mut applied = self.applied.lock().unwrap_or_else(PoisonError::into_inner);
+        if generation < *applied {
+            return;
+        }
+        *applied = generation;
         let me = own.me();
         let want = gate::should_run(&cfg.discovery, me);
         let designated = gate::designated(&cfg.discovery, me);
@@ -255,7 +280,8 @@ mod tests {
             ephemeral: false,
             witness: false,
         };
-        rt.reconcile(&Config::default(), dir.path(), &own, None, None);
+        let generation = rt.next_generation();
+        rt.reconcile(generation, &Config::default(), dir.path(), &own, None, None);
         let s = rt.status();
         assert!(!s.enabled);
         assert!(
@@ -264,6 +290,33 @@ mod tests {
         );
         assert!(s.workers.is_empty(), "no worker starts while it is off");
         assert!(!dir.path().join("inventory.json").exists());
+    }
+
+    /// REQ: DSC-001 (`dsc_001_reconciles_apply_in_order`, ADR-928) — two reloads whose reconciles run
+    /// out of order: the older one (on) arrives last and is skipped, so the newer (off) stands.
+    #[test]
+    fn dsc_001_reconciles_apply_in_order() {
+        let rt = Runtime::default();
+        let dir = tempfile::tempdir().unwrap();
+        let own = Own {
+            node_id: "n".into(),
+            name: "n".into(),
+            primary: true,
+            ephemeral: false,
+            witness: false,
+        };
+        let on = telltale_config::Loader::new()
+            .toml_str("t", "[discovery]\nenabled = true\n")
+            .load()
+            .unwrap()
+            .config;
+        let g_on = rt.next_generation();
+        let g_off = rt.next_generation();
+        rt.reconcile(g_off, &Config::default(), dir.path(), &own, None, None);
+        rt.reconcile(g_on, &on, dir.path(), &own, None, None);
+        let s = rt.status();
+        assert!(!s.enabled, "the older reconcile was skipped");
+        assert!(s.workers.is_empty(), "nothing was started");
     }
 
     /// REQ: DSC-002 (DSC-014) — the metrics name each worker's up and restart series.

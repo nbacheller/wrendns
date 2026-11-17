@@ -4897,11 +4897,18 @@ fn plan_settings(
         && crate::settings_kinds::none_stored(&entries, w.kind)
         && let Some(c) = &src.cluster
     {
-        let members: Vec<(String, String)> = c
+        let mut members: Vec<(String, String)> = c
             .members()
             .into_iter()
-            .map(|m| (m.node_id, m.version))
+            .map(|m| {
+                let v = crate::forward::gate_version(c, &m.node_id, &m.version);
+                (m.node_id, v)
+            })
             .collect();
+        // This node is a member of its own cluster, and its own version is the gate's too.
+        let me = c.identity.meta.node_id.clone();
+        let own = crate::forward::gate_version(c, &me, crate::build_info::VERSION);
+        members.push((me, own));
         if let Some(problem) =
             crate::settings_kinds::members_too_old(&members, crate::forward::DISCOVERY_SINCE)
         {

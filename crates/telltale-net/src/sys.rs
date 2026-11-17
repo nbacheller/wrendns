@@ -708,16 +708,16 @@ pub(crate) fn trim_executable_pages() -> io::Result<u64> {
     Ok(trimmed)
 }
 
-/// REQ: DSC-002 (ADR-908) — the discovery worker's own limits: `RLIMIT_DATA` at `data_bytes` (an
-/// allocation past it aborts the worker alone), no core dumps, and not dumpable, so an abort never
-/// writes memory that holds a credential. `RLIMIT_AS` is not used (ADR-908).
-pub(crate) fn harden_worker(data_bytes: u64) -> io::Result<()> {
+/// REQ: DSC-002 (ADR-908) — the discovery worker's `RLIMIT_DATA` at `data_bytes` (an allocation past
+/// it aborts the worker alone) and `RLIMIT_CORE` 0, so an abort never writes a core file. `RLIMIT_AS`
+/// is not used (ADR-908). Lowering both limits needs no privilege.
+pub(crate) fn set_worker_rlimits(data_bytes: u64) -> io::Result<()> {
     let data = libc::rlimit {
         rlim_cur: data_bytes as libc::rlim_t,
         rlim_max: data_bytes as libc::rlim_t,
     };
     // SAFETY: setrlimit reads the struct it is given for the duration of the call; RLIMIT_DATA is
-    // a valid resource, and lowering both limits needs no privilege.
+    // a valid resource.
     if unsafe { libc::setrlimit(libc::RLIMIT_DATA as _, &raw const data) } != 0 {
         return Err(io::Error::last_os_error());
     }
@@ -729,12 +729,61 @@ pub(crate) fn harden_worker(data_bytes: u64) -> io::Result<()> {
     if unsafe { libc::setrlimit(libc::RLIMIT_CORE as _, &raw const core) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: PR_SET_DUMPABLE takes an integer flag and no pointers; 0 makes /proc/<pid> files
-    // and core dumps owned by root only.
+    Ok(())
+}
+
+/// Linux capability header for `capset` (`struct __user_cap_header_struct`).
+#[repr(C)]
+struct CapHeader {
+    version: u32,
+    pid: i32,
+}
+
+/// One capability data word for `capset` (`struct __user_cap_data_struct`).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct CapData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+
+/// `_LINUX_CAPABILITY_VERSION_3`: two data words, so all 64 capability bits.
+const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+
+/// REQ: DSC-002 (ADR-908) — the discovery worker holds no capability: the ambient set is cleared,
+/// the permitted, effective and inheritable sets are emptied, and `no_new_privs` is set, so no exec
+/// can gain one. Dropping a capability needs no privilege. The worker needs none: it reads stdin,
+/// writes stdout, and lowers its own limits; its OOM score is raised before this runs.
+pub(crate) fn drop_worker_capabilities() -> io::Result<()> {
+    // SAFETY: PR_CAP_AMBIENT with PR_CAP_AMBIENT_CLEAR_ALL takes no pointers.
     if unsafe {
         libc::prctl(
-            libc::PR_SET_DUMPABLE,
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL as libc::c_ulong,
             0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let header = CapHeader {
+        version: LINUX_CAPABILITY_VERSION_3,
+        pid: 0,
+    };
+    let data = [CapData::default(); 2];
+    // SAFETY: capset reads the header and the two data words, both of which live for the call. A
+    // pid of 0 is the calling thread's process; empty sets are always a legal new value.
+    if unsafe { libc::syscall(libc::SYS_capset, &raw const header, data.as_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: PR_SET_NO_NEW_PRIVS takes an integer flag and no pointers.
+    if unsafe {
+        libc::prctl(
+            libc::PR_SET_NO_NEW_PRIVS,
+            1 as libc::c_ulong,
             0 as libc::c_ulong,
             0 as libc::c_ulong,
             0 as libc::c_ulong,
@@ -744,6 +793,146 @@ pub(crate) fn harden_worker(data_bytes: u64) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// The architecture this build's syscall numbers and filter are for (`AUDIT_ARCH_*`).
+#[cfg(target_arch = "x86_64")]
+const AUDIT_ARCH_NATIVE: u32 = 0xC000_003E;
+#[cfg(target_arch = "aarch64")]
+const AUDIT_ARCH_NATIVE: u32 = 0xC000_00B7;
+
+/// The syscalls a discovery worker never makes: a listening socket (`bind`, `listen`), a tracer
+/// (`ptrace`), and another process's memory (`process_vm_readv`, `process_vm_writev`). A compromised
+/// worker could otherwise take a share of the DNS port (`SO_REUSEPORT`) or read the parent (ADR-908).
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+const WORKER_DENIED_SYSCALLS: [libc::c_long; 5] = [
+    libc::SYS_bind,
+    libc::SYS_listen,
+    libc::SYS_ptrace,
+    libc::SYS_process_vm_readv,
+    libc::SYS_process_vm_writev,
+];
+
+/// REQ: DSC-002 (ADR-908) — installs the worker's seccomp filter: the denied syscalls fail with
+/// EPERM, every other syscall is allowed, and a call from another architecture (a 32-bit syscall
+/// entry, say) kills the process. Needs `no_new_privs` (set by [`drop_worker_capabilities`]). On an
+/// architecture with no filter the worker refuses to run (fail closed, see the other definition).
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub(crate) fn install_worker_seccomp() -> io::Result<()> {
+    const BPF_LD_W_ABS: u16 = 0x20;
+    const BPF_JMP_JEQ_K: u16 = 0x15;
+    const BPF_RET_K: u16 = 0x06;
+    const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
+    const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
+    const SECCOMP_RET_ERRNO_EPERM: u32 = 0x0005_0000 | 1;
+    // Offsets into `struct seccomp_data`: `nr`, then `arch`.
+    const OFFSET_NR: u32 = 0;
+    const OFFSET_ARCH: u32 = 4;
+    let stmt = |code: u16, k: u32| libc::sock_filter {
+        code,
+        jt: 0,
+        jf: 0,
+        k,
+    };
+    let denied = &WORKER_DENIED_SYSCALLS;
+    let n = denied.len();
+    let mut prog: Vec<libc::sock_filter> = Vec::with_capacity(n + 6);
+    // 0: the architecture; 1: when it is ours, skip the kill at 2.
+    prog.push(stmt(BPF_LD_W_ABS, OFFSET_ARCH));
+    prog.push(libc::sock_filter {
+        code: BPF_JMP_JEQ_K,
+        jt: 1,
+        jf: 0,
+        k: AUDIT_ARCH_NATIVE,
+    });
+    prog.push(stmt(BPF_RET_K, SECCOMP_RET_KILL_PROCESS));
+    // 3: the syscall number. 4..4+n: one test per denied call, which jumps to the EPERM return
+    // (4 + n + 1) on a match; otherwise it falls through to the allow return (4 + n).
+    prog.push(stmt(BPF_LD_W_ABS, OFFSET_NR));
+    for (i, nr) in denied.iter().enumerate() {
+        let jt = u8::try_from(n - i).map_err(|_| io::Error::other("seccomp: filter too long"))?;
+        let k = u32::try_from(*nr).map_err(|_| io::Error::other("seccomp: bad syscall number"))?;
+        prog.push(libc::sock_filter {
+            code: BPF_JMP_JEQ_K,
+            jt,
+            jf: 0,
+            k,
+        });
+    }
+    prog.push(stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
+    prog.push(stmt(BPF_RET_K, SECCOMP_RET_ERRNO_EPERM));
+    let len =
+        u16::try_from(prog.len()).map_err(|_| io::Error::other("seccomp: filter too long"))?;
+    let fprog = libc::sock_fprog {
+        len,
+        filter: prog.as_mut_ptr(),
+    };
+    // SAFETY: PR_SET_SECCOMP with SECCOMP_MODE_FILTER reads one `sock_fprog` whose filter points at
+    // `prog`, which lives for the call; the kernel copies the program. No_new_privs was set first,
+    // so this needs no privilege.
+    if unsafe {
+        libc::prctl(
+            libc::PR_SET_SECCOMP,
+            libc::c_ulong::from(libc::SECCOMP_MODE_FILTER),
+            ptr::from_ref(&fprog) as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Fails: this architecture has no worker filter, so the worker refuses to run (ADR-908).
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub(crate) fn install_worker_seccomp() -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "no seccomp filter for this architecture",
+    ))
+}
+
+/// Sets `PR_SET_DUMPABLE`. The worker becomes not dumpable last: a non-dumpable process's `/proc/self`
+/// files belong to root, so anything that needs them is done first.
+pub(crate) fn set_dumpable(on: bool) -> io::Result<()> {
+    // SAFETY: PR_SET_DUMPABLE takes an integer flag and no pointers; 0 makes /proc/<pid> files and
+    // core dumps owned by root only.
+    if unsafe {
+        libc::prctl(
+            libc::PR_SET_DUMPABLE,
+            libc::c_ulong::from(on),
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// A `ptrace(PTRACE_TRACEME)` probe, for the test that the filter refuses it (`EPERM`).
+#[cfg(test)]
+pub(crate) fn ptrace_probe() -> io::Result<()> {
+    // SAFETY: PTRACE_TRACEME takes no pointers. The filter refuses it, so the call fails with EPERM
+    // and nothing is traced.
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_ptrace,
+            libc::c_long::from(libc::PTRACE_TRACEME),
+            0 as libc::c_long,
+            0 as libc::c_long,
+            0 as libc::c_long,
+        )
+    };
+    if rc == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// The process's current `RLIMIT_DATA` soft limit, in bytes (`RLIM_INFINITY` as `u64::MAX`).

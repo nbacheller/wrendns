@@ -4,7 +4,7 @@
 //! merges, sweeps retention, and saves `inventory.json` on the write cadence. Nothing here
 //! answers a query, and a failure here only logs (CLU-004).
 //!
-//! Nothing starts this thread yet: `[discovery]` (T25.2) is the switch, and it is off by default.
+//! `[discovery]` is the switch that starts this thread on the designated node, and it is off by default.
 
 use std::io;
 use std::path::PathBuf;
@@ -59,8 +59,10 @@ pub(crate) struct Providers {
 /// A running inventory thread.
 pub(crate) struct Handle {
     /// The latest inventory, for readers (the API, T25.12).
+    #[allow(dead_code)] // REQ: DSC-013 — read by the API's device list (T25.12).
     pub(crate) shared: Arc<ArcSwap<Inventory>>,
     /// Set to make the next save follow the one-minute cadence (after an import or `public`).
+    #[allow(dead_code)] // REQ: DSC-008 — set by the import path (T25.11).
     pub(crate) fast_write: Arc<AtomicBool>,
     stop: mpsc::Sender<()>,
     join: JoinHandle<()>,

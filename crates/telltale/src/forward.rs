@@ -479,8 +479,21 @@ pub(crate) const SETTINGS_KINDS_SINCE: (u64, u64, u64) = (0, 8, 0);
 
 /// REQ: DSC-001 (T25.2, ADR-907, ADR-928) — the first version that knows the `discovery` kind and
 /// the `[discovery]` section: an older member can't read them (CLU-010), so the first write is
-/// refused while any member runs an older version (`members_too_old`).
-pub(crate) const DISCOVERY_SINCE: (u64, u64, u64) = (0, 9, 0);
+/// refused while any member runs an older version (`members_too_old`). It is the release that
+/// carries the section, the same as `SETTINGS_KINDS_SINCE`; the workspace version is that release.
+pub(crate) const DISCOVERY_SINCE: (u64, u64, u64) = (0, 8, 0);
+
+/// REQ: DSC-001 (ADR-928) — the version the gate compares for `node_id`. An unreleased build reports
+/// `dev`, which no gate can read, so this node's own `dev` counts as the crate's version: the code it
+/// runs is that version and knows every kind it has. Another node's `dev` stays unreadable, so it
+/// still counts as older.
+pub(crate) fn gate_version(cluster: &Cluster, node_id: &str, version: &str) -> String {
+    if version == "dev" && cluster.identity.meta.node_id == node_id {
+        env!("CARGO_PKG_VERSION").to_owned()
+    } else {
+        version.to_owned()
+    }
+}
 
 /// Whether a version string (`0.8.0`, `v0.8.1-rc.1`) is at least `min`; unreadable is not.
 pub(crate) fn version_at_least(v: &str, min: (u64, u64, u64)) -> bool {
@@ -516,7 +529,7 @@ fn markers_understood(
         .members()
         .into_iter()
         .find(|m| m.node_id == primary)
-        .map(|m| m.version);
+        .map(|m| gate_version(cluster, &m.node_id, &m.version));
     if version
         .as_deref()
         .is_some_and(|v| version_at_least(v, MARKERS_SINCE))
@@ -557,7 +570,7 @@ fn settings_kinds_understood(
         .members()
         .into_iter()
         .find(|m| m.node_id == primary)
-        .map(|m| m.version);
+        .map(|m| gate_version(cluster, &m.node_id, &m.version));
     if version
         .as_deref()
         .is_some_and(|v| version_at_least(v, since))

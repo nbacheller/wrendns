@@ -813,8 +813,10 @@ async fn start_http(
         auth.agents()
             .set_require_approval(cfg.agents.require_approval);
         let _ = sources.auth.set(Arc::clone(&auth));
-        // REQ: DSC-001 (T25.2) — the `[discovery]` section as the files set it, at start.
-        audit_discovery(sources, None, cfg);
+        // REQ: DSC-001 (T25.2) — the `[discovery]` section as the files set it, at start. The files'
+        // own copy is audited, never `cfg`, which may already hold what the API stored.
+        let file = sources.file_config.load_full();
+        audit_discovery(sources, None, &file);
         // REQ: FLT-005 (ADR-067) — expired quick rules are removed and audit-logged.
         crate::api_backend::spawn_rule_sweep(Arc::clone(sources), Arc::clone(&auth), stop.clone());
         let app = http::api_router(Arc::clone(sources), auth);
@@ -1565,9 +1567,11 @@ fn reconcile_discovery(sources: &http::Sources, pipeline: &Pipeline, cfg: &Confi
         Arc::clone(&pipeline.router_leases),
         Arc::clone(&pipeline.mdns_names),
     );
+    // REQ: DSC-001 — the generation is taken here, in reload order; the blocking task applies it.
+    let generation = rt.next_generation();
     // A stopping inventory saves and joins its thread: that happens off the runtime's workers.
     drop(tokio::task::spawn_blocking(move || {
-        rt.reconcile(&cfg, &data_dir, &own, Some(routers), Some(mdns));
+        rt.reconcile(generation, &cfg, &data_dir, &own, Some(routers), Some(mdns));
     }));
 }
 

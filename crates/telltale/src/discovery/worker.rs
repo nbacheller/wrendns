@@ -244,6 +244,9 @@ pub(crate) fn harden_process(memory_mib: u32) -> Result<WorkerLimits, String> {
 
 /// The process entry point of `telltale discovery-worker [--import]`. Returns the exit code.
 pub(crate) fn main(import: bool) -> i32 {
+    // REQ: DSC-002 (ADR-908) — the worker is background-only itself (`SCHED_IDLE`), not by
+    // inheriting it from the inventory thread that started it.
+    telltale_net::background_thread();
     let mode = if import { "import" } else { "snmp" };
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

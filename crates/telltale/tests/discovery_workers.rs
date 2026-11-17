@@ -36,14 +36,35 @@ struct Worker {
 
 impl Worker {
     fn start(args: &[&str]) -> Self {
-        let mut child = Command::new(BIN)
-            .args(args)
-            .env_clear()
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("the telltale binary starts");
+        Self::spawn(
+            Command::new(BIN)
+                .args(args)
+                .env_clear()
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null()),
+        )
+    }
+
+    /// Starts the worker as another user (`uid` and `gid`), as the systemd unit, the image and the
+    /// Helm chart run it. Needs root to change the user.
+    #[cfg(target_os = "linux")]
+    fn start_as(args: &[&str], uid: u32) -> Self {
+        use std::os::unix::process::CommandExt;
+        Self::spawn(
+            Command::new(BIN)
+                .args(args)
+                .env_clear()
+                .uid(uid)
+                .gid(uid)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null()),
+        )
+    }
+
+    fn spawn(cmd: &mut Command) -> Self {
+        let mut child = cmd.spawn().expect("the telltale binary starts");
         let mut out = child.stdout.take().unwrap();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -89,6 +110,45 @@ impl Drop for Worker {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// REQ: DSC-002 (`dsc_002_worker_starts_as_non_root`) — the worker starts, hardens itself and
+/// answers its handshake as an unprivileged user. The systemd unit (`User=telltale`), the image
+/// (`USER 65532`) and the Helm chart (`runAsUser: 65532`) all run it that way. Its `oom_score_adj` is
+/// written before the process becomes not dumpable, so the write is still the process's own. The
+/// test needs root to start the worker as another user, and skips when it isn't root.
+#[cfg(target_os = "linux")]
+#[test]
+fn dsc_002_worker_starts_as_non_root() {
+    let status = std::fs::read_to_string("/proc/self/status").expect("status");
+    let root = status
+        .lines()
+        .find(|l| l.starts_with("Uid:"))
+        .is_some_and(|l| l.split_whitespace().nth(1) == Some("0"));
+    if !root {
+        eprintln!("skipped: the test starts the worker as another user, which needs root");
+        return;
+    }
+    let build = worker_build();
+    let mut w = Worker::start_as(&["discovery-worker"], 65534);
+    w.send(&json_frame(&Worker::hello(64, &build)));
+    let reply = w.next(Duration::from_secs(10)).expect(
+        "the non-root worker answers its hello (it exits with code 4 when it can't harden)",
+    );
+    assert_eq!(reply["t"], "hello");
+    assert_eq!(reply["dumpable"], false, "a worker is not dumpable");
+    assert_eq!(
+        reply["oom_score_adj"], 1000,
+        "the kernel kills the worker first"
+    );
+    assert_eq!(
+        reply["data_bytes"],
+        64u64 << 20,
+        "RLIMIT_DATA is the asked-for size"
+    );
+    w.send(&json_frame(&json!({"t": "job", "id": 1, "op": "ping"})));
+    let answer = w.next(Duration::from_secs(10)).expect("ping answer");
+    assert_eq!(answer["ok"], true);
 }
 
 /// The worker's own build, as it answers a hello it refuses (the answer carries its build).

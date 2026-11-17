@@ -119,18 +119,60 @@ pub(crate) fn read_frame<R: Read>(r: &mut R) -> Result<Frame, FrameError> {
 }
 
 fn read_exact<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<(), FrameError> {
-    r.read_exact(buf).map_err(|e| {
-        if e.kind() == io::ErrorKind::UnexpectedEof {
-            FrameError::Eof
-        } else {
-            FrameError::Io(e.to_string())
-        }
+    r.read_exact(buf).map_err(|e| io_error(&e))
+}
+
+fn io_error(e: &io::Error) -> FrameError {
+    if e.kind() == io::ErrorKind::UnexpectedEof {
+        FrameError::Eof
+    } else {
+        FrameError::Io(e.to_string())
+    }
+}
+
+/// REQ: DSC-002 (ADR-908) — reads one frame from an async stream, with the same checks as
+/// [`read_frame`]: the header is checked before the payload is allocated. The main process reads
+/// the worker's bytes with this (the side that reads untrusted input), and the `worker_frames` fuzz
+/// target runs it beside [`read_frame`], so both readers are fuzzed.
+pub(crate) async fn read_frame_async<R: tokio::io::AsyncRead + Unpin>(
+    r: &mut R,
+) -> Result<Frame, FrameError> {
+    use tokio::io::AsyncReadExt;
+    let mut head = [0u8; HEADER];
+    r.read_exact(&mut head).await.map_err(|e| io_error(&e))?;
+    let len = u32::from_be_bytes([head[0], head[1], head[2], head[3]]);
+    let kind = head[4];
+    let payload = check_header(len, kind)?;
+    let mut body = vec![0u8; payload];
+    r.read_exact(&mut body).await.map_err(|e| io_error(&e))?;
+    Ok(match kind {
+        KIND_JSON => Frame::Json(body),
+        _ => Frame::Chunk(body),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ: DSC-002 (`dsc_002_async_reader_agrees_with_sync`) — the main process's async reader
+    /// refuses exactly what the worker's synchronous reader refuses, with the same error.
+    #[tokio::test]
+    async fn dsc_002_async_reader_agrees_with_sync() {
+        let over_json = wire(u32::try_from(JSON_MAX + 2).unwrap(), KIND_JSON, &[]);
+        let cases: [Vec<u8>; 5] = [
+            wire(0, KIND_JSON, &[]),
+            wire(2, 9, b"x"),
+            over_json,
+            wire(3, KIND_CHUNK, b"ab"),
+            Vec::new(),
+        ];
+        for bytes in cases {
+            let sync = read_frame(&mut &bytes[..]);
+            let asynced = read_frame_async(&mut &bytes[..]).await;
+            assert_eq!(sync, asynced, "{bytes:?}");
+        }
+    }
 
     fn wire(len: u32, kind: u8, body: &[u8]) -> Vec<u8> {
         let mut v = len.to_be_bytes().to_vec();

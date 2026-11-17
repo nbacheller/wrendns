@@ -20,7 +20,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
 use telltale_api::model::DiscoveryWorker;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use super::frames::{self, Frame, FrameError};
@@ -40,8 +40,14 @@ pub(crate) const HEALTHY_RUN: Duration = Duration::from_secs(600);
 pub(crate) const PING_EVERY: Duration = Duration::from_secs(30);
 /// How long a worker has to answer the handshake.
 pub(crate) const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long a worker has to answer one job.
-pub(crate) const JOB_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a worker has to answer one job: the SNMP walk's budget (ADR-908, a 30 s walk). A `ping`
+/// has [`PING_TIMEOUT`] instead, so a hung worker is noticed sooner.
+pub(crate) const JOB_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a worker has to answer a `ping`.
+pub(crate) const PING_TIMEOUT: Duration = Duration::from_secs(10);
+/// The most of one stderr line that is kept and logged. The rest of a longer line is dropped while
+/// it is read, so a worker can't make this process hold more (ADR-908, CLU-004).
+pub(crate) const STDERR_LINE_MAX: usize = 400;
 /// How long a worker of another build is left alone before the next try.
 pub(crate) const VERSION_WAIT: Duration = Duration::from_secs(300);
 /// Stderr lines logged per minute, per worker; the rest are counted and dropped.
@@ -68,7 +74,9 @@ pub(crate) struct Spec {
     /// The binary to run. `/proc/self/exe` on Linux: the image that is running, not a newer file.
     pub(crate) exe: PathBuf,
     pub(crate) ping_every: Duration,
+    /// The longest a job may take, unless [`timeout_for`] names another for its op.
     pub(crate) job_timeout: Duration,
+    pub(crate) ping_timeout: Duration,
     pub(crate) hello_timeout: Duration,
     pub(crate) version_wait: Duration,
 }
@@ -83,10 +91,51 @@ impl Spec {
             exe: exe_path(),
             ping_every: PING_EVERY,
             job_timeout: JOB_TIMEOUT,
+            ping_timeout: PING_TIMEOUT,
             hello_timeout: HELLO_TIMEOUT,
             version_wait: VERSION_WAIT,
         }
     }
+}
+
+/// The time a job of `op` may take: a `ping` has its own, and every other op has the job timeout.
+/// Each op that needs longer (a T25.4 walk, say) gets its own limit here.
+pub(crate) fn timeout_for(spec: &Spec, op: &str) -> Duration {
+    match op {
+        "ping" => spec.ping_timeout,
+        _ => spec.job_timeout,
+    }
+}
+
+/// REQ: DSC-002 (ADR-908) — the limits a worker reports must be the ones this process asked for:
+/// not dumpable, its data limit at `memory_mib`, and `oom_score_adj` at [`worker::OOM_SCORE_ADJ`].
+/// A worker that reports otherwise is refused (on Linux, where the limits exist).
+pub(crate) fn check_limits(reply: &Hello, memory_mib: u32) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        if reply.dumpable {
+            return Err("the worker is dumpable".to_owned());
+        }
+        let want = u64::from(memory_mib) << 20;
+        if reply.data_bytes != want {
+            return Err(format!(
+                "its data limit is {} bytes, not the {want} asked for",
+                reply.data_bytes
+            ));
+        }
+        if reply.oom_score_adj != Some(telltale_net::worker::OOM_SCORE_ADJ) {
+            return Err(format!(
+                "its oom_score_adj is {:?}, not {}",
+                reply.oom_score_adj,
+                telltale_net::worker::OOM_SCORE_ADJ
+            ));
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (reply, memory_mib);
+    }
+    Ok(())
 }
 
 /// The path the workers are started from: this process's own executable (ADR-908).
@@ -292,6 +341,9 @@ async fn run_once(spec: &Spec, board: &Board, requests: &Requests, stop: &Atomic
         let _ = child.kill().await;
         return Outcome::VersionMismatch(why);
     }
+    if let Err(why) = check_limits(&reply, spec.memory_mib) {
+        return fail(&mut child, format!("refused: {why}")).await;
+    }
     update(board, spec.name, |w| {
         w.up = true;
         w.version_mismatch = false;
@@ -329,7 +381,8 @@ async fn run_once(spec: &Spec, board: &Board, requests: &Requests, stop: &Atomic
                 continue;
             }
         };
-        match run_job(&mut stdin, &mut stdout, &job, spec.job_timeout).await {
+        let limit = timeout_for(spec, &job.op);
+        match run_job(&mut stdin, &mut stdout, &job, limit).await {
             Ok(r) if r.ok => {}
             Ok(r) => {
                 tracing::debug!(worker = spec.name, op = %r.op, error = ?r.error, "discovery job refused");
@@ -369,28 +422,10 @@ async fn send(stdin: &mut ChildStdin, msg: &Msg) -> Result<(), String> {
 }
 
 async fn recv(stdout: &mut Reader) -> Result<Msg, String> {
-    let f: Frame = read_frame_async(stdout)
+    let f: Frame = frames::read_frame_async(stdout)
         .await
         .map_err(|e: FrameError| e.to_string())?;
     worker::decode(&f)
-}
-
-/// Reads one frame from an async stream, with the same checks as the synchronous reader in `frames`.
-pub(crate) async fn read_frame_async<R: tokio::io::AsyncRead + Unpin>(
-    r: &mut R,
-) -> Result<Frame, FrameError> {
-    use tokio::io::AsyncReadExt;
-    let mut head = [0u8; frames::HEADER];
-    r.read_exact(&mut head).await.map_err(|e| async_err(&e))?;
-    let len = u32::from_be_bytes([head[0], head[1], head[2], head[3]]);
-    let kind = head[4];
-    let payload = frames::check_header(len, kind)?;
-    let mut body = vec![0u8; payload];
-    r.read_exact(&mut body).await.map_err(|e| async_err(&e))?;
-    Ok(match kind {
-        frames::KIND_JSON => Frame::Json(body),
-        _ => Frame::Chunk(body),
-    })
 }
 
 /// Writes one frame to an async stream and flushes it.
@@ -406,25 +441,71 @@ pub(crate) async fn write_frame_async<W: tokio::io::AsyncWrite + Unpin>(
     w.flush().await.map_err(|e| FrameError::Io(e.to_string()))
 }
 
-fn async_err(e: &io::Error) -> FrameError {
-    if e.kind() == io::ErrorKind::UnexpectedEof {
-        FrameError::Eof
-    } else {
-        FrameError::Io(e.to_string())
+/// REQ: DSC-002 (ADR-908) — reads one line of a worker's stderr, keeping at most `keep` bytes of it.
+/// The rest of a longer line is read and dropped up to its newline, so the memory this holds is
+/// bounded whatever the worker writes. Returns `None` at the end of the stream, else the kept bytes
+/// and whether the line was cut.
+pub(crate) async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
+    r: &mut R,
+    keep: usize,
+) -> io::Result<Option<(Vec<u8>, bool)>> {
+    use tokio::io::AsyncBufReadExt;
+    let mut line = Vec::new();
+    let mut cut = false;
+    let mut seen = false;
+    loop {
+        let buf = r.fill_buf().await?;
+        if buf.is_empty() {
+            return Ok(seen.then_some((line, cut)));
+        }
+        seen = true;
+        let (take, newline) = match buf.iter().position(|&b| b == b'\n') {
+            Some(i) => (i, true),
+            None => (buf.len(), false),
+        };
+        let room = keep.saturating_sub(line.len());
+        if take > room {
+            cut = true;
+        }
+        line.extend_from_slice(buf.get(..take.min(room)).unwrap_or_default());
+        r.consume(if newline {
+            take.saturating_add(1)
+        } else {
+            take
+        });
+        if newline {
+            return Ok(Some((line, cut)));
+        }
     }
 }
 
-/// Reads a worker's stderr and logs it, at most [`STDERR_LINES_PER_MINUTE`] lines a minute.
+/// Makes a worker's stderr line safe to log: invalid UTF-8 is replaced, and every control character
+/// (a newline, an escape sequence) is written as an escape, so a line can't forge another log entry.
+pub(crate) fn sanitize_line(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .flat_map(|c| {
+            if c.is_control() {
+                c.escape_default().collect::<Vec<char>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
+}
+
+/// Reads a worker's stderr and logs it, at most [`STDERR_LINES_PER_MINUTE`] lines a minute, each
+/// line at most [`STDERR_LINE_MAX`] bytes and with its control characters escaped (ADR-908).
 async fn log_stderr(name: &'static str, err: tokio::process::ChildStderr) {
-    let mut lines = BufReader::new(err).lines();
+    let mut reader = BufReader::new(err);
     let mut limit = LineLimit::default();
-    while let Ok(Some(line)) = lines.next_line().await {
+    while let Ok(Some((bytes, cut))) = read_capped_line(&mut reader, STDERR_LINE_MAX).await {
         if limit.allow(unix_now(), STDERR_LINES_PER_MINUTE) {
-            tracing::warn!(
-                worker = name,
-                "{}",
-                line.chars().take(400).collect::<String>()
-            );
+            let mut text = sanitize_line(&bytes);
+            if cut {
+                text.push_str(" [cut]");
+            }
+            tracing::warn!(worker = name, "{text}");
         }
     }
     if limit.dropped() > 0 {
@@ -460,6 +541,82 @@ mod tests {
     }
 
     /// REQ: DSC-002 — stderr lines are rate limited, and the refused ones are counted.
+    /// REQ: DSC-002 (`dsc_002_stderr_line_is_bounded`) — a worker's stderr line is kept to
+    /// [`STDERR_LINE_MAX`] bytes however long it is, the rest is read and dropped up to its newline,
+    /// and the next line is still read whole.
+    #[tokio::test]
+    async fn dsc_002_stderr_line_is_bounded() {
+        let mut bytes = vec![b'x'; 5 << 20];
+        bytes.extend_from_slice(b"\nnext line\n");
+        let mut rd = tokio::io::BufReader::new(&bytes[..]);
+        let (first, cut) = read_capped_line(&mut rd, STDERR_LINE_MAX)
+            .await
+            .expect("read")
+            .expect("a line");
+        assert_eq!(first.len(), STDERR_LINE_MAX);
+        assert!(cut, "the cut is recorded");
+        let (second, cut) = read_capped_line(&mut rd, STDERR_LINE_MAX)
+            .await
+            .expect("read")
+            .expect("the next line");
+        assert_eq!(second, b"next line");
+        assert!(!cut);
+        assert!(
+            read_capped_line(&mut rd, STDERR_LINE_MAX)
+                .await
+                .expect("read")
+                .is_none()
+        );
+    }
+
+    /// REQ: DSC-002 (`dsc_002_stderr_is_escaped`) — control characters in a worker's stderr are
+    /// escaped before they are logged, so a line can't forge a log entry or move the terminal.
+    #[test]
+    fn dsc_002_stderr_is_escaped() {
+        let s = sanitize_line(b"ok\r\n2026 WARN forged\x1b[2J\xff");
+        assert!(!s.chars().any(char::is_control), "{s:?}");
+        assert_eq!(s, "ok\\r\\n2026 WARN forged\\u{1b}[2J\u{fffd}");
+    }
+
+    /// REQ: DSC-002 (`dsc_002_limits_must_match`) — the supervisor refuses a worker whose reported
+    /// limits aren't the ones it asked for (Linux).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dsc_002_limits_must_match() {
+        let good = Hello {
+            dumpable: false,
+            data_bytes: 64 << 20,
+            oom_score_adj: Some(1000),
+            ..Hello::default()
+        };
+        assert!(check_limits(&good, 64).is_ok());
+        let dumpable = Hello {
+            dumpable: true,
+            ..good.clone()
+        };
+        assert!(check_limits(&dumpable, 64).is_err());
+        let other_size = Hello {
+            data_bytes: 32 << 20,
+            ..good.clone()
+        };
+        assert!(check_limits(&other_size, 64).is_err());
+        let no_oom = Hello {
+            oom_score_adj: None,
+            ..good
+        };
+        assert!(check_limits(&no_oom, 64).is_err());
+    }
+
+    /// REQ: DSC-002 (`dsc_002_job_timeouts_by_op`) — a ping has its own, shorter timeout; a job has
+    /// the walk's budget.
+    #[test]
+    fn dsc_002_job_timeouts_by_op() {
+        let spec = Spec::snmp(64);
+        assert_eq!(timeout_for(&spec, "ping"), PING_TIMEOUT);
+        assert_eq!(timeout_for(&spec, "walk"), JOB_TIMEOUT);
+        assert!(PING_TIMEOUT < JOB_TIMEOUT);
+    }
+
     #[test]
     fn dsc_002_stderr_is_rate_limited() {
         let mut l = LineLimit::default();
@@ -498,9 +655,33 @@ mod process_tests {
             exe: PathBuf::from("/bin/sh"),
             ping_every: Duration::from_secs(30),
             job_timeout: Duration::from_millis(500),
+            ping_timeout: Duration::from_millis(500),
             hello_timeout: Duration::from_millis(500),
             version_wait: Duration::from_secs(1),
         }
+    }
+
+    /// REQ: DSC-002 (`dsc_002_worker_reporting_other_limits_is_refused`) — a worker that reports it
+    /// is dumpable is refused and ends as a crash, not run.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn dsc_002_worker_reporting_other_limits_is_refused() {
+        let build = worker::build_id();
+        let hello = frame_bytes(&format!(
+            r#"{{"t":"hello","protocol":1,"build":"{build}","dumpable":true,"data_bytes":67108864,"oom_score_adj":1000}}"#
+        ));
+        let spec = spec_for(format!("printf '{}'; exec sleep 30", octal(&hello)));
+        let out = run_once(
+            &spec,
+            &board(),
+            &Requests::default(),
+            &AtomicBool::new(false),
+        )
+        .await;
+        assert!(
+            matches!(&out, Outcome::Crashed(w) if w.contains("dumpable")),
+            "{out:?}"
+        );
     }
 
     fn board() -> Board {

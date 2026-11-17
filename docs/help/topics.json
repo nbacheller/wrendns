@@ -968,7 +968,7 @@
       "when": "Turn it on when you want to see devices that never ask DNS for anything, such as printers or devices with fixed addresses. Leave it off if you don't want TelltaleDNS reading switches or gateways at all.",
       "example": "You list your gateway's subnet 192.168.1.0/24 and turn the inventory on. The gateway's ARP table then tells TelltaleDNS which MAC address sits behind each address on that subnet.",
       "caution": "Only one node runs the inventory: the primary, or the node you name. Changes are for administrators only. Turning it on is refused while privacy level is 2 or 3, because the inventory needs client addresses.",
-      "docs": "network-inventory"
+      "docs": "network-inventory-devices-that-never-ask-dns"
     },
     {
       "id": "discovery-workers",
@@ -978,7 +978,7 @@
       "when": "Look here when the inventory shows no data, or when the health icon names a discovery worker.",
       "example": "A worker is refused because it was built from a different version than this node. Upgrade the node so both match, and the worker starts again.",
       "caution": "A worker that keeps crashing is a sign of a fault in the inventory or in a device's reply. DNS keeps answering while it is down.",
-      "docs": "network-inventory"
+      "docs": "network-inventory-devices-that-never-ask-dns"
     }
   ]
 }

@@ -321,7 +321,7 @@ impl Entry {
     }
 
     /// Whether only weak sources (the neighbour table, SNMP, history) back the entry.
-    pub(crate) fn is_weak_only(&self) -> bool {
+        pub(crate) fn is_weak_only(&self) -> bool {
         let weak = Source::Neighbor.bit()
             | Source::SnmpArp.bit()
             | Source::Snmp.bit()

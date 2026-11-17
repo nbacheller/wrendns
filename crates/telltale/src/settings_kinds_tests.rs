@@ -357,6 +357,11 @@ async fn dsc_001_write_is_admin_only_and_audited() {
         v["items"][0]["definition"]["subnet"][0]["cidr"], "192.168.1.0/24",
         "{v}"
     );
+    // The admin's write is audited with what changed (ADR-928): the record names the action and
+    // carries the section after the change.
+    let audit = h.audit_text();
+    assert!(audit.contains("discovery.put"), "{audit}");
+    assert!(audit.contains("192.168.1.0/24"), "{audit}");
 }
 
 /// REQ: DSC-001 (`dsc_001_agents_cannot_write_kind`) — no agent writes the network inventory's
@@ -383,8 +388,8 @@ async fn dsc_001_agents_cannot_write_kind() {
 fn dsc_001_n1_member_refuses_first_write() {
     let since = crate::forward::DISCOVERY_SINCE;
     let old = vec![
-        ("pi-a".to_owned(), "0.9.0".to_owned()),
-        ("pi-b".to_owned(), "0.8.0".to_owned()),
+        ("pi-a".to_owned(), "0.8.0".to_owned()),
+        ("pi-b".to_owned(), "0.7.9".to_owned()),
     ];
     let refused =
         crate::settings_kinds::members_too_old(&old, since).expect("an N-1 member refuses");
@@ -396,8 +401,45 @@ fn dsc_001_n1_member_refuses_first_write() {
     );
     let unknown = vec![("pi-c".to_owned(), "dev".to_owned())];
     assert!(crate::settings_kinds::members_too_old(&unknown, since).is_some());
-    let current = vec![("pi-a".to_owned(), "0.9.1-edge.4".to_owned())];
+    let current = vec![("pi-a".to_owned(), "0.8.0".to_owned())];
     assert!(crate::settings_kinds::members_too_old(&current, since).is_none());
+    let later = vec![("pi-a".to_owned(), "0.8.1-rc.1".to_owned())];
+    assert!(crate::settings_kinds::members_too_old(&later, since).is_none());
+}
+
+/// REQ: DSC-001 (`dsc_001_current_build_passes_the_gate`, ADR-928) — through the real route and the
+/// real build version: a write from a replica to a primary at the release that carries `[discovery]`
+/// goes through (this node's own `VERSION` counts as the crate's when it is a `dev` build), and to a
+/// primary at an older release it is refused with 409 and never forwarded.
+#[tokio::test(flavor = "multi_thread")]
+async fn dsc_001_current_build_passes_the_gate() {
+    let body = json!({"enabled": false, "node": null, "worker_memory_mib": 64,
+        "subnet": [{ "cidr": "192.168.1.0/24" }] });
+    let (replica, current) = older_primary_and_replica(env!("CARGO_PKG_VERSION")).await;
+    let h = harness_in("", Some(replica));
+    let mut req = h.request("PUT", DISCOVERY, Some(&body));
+    req.headers_mut()
+        .insert("idempotency-key", "gate-current".parse().unwrap());
+    let (s, _, text) = h.send(req).await;
+    assert_eq!(s, StatusCode::OK, "{text}");
+    assert_eq!(
+        current.got.lock().unwrap().len(),
+        1,
+        "forwarded to the primary"
+    );
+
+    let (older_replica, older) = older_primary_and_replica("0.7.4").await;
+    let h = harness_in("", Some(older_replica));
+    let mut req = h.request("PUT", DISCOVERY, Some(&body));
+    req.headers_mut()
+        .insert("idempotency-key", "gate-older".parse().unwrap());
+    let (s, _, text) = h.send(req).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{text}");
+    assert!(
+        text.contains("members_too_old") || text.contains("upgrade_required"),
+        "{text}"
+    );
+    assert!(older.got.lock().unwrap().is_empty(), "never forwarded");
 }
 
 /// REQ: DSC-001 (`dsc_001_file_edit_audited_at_start`) — the file's `[discovery]` is audited at start
