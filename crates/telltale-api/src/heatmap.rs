@@ -277,7 +277,7 @@ pub(crate) async fn stats_heatmap(
     State(b): State<Shared>,
     Query(p): Query<HeatmapParams>,
 ) -> Result<Json<Heatmap>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&crate::request_backend(&b), p.scope.as_deref())?;
     let now = b.now_unix_seconds();
     let grain = p.grain.unwrap_or_else(|| "hour".into());
     let slot = grain_secs(&grain).ok_or_else(|| {

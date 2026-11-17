@@ -184,7 +184,7 @@ async fn list_annotations(
     State((b, _)): State<(Shared, Arc<Auth>)>,
     Query(p): Query<AnnotationParams>,
 ) -> Result<Json<AnnotationPage>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&crate::request_backend(&b), p.scope.as_deref())?;
     let now_ms = b.now_unix_seconds() * 1000;
     let (f, limit) = filter(&p, now_ms)?;
     let bk = Arc::clone(&b);

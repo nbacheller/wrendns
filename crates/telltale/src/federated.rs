@@ -22,6 +22,9 @@ use telltale_api::problem::Problem;
 use telltale_api::{Backend, BoxFuture, ClientWrite, ManagedKind, ManagedWrite, Shared};
 use telltale_cluster::net::{Cluster, RpcHandler};
 
+/// One answer of a round: the read's index in the round, the peer, and its body.
+type RoundAnswer = (usize, String, Vec<u8>);
+
 /// The RPC every federated read uses; its body is a JSON [`Read`].
 const KIND: &str = "api.read";
 /// How long a read waits for peers (CLU-002: a dead node costs at most this).
@@ -902,9 +905,12 @@ impl Federated {
         }
     }
 
-    /// Sends `reads` (one per peer) concurrently and waits at most [`DEADLINE`]. Records
-    /// which known nodes didn't answer.
-    fn gather(&self, reads: Vec<(String, Read)>) -> Vec<(String, Vec<u8>)> {
+    /// Sends `reads` (one per peer) concurrently and waits at most [`DEADLINE`]. Each answer
+    /// comes with its index in `reads`, and the labels of the nodes that didn't answer come
+    /// back with them: the known nodes in scope that are disconnected, and the peers whose read
+    /// failed. Nothing is recorded on `self` (T24.11): the caller returns the set with its
+    /// result.
+    fn round(&self, reads: Vec<(String, Read)>) -> (Vec<RoundAnswer>, Vec<String>) {
         let mut missing: Vec<String> = self
             .cluster
             .members()
@@ -914,41 +920,43 @@ impl Federated {
             // (REQ: FLT-004; a Kubernetes pod is named by its pod, not its shared site).
             .map(|m| self.label_of(&m.node_id))
             .collect();
-        let calls: Vec<(String, Vec<u8>)> = reads
+        let calls: Vec<RoundAnswer> = reads
             .into_iter()
-            .filter_map(|(peer, r)| serde_json::to_vec(&r).ok().map(|b| (peer, b)))
+            .enumerate()
+            .filter_map(|(i, (peer, r))| serde_json::to_vec(&r).ok().map(|b| (i, peer, b)))
             .collect();
-        let answers = match tokio::runtime::Handle::try_current() {
-            Ok(rt) if !calls.is_empty() => {
-                let cluster = Arc::clone(&self.cluster);
-                // REQ: CLU-004 — the calls run to completion off the runtime worker.
-                run_off_the_worker(&rt, async move {
-                    let tasks: Vec<_> = calls
-                        .into_iter()
-                        .map(|(peer, body)| {
-                            let c = Arc::clone(&cluster);
-                            tokio::spawn(async move {
-                                let r = c.call(&peer, KIND, body, DEADLINE).await;
-                                (peer, r)
+        let answers: Vec<(usize, String, Result<Vec<u8>, String>)> =
+            match tokio::runtime::Handle::try_current() {
+                Ok(rt) if !calls.is_empty() => {
+                    let cluster = Arc::clone(&self.cluster);
+                    // REQ: CLU-004 — the calls run to completion off the runtime worker.
+                    run_off_the_worker(&rt, async move {
+                        let tasks: Vec<_> = calls
+                            .into_iter()
+                            .map(|(i, peer, body)| {
+                                let c = Arc::clone(&cluster);
+                                tokio::spawn(async move {
+                                    let r = c.call(&peer, KIND, body, DEADLINE).await;
+                                    (i, peer, r)
+                                })
                             })
-                        })
-                        .collect();
-                    let mut out = Vec::new();
-                    for t in tasks {
-                        if let Ok(r) = t.await {
-                            out.push(r);
+                            .collect();
+                        let mut out = Vec::new();
+                        for t in tasks {
+                            if let Ok(r) = t.await {
+                                out.push(r);
+                            }
                         }
-                    }
-                    out
-                })
-                .unwrap_or_default()
-            }
-            _ => Vec::new(),
-        };
+                        out
+                    })
+                    .unwrap_or_default()
+                }
+                _ => Vec::new(),
+            };
         let mut ok = Vec::new();
-        for (peer, r) in answers {
+        for (i, peer, r) in answers {
             match r {
-                Ok(body) => ok.push((peer, body)),
+                Ok(body) => ok.push((i, peer, body)),
                 Err(e) => {
                     tracing::debug!(peer, error = %e, "federated read failed");
                     missing.push(self.label_of(&peer));
@@ -957,8 +965,23 @@ impl Federated {
         }
         missing.sort();
         missing.dedup();
+        (ok, missing)
+    }
+
+    /// Sends `reads` (one per peer) concurrently and waits at most [`DEADLINE`]. Records
+    /// which known nodes didn't answer, on this request's handle.
+    fn gather(&self, reads: Vec<(String, Read)>) -> Vec<(String, Vec<u8>)> {
+        let (answers, missing) = self.round(reads);
+        self.record_missing(missing);
+        answers
+            .into_iter()
+            .map(|(_, peer, body)| (peer, body))
+            .collect()
+    }
+
+    /// The nodes this request's reads couldn't reach (what [`Backend::missing_nodes`] returns).
+    fn record_missing(&self, missing: Vec<String>) {
         *self.missing.lock().unwrap_or_else(PoisonError::into_inner) = missing;
-        ok
     }
 
     /// Asks every reachable peer the same read; decoded answers with each peer's label.
@@ -1153,6 +1176,16 @@ impl Backend for Federated {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+    // REQ: CLU-003, T24.11 — each request reads through its own handle, with its own set of
+    // the nodes that didn't answer (a shared one let concurrent requests overwrite each other).
+    fn for_request(&self) -> Option<Shared> {
+        Some(Arc::new(Self {
+            local: Arc::clone(&self.local),
+            cluster: Arc::clone(&self.cluster),
+            missing: Mutex::new(Vec::new()),
+            only: self.only.clone(),
+        }))
     }
     fn promote(&self, req: PromoteRequest, by: String) -> Result<ClusterView, Problem> {
         self.local.promote(req, by)
@@ -1672,6 +1705,13 @@ impl Backend for Federated {
     // `ctl lists refresh --wait` know the download state shown is this node's own).
     // `GET /lists` swaps in the cluster's hits too (OBS-009).
     fn lists(&self) -> Vec<ListInfo> {
+        self.lists_and_hits().lists
+    }
+    // REQ: FLT-004, CLU-003, OBS-009 (T24.11) — the primary's lists and every node's hits go out in
+    // one round (a replica used to ask the primary, then the peers, a deadline each). The missing
+    // set is this request's: the primary when it didn't answer, and the nodes the round couldn't
+    // reach.
+    fn lists_and_hits(&self) -> telltale_api::ListsAndHits {
         let mine = self.local.lists();
         let primary = self
             .cluster
@@ -1679,35 +1719,53 @@ impl Backend for Federated {
             .into_iter()
             .find(|m| m.primary)
             .map(|m| m.node_id);
-        let primary = match primary {
-            Some(p) if !self.cluster.is_primary() => p,
-            // The primary itself, or no primary known yet: this node's view is the answer.
-            _ => {
-                self.missing
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clear();
-                return mine;
+        // A replica asks the reachable primary for the download state; the primary itself, or
+        // no primary known yet, answers with this node's own lists.
+        let replica_of = match primary {
+            Some(p) if !self.cluster.is_primary() => Some(p),
+            _ => None,
+        };
+        let lists_at = replica_of
+            .as_ref()
+            .and_then(|_| self.cluster.reachable_primary());
+        let mut reads = Vec::new();
+        // Index 0 is the primary's lists, when asked.
+        if let Some(p) = &lists_at {
+            reads.push((p.clone(), Read::Lists));
+        }
+        reads.extend(self.peers().into_iter().map(|p| (p, Read::ListHits)));
+        let (answers, mut missing) = self.round(reads);
+        let mut theirs = None;
+        let mut parts = Vec::new();
+        if self.with_me() {
+            parts.push(self.local.list_hits());
+        }
+        for (i, _peer, body) in answers {
+            if lists_at.is_some() && i == 0 {
+                theirs = lists_from_primary(&body);
+            } else if let Ok(v) =
+                serde_json::from_slice::<std::collections::BTreeMap<String, u64>>(&body)
+            {
+                parts.push(v);
+            } else {
+                tracing::debug!("undecodable federated list hits");
             }
-        };
-        let theirs = self
-            .cluster
-            .reachable_primary()
-            .and_then(|p| self.call_one(&p, &Read::Lists, DEADLINE))
-            .and_then(|r| {
-                r.map_err(|e| tracing::debug!(error = %e, "the primary's lists unread"))
-                    .ok()
-            })
-            .and_then(|body| lists_from_primary(&body));
-        let missing = if theirs.is_some() {
-            Vec::new()
-        } else {
-            vec![self.label_of(&primary)]
-        };
-        *self.missing.lock().unwrap_or_else(PoisonError::into_inner) = missing;
-        match theirs {
+        }
+        if let Some(primary) = replica_of.filter(|_| theirs.is_none()) {
+            missing.push(self.label_of(&primary));
+        }
+        missing.sort();
+        missing.dedup();
+        self.record_missing(missing.clone());
+        let hits = telltale_api::federation::merge_list_hits(parts);
+        let lists = match theirs {
             Some(theirs) => merge_lists(&mine, theirs),
             None => mine,
+        };
+        telltale_api::ListsAndHits {
+            lists,
+            hits,
+            missing,
         }
     }
     // REQ: OBS-009 (T7.14) — every node's hits, added up by list name: the node serving the

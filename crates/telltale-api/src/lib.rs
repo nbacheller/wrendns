@@ -83,9 +83,17 @@ pub trait Backend: Send + Sync + 'static {
     fn local(&self) -> Option<Shared> {
         None
     }
-    /// Cluster nodes that couldn't be read just now (shown as `missingNodes`).
+    /// Cluster nodes that couldn't be read just now (shown as `missingNodes`). A clustered
+    /// node answers for the handle a request holds (see [`request_backend`]), never for
+    /// another request.
     fn missing_nodes(&self) -> Vec<String> {
         Vec::new()
+    }
+    /// REQ: CLU-003, T24.11 — a handle of its own for one request: its reads and its
+    /// [`Backend::missing_nodes`] are that request's alone. `None` when reads keep no
+    /// per-request state (a standalone node).
+    fn for_request(&self) -> Option<Shared> {
+        None
     }
     /// REQ: AGT-011, CLU-002 (T7.3) — the same reads over the nodes `scope` names
     /// (`site:<name>`, `node:<id, site, or pod>`). A standalone node has no other nodes.
@@ -278,6 +286,16 @@ pub trait Backend: Send + Sync + 'static {
     /// the one serving the API).
     fn list_hits(&self) -> std::collections::BTreeMap<String, u64> {
         self.lists().into_iter().map(|l| (l.name, l.hits)).collect()
+    }
+    /// REQ: FLT-004, OBS-009, T24.11 — the lists and every node's hits, with the nodes that
+    /// didn't answer, from one read round (a clustered node asks the primary and the peers
+    /// together, so the answer takes one deadline).
+    fn lists_and_hits(&self) -> ListsAndHits {
+        ListsAndHits {
+            lists: self.lists(),
+            hits: self.list_hits(),
+            missing: self.missing_nodes(),
+        }
     }
     fn groups(&self) -> Vec<GroupInfo>;
     fn clients(&self) -> Vec<ClientInfo>;
@@ -884,6 +902,21 @@ pub enum DrillWrite {
 }
 
 pub type Shared = Arc<dyn Backend>;
+
+/// REQ: CLU-003, T24.11 — the backend one request reads through: its own handle when the
+/// backend keeps per-request state ([`Backend::for_request`]), else the shared one.
+pub fn request_backend(b: &Shared) -> Shared {
+    b.for_request().unwrap_or_else(|| Arc::clone(b))
+}
+
+/// What [`Backend::lists_and_hits`] answers: the lists, every node's hits by list name, and
+/// the nodes that didn't answer.
+#[derive(Debug)]
+pub struct ListsAndHits {
+    pub lists: Vec<ListInfo>,
+    pub hits: std::collections::BTreeMap<String, u64>,
+    pub missing: Vec<String>,
+}
 
 /// REQ: OPS-011 — a support package made by the backend.
 #[derive(Debug)]
@@ -1518,6 +1551,7 @@ async fn system_health(State(b): State<Shared>) -> Result<Json<model::Health>, P
 async fn system_probes(
     State(b): State<Shared>,
 ) -> Result<Json<Items<model::ProbeResult>>, Problem> {
+    let b = request_backend(&b);
     let bk = Arc::clone(&b);
     let items = blocking(move || Ok(bk.probes())).await?;
     Ok(Json(Items {
@@ -1539,6 +1573,7 @@ async fn system_probes(
 async fn shadow_lists(
     State(b): State<Shared>,
 ) -> Result<Json<Items<model::ShadowListStats>>, Problem> {
+    let b = request_backend(&b);
     let bk = Arc::clone(&b);
     let items = blocking(move || Ok(bk.shadow_lists())).await?;
     Ok(Json(Items {
@@ -1561,6 +1596,7 @@ async fn overblocking(
     State(b): State<Shared>,
     Query(p): Query<model::LimitParam>,
 ) -> Result<Json<Items<model::OverblockSuspect>>, Problem> {
+    let b = request_backend(&b);
     let limit = p.limit.unwrap_or(50).clamp(1, 500);
     let bk = Arc::clone(&b);
     let items = blocking(move || Ok(bk.overblocking(limit))).await?;
@@ -1584,6 +1620,7 @@ async fn overblocking(
 async fn upstream_checks(
     State(b): State<Shared>,
 ) -> Result<Json<Items<model::UpstreamChecks>>, Problem> {
+    let b = request_backend(&b);
     let bk = Arc::clone(&b);
     let items = blocking(move || Ok(bk.upstream_checks())).await?;
     Ok(Json(Items {
@@ -1654,7 +1691,7 @@ async fn stats_summary(
     State(b): State<Shared>,
     Query(p): Query<SummaryParams>,
 ) -> Result<Json<Summary>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&request_backend(&b), p.scope.as_deref())?;
     let now = b.now_unix_seconds();
     let from = time_param(p.from.as_deref(), now.saturating_sub(86_400), now, "from")?;
     let to = time_param(p.to.as_deref(), now + 1, now, "to")?;
@@ -1721,7 +1758,7 @@ async fn stats_slo(
     State(b): State<Shared>,
     Query(p): Query<model::ScopeParam>,
 ) -> Result<Json<model::SloStatus>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&request_backend(&b), p.scope.as_deref())?;
     let now = b.now_unix_seconds();
     let s = b.slo_settings();
     if !s.enabled {
@@ -1758,7 +1795,7 @@ async fn stats_timeseries(
     State(b): State<Shared>,
     Query(p): Query<TimeseriesParams>,
 ) -> Result<Json<Items<TimeBucket>>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&request_backend(&b), p.scope.as_deref())?;
     let now = b.now_unix_seconds();
     let step = p.step.unwrap_or(Step::Minute);
     let default_from = now.saturating_sub(match step {
@@ -1833,7 +1870,7 @@ async fn stats_top(
     State(b): State<Shared>,
     Query(p): Query<TopParams>,
 ) -> Result<Json<Items<TopItem>>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&request_backend(&b), p.scope.as_deref())?;
     let limit = p.limit.unwrap_or(10).clamp(1, 100);
     let client = match &p.client {
         None => None,
@@ -1913,7 +1950,7 @@ async fn stats_latency(
     State(b): State<Shared>,
     Query(p): Query<LatencyParams>,
 ) -> Result<Json<Items<LatencyRow>>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&request_backend(&b), p.scope.as_deref())?;
     let bk = Arc::clone(&b);
     let (by, hour) = (p.by, p.hour.unwrap_or_default());
     let items = blocking(move || Ok(bk.latency(by, hour))).await?;
@@ -1936,7 +1973,7 @@ async fn queries(
     State(b): State<Shared>,
     Query(p): Query<QueryParams>,
 ) -> Result<Json<QueryPage>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&request_backend(&b), p.scope.as_deref())?;
     let now = b.now_unix_seconds();
     let from = time_param(p.from.as_deref(), 0, now, "from")?;
     let to = time_param(p.to.as_deref(), 0, now, "to")?;
@@ -2000,27 +2037,21 @@ async fn explain(
 #[utoipa::path(get, path = "/api/v1/lists", tag = "config",
     responses((status = 200, body = Items<ListInfo>, description = "The result.")))]
 async fn lists(State(b): State<Shared>) -> Result<Json<Items<ListInfo>>, Problem> {
-    // A cluster replica asks the primary for the download state and every node for its hits
-    // (both block on cluster calls).
-    let (items, missing_nodes) = blocking(move || {
-        // REQ: FLT-004 — a primary that didn't answer is named in `missingNodes`.
-        let mut items = b.lists();
-        let mut missing = b.missing_nodes();
-        // REQ: OBS-009 (T7.14) — hits from every node: in a cluster the API's node may answer
-        // few or no queries itself. Each federated read resets `missing_nodes`: keep both.
-        let hits = b.list_hits();
-        missing.extend(b.missing_nodes());
-        missing.sort();
-        missing.dedup();
-        for l in &mut items {
-            l.hits = hits.get(&l.name).copied().unwrap_or(0);
-        }
-        Ok((items, missing))
-    })
-    .await?;
+    // REQ: FLT-004, OBS-009 (T24.11) — a cluster replica asks the primary for the download state
+    // and every node for its hits in one round (both block on cluster calls); the nodes that
+    // didn't answer come back with the result, for this request alone.
+    let b = request_backend(&b);
+    let ListsAndHits {
+        lists: mut items,
+        hits,
+        missing,
+    } = blocking(move || Ok(b.lists_and_hits())).await?;
+    for l in &mut items {
+        l.hits = hits.get(&l.name).copied().unwrap_or(0);
+    }
     Ok(Json(Items {
         items,
-        missing_nodes,
+        missing_nodes: missing,
     }))
 }
 
@@ -2104,6 +2135,7 @@ async fn anomalies(
     State(b): State<Shared>,
     Query(p): Query<AnomalyParams>,
 ) -> Result<Json<Items<AnomalyFinding>>, Problem> {
+    let b = request_backend(&b);
     let now = b.now_unix_seconds();
     let since = time_param(
         p.since.as_deref(),
@@ -2210,6 +2242,7 @@ async fn vqlog_query(
     State(b): State<Shared>,
     Query(p): Query<VqlogParams>,
 ) -> Result<Json<VqlogResult>, Problem> {
+    let b = request_backend(&b);
     let q = vqlog::parse(&p.q).map_err(|e| {
         let p = Problem::invalid(format!("`q`: {}", e.message));
         if e.hint.is_empty() { p } else { p.hint(e.hint) }

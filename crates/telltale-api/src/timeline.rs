@@ -411,6 +411,7 @@ pub(crate) async fn client_timeline(
     Path(id): Path<String>,
     Query(p): Query<TimelineParams>,
 ) -> Result<Json<DeviceTimeline>, Problem> {
+    let b = crate::request_backend(&b);
     // REQ: FLT-017 — a Kubernetes workload (its name or analytics key): the analytics use its
     // key, the query-log reads its name (every pod address it held, while it held it).
     let (ip, log_client) = if let Some((text, key)) = b.workload(&id) {
