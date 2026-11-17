@@ -561,6 +561,15 @@ pub const LEAVE: &str = "cluster.leave";
 /// Events kept in memory.
 const MAX_EVENTS: usize = 200;
 
+/// REQ: CLU-015 (ADR-903 §4) — why [`Cluster::primary_epoch`] gave no epoch: this node is a replica,
+/// an emergency primary (it coordinates but changes nothing), or a primary whose lease lapsed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotPrimary {
+    Replica,
+    Emergency,
+    NoLease,
+}
+
 /// Answers peers' RPCs (CLU-002): `(peer node ID, kind, body)` → body, or an error. The peer
 /// ID comes from the stream's mTLS certificate, so a handler can trust it.
 pub type RpcHandler = Arc<
@@ -1703,6 +1712,23 @@ impl Cluster {
         }
         self.publish(signed, blobs);
         true
+    }
+
+    /// REQ: CLU-015, CLU-005 (ADR-903 §2, §4) — this node's epoch, if it is the primary (not an
+    /// emergency one) and its lease holds, read under the lock role changes take (so role and
+    /// epoch are one consistent pair); the reason otherwise. Nothing else runs under the lock:
+    /// the caller stamps a stored secret in this epoch afterwards (disk I/O stays outside the
+    /// role-change lock). A step-down in between leaves a row of the old epoch, which the new
+    /// primary's newer epoch outranks (§2's orphans), as with [`Cluster::publish_as`].
+    pub fn primary_epoch(&self) -> Result<u64, NotPrimary> {
+        let _fence = self.fence.lock().unwrap_or_else(PoisonError::into_inner);
+        let (role, epoch) = self.role();
+        match role {
+            Role::Replica => Err(NotPrimary::Replica),
+            Role::Emergency => Err(NotPrimary::Emergency),
+            Role::Primary if !self.may_publish() => Err(NotPrimary::NoLease),
+            Role::Primary => Ok(epoch),
+        }
     }
 
     /// The manifest this node publishes, if any.

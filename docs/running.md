@@ -211,6 +211,7 @@ Admins can also download one in the web UI (**Settings → System → Download a
 
 **Left out:**
 - sign-in sessions (everyone signs in again);
+- [stored secrets](#stored-secrets) and the node's secrets key: they're encrypted with a key no backup holds, so a restored node has none (set them again);
 - downloaded lists, compiled snapshots, and the cache, which are rebuilt;
 - the cluster identity and its CA key. A restored cluster member starts on its own: run `telltale cluster init` or join it again.
 
@@ -305,7 +306,7 @@ the chart's schema rejects a mistyped value with its path.
 - **`hostNetwork: true`** answers on port 53 of the node itself (no LoadBalancer, MAC addresses visible). Binding 53 there needs root with only `NET_BIND_SERVICE` kept; on Ubuntu nodes turn off systemd-resolved's stub listener first. k3s's CoreDNS doesn't conflict.
 - **The UI and API**: `service.api.type: LoadBalancer`, or `ingress.enabled` with `ingress.host` (set `[api] trusted_proxies` in `config` to your ingress's network).
 - **Configuration**: `config:` is merged after the chart's own settings (listeners, data directory, ports): upstreams, lists, groups, `[auth.oidc]`, everything in `docs/configuration.md`.
-- **Secrets**: `auth.bootstrapAdmin.existingSecret` creates the first admin (keys `username` and `password` or `password-hash`); `secretMounts` mounts Secrets at `/etc/telltale-secrets/<name>` (for example an OIDC `client_secret_file`).
+- **Secrets**: `auth.bootstrapAdmin.existingSecret` creates the first admin (keys `username` and `password` or `password-hash`); `secretMounts` mounts Secrets at `/etc/telltale-secrets/<name>` (for example an OIDC `client_secret_file`). The key of the [stored secrets](#stored-secrets) is, by default, `secrets.key` on the controller's volume; better, give your own Secret with `secretsKey.existingSecret` (entry `secretsKey.key`, default `secrets.key`, holding `ttsk1:` and 43 base64url characters): it is mounted read-only on the controller only, with `[node] secrets_key_file` set, and never on resolver pods, which hold no stored secrets. `secretsKey.generate: true` makes that Secret with the chart and keeps it (Helm `lookup`), which doesn't work under `helm template` or Argo CD: each render would make a new key and lock the store. With `persistence.enabled: false` stored secrets are lost at every restart, and health says `secrets_ephemeral`.
 - **Monitoring**: `serviceMonitor.enabled`, `prometheusRule.enabled` (down, all upstreams down, SERVFAIL rate, stale lists, dropped telemetry, masked client IPs, device anomalies), and `grafanaDashboard.enabled` (a ConfigMap for the Grafana sidecar).
 - **`networkPolicy.enabled`** limits who may query (`dnsFrom`), reach the UI (`apiFrom`), and scrape (`metricsFrom`).
 - **Encrypted DNS**: `encrypted.dot.enabled` (853), `encrypted.doh.enabled` (443, plus `encrypted.doh.http3`), and `encrypted.doq.enabled` add DoT, DoH, and DoQ to the DNS Service; the certificate comes from `encrypted.tls.secretName` or a cert-manager `Certificate` (`encrypted.tls.certManager.issuerRef` and `dnsNames`; add a wildcard for client IDs) and is reloaded when renewed. `encrypted.proxyProtocol` accepts PROXY protocol v2 on TCP, DoT, and DoH.
@@ -747,6 +748,7 @@ url = "exec:///usr/local/bin/consul-dns-plugin"
 args = ["--datacenter", "home"]
 ```
 - With `exec://`, TelltaleDNS starts the program and tells it where to listen in `TELLTALE_PLUGIN_SOCKET` (under `<data_dir>/plugins/`; `TELLTALE_UPSTREAM` has the upstream's name). If it exits, it's restarted after 1 s, then 2, 4, ... up to 60 s (back to 1 s once it has run for a minute). Its output goes to TelltaleDNS's log. It's stopped when the configuration changes or TelltaleDNS stops.
+- The plugin gets TelltaleDNS's environment except every `TELLTALE_*` variable but the two above: settings given through the environment can hold credentials (an upstream's headers, an OIDC `client_secret`), besides `TELLTALE_SECRETS_KEY`, `TELLTALE_SECRETS_PREVIOUS_KEY`, `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD`, `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH` and `TELLTALE_TOKEN` (the self-update's checks and restart don't get those five either). Its `args` are treated as credentials: the API and `telltale config check --print` show them as `<redacted>`.
 - A plugin can't hurt the resolver: it's another process, every exchange has the upstream's timeout, and a dead plugin is a failing upstream like any other (health, breaker, the group's other members).
 
 ## How a query is answered
@@ -2052,7 +2054,8 @@ path = "telltale/shared.toml"             # the shared settings, in TelltaleDNS'
   `allowed_signers_file` are accepted (`git config gpg.format ssh`; Ed25519 keys).
 - **Webhook:** point the repository's push webhook at `https://<node>/api/v1/hooks/git` with
   the secret from `webhook_secret_file`. Changes then apply within seconds, not at the next
-  poll.
+  poll. A refused webhook gets a plain 401 (the log says why: a wrong signature, an unreadable
+  file), and an empty secret file refuses every webhook.
 - **Outages don't matter to DNS:** with the repository unreachable, every node keeps serving
   the last commit (`telltale_cluster_git_failing` and an alert after 15 minutes).
 - **What you see:** the Cluster page shows the repository, the commit in use (author,
@@ -2949,14 +2952,15 @@ Rules watch:
 | `cluster_pinned` | the cluster is [pinned](#pinning-the-cluster-to-a-version) to an older version, so changes wait (raise `for_secs` if you pin on purpose for long) | cluster |
 | `chatty_loop` | a device asks a domain at a steady rhythm faster than every 30 s (an informational finding the `anomaly` rule leaves out; see [Device anomalies](#device-anomalies)) | finding |
 | `drill_report` | a [failover drill](#failover-drills)'s report is ready, scheduled or started by hand: followed, stuck, quiet, coverage | drill |
+| `credential_redirected` | an admin changed where an entry's credential is sent (an upstream's URL or TLS name, an alert destination's URL; see [Who may point a credential somewhere](#who-may-point-a-credential-somewhere)) | change |
 
 - **Nodes in maintenance** are left out of the per-node conditions, and an alert about one that was firing resolves with "(maintenance)". When the window ends, `for_secs` counts from zero. The Alerts page says whose alerts are paused, until when.
-- A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies, updates, new devices, pending plans, and failed rollouts go out once each.
+- A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies, updates, new devices, pending plans, failed rollouts, and credential redirects go out once each.
 - In a cluster, the primary checks the rules against the whole cluster's data and sends the alerts, so you get one message, not one per node.
 - Formats: `webhook` posts JSON (`rule`, `status` = `firing` or `resolved`, `subject`, `summary`, `node`, `time`); `ntfy` posts the text with a title and priority (a token from `token_file` as a Bearer token); `gotify` posts to `<url>/message` with the application token from `token_file`; `slack` posts `{"text": ...}`.
 - Alerts never affect DNS: a destination that's down is logged (`alert not delivered`) and skipped.
 - **In the UI:** **Alerts** (under System) shows what's firing now and how the last delivery to each destination went, and adds, changes, or removes destinations and rules like other configuration (a dry run first; on a Git-managed cluster it says what to add to Git). **Send test** on a destination sends a test message and shows the result, a wrong password or an unreachable server included.
-- **API:** `GET /api/v1/alerts` (firing alerts and deliveries), `PUT`/`DELETE /api/v1/alerts/destinations/{name}` and `/api/v1/alerts/rules/{name}` (same fields as the configuration, with `?dryRun=true`, `If-Match`, and `Idempotency-Key`), and `POST /api/v1/alerts/destinations/{name}/test`. Agent tokens need `config:write:alerts`. Passwords and tokens stay in files on the node: only their paths go through the API.
+- **API:** `GET /api/v1/alerts` (firing alerts and deliveries), `PUT`/`DELETE /api/v1/alerts/destinations/{name}` and `/api/v1/alerts/rules/{name}` (same fields as the configuration, with `?dryRun=true`, `If-Match`, and `Idempotency-Key`), and `POST /api/v1/alerts/destinations/{name}/test`. Agent tokens need `config:write:alerts`, which doesn't cover a destination's `token_file` or `password_file`, nor the address of one that has a credential (403: those are an admin's, see [Who may point a credential somewhere](#who-may-point-a-credential-somewhere)). Passwords and tokens stay in files on the node: only their paths go through the API, and a file set there must be in `[node] secret_file_dirs` (`/run/secrets` by default).
 
 ### Email
 Any mail account that allows SMTP sign-in works; you don't need a mail server of your own:
@@ -2997,7 +3001,7 @@ The icon at the bottom of the menu says how TelltaleDNS is doing, for every node
 | Icon | Level | When |
 |---|---|---|
 | circle with a check (quiet) | healthy | nothing below |
-| triangle with "!" (amber) | degraded | DNS answers, but something needs a look: one upstream isn't answering while its group still has others; a cluster node is unreachable, not serving, or behind on configuration for a minute; a list fails to download, or [hasn't changed in 30 days](#lists-that-stopped-changing); a device was rate-limited in the last 5 minutes; SERVFAIL for 5% or more of the last 5 minutes' queries; a data disk is over 90% full; a [service-level objective](#service-level-objectives) burns its error budget fast; a [listener check](#listener-checks) fails twice in a row; a listener's certificate expires within 14 days |
+| triangle with "!" (amber) | degraded | DNS answers, but something needs a look: one upstream isn't answering while its group still has others; a cluster node is unreachable, not serving, or behind on configuration for a minute; a list fails to download, or [hasn't changed in 30 days](#lists-that-stopped-changing); a device was rate-limited in the last 5 minutes; SERVFAIL for 5% or more of the last 5 minutes' queries; a data disk is over 90% full; a [service-level objective](#service-level-objectives) burns its error budget fast; a [listener check](#listener-checks) fails twice in a row; a listener's certificate expires within 14 days; the [stored secrets](#stored-secrets) are locked (`secrets_locked`), or kept in a data directory that doesn't survive a restart (`secrets_ephemeral`) |
 | octagon with "×" (red) | severe | DNS is failing for some devices: no upstream in a group answers, no node serves DNS (its listeners aren't bound, or none answers its own check), SERVFAIL for 25% or more, or a listener's certificate has expired |
 
 Click it for every reason, its node, and a link to the page to look at. On a phone, where the menu is hidden, a dot on the menu button shows when the level isn't healthy. Device anomalies don't change the level; they have their own badge. A node in [maintenance](#taking-a-node-down-for-maintenance) is left out of the level (its conditions, and its being unreachable) and listed instead ("1 node in maintenance until 14:00 (SD card swap)"); a node in maintenance that still answers counts as serving. The same answer is at `GET /api/v1/system/health` and in the MCP tool `health`. Each condition is judged over a window it already has (the upstream's circuit breaker, the last 5 minutes, the cluster heartbeat), so one failed lookup doesn't change the icon.
@@ -3021,6 +3025,97 @@ Changes are stored in `state.db`, next to named devices and local names. **The c
 **Keep it in Git.** On a node whose configuration comes from Git (`[cluster] config_source = "gitops"`, as with the Helm chart and Argo CD or Flux), the change works at once, but a rebuild from Git won't have it. After **Apply** the UI shows the TOML to add to the repository (with the Helm chart: under `config:` in the values) with a **Copy** button, or which block to remove. Once Git has it, **Revert to the file** removes the UI's copy. The API returns the same text as `keepInGit`.
 
 The same through the API: `PUT` or `DELETE` on `/api/v1/upstreams/{name}`, `/api/v1/upstream-groups/{name}`, `/api/v1/lists/{name}`, and `/api/v1/groups/{name}`, with `?dryRun=true` to preview. The body has the same fields as the TOML section. `GET /api/v1/config/entries?kind=list` lists the entries with their sources.
+
+#### Credentials are never shown
+
+Some fields hold credentials: an upstream's `headers` (a DoH API token) and `args` (an `exec://` plugin's command line), a password in any URL (`https://me:password@doh.example/dns-query`: an upstream's `url`, `proxy` and `relay`, an alert destination's or a list's `url`, `[cluster.git] repo`, a router's or a sink's `url`, `[telemetry.otlp] endpoint`, and the other URL settings), an OIDC provider's `client_secret`, and `[telemetry.otlp] headers`. TelltaleDNS never sends one back once it has it:
+- `GET /api/v1/config/entries` shows each as `<redacted>` (a URL keeps its user and host: `https://me:<redacted>@doh.example/dns-query`), and the entry's `redacted` lists which fields (`headers.Authorization`, `args[1]`, `url`). A replica shows the primary's entries the same way, even from an older primary.
+- So do write responses, the audit log (both records of a change made on a replica), the TOML to keep a change in Git, agents' plans (`GET /api/v1/plans` and `list_plans`: the write a plan replays is kept for `apply_plan` but shown redacted), the Cluster page's Git repository, pin and version diffs (a change to a credential alone shows as a `replace` whose value is `<redacted>`), every MCP read tool and resource, and `telltale config check --print` (add `--show-secrets` to print them on the node itself).
+- **Sending `<redacted>` back keeps the value.** The UI and agents edit an entry by sending the definition they read back, markers included: each `<redacted>` keeps the stored value, as long as the entry still points where it did (`url`, `proxy`, `host`, `tls_server_name`, `tls_ca`, `bootstrap`, `tls_insecure_skip_verify`, `spki_pins`, and an alert destination's `type` unchanged; the scheme is part of the URL). Change any of those and the credential has to be typed again: the write is refused with 422 `credential_reentry_required`, naming the field. That's the same for an agent's `plan_update_upstreams` that moves an upstream. A `<redacted>` with nothing stored behind it is 422 too. `POST /api/v1/checks/upstream` and `/checks/list` never use stored values: a draft with `<redacted>` is refused (422), so **Test it** on an existing upstream with headers, or a list whose URL has a password, needs the credential typed into the draft.
+- **On a replica**, a change that sends `<redacted>` back is forwarded only to a primary that runs this version or later. An older primary would store `<redacted>` itself as the value, so the change is refused with 409 `upgrade_required` until the primary is upgraded (or the credential is typed).
+- **Retries keep no request.** An `Idempotency-Key` record keeps a keyed hash of the request (keyed with the node's secrets key, below) and the redacted response, so a request that differs only in a header value is a different request (409). If the key can't be read, a write with an `Idempotency-Key` that sets a credential is refused (503 `secrets_locked`); send it without the header.
+- **Older records.** Upgrading deletes the retry records kept before (they held request bodies), with `secure_delete` on and the WAL truncated. Audit entries written before this version may hold an upstream's headers: the audit log's hash chain forbids rewriting them, so treat an older `state.db` (and its backups) as sensitive.
+
+**The node's secrets key.** Each full member has one key, which encrypts the [stored secrets](#stored-secrets) and keys those hashes. It comes from the first of `TELLTALE_SECRETS_KEY`, a file named by `[node] secrets_key_file` (`TELLTALE_NODE_SECRETS_KEY_FILE`, for a mounted Kubernetes Secret), or `<data_dir>/secrets.key`, which the first start creates while no secret is stored (mode 0600, written whole through `secrets.key.tmp`; never replaced). A key is `ttsk1:` and 43 base64url characters. Prefer a file to the variable, and on Kubernetes a `secretKeyRef` to a literal `value`. A configured key that can't be read leaves the store locked: DNS is unaffected, the log says why, and the node tries again at most every 30 seconds (a key mounted after the start is picked up without a restart). Resolver pods need none. Custody, rotation and recovery: [docs/secrets.md](secrets.md).
+
+#### Stored secrets
+
+A credential that comes from a file can instead name a **stored secret**: a value kept in `state.db`, encrypted with the node's key (ChaCha20-Poly1305), and never shown again, not even to admins. Each such field has a `_ref` beside its `_file`, holding the secret's name (lowercase letters, digits, `.`, `_` and `-`, up to 63):
+
+| Credential | File | Stored secret |
+|---|---|---|
+| a router's API key, API secret, password | `api_key_file`, `api_secret_file`, `password_file` | `api_key_ref`, `api_secret_ref`, `password_ref` |
+| an alert destination's token, password | `token_file`, `password_file` | `token_ref`, `password_ref` |
+| an OIDC provider's client secret | `client_secret` (inline), `client_secret_file` | `client_secret_ref` |
+| an event sink's token | `token_file` | `token_ref` |
+| OTLP headers | `headers` (inline) | `header_refs = { api-key = "otlp" }` |
+| the Git source's credentials, webhook secret | `credentials_file`, `webhook_secret_file` | `credentials_ref`, `webhook_secret_ref` |
+
+```toml
+[[router]]
+name = "unifi"
+type = "unifi"
+url = "https://192.168.1.1"
+api_key_ref = "unifi"     # the secret named `unifi`
+```
+
+- **One source per credential.** A field takes its inline value, its `_file`, or its `_ref`: setting two is a configuration error. `<redacted>` (what a redacted copy shows) is never a value: in the files it is an error too.
+- **The files win.** A credential the configuration files set (inline or by file) can't be set, replaced or removed through the UI or API: a change that tries is refused with 409 `set_by_file`, and so is hiding a destination the files define with a credential. An override that changes other fields keeps the files' credential. Should an override hold a reference the files have since set a file for, the file is used.
+- **A reference to a secret that isn't stored** is a warning when the configuration loads (DNS never depends on the store) and 422 `secret_missing` on an API write. An integration whose secret can't be read on this node (missing, encrypted with another key, damaged, or the store locked) reports itself "not configured: secret `<name>` can't be read on this node (why)", logged once until that changes. Setting a reference is an admin's change, like a file; pointing one at a secret an entry of another kind uses is audited as `credential.redirect`.
+- **Resolver pods** hold no stored secrets: an integration there that names one isn't configured (use a file).
+- **`telltale secrets status`** (on the node, with its `-c` files) shows the store (`ready`, `locked` with why, or `ephemeral` on a resolver pod), the key's source and `key_id` (never the key), each stored secret without its value (readable, `unreadable`: another key made it, or `corrupt`), and every credential field with its source and whether this node can read it (a file is opened without being read). It exits 1 while the store is locked, and changes nothing (no key or database made, no leftover `secrets.key.new` finished or dropped, nothing re-encrypted), so it's safe beside a running node.
+- **`telltale secrets rotate-key`** replaces the data-directory key with TelltaleDNS stopped (it refuses while the node runs): every stored secret is re-encrypted under a new key in one transaction, then the new key replaces `secrets.key`. An interrupted rotation is finished, or undone, at the next start. A key from `TELLTALE_SECRETS_KEY` or `[node] secrets_key_file` is rotated by setting the new key there and the old one as `TELLTALE_SECRETS_PREVIOUS_KEY` (or `[node] secrets_previous_key_file`): the next start re-encrypts and logs that the previous key can go.
+- **Locked.** With the configured key unreadable, `secrets.key` missing while secrets are stored (a new key is never made then), or no stored secret readable with the key, the store is locked: secret writes get 503 `secrets_locked`, health is degraded (`secrets_locked`), status reads work, and DNS and `/readyz` are unaffected. A replica whose stored secrets all came from the cluster drops them, makes a new key, and gets them again from the primary.
+- **Backups never hold them**: the rows, their deletion records and the node key are left out of every backup (`telltale backup create`). A restored node has no stored secrets; set them again.
+- **Metrics:** `telltale_secrets{state="readable|unreadable|corrupt"}`.
+
+##### Setting a stored secret
+
+Values go in through the API (or `telltale ctl secrets`), and come back out nowhere: every answer, read, log line and audit entry holds only the secret's name, kind, stamp, who set it when, and which fields use it. The Settings page for them (Integrations & secrets) isn't in yet.
+
+```sh
+telltale ctl secrets set unifi --from-file /root/unifi-key   # or pipe it in: `... set unifi < key`
+telltale ctl secrets list                                     # names, users, readable per node; never a value
+telltale ctl secrets clear unifi                              # refused while a field names it
+```
+
+| Endpoint | What it does |
+|---|---|
+| `GET /api/v1/secrets` | every stored secret (name, kind, `stamp`, `updated`, `updatedBy`, `origin`, `usedBy`, `nodes` with whether each can read it), names a `*_ref` uses that aren't set (`set: false`), this node's store (state, key source and `key_id`), and every credential field of this node with its source (`inline`, `file`, `stored`) and whether it's readable here. Operators and admins; agents with `config:read` (MCP `secrets_status`). The ETag is the secrets head |
+| `GET /api/v1/secrets/<name>` | one of them |
+| `PUT /api/v1/secrets/<name>` with `{"value": "...", "kind": "text"}` | set or replace it (admins) |
+| `DELETE /api/v1/secrets/<name>` | delete it (admins); `?force=true` when a cluster member's references can't be read |
+
+- **Admins only, never agents.** An operator gets 403; an agent token gets 403 `agent_not_allowed` whatever its scopes (a value would sit in its plan and transcript), and has no MCP tool to set one.
+- **HTTPS or the node itself.** A `PUT` or `DELETE` over plain HTTP from another host is refused with 403 `insecure_transport`: turn on `[api] tls = { self_signed = true }` (or your own certificate), put a TLS proxy in front (listed in `[api] trusted_proxies`, sending `X-Forwarded-Proto: https`), or run the command on the node (`http://127.0.0.1` counts; a request a proxy forwarded doesn't). For this check a proxy on the same host counts only when it is listed too (`127.0.0.1/32`): a plain-HTTP proxy or relay there would otherwise pass a remote client's `X-Forwarded-Proto: https` through. `telltale ctl secrets set` reads the value from `--from-file` or a pipe, never from a terminal (it would echo). `[api] allow_secrets_over_http = true` in the node's own files lifts the check; the value then crosses the network in clear.
+- **Checks.** `?dryRun=true` checks the name, kind and value and answers `wouldCreate` or `wouldReplace` with the fields that would use it, storing nothing. `Idempotency-Key` replays the first answer for the same value (the record keeps the request line and a hash keyed with the node's secrets key, never the value; another value with the same key is 409). `If-Match` takes the ETag of `GET /api/v1/secrets` (412 when another change came first). `X-Telltale-Reason` goes into the audit log, which records `secret.put` and `secret.delete` with the name, kind, stamp and users, never the value or its length. Answers carry `Cache-Control: no-store`.
+- **Values.** One line of text, at most 8 KiB, trimmed; empty, control characters, `<redacted>` and the reserved kind `pem` are refused (400), and so is a 129th secret. A secret a `webhook_secret_ref` names needs at least 16 characters. The name the UI gives a credential (`<kind>.<entry>.<field>`, such as `router.unifi.api_key`) is refused with 409 `set_by_file` when the configuration files already set that credential.
+- **Deleting** a secret a field still names, on any node, is refused with 409 `secret_in_use`, listing the fields (a node-local one, such as an OIDC provider in a replica's own files, with its node). When a full member can't be asked (it's offline, or too old to say), the delete needs `?force=true`; fields that are known to use it refuse even then.
+- **In a cluster** the primary keeps the set: a replica sends the change there over the cluster channel (`secret.put`, `secret.delete`) and logs only the operation and the name. With no primary reachable the answer is 409; a primary too old to know the call gives 409 `upgrade_required`. Secret writes go through while the configuration is managed in Git (secrets are state, never in Git) and while the cluster is pinned or a rollout is baking (they aren't configuration versions); an emergency primary and a primary without its lease refuse them (409). For now a secret set in a cluster is stored on the primary only (replication to the other full members isn't in yet): integrations that read it on another member report it as not set there. `GET /api/v1/secrets` on a replica shows the primary's list (with `stale: true` when the primary can't be asked).
+- **Mixed versions.** An older replica forwards no secret writes (it doesn't know the call), and an older primary refuses them.
+
+#### Who may point a credential somewhere
+
+Operators can't read a credential, and they can't send one somewhere else either. These changes need the **admin** role, through the UI or the API (agent tokens never make them, whatever their scopes):
+- **Which file holds a credential:** an alert destination's `token_file` and `password_file`, and an upstream's `tls_client_key` (adding, changing or removing one).
+- **Where an entry with a credential sends it:** its `url` (the scheme counts), `proxy`, `host`, `tls_server_name`, `tls_ca` or `bootstrap`, how the other end is checked (`tls_insecure_skip_verify`, `spki_pins`: with checks off, anyone on the network path could receive it), or an alert destination's `type`, when the entry has headers, arguments, a password in a URL, or a credential file. Other edits of such an entry (its weight, a rule's recipients) stay an operator's. An entry without a credential can be moved by an operator.
+- **Programs:** creating an `exec://` or `unix://` upstream, switching one to it, or changing a plugin's program or `args`. **Test it** (`POST /api/v1/checks/upstream`) on such a draft, or on one with a `tls_client_key`, needs admin too.
+
+An operator gets 403 (`forbidden`), dry runs included, naming the field.
+
+**Where a path set through the UI or API may point.** Every path an entry sets (`token_file`, `password_file`, `tls_ca`, `tls_client_cert`, `tls_client_key`, a list's `path`) is checked with its symbolic links followed, for admins too: it may not be under `/proc`, `/sys`, `/dev` or the data directory, nor be the secrets key (`[node] secrets_key_file`, the previous key), `[cluster] bootstrap_secret_file`, or a listener's or the API's TLS key, nor be under `/var/run/secrets/kubernetes.io` (the pod's service-account token). A path that isn't a credential's (`tls_ca`, `tls_client_cert`, a list's `path`) may not name a credential file the node's own configuration uses, and a list's `path` may not be in `secret_file_dirs` at all (a list's lines are shown back as rules and errors). A file holding a credential must be in one of `[node] secret_file_dirs`:
+```toml
+[node]
+# The default: where Docker, Kubernetes and the packages put secrets.
+secret_file_dirs = ["/run/secrets", "/var/run/secrets", "/etc/telltale/secrets"]
+```
+A refused path is 422 `path_not_allowed`. `secret_file_dirs` comes from the node's own files (never from the cluster), and paths in the configuration files aren't limited by it. A path an override keeps from the files' entry of the same name counts as the files'.
+
+**Paths stored before this version.** A path set through the API that breaks these rules is no longer read: a list or alert destination fails as with a missing file; an upstream runs without it (without a refused `tls_ca` it checks the server against the system's roots, and without a refused client certificate or key it connects without one, so a server that requires one refuses it), since an upstream file that can't be read would stop the whole configuration from loading. The log says why at each reload, and `GET /api/v1/config/entries` lists it in the entry's `credentialIssues` (the UI marks the row "not read"). An admin sets another path (or moves the file) to fix it.
+
+**Redirects are audited.** When an admin changes where an entry's credential goes, the dry run warns, and the change gets its own audit record, `credential.redirect` (which field, from where to where, passwords as `<redacted>`). The alert condition `credential_redirected` sends it, once per change, naming only the new address's scheme and host (the audit record has the rest). It is read from the audit log of the node that applied the change, for an hour: a change applied just before a failover isn't alerted by the new primary (its audit record stays on the old one).
+
+**In a cluster**, a replica forwards the change with the role of whoever made it, and the primary checks again. A change that touches a credential forwarded by a replica that's too old to say (0.7) is refused with 409 `upgrade_required`; other changes from it still go through. Upgrade the replicas, or make the change on the primary.
 
 ## API
 A REST API (JSON) listens on `0.0.0.0:8053` by default and also serves `/metrics` and the health probes:
@@ -3074,6 +3169,7 @@ telltale ctl flush --name example.com --subtree
 telltale ctl lists                           # with unique names and hits
 telltale ctl lists refresh --wait            # download every list again now (or name some)
 telltale ctl plans                           # agents' pending changes; `ctl approve <id>` / `ctl reject <id>`
+telltale ctl secrets list                    # stored secrets, never a value; `secrets set NAME --from-file F`, `secrets clear NAME`
 telltale ctl get stats/latency by=upstream   # any endpoint (raw JSON)
 telltale ctl put groups/kids --data '{"lists": ["oisd-small"]}'
 ```
@@ -3100,6 +3196,7 @@ The default is `analytics:read` and `config:read`: read-only, without the query 
 
 **What an agent can't do:**
 - Anything not listed above is refused. That covers users, tokens, passwords, backups, and the audit log.
+- Setting or clearing a [stored secret](#setting-a-stored-secret), taking a backup, and checking a router are refused with 403 `agent_not_allowed` whatever the scopes: a value would sit in the agent's plan and transcript. Reading the secrets' metadata (`GET /api/v1/secrets`, the tool `secrets_status`) needs `config:read`.
 - With `group`, it sees and changes only that group's devices and queries, and other views are refused.
 
 **Every change from an agent:**
@@ -3143,6 +3240,7 @@ For agents that start their tools as a subprocess, use the stdio transport. It r
 | `plan_failover_drill` | plan a [failover drill](#failover-drills): the preview lists every precondition, the baseline, and the devices (needs `ops:drill` to apply; never a default scope) |
 | `drill_report` | the newest drills, or one report: who followed, who was stuck, time to failover, who came back |
 | `get_config` | one configuration section (no secrets) |
+| `secrets_status` | the [stored secrets](#setting-a-stored-secret): names, who set them when, the fields that use them, which nodes can read them, never a value; and every credential field with its source (needs `config:read`; there's no tool to set one) |
 
 ### Analytics in one query (vqlog)
 `vqlog` is a small query language over the query log, for agents and for you: one query instead of many narrow tools, and never SQL. Stages are separated by `|`:
@@ -3326,7 +3424,7 @@ tls = { self_signed = true }                 # a certificate made on first start
 [api]
 trusted_proxies = ["10.0.0.0/8"]   # e.g. the Kubernetes pod network your ingress runs in
 ```
-The same list decides whose `X-Forwarded-Proto: https` counts: it is what lets HTTP Basic work and marks the session cookie `Secure` behind a TLS-terminating proxy. From anyone else the header is ignored, so a client on plain HTTP can't claim HTTPS. A proxy on the same host (Caddy or nginx on `127.0.0.1`) always counts.
+The same list decides whose `X-Forwarded-Proto: https` counts: it is what lets HTTP Basic work and marks the session cookie `Secure` behind a TLS-terminating proxy. From anyone else the header is ignored, so a client on plain HTTP can't claim HTTPS. A proxy on the same host (Caddy or nginx on `127.0.0.1`) always counts, except for setting a stored secret, where it must be listed as well ([Setting a stored secret](#setting-a-stored-secret)).
 
 **Audit log.** Every change to users, passwords, two-factor sign-in, and API tokens, every sign-in, each account or address lockout, and every configuration reload that changed something is recorded: who (for API tokens, the token and its owner: `token:grafana (owner: ana)`), when, from which address, what changed (`role: viewer → operator`; reloads list the changed settings, never their values), and why, if the caller sent an `X-Telltale-Reason` header. Admins see it under **Settings → Audit log** or `GET /api/v1/audit`.
 

@@ -89,6 +89,34 @@ pub enum Code {
     /// REQ: FLT-004 — this node doesn't download lists (role `resolver`, or the list fetcher
     /// didn't start): ask a node that does.
     ListsNotHere,
+    /// REQ: API-014 (ADR-903 §4) — a write sent `<redacted>` back for a credential whose entry
+    /// now points somewhere else (or that has no stored value): enter the credential again.
+    CredentialReentryRequired,
+    /// REQ: API-014, OPS-014 (ADR-903 §3) — this node's secrets key can't be read, so nothing
+    /// that needs it (a write with an `Idempotency-Key` that sets a credential) can be done.
+    SecretsLocked,
+    /// REQ: API-014, CLU-010 (ADR-903 §4) — the change needs a newer primary: it sends
+    /// `<redacted>` back, which an older primary would store as the value; or (T23.2) it
+    /// touches a credential and was forwarded by a node too old to say who made it.
+    UpgradeRequired,
+    /// REQ: API-014 (T23.2, ADR-903 §4) — a path set through the API points where none may
+    /// (under `/proc`, `/sys`, `/dev`, the data directory, or a key file), or a file holding a
+    /// credential isn't under `[node] secret_file_dirs`.
+    PathNotAllowed,
+    /// REQ: OPS-014 (ADR-903 §2, decision 4) — the configuration files set this credential
+    /// (inline or by file), and they win: the API can't set, replace or remove it.
+    SetByFile,
+    /// REQ: OPS-014 (ADR-903 §2) — a `*_ref` names a secret this node doesn't store.
+    SecretMissing,
+    /// REQ: API-015 (ADR-903 §4) — an entry or a node still uses the secret: remove those
+    /// references first (or, when a member's references can't be read, `?force=true`).
+    SecretInUse,
+    /// REQ: API-015 (ADR-903 §4) — a secret's value (or a backup's passphrase) would cross the
+    /// network in clear: use HTTPS, or the node itself (loopback).
+    InsecureTransport,
+    /// REQ: API-015, AGT-004 (ADR-903 §5) — agent tokens never do this, whatever their scopes
+    /// (secret values, backups, router checks: a value would sit in an agent's plan and transcript).
+    AgentNotAllowed,
 }
 
 impl Code {
@@ -130,6 +158,17 @@ impl Code {
             Self::NodeIsPrimary => "https://telltaledns.dev/problems/node_is_primary",
             Self::NodeIsUp => "https://telltaledns.dev/problems/node_is_up",
             Self::ListsNotHere => "https://telltaledns.dev/problems/lists_not_here",
+            Self::CredentialReentryRequired => {
+                "https://telltaledns.dev/problems/credential_reentry_required"
+            }
+            Self::SecretsLocked => "https://telltaledns.dev/problems/secrets_locked",
+            Self::UpgradeRequired => "https://telltaledns.dev/problems/upgrade_required",
+            Self::PathNotAllowed => "https://telltaledns.dev/problems/path_not_allowed",
+            Self::SetByFile => "https://telltaledns.dev/problems/set_by_file",
+            Self::SecretMissing => "https://telltaledns.dev/problems/secret_missing",
+            Self::SecretInUse => "https://telltaledns.dev/problems/secret_in_use",
+            Self::InsecureTransport => "https://telltaledns.dev/problems/insecure_transport",
+            Self::AgentNotAllowed => "https://telltaledns.dev/problems/agent_not_allowed",
         }
     }
 
@@ -171,6 +210,15 @@ impl Code {
             Self::NodeIsPrimary => "The node is the primary",
             Self::NodeIsUp => "The node is up",
             Self::ListsNotHere => "Lists aren't downloaded here",
+            Self::CredentialReentryRequired => "Enter the credential again",
+            Self::SecretsLocked => "Secrets key unavailable",
+            Self::UpgradeRequired => "Upgrade needed",
+            Self::PathNotAllowed => "Path not allowed",
+            Self::SetByFile => "Set by the configuration files",
+            Self::SecretMissing => "No such stored secret",
+            Self::SecretInUse => "Secret in use",
+            Self::InsecureTransport => "HTTPS needed",
+            Self::AgentNotAllowed => "Not for agents",
         }
     }
 
@@ -178,10 +226,15 @@ impl Code {
         match self {
             Self::InvalidParameter | Self::UnsupportedScope => StatusCode::BAD_REQUEST,
             Self::NotFound | Self::NodeUnknown | Self::VersionUnknown => StatusCode::NOT_FOUND,
-            Self::Unavailable | Self::NodeUnreachable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Unavailable | Self::NodeUnreachable | Self::SecretsLocked => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Unauthorized | Self::TotpRequired => StatusCode::UNAUTHORIZED,
-            Self::Forbidden | Self::CsrfRejected => StatusCode::FORBIDDEN,
+            Self::Forbidden
+            | Self::CsrfRejected
+            | Self::InsecureTransport
+            | Self::AgentNotAllowed => StatusCode::FORBIDDEN,
             Self::Conflict
             | Self::GitopsManaged
             | Self::SimulationBusy
@@ -193,7 +246,10 @@ impl Code {
             | Self::DrillActive
             | Self::NodeIsPrimary
             | Self::NodeIsUp
-            | Self::ListsNotHere => StatusCode::CONFLICT,
+            | Self::ListsNotHere
+            | Self::UpgradeRequired
+            | Self::SetByFile
+            | Self::SecretInUse => StatusCode::CONFLICT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::VersionConflict => StatusCode::PRECONDITION_FAILED,
             Self::InvalidConfig
@@ -204,7 +260,10 @@ impl Code {
             | Self::AnnotationTime
             | Self::HeatmapWindow
             | Self::PrivacyLevel
-            | Self::DrillTargets => StatusCode::UNPROCESSABLE_ENTITY,
+            | Self::DrillTargets
+            | Self::CredentialReentryRequired
+            | Self::PathNotAllowed
+            | Self::SecretMissing => StatusCode::UNPROCESSABLE_ENTITY,
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
         }
     }

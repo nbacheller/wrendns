@@ -29,7 +29,8 @@ does, what to check, and what to do when a step fails. Decision record: ADR-097.
 1. **Write the notes** on `main`: `deploy/release/notes/vX.Y.Z.md`, a short Markdown summary
    for people upgrading (highlights, anything to do when upgrading, known issues). GitHub
    appends its generated changelog below it. Commit and push; wait for CI to pass on that
-   commit.
+   commit. Tasks may start the file early, with upgrade items, under a first line beginning
+   `_Draft`: preflight refuses the notes until that line is gone.
 2. **Run the workflow:** GitHub → Actions → **release** → Run workflow, version `X.Y.Z`
    (`next` is optional; the default is `X.Y+1.0`).
 3. **Watch two runs:**

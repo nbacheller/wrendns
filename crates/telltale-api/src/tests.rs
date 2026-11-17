@@ -1623,8 +1623,9 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 113 with CLU-001's /cluster/nodes/{id}.
     // 114 with OBS-038's /anomaly-mutes/{name}; 116 with OPS-011's /system/support-package and
     // /system/support-package/{id}/map.
-    // 117 with API-013's /networks; 118 with FLT-004's /lists/refresh.
-    assert_eq!(paths.len(), 118);
+    // 117 with API-013's /networks; 118 with FLT-004's /lists/refresh; 120 with API-015's
+    // /secrets and /secrets/{name}.
+    assert_eq!(paths.len(), 120);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -2622,6 +2623,7 @@ async fn agt_007_viewers_see_only_their_own_plans() {
         method: "PUT".into(),
         path: "/api/v1/rules/x".into(),
         body: None,
+        write_body: None,
         preview: serde_json::json!({}),
         config_version: 1,
         reason: "too many ads".into(),

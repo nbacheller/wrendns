@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use telltale_api::auth::Actor;
+use telltale_api::auth::{Actor, Role};
 use telltale_api::model::{ClientChange, ClientInput, ConfigChange};
 use telltale_api::problem::{Code, Problem};
 use telltale_api::{
@@ -30,8 +30,8 @@ const DEADLINE: Duration = Duration::from_secs(10);
 /// `[simulate] max_secs` (300 s at most), plus the peers' list downloads.
 const SIMULATE_DEADLINE: Duration = Duration::from_secs(10 + 300 + 30);
 
-/// A configuration write, as sent to the primary.
-#[derive(Debug, Serialize, Deserialize)]
+/// A configuration write, as sent to the primary. Its `Debug` redacts credentials (API-014).
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "write", rename_all = "snake_case")]
 pub(crate) enum Write {
     Managed {
@@ -44,6 +44,14 @@ pub(crate) enum Write {
         /// REQ: OBS-024 — absent from older nodes (N−1): no simulation.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         simulate: Option<SimulateOpts>,
+        /// REQ: API-014, CLU-010 (T23.2) — the role of whoever made the change, so the primary
+        /// checks the credential rules again. Absent from older nodes (N−1): a change touching a
+        /// credential is then refused (409 `upgrade_required`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<Role>,
+        /// REQ: API-014 — the agent token's name when an agent made it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
     },
     Client {
         name: String,
@@ -61,6 +69,55 @@ pub(crate) enum Write {
     ListsRefresh(ListsRefreshWrite),
 }
 
+/// REQ: API-014 (ADR-903 §4) — what forward logging shows of a write: everything but a
+/// credential's value.
+impl std::fmt::Debug for Write {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Managed {
+                kind,
+                name,
+                body,
+                dry_run,
+                expect,
+                by,
+                simulate,
+                role,
+                agent,
+            } => f
+                .debug_struct("Managed")
+                .field("kind", kind)
+                .field("name", name)
+                .field("body", &crate::redact::body(*kind, body.as_ref()))
+                .field("dry_run", dry_run)
+                .field("expect", expect)
+                .field("by", by)
+                .field("simulate", simulate)
+                .field("role", role)
+                .field("agent", agent)
+                .finish(),
+            Self::Client {
+                name,
+                input,
+                dry_run,
+                expect,
+                by,
+                simulate,
+            } => f
+                .debug_struct("Client")
+                .field("name", name)
+                .field("input", input)
+                .field("dry_run", dry_run)
+                .field("expect", expect)
+                .field("by", by)
+                .field("simulate", simulate)
+                .finish(),
+            Self::AnomalyAck(a) => f.debug_tuple("AnomalyAck").field(a).finish(),
+            Self::ListsRefresh(a) => f.debug_tuple("ListsRefresh").field(a).finish(),
+        }
+    }
+}
+
 impl From<ManagedWrite> for Write {
     fn from(w: ManagedWrite) -> Self {
         Self::Managed {
@@ -71,6 +128,8 @@ impl From<ManagedWrite> for Write {
             expect: w.expect,
             by: w.by,
             simulate: w.simulate,
+            role: w.role,
+            agent: w.agent,
         }
     }
 }
@@ -136,8 +195,16 @@ pub(crate) async fn handle(
     body: Vec<u8>,
 ) -> Result<Vec<u8>, String> {
     let write: Write = serde_json::from_slice(&body).map_err(|e| format!("bad write: {e}"))?;
+    tracing::debug!(%peer, ?write, "a forwarded write");
     let answer = if cluster.is_primary() {
-        apply(&src, &local, &cluster, &peer, write).await
+        let via = cluster
+            .members()
+            .into_iter()
+            .find(|m| m.node_id == peer)
+            .map(|m| m.site)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| peer.clone());
+        apply(&src, &local, &peer, &via, write).await
     } else {
         Answer::Err(
             Problem::new(Code::Conflict, "this node isn't the primary any more")
@@ -148,15 +215,9 @@ pub(crate) async fn handle(
     serde_json::to_vec(&answer).map_err(|e| e.to_string())
 }
 
-async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: Write) -> Answer {
-    let via = cluster
-        .members()
-        .into_iter()
-        .find(|m| m.node_id == peer)
-        .map(|m| m.site)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| peer.to_owned());
-    let (action, target, result) = match w {
+/// Applies a forwarded write here (the primary) for `peer` (shown as `via`), and audits it.
+async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -> Answer {
+    let (action, target, result, kind) = match w {
         Write::Managed {
             kind,
             name,
@@ -165,6 +226,8 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
             expect,
             by,
             simulate,
+            role,
+            agent,
         } => {
             let action = match kind {
                 ManagedKind::Record => "record",
@@ -194,10 +257,14 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
                     expect,
                     by: format!("{by} via {via}"),
                     simulate,
+                    // REQ: API-014, CLU-010 (T23.2) — the rules are checked again here, with
+                    // the role the entry node vouches for (none from an older node).
+                    role,
+                    agent,
                 })
                 .await
                 .map(|c| serde_json::to_value(c).unwrap_or_default());
-            (verb(action, deleting), (name, by), r)
+            (verb(action, deleting), (name, by), r, Some(kind))
         }
         Write::Client {
             name,
@@ -219,10 +286,10 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
                 })
                 .await
                 .map(|c| serde_json::to_value(c).unwrap_or_default());
-            (verb("client", deleting), (name, by), r)
+            (verb("client", deleting), (name, by), r, None)
         }
-        Write::AnomalyAck(w) => return apply_ack(src, local, peer, &via, w).await,
-        Write::ListsRefresh(w) => return apply_lists_refresh(src, local, peer, &via, w).await,
+        Write::AnomalyAck(w) => return apply_ack(src, local, peer, via, w).await,
+        Write::ListsRefresh(w) => return apply_lists_refresh(src, local, peer, via, w).await,
     };
     match result {
         Ok(c) => {
@@ -236,12 +303,14 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
                     remote: Some(format!("node {peer}")),
                     reason: None,
                 };
-                auth.record(
-                    &actor,
-                    &action,
-                    &target.0,
-                    &serde_json::json!({ "before": c["before"], "after": c["after"], "configVersion": c["configVersion"] }),
-                );
+                // REQ: API-014 — the second audit record is redacted like the first.
+                let detail = match kind {
+                    Some(k) => crate::redact::audit_detail(k, &c),
+                    None => {
+                        serde_json::json!({ "before": c["before"], "after": c["after"], "configVersion": c["configVersion"] })
+                    }
+                };
+                auth.record(&actor, &action, &target.0, &detail);
             }
             Answer::Ok(c)
         }
@@ -376,6 +445,7 @@ async fn send<T: serde::de::DeserializeOwned>(
         } => SIMULATE_DEADLINE,
         _ => DEADLINE,
     };
+    tracing::debug!(?primary, write = ?w, "forwarding a write to the primary");
     let body = serde_json::to_vec(&w).map_err(|e| Problem::internal(e.to_string()))?;
     let reply = cluster
         .call(&primary, KIND, body, deadline)
@@ -394,13 +464,75 @@ async fn send<T: serde::de::DeserializeOwned>(
     }
 }
 
-/// Forwards a local-name or forwarded-domain write.
+/// The first version whose primary applies the marker rule (ADR-903 §4).
+pub(crate) const MARKERS_SINCE: (u64, u64, u64) = (0, 8, 0);
+
+/// Whether a version string (`0.8.0`, `v0.8.1-rc.1`) is at least `min`; unreadable is not.
+pub(crate) fn version_at_least(v: &str, min: (u64, u64, u64)) -> bool {
+    let core = v.trim().trim_start_matches('v');
+    let core = core.split(['-', '+']).next().unwrap_or_default();
+    let mut parts = core.split('.').map(|p| p.parse::<u64>().ok());
+    match (
+        parts.next().flatten(),
+        parts.next().flatten(),
+        parts.next().flatten(),
+    ) {
+        (Some(a), Some(b), Some(c)) => (a, b, c) >= min,
+        _ => false,
+    }
+}
+
+/// REQ: API-014, CLU-010 (ADR-903 §4) — a body that sends `<redacted>` back goes only to a
+/// primary that resolves it: an older one (N−1) would store the marker itself as the header or
+/// password, and publish it to every node. 409 `upgrade_required` otherwise (a primary whose
+/// version isn't known counts as older).
+fn markers_understood(
+    cluster: &Cluster,
+    primary: &str,
+    kind: ManagedKind,
+    body: Option<&serde_json::Value>,
+) -> Result<(), Problem> {
+    if !body
+        .is_some_and(|b| telltale_config::credentials::has_marker(crate::redact::api_kind(kind), b))
+    {
+        return Ok(());
+    }
+    let version = cluster
+        .members()
+        .into_iter()
+        .find(|m| m.node_id == primary)
+        .map(|m| m.version);
+    if version
+        .as_deref()
+        .is_some_and(|v| version_at_least(v, MARKERS_SINCE))
+    {
+        return Ok(());
+    }
+    Err(Problem::new(
+        Code::UpgradeRequired,
+        format!(
+            "the change sends `<redacted>` back for a credential, and the primary ({}) is too old to keep the stored value: it would store `<redacted>` itself",
+            version.as_deref().unwrap_or("version unknown")
+        ),
+    )
+    .hint("Upgrade the primary first, or send the credential itself instead of `<redacted>`."))
+}
+
+/// Forwards a configuration write. REQ: API-014 — the primary's answer is redacted again here
+/// (an older primary's isn't): it becomes this node's response, audit record, and stored
+/// idempotency response.
 pub(crate) async fn managed(
     cluster: Arc<Cluster>,
     primary: Option<String>,
     w: ManagedWrite,
 ) -> Result<ConfigChange, Problem> {
-    send(&cluster, primary, w.into()).await
+    let kind = w.kind;
+    if let Some(p) = &primary {
+        markers_understood(&cluster, p, kind, w.body.as_ref())?;
+    }
+    let mut c: ConfigChange = send(&cluster, primary, w.into()).await?;
+    crate::redact::change(kind, &mut c);
+    Ok(c)
 }
 
 /// REQ: OBS-014 — forwards an acknowledge or unacknowledge.
@@ -446,6 +578,182 @@ mod tests {
         let p: Problem = w.into();
         assert_eq!(p.code, Code::Conflict);
         assert_eq!(p.hint.as_deref(), Some("re-read"));
+    }
+
+    /// REQ: API-014 — a write forwarded from a replica: the primary's answer (the entry node's
+    /// response) and the primary's audit record carry no credential, and neither does forward
+    /// logging (`Write`'s `Debug`).
+    #[tokio::test]
+    async fn api_014_forwarded_write_audit_redacted() {
+        use crate::credential_tests::{HEADER, URL_PASSWORD, harness, leaks};
+        let h = harness("");
+        let local: Shared = Arc::new(crate::api_backend::ApiBackend {
+            src: Arc::clone(&h.src),
+        });
+        let w = Write::Managed {
+            kind: ManagedKind::Upstream,
+            name: "nextdns".into(),
+            body: Some(serde_json::json!({
+                "url": format!("https://me:{URL_PASSWORD}@doh.example/dns-query"),
+                "headers": {"Authorization": HEADER}
+            })),
+            dry_run: false,
+            expect: None,
+            by: "alice".into(),
+            simulate: None,
+            role: Some(Role::Admin),
+            agent: None,
+        };
+        let logged = format!("{w:?}");
+        assert!(leaks(&logged).is_empty(), "{logged}");
+        assert!(logged.contains("nextdns"), "{logged}");
+        let Answer::Ok(c) = apply(&h.src, &local, "node-b", "pi", w).await else {
+            panic!("refused")
+        };
+        assert_eq!(c["applied"], true, "{c}");
+        assert!(leaks(&c.to_string()).is_empty(), "{c}");
+        let audit = h
+            .auth
+            .state()
+            .audit_page(None, 10, Some("upstream."), None)
+            .unwrap()
+            .iter()
+            .map(|e| format!("{} {}\n", e.actor, e.detail))
+            .collect::<Vec<_>>()
+            .concat();
+        assert!(audit.contains("alice via pi"), "{audit}");
+        assert!(leaks(&audit).is_empty(), "{audit}");
+    }
+
+    /// REQ: API-014, CLU-010 (T23.2) — the primary checks the credential rules again for a
+    /// forwarded write, with the role the entry node sends: an operator's or an agent's redirect
+    /// is refused (403), and one forwarded without a role (an older node) gives 409
+    /// `upgrade_required` when it touches a credential, while other writes from such a node
+    /// still apply.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // one case per kind of forward
+    async fn api_014_forwarded_write_rechecked_on_primary() {
+        use crate::credential_tests::harness;
+        let h = harness("");
+        let local: Shared = Arc::new(crate::api_backend::ApiBackend {
+            src: Arc::clone(&h.src),
+        });
+        let write =
+            |name: &str, body: serde_json::Value, role: Option<Role>, agent: Option<&str>| {
+                Write::Managed {
+                    kind: ManagedKind::Upstream,
+                    name: name.into(),
+                    body: Some(body),
+                    dry_run: false,
+                    expect: None,
+                    by: "olive".into(),
+                    simulate: None,
+                    role,
+                    agent: agent.map(str::to_owned),
+                }
+            };
+        let moved = serde_json::json!({
+            "url": "https://doh.attacker.example/dns-query",
+            "tls_server_name": "doh.example",
+            "headers": {"Authorization": "Bearer typed"}
+        });
+        let refused = |a: Answer| match a {
+            Answer::Err(p) => p.code,
+            Answer::Ok(c) => panic!("applied: {c}"),
+        };
+        let a = apply(
+            &h.src,
+            &local,
+            "node-b",
+            "pi",
+            write("nextdns", moved.clone(), Some(Role::Operator), None),
+        )
+        .await;
+        assert_eq!(refused(a), Code::Forbidden);
+        let a = apply(
+            &h.src,
+            &local,
+            "node-b",
+            "pi",
+            write("nextdns", moved.clone(), Some(Role::Admin), Some("bot")),
+        )
+        .await;
+        assert_eq!(refused(a), Code::Forbidden);
+        // An older replica's forward: no role.
+        let a = apply(
+            &h.src,
+            &local,
+            "node-b",
+            "pi",
+            write("nextdns", moved.clone(), None, None),
+        )
+        .await;
+        assert_eq!(refused(a), Code::UpgradeRequired);
+        let old = br#"{"write":"managed","kind":"upstream","name":"plug","body":{"url":"exec:///usr/local/bin/plugin","args":["--token","x"],"weight":2},"dry_run":true,"expect":null,"by":"bob"}"#;
+        let w: Write = serde_json::from_slice(old).unwrap();
+        assert_eq!(
+            refused(apply(&h.src, &local, "node-b", "pi", w).await),
+            Code::UpgradeRequired
+        );
+        // ... while a change that touches no credential still applies.
+        let plain = serde_json::json!({"url": "tls://9.9.9.9", "tls_server_name": "dns.quad9.net"});
+        let Answer::Ok(c) = apply(
+            &h.src,
+            &local,
+            "node-b",
+            "pi",
+            write("quad9", plain, None, None),
+        )
+        .await
+        else {
+            panic!("refused")
+        };
+        assert_eq!(c["applied"], true, "{c}");
+        // The admin's applies, and is audited as a redirect on the primary.
+        let Answer::Ok(c) = apply(
+            &h.src,
+            &local,
+            "node-b",
+            "pi",
+            write("nextdns", moved, Some(Role::Admin), None),
+        )
+        .await
+        else {
+            panic!("refused")
+        };
+        assert_eq!(c["applied"], true, "{c}");
+        let audit = h
+            .auth
+            .state()
+            .audit_page(
+                None,
+                10,
+                Some(crate::credential_rules::REDIRECT_ACTION),
+                None,
+            )
+            .unwrap();
+        assert_eq!(audit.len(), 1);
+        assert_eq!(audit[0].actor, "olive via pi");
+        assert!(
+            h.src
+                .config
+                .load()
+                .upstream
+                .iter()
+                .any(|u| u.url.contains("attacker")),
+            "the admin's change applied"
+        );
+    }
+
+    /// REQ: API-014, CLU-010 — which primaries resolve `<redacted>`.
+    #[test]
+    fn api_014_marker_capable_versions() {
+        for v in ["0.8.0", "v0.8.0", "0.8.1-rc.1", "0.10.0", "1.0.0+build"] {
+            assert!(version_at_least(v, MARKERS_SINCE), "{v}");
+        }
+        for v in ["0.7.9", "0.7", "", "dev", "0.7.12-rc.1"] {
+            assert!(!version_at_least(v, MARKERS_SINCE), "{v}");
+        }
     }
 
     // REQ: OBS-014 — an acknowledgement crosses the channel intact.
@@ -593,6 +901,8 @@ mod tests {
                 auto: false,
                 until_s: None,
             }),
+            role: Some(Role::Operator),
+            agent: Some("helper".into()),
         }
         .into();
         let back: Write = serde_json::from_slice(&serde_json::to_vec(&w).unwrap()).unwrap();
@@ -601,6 +911,8 @@ mod tests {
             expect,
             by,
             simulate,
+            role,
+            agent,
             ..
         } = back
         else {
@@ -611,11 +923,17 @@ mod tests {
             (ManagedKind::Forward, Some(7), "alice")
         );
         assert_eq!(simulate.and_then(|s| s.window).as_deref(), Some("24h"));
-        // REQ: OBS-024 — a write from an older node (no `simulate`) still reads.
+        // REQ: API-014 (T23.2) — the role and the agent cross the channel.
+        assert_eq!(
+            (role, agent.as_deref()),
+            (Some(Role::Operator), Some("helper"))
+        );
+        // REQ: OBS-024 — a write from an older node (no `simulate`, no role) still reads.
         let old = br#"{"write":"managed","kind":"forward","name":"x","body":null,"dry_run":true,"expect":null,"by":"bob"}"#;
-        let Write::Managed { simulate, .. } = serde_json::from_slice(old).unwrap() else {
+        let Write::Managed { simulate, role, .. } = serde_json::from_slice(old).unwrap() else {
             panic!("expected managed")
         };
         assert!(simulate.is_none());
+        assert!(role.is_none());
     }
 }

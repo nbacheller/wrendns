@@ -42,8 +42,13 @@ pub struct Plan {
     /// The REST write it replays: `PUT` or `DELETE`.
     pub method: String,
     pub path: String,
+    /// The write's body as shown: credentials read `<redacted>` (API-014).
     #[schema(value_type = Option<Object>)]
     pub body: Option<serde_json::Value>,
+    /// The body `apply_plan` sends, as the agent gave it; never shown (API-014). [`Plans::add`]
+    /// fills it from `body` and redacts `body`.
+    #[serde(skip)]
+    pub write_body: Option<serde_json::Value>,
     /// The dry run's answer: before, after, impact, and warnings.
     #[schema(value_type = Object)]
     pub preview: serde_json::Value,
@@ -89,6 +94,32 @@ pub fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// REQ: API-014, AGT-007 (ADR-903 §4) — a plan's write body as `GET /api/v1/plans`, the MCP
+/// `list_plans` tool, and the approve and reject answers show it: the credential table of the
+/// entry kind its path writes (every kind with credentials, for a path that names none).
+fn redact_body(path: &str, body: &mut serde_json::Value) {
+    use telltale_config::credentials::redact_entry;
+    let rest = path.strip_prefix("/api/v1/").unwrap_or(path);
+    let kind = [
+        ("upstreams/", "upstream"),
+        ("lists/", "list"),
+        ("alerts/destinations/", "alert_destination"),
+    ]
+    .into_iter()
+    .find(|(p, _)| rest.starts_with(p))
+    .map(|(_, k)| k);
+    match kind {
+        Some(k) => {
+            redact_entry(k, body);
+        }
+        None => {
+            for k in ["upstream", "list", "alert_destination"] {
+                redact_entry(k, body);
+            }
+        }
+    }
+}
+
 /// The plans on this node.
 #[derive(Debug, Default)]
 pub struct Plans(Mutex<HashMap<String, Plan>>);
@@ -107,7 +138,14 @@ impl Plans {
         }
     }
 
-    pub fn add(&self, plan: Plan) -> Plan {
+    /// Keeps `plan`; its `body` is kept for `apply_plan` (`write_body`) and shown redacted.
+    pub fn add(&self, mut plan: Plan) -> Plan {
+        if plan.write_body.is_none() {
+            plan.write_body.clone_from(&plan.body);
+        }
+        if let Some(b) = &mut plan.body {
+            redact_body(&plan.path, b);
+        }
         let now = now();
         let mut m = self.lock();
         Self::expire(&mut m, now);
@@ -311,6 +349,7 @@ mod tests {
             method: "PUT".into(),
             path: "/api/v1/rules/x".into(),
             body: None,
+            write_body: None,
             preview: serde_json::json!({}),
             config_version: 3,
             reason: "test".into(),
@@ -323,6 +362,37 @@ mod tests {
             decided_by: None,
             result: None,
         }
+    }
+
+    /// REQ: API-014, AGT-007 — a plan shows its body redacted and keeps the agent's for apply.
+    #[test]
+    fn api_014_plan_body_shown_redacted() {
+        let plans = Plans::default();
+        let mut p = plan("p1", "token:a", "ready", now() + 600);
+        p.path = "/api/v1/upstreams/nextdns".into();
+        p.body = Some(serde_json::json!({
+            "url": "https://u:plantedpw@doh.example/q",
+            "headers": {"Authorization": "Bearer planted"}
+        }));
+        let shown = plans.add(p);
+        let listed = serde_json::to_string(&plans.list(None)).unwrap();
+        for text in [serde_json::to_string(&shown).unwrap(), listed] {
+            assert!(!text.contains("planted"), "{text}");
+            assert!(
+                text.contains("https://u:<redacted>@doh.example/q"),
+                "{text}"
+            );
+        }
+        let kept = plans.get("p1").unwrap().write_body.unwrap();
+        assert_eq!(kept["headers"]["Authorization"], "Bearer planted");
+        // A path that names no kind: every kind's credentials.
+        let mut q = plan("p2", "token:a", "ready", now() + 600);
+        q.body = Some(serde_json::json!({"headers": {"X": "planted"}}));
+        assert!(
+            !serde_json::to_string(&plans.add(q))
+                .unwrap()
+                .contains("planted")
+        );
     }
 
     /// REQ: AGT-007 — pending plans wait for approval; expired ones can't be applied; owners

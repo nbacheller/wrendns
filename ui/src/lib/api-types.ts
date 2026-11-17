@@ -41,14 +41,21 @@ export interface paths {
          *     `{"type": "ntfy", "url": "https://ntfy.sh/my-topic"}`, or for email
          *     `{"type": "email", "url": "smtp://smtp.gmail.com:587", "from": "me@gmail.com", "to":
          *     ["me@gmail.com"], "username": "me@gmail.com", "password_file": "/run/secrets/smtp"}`.
-         *     Secrets stay in files on the node (`token_file`, `password_file`): only the path is sent.
-         *     A destination the config files define is overridden until this one is deleted.
+         *     Secrets stay in files on the node (`token_file`, `password_file`) or in its encrypted store
+         *     (`token_ref`, `password_ref` name a stored secret: 422 `secret_missing` when none has that
+         *     name): only the path or the name is sent, and a password in `url` reads `<redacted>` wherever
+         *     the destination is shown (API-014; send it back as it is to keep it, as long as the URL's host
+         *     is unchanged). Setting a file or a reference is an admin's (OPS-014).
+         *     A destination the config files define is overridden until this one is deleted; a credential
+         *     the files set for it stays as they set it: left out of the body, it is kept, and a body that
+         *     sets, replaces or removes it is refused (409 `set_by_file`).
          */
         put: operations["put_alert_destination"];
         post?: never;
         /**
          * Remove an alert destination (OBS-010, T9.6).
-         * @description Rules that still send to it make the configuration invalid (422 says which).
+         * @description Rules that still send to it make the configuration invalid (422 says which). A destination
+         *     the config files define, with a credential they set, can't be hidden (409 `set_by_file`).
          */
         delete: operations["delete_alert_destination"];
         options?: never;
@@ -1404,7 +1411,14 @@ export interface paths {
          *     from (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the
          *     config files' entry of the same name), or `hidden` (the files' entry is left out; listed so
          *     it can be brought back). `DELETE` on an override's or a hidden entry's path brings the
-         *     files' version back. Secrets aren't part of these sections.
+         *     files' version back.
+         *
+         *     Credentials never come back (API-014): upstream `headers` and `args`, and the password in a
+         *     URL (`https://me:<redacted>@host/`) read `<redacted>`, and `redacted` lists where. Sending
+         *     `<redacted>` back in a `PUT` keeps the stored value while the entry's destination (`url`,
+         *     `proxy`, `host`, `tls_server_name`, `tls_ca`, `bootstrap`, `tls_insecure_skip_verify`,
+         *     `spki_pins`, a destination's `type`) is unchanged; with a new destination the
+         *     credential has to be entered again (422 `credential_reentry_required`).
          */
         get: operations["config_entries"];
         put?: never;
@@ -2265,6 +2279,81 @@ export interface paths {
          *     of the group's `schedules` first.
          */
         delete: operations["delete_schedule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/secrets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the stored secrets (never a value).
+         * @description Every stored secret with its kind, stamp, who set it when, the credential fields that name it
+         *     (`usedBy`), and which nodes hold it and can read it; names a reference uses that aren't set
+         *     come with `set: false`. Also this node's secrets store (ready, locked and why, the key's
+         *     source and ID: never the key) and every credential field of this node's configuration with
+         *     its source: `inline` or `file` (the configuration files set it, and win: the UI shows it
+         *     read-only), or `stored`, and whether this node can read it. On a replica the list is the
+         *     primary's when it answers, otherwise this node's with `stale: true`. The answer's `ETag` is the
+         *     secrets head, for `If-Match` on a write. Operators and admins; agents with `config:read`
+         *     (MCP `secrets_status`).
+         */
+        get: operations["list_secrets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/secrets/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One stored secret (never its value).
+         * @description As in the list: its kind, stamp, who set it when, which fields name it, and which nodes hold
+         *     it. 404 when no secret of that name is stored and nothing names it.
+         */
+        get: operations["get_secret"];
+        /**
+         * Set (or replace) a stored secret.
+         * @description Stores `value`, encrypted with the node's key, under `name` (lowercase letters, digits, `.`,
+         *     `_` and `-`, starting with a letter or digit, at most 63). Entries name it in their `*_ref`
+         *     fields (`api_key_ref = "unifi"`). The value is write-only: the answer, every read, the audit
+         *     entry (`secret.put`: name, kind, stamp, users) and the logs hold only metadata. In a cluster a
+         *     replica sends it to the primary (`secret.put` over the cluster channel); pins and staged
+         *     rollouts don't hold it back, and a configuration managed in Git doesn't refuse it (secrets
+         *     are state, never in Git). Refused on an emergency primary, a primary without its lease, or
+         *     with no primary reachable (409).
+         *
+         *     Admins only: agent tokens get 403 `agent_not_allowed`, whatever their scopes. Only over HTTPS
+         *     or from the node itself (403 `insecure_transport`; `[api] allow_secrets_over_http` lifts it).
+         *     `?dryRun=true` checks the name, kind and value and reports `wouldCreate`/`wouldReplace` and the
+         *     fields that would become configured, storing nothing. `Idempotency-Key` replays the first
+         *     answer for the same value (another value with the same key is 409); `If-Match` takes the
+         *     secrets head's `ETag` (412 when it moved).
+         */
+        put: operations["put_secret"];
+        post?: never;
+        /**
+         * Delete a stored secret.
+         * @description Removes the value (a deletion record stays, so members that were offline learn of it). Refused
+         *     with 409 `secret_in_use` while a field names it, on any node (the answer lists them): change
+         *     those entries first. When a full member's references can't be read now (it is offline), the
+         *     delete needs `?force=true`. Admins only (never agents), audited as `secret.delete`; the same
+         *     dry run, `Idempotency-Key`, `If-Match` and HTTPS rule as setting one.
+         */
+        delete: operations["delete_secret"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4281,7 +4370,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "path_not_allowed" | "set_by_file" | "secret_missing" | "secret_in_use" | "insecure_transport" | "agent_not_allowed";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -4320,13 +4409,25 @@ export interface components {
          */
         ConfigEntry: {
             /**
+             * @description REQ: API-014 (T23.2, ADR-903 §4) — paths this entry sets through the UI or API that the
+             *     path rules refuse (under `/proc` or the data directory, a key file, a credential file
+             *     outside `[node] secret_file_dirs`): they aren't read until an admin sets another.
+             */
+            credentialIssues?: components["schemas"]["CredentialIssue"][];
+            /**
              * @description The definition in effect, with the same fields as in `telltale.toml` (absent when
-             *     hidden).
+             *     hidden). Credentials read `<redacted>` (API-014).
              */
             definition?: Record<string, never> | null;
             /** @description `upstream`, `upstream_group`, `list`, or `group`. */
             kind: string;
             name: string;
+            /**
+             * @description REQ: API-014 — the fields of `definition` that hold a credential and read `<redacted>`
+             *     (`headers.Authorization`, `args[1]`, `url` for a URL's password). Send them back as they
+             *     are to keep the values.
+             */
+            redacted?: string[];
             /**
              * @description `file` (the config files), `added` (made through the UI or API), `override` (replaces
              *     the files' entry of that name), or `hidden` (the files' entry is left out).
@@ -4378,6 +4479,33 @@ export interface components {
             password: string;
             role: components["schemas"]["Role"];
             username: string;
+        };
+        /** @description A credential field of a node's configuration, with where its value comes from. */
+        CredentialField: {
+            /** @description The file's path, or the stored secret's name (never a value). */
+            at?: string | null;
+            entry: string;
+            /** @description `api_key`, `token`, `header:api-key`, ... */
+            field: string;
+            kind: string;
+            /** @description The node this is about. */
+            node: string;
+            /**
+             * @description This node can read it (a file is opened without being read; a stored secret is judged by
+             *     its row, not decrypted).
+             */
+            readable: boolean;
+            /** @description Why not. */
+            reason?: string | null;
+            /** @description `inline` or `file` (set by the configuration files: the UI won't edit it), or `stored`. */
+            source: string;
+        };
+        /** @description REQ: API-014 (T23.2) — a stored path that isn't read, and why. */
+        CredentialIssue: {
+            /** @description The entry's field (`token_file`, `tls_ca`, `path`). */
+            field: string;
+            /** @description Why it isn't read. */
+            reason: string;
         };
         /**
          * @description REQ: OBS-025 (T13.3, ADR-117) — what a device looks like: a guess from its MAC vendor,
@@ -5427,13 +5555,25 @@ export interface components {
         Items_ConfigEntry: {
             items: {
                 /**
+                 * @description REQ: API-014 (T23.2, ADR-903 §4) — paths this entry sets through the UI or API that the
+                 *     path rules refuse (under `/proc` or the data directory, a key file, a credential file
+                 *     outside `[node] secret_file_dirs`): they aren't read until an admin sets another.
+                 */
+                credentialIssues?: components["schemas"]["CredentialIssue"][];
+                /**
                  * @description The definition in effect, with the same fields as in `telltale.toml` (absent when
-                 *     hidden).
+                 *     hidden). Credentials read `<redacted>` (API-014).
                  */
                 definition?: Record<string, never> | null;
                 /** @description `upstream`, `upstream_group`, `list`, or `group`. */
                 kind: string;
                 name: string;
+                /**
+                 * @description REQ: API-014 — the fields of `definition` that hold a credential and read `<redacted>`
+                 *     (`headers.Authorization`, `args[1]`, `url` for a URL's password). Send them back as they
+                 *     are to keep the values.
+                 */
+                redacted?: string[];
                 /**
                  * @description `file` (the config files), `added` (made through the UI or API), `override` (replaces
                  *     the files' entry of that name), or `hidden` (the files' entry is left out).
@@ -5831,6 +5971,7 @@ export interface components {
         /** @description A list wrapper used by every collection endpoint. */
         Items_Plan: {
             items: {
+                /** @description The write's body as shown: credentials read `<redacted>` (API-014). */
                 body?: Record<string, never> | null;
                 /**
                  * Format: int64
@@ -6938,6 +7079,7 @@ export interface components {
         };
         /** @description A planned change (REQ: AGT-007). */
         Plan: {
+            /** @description The write's body as shown: credentials read `<redacted>` (API-014). */
             body?: Record<string, never> | null;
             /**
              * Format: int64
@@ -7416,6 +7558,123 @@ export interface components {
          * @enum {string}
          */
         Scope: "read" | "write" | "admin";
+        /** @description REQ: API-015, AGT-002 — what a `PUT` or `DELETE` did (or, with `dryRun`, would do). */
+        SecretChange: {
+            applied: boolean;
+            dryRun: boolean;
+            /** @description The head after the change (its `etag` for the next `If-Match`). */
+            head: components["schemas"]["SecretsHead"];
+            secret: components["schemas"]["SecretMeta"];
+            /** @description The fields that name it: they become configured with it (or lose it, on delete). */
+            usedBy: components["schemas"]["SecretUse"][];
+            warnings: string[];
+            /** @description A new secret. */
+            wouldCreate: boolean;
+            wouldDelete: boolean;
+            /** @description One that was set already. */
+            wouldReplace: boolean;
+        };
+        /** @description A stored secret: never its value. */
+        SecretMeta: {
+            /** @description On the answering node: `readable`, `unreadable` (another key made it) or `corrupt`. */
+            health?: string | null;
+            /** @description `text`. */
+            kind: string;
+            name: string;
+            /** @description Which nodes hold it, and whether they can read it. */
+            nodes: components["schemas"]["SecretNode"][];
+            /** @description `local` (made on this node) or `cluster` (the primary's). */
+            origin?: string | null;
+            /** @description Stored now (false: a reference names it but it isn't set, or it was deleted). */
+            set: boolean;
+            stamp: components["schemas"]["SecretStamp"];
+            /** @description When it was set or deleted (RFC 3339). */
+            updated?: string | null;
+            updatedBy?: string | null;
+            /** @description The credential fields that name it. */
+            usedBy: components["schemas"]["SecretUse"][];
+        };
+        /** @description How one node holds a secret. */
+        SecretNode: {
+            /** @description It holds this stamp. */
+            applied: boolean;
+            node: string;
+            /** @description It holds it but can't read it (another key made it, or it's damaged). */
+            unreadable: boolean;
+        };
+        /** @description The body of `PUT /api/v1/secrets/{name}`. */
+        SecretPut: {
+            /** @description `text` (the default). `pem` is reserved. */
+            kind?: string | null;
+            /**
+             * @description The value: one line of text (a token, a password, an API key), at most 8 KiB, trimmed, no
+             *     control characters. Write-only: no answer, read, log, audit entry or backup without a
+             *     passphrase ever holds it.
+             * @example s3cr3t-token
+             */
+            value: string;
+        };
+        /** @description A stamp: the epoch (0 on a standalone node) and the change's number in it. */
+        SecretStamp: {
+            /** Format: int64 */
+            epoch: number;
+            /** Format: int64 */
+            seq: number;
+        };
+        /** @description A credential field that names a secret. */
+        SecretUse: {
+            /** @description The reference (`api_key_ref`, `header_refs.api-key`). */
+            field: string;
+            /** @description `router`, `alert_destination`, `oidc_provider`, `sink`, `git`, `otlp`. */
+            kind: string;
+            /** @description The entry's name (`default` for the Git source and OTLP). */
+            name: string;
+            /** @description The node whose own (node-local) configuration holds the reference; absent: the cluster's. */
+            node?: string | null;
+            /** @description `stored`: the field takes the secret. */
+            source: string;
+        };
+        /**
+         * @description REQ: API-015 (ADR-903 §2) — the secrets head: the highest stamp and a digest of every
+         *     secret's name, kind, stamp and deletion (no value, no value hash). `etag` is what `If-Match`
+         *     takes.
+         */
+        SecretsHead: {
+            /** @description BLAKE3, hex. */
+            digest: string;
+            /** Format: int64 */
+            epoch: number;
+            /** @description `"<epoch>.<seq>.<first 16 digits of digest>"`: send it as `If-Match`. */
+            etag: string;
+            /** Format: int64 */
+            seq: number;
+        };
+        /** @description REQ: API-015 — `GET /api/v1/secrets`. */
+        SecretsStatus: {
+            /** @description This node's credential fields. */
+            credentials: components["schemas"]["CredentialField"][];
+            head: components["schemas"]["SecretsHead"];
+            /** @description Stored secrets (and names a reference uses that aren't set), by name. */
+            items: components["schemas"]["SecretMeta"][];
+            /** @description From this node's own copy: the primary couldn't be asked. */
+            stale: boolean;
+            /** @description This node's store. */
+            store: components["schemas"]["SecretsStore"];
+        };
+        /** @description The answering node's secrets store. */
+        SecretsStore: {
+            /** @description The data directory isn't kept across restarts (stored secrets would be lost). */
+            dataEphemeral: boolean;
+            /** @description The key's ID (8 bytes, hex). */
+            keyId?: string | null;
+            /** @description Where the key came from (the environment, or a file's path); never the key. */
+            keySource?: string | null;
+            node: string;
+            previousKeyId?: string | null;
+            reason?: string | null;
+            /** @description `starting`, `ready`, `locked`, or `ephemeral` (a resolver pod: it holds none). */
+            state: string;
+        };
         /** @description REQ: FLT-012 (T7.9) — a blockable service. */
         ServiceInfo: {
             /** @description `social`, `video`, `music`, `gaming`, `messaging`, `dating`, `ai`, ... */
@@ -8378,6 +8637,15 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description `set_by_file`: the config files set this destination's credential, and they win. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -8387,7 +8655,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description A field is wrong, or the configuration wouldn't be valid: problem+json says which. */
+            /** @description A field is wrong, a reference names no stored secret (`secret_missing`), or the configuration wouldn't be valid: problem+json says which. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -8436,6 +8704,15 @@ export interface operations {
             };
             /** @description No entry by that name. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define it with a credential. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12883,6 +13160,223 @@ export interface operations {
             };
             /** @description A group still uses it. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_secrets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stored secrets, without values. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretsStatus"];
+                };
+            };
+            /** @description Viewers don't see them. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_secret: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The secret's name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The secret, without its value. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretMeta"];
+                };
+            };
+            /** @description No secret of that name, and nothing names one. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_secret: {
+        parameters: {
+            query?: {
+                /** @description Check and report without changing anything. */
+                dryRun?: boolean;
+                /**
+                 * @description `DELETE` only: go ahead although a full member's references can't be read now (it is
+                 *     offline). References that are known still refuse.
+                 */
+                force?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The secret's name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecretPut"];
+            };
+        };
+        responses: {
+            /** @description Stored (or, with dryRun, what would be). Metadata only. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretChange"];
+                };
+            };
+            /** @description The name, kind or value isn't acceptable (empty, over 8 KiB, a control character, `<redacted>`; a webhook secret under 16 characters), or 128 secrets are stored (`invalid_parameter`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not an admin, an agent token (`agent_not_allowed`), or plain HTTP from another host (`insecure_transport`). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No primary to take it, an emergency primary or one without its lease, a primary too old to store secrets (`upgrade_required`), the configuration files set that credential (`set_by_file`), or an Idempotency-Key reused with another value. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description If-Match: the secrets head moved. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The node's secrets key can't be read (`secrets_locked`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_secret: {
+        parameters: {
+            query?: {
+                /** @description Check and report without changing anything. */
+                dryRun?: boolean;
+                /**
+                 * @description `DELETE` only: go ahead although a full member's references can't be read now (it is
+                 *     offline). References that are known still refuse.
+                 */
+                force?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The secret's name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted (or, with dryRun, what would be). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretChange"];
+                };
+            };
+            /** @description Not an admin, an agent token, or plain HTTP from another host. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No secret of that name is stored. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Still named by a field (`secret_in_use`; or a member's references are unknown: `?force=true`), or no primary to take it. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description If-Match: the secrets head moved. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The node's secrets key can't be read (`secrets_locked`). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

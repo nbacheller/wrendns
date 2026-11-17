@@ -44,9 +44,11 @@ const TABLE: &[(&str, Class)] = &[
     ("alerts.destination[].from", Scan),
     ("alerts.destination[].name", Plain),
     ("alerts.destination[].password_file", Scan),
+    ("alerts.destination[].password_ref", Plain),
     ("alerts.destination[].tls_ca", Scan),
     ("alerts.destination[].to[]", Scan),
     ("alerts.destination[].token_file", Scan),
+    ("alerts.destination[].token_ref", Plain),
     ("alerts.destination[].url", Url),
     ("alerts.destination[].username", Secret),
     ("alerts.rule[].name", Plain),
@@ -66,6 +68,7 @@ const TABLE: &[(&str, Class)] = &[
     ("auth.oidc.provider[].client_id", Secret),
     ("auth.oidc.provider[].client_secret", Secret),
     ("auth.oidc.provider[].client_secret_file", Scan),
+    ("auth.oidc.provider[].client_secret_ref", Plain),
     ("auth.oidc.provider[].groups_claim", Plain),
     ("auth.oidc.provider[].id", Plain),
     ("auth.oidc.provider[].issuer", Url),
@@ -84,11 +87,13 @@ const TABLE: &[(&str, Class)] = &[
     ("cluster.config_source", Plain),
     ("cluster.git.allowed_signers_file", Scan),
     ("cluster.git.credentials_file", Scan),
+    ("cluster.git.credentials_ref", Plain),
     ("cluster.git.max_bytes", Plain),
     ("cluster.git.path", Free),
     ("cluster.git.ref", Free),
     ("cluster.git.repo", Url),
     ("cluster.git.webhook_secret_file", Scan),
+    ("cluster.git.webhook_secret_ref", Plain),
     ("cluster.init.advertise[]", Scan),
     ("cluster.init.config_authority", Plain),
     ("cluster.join_url", Url),
@@ -142,6 +147,9 @@ const TABLE: &[(&str, Class)] = &[
     ("local.device_domain", Scan),
     ("node.data_dir", Scan),
     ("node.name", Name(C::Node)),
+    ("node.secret_file_dirs[]", Scan),
+    ("node.secrets_key_file", Scan),
+    ("node.secrets_previous_key_file", Scan),
     ("probe.targets[]", Scan),
     ("ratelimit.exempt[]", Scan),
     ("record[].name", Free),
@@ -152,9 +160,12 @@ const TABLE: &[(&str, Class)] = &[
     ("route[].match_suffix[]", Free),
     ("route[].upstream_group", Plain),
     ("router[].api_key_file", Scan),
+    ("router[].api_key_ref", Plain),
     ("router[].api_secret_file", Scan),
+    ("router[].api_secret_ref", Plain),
     ("router[].name", Plain),
     ("router[].password_file", Scan),
+    ("router[].password_ref", Plain),
     ("router[].site", Plain),
     ("router[].tls_ca", Scan),
     ("router[].tls_server_name", Scan),
@@ -182,6 +193,7 @@ const TABLE: &[(&str, Class)] = &[
     ("telemetry.internal_names[]", Free),
     ("telemetry.metrics.listen", Scan),
     ("telemetry.otlp.endpoint", Url),
+    ("telemetry.otlp.header_refs", Plain),
     ("telemetry.otlp.headers", Secret),
     ("telemetry.qlog.retention_bytes", Plain),
     ("telemetry.ship.buffer_bytes", Plain),
@@ -194,6 +206,7 @@ const TABLE: &[(&str, Class)] = &[
     ("telemetry.sink[].statuses[]", Plain),
     ("telemetry.sink[].tls_ca", Scan),
     ("telemetry.sink[].token_file", Scan),
+    ("telemetry.sink[].token_ref", Plain),
     ("telemetry.sink[].token_scheme", Plain),
     ("telemetry.sink[].url", Url),
     ("updates.index_url", Url),
@@ -382,10 +395,18 @@ pub fn schema_info() -> &'static SchemaInfo {
 }
 
 /// A key that looks like a credential: the second net, whatever the table says. `*_file`, `*_path`,
-/// and `*_scheme` fields name where a secret is, or how it is sent, and aren't secrets themselves.
+/// `*_scheme` and `*_ref` fields name where a secret is, or how it is sent, and aren't secrets
+/// themselves.
 fn credential_name(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
-    if k.ends_with("_file") || k.ends_with("_path") || k.ends_with("_scheme") {
+    // REQ: OPS-014 (ADR-903 §4) — `*_ref` and `header_refs` name a stored secret: a name, not
+    // the value.
+    if k.ends_with("_file")
+        || k.ends_with("_path")
+        || k.ends_with("_scheme")
+        || k.ends_with("_ref")
+        || k.ends_with("_refs")
+    {
         return false;
     }
     [

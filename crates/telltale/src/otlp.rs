@@ -305,12 +305,22 @@ pub(crate) async fn post(
     url: &str,
     cfg: &telltale_config::Config,
     body: String,
+    store: &crate::secrets::SecretStore,
 ) -> Result<(), String> {
     let mut req = http::Request::post(url)
         .header("content-type", "application/json")
         .header("user-agent", "TelltaleDNS");
     for (k, v) in &cfg.telemetry.otlp.headers {
         req = req.header(k.as_str(), v.as_str());
+    }
+    // REQ: OPS-014 (ADR-903 §2) — headers whose values are stored secrets, read per request.
+    for (k, name) in &cfg.telemetry.otlp.header_refs {
+        let v = crate::secrets::Credential::of(None, Some(name))
+            .resolve(Some(store))?
+            .map(|r| r.value);
+        if let Some(v) = v {
+            req = req.header(k.as_str(), v.expose());
+        }
     }
     let req = req.body(body.into_bytes()).map_err(|e| e.to_string())?;
     match tokio::time::timeout(Duration::from_secs(10), client.request(req, 64 * 1024)).await {
@@ -352,7 +362,7 @@ pub(crate) async fn run(
             now_ns,
         )
         .to_string();
-        match post(&client, &url, &cfg, body).await {
+        match post(&client, &url, &cfg, body, &sources.secrets).await {
             Ok(()) => {
                 if failing {
                     debug!("OTLP export: delivered again");

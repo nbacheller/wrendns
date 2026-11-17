@@ -25,22 +25,26 @@
   $effect(() => poll(load, 15_000));
 
   const kinds = ['email', 'ntfy', 'gotify', 'slack', 'webhook'];
+  // REQ: API-014 (T23.2) — a destination holds a credential when a file gives it one or its
+  // address carries a password: then only an admin changes where it goes.
+  const holdsCredential = (d: Record<string, unknown>) =>
+    Boolean(d.token_file || d.password_file || /:\/\/[^/?#]*:[^/?#@]*@/.test(String(d.url ?? '')));
   const destinationFields: Field[] = [
     { key: 'type', label: 'Type', type: 'select', options: kinds, initial: 'email',
       help: 'email (any provider’s SMTP), ntfy or Gotify (phone push), slack (Slack, Mattermost, Discord), or a JSON webhook.' },
     { key: 'url', label: 'Address', type: 'text', placeholder: 'smtp://smtp.gmail.com:587 or https://ntfy.sh/my-topic',
-      help: 'Email: smtp://host:587 (STARTTLS) or smtps://host:465. Others: the https:// URL.' },
+      help: 'Email: smtp://host:587 (STARTTLS) or smtps://host:465. Others: the https:// URL.', admin: holdsCredential },
     { key: 'from', label: 'From (email)', type: 'text', placeholder: 'you@gmail.com' },
     { key: 'to', label: 'To (email, one per line)', type: 'lines', placeholder: 'you@gmail.com' },
     { key: 'username', label: 'Account (email)', type: 'text', placeholder: 'you@gmail.com' },
     { key: 'password_file', label: 'Password file (email)', type: 'text', placeholder: '/run/secrets/smtp-password',
-      help: 'A file on the node holding the password (a Gmail app password, for example). The password itself never goes through the UI.' },
-    { key: 'token_file', label: 'Token file (ntfy, Gotify)', type: 'text', placeholder: '/run/secrets/ntfy-token', advanced: true },
-    { key: 'tls_ca', label: 'Private CA (email)', type: 'text', placeholder: '/etc/telltale/mail-ca.pem', advanced: true },
+      help: 'A file on the node holding the password (a Gmail app password, for example), in /run/secrets or another of [node] secret_file_dirs. The password itself never goes through the UI.', admin: true },
+    { key: 'token_file', label: 'Token file (ntfy, Gotify)', type: 'text', placeholder: '/run/secrets/ntfy-token', advanced: true, admin: true },
+    { key: 'tls_ca', label: 'Private CA (email)', type: 'text', placeholder: '/etc/telltale/mail-ca.pem', advanced: true, admin: holdsCredential },
   ];
   const conditions = [
     'upstream_down', 'node_down', 'sync_lag', 'list_failing', 'list_stale', 'servfail_rate', 'anomaly', 'new_device',
-    'disk_full', 'plan_pending', 'update_available', 'maintenance',
+    'disk_full', 'plan_pending', 'update_available', 'maintenance', 'credential_redirected',
   ];
   const ruleFields = $derived<Field[]>([
     { key: 'when', label: 'When', type: 'select', options: conditions, initial: 'upstream_down' },

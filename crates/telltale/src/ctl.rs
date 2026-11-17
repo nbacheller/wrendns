@@ -77,6 +77,10 @@ pub(crate) enum CtlCommand {
     /// pin; promote or abort.
     #[command(subcommand)]
     Rollout(RolloutCmd),
+    /// Stored secrets (API-015): list them (never a value), set one, or clear one. Admins only,
+    /// over HTTPS or on the node itself.
+    #[command(subcommand)]
+    Secrets(SecretsCmd),
     /// The cluster versions the primary keeps, newest first (what to pin back to).
     Versions,
     /// Pin the cluster to a kept version: every node serves its configuration and filter
@@ -325,6 +329,176 @@ pub(crate) enum DrillCmd {
     },
     /// The newest drills, or one drill's report.
     Report { id: Option<String> },
+}
+
+/// REQ: API-015, API-008 — `telltale ctl secrets`.
+#[derive(Debug, Subcommand)]
+pub(crate) enum SecretsCmd {
+    /// The stored secrets (name, kind, when and by whom set, which fields use them), the node's
+    /// store, and every credential field with its source. Never a value.
+    List,
+    /// Set (or replace) a secret. The value comes from a file, or from standard input (`-`, or
+    /// no `--from-file`), never from the command line (it would be in the shell's history).
+    Set {
+        /// The secret's name (lowercase letters, digits, `.`, `_` and `-`), as `*_ref` fields
+        /// name it.
+        name: String,
+        /// Read the value from this file (`-`: standard input). Surrounding space is trimmed.
+        #[arg(long, value_name = "FILE")]
+        from_file: Option<std::path::PathBuf>,
+        /// `text` (the default).
+        #[arg(long, default_value = "text")]
+        kind: String,
+        /// Check it and say what would change, storing nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Delete a secret (refused while a field names it).
+    Clear {
+        name: String,
+        /// Go ahead although a cluster member's references can't be read now (it is offline).
+        #[arg(long)]
+        force: bool,
+        /// Say what would happen, deleting nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+/// REQ: API-015 — a secret's value from `file` (`-` or none: standard input), wiped after use.
+fn secret_value(file: Option<&std::path::Path>) -> Result<zeroize::Zeroizing<String>, String> {
+    use std::io::Read as _;
+    let mut text = zeroize::Zeroizing::new(String::new());
+    match file {
+        Some(p) if p != std::path::Path::new("-") => {
+            let mut f = std::fs::File::open(p).map_err(|e| format!("{}: {e}", p.display()))?;
+            f.read_to_string(&mut text)
+                .map_err(|e| format!("{}: {e}", p.display()))?;
+        }
+        _ => {
+            // A terminal would echo the value and keep it in the scrollback.
+            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                return Err("standard input is a terminal, which would show the value: give it with --from-file FILE, or pipe it in (`... | telltale ctl secrets set NAME`)".into());
+            }
+            std::io::stdin()
+                .read_to_string(&mut text)
+                .map_err(|e| format!("standard input: {e}"))?;
+        }
+    }
+    if text.trim().is_empty() {
+        return Err(
+            "the value is empty (give it with --from-file FILE, or on standard input)".into(),
+        );
+    }
+    Ok(text)
+}
+
+/// REQ: API-015 — the stored secrets as text.
+fn secrets_text(v: &Value) -> String {
+    let st = &v["store"];
+    let mut out = format!(
+        "store on {}: {}{}{}\n",
+        s(st, "node"),
+        s(st, "state"),
+        if s(st, "keyId").is_empty() {
+            String::new()
+        } else {
+            format!(" (key {} from {})", s(st, "keyId"), s(st, "keySource"))
+        },
+        if s(st, "reason").is_empty() {
+            String::new()
+        } else {
+            format!(": {}", s(st, "reason"))
+        },
+    );
+    if v["stale"] == true {
+        out.push_str("the primary couldn't be asked: this is this node's own copy\n");
+    }
+    let rows: Vec<Vec<String>> = items(v)
+        .iter()
+        .map(|i| {
+            let used: Vec<String> = i["usedBy"]
+                .as_array()
+                .map_or(&[][..], Vec::as_slice)
+                .iter()
+                .map(|u| format!("{} {}.{}", s(u, "kind"), s(u, "name"), s(u, "field")))
+                .collect();
+            vec![
+                s(i, "name"),
+                if i["set"] == true {
+                    s(i, "health")
+                } else {
+                    "not set".into()
+                },
+                s(i, "updated"),
+                s(i, "updatedBy"),
+                used.join(", "),
+            ]
+        })
+        .collect();
+    out.push_str(&table(
+        &["NAME", "STATE", "UPDATED", "BY", "USED BY"],
+        &rows,
+    ));
+    let creds: Vec<Vec<String>> = v["credentials"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .map(|c| {
+            vec![
+                format!("{} {}", s(c, "kind"), s(c, "entry")),
+                s(c, "field"),
+                s(c, "source"),
+                s(c, "at"),
+                if c["readable"] == true {
+                    "yes".into()
+                } else {
+                    format!("no: {}", s(c, "reason"))
+                },
+            ]
+        })
+        .collect();
+    if !creds.is_empty() {
+        out.push('\n');
+        out.push_str(&table(
+            &["ENTRY", "FIELD", "SOURCE", "AT", "READABLE"],
+            &creds,
+        ));
+    }
+    out
+}
+
+/// REQ: API-015 — what a set or clear did.
+fn secret_change_text(v: &Value) -> String {
+    let name = s(&v["secret"], "name");
+    let mut out = if v["applied"] == true {
+        if v["wouldDelete"] == true {
+            format!("deleted `{name}`\n")
+        } else if v["wouldReplace"] == true {
+            format!("replaced `{name}`\n")
+        } else {
+            format!("stored `{name}`\n")
+        }
+    } else if v["wouldDelete"] == true {
+        format!("would delete `{name}` (dry run)\n")
+    } else if v["wouldReplace"] == true {
+        format!("would replace `{name}` (dry run)\n")
+    } else {
+        format!("would store `{name}` (dry run)\n")
+    };
+    for u in v["usedBy"].as_array().map_or(&[][..], Vec::as_slice) {
+        let _ = writeln!(
+            out,
+            "  used by {} {}.{}",
+            s(u, "kind"),
+            s(u, "name"),
+            s(u, "field")
+        );
+    }
+    for w in v["warnings"].as_array().map_or(&[][..], Vec::as_slice) {
+        let _ = writeln!(out, "note: {}", w.as_str().unwrap_or_default());
+    }
+    out
 }
 
 /// REQ: CLU-013 — `telltale ctl rollout`.
@@ -769,6 +943,49 @@ pub(crate) async fn run(
         ),
         // REQ: CLU-013
         CtlCommand::Rollout(c) => rollout(&api, c).await?,
+        // REQ: API-015
+        CtlCommand::Secrets(SecretsCmd::List) => {
+            (api.get("secrets").await?, Some(Box::new(secrets_text)))
+        }
+        CtlCommand::Secrets(SecretsCmd::Set {
+            name,
+            from_file,
+            kind,
+            dry_run,
+        }) => {
+            let value = secret_value(from_file.as_deref())?;
+            let body = json!({"value": value.trim(), "kind": kind});
+            drop(value);
+            (
+                api.call(
+                    http::Method::PUT,
+                    &format!(
+                        "secrets/{}{}",
+                        path_segment(&name),
+                        if dry_run { "?dryRun=true" } else { "" }
+                    ),
+                    Some(&body),
+                )
+                .await?,
+                Some(Box::new(secret_change_text)),
+            )
+        }
+        CtlCommand::Secrets(SecretsCmd::Clear {
+            name,
+            force,
+            dry_run,
+        }) => (
+            api.call(
+                http::Method::DELETE,
+                &format!(
+                    "secrets/{}?force={force}&dryRun={dry_run}",
+                    path_segment(&name)
+                ),
+                None,
+            )
+            .await?,
+            Some(Box::new(secret_change_text)),
+        ),
         CtlCommand::Versions => (
             api.get("cluster/versions").await?,
             Some(Box::new(versions_text)),

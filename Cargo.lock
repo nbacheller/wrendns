@@ -3459,6 +3459,7 @@ version = "0.8.0"
 dependencies = [
  "allocation-counter",
  "arc-swap",
+ "argon2",
  "axum",
  "base64 0.23.1",
  "blake3",
@@ -3500,6 +3501,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "webpki-roots",
+ "zeroize",
  "zstd",
 ]
 
@@ -3518,6 +3520,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "telltale-config",
  "telltale-store",
  "telltale-telemetry",
  "tokio",
@@ -3525,6 +3528,7 @@ dependencies = [
  "tower",
  "tracing",
  "utoipa",
+ "zeroize",
 ]
 
 [[package]]

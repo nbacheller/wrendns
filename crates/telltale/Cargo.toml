@@ -48,6 +48,12 @@ miniz_oxide = "0.8"
 zstd = { version = "0.14.0", default-features = false }
 # SHA-256 for self-update (already in the tree through rustls).
 ring = "0.17.14"
+# REQ: OPS-014 (ADR-903) — wipes secret values and keys when dropped; already in the tree
+# through RustCrypto (argon2, rustls).
+zeroize = "1.9.0"
+# REQ: OPS-014 (ADR-903 §8) — the passphrase key of backups that carry secrets (T23.9);
+# already in the tree through telltale-api's password hashing.
+argon2 = "0.6.0"
 serde = { version = "1.0.229", features = ["derive"] }
 # REQ: OBS-010 (T9.4) — alert email over STARTTLS/TLS: the same rustls stack the fetcher and
 # DoT use (already in the tree), with the built-in Mozilla roots.

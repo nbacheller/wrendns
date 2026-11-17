@@ -654,15 +654,22 @@ fn group_guard(
 /// `{"type": "ntfy", "url": "https://ntfy.sh/my-topic"}`, or for email
 /// `{"type": "email", "url": "smtp://smtp.gmail.com:587", "from": "me@gmail.com", "to":
 /// ["me@gmail.com"], "username": "me@gmail.com", "password_file": "/run/secrets/smtp"}`.
-/// Secrets stay in files on the node (`token_file`, `password_file`): only the path is sent.
-/// A destination the config files define is overridden until this one is deleted.
+/// Secrets stay in files on the node (`token_file`, `password_file`) or in its encrypted store
+/// (`token_ref`, `password_ref` name a stored secret: 422 `secret_missing` when none has that
+/// name): only the path or the name is sent, and a password in `url` reads `<redacted>` wherever
+/// the destination is shown (API-014; send it back as it is to keep it, as long as the URL's host
+/// is unchanged). Setting a file or a reference is an admin's (OPS-014).
+/// A destination the config files define is overridden until this one is deleted; a credential
+/// the files set for it stays as they set it: left out of the body, it is kept, and a body that
+/// sets, replaces or removes it is refused (409 `set_by_file`).
 #[utoipa::path(put, path = "/api/v1/alerts/destinations/{name}", tag = "config",
     params(("name" = String, Path, description = "The name."), DryRun),
     request_body = Object,
     responses(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files set this destination's credential, and they win."),
         (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
-        (status = 422, body = Problem, description = "A field is wrong, or the configuration wouldn't be valid: problem+json says which."),
+        (status = 422, body = Problem, description = "A field is wrong, a reference names no stored secret (`secret_missing`), or the configuration wouldn't be valid: problem+json says which."),
     ))]
 pub(crate) async fn put_alert_destination(
     State((backend, auth)): State<Ctx>,
@@ -692,12 +699,14 @@ pub(crate) async fn put_alert_destination(
 
 /// Remove an alert destination (OBS-010, T9.6).
 ///
-/// Rules that still send to it make the configuration invalid (422 says which).
+/// Rules that still send to it make the configuration invalid (422 says which). A destination
+/// the config files define, with a credential they set, can't be hidden (409 `set_by_file`).
 #[utoipa::path(delete, path = "/api/v1/alerts/destinations/{name}", tag = "config",
     params(("name" = String, Path, description = "The name."), DryRun),
     responses(
         (status = 200, body = ConfigChange, description = "The result."),
         (status = 404, body = Problem, description = "No entry by that name."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files define it with a credential."),
         (status = 422, body = Problem, description = "A rule still uses it."),
     ))]
 pub(crate) async fn delete_alert_destination(
@@ -843,6 +852,29 @@ pub(crate) async fn check_upstream(
     let p = principal(&ext)?;
     let input = body(b)?;
     let url = input.get("url").cloned().unwrap_or_default();
+    // REQ: API-014 (T23.2, ADR-903 §4) — a check builds and runs the draft: one that runs a
+    // program (`exec://`, `unix://`) or reads a file holding a credential is an admin's, as
+    // saving it would be. Agents never, whatever their scopes.
+    let program = telltale_config::credentials::runs_program(url.as_str().unwrap_or_default());
+    let key_file = telltale_config::credentials::reference_changes("upstream", None, &input);
+    if (program || !key_file.is_empty())
+        && (p.role != crate::auth::Role::Admin || p.agent.is_some())
+    {
+        let what = if program {
+            "an `exec://` or `unix://` upstream runs a program, or talks to a socket, on the node"
+                .to_owned()
+        } else {
+            format!(
+                "`{}` names a file holding a credential",
+                key_file.join("`, `")
+            )
+        };
+        return Err(Problem::new(
+            Code::Forbidden,
+            format!("only an admin can check this draft: {what}"),
+        )
+        .hint("Ask an admin to check and add this upstream."));
+    }
     let mut r = backend.check_upstream(input).await?;
     let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
     auth.record(
@@ -1851,10 +1883,26 @@ async fn write(
         .and_then(|v| v.to_str().ok())
         .map(|k| format!("{}:{}", p.user_id, k.trim()))
         .filter(|k| !dry_run && k.len() > 2);
+    // REQ: API-014 (ADR-903 §4) — the record keeps a keyed hash of the whole request, never
+    // its text (a body can carry an upstream's headers), so a body differing only in a
+    // credential is another request.
+    let fingerprint = if key.is_some() {
+        let (kind, body) = match &op {
+            Op::Managed(k, b) => (Some(*k), b.as_ref()),
+            Op::Client(_) => (None, None),
+        };
+        match backend.idempotency_request(kind, &request, body) {
+            Ok(f) => Some(f),
+            Err(e) => return e.into_response(),
+        }
+    } else {
+        None
+    };
+    drop(request);
     let now = backend.now_unix_seconds();
-    if let Some(k) = &key {
+    if let (Some(k), Some(f)) = (&key, &fingerprint) {
         match auth.state().idempotent(k, now) {
-            Ok(Some(r)) if r.request == request.as_bytes() => return replay(&r),
+            Ok(Some(r)) if &r.request == f => return replay(&r),
             Ok(Some(_)) => {
                 return Problem::new(
                     Code::Conflict,
@@ -1894,6 +1942,9 @@ async fn write(
                 expect,
                 by: actor.name.clone(),
                 simulate,
+                // REQ: API-014 (T23.2) — the backend holds credential changes to the role.
+                role: Some(p.role),
+                agent: p.agent.as_ref().map(|a| a.token_name.clone()),
             })
             .await
             .map(|c| serde_json::to_value(c).unwrap_or_default()),
@@ -1913,11 +1964,12 @@ async fn write(
             &serde_json::json!({ "before": c["before"], "after": c["after"], "configVersion": c["configVersion"] }),
         );
     }
-    if let Some(k) = &key
+    if let (Some(k), Some(f)) = (&key, fingerprint)
         && status.is_success()
     {
+        // The response is the backend's, redacted already (API-014).
         let r = Replay {
-            request: request.into_bytes(),
+            request: f,
             status: status.as_u16(),
             response: text.clone(),
         };

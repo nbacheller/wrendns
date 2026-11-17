@@ -19,7 +19,7 @@ use telltale_api::model::{
     TopItem, TopKind, UpstreamInfo,
 };
 use telltale_api::problem::Problem;
-use telltale_api::{Backend, BoxFuture, ClientWrite, ManagedWrite, Shared};
+use telltale_api::{Backend, BoxFuture, ClientWrite, ManagedKind, ManagedWrite, Shared};
 use telltale_cluster::net::{Cluster, RpcHandler};
 
 /// The RPC every federated read uses; its body is a JSON [`Read`].
@@ -176,6 +176,11 @@ enum Read {
     Lists,
     /// REQ: OBS-009 — the peer's own hits per list (older peers don't know it).
     ListHits,
+    /// REQ: API-015 (ADR-903 §4) — the primary's stored secrets (metadata only), for a replica's
+    /// `GET /api/v1/secrets` (older peers don't know it).
+    SecretsStatus,
+    /// REQ: API-015 — the peer's own references to stored secrets, for a delete on the primary.
+    SecretRefs,
 }
 
 /// The reads that change the answering node: operational actions a user asked for on the
@@ -281,6 +286,8 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::WorkloadCounts => serde_json::to_vec(&b.workload_counts()),
         Read::Lists => serde_json::to_vec(&b.lists()),
         Read::ListHits => serde_json::to_vec(&b.list_hits()),
+        Read::SecretsStatus => serde_json::to_vec(&b.secrets_status().map_err(text)?),
+        Read::SecretRefs => serde_json::to_vec(&b.secret_refs()),
     }
     .map_err(|e| e.to_string())
 }
@@ -335,6 +342,14 @@ pub(crate) fn rpc_handler(
             }
             if kind == crate::forward::KIND {
                 return crate::forward::handle(src, local, cluster, peer, body).await;
+            }
+            if kind == crate::secrets_api::KIND_PUT || kind == crate::secrets_api::KIND_DELETE {
+                // REQ: API-015 (ADR-903 §4) — a replica's secret write (a user acted there);
+                // only from a full member (checked again inside).
+                if ephemeral {
+                    return Err("an ephemeral member can't forward secret writes".into());
+                }
+                return crate::secrets_api::handle(src, local, cluster, peer, kind, body).await;
             }
             if kind == crate::maintenance::KIND_SET || kind == crate::maintenance::KIND_CLEAR {
                 // REQ: OPS-010 — another node asks this node to start or end maintenance (a
@@ -435,9 +450,14 @@ pub(crate) fn rpc_handler(
             if ephemeral && changes_state(&read) {
                 return Err("an ephemeral member can't change this node's state".into());
             }
-            tokio::task::spawn_blocking(move || answer(local.as_ref(), read))
-                .await
-                .map_err(|e| format!("read worker failed: {e}"))?
+            // The caller's log dispatcher goes along, so the blocking thread logs where the
+            // request does.
+            let log = tracing::dispatcher::get_default(Clone::clone);
+            tokio::task::spawn_blocking(move || {
+                tracing::dispatcher::with_default(&log, || answer(local.as_ref(), read))
+            })
+            .await
+            .map_err(|e| format!("read worker failed: {e}"))?
         })
     })
 }
@@ -1646,7 +1666,7 @@ impl Backend for Federated {
                 r.map_err(|e| tracing::debug!(error = %e, "the primary's lists unread"))
                     .ok()
             })
-            .and_then(|body| serde_json::from_slice::<Vec<ListInfo>>(&body).ok());
+            .and_then(|body| lists_from_primary(&body));
         let missing = if theirs.is_some() {
             Vec::new()
         } else {
@@ -2625,11 +2645,20 @@ impl Backend for Federated {
                 },
                 VERSION_DEADLINE,
             )
-            && let Ok(v) = serde_json::from_slice::<Vec<telltale_api::model::ConfigEntry>>(&body)
+            && let Some(v) = entries_from_primary(&body)
         {
             return v;
         }
         self.local.config_entries(kind)
+    }
+    // REQ: API-014 — the keyed hash is this node's (the entry node keeps the record).
+    fn idempotency_request(
+        &self,
+        kind: Option<ManagedKind>,
+        request: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<Vec<u8>, Problem> {
+        self.local.idempotency_request(kind, request, body)
     }
     fn write_client(&self, w: ClientWrite) -> BoxFuture<Result<ClientChange, Problem>> {
         match self.write_route() {
@@ -2642,6 +2671,78 @@ impl Backend for Federated {
             WriteRoute::NoLease => Box::pin(async { Err(no_lease()) }),
         }
     }
+    // REQ: API-015, CLU-002 (ADR-903 §4) — a replica lists the primary's secrets (with its own
+    // store, credential fields and node-local references); without the primary, or with one too
+    // old to answer, its own copy marked stale.
+    fn secrets_status(&self) -> Result<telltale_api::secrets_api::SecretsStatus, Problem> {
+        let local = self.local.secrets_status()?;
+        if self.cluster.is_primary() {
+            return Ok(local);
+        }
+        if let Some(primary) = self.cluster.reachable_primary()
+            && let Some(Ok(body)) = self.call_one(&primary, &Read::SecretsStatus, VERSION_DEADLINE)
+            && let Ok(p) = serde_json::from_slice::<telltale_api::secrets_api::SecretsStatus>(&body)
+        {
+            return Ok(crate::secrets_api::merge_with_primary(p, local));
+        }
+        Ok(telltale_api::secrets_api::SecretsStatus {
+            stale: true,
+            ..local
+        })
+    }
+    fn secret_refs(&self) -> Vec<(String, telltale_api::secrets_api::SecretUse)> {
+        self.local.secret_refs()
+    }
+    // REQ: API-015, CLU-010 — the primary applies secret writes; a replica forwards them as
+    // their own RPC kind. Pins, rollouts and a GitOps authority don't route them elsewhere.
+    fn secret_write(
+        &self,
+        w: telltale_api::secrets_api::SecretWrite,
+    ) -> BoxFuture<Result<telltale_api::secrets_api::SecretChange, Problem>> {
+        if self.cluster.is_primary() {
+            return self.local.secret_write(w);
+        }
+        Box::pin(crate::secrets_api::forward(Arc::clone(&self.cluster), w))
+    }
+    // REQ: AGT-003 — the entry node keeps the record, keyed with its own key.
+    fn secret_idempotency(
+        &self,
+        request: &str,
+        value: Option<&telltale_api::secrets_api::SecretText>,
+    ) -> Result<Vec<u8>, Problem> {
+        self.local.secret_idempotency(request, value)
+    }
+    fn secrets_over_http_allowed(&self) -> bool {
+        self.local.secrets_over_http_allowed()
+    }
+}
+
+/// REQ: API-015 (ADR-903 §4) — one member's references to stored secrets (`Read::SecretRefs`).
+/// An older member doesn't know the read: an error, so its references count as unknown.
+pub(crate) async fn peer_secret_refs(
+    cluster: &Cluster,
+    peer: &str,
+    timeout: Duration,
+) -> Result<Vec<(String, telltale_api::secrets_api::SecretUse)>, String> {
+    let body = serde_json::to_vec(&Read::SecretRefs).map_err(|e| e.to_string())?;
+    let reply = cluster.call(peer, KIND, body, timeout).await?;
+    serde_json::from_slice(&reply).map_err(|e| e.to_string())
+}
+
+/// REQ: API-014, ADR-905 — the primary's lists as a replica shows them: the source and errors
+/// redacted again here, since an older primary (N−1) sends them as they are.
+pub(crate) fn lists_from_primary(body: &[u8]) -> Option<Vec<ListInfo>> {
+    let mut v = serde_json::from_slice::<Vec<ListInfo>>(body).ok()?;
+    crate::redact::lists(&mut v);
+    Some(v)
+}
+
+/// REQ: API-014 — the primary's entries as a replica shows them: redacted again here, since an
+/// older primary (N−1) sends its definitions as they are.
+pub(crate) fn entries_from_primary(body: &[u8]) -> Option<Vec<telltale_api::model::ConfigEntry>> {
+    let mut v = serde_json::from_slice::<Vec<telltale_api::model::ConfigEntry>>(body).ok()?;
+    crate::redact::entries(&mut v);
+    Some(v)
 }
 
 #[cfg(test)]
