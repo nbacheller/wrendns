@@ -2826,9 +2826,20 @@ fn identities_of(signed: &Signed) -> Option<String> {
 pub async fn serve(
     cluster: Arc<Cluster>,
     addr: SocketAddr,
-    mut stop: watch::Receiver<bool>,
+    stop: watch::Receiver<bool>,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
+    serve_on(cluster, listener, stop).await
+}
+
+/// [`serve`] on a listener the caller already bound. Binding ahead of time keeps the port
+/// reserved: a caller that picks a free port and binds it later can lose it to another socket.
+pub async fn serve_on(
+    cluster: Arc<Cluster>,
+    listener: TcpListener,
+    mut stop: watch::Receiver<bool>,
+) -> std::io::Result<()> {
+    let addr = listener.local_addr()?;
     let mut tls = tokio_rustls::TlsAcceptor::from(
         server_config(&cluster.identity).map_err(std::io::Error::other)?,
     );
