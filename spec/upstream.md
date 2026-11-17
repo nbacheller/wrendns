@@ -7,7 +7,7 @@ Fork-only file. `nbacheller/telltaledns` is based on `paimonsoror/telltaledns`; 
 upstream-synced: 3868483
 
 - Upstream commit: `3868483` (upstream `main` at the last sync; `perf(image): ... ADR-167, 168, 169`).
-- Fork merge: `19fb633` on `feat/ipam-integrations`, 2026-11-17 (14 upstream commits: smaller image, UniFi offline clients, blobs from the primary, domain icons; ADR-942).
+- Fork merge: `e3a00a7` on `feat/ipam-integrations`, 2026-11-17 (14 upstream commits: smaller image, UniFi offline clients, blobs from the primary, domain icons; ADR-942).
 - Fork point before that merge: `b989b20`. Upstream `main` is now `be28b04` (one commit past the last sync, ADR-170); it is not yet in the fork.
 
 ### How to sync
@@ -68,7 +68,7 @@ Every upstream issue the fork has triaged. "Fork action" is what the fork does; 
 | [#59](https://github.com/paimonsoror/telltaledns/issues/59) | TelltaleDNSListStale fires for inline lists 48 hours after every config edit | closed 2026-11-16 (735491a) | bug | fixed in fork | None. Test that inline lists show no last-success time (optional). | — |
 | [#57](https://github.com/paimonsoror/telltaledns/issues/57) | Quick rules: add an Edit option | closed 2026-11-16 (fb4b9f6, FLT-005) | enhancement | fixed in fork | None. | — |
 | [#56](https://github.com/paimonsoror/telltaledns/issues/56) | Lists: allow more characters in a list's name | closed (wontfix: a list name is a stable ID) | enhancement | n/a | None. The importer maps Pi-hole list names into the ID charset (T24.6, T24.18). | — |
-| [#50](https://github.com/paimonsoror/telltaledns/issues/50) | Support package: export a redacted diagnostics bundle | closed 2026-11-16 (aa42fc0, 175bccf, 53d8204) | enhancement | fixed in fork | None. The fork classifies `[discovery]` (c2635d2). | — |
+| [#50](https://github.com/paimonsoror/telltaledns/issues/50) | Support package: export a redacted diagnostics bundle | closed 2026-11-16 (aa42fc0, 175bccf, 53d8204) | enhancement | fixed in fork | None. The fork classifies `[discovery]` (8ffed02). | — |
 | [#43](https://github.com/paimonsoror/telltaledns/issues/43) | A replica attached to another replica never moves back; blob fetches get 404 | closed 2026-11-17 (7942dcd, d384448) | bug | fixed in fork | None. A cluster test for a replicated secrets blob from the primary is worth adding (CLU-015). | — |
 | [#39](https://github.com/paimonsoror/telltaledns/issues/39) | Flaky e2e obs_033: a note added just after the minute turns | closed 2026-11-17 (5bda419) | bug | fixed in fork | None. | — |
 | [#38](https://github.com/paimonsoror/telltaledns/issues/38) | Anomalies: mute a finding kind for one device | closed 2026-11-16 (23bc211) | enhancement | fixed in fork | None. | — |

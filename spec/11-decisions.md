@@ -1407,7 +1407,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 **Consequences:** no API, OpenAPI, MCP or config change; the help topic `list-update-now` covers per-row updates. The per-row request is audited as `lists.refresh` with its names, like the page-wide one.
 
 ## ADR-934 — Worker spawn and filter hardening under the systemd unit: no ambient capability, no capset call without one, a non-dumpable parent, and the x32 and io_uring calls refused (Accepted 2026-11-17)
-**Context:** The review of the T25.3 fixes (8738440) found four gaps in ADR-908's worker hardening.
+**Context:** The review of the T25.3 fixes (276315b) found four gaps in ADR-908's worker hardening.
 - **N1 (HIGH).** The unit sets `AmbientCapabilities=CAP_NET_BIND_SERVICE` and `SystemCallFilter=~@privileged`. A child inherits the ambient set, so the worker held `CAP_NET_BIND_SERVICE`, and `drop_worker_capabilities` called `capset`, which `@privileged` contains. A filtered call with no error number kills the process (SIGSYS), so every worker died on every systemd install.
 - **N2 (MEDIUM).** The filter checked the native syscall numbers only. An x32 call (`nr | 0x40000000`) reached `bind` and bound a loopback port (demonstrated on WSL2, kernel 6.6). io_uring's bind and listen skip the filter on kernels 6.11 and later. A worker of the same uid could open `/proc/<parent>/mem` under Yama ptrace scope 0, because the parent is dumpable.
 - **N3 (MEDIUM)** is ADR-933.
@@ -2294,7 +2294,7 @@ This ADR keeps the read-only router posture of ADR-080 and ADR-902. ADR-091 (no 
 3. A backup carries secrets only when they are encrypted with a passphrase given at backup time, and the backup says so when it leaves them out.
 4. A `*_file` or inline value in the configuration files wins. The UI shows it as set by file and won't edit it.
 
-The code this ADR changes is at commit `a708f7f`.
+The code this ADR changes is at commit `412add6`.
 
 - **Where secrets live now.**
   - Most are files named by a `*_file` path and read when used: `routers.rs:112-119`, `alerts.rs:737-745,809-817`, `sinks.rs:719-725`, `gitsource.rs:205-210,419-422`, `auth_setup.rs:69-78`, `telltale-cluster/src/net.rs:1008-1015`.
@@ -2796,7 +2796,7 @@ Non-secret settings that exist only in files are phased with the forms that need
 
 ## ADR-915 — Image size: optimize cold code for size, embed only the gzip UI, and ship only the tz database the code reads (Accepted 2026-11-16)
 **Status note (upstream sync, 2026-11-17):** partly superseded by ADR-168 and ADR-169. The zoneinfo step described here (the fork's own tz database, shipped whole) is replaced by upstream's `zic -b fat` build, and the CA bundle that ADR-168 drops is no longer copied. The other cuts stand.
-**Context:** NFR-001 (`01`, `00 §5`) caps the compressed image at 15 MiB per architecture (`deploy/image/size.py`). At 7db1908 the amd64 image measured 15.13 MiB, up from 14.76 MiB at a708f7f. The new code (secrets, credential rules, lists refresh, federated paths, ctl, OpenAPI schemas) grew the stripped binary by 0.91 MiB. The dependency and UI changes added almost nothing. The binary is already at `opt-level = 3`, fat LTO, one codegen unit and `panic = "abort"`, so the remaining savings come from what is compiled at a lower opt-level and from what is embedded.
+**Context:** NFR-001 (`01`, `00 §5`) caps the compressed image at 15 MiB per architecture (`deploy/image/size.py`). At 177ef45 the amd64 image measured 15.13 MiB, up from 14.76 MiB at 412add6. The new code (secrets, credential rules, lists refresh, federated paths, ctl, OpenAPI schemas) grew the stripped binary by 0.91 MiB. The dependency and UI changes added almost nothing. The binary is already at `opt-level = 3`, fat LTO, one codegen unit and `panic = "abort"`, so the remaining savings come from what is compiled at a lower opt-level and from what is embedded.
 
 **Decision:** Reduce the image in the order of saving against risk, without dropping a feature and without touching the DNS hot path (`02 §3`):
 1. **API and MCP code at `opt-level = "s"`.** `[profile.release.package.telltale-api]` takes opt-level `s`; the rest of the workspace keeps opt-level 3. `telltale-api` holds the handlers, OpenAPI and MCP code, which are cold next to the DNS path. Measured: amd64 15.13 to 14.58 MiB.
