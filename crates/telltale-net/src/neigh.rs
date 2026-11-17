@@ -24,10 +24,16 @@ const AF_INET6: u8 = 10;
 const NUD_USABLE: u16 = 0x02 | 0x04 | 0x08 | 0x10 | 0x80;
 
 /// One neighbor: an address and the MAC it was last seen at.
+///
+/// REQ: DSC-008 (ADR-910) — `ifindex` is the kernel's interface index (`ndm_ifindex`), which
+/// the inventory maps to a name to skip container and overlay interfaces; `state` is the
+/// `NUD_*` bits, so the inventory can take only REACHABLE, STALE, DELAY and PROBE.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Neighbor {
     pub ip: IpAddr,
     pub mac: [u8; 6],
+    pub ifindex: u32,
+    pub state: u16,
 }
 
 /// The `RTM_GETNEIGH` dump request for all address families.
@@ -96,6 +102,7 @@ pub(crate) fn parse(buf: &[u8], out: &mut Vec<Neighbor>) -> io::Result<Chunk> {
 /// `ndmsg` + attributes → a neighbor, if it's usable and has both an address and a MAC.
 fn parse_neigh(body: &[u8]) -> Option<Neighbor> {
     let family = *body.first()?;
+    let ifindex = u32_at(body, 4)?;
     let state = u16_at(body, 8)?;
     if state & NUD_USABLE == 0 {
         return None;
@@ -125,7 +132,12 @@ fn parse_neigh(body: &[u8]) -> Option<Neighbor> {
         off += (alen + 3) & !3;
     }
     let mac = mac.filter(|m| *m != [0; 6])?;
-    Some(Neighbor { ip: ip?, mac })
+    Some(Neighbor {
+        ip: ip?,
+        mac,
+        ifindex,
+        state,
+    })
 }
 
 /// Reads the whole neighbor table. Linux only; elsewhere returns an empty table.
@@ -200,11 +212,15 @@ mod tests {
             vec![
                 Neighbor {
                     ip: "192.168.1.20".parse().unwrap(),
-                    mac
+                    mac,
+                    ifindex: 2,
+                    state: 0x02,
                 },
                 Neighbor {
                     ip: "fe80::1".parse().unwrap(),
-                    mac
+                    mac,
+                    ifindex: 2,
+                    state: 0x04,
                 },
             ]
         );
@@ -214,6 +230,24 @@ mod tests {
         done.extend_from_slice(&[0; 10]);
         assert_eq!(parse(&done, &mut out).unwrap(), Chunk::Done);
         assert!(parse(&[1, 0, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], &mut out).is_err());
+    }
+
+    /// REQ: DSC-008 (ADR-910) — `ndm_ifindex` (offset 4 of `ndmsg`) and the NUD state are kept.
+    #[test]
+    fn dsc_008_neighbor_carries_ifindex_and_state() {
+        let mac = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55];
+        let mut msg = neigh_msg(
+            AF_INET,
+            0x08,
+            &[attr(NDA_DST, &[192, 168, 1, 30]), attr(NDA_LLADDR, &mac)],
+        );
+        // Patch ndm_ifindex (bytes 16 + 4 .. 16 + 8 of the message) to 7.
+        msg[20..24].copy_from_slice(&7u32.to_ne_bytes());
+        let mut out = Vec::new();
+        parse(&msg, &mut out).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].ifindex, 7);
+        assert_eq!(out[0].state, 0x08);
     }
 
     #[test]

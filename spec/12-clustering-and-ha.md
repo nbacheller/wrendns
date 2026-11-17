@@ -109,3 +109,10 @@ Shipping uses the same mTLS channel, in batches of columnar blocks (the same enc
 
 ## 10. Test matrix (must pass in CI, see `09`)
 Partition primary ↔ replica for 1 h → DNS keeps serving, and convergence after heal is ≤ 10 s. Kill the primary in witness mode → new primary ≤ 30 s and no dual-writer window (Jepsen-style checker over the change log). Old primary returns with orphaned writes → they appear under Conflicts, and nothing is applied silently. Rolling upgrade N-1 → N with live traffic → 0 failed queries at clients with two DNS servers configured.
+
+## 11. Network inventory: the designated discovery node (M25, DSC-001, ADR-907)
+- Discovery (SNMP polling, the inventory merge, imports and the `public` pass) runs on one node: `[discovery] node` when it is set, else the primary, else the standalone node. Ephemeral pods and witnesses never run it.
+- When the designated node changes (a failover, ADR-051/056), the inventory starts empty on the new node, learns again, and imports must be uploaded again (ADR-913). Nothing is replicated as configuration; `inventory.json` stays on the node that writes it.
+- Other nodes ask the designated node for a filtered page of inventory rows (`Read::Discovery`, federated, at most 500 rows and 256 KiB per answer, `missingNodes` for nodes that don't answer, ADR-910). Their own DNS answers never depend on it (CLU-004).
+- The designated node's own queries are unaffected by the inventory thread. The thread runs on its own OS thread at idle priority.
+

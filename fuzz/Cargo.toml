@@ -22,6 +22,7 @@ regex-syntax = "0.8"
 telltale-store = { path = "../crates/telltale-store" }
 telltale-telemetry = { path = "../crates/telltale-telemetry" }
 telltale-support = { path = "../crates/telltale-support" }
+serde = { version = "1.0.229", features = ["derive"] }
 
 [[bin]]
 name = "parse_query"
@@ -74,3 +75,10 @@ bench = false
 
 [profile.release]
 debug = 1
+
+[[bin]]
+name = "inventory_merge"
+path = "fuzz_targets/inventory_merge.rs"
+test = false
+doc = false
+bench = false
