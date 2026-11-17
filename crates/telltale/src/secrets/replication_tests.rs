@@ -202,7 +202,8 @@ fn clu_015_replica_wrong_key_heals() {
     let dropped = r
         .heal_as_replica()
         .expect("a replica with the cluster's rows heals");
-    assert_eq!(dropped, 1);
+    assert_eq!(dropped.rows, 1);
+    assert_eq!(dropped.orphans.len(), 0);
     assert_eq!(r.status().state, StoreState::Ready);
     sync(&p, &r, 1);
     assert_eq!(read(&r, "dns.token").as_deref(), Some("tok-123456789"));
@@ -413,6 +414,45 @@ fn clu_015_stale_epoch_secret_orphaned() {
     );
     // It is not deleted by absence either: the row is still there.
     assert!(r.status().secrets.iter().any(|s| s.name == "x"));
+}
+
+/// REQ: CLU-015 (ADR-917 point 15; N2) — a replica that lost its key while holding an orphan heals:
+/// the orphan can't be read by any key it has, so the heal drops it (named in the answer), and the
+/// rows the primary lists come back from it. Before, the orphan kept the store locked for good.
+#[test]
+fn clu_015_unreadable_orphan_dropped_by_heal() {
+    let (d1, d2, rd) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let (p1, p2) = (node(d1.path()), node(d2.path()));
+    put(&p1, "a", "alpha-value-1", 1);
+    put(&p1, "x", "stale-value-4444", 1);
+    put(&p2, "a", "alpha-value-1", 1);
+    {
+        let r = node(rd.path());
+        sync(&p1, &r, 1);
+        // Epoch 2's primary doesn't list `x`: the replica's epoch-1 copy is an orphan.
+        let applied = sync(&p2, &r, 2);
+        assert_eq!(applied.orphaned, 1);
+    }
+    std::fs::remove_file(rd.path().join("secrets.key")).unwrap();
+    let r = SecretStore::with_env(&cfg_in(rd.path(), false), no_env(), true, false);
+    r.load_now();
+    assert_eq!(r.status().state, StoreState::Locked);
+    let dropped = r
+        .heal_as_replica()
+        .expect("an unreadable orphan doesn't keep the replica locked");
+    assert_eq!(dropped.orphans, vec!["x".to_owned()], "named for the audit");
+    assert_eq!(dropped.rows, 2);
+    assert_eq!(r.status().state, StoreState::Ready);
+    sync(&p2, &r, 2);
+    assert_eq!(read(&r, "a").as_deref(), Some("alpha-value-1"));
+    assert!(
+        !r.status().secrets.iter().any(|s| s.name == "x"),
+        "the orphan is gone, not listed by the primary"
+    );
 }
 
 /// REQ: CLU-015 (AC13) — a stale or altered answer is refused: a changed value's stamp or a
@@ -679,10 +719,10 @@ fn run_schedule(seed: u64) {
                 .find(|s| s.name == row.name && !s.orphaned);
             match on_primary {
                 Some(pr) => {
-                    // REQ: CLU-015 (ADR-917 point 10) — a deletion of an older epoch that the
-                    // primary now lists as live is kept here, and reported as a conflict: the
-                    // replica doesn't take the revoked value back.
-                    if row.deleted && !pr.deleted && row.stamp.epoch < epoch {
+                    // REQ: CLU-015 (ADR-917 point 10) — a deletion that the primary lists as live
+                    // with an older stamp (a write it superseded) is kept here, and reported as a
+                    // conflict: the replica doesn't take the revoked value back. A later write wins.
+                    if row.deleted && !pr.deleted && pr.stamp < row.stamp {
                         continue;
                     }
                     // An orphan is a row the primary doesn't hold; this one it does hold.
@@ -723,8 +763,7 @@ fn run_schedule(seed: u64) {
         for pr in p.status().secrets.into_iter().filter(|s| !s.orphaned) {
             assert!(
                 state.secrets.iter().any(|s| s.name == pr.name
-                    && (s.stamp == pr.stamp
-                        || (s.deleted && !pr.deleted && s.stamp.epoch < epoch))),
+                    && (s.stamp == pr.stamp || (s.deleted && !pr.deleted && pr.stamp < s.stamp))),
                 "seed {seed}: replica {j} lacks {} (ops: {ops:?})",
                 pr.name
             );
@@ -809,8 +848,35 @@ fn clu_015_removed_member_purge_restores_only_local() {
     assert!(!contains(&on_disk, b"cluster-new-3333"));
 }
 
+/// REQ: CLU-015 (ADR-917 point 10; N1) — a secret deleted in one epoch and created again in a later
+/// one reaches a replica: the later write's stamp is after the tombstone, so it is taken, not held
+/// as a conflict, and the heads converge.
+#[test]
+fn clu_015_recreated_after_epoch_change_replicates() {
+    let (pd, rd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (p, r) = (node(pd.path()), node(rd.path()));
+    put(&p, "a", "first-value-1", 1);
+    sync(&p, &r, 1);
+    p.delete("a", 1, "root via pi", 300).unwrap();
+    let applied = sync(&p, &r, 1);
+    assert_eq!(applied.tombstones, 1);
+    assert_eq!(read(&r, "a"), None);
+    // Epoch 2: the primary writes `a` again, stamped in epoch 2.
+    put(&p, "a", "second-value-2", 2);
+    let applied = sync(&p, &r, 2);
+    assert!(
+        applied.conflicts.is_empty(),
+        "a later write is not a conflict"
+    );
+    assert_eq!(read(&r, "a").as_deref(), Some("second-value-2"));
+    assert_eq!(head_of_store(&p), head_of_store(&r), "the heads converge");
+    // The tombstone it displaced is kept in the cluster's shadow slot, not as a live value.
+    assert_eq!(r.status().shadows, vec!["a".to_owned()]);
+}
+
 /// REQ: CLU-015 (ADR-917 point 10; M4) — a deletion of an older epoch is not undone by a newer
-/// primary's listing of the name as live: the replica keeps the tombstone and reports a conflict.
+/// primary's listing of the name as live when that listing is a write the deletion superseded (its
+/// stamp is older than the tombstone): the replica keeps the tombstone and reports a conflict.
 #[test]
 fn clu_015_tombstone_of_older_epoch_not_resurrected() {
     let (pd, qd, rd) = (
@@ -824,8 +890,9 @@ fn clu_015_tombstone_of_older_epoch_not_resurrected() {
     p.delete("a", 1, "root", 100).unwrap();
     sync(&p, &r, 1);
     assert_eq!(read(&r, "a"), None, "deleted on the replica");
-    // The new primary holds `a` live, stamped in epoch 2.
-    put(&q, "a", "revoked-value-9", 2);
+    // The new primary never had the deletion: its `a` is the epoch-1 write, stamped before the
+    // tombstone (1,2), so the listing is older than the deletion.
+    put(&q, "a", "revoked-value-9", 1);
     let applied = sync(&q, &r, 2);
     assert_eq!(applied.conflicts, vec!["a".to_owned()]);
     assert_eq!(read(&r, "a"), None, "the revoked value stays revoked");

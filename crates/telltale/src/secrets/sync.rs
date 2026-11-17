@@ -25,7 +25,7 @@ use telltale_store::state::Stamp;
 use tokio::sync::watch;
 use zeroize::Zeroizing;
 
-use super::store::{Applied, Page, Remote, StoreState, Unavailable, head_from};
+use super::store::{Applied, Dropped, Page, Remote, StoreState, Unavailable, head_from};
 use super::value::{Kind, SecretValue};
 use crate::http::Sources;
 
@@ -150,13 +150,15 @@ struct AdoptAns {
 }
 
 /// Per-node state of the sync task.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct Progress {
     /// The primary head this node last applied (or that it matched).
     applied: Option<SecretsHead>,
     /// Live rows of the last applied answer that the primary holds but couldn't decrypt.
     held: u32,
     failures: u32,
+    /// Answers that ran ahead of the heartbeat in a row (ADR-917 point 14).
+    stale: u32,
     next_try: Option<Instant>,
     /// Epoch of the primary this node last adopted its own rows to.
     adopted_in: Option<u64>,
@@ -283,7 +285,13 @@ fn remote_of(it: ItemJson) -> Result<Remote, String> {
 
 /// REQ: CLU-015 (ADR-917 point 12) — an audit record for the secrets sync, by the cluster, with the
 /// peer it concerns in `detail`. Nothing secret goes in: names and counts only.
-fn audit(src: &Sources, reason: &str, action: &str, target: &str, detail: &serde_json::Value) {
+pub(crate) fn audit(
+    src: &Sources,
+    reason: &str,
+    action: &str,
+    target: &str,
+    detail: &serde_json::Value,
+) {
     if let Some(auth) = src.auth.get() {
         let actor = telltale_api::auth::Actor {
             name: "cluster".to_owned(),
@@ -293,6 +301,15 @@ fn audit(src: &Sources, reason: &str, action: &str, target: &str, detail: &serde
         };
         auth.record(&actor, action, target, detail);
     }
+}
+
+/// REQ: CLU-015 (ADR-917 point 15) — a heal that dropped rows, shadows or orphans is audited as
+/// `secrets.heal`, with names and counts only. Nothing is written for a heal that dropped nothing.
+pub(crate) fn audit_heal(src: &Sources, reason: &str, dropped: &Dropped) {
+    if dropped.rows == 0 && dropped.shadows == 0 && dropped.orphans.is_empty() {
+        return;
+    }
+    audit(src, reason, "secrets.heal", "cluster", &dropped.detail());
 }
 
 /// REQ: CLU-015 — a primary's answer to `secrets.fetch`. Only a full member gets one; the primary
@@ -691,9 +708,17 @@ async fn reverse_heal(src: &Arc<Sources>, cluster: &Arc<Cluster>, st: &mut Progr
         let store = Arc::clone(&src.secrets);
         let now = crate::pipeline::unix_now();
         let rows = f.rows;
-        let done = tokio::task::spawn_blocking(move || store.heal_with(&rows, now)).await;
+        let (s, from) = (Arc::clone(src), peer.clone());
+        let done = tokio::task::spawn_blocking(move || {
+            let r = store.heal_with(&rows, now);
+            if let Ok((_, dropped)) = &r {
+                audit_heal(&s, &format!("refilled from replica {from}"), dropped);
+            }
+            r
+        })
+        .await;
         match done {
-            Ok(Ok(a)) => {
+            Ok(Ok((a, _))) => {
                 tracing::warn!(from = %peer, filled = a.changed, "secrets store refilled from a replica");
                 st.heal_next = None;
                 return;
@@ -815,11 +840,23 @@ async fn fetch_if_due(
             st.applied = Some(theirs);
             st.held = p.held;
             st.failures = 0;
+            st.stale = 0;
             st.next_try = None;
         }
         Err(PullError::Stale(e)) => {
-            // The primary's heartbeat is a pass behind its answer: the next pass asks again.
-            tracing::debug!("stored secrets: the primary's answer is ahead of its heartbeat: {e}");
+            // REQ: CLU-015 (ADR-917 point 14) — the primary's heartbeat is a pass behind its answer:
+            // the next pass asks again, with no backoff. A run of them is visible at warn.
+            st.stale = st.stale.saturating_add(1);
+            if st.stale == 3 || st.stale.is_multiple_of(20) {
+                tracing::warn!(
+                    attempts = st.stale,
+                    "stored secrets: the primary's answers keep running ahead of its heartbeat: {e}"
+                );
+            } else {
+                tracing::debug!(
+                    "stored secrets: the primary's answer is ahead of its heartbeat: {e}"
+                );
+            }
         }
         Err(PullError::Failed(e)) => {
             st.failures = st.failures.saturating_add(1);
@@ -904,7 +941,9 @@ async fn init_rows_once(src: &Arc<Sources>, st: &mut Progress) {
 /// threads (CLU-004): the runtime that serves the DNS listeners never waits on it.
 pub(crate) async fn tick(src: &Arc<Sources>, cluster: &Arc<Cluster>, st: &mut Progress) {
     let (s, c) = (Arc::clone(src), Arc::clone(cluster));
-    let mut work = std::mem::take(st);
+    // REQ: CLU-015 (review N5) — the pass works on a copy: if it panics, `st` keeps what it was
+    // (`init_done`, `removed_purged`, `adopted_in` and the backoff), and the next pass goes on.
+    let mut work = st.clone();
     // REQ: CLU-004 — whether this node is ephemeral reads the registry from disk, so the pass's
     // file and store work all runs on this blocking thread.
     let joined = tokio::task::spawn_blocking(move || {

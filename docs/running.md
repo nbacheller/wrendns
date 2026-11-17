@@ -2182,9 +2182,10 @@ Each member holds it encrypted under its own key ([`docs/secrets.md`](secrets.md
   the one place a change is made; the replica's copy follows within seconds.
 - **Deleting** a secret leaves a tombstone, so a member that was offline learns of it when it
   comes back. A delete is refused while any member's field still names the secret (`secret_in_use`).
-- **A deletion stays.** If a new primary lists a secret this node deleted at an older epoch as
-  live, the deletion is kept and the name is reported as a conflict (audited as `secret.conflict`).
-  Delete it again on the primary to settle it.
+- **A deletion stays.** If a new primary lists a secret this node deleted as live with a stamp
+  older than the deletion (a write the deletion superseded), the deletion is kept and the name is
+  reported as a conflict (audited as `secret.conflict`). Delete it again on the primary to settle
+  it. A secret created again on the primary after the deletion replicates as a new value.
 - **Partitions keep the last set.** A member that can't reach the primary keeps the secrets it
   has. Nothing is removed because it went missing from an answer.
 - **Failover moves nothing.** A replica promoted to primary keeps every secret; a member that

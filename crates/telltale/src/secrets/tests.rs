@@ -209,7 +209,7 @@ fn ops_014_missing_key_with_rows_locks_not_generates() {
     state.put_secret_row(&row, 1).unwrap();
     let replica = store(&c, &none);
     assert_eq!(replica.status_loaded().state, StoreState::Locked);
-    assert_eq!(replica.heal_as_replica().unwrap(), 1);
+    assert_eq!(replica.heal_as_replica().unwrap().rows, 1);
     assert_eq!(replica.status().state, StoreState::Ready);
     assert_eq!(replica.status().live(), 0);
     put(&replica, "unifi", "fetched again");

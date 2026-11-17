@@ -890,7 +890,7 @@ impl SecretStore {
     /// cluster's drops them and starts over with a working key, so it can fetch them again from
     /// the primary (T23.5). Only for the data-directory key: a configured key that can't be read
     /// is fixed by whoever configured it. Returns how many rows went, or why nothing was done.
-    pub(crate) fn heal_as_replica(&self) -> Result<usize, String> {
+    pub(crate) fn heal_as_replica(&self) -> Result<Dropped, String> {
         let paths = self.paths();
         let var = |k: &str| (self.var)(k);
         if self.read_only {
@@ -914,29 +914,48 @@ impl SecretStore {
         if g.rows.is_empty() || g.rows.values().any(|c| c.row.origin != "cluster") {
             return Err("some rows were made on this node: they aren't dropped".to_owned());
         }
-        // REQ: CLU-015 (ADR-917 points 4, 8) — an orphan isn't the primary's, so no fetch brings it
-        // back, and a local shadow is this node's own value: neither is dropped.
-        if g.rows.values().any(|c| c.row.orphaned) {
-            return Err(
-                "some rows are orphaned (kept, never dropped): they stay as they are".to_owned(),
-            );
+        // REQ: CLU-015 (ADR-917 points 4, 15) — an orphan isn't the primary's, so no fetch brings it
+        // back. One this node can't decrypt (every live row of a locked store is one) is dropped with
+        // the rest, and audited; a readable one is a value, so the heal refuses.
+        if let Some(c) = g
+            .rows
+            .values()
+            .find(|c| c.row.orphaned && c.health == RowHealth::Readable)
+        {
+            return Err(format!(
+                "orphan `{}` can still be read (kept, never dropped): the rows stay as they are",
+                c.row.name
+            ));
         }
         let Some(state) = g.state.clone() else {
             return Err("no state database".to_owned());
         };
+        // REQ: CLU-015 (ADR-917 point 4) — a local shadow is this node's own value: it isn't
+        // dropped. Its recovery is the documented step in docs/secrets.md.
         let shadows = state.secret_shadows().map_err(|e| e.to_string())?;
         if shadows.iter().any(|s| s.origin == "local") {
             return Err("a local value is shadowed by a cluster row: it isn't dropped".to_owned());
         }
+        let orphans: Vec<String> = g
+            .rows
+            .values()
+            .filter(|c| c.row.orphaned)
+            .map(|c| c.row.name.clone())
+            .collect();
         let n = state.clear_secret_rows().map_err(|e| e.to_string())?;
         tracing::warn!(
             dropped = n,
+            orphans = orphans.len(),
             stale_shadows = shadows.len(),
             "secrets store: this replica couldn't read the cluster's secrets; it dropped them (and the older copies it kept) and fetches them again from the primary"
         );
         g.rows.clear();
         self.load_into(&mut g);
-        Ok(n)
+        Ok(Dropped {
+            rows: n,
+            orphans,
+            shadows: shadows.len(),
+        })
     }
 
     /// REQ: OPS-014 (ADR-903 §2) — the secrets head: the highest stamp, and BLAKE3 over the
@@ -1024,6 +1043,22 @@ pub(crate) struct Applied {
     pub(crate) conflicts: Vec<String>,
     /// The head after the batch.
     pub(crate) head: (Stamp, [u8; 32]),
+}
+
+/// REQ: CLU-015 (ADR-917 point 15) — what a heal dropped, for the audit record: every row it
+/// cleared, the orphans it couldn't read (names), and the cluster shadows it cleared. Values never.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct Dropped {
+    pub(crate) rows: usize,
+    pub(crate) orphans: Vec<String>,
+    pub(crate) shadows: usize,
+}
+
+impl Dropped {
+    /// The audit record's detail (names and counts only).
+    pub(crate) fn detail(&self) -> serde_json::Value {
+        serde_json::json!({ "rows": self.rows, "orphans": self.orphans, "shadows": self.shadows })
+    }
 }
 
 /// REQ: CLU-015 (ADR-903 §6) — the sharing of rows between members. Everything here is under the
@@ -1176,7 +1211,11 @@ impl SecretStore {
     /// all the cluster's (and a data-directory key that's missing) is replaced by a new key, and
     /// every row is filled from `items`, a replica's rows at the stamps the primary holds. Refused
     /// unless every row is covered, so no row is lost to a partial answer.
-    pub(crate) fn heal_with(&self, items: &[Remote], now: u64) -> Result<Applied, String> {
+    pub(crate) fn heal_with(
+        &self,
+        items: &[Remote],
+        now: u64,
+    ) -> Result<(Applied, Dropped), String> {
         let paths = self.paths();
         let var = |k: &str| (self.var)(k);
         if self.read_only {
@@ -1198,22 +1237,24 @@ impl SecretStore {
         if g.rows.values().any(|c| c.row.origin != "cluster") {
             return Err("some rows were made on this node: they aren't replaced".to_owned());
         }
-        // REQ: CLU-015 (ADR-917 points 4, 8; L4) — orphans and local shadows are kept, never
-        // dropped: an orphan isn't in any replica's listing, and a shadow is a local value.
-        if g.rows.values().any(|c| c.row.orphaned) {
-            return Err(
-                "some rows are orphaned (kept, never dropped): they stay as they are".to_owned(),
-            );
+        // REQ: CLU-015 (ADR-917 points 4, 8, 15) — an orphan this node can't decrypt is dropped with
+        // the rest, and audited; a readable one is a value no replica lists, so the heal refuses. A
+        // local shadow is a local value: it stays, and the heal refuses.
+        if let Some(c) = g
+            .rows
+            .values()
+            .find(|c| c.row.orphaned && c.health == RowHealth::Readable)
+        {
+            return Err(format!(
+                "orphan `{}` can still be read (kept, never dropped): the rows stay as they are",
+                c.row.name
+            ));
         }
         let Some(state) = g.state.clone() else {
             return Err("no state database".to_owned());
         };
-        if state
-            .secret_shadows()
-            .map_err(|e| e.to_string())?
-            .iter()
-            .any(|s| s.origin == "local")
-        {
+        let shadows = state.secret_shadows().map_err(|e| e.to_string())?;
+        if shadows.iter().any(|s| s.origin == "local") {
             return Err("a local value is shadowed by a cluster row: it stays as it is".to_owned());
         }
         for c in g.rows.values().filter(|c| !c.row.orphaned) {
@@ -1230,9 +1271,16 @@ impl SecretStore {
                 ));
             }
         }
+        let orphans: Vec<String> = g
+            .rows
+            .values()
+            .filter(|c| c.row.orphaned)
+            .map(|c| c.row.name.clone())
+            .collect();
         let n = state.clear_secret_rows().map_err(|e| e.to_string())?;
         tracing::warn!(
             dropped = n,
+            orphans = orphans.len(),
             "secrets store: this primary's rows were unreadable; a replica holds them, so they're filled in again under a new key"
         );
         g.rows.clear();
@@ -1240,7 +1288,15 @@ impl SecretStore {
         if let Some(why) = g.locked.clone() {
             return Err(format!("still locked after the new key: {why}"));
         }
-        apply_inner(&mut g, items, 0, true, now).map_err(|e| e.to_string())
+        let applied = apply_inner(&mut g, items, 0, true, now).map_err(|e| e.to_string())?;
+        Ok((
+            applied,
+            Dropped {
+                rows: n,
+                orphans,
+                shadows: shadows.len(),
+            },
+        ))
     }
 
     /// Live rows this node can't read (encrypted under a key it doesn't have, or damaged).
@@ -1298,9 +1354,15 @@ fn apply_inner(
         let local = g.rows.get(&it.name).map(|c| c.row.clone());
         let (take, displaced) = if authoritative {
             // REQ: CLU-015 (ADR-917 point 10) — a tombstone of an older epoch is a revocation this
-            // node has; a listing that calls the name live doesn't bring the value back.
+            // node has; a listing older than it (a write the deletion superseded, held by a primary
+            // that never had the deletion) doesn't bring the value back. A listing stamped after the
+            // tombstone is a later write, possibly a re-creation in a later epoch, and is taken below.
             if local.as_ref().is_some_and(|l| {
-                l.origin == "cluster" && l.deleted && !it.deleted && l.stamp.epoch < primary_epoch
+                l.origin == "cluster"
+                    && l.deleted
+                    && !it.deleted
+                    && l.stamp.epoch < primary_epoch
+                    && it.stamp < l.stamp
             }) {
                 out.conflicts.push(it.name.clone());
                 continue;
@@ -1422,7 +1484,7 @@ fn apply_inner(
     Ok(out)
 }
 
-// REQ: CLU-015 (ADR-903 §6) — the head of the cluster's rows held here: every row but the
+/// REQ: CLU-015 (ADR-903 §6) — the head of the cluster's rows held here: every row but the
 /// orphans (a row the cluster doesn't hold is not part of what members share).
 fn live_head(rows: &BTreeMap<String, Cached>) -> (Stamp, [u8; 32]) {
     head_of(rows.values().map(|c| &c.row).filter(|r| !r.orphaned))
@@ -1541,8 +1603,15 @@ pub(crate) fn spawn_upkeep(
             let s = Arc::clone(&src);
             let _ = tokio::task::spawn_blocking(move || {
                 let _ = s.secrets.keys();
-                if replica && s.secrets.status().state == StoreState::Locked {
-                    let _ = s.secrets.heal_as_replica();
+                if replica
+                    && s.secrets.status().state == StoreState::Locked
+                    && let Ok(d) = s.secrets.heal_as_replica()
+                {
+                    super::sync::audit_heal(
+                        &s,
+                        "this replica's key couldn't read the cluster's secrets",
+                        &d,
+                    );
                 }
             })
             .await;
