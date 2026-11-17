@@ -558,6 +558,16 @@
       "docs": "scaling-in-kubernetes"
     },
     {
+      "id": "cluster-secrets",
+      "title": "Stored secrets reach every full member",
+      "term": "Secrets replication",
+      "summary": "A secret stored in the UI is copied to every full member over the cluster's encrypted channel, and each member re-encrypts it with its own key. This column shows each node's secrets head, the head it has applied from the primary, and how many secrets it can't read.",
+      "when": "You stored a credential on one node and want to know every node has it, or a node reports a secret it can't read.",
+      "example": "The primary's head is 2.14 and the Pi has applied 2.14, so it's in sync. The Pi shows 1 unreadable: its key file was replaced, so enter that secret again on the primary.",
+      "caution": "A secret never goes to a resolver pod or a witness, and never to a file or a backup. A 'held' count means the primary couldn't decrypt those secrets to send them, so this node keeps its own copy.",
+      "docs": "replicated-secrets"
+    },
+    {
       "id": "host-resources",
       "title": "The machines your nodes run on",
       "term": "Host resources",

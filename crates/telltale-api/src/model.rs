@@ -3082,6 +3082,23 @@ pub struct NodeRemoval {
     pub notes: Vec<String>,
 }
 
+/// REQ: CLU-015 (ADR-903 §6) — one member's stored secrets. Stamps are `epoch.seq`; a value is
+/// never here.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterSecrets {
+    /// The newest stamp in its secrets head.
+    pub head: Option<String>,
+    /// The head it has applied from the primary (the primary's own, on the primary).
+    pub applied: Option<String>,
+    /// Its applied head is the primary's head: same stamps and digest.
+    pub in_sync: bool,
+    /// Live secrets it can't read here (encrypted under a key it doesn't have, or damaged).
+    pub unreadable: u32,
+    /// Secrets the primary holds but couldn't decrypt to send: this node keeps its own copy.
+    pub held: u32,
+}
+
 /// One node in [`ClusterView`].
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 #[allow(clippy::struct_excessive_bools)] // independent flags of one record
@@ -3133,6 +3150,9 @@ pub struct ClusterNode {
     pub config_source: Option<String>,
     /// The machine it runs on (T6.11); absent from older nodes and before the first sample.
     pub host: Option<HostReport>,
+    /// REQ: CLU-015 (ADR-903 §6) — its stored secrets: stamps and counts, never a value. Absent
+    /// from older nodes and from nodes not heard from.
+    pub secrets: Option<ClusterSecrets>,
     /// REQ: CLU-008 (T6.14) — the Kubernetes node and pod it runs in (absent elsewhere and
     /// from older nodes).
     pub kube_node: Option<String>,

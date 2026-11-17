@@ -3222,6 +3222,42 @@ test('flt_017 workloads', async () => {
 // Start, the live counters on the Drills tab, the report (verdicts, time to failover, came back),
 // and the drill marker on the dashboard; the real single node refuses a drill (no other node);
 // the affinity column in the Advanced view with its help.
+test('clu_015 cluster page shows each member's secret state', async () => {
+  // REQ: CLU-015 (ADR-903 §6) — the Nodes table's Secrets column: each member's head, what it has
+  // applied, its unreadable and held counts, and whether it's in sync with the primary.
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const node = (o: Record<string, unknown>) => ({
+    ephemeral: false, witness: false, protocol: 4, role: 'replica', thisNode: false, eligible: true, version: '0.8.0',
+    up: true, connected: true, link: 'inbound', lastSeenSecondsAgo: 1, rttMs: 3, configSeq: 12, configLag: 0, ready: true,
+    qps: 10, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, restarts: 0, ...o,
+  });
+  const view = {
+    enabled: true, clusterId: 'c1', name: 'home', thisNode: 'aaaa1111', newestConfigSeq: 12, healthy: true, checks: [],
+    events: [], conflicts: [], authority: 'api',
+    nodes: [
+      node({ nodeId: 'aaaa1111', site: 'k8s', role: 'primary', thisNode: true, link: 'self',
+        secrets: { head: '2.14', applied: '2.14', inSync: true, unreadable: 0, held: 0 } }),
+      node({ nodeId: 'bbbb2222', site: 'pi',
+        secrets: { head: '2.14', applied: '2.14', inSync: true, unreadable: 0, held: 0 } }),
+      node({ nodeId: 'cccc3333', site: 'canary-box',
+        secrets: { head: '2.14', applied: '2.9', inSync: false, unreadable: 1, held: 2 } }),
+    ],
+  };
+  await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: view }));
+  await page.goto('/#/cluster');
+  const rows = page.getByTestId('cluster-node');
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0).getByTestId('cluster-node-secrets-state')).toHaveText('primary');
+  await expect(rows.nth(0).getByTestId('cluster-node-secrets')).toContainText('head 2.14 · applied 2.14');
+  await expect(rows.nth(1).getByTestId('cluster-node-secrets-state')).toHaveText('in sync');
+  await expect(rows.nth(2).getByTestId('cluster-node-secrets-state')).toHaveText('behind');
+  await expect(rows.nth(2).getByTestId('cluster-node-secrets')).toContainText('applied 2.9');
+  await expect(rows.nth(2).getByTestId('cluster-node-unreadable')).toContainText('1 unreadable here');
+  await expect(rows.nth(2).getByTestId('cluster-node-held')).toContainText('2 held by the primary');
+  // The help topic for the column is there.
+  await expect(page.locator('th', { hasText: 'Secrets' }).getByRole('button')).toBeVisible();
+});
+
 test('clu_014 drill', async () => {
   test.setTimeout(90_000);
   await page.setViewportSize({ width: 1280, height: 800 });

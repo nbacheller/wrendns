@@ -272,6 +272,22 @@ pub(crate) fn info(c: &Cluster) -> ClusterInfo {
     }
 }
 
+/// REQ: CLU-015 (ADR-903 §6) — a member's secrets as the Cluster page shows them: stamps and
+/// counts, and whether its applied head is the primary's.
+fn secrets_view(
+    m: &telltale_cluster::net::SecretsMark,
+    primary: Option<&telltale_cluster::net::SecretsHead>,
+) -> telltale_api::model::ClusterSecrets {
+    let stamp = |h: &telltale_cluster::net::SecretsHead| format!("{}.{}", h.epoch, h.seq);
+    telltale_api::model::ClusterSecrets {
+        head: m.head.as_ref().map(stamp),
+        applied: m.applied.as_ref().map(stamp),
+        in_sync: matches!((m.applied.as_ref(), primary), (Some(a), Some(p)) if a == p),
+        unreadable: m.unreadable,
+        held: m.held,
+    }
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -423,7 +439,18 @@ pub(crate) fn view(
             .find(|n| n.node_id == id)
             .map_or((false, false), |n| (n.ephemeral, n.witness))
     };
+    // REQ: CLU-015 — the primary's secrets head, which each member's applied head is compared with.
+    let secrets_primary = if c.is_primary() {
+        local.secrets.head.clone()
+    } else {
+        c.members()
+            .into_iter()
+            .filter(|m| m.primary)
+            .max_by_key(|m| m.epoch)
+            .and_then(|m| m.secrets.head)
+    };
     let mut nodes = vec![ClusterNode {
+        secrets: Some(secrets_view(&local.secrets, secrets_primary.as_ref())),
         ephemeral: flags(&me.node_id).0,
         witness: me.witness,
         protocol: telltale_cluster::wire::PROTOCOL,
@@ -473,6 +500,7 @@ pub(crate) fn view(
     for p in &peers {
         let (lag, behind) = lag_of(p.stable_seq(), p.behind_since_ms);
         nodes.push(ClusterNode {
+            secrets: Some(secrets_view(&p.secrets, secrets_primary.as_ref())),
             ephemeral: flags(&p.node_id).0,
             witness: flags(&p.node_id).1,
             protocol: p.protocol,
