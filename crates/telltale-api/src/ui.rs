@@ -64,8 +64,48 @@ fn accepts_gzip(headers: &HeaderMap) -> bool {
         .flat_map(|v| v.split(','))
         .any(|e| {
             let mut parts = e.trim().split(';');
-            parts.next() == Some("gzip") && !parts.any(|q| q.trim().replace(' ', "") == "q=0")
+            let name = parts.next().map(str::trim).unwrap_or_default();
+            // RFC 9110 §12.5.3: names are case-insensitive, and any q of zero ("0", "0.0", "0.000")
+            // refuses the coding.
+            name.eq_ignore_ascii_case("gzip")
+                && !parts.any(|p| {
+                    let p = p.trim();
+                    p.get(..2).is_some_and(|k| k.eq_ignore_ascii_case("q="))
+                        && p.get(2..)
+                            .and_then(|q| q.trim().parse::<f32>().ok())
+                            .is_some_and(|q| q <= 0.0)
+                })
         })
+}
+
+#[cfg(test)]
+mod accept_tests {
+    use super::accepts_gzip;
+    use axum::http::{HeaderMap, HeaderValue, header};
+
+    fn with(v: &'static str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(header::ACCEPT_ENCODING, HeaderValue::from_static(v));
+        h
+    }
+
+    // REQ: NFR-001 (ADR-915) — a zero q in any spelling refuses gzip; names ignore case.
+    #[test]
+    fn nfr_001_gzip_q_zero_in_any_form_refuses() {
+        for v in [
+            "gzip;q=0",
+            "gzip;q=0.0",
+            "gzip; q=0.000",
+            "GZIP;Q=0",
+            "br, gzip;q=0.00",
+        ] {
+            assert!(!accepts_gzip(&with(v)), "{v}");
+        }
+        for v in ["gzip", "GZip", "gzip;q=0.5", "br, gzip", "gzip; q=1"] {
+            assert!(accepts_gzip(&with(v)), "{v}");
+        }
+        assert!(!accepts_gzip(&HeaderMap::new()));
+    }
 }
 
 /// Inflates a gzip member written by `ui/scripts/postbuild.mjs` (RFC 1952, no optional header
