@@ -136,12 +136,19 @@
   }
 
   const nameOk = (n: string) => /^[a-z0-9][a-z0-9._-]{0,62}$/.test(n);
+  // REQ: API-016 (review of T23.8) — Add never replaces a router: a name another router holds is
+  // refused before anything is stored under it (the form's secrets are named after the router).
+  const nameTaken = $derived(form !== null && form.original === null && items.some((i) => i.name === form.name.trim().toLowerCase()));
 
   async function check() {
     if (!form) return;
+    if (!form.name.trim()) {
+      checkOut = { ok: false, text: 'Name the router first: a check of a stored credential needs the name it is stored under.' };
+      return;
+    }
     checkOut = { ok: true, text: 'Checking…' };
     try {
-      const r = await api.checkRouter({ name: form.name.trim() || 'draft', ...bodyOf(form) });
+      const r = await api.checkRouter({ ...bodyOf(form), name: form.name.trim().toLowerCase() });
       if (r.ok) {
         checkOut = { ok: true, text: `It works: ${r.devices} device${r.devices === 1 ? '' : 's'}${r.networks ? ` and ${r.networks} network${r.networks === 1 ? '' : 's'}` : ''} read. Nothing was saved.` };
       } else {
@@ -177,6 +184,10 @@
     if (!form) return;
     formError = '';
     const name = form.name.trim().toLowerCase();
+    if (nameTaken) {
+      formError = `A router named ${name} exists. Change it, or choose another name.`;
+      return;
+    }
     if (!nameOk(name)) {
       formError = 'The name uses lower-case letters, digits, dots, dashes, and underscores, and starts with a letter or digit.';
       return;
@@ -263,6 +274,7 @@
         <label>
           <span>Name</span>
           <input bind:value={form.name} disabled={form.original !== null} placeholder="home-gateway" autocomplete="off" aria-label="Name" />
+          {#if nameTaken}<span class="small bad-text" role="alert" data-testid="routers-name-taken">A router named {form.name.trim().toLowerCase()} exists. Change it, or choose another name.</span>{/if}
         </label>
         <label>
           <span>Address</span>
@@ -286,7 +298,7 @@
 
       <h3>Credentials</h3>
       <p class="small muted">Entered once, stored encrypted on the node, and never shown again. The form keeps the stored name.</p>
-      {#if form.name.trim()}
+      {#if form.name.trim() && !nameTaken}
         {#each fieldsOf(form.kind) as field (field)}
           <CredentialInput
             label={keyLabel(form.kind, field)}
@@ -295,11 +307,11 @@
             onsaved={(n) => form && setRef(form, field, n)}
           />
         {/each}
-      {:else}
+      {:else if !nameTaken}
         <p class="small muted">Enter a name first: the stored secrets are named after the router.</p>
       {/if}
 
-      <h3>Certificate</h3>
+      <h3>Certificate <HelpButton id="router-certificate" /></h3>
       <p class="small muted">A console's own certificate names <span class="mono">unifi.local</span>, not its address. Fetch it from the console and trust it: nothing else is trusted for this router.</p>
       <label class="wide">
         <span>Certificate (PEM)</span>
@@ -326,7 +338,8 @@
       {#if checkOut}<p class={checkOut.ok ? 'ok-text' : 'bad-text'} role="status" data-testid="routers-check">{checkOut.text}</p>{/if}
       <div class="row-actions">
         <button type="button" class="btn" data-testid="routers-check-button" onclick={check} disabled={busy || !form.url.trim()}>Check it</button>
-        <button type="button" class="btn primary" data-testid="routers-save" onclick={save} disabled={busy}>Save the router</button>
+        <HelpButton id="router-check" />
+        <button type="button" class="btn primary" data-testid="routers-save" onclick={save} disabled={busy || nameTaken}>Save the router</button>
         <button type="button" class="btn" onclick={closeForm}>Cancel</button>
       </div>
     </section>
@@ -348,7 +361,6 @@
         <span class={e.status.state === 'ok' ? 'badge ok' : e.status.state === 'failing' ? 'badge bad' : 'badge'}>{stateLabel[e.status.state] ?? e.status.state}</span>
         {#if e.status.state === 'skipped'}<span class="small muted">({e.status.polledBy})</span>{/if}
         {#if e.status.lastPoll}<span class="small muted">Last read {when(e.status.lastPoll)}: {e.status.devices} devices{e.status.networks ? `, ${e.status.networks} networks` : ''}.</span>{/if}
-        {#if e.status.polledBy === 'the primary' && e.status.state !== 'skipped'}<span class="small muted">A stored credential is read on the primary.</span>{/if}
       </p>
       {#if e.status.error}<p class="small bad-text" data-testid="router-error">{e.status.error}</p>{/if}
       <ul class="creds">

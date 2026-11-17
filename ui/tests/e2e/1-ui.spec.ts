@@ -3832,7 +3832,8 @@ test('obs_037 internal names', async () => {
 const ROUTER_CERT = {
   names: ['unifi.local', 'localhost'],
   fingerprintSha256: 'AB:CD:EF',
-  pem: '-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n',
+  // A PEM body the server decodes: a bare marker, or a body that isn't base64, is refused (API-016).
+  pem: '-----BEGIN CERTIFICATE-----\nMAMCAQU=\n-----END CERTIFICATE-----\n',
   suggestedTlsServerName: 'unifi.local',
 };
 
@@ -3913,7 +3914,6 @@ test('api_016 file router shows set by file', async () => {
   await page.route('**/api/v1/routers', (route) =>
     route.fulfill({
       json: {
-        stale: false,
         items: [
           {
             name: 'filed-udm',
@@ -3966,6 +3966,55 @@ test('api_016 add an OPNsense router from the UI', async () => {
   await expect(card).toContainText('opnsense.opn-e2e.api_secret');
 });
 
+// REQ: API-016 (T23.8, ADR-922) — Change edits a router in place: the name is fixed, and Save sends the
+// new interval.
+test('api_016 change a router from the UI', async () => {
+  await page.goto('/#/routers');
+  await page.reload();
+  const card = page.getByTestId('router-card').filter({ hasText: 'lab-udm' });
+  await expect(card).toBeVisible({ timeout: 10_000 });
+  await card.getByTestId('router-edit').click();
+  const editor = page.getByTestId('routers-editor');
+  await expect(editor.getByRole('heading', { name: 'Change lab-udm' })).toBeVisible();
+  await expect(editor.getByRole('textbox', { name: 'Name', exact: true })).toBeDisabled();
+  await editor.getByRole('spinbutton', { name: 'Read every (seconds)' }).fill('600');
+  const put = page.waitForRequest((r) => r.method() === 'PUT' && r.url().includes('/api/v1/routers/lab-udm'));
+  await page.getByRole('button', { name: 'Save the router' }).click();
+  expect((await put).postDataJSON().interval_secs).toBe(600);
+  await expect(page.getByTestId('routers-notice')).toContainText('Saved lab-udm');
+  await expect(page.getByTestId('routers-editor')).toHaveCount(0);
+});
+
+// REQ: API-016 (review of T23.8) — Add never replaces a router: a name another router holds is refused
+// before anything is stored, and Save stays off.
+test('api_016 a name in use is refused when adding', async () => {
+  await page.goto('/#/routers');
+  await page.getByTestId('routers-add').click();
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('lab-udm');
+  await expect(page.getByTestId('routers-name-taken')).toContainText('A router named lab-udm exists');
+  await expect(page.getByRole('button', { name: 'Save the router' })).toBeDisabled();
+  await expect(page.getByTestId('credential-input')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByTestId('routers-editor')).toHaveCount(0);
+});
+
+// REQ: API-016 (review of T23.8, ADR-922) — a check that drops a stored credential says so.
+test('api_016 a check says when a stored credential was not sent', async () => {
+  await page.route('**/api/v1/checks/router', (route) =>
+    route.fulfill({ json: { ok: false, devices: 0, networks: 0, error: 'HTTP 401 (check the long-lived access token)', credentialSent: false } }),
+  );
+  await page.goto('/#/routers');
+  await page.getByTestId('routers-add').click();
+  await page.getByRole('combobox', { name: 'Kind' }).selectOption('home_assistant');
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ha-moved');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('http://127.0.0.1:8125');
+  await page.getByTestId('routers-check-button').click();
+  await expect(page.getByTestId('routers-check')).toContainText("A stored credential wasn't sent");
+  await expect(page.getByTestId('routers-check')).toContainText('Nothing was saved.');
+  await page.unroute('**/api/v1/checks/router');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+});
+
 test('api_016 operator sees routers read-only', async () => {
   const csrf = (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
   const made = await page.request.post('/api/v1/users', {
@@ -3999,7 +4048,6 @@ test('api_016 router with an unreadable credential shows the issue', async () =>
   await page.route('**/api/v1/routers', (route) =>
     route.fulfill({
       json: {
-        stale: false,
         items: [
           {
             name: 'lost-key',
@@ -4030,7 +4078,9 @@ test('api_016 delete a router from the UI', async () => {
   expect(secret.status(), await secret.text()).toBe(200);
   const made = await request.put('/api/v1/routers/del-e2e', { headers: { 'x-csrf-token': csrf }, data: { type: 'home_assistant', url: 'http://127.0.0.1:8124', api_key_ref: 'ha-e2e-token' } });
   expect(made.status(), await made.text()).toBe(200);
+  // The page is already on this route, and a hash change keeps its last mocked list: reload.
   await page.goto('/#/routers');
+  await page.reload();
   const card = page.getByTestId('router-card').filter({ hasText: 'del-e2e' });
   await expect(card).toBeVisible({ timeout: 10_000 });
   await card.getByTestId('router-delete').click();

@@ -917,8 +917,28 @@
       "term": "Long-lived access token",
       "summary": "Home Assistant names devices by the MAC addresses in its registry. TelltaleDNS reads them with a long-lived access token, which must come from an administrator's account, because the template it renders needs one.",
       "when": "Your devices (Shelly, ESPHome, Sonos, TVs) have names in Home Assistant you'd like TelltaleDNS to use.",
-      "example": "Address http://homeassistant.local:8123 and a token stored as home-assistant.ha.api_key.",
+      "example": "Address http://homeassistant.local:8123 and a token stored as home_assistant.ha.api_key (the form names it `<kind>.<router name>.api_key`).",
       "caution": "The token is an administrator's: anyone holding it can read your Home Assistant. Keep it stored, never in a file in Git.",
+      "docs": "routers"
+    },
+    {
+      "id": "router-certificate",
+      "title": "Trust a console's certificate",
+      "term": "Certificate (PEM)",
+      "summary": "The console's own certificate, fetched with Fetch the console's certificate and trusted with Trust this certificate. It's saved as the text of the certificate chain the console presents, and nothing else is trusted for that router.",
+      "when": "The router's HTTPS address is refused because its certificate isn't one a public authority signed, which is the normal case for a console.",
+      "example": "The console at https://192.168.1.1 presents unifi.local; fetch it, trust it, and the name to check is unifi.local.",
+      "caution": "The certificate changes when the console renews it, and the router then fails until the new one is saved. Skipping the check is not offered: anything on the LAN could pose as the console.",
+      "docs": "routers"
+    },
+    {
+      "id": "router-check",
+      "title": "Check a router before you save it",
+      "term": "Check it",
+      "summary": "Check it reads the router once with the form's settings and saves nothing. A stored credential is sent only to the address and TLS settings it was saved with, or to a new router's own secret named after it.",
+      "when": "You want to know the key, address, and certificate work before the router is saved and read every few minutes.",
+      "example": "A check of a new UniFi router that reports 12 devices and 3 networks read, with nothing saved.",
+      "caution": "When the address or the certificate differs from the saved router's, a stored credential isn't sent, and the check says so.",
       "docs": "routers"
     }
   ]

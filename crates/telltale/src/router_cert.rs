@@ -1,7 +1,9 @@
 //! REQ: API-016 (T23.8, ADR-120) — the certificate a router console presents, for the Routers page's
-//! "trust the console certificate" step. One TLS handshake at the address, the end-entity certificate
-//! read, and nothing else: the handshake's chain is not trusted (that is the point of the check), the
-//! connection is closed, and the admin saves the PEM only by submitting the form.
+//! "trust the console certificate" step. One TLS handshake at the address, the chain it presents
+//! read (the end-entity certificate first, then its CAs), and nothing else: the handshake is not
+//! trusted (that is the point of the check), the connection is closed, and the admin saves the PEM
+//! only by submitting the form. The saved PEM is the whole chain, so a console signed by a private
+//! CA it sends is trusted as well (review of T23.7).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -18,19 +20,19 @@ use tokio_rustls::TlsConnector;
 /// How long the handshake may take.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Accepts whatever the console presents, and keeps its end-entity certificate. Signatures are still
-/// checked, so the handshake itself is sound; trust is decided by the admin, not here.
+/// Accepts whatever the console presents, and keeps its chain (end-entity first). Signatures are
+/// still checked, so the handshake itself is sound; trust is decided by the admin, not here.
 #[derive(Debug)]
 struct Capture {
     provider: Arc<rustls::crypto::CryptoProvider>,
-    cert: Arc<Mutex<Option<Vec<u8>>>>,
+    cert: Arc<Mutex<Option<Vec<Vec<u8>>>>>,
 }
 
 impl ServerCertVerifier for Capture {
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
+        intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName<'_>,
         _ocsp: &[u8],
         _now: UnixTime,
@@ -39,7 +41,9 @@ impl ServerCertVerifier for Capture {
             .cert
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *slot = Some(end_entity.as_ref().to_vec());
+        let mut chain = vec![end_entity.as_ref().to_vec()];
+        chain.extend(intermediates.iter().map(|c| c.as_ref().to_vec()));
+        *slot = Some(chain);
         Ok(ServerCertVerified::assertion())
     }
 
@@ -117,9 +121,12 @@ fn names_of(der: &[u8]) -> Vec<String> {
         for n in &san.value.general_names {
             match n {
                 x509_parser::extensions::GeneralName::DNSName(d) => names.push((*d).to_owned()),
+                // REQ: API-016 (review of T23.8) — IPv4 (4 bytes) and IPv6 (16) addresses both.
                 x509_parser::extensions::GeneralName::IPAddress(b) => {
                     if let Ok(ip) = <[u8; 4]>::try_from(*b) {
                         names.push(std::net::Ipv4Addr::from(ip).to_string());
+                    } else if let Ok(ip) = <[u8; 16]>::try_from(*b) {
+                        names.push(std::net::Ipv6Addr::from(ip).to_string());
                     }
                 }
                 _ => {}
@@ -191,12 +198,15 @@ pub(crate) async fn fetch(url: &str) -> Result<RouterCertificate, Problem> {
         Ok(Err(e)) => return Err(Problem::new(Code::Unavailable, e)),
         Ok(Ok(())) => {}
     }
-    let der = cell
+    let chain = cell
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take()
         .ok_or_else(|| Problem::new(Code::Unavailable, "the console presented no certificate"))?;
-    let names = names_of(&der);
+    let der = chain
+        .first()
+        .ok_or_else(|| Problem::new(Code::Unavailable, "the console presented no certificate"))?;
+    let names = names_of(der);
     if names.is_empty() {
         return Err(Problem::new(
             Code::Unavailable,
@@ -217,8 +227,8 @@ pub(crate) async fn fetch(url: &str) -> Result<RouterCertificate, Problem> {
     };
     Ok(RouterCertificate {
         names,
-        fingerprint_sha256: fingerprint_of(&der),
-        pem: pem_of(&der),
+        fingerprint_sha256: fingerprint_of(der),
+        pem: chain.iter().map(|c| pem_of(c)).collect(),
         suggested_tls_server_name: suggested,
     })
 }
@@ -257,6 +267,15 @@ mod tests {
         assert!(pem.ends_with("-----END CERTIFICATE-----\n"));
         let back = rustls::pki_types::CertificateDer::from_pem_slice(pem.as_bytes()).unwrap();
         assert_eq!(back.as_ref(), der.as_slice());
+    }
+
+    /// REQ: API-016 (review of T23.8) — a certificate whose names are IP addresses (IPv6 included)
+    /// has names; the form and the check don't refuse it as "names couldn't be read".
+    #[test]
+    fn api_016_ipv6_names_read() {
+        let cert = rcgen::generate_simple_self_signed(vec!["fd00::1".to_owned()]).unwrap();
+        let names = names_of(cert.cert.der());
+        assert!(names.iter().any(|n| n == "fd00::1"), "{names:?}");
     }
 
     /// REQ: API-016 — the fingerprint is SHA-256 in colon-separated hex.

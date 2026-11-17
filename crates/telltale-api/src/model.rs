@@ -3685,9 +3685,6 @@ pub struct RouterStatus {
 #[serde(rename_all = "camelCase")]
 pub struct RouterList {
     pub items: Vec<RouterEntry>,
-    /// Whether the answer is stale (a replica that couldn't ask the primary); the list itself is the
-    /// replicated configuration.
-    pub stale: bool,
 }
 
 /// REQ: API-016 (T23.8) — a read-only poll of a router as a draft (`POST /checks/router`).

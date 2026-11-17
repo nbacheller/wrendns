@@ -168,6 +168,7 @@ const TABLE: &[(&str, Class)] = &[
     ("router[].password_ref", Plain),
     ("router[].site", Plain),
     ("router[].tls_ca", Scan),
+    ("router[].tls_ca_pem", Scan),
     ("router[].tls_server_name", Scan),
     ("router[].url", Url),
     ("router[].username", Secret),

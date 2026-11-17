@@ -7781,11 +7781,6 @@ export interface components {
         /** @description REQ: API-016 (T23.8, ADR-903 §9) — `GET /api/v1/routers`. */
         RouterList: {
             items: components["schemas"]["RouterEntry"][];
-            /**
-             * @description The node that answered, and whether another node holds the settings (a replica that
-             *     couldn't ask the primary answers with `stale`).
-             */
-            stale: boolean;
         };
         /** @description REQ: API-016 (T23.7) — what this node's poll of a router last did. */
         RouterStatus: {
@@ -10470,6 +10465,15 @@ export interface operations {
                     "application/json": components["schemas"]["RouterCertificate"];
                 };
             };
+            /** @description The URL is not an https address. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Only an admin can check a router (agents never). */
             403: {
                 headers: {
@@ -10479,8 +10483,8 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description The URL is not an https address, or no certificate could be read. */
-            422: {
+            /** @description The console didn't answer, or presented no certificate. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -4309,12 +4309,27 @@ fn router_entry(
         if file_path.is_none() && reference.is_none() {
             continue;
         }
-        let resolved =
-            crate::secrets::Credential::of(file_path, reference).resolve(Some(&src.secrets));
-        let (readable, issue) = match resolved {
-            Ok(Some(_)) => (Some(true), None),
-            Ok(None) => (None, None),
-            Err(e) => (Some(false), Some(e)),
+        // REQ: API-016 (review of T23.7) — a stored secret is judged from its row, never decrypted
+        // for this list (it runs on every poll, and the store's lock is shared with the reads); a
+        // file is read as before.
+        let (readable, issue) = match (file_path, reference) {
+            (None, Some(name)) => match src.secrets.readable(name.as_str()) {
+                Ok(()) => (Some(true), None),
+                Err(why) => (
+                    Some(false),
+                    Some(crate::secrets::credential::not_configured(
+                        name.as_str(),
+                        &why.to_string(),
+                    )),
+                ),
+            },
+            _ => match crate::secrets::Credential::of(file_path, reference)
+                .resolve(Some(&src.secrets))
+            {
+                Ok(Some(_)) => (Some(true), None),
+                Ok(None) => (None, None),
+                Err(e) => (Some(false), Some(e)),
+            },
         };
         credentials.push(RouterCredential {
             field: field.to_owned(),

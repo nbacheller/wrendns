@@ -170,7 +170,13 @@ async fn call(
     let status = resp.status();
     let headers = resp.headers().clone();
     let body = resp.into_body();
-    let v = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    // REQ: API-016 (review of T23.7, ADR-922) — a success whose answer isn't JSON is a failed read:
+    // read as nothing, it would clear the router's names. An error status keeps its own message.
+    let v = if body.is_empty() || !status.is_success() {
+        serde_json::from_slice(&body).unwrap_or(Value::Null)
+    } else {
+        serde_json::from_slice(&body).map_err(|_| format!("{url}: the answer isn't JSON"))?
+    };
     Ok((status, headers, v))
 }
 
@@ -880,11 +886,16 @@ fn reconcile(
         match slots.get_mut(&name) {
             Some(s) if s.config != *r => {
                 *generation += 1;
+                // REQ: API-016 (review of T23.7, ADR-922) — a change to the same address keeps the
+                // names until the debounced read succeeds; another address or kind is another
+                // device, so its names go now.
+                if s.config.url != r.url || s.config.kind != r.kind {
+                    s.part = Polled::default();
+                    s.ha = None;
+                }
                 s.config = r.clone();
                 s.generation = *generation;
                 s.due = debounced(s.last, now);
-                s.part = Polled::default();
-                s.ha = None;
                 s.in_flight = false;
                 s.failing = false;
                 s.read_once = false;
@@ -1051,12 +1062,14 @@ fn parts_of(
 /// Writes each router's status to the board, for the API and the Routers page.
 fn publish(slots: &HashMap<String, Slot>, board: &Board) {
     for (name, s) in slots {
+        // REQ: API-016 (review of T23.7) — a changed router reads `waiting` until its debounced read
+        // lands (its names are the last read's, not the new settings').
         let state = if s.skipped.is_some() {
             "skipped"
-        } else if s.last.is_none() {
-            "waiting"
         } else if s.error.is_some() {
             "failing"
+        } else if !s.read_once {
+            "waiting"
         } else {
             "ok"
         };
@@ -1152,6 +1165,22 @@ pub(crate) async fn run(
     }
 }
 
+/// REQ: API-016 (review of T23.8, ADR-922) — whether a check may send the stored secret a draft
+/// names: the saved router's own secret when its address and TLS settings are the saved ones, or
+/// the one named for this router when no other router uses it.
+fn ref_sent(
+    reference: &str,
+    named_for_router: &str,
+    saved_ref: Option<&telltale_config::SafeString>,
+    same_target: bool,
+    used_elsewhere: bool,
+) -> bool {
+    if same_target && saved_ref.is_some_and(|s| s.as_str() == reference) {
+        return true;
+    }
+    reference == named_for_router && !used_elsewhere
+}
+
 /// REQ: API-016 (T23.8, ADR-922) — one read of a router draft, without saving it. A stored
 /// credential is sent only when the draft's address and TLS settings are the saved ones: a draft
 /// aimed elsewhere runs without it (`credential_sent: false`), so a stored key never goes to a new
@@ -1179,16 +1208,55 @@ pub(crate) async fn check_draft(
             && s.tls_server_name == r.tls_server_name
             && s.tls_insecure_skip_verify == r.tls_insecure_skip_verify
     });
+    // REQ: API-016 (review of T23.8, ADR-922) — a stored credential goes only where it was saved
+    // for: each of the draft's references is kept when it is the saved router's own secret (and
+    // the address and TLS settings are the saved ones), or the secret the form names for this
+    // router (`<kind>.<name>.<field>`) when no other router uses it. Any other reference is
+    // dropped, so another kind's secret never goes to a console.
+    let kind = match r.kind {
+        telltale_config::RouterKind::Unifi => "unifi",
+        telltale_config::RouterKind::Opnsense => "opnsense",
+        telltale_config::RouterKind::HomeAssistant => "home_assistant",
+    };
+    let router_name = r.name.as_str().to_owned();
     let mut credential_sent = true;
-    if !same_target {
-        let had_ref =
-            r.api_key_ref.is_some() || r.api_secret_ref.is_some() || r.password_ref.is_some();
-        if had_ref {
+    let fields: [(
+        &str,
+        &mut Option<telltale_config::SafeString>,
+        Option<&telltale_config::SafeString>,
+    ); 3] = [
+        (
+            "api_key",
+            &mut r.api_key_ref,
+            saved.and_then(|s| s.api_key_ref.as_ref()),
+        ),
+        (
+            "api_secret",
+            &mut r.api_secret_ref,
+            saved.and_then(|s| s.api_secret_ref.as_ref()),
+        ),
+        (
+            "password",
+            &mut r.password_ref,
+            saved.and_then(|s| s.password_ref.as_ref()),
+        ),
+    ];
+    for (field, reference, saved_ref) in fields {
+        let Some(value) = reference.as_ref().map(|s| s.as_str().to_owned()) else {
+            continue;
+        };
+        let named = format!("{kind}.{router_name}.{field}");
+        let used_elsewhere = cfg.router.iter().any(|o| {
+            o.name.as_str() != router_name
+                && [&o.api_key_ref, &o.api_secret_ref, &o.password_ref]
+                    .into_iter()
+                    .flatten()
+                    .any(|s| s.as_str() == value)
+        });
+        if !ref_sent(&value, &named, saved_ref, same_target, used_elsewhere) {
+            *reference = None;
             credential_sent = false;
         }
-        r.api_key_ref = None;
-        r.api_secret_ref = None;
-        r.password_ref = None;
     }
     let resolver: Arc<dyn telltale_filter::fetch::Resolve> =
         Arc::new(telltale_filter::fetch::SystemResolver);

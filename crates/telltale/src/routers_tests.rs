@@ -345,7 +345,9 @@ async fn api_016_router_url_password_redacted() {
     assert_eq!(s, StatusCode::OK, "{answer}");
     assert!(!answer.to_string().contains(PW), "{answer}");
     assert!(answer.to_string().contains("<redacted>"), "{answer}");
-    let (_, _, entries) = h.call("GET", "/api/v1/config/entries?kind=router", None).await;
+    let (_, _, entries) = h
+        .call("GET", "/api/v1/config/entries?kind=router", None)
+        .await;
     assert!(!entries.to_string().contains(PW), "{entries}");
     let (_, _, routers) = h.call("GET", ROUTERS, None).await;
     assert!(!routers.to_string().contains(PW), "{routers}");
@@ -798,4 +800,200 @@ async fn api_016_certificate_needs_https() {
         )
         .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+/// A fake router answering every request with `body` exactly as given (not checked as JSON), and
+/// counting the requests it gets.
+async fn fake_raw(body: Vec<u8>) -> (SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let body = Arc::new(body);
+    let seen = Arc::clone(&count);
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = l.accept().await {
+            let (body, seen) = (Arc::clone(&body), Arc::clone(&seen));
+            tokio::spawn(async move {
+                read_request(&mut s).await;
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = s.write_all(head.as_bytes()).await;
+                let _ = s.write_all(&body).await;
+                let _ = s.shutdown().await;
+            });
+        }
+    });
+    (addr, count)
+}
+
+/// Waits until `f` holds, up to `limit`.
+async fn eventually_within(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
+    let until = Instant::now() + limit;
+    while Instant::now() < until {
+        if f() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    f()
+}
+
+/// Stores `value` as the secret `name` on the harness's node.
+fn store_secret(h: &Harness, name: &str, value: &str) {
+    h.src
+        .secrets
+        .put(
+            name,
+            Kind::Text,
+            &crate::secrets::SecretValue::new(
+                Kind::Text,
+                zeroize::Zeroizing::new(value.to_owned()),
+            )
+            .unwrap(),
+            0,
+            "root",
+            "local",
+            2,
+        )
+        .unwrap();
+}
+
+/// REQ: API-016 (T23.7, ADR-922) — a stored credential that changes wakes the loop, and its router
+/// is read again only after the debounce (five seconds from its last read), not at once.
+#[tokio::test]
+async fn api_016_router_secret_change_polls_debounced() {
+    let (addr, reads) = fake_raw(HA_ANSWER.as_bytes().to_vec()).await;
+    let h = with_secret(&format!(
+        "[[router]]\nname = \"lab\"\ntype = \"home_assistant\"\nurl = \"http://{addr}\"\napi_key_ref = \"ha\"\ninterval_secs = 60\n"
+    ));
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(super::run(Arc::clone(&h.src), stop_rx));
+    assert!(eventually(|| reads.load(std::sync::atomic::Ordering::SeqCst) == 1).await);
+    store_secret(&h, "ha", "tok-rotated");
+    h.src.routers_changed.notify_one();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        reads.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the router was read again before the debounce"
+    );
+    assert!(
+        eventually_within(Duration::from_secs(10), || reads
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == 2)
+        .await,
+        "the router wasn't read again after the debounce"
+    );
+    let _ = stop_tx.send(true);
+}
+
+/// REQ: API-016 (review of T23.7, ADR-922) — a router whose answer isn't JSON, or is larger than the
+/// answer limit, fails on its own: it keeps its last answer, shows the failure, and the others are
+/// read as before (their names and leases stay).
+#[tokio::test]
+async fn api_016_malformed_and_oversized_answers_isolated() {
+    let good = fake_router(HA_ANSWER).await;
+    let (malformed, _) = fake_raw(b"<html>not json</html>".to_vec()).await;
+    let (oversized, _) = fake_raw(vec![b'x'; (16 << 20) + 1]).await;
+    let h = with_secret(&format!(
+        "[[router]]\nname = \"good\"\ntype = \"home_assistant\"\nurl = \"http://{good}\"\napi_key_ref = \"ha\"\ninterval_secs = 60\n[[router]]\nname = \"malformed\"\ntype = \"home_assistant\"\nurl = \"http://{malformed}\"\napi_key_ref = \"ha\"\ninterval_secs = 60\n[[router]]\nname = \"oversized\"\ntype = \"home_assistant\"\nurl = \"http://{oversized}\"\napi_key_ref = \"ha\"\ninterval_secs = 60\n"
+    ));
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(super::run(Arc::clone(&h.src), stop_rx));
+    assert!(
+        eventually_within(Duration::from_secs(10), || leased(
+            &h,
+            Ipv4Addr::new(192, 168, 1, 50)
+        )
+        .is_some())
+        .await
+    );
+    assert!(
+        eventually_within(Duration::from_secs(10), || {
+            let snap = h.src.routers.snapshot();
+            snap.get("malformed").is_some_and(|s| s.state == "failing")
+                && snap.get("oversized").is_some_and(|s| s.state == "failing")
+        })
+        .await,
+        "{:?}",
+        h.src.routers.snapshot()
+    );
+    let snap = h.src.routers.snapshot();
+    assert_eq!(snap["good"].state, "ok");
+    assert_eq!(snap["good"].devices, 1);
+    assert!(
+        snap["malformed"]
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("JSON") || e.contains("expected")),
+        "{:?}",
+        snap["malformed"].error
+    );
+    assert!(
+        snap["oversized"]
+            .error
+            .as_deref()
+            .is_some_and(|e| !e.is_empty()),
+        "{:?}",
+        snap["oversized"].error
+    );
+    assert!(
+        leased(&h, Ipv4Addr::new(192, 168, 1, 50)).is_some(),
+        "the good router's lease went"
+    );
+    let _ = stop_tx.send(true);
+}
+
+/// REQ: API-016 (review of T23.8, ADR-922) — a check sends a stored secret only where it was saved
+/// for: the saved router's own secret at its own address, or the secret named for this router
+/// (`<kind>.<name>.<field>`) when no other router uses it. Any other secret is dropped, and the
+/// answer says so (`credential_sent: false`).
+#[tokio::test]
+async fn api_016_check_sends_only_its_own_secret() {
+    let addr = fake_router(HA_ANSWER).await;
+    let h = with_secret(&format!(
+        "[[router]]\nname = \"lab\"\ntype = \"home_assistant\"\nurl = \"http://{addr}\"\napi_key_ref = \"ha\"\n"
+    ));
+    store_secret(&h, "alert-token", "planted-alert-token");
+    store_secret(&h, "home_assistant.fresh.api_key", "tok-fresh");
+    let draft = |name: &str, url: &str, reference: &str| {
+        let mut v = ha_body(url);
+        v["name"] = json!(name);
+        v["api_key_ref"] = json!(reference);
+        v
+    };
+    let here = format!("http://{addr}");
+    // Another kind's secret, at the saved address: dropped.
+    let other = super::check_draft(&h.src, draft("lab", &here, "alert-token"))
+        .await
+        .unwrap();
+    assert!(!other.credential_sent, "{other:?}");
+    // The saved router's own secret, at the saved address: sent.
+    let own = super::check_draft(&h.src, draft("lab", &here, "ha"))
+        .await
+        .unwrap();
+    assert!(own.credential_sent && own.ok, "{own:?}");
+    // A new router named for its secret: sent.
+    let fresh = super::check_draft(
+        &h.src,
+        draft("fresh", &here, "home_assistant.fresh.api_key"),
+    )
+    .await
+    .unwrap();
+    assert!(fresh.credential_sent, "{fresh:?}");
+    // A new router that names another router's secret: dropped.
+    let borrowed = super::check_draft(&h.src, draft("newer", &here, "ha"))
+        .await
+        .unwrap();
+    assert!(!borrowed.credential_sent, "{borrowed:?}");
+    // The saved secret, sent to a new address: dropped.
+    let moved = super::check_draft(&h.src, draft("lab", "http://127.0.0.1:9", "ha"))
+        .await
+        .unwrap();
+    assert!(!moved.credential_sent && !moved.ok, "{moved:?}");
+    // The check saved nothing.
+    assert_eq!(h.src.config.load().router.len(), 1);
 }

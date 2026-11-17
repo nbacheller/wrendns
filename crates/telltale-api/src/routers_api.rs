@@ -53,7 +53,6 @@ fn admin_only(ext: &axum::http::Extensions) -> Result<(), Problem> {
 pub(crate) async fn list_routers(State(b): State<Shared>) -> Json<RouterList> {
     Json(RouterList {
         items: b.router_entries(),
-        stale: false,
     })
 }
 

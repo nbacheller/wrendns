@@ -85,7 +85,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
 
 // REQ: UPS-011 (T7.16) — TLS settings only for TLS upstreams; both halves of a client
 // certificate; pins that look like base64 SHA-256.
-/// REQ: API-016 (review of T23.7, ADR-921) � whether `pem` holds at least one PEM certificate
+/// REQ: API-016 (review of T23.7, ADR-921) — whether `pem` holds at least one PEM certificate
 /// that decodes: the BEGIN marker alone isn't one (a body that isn't base64 fails at poll time).
 fn valid_pem_certificate(pem: &str) -> bool {
     use rustls_pki_types::pem::PemObject;
@@ -2108,5 +2108,28 @@ fn secret_references(cfg: &Config, r: &mut Report<'_>) {
                 ),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_pem_certificate;
+
+    /// REQ: API-016 (review of T23.7, ADR-921) — a router's certificate must be PEM that decodes to
+    /// at least one certificate: the BEGIN marker alone, or a body that isn't base64, is refused.
+    #[test]
+    fn api_016_pem_check_needs_a_certificate() {
+        // The base64 of a small DER sequence: the PEM decodes, whatever the certificate inside.
+        assert!(valid_pem_certificate(
+            "-----BEGIN CERTIFICATE-----\nMAMCAQU=\n-----END CERTIFICATE-----\n"
+        ));
+        assert!(!valid_pem_certificate("MIIBfake"));
+        assert!(!valid_pem_certificate(
+            "-----BEGIN CERTIFICATE-----\nnot base64 !!\n-----END CERTIFICATE-----\n"
+        ));
+        assert!(!valid_pem_certificate(
+            "-----BEGIN CERTIFICATE-----\nMAMCAQU=\n"
+        ));
+        assert!(!valid_pem_certificate(""));
     }
 }

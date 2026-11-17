@@ -3576,6 +3576,7 @@ name = "telltale-config"
 version = "0.8.0"
 dependencies = [
  "jiff",
+ "rustls-pki-types",
  "schemars 1.2.3",
  "serde",
  "serde_json",

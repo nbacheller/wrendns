@@ -20346,8 +20346,7 @@
         "type": "object",
         "description": "REQ: API-016 (T23.8, ADR-903 §9) — `GET /api/v1/routers`.",
         "required": [
-          "items",
-          "stale"
+          "items"
         ],
         "properties": {
           "items": {
@@ -20355,10 +20354,6 @@
             "items": {
               "$ref": "#/components/schemas/RouterEntry"
             }
-          },
-          "stale": {
-            "type": "boolean",
-            "description": "Whether the answer is stale (a replica that couldn't ask the primary); the list itself is the\nreplicated configuration."
           }
         }
       },

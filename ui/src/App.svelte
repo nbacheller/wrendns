@@ -27,7 +27,7 @@
   import Explain from './pages/Explain.svelte';
   import Analyze from './pages/Analyze.svelte';
   import Clients from './pages/Clients.svelte';
-import Routers from './pages/Routers.svelte';
+  import Routers from './pages/Routers.svelte';
   import Networks from './pages/Networks.svelte';
   import Anomalies from './pages/Anomalies.svelte';
   import Cluster from './pages/Cluster.svelte';
