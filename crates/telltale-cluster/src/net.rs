@@ -411,6 +411,9 @@ pub struct Member {
     pub uptime_s: u64,
     /// Since when its applied configuration has been older than the newest known (Unix ms).
     pub behind_since_ms: Option<u64>,
+    /// REQ: OBS-010 (T24.5, fork #2) — how long it had gone without reaching its primary when it
+    /// last reported (seconds; `None` when it reached it).
+    pub primary_silent_s: Option<u64>,
     /// `gitops` or `file` (ADR-048).
     pub config_source: String,
     /// The cluster protocol it speaks (CLU-010).
@@ -545,6 +548,21 @@ impl Member {
         now_ms.saturating_sub(self.last_seen_ms)
             <= 3 * u64::try_from(HEARTBEAT.as_millis()).unwrap_or(15_000)
     }
+}
+
+/// REQ: OBS-010 (T24.5, fork #2) — the silence a replica reports about its primary: `None` while
+/// one of the primary's last heartbeats is within the `up` window (`Member::up`, three
+/// heartbeats), otherwise the whole seconds since the latest one (`started_ms` when none has been
+/// heard). Pure, so the timing can be tested without a network.
+pub(crate) fn primary_silence_secs(
+    now_ms: u64,
+    started_ms: u64,
+    primary_last_seen: impl Iterator<Item = u64>,
+) -> Option<u64> {
+    let window = 3 * u64::try_from(HEARTBEAT.as_millis()).unwrap_or(15_000);
+    let last = primary_last_seen.max().unwrap_or(started_ms);
+    let silent_ms = now_ms.saturating_sub(last);
+    (silent_ms > window).then_some(silent_ms / 1000)
 }
 
 /// Values this node reports in its Hello and heartbeats.
@@ -1721,6 +1739,22 @@ impl Cluster {
             .clone()
     }
 
+    /// REQ: OBS-010 (T24.5, fork #2) — how long this node has gone without a heartbeat from its
+    /// primary, in seconds, read from the heartbeats it already exchanges (never from the DNS
+    /// path). `None` when a primary was heard within the `up` window or this node is the
+    /// primary. Before any primary has been heard, the time counts from this process's start.
+    pub fn primary_silent_secs(&self, now_ms: u64) -> Option<u64> {
+        if self.is_primary() {
+            return None;
+        }
+        let members = self.members();
+        primary_silence_secs(
+            now_ms,
+            self.started_ms,
+            members.iter().filter(|m| m.primary).map(|m| m.last_seen_ms),
+        )
+    }
+
     /// Replication state.
     pub fn sync_status(&self) -> SyncStatus {
         self.sync
@@ -2076,6 +2110,7 @@ impl Cluster {
                 drill_id: l.drill.as_ref().map(|d| d.id.clone()).unwrap_or_default(),
                 drill_since_ms: l.drill.as_ref().map_or(0, |d| d.since_ms),
                 drill_until_ms: l.drill.as_ref().map_or(0, |d| d.until_ms),
+                primary_silent_s: self.primary_silent_secs(now_ms()),
                 secrets_head: head_to_wire(l.secrets.head.as_ref()),
                 secrets_applied: head_to_wire(l.secrets.applied.as_ref()),
                 secrets_unreadable: l.secrets.unreadable,
@@ -2147,6 +2182,7 @@ impl Cluster {
                         p90_us: prev.as_ref().map_or(0, |p| p.p90_us),
                         uptime_s: prev.as_ref().map_or(0, |p| p.uptime_s),
                         behind_since_ms: prev.as_ref().and_then(|p| p.behind_since_ms),
+                        primary_silent_s: None,
                         config_source: h.config_source,
                         protocol: h.protocol,
                         source_commit: h.source_commit,
@@ -2253,6 +2289,8 @@ impl Cluster {
                     m.sync_error = std::mem::take(&mut hb.sync_error);
                     m.probe_failing = hb.probe_failing;
                     m.canary_of = hb.canary_of;
+                    // REQ: OBS-010 (T24.5) — the peer's own view of its primary (absent: it reaches it).
+                    m.primary_silent_s = hb.primary_silent_s;
                     m.last_seen_ms = now;
                     if !hb.trust_fp.is_empty() {
                         m.trust_fp.clone_from(&hb.trust_fp);

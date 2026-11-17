@@ -2851,7 +2851,7 @@ pub struct HealthReason {
     /// `degraded` or `severe`.
     pub level: String,
     /// Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,
-    /// `sync_lag`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
+    /// `sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
     /// `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
     /// `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`.
     #[schema(example = "upstream_down")]
@@ -3193,6 +3193,10 @@ pub struct ClusterNode {
     pub config_lag: u64,
     /// How long it has been behind (absent when in sync).
     pub behind_seconds: Option<u64>,
+    /// REQ: OBS-010 (T24.5, fork #2) — a replica's time without reaching its primary, in seconds
+    /// (the `primary_unreachable` alert and the health icon read it). Absent when it reaches the
+    /// primary, is the primary, or isn't heard from.
+    pub primary_silent_seconds: Option<u64>,
     /// Serving DNS (listeners bound, not shutting down).
     pub ready: bool,
     /// Queries per second over the last minute, to two decimals (a node one minor version older

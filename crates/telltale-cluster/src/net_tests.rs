@@ -2052,3 +2052,65 @@ fn clu_001_the_removed_list_keeps_the_newest() {
         Some(format!("n{}", crate::node::MAX_REMOVED + 4))
     );
 }
+
+// REQ: OBS-010 (T24.5, fork #2) — a replica's silence about its primary: no report inside the
+// `up` window (three heartbeats), whole seconds after it, and the process start counts while no
+// primary has been heard at all.
+#[test]
+fn obs_010_t24_5_primary_silence_counts_from_the_last_heartbeat() {
+    let started = 1_000_000;
+    // Heard just now, or within the window: nothing to report, so nothing flaps.
+    assert_eq!(
+        primary_silence_secs(5_000_000, started, [5_000_000].into_iter()),
+        None
+    );
+    assert_eq!(
+        primary_silence_secs(5_015_000, started, [5_000_000].into_iter()),
+        None,
+        "exactly the window"
+    );
+    // One millisecond past it, the silence is reported in whole seconds.
+    assert_eq!(
+        primary_silence_secs(5_015_001, started, [5_000_000].into_iter()),
+        Some(15)
+    );
+    assert_eq!(
+        primary_silence_secs(5_059_999, started, [5_000_000].into_iter()),
+        Some(59)
+    );
+    assert_eq!(
+        primary_silence_secs(5_060_000, started, [5_000_000].into_iter()),
+        Some(60)
+    );
+}
+
+#[test]
+fn obs_010_t24_5_primary_silence_uses_the_newest_primary_and_clears_on_contact() {
+    // Two primaries known (a failover in progress): the newest heartbeat decides.
+    assert_eq!(
+        primary_silence_secs(6_000_000, 0, [1_000_000, 5_990_000].into_iter()),
+        None,
+        "the newer primary was heard 10 s ago"
+    );
+    // Silent for 90 s; then a heartbeat from the primary arrives and the report clears.
+    let silent = primary_silence_secs(5_090_000, 0, [5_000_000].into_iter());
+    assert_eq!(silent, Some(90));
+    assert_eq!(
+        primary_silence_secs(5_090_500, 0, [5_090_000].into_iter()),
+        None,
+        "reconnected"
+    );
+}
+
+#[test]
+fn obs_010_t24_5_primary_silence_counts_from_start_when_none_was_heard() {
+    // A replica that has never heard a primary since it started: the time since start.
+    assert_eq!(
+        primary_silence_secs(1_000_000 + 45_000, 1_000_000, std::iter::empty()),
+        Some(45)
+    );
+    assert_eq!(
+        primary_silence_secs(1_000_000 + 15_000, 1_000_000, std::iter::empty()),
+        None
+    );
+}

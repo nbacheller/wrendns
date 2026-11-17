@@ -474,6 +474,8 @@ pub(crate) fn view(
         config_seq: local.applied_seq,
         config_lag: my_lag,
         behind_seconds: my_behind,
+        // REQ: OBS-010 (T24.5, fork #2) — this node's own time without its primary.
+        primary_silent_seconds: c.primary_silent_secs(now),
         ready: local.ready,
         qps: per_second(local.queries_last_minute),
         servfail_percent: f64::from(local.servfail_permille) / 10.0,
@@ -519,6 +521,8 @@ pub(crate) fn view(
             config_seq: p.applied_seq,
             config_lag: lag,
             behind_seconds: behind,
+            // REQ: OBS-010 (T24.5, fork #2) — the peer's report, while its heartbeats are fresh.
+            primary_silent_seconds: if p.up(now) { p.primary_silent_s } else { None },
             ready: p.ready,
             qps: per_second(p.queries_last_minute),
             servfail_percent: f64::from(p.servfail_permille) / 10.0,

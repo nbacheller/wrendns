@@ -1505,6 +1505,10 @@ pub enum AlertWhen {
     /// REQ: OBS-010 (T9.5) — a replica is behind the primary's configuration (one alert per
     /// node; `for_secs` says for how long).
     SyncLag,
+    /// REQ: OBS-010 (T24.5, fork #2) — a replica hasn't reached its primary for `threshold`
+    /// seconds (default 60; 15 to 86400), so a silent split is seen (one alert per replica).
+    /// Witnesses and resolver pods are left out.
+    PrimaryUnreachable,
     /// A device TelltaleDNS has never seen starts asking (once per device; quiet for the
     /// first day after a fresh start, while every device is new).
     NewDevice,

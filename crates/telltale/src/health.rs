@@ -27,6 +27,9 @@ const MIN_QUERIES: u64 = 50;
 pub(crate) const DISK_FULL: f64 = 90.0;
 /// A replica behind the primary's configuration for this long degrades.
 const SYNC_LAG_SECONDS: u64 = 60;
+/// REQ: OBS-010 (T24.5, fork #2) — the health icon's fixed threshold for a replica that hasn't
+/// reached its primary (ADR-104 fixed thresholds; the alert rule's `threshold` is its own).
+pub(crate) const PRIMARY_UNREACHABLE_SECONDS: u64 = 60;
 
 /// REQ: DSC-002 (T25.3, DSC-014) — a discovery worker that is refused for its build, or that keeps
 /// crashing, is degraded. It never makes DNS unhealthy: the inventory is not on the query path.
@@ -348,6 +351,28 @@ pub(crate) fn cluster_reasons(view: &ClusterView) -> Vec<HealthReason> {
     let mut out = rollout_reasons(view);
     if !view.enabled {
         return out;
+    }
+    // REQ: OBS-010 (T24.5, fork #2) — a replica that hasn't reached its primary for a minute
+    // (a silent split). Witnesses and resolver pods are left out, as the alert leaves them out.
+    for n in view
+        .nodes
+        .iter()
+        .filter(|n| n.role == "replica" && n.up && !n.witness && !n.ephemeral)
+    {
+        if let Some(s) = n
+            .primary_silent_seconds
+            .filter(|s| *s >= PRIMARY_UNREACHABLE_SECONDS)
+        {
+            let name = node_name(n);
+            let mut r = reason(
+                DEGRADED,
+                "primary_unreachable",
+                format!("{name} hasn't reached its primary for {s} s"),
+                "#/cluster",
+            );
+            r.node = Some(name);
+            out.push(r);
+        }
     }
     for n in view.nodes.iter().filter(|n| !n.this_node && !n.witness) {
         let name = node_name(n);
@@ -721,6 +746,67 @@ mod tests {
             String::new(),
         );
         assert_eq!(h.level, "healthy", "too few queries to judge");
+    }
+
+    // REQ: OBS-010 (T24.5, fork #2) — a replica that hasn't reached its primary for a minute
+    // gives a degraded reason naming it (the exact boundary counts); witnesses, resolver pods
+    // and replicas out of contact don't; the reason is gone once it reaches the primary again.
+    #[test]
+    fn obs_010_t24_5_health_names_a_replica_that_cannot_reach_its_primary() {
+        use telltale_api::model::ClusterNode;
+        let node = |id: &str, silent: Option<u64>| ClusterNode {
+            node_id: id.into(),
+            site: id.into(),
+            role: "replica".into(),
+            connected: true,
+            up: true,
+            primary_silent_seconds: silent,
+            ..ClusterNode::default()
+        };
+        let mut primary = node("p", None);
+        primary.role = "primary".into();
+        primary.this_node = true;
+        let codes = |nodes: Vec<ClusterNode>| {
+            let view = ClusterView {
+                enabled: true,
+                cluster_id: None,
+                name: None,
+                this_node: Some("p".into()),
+                newest_config_seq: 1,
+                healthy: true,
+                checks: Vec::new(),
+                nodes,
+                events: Vec::new(),
+                authority: None,
+                conflicts: Vec::new(),
+                failover: None,
+                source: None,
+                rollout: None,
+                host: None,
+            };
+            cluster_reasons(&view)
+        };
+        assert!(codes(vec![primary.clone(), node("r", Some(59))]).is_empty());
+        let r = codes(vec![primary.clone(), node("r", Some(60))]);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].code, "primary_unreachable");
+        assert_eq!(r[0].node.as_deref(), Some("r"));
+        assert_eq!(r[0].link.as_deref(), Some("#/cluster"));
+        assert_eq!(r[0].summary, "r hasn't reached its primary for 60 s");
+        // The answering node's own replica state counts too (it is in the view).
+        let mut me = node("me", Some(120));
+        me.this_node = true;
+        assert_eq!(codes(vec![primary.clone(), me]).len(), 1);
+        // Witnesses, resolver pods and replicas out of contact: no reason.
+        let mut witness = node("w", Some(600));
+        witness.witness = true;
+        let mut pod = node("pod", Some(600));
+        pod.ephemeral = true;
+        let mut away = node("away", Some(600));
+        away.up = false;
+        assert!(codes(vec![primary.clone(), witness, pod, away]).is_empty());
+        // Reconnected: the value is absent, so the reason clears.
+        assert!(codes(vec![primary, node("r", None)]).is_empty());
     }
 
     // REQ: OPS-010 (ADR-118) — a node in maintenance that went silent: its `node_down` and
