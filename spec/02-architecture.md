@@ -89,7 +89,7 @@ config edit (UI/API/GitOps) ─► primary: validate ─► append to change log
 In Kubernetes: the controller uses a PVC. Resolver pods use `emptyDir` (snapshot re-fetched on start, local qlog optional because they ship to the controller by default).
 
 ## 7. Key dependencies (pin in Cargo.toml; justify any additions in an ADR)
-`tokio`, `socket2`, `quanta`, `arc-swap`, `crossbeam` (or `rtrb`), `mimalloc`, `rustls` + `tokio-rustls` + `rustls-platform-verifier`, `quinn`, `h3`/`h3-quinn`, `hyper` + `h2`, `axum`, `fst`, `regex-automata`, `aho-corasick`, `hickory-proto` (+ `dnssec-ring`), `rusqlite` (bundled), `zstd`, `blake3`, `ed25519-dalek`, `rcgen`, `serde` + `toml` + `ciborium`, `prost` (cluster RPC messages), `hdrhistogram`, `argon2`, `totp-rs`, `openidconnect`, `tracing`, `rust-embed`, `clap`.
+`tokio`, `socket2`, `quanta`, `arc-swap`, `crossbeam` (or `rtrb`), `mimalloc`, `rustls` + `tokio-rustls` + `rustls-platform-verifier`, `quinn`, `h3`/`h3-quinn`, `hyper` + `h2`, `axum`, `fst`, `regex-automata`, `aho-corasick`, `hickory-proto` (+ `dnssec-ring`), `rusqlite` (bundled), `zstd`, `blake3`, `ed25519-dalek`, `rcgen`, `serde` + `toml` + `ciborium`, `prost` (cluster RPC messages), `hdrhistogram`, `argon2`, `totp-rs`, `ring` (OIDC signature checks, ADR-951), `tracing`, `rust-embed`, `clap`.
 
 M25 adds `aes` for SNMPv3 AES-128-CFB privacy only (ADR-911; T25.5). It is pinned exactly, `=0.8.4`, with its `zeroize` feature, so the key schedule is zeroized on drop. `telltale-snmp` is the only crate that depends on it. `telltale-snmp` also uses `ring` (digests, HMAC, `SystemRandom`) and `zeroize`; neither is new to the workspace.
 
