@@ -1,5 +1,5 @@
 //! REQ: DSC-003, DSC-004 — the bounded walker (ADR-908). A table is read with GETBULK, one
-//! request after another, with three caps: rows (5,000), time (30 s per walk) and pacing (a gap
+//! request after another, with three caps: rows (5,000), time (30 s per walk, checked before and after each request) and pacing (a gap
 //! of at least 50 ms between requests, so at most 20 requests a second). A walk ends at the
 //! first varbind outside the subtree, at an endOfMibView, or at a cap. A walk whose OIDs do not
 //! increase is an error, so a misbehaving agent cannot loop the client.
@@ -16,7 +16,9 @@ use crate::pdu::{RequestKind, Response, Value, VarBind};
 
 /// The most rows one walk returns (DSC-004: 5,000 rows per table).
 pub const MAX_ROWS: usize = 5_000;
-/// The most time one walk may take, measured before each request (DSC-004: a 30 s walk cap).
+/// The most time one walk may take (DSC-004: a 30 s walk cap). It is checked before and after each
+/// request, so a reply that arrives past the cap is not used; one request in flight can still run
+/// its own timeouts.
 pub const WALK_TIME_CAP: Duration = Duration::from_secs(30);
 /// The least gap between two requests (DSC-004: at least 50 ms, so at most 20 requests a second).
 pub const MIN_GAP: Duration = Duration::from_millis(50);
@@ -137,6 +139,15 @@ pub fn walk<B: Bulk, P: Pacer>(
         }
         let resp = agent.bulk(&last, limits.max_repetitions)?;
         requests = requests.saturating_add(1);
+        // A request can run past the cap (a v3 request may rediscover the engine first). The
+        // cap is checked again after it, so a reply that arrives after the cap is not used.
+        if pacer.now().saturating_duration_since(start) >= limits.max_time {
+            return Ok(Walked {
+                rows,
+                stop: Stop::TimeCap,
+                requests,
+            });
+        }
         if resp.varbinds.is_empty() {
             return Ok(Walked {
                 rows,

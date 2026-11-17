@@ -64,12 +64,28 @@ pub fn read_file(path: &Path, secret_dirs: &[PathBuf]) -> Result<SecretValue, Cr
     if !allowed {
         return Err(CredError::OutsideSecretDirs);
     }
-    let file = File::open(&resolved).map_err(|_| CredError::Unreadable)?;
+    // The open refuses a final symlink (O_NOFOLLOW) and never blocks on a FIFO (O_NONBLOCK). The
+    // metadata is read from the handle before any byte is read, so a FIFO or a device is refused
+    // before it is read.
+    let file = open_no_follow(&resolved).map_err(|_| CredError::Unreadable)?;
     let meta = file.metadata().map_err(|_| CredError::Unreadable)?;
     if !meta.is_file() || meta.len() > MAX_CREDENTIAL_FILE {
         return Err(CredError::Unreadable);
     }
-    let mut bytes = Zeroizing::new(Vec::new());
+    // A directory on the path may have been swapped after the canonical check. The handle must
+    // still be the object that the path names now.
+    let now = fs::canonicalize(path).map_err(|_| CredError::Unreadable)?;
+    if now != resolved {
+        return Err(CredError::OutsideSecretDirs);
+    }
+    let path_meta = fs::metadata(&now).map_err(|_| CredError::Unreadable)?;
+    if !same_object(&meta, &path_meta) {
+        return Err(CredError::OutsideSecretDirs);
+    }
+    // The buffer is sized for the cap up front, so reading never reallocates and leaves no old
+    // copy of the secret behind.
+    let cap = usize::try_from(MAX_CREDENTIAL_FILE.saturating_add(1)).unwrap_or(usize::MAX);
+    let mut bytes = Zeroizing::new(Vec::with_capacity(cap));
     file.take(MAX_CREDENTIAL_FILE.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|_| CredError::Unreadable)?;
@@ -80,6 +96,35 @@ pub fn read_file(path: &Path, secret_dirs: &[PathBuf]) -> Result<SecretValue, Cr
         bytes.pop();
     }
     Ok(SecretValue::new(std::mem::take(&mut *bytes)))
+}
+
+/// Opens a credential file without following a final symlink, and without blocking on a FIFO
+/// (ADR-932).
+#[cfg(unix)]
+fn open_no_follow(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_no_follow(path: &Path) -> std::io::Result<File> {
+    File::open(path)
+}
+
+/// Whether an open file and a path name the same object (device and inode).
+#[cfg(unix)]
+fn same_object(open: &fs::Metadata, named: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    open.dev() == named.dev() && open.ino() == named.ino()
+}
+
+/// Off Unix the canonical path is the check: there is no device and inode to compare.
+#[cfg(not(unix))]
+fn same_object(_open: &fs::Metadata, _named: &fs::Metadata) -> bool {
+    true
 }
 
 #[cfg(test)]

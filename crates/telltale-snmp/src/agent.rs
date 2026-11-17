@@ -356,13 +356,17 @@ impl Agent {
             return None;
         }
         let engine = self.engine.clone()?;
-        if reply.engine_id != engine.id {
+        if reply.engine_id != engine.id || reply.user != expect.user {
             return None;
         }
-        // The reply's security level and identity are the request's (RFC 3412 §7.2). An
-        // unauthenticated reply is never accepted: noAuthNoPriv is not a mode this client uses,
-        // and a forged Report is what an attacker can send.
-        if reply.flags & usm::LEVEL_MASK != expect.flags || reply.user != expect.user {
+        // The reply's security level is the request's (RFC 3412 §7.2), with one exception. An
+        // agent checks the time window before it decrypts, so its time-window `Report` for an
+        // authPriv request is sent at authNoPriv (RFC 3414 §3.2.7a). That `Report` is accepted
+        // only when its MAC verifies, and it is in plaintext. An unauthenticated reply is never
+        // accepted: a forged Report is what an attacker can send.
+        let level = reply.flags & usm::LEVEL_MASK;
+        let report_level = level == usm::AUTH_FLAG && expect.flags == usm::LEVEL_MASK;
+        if level != expect.flags && !report_level {
             return None;
         }
         let keys = self.keys.as_ref()?;
@@ -371,14 +375,17 @@ impl Agent {
         }
         // An authenticated message is ours to trust, so its clock may move (RFC 3414 §3.2.7).
         let window = engine.window(reply.boots, reply.time, now);
-        let plain = if reply.flags & 0x02 != 0 {
+        let encrypted = level == usm::LEVEL_MASK;
+        let plain = if encrypted {
             usm::decrypt(&reply, keys).ok()?
         } else {
             reply.scoped.clone()
         };
         let resp = usm::scoped_response(&plain).ok()?;
         if resp.tag == TAG_REPORT {
-            if resp.request_id != expect.request_id {
+            // The agent may not know the request ID when it refuses the time window, so it may
+            // send 0 (ADR-908). Any other ID is not ours.
+            if resp.request_id != expect.request_id && resp.request_id != 0 {
                 return None;
             }
             let not_in_window = resp
@@ -393,7 +400,8 @@ impl Agent {
             }
             return Some(Err(AgentError::ReportRefused));
         }
-        if resp.request_id != expect.request_id {
+        // Only a `Report` may come at authNoPriv for an authPriv request.
+        if level != expect.flags || resp.request_id != expect.request_id {
             return None;
         }
         match window {

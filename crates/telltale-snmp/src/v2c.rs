@@ -2,6 +2,7 @@
 
 use crate::ber::{self, DecodeError};
 use crate::pdu::{self, Response};
+use zeroize::Zeroizing;
 
 /// The `msgVersion` of `SNMPv2c`.
 pub const VERSION_V2C: i64 = 1;
@@ -18,7 +19,7 @@ pub fn encode(community: &[u8], pdu: &[u8]) -> Vec<u8> {
 /// A decoded v2c reply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Decoded {
-    pub community: Vec<u8>,
+    pub community: Zeroizing<Vec<u8>>,
     pub response: Response,
 }
 
@@ -47,7 +48,7 @@ pub fn decode(input: &[u8]) -> Result<Decoded, DecodeError> {
     }
     let response = pdu::decode_response(pdu_tlv)?;
     Ok(Decoded {
-        community: community.content.to_vec(),
+        community: Zeroizing::new(community.content.to_vec()),
         response,
     })
 }
@@ -70,7 +71,7 @@ mod tests {
         let reply_pdu = crate::pdu::tests_support::response(9, 0, &oid, &ber::octets(b"x"));
         let reply = encode(b"ttcomm", &reply_pdu);
         let d = decode(&reply).unwrap_or_else(|e| panic!("{e:?}"));
-        assert_eq!(d.community, b"ttcomm");
+        assert_eq!(d.community.as_slice(), b"ttcomm");
         assert_eq!(d.response.request_id, 9);
     }
 

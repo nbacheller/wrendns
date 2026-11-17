@@ -3707,6 +3707,7 @@ name = "telltale-snmp"
 version = "0.8.0"
 dependencies = [
  "aes",
+ "libc",
  "ring",
  "zeroize",
 ]

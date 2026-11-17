@@ -149,6 +149,9 @@ fn fake_v3(
         let keys = v3_user(priv_on)
             .derive()
             .unwrap_or_else(|e| panic!("{e:?}"));
+        // The same authentication key without privacy: a time-window Report is authNoPriv (RFC 3414
+        // §3.2.7a), even when the request was authPriv.
+        let auth_keys = v3_user(false).derive().unwrap_or_else(|e| panic!("{e:?}"));
         let mut buf = vec![0u8; 65_536];
         while !stop.load(Ordering::Relaxed) {
             let Ok((n, from)) = sock.recv_from(&mut buf) else {
@@ -228,7 +231,10 @@ fn fake_v3(
                     oid: oid(usm::USM_STATS_NOT_IN_TIME_WINDOW),
                     value: Value::Counter32(1),
                 }];
-                if let Ok(pdu_out) = pdu::encode_response(TAG_REPORT, id, 0, &vbs) {
+                // The agent refuses the time before it decrypts, so its Report carries request ID 0
+                // when the request was authPriv.
+                let rid = if priv_on { 0 } else { id };
+                if let Ok(pdu_out) = pdu::encode_response(TAG_REPORT, rid, 0, &vbs) {
                     let out = Outgoing {
                         msg_id: reply.msg_id,
                         engine_id: &ENGINE,
@@ -238,7 +244,7 @@ fn fake_v3(
                         reportable: false,
                     };
                     if let Ok(m) =
-                        usm::encode(&out, Some(&keys), &scoped_response(&ENGINE, &pdu_out))
+                        usm::encode(&out, Some(&auth_keys), &scoped_response(&ENGINE, &pdu_out))
                     {
                         let _ = sock.send_to(&m, from);
                     }
@@ -454,8 +460,19 @@ fn dsc_003_v3_stale_boots_are_refused() {
 
 #[test]
 fn dsc_003_authenticated_time_report_resends_once() {
-    // An authenticated notInTimeWindow Report takes the agent's clock, and the request is sent
-    // again: the second attempt is answered.
+    time_report_resends_once(false);
+}
+
+#[test]
+fn dsc_003_authenticated_time_report_resends_once_authpriv() {
+    // An authPriv request gets its time-window Report at authNoPriv, with request ID 0 (RFC 3414
+    // §3.2.7a). The Report still resyncs the clock, and the request is sent again.
+    time_report_resends_once(true);
+}
+
+/// An authenticated notInTimeWindow Report takes the agent's clock, and the request is sent
+/// again: the second attempt is answered.
+fn time_report_resends_once(priv_on: bool) {
     let stop = Arc::new(AtomicBool::new(false));
     let st = state(
         5,
@@ -465,11 +482,11 @@ fn dsc_003_authenticated_time_report_resends_once() {
             time: 1200,
         },
     );
-    let addr = fake_v3(false, st.clone(), stop.clone());
+    let addr = fake_v3(priv_on, st.clone(), stop.clone());
     let mut agent = Agent::new(
         addr,
         Security::V3 {
-            user: v3_user(false),
+            user: v3_user(priv_on),
         },
         timing(),
     )
