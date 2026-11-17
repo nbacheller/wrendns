@@ -11,12 +11,12 @@
 >   - a [Docker Desktop bundle](deploy/docker-desktop/README.md) to try it.
 > - **M24, replacing Pi-hole (in progress):**
 >   - Pi-hole's special names: iCloud Private Relay blocked by default, `resolver.arpa` with encrypted DNS discovery (DDR), and domain-needed;
->   - **Update lists now** (Pi-hole's "Update Gravity");
+>   - **Update lists now** (Pi-hole's "Update Gravity"), for every list or one row at a time, with when each list was last confirmed current;
 >   - in the UI: special names and DDR, device names in DNS, DNS names and naming sources on the Clients page, and a **Networks** page (make a group from a network);
 >   - still to come: keepalived failover, importer gaps, IPv6 device names.
 > - **M23, secrets and integrations in the UI (in progress):** secrets store, write-only API, no credential on any read surface; secrets replicated to every full cluster member; a **Secrets** page, and credentials (alerts, routers) entered in the UI, write-only, while a secret file still wins; routers (UniFi, Home Assistant) added, checked and changed from a **Routers** page without a restart. Still to come: encrypted backups, OIDC, sinks.
-> - **M25, network inventory beyond the gateway (started):** the inventory model, which merges devices by MAC, is in; still to come:
->   - SNMP from your gateway and switches (which device is on which port);
+> - **M25, network inventory beyond the gateway (in progress):** in so far: the inventory model, which merges devices by MAC; sandboxed discovery workers (a separate process with seccomp, no capabilities and not dumpable) and a `[discovery]` section; an SNMP library (v2c, and v3 with AES). Still to come:
+>   - SNMP polling of your gateway and switches (which device is on which port);
 >   - more UniFi reads;
 >   - importing results from a scanner you run yourself.
 > - **M26, live network map (planned):** an animated map of your network and of where its lookups go, coloured green, yellow or red by health. A world view is optional.
