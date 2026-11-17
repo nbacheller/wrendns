@@ -343,6 +343,15 @@ pub(crate) fn rpc_handler(
             if kind == crate::forward::KIND {
                 return crate::forward::handle(src, local, cluster, peer, body).await;
             }
+            if kind == crate::secrets::sync::KIND_FETCH {
+                // REQ: CLU-015 (ADR-903 §6) — a full member reads this node's stored secrets (the
+                // primary's rows, or a replica's for the primary's reverse heal). Over mTLS only.
+                return crate::secrets::sync::answer_fetch(src, cluster, peer, body).await;
+            }
+            if kind == crate::secrets::sync::KIND_ADOPT {
+                // REQ: CLU-015 — a joining full member hands its own secrets to the primary.
+                return crate::secrets::sync::answer_adopt(src, cluster, peer, body).await;
+            }
             if kind == crate::secrets_api::KIND_PUT || kind == crate::secrets_api::KIND_DELETE {
                 // REQ: API-015 (ADR-903 §4) — a replica's secret write (a user acted there);
                 // only from a full member (checked again inside).

@@ -145,6 +145,25 @@ const MIGRATIONS: &[&str] = &[
         updated INTEGER NOT NULL,
         updated_by TEXT NOT NULL
     );",
+    // 12: REQ: CLU-015 (ADR-903 §6) — replication: a cluster row the new primary doesn't hold
+    // is flagged `orphaned` (never deleted); a standalone or local row a cluster row of the same
+    // name displaced is kept in `secrets_shadow` (never dropped), and comes back when the
+    // cluster rows are purged.
+    "ALTER TABLE secrets ADD COLUMN orphaned INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE secrets_shadow (
+        name TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        key_id BLOB,
+        nonce BLOB,
+        ciphertext BLOB,
+        stamp_epoch INTEGER NOT NULL,
+        stamp_seq INTEGER NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        origin TEXT NOT NULL,
+        updated INTEGER NOT NULL,
+        updated_by TEXT NOT NULL,
+        orphaned INTEGER NOT NULL DEFAULT 0
+    );",
 ];
 
 /// REQ: API-014 — the migration that purges the old idempotency records.

@@ -20,8 +20,11 @@
 pub(crate) mod cli;
 pub(crate) mod credential;
 pub(crate) mod store;
+pub(crate) mod sync;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod replication_tests;
 pub(crate) mod value;
 
 use std::fmt;

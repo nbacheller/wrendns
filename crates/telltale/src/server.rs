@@ -1046,6 +1046,9 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
             cfg.clone(),
             http_stopped.clone(),
         );
+        // REQ: CLU-015 (ADR-903 §6) — the secrets replication task: publishes this node's head,
+        // pulls from the primary, refills a locked primary, purges after a removal.
+        crate::secrets::sync::spawn(Arc::clone(&sources), http_stopped.clone());
     }
     http::serve_peers(&sources);
     // REQ: OBS-025 — device identification, on a thread of its own.

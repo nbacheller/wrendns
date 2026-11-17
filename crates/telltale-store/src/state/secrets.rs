@@ -43,10 +43,17 @@ pub struct SecretRow {
     /// Unix seconds.
     pub updated: u64,
     pub updated_by: String,
+    /// REQ: CLU-015 — a cluster row the current primary doesn't hold (it was stamped by an older
+    /// primary after the current one took over). It is never used and never deleted by the
+    /// replication; the Conflicts list shows it.
+    pub orphaned: bool,
 }
 
 const COLS: &str = "name, kind, key_id, nonce, ciphertext, stamp_epoch, stamp_seq, deleted, \
-    origin, updated, updated_by";
+    origin, updated, updated_by, orphaned";
+
+/// The table a displaced row goes to (REQ: CLU-015): the same columns as `secrets`.
+const SHADOW: &str = "secrets_shadow";
 
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<SecretRow> {
     Ok(SecretRow {
@@ -63,6 +70,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<SecretRow> {
         origin: r.get(8)?,
         updated: u(r.get(9)?),
         updated_by: r.get(10)?,
+        orphaned: r.get(11)?,
     })
 }
 
@@ -73,7 +81,36 @@ fn blob(b: &[u8]) -> Option<&[u8]> {
 fn upsert(c: &rusqlite::Connection, s: &SecretRow) -> rusqlite::Result<()> {
     c.execute(
         &format!(
-            "INSERT INTO secrets ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "INSERT INTO secrets ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(name) DO UPDATE SET kind = excluded.kind, key_id = excluded.key_id,
+               nonce = excluded.nonce, ciphertext = excluded.ciphertext,
+               stamp_epoch = excluded.stamp_epoch, stamp_seq = excluded.stamp_seq,
+               deleted = excluded.deleted, origin = excluded.origin, updated = excluded.updated,
+               updated_by = excluded.updated_by, orphaned = excluded.orphaned"
+        ),
+        params![
+            s.name,
+            s.kind,
+            blob(&s.key_id),
+            blob(&s.nonce),
+            blob(&s.ciphertext),
+            i(s.stamp.epoch),
+            i(s.stamp.seq),
+            s.deleted,
+            s.origin,
+            i(s.updated),
+            s.updated_by,
+            s.orphaned,
+        ],
+    )?;
+    Ok(())
+}
+
+/// The same row, written to the shadow table (one per name). Shadows are never orphaned.
+fn upsert_shadow(c: &rusqlite::Connection, s: &SecretRow) -> rusqlite::Result<()> {
+    c.execute(
+        &format!(
+            "INSERT INTO {SHADOW} ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0)
              ON CONFLICT(name) DO UPDATE SET kind = excluded.kind, key_id = excluded.key_id,
                nonce = excluded.nonce, ciphertext = excluded.ciphertext,
                stamp_epoch = excluded.stamp_epoch, stamp_seq = excluded.stamp_seq,
@@ -127,6 +164,26 @@ impl State {
         self.with(|c| {
             c.query_row(
                 &format!("SELECT {COLS} FROM secrets WHERE name = ?1"),
+                [name],
+                row,
+            )
+            .optional()
+        })
+    }
+
+    /// REQ: CLU-015 (ADR-903 §6) — every shadowed row (a local row a cluster row displaced).
+    pub fn secret_shadows(&self) -> Result<Vec<SecretRow>> {
+        self.with(|c| {
+            let mut st = c.prepare(&format!("SELECT {COLS} FROM {SHADOW} ORDER BY name"))?;
+            st.query_map([], row)?.collect()
+        })
+    }
+
+    /// REQ: CLU-015 — the shadowed row of `name`, if any.
+    pub fn secret_shadow(&self, name: &str) -> Result<Option<SecretRow>> {
+        self.with(|c| {
+            c.query_row(
+                &format!("SELECT {COLS} FROM {SHADOW} WHERE name = ?1"),
                 [name],
                 row,
             )
@@ -209,6 +266,83 @@ impl State {
         })
     }
 
+    /// REQ: CLU-015 (ADR-903 §6) — applies one replication batch in one transaction. `upserts`
+    /// replace the rows of those names (tombstones and orphan flags included); `shadow` moves
+    /// displaced local rows to the shadow table; `unshadow` names the shadows that go. Old
+    /// tombstones are pruned as on a local delete. Returns whether the WAL is clean.
+    pub fn apply_secret_batch(
+        &self,
+        upserts: &[SecretRow],
+        shadow: &[SecretRow],
+        unshadow: &[String],
+        now: u64,
+    ) -> Result<bool> {
+        self.with(|c| {
+            let tx = c.unchecked_transaction()?;
+            for s in shadow {
+                upsert_shadow(&tx, s)?;
+            }
+            for name in unshadow {
+                tx.execute(&format!("DELETE FROM {SHADOW} WHERE name = ?1"), [name])?;
+            }
+            for s in upserts {
+                upsert(&tx, s)?;
+            }
+            prune(&tx, now)?;
+            tx.commit()?;
+            checkpoint_truncate(c)
+        })
+    }
+
+    /// REQ: CLU-015 (ADR-903 §6) — a standalone node's rows become cluster rows (at `cluster
+    /// init`, on the primary). Returns how many changed.
+    pub fn adopt_secret_rows(&self) -> Result<usize> {
+        self.with(|c| {
+            Ok(c.execute(
+                "UPDATE secrets SET origin = 'cluster' WHERE origin = 'local' AND deleted = 0",
+                [],
+            )?)
+        })
+    }
+
+    /// REQ: CLU-015 (ADR-903 §6, removal and leave) — the cluster's rows go: a name a shadow
+    /// covers comes back as the local row it displaced; the rest are deleted. Returns
+    /// `(deleted, restored)`.
+    pub fn purge_cluster_secrets(&self) -> Result<(usize, usize)> {
+        self.with(|c| {
+            let tx = c.unchecked_transaction()?;
+            let cluster: Vec<String> = {
+                let mut st = tx.prepare("SELECT name FROM secrets WHERE origin = 'cluster'")?;
+                st.query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            let (mut deleted, mut restored) = (0usize, 0usize);
+            for name in &cluster {
+                let shadow: Option<SecretRow> = tx
+                    .query_row(
+                        &format!("SELECT {COLS} FROM {SHADOW} WHERE name = ?1"),
+                        [name],
+                        row,
+                    )
+                    .optional()?;
+                match shadow {
+                    Some(local) => {
+                        upsert(&tx, &local)?;
+                        tx.execute(&format!("DELETE FROM {SHADOW} WHERE name = ?1"), [name])?;
+                        restored += 1;
+                    }
+                    None => {
+                        tx.execute("DELETE FROM secrets WHERE name = ?1", [name])?;
+                        deleted += 1;
+                    }
+                }
+            }
+            tx.commit()?;
+            let _ = checkpoint_truncate(c)?;
+            Ok((deleted, restored))
+        })
+    }
+
     /// REQ: OPS-014 (ADR-903 §3) — re-encryption (a rotation): every row given replaces its own
     /// in one transaction, then the WAL is truncated, so no ciphertext under the old key is left
     /// in the file (`secure_delete`) or the WAL. Returns whether the truncation finished.
@@ -251,6 +385,7 @@ mod tests {
             origin: "local".into(),
             updated: 100,
             updated_by: "root".into(),
+            orphaned: false,
         }
     }
 
