@@ -54,4 +54,5 @@ UX rules:
 - A banner shows cluster state: read-only (no primary), GitOps-managed, client IPs masked, or a node lagging.
 - Every chart has a table view.
 - Every time chart shows change markers (OBS-033, `06` §3.1): thin vertical lines for configuration versions, builds, restarts, list refreshes, rollouts, maintenance, pauses, cache flushes, breakers, and notes, from one shared store per page, with a Changes toggle in the dashboard header.
+- A domain name in the dashboard's top lists and the query log has a small mark left of it (OBS-039, ADR-167): a brand tile (colour and glyph, from a curated map; a lazy chunk), a monogram in a stable colour per owner, a house for names of the network itself, nothing for a name the privacy level hid. It is drawn from what the UI holds: no request is made for it. Settings → Account picks Brand and monogram (the default), Monogram only, or Off, and Default (20 px) or Small (16 px), per user in the browser.
 - The UI requires JavaScript and is not prerendered.

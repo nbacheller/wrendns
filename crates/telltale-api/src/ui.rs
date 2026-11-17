@@ -1,10 +1,12 @@
 //! The embedded web UI (REQ: API-005, ADR-009, ADR-030): `ui/dist` compiled into the binary,
 //! served at `/` on the API listener with a strict CSP (`spec/08` §6: no inline scripts,
 //! `X-Frame-Options: DENY`). Hashed assets are cached forever; `index.html` never is.
-//! `npm run build` writes a `.gz` for each text file that gzip shrinks and removes the raw copy
-//! (REQ: NFR-001, ADR-915). The gzip goes to browsers that accept it; any other client gets the
-//! same bytes inflated on the request. Binary files are embedded as they are. A build without
-//! `ui/dist` still compiles and serves a short page saying so.
+//! `npm run build` replaces each text file with its `.gz` (REQ: NFR-001, ADR-168: the binary
+//! embeds what `ui/dist` holds, so keeping both copies cost about the file's gzip size again in
+//! the image). A browser that accepts gzip gets the stored file as it is; any other client gets
+//! it inflated. A build without `ui/dist` still compiles and serves a short page saying so.
+
+use std::borrow::Cow;
 
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
@@ -54,6 +56,26 @@ fn security_headers(h: &mut HeaderMap) {
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
     );
+}
+
+/// The most one embedded UI file may inflate to (the biggest is under 1 MB): a damaged stream
+/// can't grow past it.
+const MAX_INFLATED: usize = 8 << 20;
+
+/// What a `.gz` file written by `ui/scripts/postbuild.mjs` holds: a 10-byte header with no
+/// optional fields, a deflate stream, then CRC-32 and the length. The CRC isn't checked (the
+/// file is part of this binary), the length is. `None` for anything else, so a damaged file is
+/// refused and never served half-read.
+fn gunzip(gz: &[u8]) -> Option<Vec<u8>> {
+    let (head, rest) = gz.split_at_checked(10)?;
+    // ID, deflate, and no flags: no extra field, name, comment, or header checksum to skip.
+    if !head.starts_with(&[0x1f, 0x8b, 8, 0]) {
+        return None;
+    }
+    let (stream, tail) = rest.split_at_checked(rest.len().checked_sub(8)?)?;
+    let size = u32::from_le_bytes(tail.get(4..8)?.try_into().ok()?);
+    let out = miniz_oxide::inflate::decompress_to_vec_with_limit(stream, MAX_INFLATED).ok()?;
+    (out.len() == usize::try_from(size).ok()?).then_some(out)
 }
 
 fn accepts_gzip(headers: &HeaderMap) -> bool {
@@ -137,13 +159,19 @@ pub fn serve(method: &Method, uri: &Uri, headers: &HeaderMap) -> Response {
     {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let gz = Assets::get(&format!("{path}.gz"));
-    let (body, encoded): (Vec<u8>, bool) = match (accepts_gzip(headers), gz, Assets::get(path)) {
-        (true, Some(f), _) => (f.data.into_owned(), true),
-        (_, _, Some(f)) => (f.data.into_owned(), false),
-        (false, Some(f), None) => match gunzip(&f.data) {
-            Some(plain) => (plain, false),
+    let (body, encoded): (Cow<'static, [u8]>, bool) = match Assets::get(&format!("{path}.gz")) {
+        // A client that accepts gzip gets the stored file; any other gets it inflated.
+        Some(f) if accepts_gzip(headers) => (f.data, true),
+        Some(f) => match gunzip(&f.data) {
+            Some(plain) => (Cow::Owned(plain), false),
             None => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        },
+        // Files with no `.gz` (images, fonts, and the small ones gzip doesn't shrink) are
+        // stored as they are.
+        None => match Assets::get(path) {
+            Some(f) => (f.data, false),
+            None if path == "index.html" => (Cow::Borrowed(MISSING.as_bytes()), false),
+            None => return StatusCode::NOT_FOUND.into_response(),
         },
         (_, _, None) if path == "index.html" => (MISSING.as_bytes().to_vec(), false),
         _ => return StatusCode::NOT_FOUND.into_response(),
@@ -195,16 +223,32 @@ mod tests {
         assert_eq!(content_type("favicon.svg"), "image/svg+xml");
     }
 
-    // REQ: NFR-001 (ADR-915) — `gzip.compress(b'hello, telltale\n', mtime=0)`, the form postbuild writes.
+    // REQ: NFR-001 (ADR-168) — a UI file is stored gzipped and inflated for a client that
+    // doesn't accept gzip.
     #[test]
-    fn ui_001_gunzip_inflates_the_postbuild_gzip() {
-        let gz = [
-            0x1f, 0x8b, 0x8, 0x0, 0x0, 0x0, 0x0, 0x0, 0x2, 0xff, 0xcb, 0x48, 0xcd, 0xc9, 0xc9,
-            0xd7, 0x51, 0x28, 0x1, 0x52, 0x25, 0x89, 0x39, 0xa9, 0x5c, 0x0, 0x8a, 0x75, 0x12, 0x4c,
-            0x10, 0x0, 0x0, 0x0,
-        ];
-        assert_eq!(gunzip(&gz).as_deref(), Some(&b"hello, telltale\n"[..]));
-        assert_eq!(gunzip(b"not gzip at all, but long enough"), None);
-        assert_eq!(gunzip(&gz[..12]), None);
+    fn nfr_001_gunzip_reads_what_postbuild_writes() {
+        let plain = b"<!doctype html><title>TelltaleDNS</title>".repeat(40);
+        let stream = miniz_oxide::deflate::compress_to_vec(&plain, 6);
+        let len = u32::try_from(plain.len()).unwrap();
+        // Node's gzip: ID, deflate, no flags, no time, extra flags, OS; then the stream, CRC-32, length.
+        let mut gz = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 2, 3];
+        gz.extend_from_slice(&stream);
+        gz.extend_from_slice(&0u32.to_le_bytes());
+        gz.extend_from_slice(&len.to_le_bytes());
+        assert_eq!(gunzip(&gz).as_deref(), Some(plain.as_slice()));
+
+        // Anything damaged or unexpected is refused, never served half-read.
+        assert!(gunzip(b"").is_none());
+        assert!(gunzip(&gz[..gz.len() - 9]).is_none(), "cut short");
+        let mut not_deflate = gz.clone();
+        not_deflate[2] = 9;
+        assert!(gunzip(&not_deflate).is_none());
+        let mut flagged = gz.clone();
+        flagged[3] = 8; // a file name follows the header: not what postbuild writes
+        assert!(gunzip(&flagged).is_none());
+        let mut wrong_length = gz.clone();
+        let n = wrong_length.len();
+        wrong_length[n - 4] ^= 1;
+        assert!(gunzip(&wrong_length).is_none());
     }
 }

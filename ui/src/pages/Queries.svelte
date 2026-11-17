@@ -13,6 +13,7 @@
   import QuickRuleForm from '../lib/components/QuickRuleForm.svelte';
   import CacheCard from '../lib/components/CacheCard.svelte';
   import { can } from '../lib/session.svelte';
+  import DomainIcon from '../lib/icons/DomainIcon.svelte';
 
   const STATUSES = ['blocked', 'cached', 'refreshed', 'forwarded', 'local', 'stale', 'special', 'refused', 'servfail', 'rate_limited'];
   const RANGES = [
@@ -305,7 +306,7 @@
                   <ClientChip ip={r.client} name={r.clientName} onchanged={(n) => renamed(r.client, n)} />
                   {#if r.group}<div class="group-chip small" style:--gc={groupColor(r.group)}>{r.group}</div>{/if}
                 </td>
-                <td class="name mono">{r.name}</td>
+                <td class="name mono"><span class="nmi"><DomainIcon name={r.name} quiet={r.status === 'blocked'} /><span>{r.name}</span></span></td>
                 <td>{r.qtype}</td>
                 <td>
                   <StatusBadge value={r.status} />
@@ -367,6 +368,17 @@
 {/if}
 
 <style>
+  /* REQ: OBS-039 — the mark and the name on one line; a long name wraps beside the mark. */
+  .nmi {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 100%;
+  }
+  .nmi > span:last-child {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
   .filters {
     display: grid;
     gap: 10px;

@@ -392,6 +392,12 @@ fn routers(cfg: &Config, r: &mut Report<'_>) {
                 );
             }
         }
+        if x.offline_days > 365 {
+            r.err(
+                format!("{p}.offline_days"),
+                "at most 365 days (0: only the connected clients)",
+            );
+        }
         if x.tls_insecure_skip_verify {
             r.warn(format!("{p}.tls_insecure_skip_verify: the router's certificate isn't checked (prefer tls_ca, with tls_server_name if the certificate doesn't name the address)"));
         }

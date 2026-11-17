@@ -1,0 +1,7 @@
+# REQ: NFR-001 (ADR-169) — SQLite is built without the modules nothing here uses: full-text search
+# (FTS3, FTS5), the R-tree index, and the dbstat table. They are about 0.2 MiB of the compressed
+# image. The bundled SQLite's build script (libsqlite3-sys) applies these `-U` flags after its own
+# `-D` defaults. They live here, not in the Dockerfile, so `cargo test` runs against the same SQLite
+# the image ships (crates/telltale-store/tests/sqlite_build.rs checks it).
+[env]
+LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_FTS3 -USQLITE_ENABLE_FTS3_PARENTHESIS -USQLITE_ENABLE_FTS5 -USQLITE_ENABLE_RTREE -USQLITE_ENABLE_DBSTAT_VTAB"

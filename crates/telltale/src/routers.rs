@@ -109,6 +109,10 @@ struct Polled {
     networks: Vec<Network>,
     /// Optional reads that didn't work (logged once, so a key without access is noticed).
     notes: Vec<String>,
+    /// REQ: T8.2 (ADR-166) — UniFi's offline clients that are known by name: they name an
+    /// address in the query log, but they aren't "seen", so device identification doesn't
+    /// count them.
+    offline: Seen,
 }
 
 impl Polled {
@@ -119,6 +123,11 @@ impl Polled {
         }
     }
 }
+
+/// REQ: T8.2 (ADR-166) — most offline clients one UniFi poll keeps (most recently seen first),
+/// whatever `offline_days` says: they ride in every node's answer to `devices.names` and sit
+/// in memory on every node.
+pub(crate) const OFFLINE_MAX: usize = 1024;
 
 /// REQ: OPS-014 (ADR-903 §2) — a router credential: its file, or the stored secret it names.
 fn secret(
@@ -255,6 +264,80 @@ fn unifi_merge(active: Seen, reserved: Seen) -> Seen {
     out
 }
 
+/// REQ: T8.2 (ADR-166) — the client objects of a UniFi answer: `data` in the classic API, a
+/// bare array in v2.
+fn unifi_rows(v: &Value) -> &[Value] {
+    v.get("data")
+        .and_then(Value::as_array)
+        .or_else(|| v.as_array())
+        .map_or(&[], Vec::as_slice)
+}
+
+/// REQ: T8.2 (ADR-166) — UniFi's known clients that may be offline (v2 `clients/history`,
+/// `rest/user`): the named ones, most recently seen first, at most [`OFFLINE_MAX`]. A row last
+/// seen before `not_before` (Unix seconds) is dropped; one with no date stays (the cap bounds
+/// those). A fixed address counts only while its reservation is on.
+pub(crate) fn unifi_known(v: &Value, not_before: u64) -> Seen {
+    let mut rows: Vec<(u64, Entry)> = unifi_rows(v)
+        .iter()
+        .filter_map(|c| {
+            let seen = c.get("last_seen").and_then(Value::as_u64);
+            if seen.is_some_and(|t| t < not_before) {
+                return None;
+            }
+            let mac = c.get("mac")?.as_str()?.to_ascii_lowercase();
+            let fixed = c
+                .get("use_fixedip")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let mut addrs: Vec<&str> = ["ip", "last_ip"]
+                .iter()
+                .filter_map(|k| c.get(*k).and_then(Value::as_str))
+                .collect();
+            if fixed {
+                addrs.extend(c.get("fixed_ip").and_then(Value::as_str));
+            }
+            let ip: Ipv4Addr = addrs.into_iter().find_map(|s| s.trim().parse().ok())?;
+            let name = first_str(c, &["name", "hostname"])?;
+            Some((seen.unwrap_or(0), (mac, ip, Some(name))))
+        })
+        .collect();
+    rows.sort_by_key(|r| std::cmp::Reverse(r.0));
+    rows.truncate(OFFLINE_MAX);
+    rows.into_iter().map(|(_, e)| e).collect()
+}
+
+/// REQ: T8.2 (ADR-166) — a connected client with no name takes the name UniFi knows for its
+/// MAC.
+fn unifi_fill_names(seen: &mut Seen, known: &Seen) {
+    let names: HashMap<&str, &str> = known
+        .iter()
+        .filter_map(|k| Some((k.0.as_str(), k.2.as_deref()?)))
+        .collect();
+    for c in seen.iter_mut().filter(|c| c.2.is_none()) {
+        c.2 = names.get(c.0.as_str()).map(|n| (*n).to_owned());
+    }
+}
+
+/// REQ: T8.2 (ADR-166) — the known clients that no connected or reserved device holds (by MAC
+/// or address), at most [`OFFLINE_MAX`]; the first of two rows for one device or address wins.
+pub(crate) fn unifi_offline(held: &Seen, known: Seen) -> Seen {
+    let mut macs: std::collections::HashSet<String> = held.iter().map(|c| c.0.clone()).collect();
+    let mut ips: std::collections::HashSet<Ipv4Addr> = held.iter().map(|c| c.1).collect();
+    let mut out = Seen::new();
+    for (mac, ip, name) in known {
+        if out.len() >= OFFLINE_MAX {
+            break;
+        }
+        if macs.contains(&mac) || !ips.insert(ip) {
+            continue;
+        }
+        macs.insert(mac.clone());
+        out.push((mac, ip, name));
+    }
+    out
+}
+
 /// REQ: API-013 (T22.2) — UniFi's networks in a `rest/networkconf` answer: the ones with a
 /// subnet (not WAN or VPN); `ip_subnet` is the gateway's address with the prefix
 /// (`192.0.2.1/24`).
@@ -362,9 +445,12 @@ impl UnifiAuth {
 async fn read_unifi(
     client: &telltale_filter::fetch::Client,
     auth: &UnifiAuth,
-    api: &str,
+    root: &str,
+    site: &str,
     router: &str,
+    offline_days: u32,
 ) -> Result<Polled, String> {
+    let api = format!("{root}/api/s/{site}");
     let url = format!("{api}/stat/sta");
     let (status, _, v) = call(client, auth.get(&url)?).await?;
     if status == http::StatusCode::UNAUTHORIZED || status == http::StatusCode::FORBIDDEN {
@@ -393,22 +479,42 @@ async fn read_unifi(
                 None
             }
         };
-    let reserved = optional(
+    let user_rows = optional(
         "reservations (rest/user)",
         call(client, auth.get(&format!("{api}/rest/user"))?).await,
-    )
-    .map(|v| unifi_reserved(&v))
-    .unwrap_or_default();
+    );
+    let reserved = user_rows.as_ref().map(unifi_reserved).unwrap_or_default();
     let networks = optional(
         "networks (rest/networkconf)",
         call(client, auth.get(&format!("{api}/rest/networkconf"))?).await,
     )
     .map(|v| unifi_networks(&v, router))
     .unwrap_or_default();
+    // REQ: T8.2 (ADR-166) — offline clients, when `offline_days` keeps any: the console filters
+    // its history by the window before answering, and every dated row is checked against it.
+    let mut known = Seen::new();
+    if offline_days > 0 {
+        let days = u64::from(offline_days);
+        let not_before = crate::pipeline::unix_now().saturating_sub(days * 86_400);
+        let history = format!(
+            "{root}/v2/api/site/{site}/clients/history?onlyNonBlocked=true&includeUnifiDevices=false&withinHours={}",
+            days * 24
+        );
+        if let Some(v) = optional(
+            "offline clients (clients/history)",
+            call(client, auth.get(&history)?).await,
+        ) {
+            known.extend(unifi_known(&v, not_before));
+        }
+    }
+    let mut seen = unifi_merge(active, reserved);
+    unifi_fill_names(&mut seen, &known);
+    let offline = unifi_offline(&seen, known);
     Ok(Polled {
         networks,
         notes,
-        ..Polled::routed(unifi_merge(active, reserved))
+        offline,
+        ..Polled::routed(seen)
     })
 }
 
@@ -421,12 +527,13 @@ async fn poll_unifi(
     let base = c.url.trim_end_matches('/');
     let site = c.site.as_deref().unwrap_or("default");
     if let Some(key) = secret(c.api_key_file.as_ref(), c.api_key_ref.as_ref(), store)? {
-        let api = format!("{base}/proxy/network/api/s/{site}");
         return read_unifi(
             client,
             &UnifiAuth::Key(zeroize::Zeroizing::new(key.expose().to_owned())),
-            &api,
+            &format!("{base}/proxy/network"),
+            site,
             &c.name,
+            c.offline_days,
         )
         .await;
     }
@@ -456,12 +563,13 @@ async fn poll_unifi(
                 "{base}{login}: HTTP {status} (check the username and password)"
             ));
         }
-        let api = format!("{base}{prefix}/api/s/{site}");
         return read_unifi(
             client,
             &UnifiAuth::Cookie(zeroize::Zeroizing::new(cookies(&headers))),
-            &api,
+            &format!("{base}{prefix}"),
+            site,
             &c.name,
+            c.offline_days,
         )
         .await;
     }
@@ -672,6 +780,7 @@ fn rebuild(order: &[String], parts: &HashMap<String, Polled>, view: &ArcSwap<Lea
                         hostname: name.clone(),
                         expires: 0,
                         router: Some(router.to_owned()),
+                        offline: false,
                     },
                 );
             }
@@ -681,6 +790,20 @@ fn rebuild(order: &[String], parts: &HashMap<String, Polled>, view: &ArcSwap<Lea
                 l.router = Some(router.to_owned());
             }
             Some(_) => {}
+        }
+    }
+    // REQ: T8.2 (ADR-166) — an offline client only names an address no router reports as
+    // connected, and is marked, so it isn't "seen".
+    for p in parts.values() {
+        for (mac, ip, name) in &p.offline {
+            m.entry(*ip).or_insert_with(|| Lease {
+                mac: mac.clone(),
+                ip: *ip,
+                hostname: name.clone(),
+                expires: 0,
+                router: None,
+                offline: true,
+            });
         }
     }
     view.store(Arc::new(m));

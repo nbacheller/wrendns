@@ -13,6 +13,11 @@
   import WallDisplays from '../lib/components/WallDisplays.svelte';
   import SupportPackage from '../lib/components/SupportPackage.svelte';
   import SecretsPanel from '../lib/components/SecretsPanel.svelte';
+  import DomainIcon from '../lib/icons/DomainIcon.svelte';
+  import { iconPrefs, setIconPrefs } from '../lib/icons/prefs.svelte';
+
+  // OBS-039 — what the Domain icons card previews: a brand, an ordinary name, a name of the network.
+  const ICON_PREVIEW = ['www.netflix.com', 'cdn.example.org', 'nas.home.arpa'];
 
   const tabs = $derived<TabItem[]>(
     [
@@ -531,6 +536,35 @@
           <div><button onclick={startTotp}>Set up two-factor sign-in</button></div>
         {/if}
       </section>
+
+      <!-- REQ: OBS-039 (ADR-167) — how this browser draws the mark left of a domain name. -->
+      <section class="card stack-card" data-testid="icons-card">
+        <h2>Domain icons<HelpButton id="domain-icons" /></h2>
+        <p class="muted">
+          The small mark left of a domain name in the dashboard's lists and the query log. It's drawn from what TelltaleDNS already
+          knows, so nothing about your queries is sent to anyone. Remembered for you in this browser.
+        </p>
+        <div class="icon-row">
+          <span class="icon-lbl" id="icons-style-lbl">Style</span>
+          <span class="seg small" role="group" aria-labelledby="icons-style-lbl">
+            <button aria-pressed={iconPrefs.style === 'brand'} onclick={() => setIconPrefs({ style: 'brand' })}>Brand and monogram</button>
+            <button aria-pressed={iconPrefs.style === 'mono'} onclick={() => setIconPrefs({ style: 'mono' })}>Monogram only</button>
+            <button aria-pressed={iconPrefs.style === 'off'} onclick={() => setIconPrefs({ style: 'off' })}>Off</button>
+          </span>
+        </div>
+        <div class="icon-row">
+          <span class="icon-lbl" id="icons-size-lbl">Size</span>
+          <span class="seg small" role="group" aria-labelledby="icons-size-lbl">
+            <button aria-pressed={iconPrefs.size === 'default'} disabled={iconPrefs.style === 'off'} onclick={() => setIconPrefs({ size: 'default' })}>Default</button>
+            <button aria-pressed={iconPrefs.size === 'small'} disabled={iconPrefs.style === 'off'} onclick={() => setIconPrefs({ size: 'small' })}>Small</button>
+          </span>
+        </div>
+        <ul class="icon-preview" aria-label="Preview">
+          {#each ICON_PREVIEW as n (n)}
+            <li><DomainIcon name={n} /><span class="mono small">{n}</span></li>
+          {/each}
+        </ul>
+      </section>
     </div>
   {:else if tab === 'tokens'}
     <section class="card">
@@ -989,6 +1023,29 @@
 </div>
 
 <style>
+  .icon-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    margin: 10px 0;
+  }
+  .icon-lbl {
+    width: 3.2em;
+    color: var(--muted);
+  }
+  .icon-preview {
+    list-style: none;
+    margin: 14px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 8px;
+  }
+  .icon-preview li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
   .change-filters {
     display: flex;
     flex-wrap: wrap;

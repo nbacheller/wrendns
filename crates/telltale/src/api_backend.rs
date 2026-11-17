@@ -6876,6 +6876,7 @@ mod top_client_name_tests {
             hostname: Some(name.into()),
             expires: 0,
             router: None,
+            offline: false,
         }
     }
 

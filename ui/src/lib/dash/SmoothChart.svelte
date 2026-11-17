@@ -8,6 +8,7 @@
   import { onDestroy, untrack } from 'svelte';
   import { clock, num, short } from '../format';
   import type { Marker } from '../annotations.svelte';
+  import { visibleMarkers } from '../markers';
   import { bucketLabel, bucketStart, rebucket, type RawSeries, type Shown } from './smooth';
 
   let {
@@ -65,10 +66,11 @@
     const w = wrap.getBoundingClientRect();
     box = { left: o.left - w.left, top: o.top - w.top, width: o.width, height: o.height };
     // The chart leaves the newest, still-filling bucket off, but a change made this minute is
-    // shown, at the right edge: markers run to the end of the raw data.
+    // shown, at the right edge: markers run to the end of the raw data, or to now when that is
+    // later (a note saved just after the minute turned has no bucket yet; GitHub issue #39).
     const rawStep = times.length > 1 ? times[1] - times[0] : 60;
     const rawEnd = (times[times.length - 1] ?? max) + rawStep;
-    const shownMarks = markers.filter((m) => m.time >= min && m.time < rawEnd);
+    const shownMarks = visibleMarkers(markers, min, rawEnd, Date.now() / 1000);
     const col = shownMarks.length > MAX_SINGLE ? 8 : 1;
     const cols = new Map<number, { x: number; marks: Marker[] }>();
     for (const m of shownMarks) {
