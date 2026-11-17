@@ -234,7 +234,7 @@ pub(crate) async fn stats_flow(
     State(b): State<Shared>,
     Query(p): Query<FlowParams>,
 ) -> Result<Json<QueryFlow>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&crate::request_backend(&b), p.scope.as_deref())?;
     let now = b.now_unix_seconds();
     let client = match p.client.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
         None => None,
