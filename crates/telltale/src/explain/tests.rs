@@ -595,3 +595,47 @@ fn dns_019_explain_names_the_special_rule() {
         None
     );
 }
+
+/// REQ: DNS-019 (T24.12, ADR-914) — the `ddr` name: a DDR query (SVCB for `_dns.resolver.arpa`)
+/// is `ddr` while the node advertises designated resolvers, and `resolver_arpa` otherwise, with
+/// or without a `ddr_name`. Any other SVCB query is `resolver_arpa` too.
+#[test]
+fn dns_019_special_key_names_ddr() {
+    // A query message for `name` of type `qtype`: a header, the question, no answers.
+    fn query(name: &str, qtype: u16) -> Vec<u8> {
+        let mut m = vec![0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+        for label in name.split('.') {
+            m.push(u8::try_from(label.len()).unwrap());
+            m.extend_from_slice(label.as_bytes());
+        }
+        m.push(0);
+        m.extend_from_slice(&qtype.to_be_bytes());
+        m.extend_from_slice(&1u16.to_be_bytes());
+        m
+    }
+    let ddr = query("_dns.resolver.arpa", rtype::SVCB);
+    let q = parse_query(&ddr).unwrap();
+    assert_eq!(special_key(&q, Special::ResolverArpa, false), Some("ddr"));
+    assert_eq!(
+        special_key(&q, Special::ResolverArpa, true),
+        Some("resolver_arpa"),
+        "no designated resolver advertised: no DDR answer"
+    );
+    let other_bytes = query("resolver.arpa", rtype::A);
+    let other = parse_query(&other_bytes).unwrap();
+    assert_eq!(
+        special_key(&other, Special::ResolverArpa, false),
+        Some("resolver_arpa")
+    );
+    // Without encrypted listeners (so no advertised resolver), the explanation says resolver_arpa.
+    let (p, sources) = setup_with("[special]\nddr_name = \"dns.home.arpa\"\n");
+    let req = Request {
+        name: "_dns.resolver.arpa",
+        qtype: rtype::SVCB,
+        client: "10.0.0.9".parse().unwrap(),
+        mac: None,
+        client_id: None,
+    };
+    let e = p.explain(&req, |n| sources.get(n).cloned()).unwrap();
+    assert_eq!(e.special, Some("resolver_arpa"), "{}", e.summary);
+}

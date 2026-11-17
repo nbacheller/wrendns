@@ -36,9 +36,10 @@ pub(crate) struct Explanation {
     pub(crate) qtype: u16,
     pub(crate) client: ClientInfo,
     pub(crate) outcome: Outcome,
-    /// REQ: DNS-019 (T24.12, ADR-914) — for a `special` outcome, the special-name rule that
-    /// answered: `private_relay`, `single_label`, `resolver_arpa`, `ddr`, `firefox_canary`,
-    /// `private_ptr`, `chaos`, or `localhost`. The UI links it to its switch.
+    /// REQ: DNS-019 (T24.12, ADR-914) — for a `special` outcome, the name of the special-name
+    /// rule that answered: `private_relay`, `single_label`, `resolver_arpa`, `ddr`,
+    /// `firefox_canary`, `private_ptr`, `chaos`, or `localhost`. It is a rule's name, not a field
+    /// of `[special]`: the UI maps it to the switch that controls it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) special: Option<&'static str>,
     /// One sentence for people.
@@ -527,9 +528,11 @@ fn rcode_text(rc: u16) -> String {
     }
 }
 
-/// REQ: DNS-019 (T24.12, ADR-914) — the configuration key of a special-name rule, as the UI and
-/// the explanation name it. `None` for a rule with no switch of its own (`.invalid`, and
-/// `resolver.arpa` without a `ddr_name`, which has none either).
+/// REQ: DNS-019 (T24.12, ADR-914) — the name of a special-name rule, as the UI and the
+/// explanation name it. `None` for a rule with no name of its own (`.invalid`, and any other
+/// name the special rules don't list). `resolver.arpa` is `ddr` for a DDR query while this node
+/// advertises designated resolvers (`[special] ddr_name` and encrypted listeners), and
+/// `resolver_arpa` otherwise.
 fn special_key(q: &telltale_proto::Query<'_>, s: Special, no_ddr: bool) -> Option<&'static str> {
     Some(match s {
         Special::Refused => "chaos",

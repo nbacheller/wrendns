@@ -29,8 +29,11 @@
   const defs = $derived((local?.definition ?? {}) as Record<string, unknown>);
   const cdefs = $derived((clients?.definition ?? {}) as Record<string, unknown>);
   const clientsMdns = $derived(cdefs.mdns === true);
+  // REQ: DNS-019, DNS-023 (M4, ADR-914) — every field the files set is locked and labelled, and
+  // is left out of the request (the files' value applies).
   const fileSet = $derived(local?.setByFile ?? []);
   const cFileSet = $derived(clients?.setByFile ?? []);
+  const setByFile = (k: string) => fileSet.includes(k);
   const domainText = $derived(typeof defs.device_domain === 'string' && defs.device_domain ? String(defs.device_domain) : 'off');
   const hostsFiles = $derived(Array.isArray(defs.hosts_files) ? (defs.hosts_files as string[]) : []);
 
@@ -62,16 +65,20 @@
     };
   }
 
-  // The body: every field of the form (the entry keeps the rest as the files set it).
+  // The body: the fields the files don't set (the entry keeps those as the files set them).
+  // `device_mdns` is sent as the switch shows it: the switch is disabled while mDNS listening is
+  // off, so it can't be turned on then, and a file's `true` is left out, not coerced.
   function body(): Record<string, unknown> {
     const f = form!;
-    return {
+    const all: Record<string, unknown> = {
       device_domain: f.domain.trim().toLowerCase() || null,
       device_ttl: Number(f.device_ttl),
-      device_mdns: f.device_mdns && clientsMdns,
+      device_mdns: f.device_mdns,
       auto_ptr: f.auto_ptr,
       default_ttl: Number(f.default_ttl),
     };
+    for (const k of fileSet) delete all[k];
+    return all;
   }
 
   async function check(e: SubmitEvent) {
@@ -194,7 +201,8 @@
     <form class="form" data-testid="device-names-form" onsubmit={check}>
       <label>
         Domain
-        <input class="mono" placeholder="home.arpa" aria-label="Domain" bind:value={form.domain} readonly={fileSet.includes('device_domain')} />
+        <input class="mono" placeholder="home.arpa" aria-label="Domain" bind:value={form.domain} readonly={setByFile('device_domain')} />
+        {#if setByFile('device_domain')}<span class="muted small" data-testid="set-by-file">Set by the configuration file: change it there.</span>{/if}
         <span class="muted small">
           Devices get names under it, such as kitchen-tablet.home.arpa. home.arpa is the domain for homes (RFC 8375). Leave it empty to turn names off.
         </span>
@@ -204,16 +212,19 @@
       </label>
       <label>
         TTL of device names (seconds)
-        <input type="number" min="0" aria-label="TTL of device names (seconds)" bind:value={form.device_ttl} />
+        <input type="number" min="0" aria-label="TTL of device names (seconds)" bind:value={form.device_ttl} readonly={setByFile('device_ttl')} />
+        {#if setByFile('device_ttl')}<span class="muted small" data-testid="set-by-file">Set by the configuration file: change it there.</span>{/if}
         <span class="muted small">Names follow DHCP, so keep it short (60 by default).</span>
       </label>
       <label class="check">
-        <input type="checkbox" role="switch" aria-label="Reverse names for local addresses" bind:checked={form.auto_ptr} />
+        <input type="checkbox" role="switch" aria-label="Reverse names for local addresses" bind:checked={form.auto_ptr} disabled={setByFile('auto_ptr')} />
+        {#if setByFile('auto_ptr')}<span class="muted small" data-testid="set-by-file">Set by the configuration file: change it there.</span>{/if}
         Reverse names for local addresses (a PTR for each)
       </label>
       <label>
         TTL of other local names (seconds)
-        <input type="number" min="0" aria-label="TTL of other local names (seconds)" bind:value={form.default_ttl} />
+        <input type="number" min="0" aria-label="TTL of other local names (seconds)" bind:value={form.default_ttl} readonly={setByFile('default_ttl')} />
+        {#if setByFile('default_ttl')}<span class="muted small" data-testid="set-by-file">Set by the configuration file: change it there.</span>{/if}
       </label>
       <label class="check">
         <input
@@ -221,8 +232,9 @@
           role="switch"
           aria-label="Name devices by their mDNS names"
           bind:checked={form.device_mdns}
-          disabled={!clientsMdns}
+          disabled={!clientsMdns || setByFile('device_mdns')}
         />
+        {#if setByFile('device_mdns')}<span class="muted small" data-testid="set-by-file">Set by the configuration file: change it there.</span>{/if}
         Name devices by the names they announce over mDNS
       </label>
       {#if !clientsMdns}

@@ -1752,7 +1752,8 @@ impl Op {
             Self::Managed(ManagedKind::KubernetesMap, _) => "kubernetes_map",
             Self::Managed(ManagedKind::Special, _) => "special",
             Self::Managed(ManagedKind::Local, _) => "local",
-            Self::Managed(ManagedKind::Clients, _) => "clients",
+            // LOW 5: not one letter from the device writes' `client.put`.
+            Self::Managed(ManagedKind::Clients, _) => "clients_settings",
         }
     }
     fn deleting(&self) -> bool {

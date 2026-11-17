@@ -13686,7 +13686,7 @@
               "string",
               "null"
             ],
-            "description": "REQ: DNS-019 (T24.12, ADR-914) — for `special`, the special-name rule that answered:\n`private_relay`, `single_label`, `resolver_arpa`, `ddr`, `firefox_canary`, `private_ptr`,\n`chaos`, or `localhost` (the switch the UI links to is `[special]`'s field of that name)."
+            "description": "REQ: DNS-019 (T24.12, ADR-914) — for `special`, the special-name rule that answered:\n`private_relay`, `single_label`, `resolver_arpa`, `ddr`, `firefox_canary`, `private_ptr`,\n`chaos`, or `localhost`. A rule's name, not a field of `[special]`: the UI maps it to the\nswitch that controls it."
           },
           "summary": {
             "type": "string",

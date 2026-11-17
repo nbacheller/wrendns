@@ -321,7 +321,7 @@
               <input type="checkbox" role="switch" bind:checked={editing.values[f.key] as boolean} aria-label={f.label} disabled={locked(f)} />
             {:else if f.type === 'number'}
               <!-- step="any": thresholds such as 0.5 % are allowed. -->
-              <input type="number" step="any" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} />
+              <input type="number" step="any" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} />
             {:else}
               <input class="mono" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} />
             {/if}

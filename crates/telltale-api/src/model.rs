@@ -614,7 +614,8 @@ pub struct Explanation {
     pub outcome: String,
     /// REQ: DNS-019 (T24.12, ADR-914) — for `special`, the special-name rule that answered:
     /// `private_relay`, `single_label`, `resolver_arpa`, `ddr`, `firefox_canary`, `private_ptr`,
-    /// `chaos`, or `localhost` (the switch the UI links to is `[special]`'s field of that name).
+    /// `chaos`, or `localhost`. A rule's name, not a field of `[special]`: the UI maps it to the
+    /// switch that controls it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub special: Option<String>,
     /// One sentence for people.

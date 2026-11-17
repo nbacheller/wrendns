@@ -2076,6 +2076,52 @@ test('dns_023 mdns switch needs clients mdns', async () => {
   }
 });
 
+// REQ: DNS-019, DNS-023 (M4, ADR-914) — every device-name field the files set is locked and
+// labelled, and the request leaves those fields out (the files' values apply). The entries are
+// mocked: the e2e file sets none of them. `mdns_port` is marked set by file too.
+test('dns_023 device-name fields set by file are locked', async () => {
+  const setByFile = ['device_domain', 'device_ttl', 'auto_ptr', 'default_ttl', 'device_mdns'];
+  const local = {
+    items: [{
+      kind: 'local', name: 'default', source: 'file',
+      definition: { device_domain: 'home.arpa', device_ttl: 60, auto_ptr: true, default_ttl: 300, device_mdns: true, hosts_files: [] },
+      redacted: [], credentialIssues: [], setByFile, answering: 3,
+    }],
+  };
+  await page.route(/\/api\/v1\/config\/entries\?kind=local/, (route) => route.fulfill({ json: local }));
+  await page.route(/\/api\/v1\/config\/entries\?kind=clients/, (route) => route.fulfill({ json: clientsEntry(true, ['mdns_port']) }));
+  let sent = null as Record<string, unknown> | null;
+  await page.route(/\/api\/v1\/local-settings\/default/, async (route) => {
+    if (route.request().method() !== 'PUT') return route.fallback();
+    sent = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      json: { applied: false, configVersion: 1, before: {}, after: {}, recentQueries: 0, impact: 'Device names in DNS change within about 10 seconds on every node, with no restart.', warnings: [] },
+    });
+  });
+  try {
+    await page.goto('/#/settings?tab=queries');
+    await page.goto('/#/local-dns');
+    const card = page.getByTestId('device-names-card');
+    await expect(card.getByTestId('device-domain')).toContainText('home.arpa');
+    await card.getByTestId('device-names-edit').click();
+    for (const label of ['Domain', 'TTL of device names (seconds)', 'TTL of other local names (seconds)']) {
+      await expect(card.getByLabel(label, { exact: true })).toHaveAttribute('readonly', '');
+    }
+    await expect(card.getByLabel('Reverse names for local addresses')).toBeDisabled();
+    await expect(card.getByRole('switch', { name: 'Name devices by their mDNS names' })).toBeDisabled();
+    await expect(card.getByTestId('set-by-file')).toHaveCount(5);
+    await expect(page.getByTestId('clients-mdns')).toContainText('(set by file)');
+    await card.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(card.getByTestId('device-names-preview')).toBeVisible();
+    expect(sent).not.toBeNull();
+    for (const k of setByFile) expect(sent).not.toHaveProperty(k);
+  } finally {
+    await page.unroute(/\/api\/v1\/config\/entries\?kind=local/).catch(() => {});
+    await page.unroute(/\/api\/v1\/config\/entries\?kind=clients/).catch(() => {});
+    await page.unroute(/\/api\/v1\/local-settings\/default/).catch(() => {});
+  }
+});
+
 // REQ: DNS-023 (T24.13, ADR-914) — an admin turns on `[clients] mdns`: the switch names the
 // setting, is checked (a dry run) before it's applied, and sends `mdns: true`. The entry is
 // answered from a mock (the e2e file sets it), so only the UI's part is checked here.
@@ -2137,8 +2183,12 @@ test('dns_023 operator sees clients mdns read-only', async () => {
   }
 });
 
-// REQ: DNS-023 (T24.13, ADR-901) — a viewer sees the device-name settings, read-only.
+// REQ: DNS-023 (T24.13, ADR-901) — a viewer sees the device-name settings, read-only. The viewer
+// is made here (not by an earlier test), so this test runs on its own.
 test('dns_023 viewer sees device-name settings read-only', async () => {
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const made = await page.request.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: VIEWER.user, password: VIEWER.pass, role: 'viewer' } });
+  expect([200, 201, 409]).toContain(made.status());
   const v = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
   try {
     const p = await v.newPage();

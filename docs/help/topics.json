@@ -870,7 +870,7 @@
       "summary": "Devices TelltaleDNS knows by name answer as name.domain, such as kitchen-tablet.home.arpa, with a reverse name too. Names come from your devices, your routers' DHCP leases, Home Assistant, and mDNS when it's on.",
       "when": "You want to open kitchen-tablet or nas by name from any device, and the router's DHCP names aren't in DNS.",
       "example": "Set home.arpa: a router lease for kitchen-tablet answers kitchen-tablet.home.arpa within about 10 seconds, and the reverse lookup gives the name back.",
-      "caution": "local is refused: mDNS owns it. mDNS names need the mDNS switch, which only an admin turns on, because it opens multicast listening on every node.",
+      "caution": "local is refused: mDNS owns it. mDNS names need the mDNS switch, which only an admin turns on, because it opens multicast listening on every node. That switch takes effect after a restart on every node.",
       "docs": "device-names-in-dns"
     }
   ]

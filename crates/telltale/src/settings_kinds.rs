@@ -285,11 +285,14 @@ pub(crate) fn check_admin_fields(
             ),
         )
         .hint("Upgrade that node first, or make the change on the primary.")),
+        // LOW 3: a partial PUT that leaves out an API-set `ddr_name` resets it, so say how to keep it.
         Some(_) => Err(Problem::new(
             Code::Forbidden,
             format!("only an admin can change `{field}`: {why}"),
         )
-        .hint("Ask an admin to make this change.")),
+        .hint(format!(
+            "Ask an admin to make this change. A partial PUT that leaves out the current `{field}` resets it: include the current value, or GET the entry first."
+        ))),
     }
 }
 
@@ -327,8 +330,10 @@ pub(crate) fn impact(kind: ManagedKind, put: bool) -> String {
         (ManagedKind::Special, false) => "The config file's special-name settings (or the defaults) apply again from the next query.".into(),
         (ManagedKind::Local, true) => "Device names in DNS change within about 10 seconds on every node, with no restart.".into(),
         (ManagedKind::Local, false) => "The config file's device-name settings (or the defaults) apply again within about 10 seconds.".into(),
-        (_, true) => "Applies on every node after the reload. mDNS names are only heard on the LAN, so this needs a listener there.".into(),
-        (_, false) => "The config file's [clients] mdns (or off) applies again on every node.".into(),
+        // REQ: DNS-023 (H1) — the mDNS listener starts once, at start-up (`restart_only_changes`):
+        // a change here takes effect after a restart on every node.
+        (_, true) => "Takes effect after a restart on every node: the mDNS listener starts once, at start-up, and device names only follow mDNS while it runs.".into(),
+        (_, false) => "The config file's [clients] mdns (or off) applies after a restart on every node.".into(),
     }
 }
 
