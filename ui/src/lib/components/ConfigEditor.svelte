@@ -104,6 +104,12 @@
   let original = $state<Record<string, unknown>>({});
   // REQ: DNS-019, DNS-023 (ADR-914) — the fields the config files set: the API keeps their value.
   let fileSet = $state<string[]>([]);
+  // REQ: API-015 (T23.6, ADR-903 §9) — this node's credential fields: a secret field reads whether
+  // its file is readable here and whether the configuration sets it inline.
+  let credentials = $state<S['CredentialField'][]>([]);
+  // Secret fields with a typed value not yet saved or discarded: Check and Apply wait for them.
+  let dirtyFields = $state<Record<string, boolean>>({});
+  const anyDirty = $derived(Object.values(dirtyFields).some(Boolean));
   const isAdmin = $derived(can('admin'));
   function locked(f: Field): boolean {
     if (fileSet.includes(f.key)) return true;
@@ -148,6 +154,11 @@
     const def = (e?.definition ?? {}) as Record<string, unknown>;
     original = { ...def };
     fileSet = e?.setByFile ?? [];
+    dirtyFields = {};
+    credentials = [];
+    if (fields.some((f) => f.type === 'secret')) {
+      void api.secrets().then((s) => (credentials = s.credentials)).catch(() => {});
+    }
     const initial = e ? {} : Object.fromEntries(fields.filter((f) => f.initial !== undefined).map((f) => [f.key, f.initial]));
     editing = { name: e?.name ?? '', isNew: !e, values: { ...initial, ...def } };
     texts = Object.fromEntries(fields.filter((f) => f.toText).map((f) => [f.key, f.toText!(editing!.values[f.key])]));
@@ -284,6 +295,8 @@
           {#if f.type === 'secret'}
             <!-- REQ: API-015 (T23.6) — a credential is entered only through SecretField. -->
             {@const fileKey = f.fileKey ?? ''}
+            {@const fileCred = credentials.find((c) => c.kind === kind && c.entry === editing!.name && c.field === fileKey)}
+            {@const inlineCred = credentials.find((c) => c.kind === kind && c.entry === editing!.name && c.source === 'inline' && c.field === f.key.replace(/_ref$/, ''))}
             <SecretField
               label={f.label}
               help={f.help}
@@ -292,7 +305,11 @@
               defaultName={f.secretName?.(editing.name.trim()) ?? ''}
               filePath={(editing.values[fileKey] as string | undefined) || undefined}
               fileFromConfig={fileSet.includes(fileKey)}
+              fileReadable={fileCred?.readable}
+              fileReason={fileCred?.reason}
+              inline={Boolean(inlineCred)}
               canSet={!locked(f)}
+              ondirty={(d) => (dirtyFields[f.key] = d)}
               onreference={(n) => {
                 // A stored secret replaces an API-set file path (never one the configuration sets).
                 if (!fileSet.includes(fileKey)) delete editing!.values[fileKey];
@@ -364,13 +381,15 @@
             {#each preview.warnings as w (w)}<p class="small warn-text">{w}</p>{/each}
             {#if replayable}<SimulationCard run={simulateDraft} />{/if}
           </div>
+          {#if anyDirty}<p class="notice warn small" data-testid="secret-unsaved">Save or discard the secret you typed first; Apply waits for it.</p>{/if}
           <div class="row">
-            <button type="button" class="primary" disabled={busy} onclick={apply}>Apply</button>
+            <button type="button" class="primary" disabled={busy || anyDirty} onclick={apply}>Apply</button>
             <button type="button" onclick={() => (preview = null)}>Change it</button>
           </div>
         {:else}
+          {#if anyDirty}<p class="notice warn small" data-testid="secret-unsaved">Save or discard the secret you typed first; Check waits for it.</p>{/if}
           <div class="row">
-            <button class="primary" disabled={busy || !editing.name.trim()}>Check</button>
+            <button class="primary" disabled={busy || !editing.name.trim() || anyDirty}>Check</button>
             {#if formAction}<button type="button" onclick={runFormAction}>{formAction.label}</button>{/if}
           </div>
         {/if}

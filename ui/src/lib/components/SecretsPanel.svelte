@@ -35,7 +35,7 @@
     rowError = null;
     rowBusy = name;
     try {
-      await api.deleteSecret(name, force);
+      await api.deleteSecret(name, force, status?.head.etag);
       await load();
     } catch (e) {
       rowError = { name, error: e };
@@ -175,7 +175,9 @@
           <code>*_ref</code> field, such as <code>token_ref = "ntfy"</code>.
         </p>
         {#key target}
-          <SecretField label="Value" testid="secret-form" canSet={isAdmin} defaultName={target} kind="text"
+          <!-- The name stays editable: a stored name is replaced by the value typed under it. -->
+          <SecretField label="Value" nameLabel="Secret name" testid="secret-form" canSet={isAdmin} defaultName={target}
+            kind="text" startReplacing={target !== ''}
             onsaved={() => {
               target = '';
               void load();

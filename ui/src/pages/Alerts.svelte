@@ -7,6 +7,7 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
+  import { secretNameFor } from '../lib/components/SecretField.svelte';
 
   let status = $state<S['AlertsStatus'] | null>(null);
   let destinations = $state<string[]>([]);
@@ -40,10 +41,10 @@
     // REQ: API-015 (T23.6, ADR-903 §9) — the password and token are stored secrets (or a file the
     // configuration sets, shown read-only); only an admin sets or clears them.
     { key: 'password_ref', label: 'Password (email)', type: 'secret', fileKey: 'password_file', admin: true,
-      secretName: (e) => `alert.${e}.password`,
+      secretName: (e) => secretNameFor('alert', e, 'password'),
       help: 'The password (a Gmail app password, for example), kept encrypted on this node and never shown again. A password_file in the configuration wins over it.' },
     { key: 'token_ref', label: 'Token (ntfy, Gotify)', type: 'secret', fileKey: 'token_file', advanced: true, admin: true,
-      secretName: (e) => `alert.${e}.token`,
+      secretName: (e) => secretNameFor('alert', e, 'token'),
       help: 'The access token of your ntfy or Gotify server, kept encrypted on this node and never shown again. A token_file in the configuration wins over it.' },
     { key: 'tls_ca', label: 'Private CA (email)', type: 'text', placeholder: '/etc/telltale/mail-ca.pem', advanced: true, admin: holdsCredential },
   ];

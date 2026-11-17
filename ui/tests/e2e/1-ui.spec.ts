@@ -19,8 +19,9 @@ test.beforeAll(async ({ browser }) => {
   page = await browser.newPage();
   page.on('pageerror', (e) => problems.push(`page error: ${e.message}`));
   page.on('console', (m) => {
-    // Expected refusals (401 sign-in, 409 secret in use, ...) are logged by the browser as resource errors.
-    if (m.type() === 'error' && !/status of 4\d\d \(/.test(m.text())) problems.push(`console: ${m.text()}`);
+    // Expected refusals (401 sign-in, 403 forbidden) are logged by the browser as resource errors. Any
+    // other 4xx is a bug; a test that expects one (a 409, say) removes it from `problems` itself.
+    if (m.type() === 'error' && !/status of 40[13] \(/.test(m.text())) problems.push(`console: ${m.text()}`);
   });
 });
 
@@ -1849,6 +1850,21 @@ test('api_014 alerts page: operators see credential fields read-only', async () 
   }
 });
 
+// Every answer the page gets while `run` executes; none may carry the secret (the network, not just the DOM).
+async function noAnswerCarries(secret: string, run: () => Promise<void>) {
+  const bodies: Promise<string>[] = [];
+  const on = (r: import('@playwright/test').Response) => {
+    if (r.url().includes('/api/v1/')) bodies.push(r.text().catch(() => ''));
+  };
+  page.on('response', on);
+  try {
+    await run();
+  } finally {
+    page.off('response', on);
+  }
+  for (const b of await Promise.all(bodies)) expect(b).not.toContain(secret);
+}
+
 // REQ: API-015, API-014 (T23.6, ADR-903 §9) — stored secrets from the UI: the field is write-only,
 // a file the configuration sets is read-only, replace and clear work, an operator sees status only,
 // a plain-HTTP refusal is explained, a locked store links to the secrets tab, and a stored token is
@@ -1870,8 +1886,10 @@ test('api_015 secret field is write-only', async () => {
   await expect(field).toHaveAttribute('data-mode', 'unset');
   await expect(field.getByRole('button', { name: 'Save secret' })).toBeDisabled();
   await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('write-only-token-7731');
-  await field.getByRole('button', { name: 'Save secret' }).click();
-  await expect(field).toHaveAttribute('data-mode', 'set');
+  await noAnswerCarries('write-only-token-7731', async () => {
+    await field.getByRole('button', { name: 'Save secret' }).click();
+    await expect(field).toHaveAttribute('data-mode', 'set');
+  });
   await expect(field.getByTestId('secret-status')).toContainText('alert.ui-stored.token');
   // Never pre-filled, and never in the page after the save.
   await expect(field.getByLabel('Token (ntfy, Gotify)', { exact: true })).toHaveCount(0);
@@ -1888,8 +1906,10 @@ test('api_015 replace and clear', async () => {
   await expect(field).toHaveAttribute('data-mode', 'set');
   await field.getByRole('button', { name: 'Replace' }).click();
   await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('replaced-token-9914');
-  await field.getByRole('button', { name: 'Save new value' }).click();
-  await expect(field).toHaveAttribute('data-mode', 'set');
+  await noAnswerCarries('replaced-token-9914', async () => {
+    await field.getByRole('button', { name: 'Save new value' }).click();
+    await expect(field).toHaveAttribute('data-mode', 'set');
+  });
   expect(await page.content()).not.toContain('replaced-token-9914');
   await field.getByRole('button', { name: 'Clear' }).click();
   await expect(field).toHaveAttribute('data-mode', 'clear');
@@ -1907,6 +1927,70 @@ test('api_015 replace and clear', async () => {
   await expect(row).toContainText('nothing');
   await row.getByRole('button', { name: 'Delete' }).click();
   await expect(row).toHaveCount(0);
+});
+
+// REQ: API-015, ADR-919 — an entry whose default name is already stored is offered that secret
+// (Use it, or Replace), never a Delete; saving it links the entry.
+test('api_015 an existing secret is offered to an entry, not deleted', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  expect((await r.put('/api/v1/secrets/alert.ui-offer.token', { headers: h, data: { value: 'offered-value-6612', kind: 'text' } })).status()).toBe(200);
+  try {
+    await page.goto('/#/alerts');
+    await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+    const dests = page.getByTestId('editor-alert_destination');
+    await dests.getByRole('button', { name: 'Add destination' }).click();
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-offer');
+    await page.getByLabel('Type', { exact: true }).selectOption('ntfy');
+    await page.getByRole('textbox', { name: 'Address', exact: true }).fill('http://127.0.0.1:18996/offer');
+    const field = page.getByTestId('secret-token_ref');
+    await expect(field).toHaveAttribute('data-mode', 'exists');
+    await expect(field.getByTestId('secret-exists')).toContainText('alert.ui-offer.token');
+    await expect(field.getByRole('button', { name: 'Delete' })).toHaveCount(0);
+    await field.getByRole('button', { name: 'Use it' }).click();
+    await expect(field).toHaveAttribute('data-mode', 'set');
+    await page.getByRole('button', { name: 'Check' }).click();
+    await page.getByRole('button', { name: 'Apply' }).click();
+    await expect(page.locator('.drawer')).toHaveCount(0);
+    await expect(dests.getByTestId('entry-row').filter({ hasText: 'ui-offer' })).toContainText('ntfy');
+  } finally {
+    await r.delete('/api/v1/alerts/destinations/ui-offer', { headers: h });
+    await r.delete('/api/v1/secrets/alert.ui-offer.token', { headers: h });
+  }
+});
+
+// REQ: API-015 (T23.6, ADR-903 §9, ADR-919) — a typed value that isn't saved holds Check and Apply
+// (the value would otherwise be dropped without a word); Save or Discard releases them.
+test('api_015 a typed secret that is not saved holds Check and Apply', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  await page.goto('/#/alerts');
+  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+  const dests = page.getByTestId('editor-alert_destination');
+  await dests.getByRole('button', { name: 'Add destination' }).click();
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-typed');
+  await page.getByLabel('Type', { exact: true }).selectOption('ntfy');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('http://127.0.0.1:18996/typed');
+  const field = page.getByTestId('secret-token_ref');
+  await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('typed-unsaved-4410');
+  await expect(page.getByRole('button', { name: 'Check' })).toBeDisabled();
+  await expect(page.getByTestId('secret-unsaved')).toContainText('Save or discard the secret');
+  await field.getByRole('button', { name: 'Discard' }).click();
+  await expect(page.getByRole('button', { name: 'Check' })).toBeEnabled();
+  await expect(page.getByTestId('secret-unsaved')).toHaveCount(0);
+  await field.getByLabel('Token (ntfy, Gotify)', { exact: true }).fill('typed-saved-4411');
+  await field.getByRole('button', { name: 'Save secret' }).click();
+  await expect(field).toHaveAttribute('data-mode', 'set');
+  await expect(field.getByTestId('secret-status')).toContainText('alert.ui-typed.token');
+  await page.getByRole('button', { name: 'Check' }).click();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(page.locator('.drawer')).toHaveCount(0);
+  try {
+    await expect(dests.getByTestId('entry-row').filter({ hasText: 'ui-typed' })).toContainText('ntfy');
+  } finally {
+    await r.delete('/api/v1/alerts/destinations/ui-typed', { headers: h });
+    await r.delete('/api/v1/secrets/alert.ui-typed.token', { headers: h });
+  }
 });
 
 test('api_015 set by file is read-only', async () => {
@@ -1978,9 +2062,75 @@ test('api_015 delete of a secret in use names its users', async () => {
     await row.getByRole('button', { name: 'Delete' }).click();
     await expect(page.getByTestId('secrets-stored').getByRole('alert')).toContainText('ui-used');
     await expect(row).toBeVisible();
+    // The refusal is the point of this test: its 409 is expected, nothing else is.
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1);
   } finally {
     await r.delete('/api/v1/alerts/destinations/ui-used', { headers: h });
     await r.delete('/api/v1/secrets/ui-in-use', { headers: h });
+  }
+});
+
+// REQ: API-015 (T23.6, ADR-903 §9, ADR-919) — on the secrets page a typed name that's stored is a
+// replacement: the name stays editable and the value goes under it.
+test('api_015 the secrets form keeps its name and replaces a stored one', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  expect((await r.put('/api/v1/secrets/ui-form-replace', { headers: h, data: { value: 'first-value-8821', kind: 'text' } })).status()).toBe(200);
+  try {
+    await page.goto('/#/settings?tab=secrets');
+    const form = page.getByTestId('secret-form');
+    await form.getByLabel('Secret name', { exact: true }).fill('ui-form-replace');
+    await expect(form).toHaveAttribute('data-mode', 'replace');
+    await expect(form.getByLabel('Secret name', { exact: true })).toBeVisible();
+    await expect(form.getByRole('button', { name: 'Save new value' })).toBeVisible();
+    await form.getByLabel('Value', { exact: true }).fill('second-value-8822');
+    await noAnswerCarries('second-value-8822', async () => {
+      await form.getByRole('button', { name: 'Save new value' }).click();
+      // Saved: the form is cleared for the next secret (its name went with the replacement).
+      await expect(form.getByLabel('Secret name', { exact: true })).toHaveValue('');
+    });
+    expect(await page.content()).not.toContain('second-value-8822');
+  } finally {
+    await r.delete('/api/v1/secrets/ui-form-replace', { headers: h });
+  }
+});
+
+// REQ: API-015 (ADR-903 §2) — a write carries the secrets head the page read (If-Match); a head that
+// moved is refused, and the page says so and shows the list again.
+test('api_015 a secret write sends the head it read, and a moved head is refused', async () => {
+  let ifMatch: string | undefined;
+  await page.route('**/api/v1/secrets/ui-moved', (route) => {
+    ifMatch = route.request().headers()['if-match'];
+    return route.fulfill({
+      status: 412,
+      contentType: 'application/problem+json',
+      json: { type: 'https://telltaledns.dev/problems/precondition_failed', title: 'Precondition Failed', status: 412, code: 'precondition_failed', detail: 'the secrets head moved' },
+    });
+  });
+  try {
+    await page.goto('/#/settings?tab=secrets');
+    await expect(page.getByTestId('secrets-store')).toBeVisible();
+    const form = page.getByTestId('secret-form');
+    await form.getByLabel('Secret name', { exact: true }).fill('ui-moved');
+    await form.getByLabel('Value', { exact: true }).fill('moved-value-1');
+    await form.getByRole('button', { name: 'Save secret' }).click();
+    await expect(page.getByTestId('secrets-form').getByRole('alert')).toContainText('Someone else changed');
+    expect(ifMatch).toMatch(/^"\d+\.\d+\./);
+  } finally {
+    await page.unroute('**/api/v1/secrets/ui-moved');
+  }
+});
+
+// REQ: API-015 (T23.6) — the secrets tab fits a phone (two tables with four and five columns).
+test('api_015 the secrets tab fits at phone width (360 px)', async () => {
+  await page.setViewportSize({ width: 360, height: 740 });
+  try {
+    await page.goto('/#/settings?tab=secrets');
+    await expect(page.getByTestId('secrets-store')).toBeVisible();
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+  } finally {
+    await page.setViewportSize({ width: 1280, height: 800 });
   }
 });
 
@@ -2032,7 +2182,7 @@ test('api_015 plain HTTP refusal is explained', async () => {
   try {
     await page.goto('/#/settings?tab=secrets');
     const form = page.getByTestId('secret-form');
-    await form.getByLabel('Value name', { exact: true }).fill('ui-refused');
+    await form.getByLabel('Secret name', { exact: true }).fill('ui-refused');
     await form.getByLabel('Value', { exact: true }).fill('refused-value-1');
     await form.getByRole('button', { name: 'Save secret' }).click();
     await expect(page.getByTestId('secret-refused')).toContainText('HTTPS');
@@ -2076,7 +2226,7 @@ test('api_015 locked store links to the secrets tab', async () => {
 
 // REQ: API-005 (T23.6, AGT-004) — the Home Assistant scope preset fills an agent token's scopes
 // with the README's list; the token is then revoked.
-test('api_015 the Home Assistant preset fills the agent scopes', async () => {
+test('api_005 the Home Assistant preset fills the agent scopes', async () => {
   await page.goto('/#/settings?tab=tokens');
   await page.getByLabel('Kind', { exact: true }).selectOption('agent');
   await page.getByLabel('Scope preset').selectOption('home-assistant');
