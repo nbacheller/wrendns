@@ -872,6 +872,7 @@ const WORKER_DENIED_SYSCALLS: [libc::c_long; 8] = [
 /// The first syscall number of the x32 ABI (`__X32_SYSCALL_BIT`). On `x86_64` a call with this bit set
 /// (`nr | 0x40000000`) reaches the same handlers as the native call without matching the native
 /// number, so the filter refuses the whole range (ADR-934). No other architecture uses it.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm"))]
 const X32_SYSCALL_BIT: u32 = 0x4000_0000;
 
 /// REQ: DSC-002 (ADR-908, ADR-934) — installs the worker's seccomp filter: the denied syscalls fail with
@@ -962,6 +963,29 @@ pub(crate) fn install_worker_seccomp() -> io::Result<()> {
         io::ErrorKind::Unsupported,
         "no seccomp filter for this architecture",
     ))
+}
+
+/// REQ: DSC-002 (ADR-934) — `/proc/self/io`, opened while this process is still dumpable. Once it is
+/// not dumpable the file belongs to root with mode 0400, so a non-root process can't open it again
+/// (EACCES), and the host's write-rate metric would stop. A descriptor opened earlier keeps working:
+/// `pread` at offset 0 regenerates the file. Set on the first call (`prepare_spawn` makes it before
+/// the process becomes not dumpable); `None` when the kernel has no such file.
+static SELF_IO: std::sync::OnceLock<Option<std::fs::File>> = std::sync::OnceLock::new();
+
+/// Opens [`SELF_IO`] if it isn't open yet. Call before [`set_dumpable`] with `false`.
+pub(crate) fn pin_self_io() {
+    SELF_IO.get_or_init(|| std::fs::File::open("/proc/self/io").ok());
+}
+
+/// The text of `/proc/self/io` as the pinned descriptor reads it now (see [`SELF_IO`]).
+pub(crate) fn self_io_text() -> Option<String> {
+    use std::os::unix::fs::FileExt as _;
+    let file = SELF_IO
+        .get_or_init(|| std::fs::File::open("/proc/self/io").ok())
+        .as_ref()?;
+    let mut buf = [0u8; 4096];
+    let n = file.read_at(&mut buf, 0).ok()?;
+    String::from_utf8(buf[..n].to_vec()).ok()
 }
 
 /// Sets `PR_SET_DUMPABLE`. The worker becomes not dumpable last: a non-dumpable process's `/proc/self`

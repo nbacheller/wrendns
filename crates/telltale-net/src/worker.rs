@@ -68,6 +68,8 @@ pub fn prepare_spawn(cmd: &mut std::process::Command) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         crate::sys::clear_ambient_before_exec(cmd);
+        // REQ: DSC-002 (ADR-934) — `/proc/self/io` is opened before the process becomes not dumpable.
+        crate::sys::pin_self_io();
         crate::sys::set_dumpable(false)?;
         Ok(())
     }
@@ -360,10 +362,14 @@ mod tests {
     }
 
     /// REQ: DSC-002 (ADR-908, ADR-934, `dsc_002_worker_cannot_read_its_parent`) — once the parent has
-    /// called [`prepare_spawn`], a worker of the same uid can't open the parent's `/proc/<pid>/mem`.
-    /// The control spawns the same worker from a dumpable parent, where the open succeeds whenever
-    /// Yama's ptrace scope allows the descendant, which shows the refusal comes from `prepare_spawn`.
-    /// The middle process is the parent; it runs as uid 65534 when this process is root.
+    /// called [`prepare_spawn`], it is not dumpable, and a worker of the same uid can't open its
+    /// `/proc/<pid>/mem`. The middle process (the parent) first makes itself dumpable in both modes:
+    /// a process that changed uid at exec is already not dumpable (the kernel resets it), so without
+    /// that step the shield would pass with `prepare_spawn` doing nothing. The flag check is the
+    /// decisive one and holds under any Yama setting. The open check is the end-to-end one: under
+    /// Yama scope 0 a dumpable parent can be read by its worker (the control), so a refusal then comes
+    /// from `prepare_spawn`. Under scope 1 (the Ubuntu default, and this container) Yama refuses the
+    /// open either way, so the control is skipped and only the flag check decides.
     #[cfg(target_os = "linux")]
     #[test]
     fn dsc_002_worker_cannot_read_its_parent() {
@@ -381,13 +387,14 @@ mod tests {
             }
             mode @ ("parent-shield" | "parent-plain") => {
                 let mut worker = child_test(NAME, "worker-mem");
+                // Dumpable first, in both modes (see the test's doc comment).
+                crate::sys::set_dumpable(true).expect("make the parent dumpable");
                 if mode == "parent-shield" {
                     prepare_spawn(&mut worker).expect("prepare the spawn");
-                } else {
-                    // A process that changed uid at exec starts not dumpable, so the control makes
-                    // itself dumpable on purpose: the open must then succeed.
-                    // SAFETY: PR_SET_DUMPABLE takes an integer flag and no pointers.
-                    unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0) };
+                    // Exit 5 when the flag is still set: prepare_spawn didn't make us not dumpable.
+                    if crate::sys::dumpable() {
+                        std::process::exit(5);
+                    }
                 }
                 let code = worker.status().unwrap().code().unwrap_or(9);
                 std::process::exit(code);
@@ -398,26 +405,23 @@ mod tests {
         assert_eq!(
             shield.code(),
             Some(0),
-            "a worker can't open a parent that prepared its spawn"
+            "prepare_spawn makes the parent not dumpable, and its worker can't open the parent"
         );
-        let plain = child_test(NAME, "parent-plain").status().unwrap();
         let scope = std::fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope")
             .ok()
             .and_then(|s| s.trim().parse::<u8>().ok())
             .unwrap_or(0);
-        // Yama scope 1 refuses a worker that ptraces its own parent (a tracer must be a descendant of
-        // its target), so only scope 0 shows what `prepare_spawn` adds. Scope 0 is the setting on the
-        // WSL2 hosts this was checked on; this container runs scope 1, where the shield is the same
-        // refusal from Yama and the control cannot tell the two apart (the sysctl is host-wide). The
-        // review host (WSL2) ran scope 0, where the N2 open was demonstrated.
         if scope == 0 {
+            let plain = child_test(NAME, "parent-plain").status().unwrap();
             assert_eq!(
                 plain.code(),
                 Some(3),
                 "the control worker can open a dumpable parent, so the refusal is the spawn's"
             );
         } else {
-            eprintln!("control skipped: Yama ptrace scope {scope} refuses the open either way");
+            eprintln!(
+                "control skipped: Yama ptrace scope {scope} refuses the worker's open either way; the not-dumpable check above is the proof"
+            );
         }
     }
 
