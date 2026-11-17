@@ -11,8 +11,20 @@ async fn free_port() -> SocketAddr {
     l.local_addr().unwrap()
 }
 
+// Waits until a spawned `serve` accepts connections. A fixed sleep raced the bind (and its
+// certificate setup) when the suite runs in parallel on a busy runner.
+async fn listening(addr: SocketAddr) {
+    for _ in 0..400 {
+        if tokio::net::TcpStream::connect(addr).await.is_ok() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("nothing listens on {addr} after 10 s");
+}
+
 async fn wait_for(mut f: impl FnMut() -> bool) {
-    for _ in 0..200 {
+    for _ in 0..400 {
         if f() {
             return;
         }
@@ -23,7 +35,7 @@ async fn wait_for(mut f: impl FnMut() -> bool) {
 
 /// [`wait_for`] for a test with several waits: the panic says which one timed out.
 async fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
-    for _ in 0..200 {
+    for _ in 0..400 {
         if f() {
             return;
         }
@@ -45,7 +57,7 @@ async fn clu_009_bootstrap_secret_joins_ephemeral_members_that_expire() {
     primary.set_bootstrap_secret("s3cret-shared-by-helm".into());
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    listening(addr).await;
 
     // The wrong secret: the primary's proof doesn't match, so its CA isn't trusted.
     let e = bootstrap_token(&url, "guess").await.unwrap_err();
@@ -126,7 +138,7 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
     let primary = Cluster::new(primary, "0.1.0");
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    listening(addr).await;
 
     // The replica joins: the token pins the CA; the secret earns a certificate.
     let key = pki::new_node_key().unwrap();
@@ -267,7 +279,7 @@ async fn clu_001_a_token_for_another_ca_is_refused_before_the_secret_is_sent() {
     let token = other.create_token(600, Some(vec![url.clone()])).unwrap();
     let (_stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Cluster::new(real, "0.1.0"), addr, stop));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    listening(addr).await;
     let key = pki::new_node_key().unwrap();
     let req = JoinRequest {
         witness: false,
@@ -292,7 +304,7 @@ async fn clu_001_streams_need_a_cluster_certificate() {
     let token = id.create_token(600, Some(vec![url.clone()])).unwrap();
     let (_stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Cluster::new(id, "0.1.0"), addr, stop));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    listening(addr).await;
     // Connect with the join-time TLS (CA pinned, no client certificate) and ask for a stream.
     let mut fp = [0u8; 32];
     for (i, b) in fp.iter_mut().enumerate() {
@@ -458,7 +470,7 @@ async fn clu_003_replicas_fetch_only_changed_blobs_and_converge_fast_over_a_wan(
     let primary = Cluster::new(primary_id, "0.1.0");
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    listening(addr).await;
 
     let key = pki::new_node_key().unwrap();
     let req = JoinRequest {
@@ -718,7 +730,7 @@ async fn clu_009_a_pod_that_shuts_down_leaves_at_once() {
     primary.set_bootstrap_secret("s3cret-shared-by-helm".into());
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    listening(addr).await;
     let token = bootstrap_token(&url, "s3cret-shared-by-helm")
         .await
         .unwrap();
@@ -780,7 +792,7 @@ async fn clu_002_a_pod_that_left_is_not_asked_by_federated_reads() {
     primary.set_bootstrap_secret("s3cret-shared-by-helm".into());
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    listening(addr).await;
     let token = bootstrap_token(&url, "s3cret-shared-by-helm")
         .await
         .unwrap();
@@ -1266,7 +1278,7 @@ async fn clu_003_users_and_tokens_are_not_served_to_pods() {
     primary.set_bootstrap_secret("s3cret-shared-by-helm".into());
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    listening(addr).await;
     let token = bootstrap_token(&url, "s3cret-shared-by-helm")
         .await
         .unwrap();
