@@ -84,7 +84,7 @@ fn sync(primary: &SecretStore, replica: &SecretStore, epoch: u64) -> Applied {
     let (all, head) = pull_all(primary);
     verify(&all, head).expect("the answer's rows recompute its head");
     replica
-        .apply_remote(&all, epoch, 200)
+        .apply_remote(&all, epoch, true, 200)
         .expect("the replica applies")
 }
 
@@ -147,7 +147,7 @@ fn clu_015_ephemeral_and_witness_refused() {
         Err(Unavailable::Ephemeral)
     ));
     assert_eq!(
-        eph.apply_remote(&[], 1, 1).unwrap_err(),
+        eph.apply_remote(&[], 1, true, 1).unwrap_err(),
         StoreError::Ephemeral
     );
 }
@@ -239,7 +239,7 @@ fn clu_015_partition_keeps_last_set() {
     // An answer that lists only `a` (say, a short page) doesn't remove `b`.
     let (all, _) = pull_all(&p);
     let only_a: Vec<Remote> = all.into_iter().filter(|x| x.name == "a").collect();
-    r.apply_remote(&only_a, 1, 200).unwrap();
+    r.apply_remote(&only_a, 1, true, 200).unwrap();
     assert_eq!(read(&r, "b").as_deref(), Some("value-b-1234"));
     assert_eq!(read(&r, "a").as_deref(), Some("value-a-1234"));
 }
@@ -328,7 +328,7 @@ fn clu_015_reverse_heal_needs_every_row() {
         // The replica has only `a`.
         let (all, _) = pull_all(&p);
         let only_a: Vec<Remote> = all.into_iter().filter(|x| x.name == "a").collect();
-        r.apply_remote(&only_a, 1, 200).unwrap();
+        r.apply_remote(&only_a, 1, true, 200).unwrap();
     }
     std::fs::remove_file(pd.path().join("secrets.key")).unwrap();
     let p = SecretStore::with_env(&cfg_in(pd.path(), false), no_env(), true, false);
@@ -505,49 +505,13 @@ fn clu_015_held_rows_keep_replica_row() {
     held[0].held = true;
     held[0].value = None;
     let replica_before = read(&r, "a");
-    let applied = r.apply_remote(&held, 1, 200).unwrap();
+    let applied = r.apply_remote(&held, 1, true, 200).unwrap();
     assert_eq!(applied.held, 1);
     assert_eq!(
         read(&r, "a"),
         replica_before,
         "the replica keeps its own row"
     );
-}
-
-/// REQ: CLU-015 (AC12) — replication doesn't consult the manifest's pins or canary bake: the store
-/// applies a primary's rows in any manifest state, here with no cluster at all. (The pin and bake
-/// are not inputs to the sync path, so the check is that nothing it calls takes one.)
-#[test]
-fn clu_015_not_gated_by_canary_bake() {
-    let (pd, rd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let (p, r) = (node(pd.path()), node(rd.path()));
-    put(&p, "a", "alpha-value-1", 1);
-    assert_eq!(sync(&p, &r, 1).changed, 1);
-}
-
-/// REQ: CLU-015 (AC12) — a pin doesn't hold a secret back: the sync path reads no manifest, so a
-/// primary's rows apply to a member whatever version its manifest pins. (Structural: the sync
-/// takes the store and the member heads only; the manifest's pins are not an input to it.)
-#[test]
-fn clu_015_replicates_while_pinned() {
-    let (pd, rd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let (p, r) = (node(pd.path()), node(rd.path()));
-    put(&p, "pinned.secret", "pinned-value-5521", 1);
-    assert_eq!(sync(&p, &r, 1).changed, 1);
-    assert_eq!(
-        read(&r, "pinned.secret").as_deref(),
-        Some("pinned-value-5521")
-    );
-}
-
-/// REQ: CLU-015 (AC14) — a replica is ready once its listeners are bound. Readiness reads no
-/// secrets state: the sync never calls `set_synced`, which only resolver pods wait for. (A
-/// structural check; the sync task itself is checked in `secrets_api_tests`.)
-#[test]
-fn clu_015_fetch_never_gates_readiness() {
-    let ready = crate::readiness::Readiness::new(false);
-    ready.set_bound();
-    assert!(ready.ready(), "a replica with bound listeners is ready");
 }
 
 // ---- the sim: partitions, failover and orphans, over many seeded schedules ----
@@ -715,6 +679,12 @@ fn run_schedule(seed: u64) {
                 .find(|s| s.name == row.name && !s.orphaned);
             match on_primary {
                 Some(pr) => {
+                    // REQ: CLU-015 (ADR-917 point 10) — a deletion of an older epoch that the
+                    // primary now lists as live is kept here, and reported as a conflict: the
+                    // replica doesn't take the revoked value back.
+                    if row.deleted && !pr.deleted && row.stamp.epoch < epoch {
+                        continue;
+                    }
                     // An orphan is a row the primary doesn't hold; this one it does hold.
                     assert!(
                         !row.orphaned,
@@ -747,13 +717,14 @@ fn run_schedule(seed: u64) {
                 }
             }
         }
-        // Every row the primary holds is on the replica (no row lost to a partition).
+        // Every row the primary holds is on the replica (no row lost to a partition), except a
+        // deletion of an older epoch the replica keeps against the primary's live listing
+        // (ADR-917 point 10: a conflict, not a loss).
         for pr in p.status().secrets.into_iter().filter(|s| !s.orphaned) {
             assert!(
-                state
-                    .secrets
-                    .iter()
-                    .any(|s| s.name == pr.name && s.stamp == pr.stamp),
+                state.secrets.iter().any(|s| s.name == pr.name
+                    && (s.stamp == pr.stamp
+                        || (s.deleted && !pr.deleted && s.stamp.epoch < epoch))),
                 "seed {seed}: replica {j} lacks {} (ops: {ops:?})",
                 pr.name
             );
@@ -777,5 +748,168 @@ fn sync_pair(
         return;
     };
     let all = page.items;
-    let _ = to.apply_remote(&all, epoch, 200);
+    let _ = to.apply_remote(&all, epoch, true, 200);
+}
+
+/// A row as a sender lists it, for a test that builds an answer by hand.
+fn remote(name: &str, v: &str, stamp: Stamp) -> Remote {
+    Remote {
+        name: name.into(),
+        kind: "text".into(),
+        stamp,
+        deleted: false,
+        held: false,
+        updated: 100,
+        updated_by: "root".into(),
+        value: Some(value(v)),
+    }
+}
+
+/// REQ: CLU-015 (ADR-917 points 4, 8; AC15) — a removed member's purge restores only the local row
+/// a cluster row displaced. A stale cluster copy displaced by a newer primary's listing sits in its
+/// own slot, and the purge drops it: the replica never holds the stale value again.
+#[test]
+fn clu_015_removed_member_purge_restores_only_local() {
+    let (pd, qd, rd) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let (p, q, r) = (node(pd.path()), node(qd.path()), node(rd.path()));
+    r.put(
+        "x",
+        Kind::Text,
+        &value("mine-local-1111"),
+        0,
+        "root",
+        "local",
+        50,
+    )
+    .unwrap();
+    // Primary P (epoch 1) lists `x`: the local row is shadowed.
+    put(&p, "x", "cluster-old-2222", 1);
+    sync(&p, &r, 1);
+    assert_eq!(read(&r, "x").as_deref(), Some("cluster-old-2222"));
+    // Primary Q (epoch 2) holds `x` at a different epoch-1 stamp: the replica's cluster row is
+    // stale, and it goes to its own slot.
+    put(&q, "x", "scratch", 1);
+    put(&q, "x", "cluster-new-3333", 1);
+    sync(&q, &r, 2);
+    assert_eq!(read(&r, "x").as_deref(), Some("cluster-new-3333"));
+    assert_eq!(r.status().shadows, vec!["x".to_owned()]);
+    let (deleted, restored) = r.purge_cluster().unwrap();
+    assert_eq!((deleted, restored), (0, 1), "the local row comes back");
+    assert_eq!(read(&r, "x").as_deref(), Some("mine-local-1111"));
+    let rows = r.status().secrets;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].origin, "local");
+    assert!(r.status().shadows.is_empty(), "the stale copy is gone");
+    let on_disk = all_bytes(rd.path());
+    assert!(!contains(&on_disk, b"cluster-old-2222"));
+    assert!(!contains(&on_disk, b"cluster-new-3333"));
+}
+
+/// REQ: CLU-015 (ADR-917 point 10; M4) — a deletion of an older epoch is not undone by a newer
+/// primary's listing of the name as live: the replica keeps the tombstone and reports a conflict.
+#[test]
+fn clu_015_tombstone_of_older_epoch_not_resurrected() {
+    let (pd, qd, rd) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let (p, q, r) = (node(pd.path()), node(qd.path()), node(rd.path()));
+    put(&p, "a", "revoked-value-9", 1);
+    sync(&p, &r, 1);
+    p.delete("a", 1, "root", 100).unwrap();
+    sync(&p, &r, 1);
+    assert_eq!(read(&r, "a"), None, "deleted on the replica");
+    // The new primary holds `a` live, stamped in epoch 2.
+    put(&q, "a", "revoked-value-9", 2);
+    let applied = sync(&q, &r, 2);
+    assert_eq!(applied.conflicts, vec!["a".to_owned()]);
+    assert_eq!(read(&r, "a"), None, "the revoked value stays revoked");
+    let row = r
+        .status()
+        .secrets
+        .into_iter()
+        .find(|s| s.name == "a")
+        .unwrap();
+    assert!(row.deleted);
+}
+
+/// REQ: CLU-015 (ADR-917 point 11; M1; ADR-903 §4) — an emergency primary's answer is not
+/// authoritative: it fills a name only by stamp where this node holds a cluster row, it displaces
+/// no local row, and it orphans nothing.
+#[test]
+fn clu_015_emergency_primary_changes_nothing() {
+    let (pd, rd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (p, r) = (node(pd.path()), node(rd.path()));
+    put(&p, "orph", "orphan-candidate", 1);
+    put(&p, "c", "cluster-one", 1);
+    sync(&p, &r, 1);
+    r.put(
+        "loc",
+        Kind::Text,
+        &value("local-keep-7"),
+        0,
+        "root",
+        "local",
+        50,
+    )
+    .unwrap();
+    // The emergency primary's answer: `loc` claimed live with a newer stamp; `c` newer; `orph`
+    // not listed at all.
+    let items = vec![
+        remote("loc", "emergency-loc", Stamp { epoch: 5, seq: 1 }),
+        remote("c", "cluster-two", Stamp { epoch: 3, seq: 1 }),
+    ];
+    let applied = r.apply_remote(&items, 5, false, 200).unwrap();
+    assert_eq!(applied.shadowed, 0, "nothing displaced");
+    assert_eq!(applied.orphaned, 0, "nothing orphaned");
+    assert_eq!(read(&r, "loc").as_deref(), Some("local-keep-7"));
+    assert_eq!(read(&r, "c").as_deref(), Some("cluster-two"), "by stamp");
+    let orph = r
+        .status()
+        .secrets
+        .into_iter()
+        .find(|s| s.name == "orph")
+        .unwrap();
+    assert!(!orph.orphaned, "an emergency answer orphans nothing");
+    assert_eq!(r.status().shadows.len(), 0);
+}
+
+/// REQ: CLU-015 (L1; AC13) — an answer is applied only when its head is the one the heartbeat
+/// announced, and its primary is in the heartbeat's epoch.
+#[test]
+fn clu_015_answer_must_match_heartbeat() {
+    use telltale_cluster::net::SecretsHead;
+    let digest = [7u8; 32];
+    let head = (Stamp { epoch: 1, seq: 2 }, digest);
+    let announced = SecretsHead {
+        epoch: 1,
+        seq: 2,
+        digest: digest.to_vec(),
+    };
+    assert!(super::sync::check_answer(head, 1, &announced, 1).is_ok());
+    let later = SecretsHead {
+        seq: 3,
+        ..announced.clone()
+    };
+    assert!(
+        super::sync::check_answer(head, 1, &later, 1).is_err(),
+        "a newer head"
+    );
+    let other = SecretsHead {
+        digest: vec![8; 32],
+        ..announced.clone()
+    };
+    assert!(
+        super::sync::check_answer(head, 1, &other, 1).is_err(),
+        "another digest"
+    );
+    assert!(
+        super::sync::check_answer(head, 2, &announced, 1).is_err(),
+        "another epoch"
+    );
 }

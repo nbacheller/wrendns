@@ -7,16 +7,23 @@
 //! secrets to the primary.
 //!
 //! Nothing here gates manifest application, `applied`, or readiness (ADR-058, CLU-004): the sync
-//! is its own task, its failures only back off and log, and it runs on blocking threads for the
-//! store. An N-1 primary answers "unknown call", which just means nothing is fetched from it.
+//! is its own task, its failures only back off and log. Everything that touches the store, the
+//! registry, the credentials or a file runs on a blocking thread, never on the runtime that serves
+//! TCP, DoT and DoH. An N-1 primary answers "unknown call", which just means nothing is fetched
+//! from it. An emergency primary changes nothing: it answers non-authoritatively, and nothing
+//! replaces its rows (ADR-903 §4, ADR-917 point 11).
 
+use std::collections::BTreeSet;
+use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use telltale_cluster::net::{Cluster, Member, SecretsHead, SecretsMark};
+use telltale_cluster::node::Role;
 use telltale_store::state::Stamp;
 use tokio::sync::watch;
+use zeroize::Zeroizing;
 
 use super::store::{Applied, Page, Remote, StoreState, Unavailable, head_from};
 use super::value::{Kind, SecretValue};
@@ -56,7 +63,7 @@ struct HeadJson {
     digest: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct ItemJson {
     name: String,
     kind: String,
@@ -75,6 +82,28 @@ struct ItemJson {
     value: Option<String>,
 }
 
+impl fmt::Debug for ItemJson {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // REQ: CLU-015 (L2) — a row's value never reaches a log or a debug dump.
+        f.debug_struct("ItemJson")
+            .field("name", &self.name)
+            .field("kind", &self.kind)
+            .field("stamp", &(self.epoch, self.seq))
+            .field("deleted", &self.deleted)
+            .field("held", &self.held)
+            .field("updated", &self.updated)
+            .field("updated_by", &self.updated_by)
+            .field("value", &self.value.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// REQ: CLU-015 (ADR-917 point 11) — a primary's answer is authoritative unless it is an emergency
+/// primary's. Absent (an older primary), it is authoritative.
+fn authoritative_default() -> bool {
+    true
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct FetchAns {
     head: HeadJson,
@@ -83,13 +112,27 @@ struct FetchAns {
     items: Vec<ItemJson>,
     #[serde(default)]
     more: bool,
+    /// False for an emergency primary's answer: a replica only fills rows by stamp from it.
+    #[serde(default = "authoritative_default")]
+    authoritative: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct AdoptItem {
     name: String,
     kind: String,
     value: String,
+}
+
+impl fmt::Debug for AdoptItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // REQ: CLU-015 (L2) — a joining node's value never reaches a log or a debug dump.
+        f.debug_struct("AdoptItem")
+            .field("name", &self.name)
+            .field("kind", &self.kind)
+            .field("value", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -101,7 +144,8 @@ struct AdoptReq {
 struct AdoptAns {
     /// Names taken as cluster rows.
     adopted: Vec<String>,
-    /// Names the cluster already holds: this node keeps its own row, shadowed.
+    /// Names the cluster already holds (live or deleted), or that were refused: this node keeps
+    /// its own row, shadowed.
     conflicts: Vec<String>,
 }
 
@@ -121,6 +165,23 @@ pub(crate) struct Progress {
     init_done: bool,
 }
 
+/// What one pull changed.
+#[derive(Debug, Default)]
+struct Pulled {
+    changed: usize,
+    held: u32,
+    /// Names a tombstone of an older epoch kept deleted against a listing (ADR-917 point 10).
+    conflicts: Vec<String>,
+}
+
+/// One answer read to the end: its rows, the head it carried, and the primary's epoch.
+struct Fetched {
+    rows: Vec<Remote>,
+    head: (Stamp, [u8; 32]),
+    primary_epoch: u64,
+    authoritative: bool,
+}
+
 fn unhex(s: &str) -> Option<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
         return None;
@@ -131,12 +192,15 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// REQ: CLU-015 (L3) — a full member is one the registry lists as neither ephemeral nor witness,
+/// and the cluster hasn't removed. Reads the registry: call it on a blocking thread.
 fn full_member(cluster: &Cluster, node: &str) -> bool {
-    cluster
-        .identity
-        .registry()
-        .iter()
-        .any(|n| n.node_id == node && !n.ephemeral && !n.witness)
+    !cluster.is_removed(node)
+        && cluster
+            .identity
+            .registry()
+            .iter()
+            .any(|n| n.node_id == node && !n.ephemeral && !n.witness)
 }
 
 /// The primary in the highest epoch this node has heard of (a heartbeat's view), when reachable.
@@ -217,6 +281,20 @@ fn remote_of(it: ItemJson) -> Result<Remote, String> {
     })
 }
 
+/// REQ: CLU-015 (ADR-917 point 12) — an audit record for the secrets sync, by the cluster, with the
+/// peer it concerns in `detail`. Nothing secret goes in: names and counts only.
+fn audit(src: &Sources, reason: &str, action: &str, target: &str, detail: &serde_json::Value) {
+    if let Some(auth) = src.auth.get() {
+        let actor = telltale_api::auth::Actor {
+            name: "cluster".to_owned(),
+            kind: "system",
+            remote: None,
+            reason: Some(reason.to_owned()),
+        };
+        auth.record(&actor, action, target, detail);
+    }
+}
+
 /// REQ: CLU-015 — a primary's answer to `secrets.fetch`. Only a full member gets one; the primary
 /// answers as primary (with its base stamp), and a replica answers only the primary of the highest
 /// epoch (a reverse heal). A locked store answers [`UNAVAILABLE`], so the requester keeps its rows.
@@ -226,20 +304,28 @@ pub(crate) async fn answer_fetch(
     peer: String,
     body: Vec<u8>,
 ) -> Result<Vec<u8>, String> {
-    if !full_member(&cluster, &peer) {
-        return Err("only a full member can read stored secrets".into());
-    }
     let req: FetchReq = if body.is_empty() {
         FetchReq::default()
     } else {
         serde_json::from_slice(&body).map_err(|_| "bad secrets.fetch request".to_owned())?
     };
-    if !cluster.is_primary() && !is_current_primary(&cluster, &peer) {
-        return Err("this node isn't the primary: it doesn't answer stored-secret reads".into());
-    }
     let log = tracing::dispatcher::get_default(Clone::clone);
     tokio::task::spawn_blocking(move || {
-        tracing::dispatcher::with_default(&log, || build_answer(&src, &cluster, &req))
+        tracing::dispatcher::with_default(&log, || {
+            // The registry is read from disk: the membership checks run on this blocking thread.
+            // A primary answers a full member. A replica keeps only its own registry entry, so it
+            // answers only the primary of the highest epoch (a primary is always a full member): the
+            // reverse heal (REQ: CLU-015, AC9) reads a replica's rows that way.
+            let allowed = if cluster.is_primary() {
+                full_member(&cluster, &peer)
+            } else {
+                is_current_primary(&cluster, &peer)
+            };
+            if !allowed {
+                return Err("only a full member can read stored secrets".into());
+            }
+            build_answer(&src, &cluster, &req)
+        })
     })
     .await
     .map_err(|e| format!("secrets worker failed: {e}"))?
@@ -254,27 +340,27 @@ fn build_answer(src: &Sources, cluster: &Cluster, req: &FetchReq) -> Result<Vec<
             Unavailable::Locked(_) => UNAVAILABLE.to_owned(),
             other => other.to_string(),
         })?;
-    let epoch = cluster.role().1;
+    let (role, epoch) = cluster.role();
     let ans = FetchAns {
         head: head_json(page.head),
         primary_epoch: epoch,
         items: page.items.iter().map(item_json).collect(),
         more: page.more,
+        // REQ: CLU-015 (ADR-917 point 11) — only a primary's own answer is authoritative.
+        authoritative: matches!(role, Role::Primary),
     };
     serde_json::to_vec(&ans).map_err(|e| e.to_string())
 }
 
 /// REQ: CLU-015 (ADR-903 §6) — a joining node's rows, taken on the primary as cluster rows where
-/// the cluster doesn't hold the name; the rest are conflicts (kept by the joiner, shadowed).
+/// the cluster doesn't hold the name; the rest are conflicts (kept by the joiner, shadowed). Every
+/// name taken or refused is audited.
 pub(crate) async fn answer_adopt(
     src: Arc<Sources>,
     cluster: Arc<Cluster>,
     peer: String,
     body: Vec<u8>,
 ) -> Result<Vec<u8>, String> {
-    if !full_member(&cluster, &peer) {
-        return Err("only a full member can hand over its secrets".into());
-    }
     let req: AdoptReq = serde_json::from_slice(&zeroize::Zeroizing::new(body))
         .map_err(|_| "bad secrets.adopt request".to_owned())?;
     let epoch = cluster
@@ -290,38 +376,60 @@ pub(crate) async fn answer_adopt(
         .unwrap_or_else(|| peer.clone());
     tokio::task::spawn_blocking(move || {
         tracing::dispatcher::with_default(&log, || {
+            if !full_member(&cluster, &peer) {
+                return Err("only a full member can hand over its secrets".into());
+            }
             let now = crate::pipeline::unix_now();
+            let reason = format!("joined from {via}");
             let mut ans = AdoptAns::default();
-            let held: Vec<String> = src
+            // REQ: CLU-015 (ADR-917 point 12) — a name the cluster holds, live or deleted, is a
+            // conflict: a tombstone is a revocation, not a free name.
+            let held: BTreeSet<String> = src
                 .secrets
                 .status()
                 .secrets
-                .iter()
-                .filter(|s| !s.deleted)
-                .map(|s| s.name.clone())
+                .into_iter()
+                .map(|s| s.name)
                 .collect();
             for it in req.secrets {
-                if held.contains(&it.name) {
-                    ans.conflicts.push(it.name);
+                let name = it.name.clone();
+                let refused = |ans: &mut AdoptAns| {
+                    audit(
+                        &src,
+                        &reason,
+                        "secret.adopt_conflict",
+                        &name,
+                        &serde_json::json!({ "peer": peer }),
+                    );
+                    ans.conflicts.push(name.clone());
+                };
+                if held.contains(&name) {
+                    refused(&mut ans);
                     continue;
                 }
                 let Ok(kind) = Kind::parse(&it.kind) else {
+                    refused(&mut ans);
                     continue;
                 };
                 let Ok(value) = SecretValue::new(kind, zeroize::Zeroizing::new(it.value)) else {
+                    refused(&mut ans);
                     continue;
                 };
-                match src.secrets.put(
-                    &it.name,
-                    kind,
-                    &value,
-                    epoch,
-                    &format!("joined from {via}"),
-                    "cluster",
-                    now,
-                ) {
-                    Ok(_) => ans.adopted.push(it.name),
-                    Err(_) => ans.conflicts.push(it.name),
+                match src
+                    .secrets
+                    .put(&name, kind, &value, epoch, &reason, "cluster", now)
+                {
+                    Ok(_) => {
+                        audit(
+                            &src,
+                            &reason,
+                            "secret.adopt",
+                            &name,
+                            &serde_json::json!({ "peer": peer }),
+                        );
+                        ans.adopted.push(name);
+                    }
+                    Err(_) => refused(&mut ans),
                 }
             }
             tracing::info!(
@@ -338,13 +446,11 @@ pub(crate) async fn answer_adopt(
 
 /// REQ: CLU-015 — pulls every page of `target`'s rows, checking that each page carries the same
 /// head and that the rows recompute it (a stale or changed answer is refused).
-async fn fetch_all(
-    cluster: &Cluster,
-    target: &str,
-) -> Result<(Vec<Remote>, (Stamp, [u8; 32]), u64), String> {
+async fn fetch_all(cluster: &Cluster, target: &str) -> Result<Fetched, String> {
     let mut after: Option<String> = None;
     let mut head: Option<(Stamp, [u8; 32])> = None;
     let mut primary_epoch = 0;
+    let mut authoritative = true;
     let mut all: Vec<Remote> = Vec::new();
     loop {
         let body = serde_json::to_vec(&FetchReq {
@@ -377,6 +483,7 @@ async fn fetch_all(
             None => {
                 head = Some(this);
                 primary_epoch = ans.primary_epoch;
+                authoritative = ans.authoritative;
             }
             Some(h) if h != this => {
                 return Err(
@@ -400,7 +507,12 @@ async fn fetch_all(
     }
     let head = head.ok_or_else(|| "no answer".to_owned())?;
     verify(&all, head)?;
-    Ok((all, head, primary_epoch))
+    Ok(Fetched {
+        rows: all,
+        head,
+        primary_epoch,
+        authoritative,
+    })
 }
 
 /// REQ: CLU-015 (ADR-903 §6) — an answer's rows must recompute the head it came with (the
@@ -417,26 +529,74 @@ pub(crate) fn verify(rows: &[Remote], head: (Stamp, [u8; 32])) -> Result<(), Str
     Ok(())
 }
 
-/// REQ: CLU-015 — the replica's pull: fetch, verify, apply. Returns how many rows were held.
-async fn pull(src: &Arc<Sources>, cluster: &Cluster, target: &str) -> Result<(usize, u32), String> {
-    let (all, _head, primary_epoch) = fetch_all(cluster, target).await?;
-    let store = Arc::clone(&src.secrets);
-    let now = crate::pipeline::unix_now();
-    let applied: Applied =
-        tokio::task::spawn_blocking(move || store.apply_remote(&all, primary_epoch, now))
-            .await
-            .map_err(|e| format!("secrets worker failed: {e}"))?
-            .map_err(|e| e.to_string())?;
-    Ok((
-        applied.changed,
-        u32::try_from(applied.held).unwrap_or(u32::MAX),
-    ))
+/// REQ: CLU-015 (L1) — an answer is applied only when it is the head the heartbeat announced, and
+/// its primary is in the epoch the heartbeat named. Anything else is a race (or a stale view):
+/// the pull is retried later, and nothing is applied.
+pub(crate) fn check_answer(
+    head: (Stamp, [u8; 32]),
+    answer_epoch: u64,
+    announced: &SecretsHead,
+    announced_epoch: u64,
+) -> Result<(), String> {
+    let (stamp, digest) = head;
+    if stamp.epoch != announced.epoch
+        || stamp.seq != announced.seq
+        || digest.as_slice() != announced.digest.as_slice()
+    {
+        return Err(
+            "the answer's head isn't the one the heartbeat announced: trying again later".into(),
+        );
+    }
+    if answer_epoch != announced_epoch {
+        return Err("the answer's primary epoch isn't the heartbeat's: trying again later".into());
+    }
+    Ok(())
 }
 
-/// REQ: CLU-015 — this node's secrets mark, as heartbeats carry it.
-fn mark_of(src: &Sources, cluster: &Cluster, st: &Progress) -> SecretsMark {
+/// Why a pull didn't apply: an answer ahead of the heartbeat that announced its head (a race, tried
+/// again at the next pass, with no backoff), or a failure (backed off).
+#[derive(Debug)]
+enum PullError {
+    Stale(String),
+    Failed(String),
+}
+
+/// REQ: CLU-015 — the replica's pull: fetch, check the answer against the heartbeat, apply.
+async fn pull(
+    src: &Arc<Sources>,
+    cluster: &Cluster,
+    primary: &Member,
+    announced: &SecretsHead,
+) -> Result<Pulled, PullError> {
+    let f = fetch_all(cluster, &primary.node_id)
+        .await
+        .map_err(PullError::Failed)?;
+    check_answer(f.head, f.primary_epoch, announced, primary.epoch).map_err(PullError::Stale)?;
+    let store = Arc::clone(&src.secrets);
+    let now = crate::pipeline::unix_now();
+    let (rows, epoch, authoritative) = (f.rows, f.primary_epoch, f.authoritative);
+    let applied: Applied =
+        tokio::task::spawn_blocking(move || store.apply_remote(&rows, epoch, authoritative, now))
+            .await
+            .map_err(|e| PullError::Failed(format!("secrets worker failed: {e}")))?
+            .map_err(|e| PullError::Failed(e.to_string()))?;
+    Ok(Pulled {
+        changed: applied.changed,
+        held: u32::try_from(applied.held).unwrap_or(u32::MAX),
+        conflicts: applied.conflicts,
+    })
+}
+
+/// REQ: CLU-015 — this node's secrets mark, as heartbeats carry it, and the head it announces.
+/// Runs on a blocking thread (the store's lock, the credentials' files and the references).
+fn mark_of(
+    src: &Sources,
+    cluster: &Cluster,
+    applied: Option<SecretsHead>,
+    held: u32,
+) -> (SecretsMark, SecretsHead) {
     let (stamp, digest) = src.secrets.head();
-    let head = SecretsHead {
+    let mine = SecretsHead {
         epoch: stamp.epoch,
         seq: stamp.seq,
         digest: digest.to_vec(),
@@ -458,18 +618,19 @@ fn mark_of(src: &Sources, cluster: &Cluster, st: &Progress) -> SecretsMark {
     refs.dedup();
     refs.truncate(MAX_REFS);
     let is_primary = cluster.is_primary();
-    SecretsMark {
-        head: Some(head.clone()),
+    let mark = SecretsMark {
+        head: Some(mine.clone()),
         applied: if is_primary {
-            Some(head)
+            Some(mine.clone())
         } else {
-            st.applied.clone()
+            applied
         },
         unreadable: u32::try_from(src.secrets.unreadable_count()).unwrap_or(u32::MAX),
-        held: if is_primary { 0 } else { st.held },
+        held: if is_primary { 0 } else { held },
         credential_issues: issues,
         secret_refs: refs,
-    }
+    };
+    (mark, mine)
 }
 
 fn backoff(failures: u32) -> Duration {
@@ -481,28 +642,43 @@ fn backoff(failures: u32) -> Duration {
 
 /// REQ: CLU-015 — the primary's reverse heal: a locked store (its data-directory key is missing,
 /// and every row is the cluster's) is filled from a replica holding every row at its stamp.
-async fn reverse_heal(src: &Arc<Sources>, cluster: &Cluster, st: &mut Progress) {
-    if src.secrets.status().state != StoreState::Locked {
-        return;
-    }
+async fn reverse_heal(src: &Arc<Sources>, cluster: &Arc<Cluster>, st: &mut Progress) {
     if st.heal_next.is_some_and(|t| Instant::now() < t) {
         return;
     }
-    let needs = src.secrets.heal_needs();
-    if needs.is_empty() {
-        return;
-    }
-    let reachable = cluster.reachable_peers();
-    let me = cluster.identity.meta.node_id.clone();
-    for n in cluster.identity.registry() {
-        if n.node_id == me || n.ephemeral || n.witness || !reachable.contains(&n.node_id) {
-            continue;
+    // The store's state, its rows and the registry are read on a blocking thread.
+    let (s, c) = (Arc::clone(src), Arc::clone(cluster));
+    let Ok(Some((needs, peers))) = tokio::task::spawn_blocking(move || {
+        if s.secrets.status().state != StoreState::Locked {
+            return None;
         }
-        let Ok((all, _, _)) = fetch_all(cluster, &n.node_id).await else {
+        let needs = s.secrets.heal_needs();
+        if needs.is_empty() {
+            return None;
+        }
+        let reachable = c.reachable_peers();
+        let me = c.identity.meta.node_id.clone();
+        let peers: Vec<String> = c
+            .identity
+            .registry()
+            .into_iter()
+            .filter(|n| {
+                n.node_id != me && !n.ephemeral && !n.witness && reachable.contains(&n.node_id)
+            })
+            .map(|n| n.node_id)
+            .collect();
+        Some((needs, peers))
+    })
+    .await
+    else {
+        return;
+    };
+    for peer in &peers {
+        let Ok(f) = fetch_all(cluster, peer).await else {
             continue;
         };
         let covers = needs.iter().all(|(name, stamp, deleted)| {
-            all.iter().any(|r| {
+            f.rows.iter().any(|r| {
                 r.name == *name
                     && r.stamp == *stamp
                     && r.deleted == *deleted
@@ -514,10 +690,11 @@ async fn reverse_heal(src: &Arc<Sources>, cluster: &Cluster, st: &mut Progress) 
         }
         let store = Arc::clone(&src.secrets);
         let now = crate::pipeline::unix_now();
-        let done = tokio::task::spawn_blocking(move || store.heal_with(&all, now)).await;
+        let rows = f.rows;
+        let done = tokio::task::spawn_blocking(move || store.heal_with(&rows, now)).await;
         match done {
             Ok(Ok(a)) => {
-                tracing::warn!(from = %n.node_id, filled = a.changed, "secrets store refilled from a replica");
+                tracing::warn!(from = %peer, filled = a.changed, "secrets store refilled from a replica");
                 st.heal_next = None;
                 return;
             }
@@ -553,13 +730,17 @@ async fn adopt_own(src: &Arc<Sources>, cluster: &Cluster, st: &mut Progress, pri
             })
             .collect(),
     };
-    let Ok(body) = serde_json::to_vec(&req) else {
+    drop(own);
+    let Ok(encoded) = serde_json::to_vec(&req) else {
         return;
     };
-    drop(own);
-    let body = zeroize::Zeroizing::new(body);
+    drop(req);
+    // REQ: CLU-015 (L2) — the encoded request is handed to the channel as it is: it is moved, not
+    // copied, out of the wrapper that zeroizes it.
+    let mut encoded = Zeroizing::new(encoded);
+    let body = std::mem::take(&mut *encoded);
     match cluster
-        .call(&primary.node_id, KIND_ADOPT, body.to_vec(), FETCH_DEADLINE)
+        .call(&primary.node_id, KIND_ADOPT, body, FETCH_DEADLINE)
         .await
     {
         Ok(raw) => {
@@ -577,21 +758,22 @@ async fn adopt_own(src: &Arc<Sources>, cluster: &Cluster, st: &mut Progress, pri
 }
 
 /// REQ: CLU-015 — one step of a replica: pull the primary's rows when its head differs from ours,
-/// at most once per head, backing off after a failure.
-async fn fetch_if_due(src: &Arc<Sources>, cluster: &Cluster, st: &mut Progress) {
+/// at most once per head, backing off after a failure. `mine` is this node's head and `ready` says
+/// whether its store is usable; both were read on a blocking thread.
+async fn fetch_if_due(
+    src: &Arc<Sources>,
+    cluster: &Cluster,
+    st: &mut Progress,
+    mine: &SecretsHead,
+    ready: bool,
+) {
     let Some(primary) = primary_of_highest(cluster) else {
         return;
     };
     let Some(theirs) = primary.secrets.head.clone() else {
         return;
     };
-    let (stamp, digest) = src.secrets.head();
-    let mine = SecretsHead {
-        epoch: stamp.epoch,
-        seq: stamp.seq,
-        digest: digest.to_vec(),
-    };
-    if mine == theirs {
+    if *mine == theirs {
         st.applied = Some(theirs);
         st.failures = 0;
         st.next_try = None;
@@ -603,19 +785,43 @@ async fn fetch_if_due(src: &Arc<Sources>, cluster: &Cluster, st: &mut Progress) 
     if st.next_try.is_some_and(|t| Instant::now() < t) {
         return;
     }
-    if src.secrets.status().state != StoreState::Ready {
+    if !ready {
         return;
     }
     adopt_own(src, cluster, st, &primary).await;
-    match pull(src, cluster, &primary.node_id).await {
-        Ok((changed, held)) => {
-            tracing::info!(changed, held, "stored secrets replicated from the primary");
+    match pull(src, cluster, &primary, &theirs).await {
+        Ok(p) => {
+            tracing::info!(
+                changed = p.changed,
+                held = p.held,
+                "stored secrets replicated from the primary"
+            );
+            for name in &p.conflicts {
+                tracing::warn!(
+                    secret = %name,
+                    "a secret deleted here is listed as live by the primary: the deletion is kept; delete it again on the primary to settle it"
+                );
+                audit(
+                    src,
+                    "replicated from the primary",
+                    "secret.conflict",
+                    name,
+                    &serde_json::json!({
+                        "peer": primary.node_id,
+                        "reason": "a deletion of an older epoch is kept against the primary's listing",
+                    }),
+                );
+            }
             st.applied = Some(theirs);
-            st.held = held;
+            st.held = p.held;
             st.failures = 0;
             st.next_try = None;
         }
-        Err(e) => {
+        Err(PullError::Stale(e)) => {
+            // The primary's heartbeat is a pass behind its answer: the next pass asks again.
+            tracing::debug!("stored secrets: the primary's answer is ahead of its heartbeat: {e}");
+        }
+        Err(PullError::Failed(e)) => {
             st.failures = st.failures.saturating_add(1);
             st.next_try = Some(Instant::now() + backoff(st.failures));
             if st.failures == 1 || st.failures.is_multiple_of(10) {
@@ -629,8 +835,8 @@ async fn fetch_if_due(src: &Arc<Sources>, cluster: &Cluster, st: &mut Progress) 
 }
 
 /// REQ: CLU-015 (ADR-903 §6, removal) — a member the cluster removed drops the cluster's rows, and
-/// its own rows (shadowed) come back, once.
-fn purge_if_removed(src: &Arc<Sources>, cluster: &Cluster, st: &mut Progress) {
+/// its own rows (shadowed) come back, once. Runs on a blocking thread.
+fn purge_if_removed(src: &Sources, cluster: &Cluster, st: &mut Progress) {
     if st.removed_purged || !cluster.is_removed(&cluster.identity.meta.node_id) {
         return;
     }
@@ -642,16 +848,14 @@ fn purge_if_removed(src: &Arc<Sources>, cluster: &Cluster, st: &mut Progress) {
                 restored,
                 "this node was removed from the cluster: its cluster secrets were purged"
             );
-            if let Some(auth) = src.auth.get() {
-                let actor = telltale_api::auth::Actor {
-                    name: "cluster".to_owned(),
-                    kind: "system",
-                    remote: None,
-                    reason: Some("removed from the cluster".to_owned()),
-                };
-                let detail = serde_json::json!({ "deleted": deleted, "restored": restored });
-                auth.record(&actor, "secrets.purge", "cluster", &detail);
-            }
+            let detail = serde_json::json!({ "deleted": deleted, "restored": restored });
+            audit(
+                src,
+                "removed from the cluster",
+                "secrets.purge",
+                "cluster",
+                &detail,
+            );
         }
         Err(e) => {
             st.removed_purged = false;
@@ -695,24 +899,46 @@ async fn init_rows_once(src: &Arc<Sources>, st: &mut Progress) {
 }
 
 /// REQ: CLU-015 — one pass of the sync task: loads the store, purges after a removal, publishes
-/// this node's secrets mark, then either refills (a primary) or adopts and pulls (a replica).
+/// this node's secrets mark, then either refills (a primary), does nothing (an emergency primary,
+/// ADR-903 §4), or adopts and pulls (a replica). The store, registry and file work is on blocking
+/// threads (CLU-004): the runtime that serves the DNS listeners never waits on it.
 pub(crate) async fn tick(src: &Arc<Sources>, cluster: &Arc<Cluster>, st: &mut Progress) {
-    if cluster.is_ephemeral() {
-        return;
-    }
-    let s = Arc::clone(src);
-    let _ = tokio::task::spawn_blocking(move || {
+    let (s, c) = (Arc::clone(src), Arc::clone(cluster));
+    let mut work = std::mem::take(st);
+    // REQ: CLU-004 — whether this node is ephemeral reads the registry from disk, so the pass's
+    // file and store work all runs on this blocking thread.
+    let joined = tokio::task::spawn_blocking(move || {
+        if c.is_ephemeral() {
+            return (work, None);
+        }
         let _ = s.secrets.keys();
+        purge_if_removed(&s, &c, &mut work);
+        let (mark, mine) = mark_of(&s, &c, work.applied.clone(), work.held);
+        let ready = s.secrets.status().state == StoreState::Ready;
+        c.set_secrets(mark);
+        (work, Some((mine, ready)))
     })
     .await;
-    purge_if_removed(src, cluster, st);
-    let mark = mark_of(src, cluster, st);
-    cluster.set_secrets(mark);
-    if cluster.is_primary() {
-        init_rows_once(src, st).await;
-        reverse_heal(src, cluster, st).await;
-    } else {
-        fetch_if_due(src, cluster, st).await;
+    let (work, pass) = match joined {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("secrets sync pass failed: {e}");
+            return;
+        }
+    };
+    *st = work;
+    let Some((mine, ready)) = pass else {
+        return;
+    };
+    match cluster.role().0 {
+        Role::Primary => {
+            init_rows_once(src, st).await;
+            reverse_heal(src, cluster, st).await;
+        }
+        // REQ: CLU-015 (ADR-917 point 11) — an emergency primary changes nothing: no hand-over of
+        // its rows, no refill, no replacement of its key.
+        Role::Emergency => {}
+        Role::Replica => fetch_if_due(src, cluster, st, &mine, ready).await,
     }
 }
 

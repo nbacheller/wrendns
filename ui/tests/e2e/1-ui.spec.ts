@@ -3217,11 +3217,6 @@ test('flt_017 workloads', async () => {
   expect(e.client.identifiedBy).toBe('kubernetes');
   expect(e.client.workload).toMatchObject({ name: 'media/deploy/jellyfin', groupFrom: 'map' });
 });
-// REQ: CLU-014 (T15.2, AC 8) — failover drills from the Cluster page (a stubbed two-node
-// cluster): Drill… on the replica, the preview with every check and what it does to devices,
-// Start, the live counters on the Drills tab, the report (verdicts, time to failover, came back),
-// and the drill marker on the dashboard; the real single node refuses a drill (no other node);
-// the affinity column in the Advanced view with its help.
 test("clu_015 cluster page shows each member's secret state", async () => {
   // REQ: CLU-015 (ADR-903 §6) — the Nodes table's Secrets column: each member's head, what it has
   // applied, its unreadable and held counts, and whether it's in sync with the primary.
@@ -3261,6 +3256,11 @@ test("clu_015 cluster page shows each member's secret state", async () => {
   await page.reload();
 });
 
+// REQ: CLU-014 (T15.2, AC 8) — failover drills from the Cluster page (a stubbed two-node
+// cluster): Drill… on the replica, the preview with every check and what it does to devices,
+// Start, the live counters on the Drills tab, the report (verdicts, time to failover, came back),
+// and the drill marker on the dashboard; the real single node refuses a drill (no other node);
+// the affinity column in the Advanced view with its help.
 test('clu_014 drill', async () => {
   test.setTimeout(90_000);
   await page.setViewportSize({ width: 1280, height: 800 });

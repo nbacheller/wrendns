@@ -164,6 +164,27 @@ const MIGRATIONS: &[&str] = &[
         updated_by TEXT NOT NULL,
         orphaned INTEGER NOT NULL DEFAULT 0
     );",
+    // 13: REQ: CLU-015 (ADR-917 point 4) — a shadow slot is per name and origin: a `local` row a
+    // cluster row displaced, and a `cluster` row (an older copy, or a tombstone) a newer listing
+    // displaced. A stale copy can no longer replace a user's local shadow. The rows move over.
+    "CREATE TABLE secrets_shadow_v13 (
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        key_id BLOB,
+        nonce BLOB,
+        ciphertext BLOB,
+        stamp_epoch INTEGER NOT NULL,
+        stamp_seq INTEGER NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        origin TEXT NOT NULL,
+        updated INTEGER NOT NULL,
+        updated_by TEXT NOT NULL,
+        orphaned INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (name, origin)
+    );
+    INSERT INTO secrets_shadow_v13 SELECT * FROM secrets_shadow;
+    DROP TABLE secrets_shadow;
+    ALTER TABLE secrets_shadow_v13 RENAME TO secrets_shadow;",
 ];
 
 /// REQ: API-014 — the migration that purges the old idempotency records.

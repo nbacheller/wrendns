@@ -301,14 +301,15 @@ fn write_archive(
 
     for (db, strip) in [
         // REQ: OPS-014 (ADR-903 §8) — sessions and retry records never; nor the secrets store
-        // (rows, tombstones and its stamp): its values are encrypted under this node's key,
-        // which no backup holds.
+        // (rows, shadows, tombstones and its stamp): its values are encrypted under this node's
+        // key, which no backup holds. REQ: CLU-015 (ADR-917 point 4) — shadows included.
         (
             "state.db",
             &[
                 "DELETE FROM sessions",
                 "DELETE FROM idempotency",
                 "DELETE FROM secrets",
+                "DELETE FROM secrets_shadow",
                 "DELETE FROM meta WHERE key = 'secrets_stamp'",
             ][..],
         ),

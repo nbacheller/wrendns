@@ -106,16 +106,26 @@ fn upsert(c: &rusqlite::Connection, s: &SecretRow) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// The same row, written to the shadow table (one per name). Shadows are never orphaned.
-fn upsert_shadow(c: &rusqlite::Connection, s: &SecretRow) -> rusqlite::Result<()> {
+/// The same row, written to the shadow table. The table holds at most one row per name and
+/// origin: a `local` row a cluster row displaced, and a `cluster` row (an older copy of a cluster
+/// secret, or a tombstone) that a newer primary's listing displaced. Shadows are never orphaned.
+///
+/// `replace` (a re-encryption) overwrites the same slot. Otherwise a displacement never replaces
+/// a `local` shadow: the first local row a name lost is kept (REQ: CLU-015, ADR-917 point 4).
+fn upsert_shadow(c: &rusqlite::Connection, s: &SecretRow, replace: bool) -> rusqlite::Result<()> {
+    let guard = if replace {
+        ""
+    } else {
+        " WHERE excluded.origin <> 'local'"
+    };
     c.execute(
         &format!(
             "INSERT INTO {SHADOW} ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0)
-             ON CONFLICT(name) DO UPDATE SET kind = excluded.kind, key_id = excluded.key_id,
+             ON CONFLICT(name, origin) DO UPDATE SET kind = excluded.kind, key_id = excluded.key_id,
                nonce = excluded.nonce, ciphertext = excluded.ciphertext,
                stamp_epoch = excluded.stamp_epoch, stamp_seq = excluded.stamp_seq,
-               deleted = excluded.deleted, origin = excluded.origin, updated = excluded.updated,
-               updated_by = excluded.updated_by"
+               deleted = excluded.deleted, updated = excluded.updated,
+               updated_by = excluded.updated_by{guard}"
         ),
         params![
             s.name,
@@ -176,18 +186,6 @@ impl State {
         self.with(|c| {
             let mut st = c.prepare(&format!("SELECT {COLS} FROM {SHADOW} ORDER BY name"))?;
             st.query_map([], row)?.collect()
-        })
-    }
-
-    /// REQ: CLU-015 — the shadowed row of `name`, if any.
-    pub fn secret_shadow(&self, name: &str) -> Result<Option<SecretRow>> {
-        self.with(|c| {
-            c.query_row(
-                &format!("SELECT {COLS} FROM {SHADOW} WHERE name = ?1"),
-                [name],
-                row,
-            )
-            .optional()
         })
     }
 
@@ -280,7 +278,7 @@ impl State {
         self.with(|c| {
             let tx = c.unchecked_transaction()?;
             for s in shadow {
-                upsert_shadow(&tx, s)?;
+                upsert_shadow(&tx, s, false)?;
             }
             for name in unshadow {
                 tx.execute(&format!("DELETE FROM {SHADOW} WHERE name = ?1"), [name])?;
@@ -305,9 +303,10 @@ impl State {
         })
     }
 
-    /// REQ: CLU-015 (ADR-903 §6, removal and leave) — the cluster's rows go: a name a shadow
-    /// covers comes back as the local row it displaced; the rest are deleted. Returns
-    /// `(deleted, restored)`.
+    /// REQ: CLU-015 (ADR-903 §6, removal and leave; ADR-917 point 8) — the cluster's rows go. A
+    /// `local` shadow comes back as the local row it displaced; every `cluster` shadow (an older
+    /// copy of a cluster secret) is dropped with the cluster's rows. A `local` shadow is never
+    /// dropped. Returns `(deleted, restored)`.
     pub fn purge_cluster_secrets(&self) -> Result<(usize, usize)> {
         self.with(|c| {
             let tx = c.unchecked_transaction()?;
@@ -318,47 +317,78 @@ impl State {
             };
             let (mut deleted, mut restored) = (0usize, 0usize);
             for name in &cluster {
-                let shadow: Option<SecretRow> = tx
+                let local: Option<SecretRow> = tx
                     .query_row(
-                        &format!("SELECT {COLS} FROM {SHADOW} WHERE name = ?1"),
+                        &format!(
+                            "SELECT {COLS} FROM {SHADOW} WHERE name = ?1 AND origin = 'local'"
+                        ),
                         [name],
                         row,
                     )
                     .optional()?;
-                if let Some(local) = shadow {
+                if let Some(local) = local {
                     upsert(&tx, &local)?;
-                    tx.execute(&format!("DELETE FROM {SHADOW} WHERE name = ?1"), [name])?;
+                    tx.execute(
+                        &format!("DELETE FROM {SHADOW} WHERE name = ?1 AND origin = 'local'"),
+                        [name],
+                    )?;
                     restored += 1;
                 } else {
                     tx.execute("DELETE FROM secrets WHERE name = ?1", [name])?;
                     deleted += 1;
                 }
             }
+            // A local shadow whose cluster row is already gone comes back too.
+            let orphans: Vec<SecretRow> = {
+                let mut st = tx.prepare(&format!(
+                    "SELECT {COLS} FROM {SHADOW} WHERE origin = 'local'
+                     AND name NOT IN (SELECT name FROM secrets)"
+                ))?;
+                st.query_map([], row)?.collect::<rusqlite::Result<_>>()?
+            };
+            for local in &orphans {
+                upsert(&tx, local)?;
+                tx.execute(
+                    &format!("DELETE FROM {SHADOW} WHERE name = ?1 AND origin = 'local'"),
+                    [&local.name],
+                )?;
+                restored += 1;
+            }
+            tx.execute(
+                &format!("DELETE FROM {SHADOW} WHERE origin = 'cluster'"),
+                [],
+            )?;
             tx.commit()?;
             let _ = checkpoint_truncate(c)?;
             Ok((deleted, restored))
         })
     }
 
-    /// REQ: OPS-014 (ADR-903 §3) — re-encryption (a rotation): every row given replaces its own
-    /// in one transaction, then the WAL is truncated, so no ciphertext under the old key is left
-    /// in the file (`secure_delete`) or the WAL. Returns whether the truncation finished.
-    pub fn replace_secret_rows(&self, rows: &[SecretRow]) -> Result<bool> {
+    /// REQ: OPS-014 (ADR-903 §3, ADR-917 point 4) — re-encryption (a rotation): every row given
+    /// replaces its own, rows and shadows alike, in one transaction, then the WAL is truncated, so
+    /// no ciphertext under the old key is left in the file (`secure_delete`) or the WAL. Returns
+    /// whether the truncation finished.
+    pub fn replace_secret_rows(&self, rows: &[SecretRow], shadows: &[SecretRow]) -> Result<bool> {
         self.with(|c| {
             let tx = c.unchecked_transaction()?;
             for s in rows {
                 upsert(&tx, s)?;
+            }
+            for s in shadows {
+                upsert_shadow(&tx, s, true)?;
             }
             tx.commit()?;
             checkpoint_truncate(c)
         })
     }
 
-    /// REQ: OPS-014 (ADR-903 §3, the replica's self-heal) — drops every row; the caller has
-    /// checked they are all the cluster's (a replica fetches them again). Returns how many went.
+    /// REQ: OPS-014 (ADR-903 §3, the replica's self-heal; ADR-917 point 4) — drops every row and
+    /// every shadow; the caller has checked that no local row or shadow would be lost (a replica
+    /// fetches the cluster's again). Returns how many rows went (shadows not counted).
     pub fn clear_secret_rows(&self) -> Result<usize> {
         self.with(|c| {
             let n = c.execute("DELETE FROM secrets", [])?;
+            c.execute(&format!("DELETE FROM {SHADOW}"), [])?;
             // Rows a new key can't open anyway: a WAL left behind holds nothing readable.
             let _ = checkpoint_truncate(c)?;
             Ok(n)
@@ -428,5 +458,45 @@ mod tests {
         assert_eq!(s.secret_rows().unwrap().len(), 2);
         assert_eq!(s.clear_secret_rows().unwrap(), 2);
         assert_eq!(s.secret_row_count().unwrap(), 0);
+    }
+
+    /// REQ: CLU-015 (ADR-917 points 4, 8; the removed-member purge) — a `local` shadow and a
+    /// `cluster` shadow of one name hold separate slots: a stale cluster copy never replaces the
+    /// local one, and a purge restores the local row and drops every cluster shadow.
+    #[test]
+    fn clu_015_shadow_slots_by_origin_purge_restores_only_local() {
+        let s = State::in_memory().unwrap();
+        let mut local = value("x", Stamp { epoch: 0, seq: 1 });
+        local.ciphertext = vec![9; 32];
+        local.origin = "local".into();
+        let mut stale = value("x", Stamp { epoch: 1, seq: 1 });
+        stale.origin = "cluster".into();
+        let mut cluster_row = value("x", Stamp { epoch: 1, seq: 3 });
+        cluster_row.origin = "cluster".into();
+        s.apply_secret_batch(
+            std::slice::from_ref(&cluster_row),
+            &[local.clone()],
+            &[],
+            100,
+        )
+        .unwrap();
+        // A stale cluster copy displaced later: its own slot.
+        s.apply_secret_batch(&[], std::slice::from_ref(&stale), &[], 100)
+            .unwrap();
+        // A second local displacement never replaces the first.
+        let mut other_local = local.clone();
+        other_local.ciphertext = vec![7; 32];
+        s.apply_secret_batch(&[], std::slice::from_ref(&other_local), &[], 100)
+            .unwrap();
+        let shadows = s.secret_shadows().unwrap();
+        assert_eq!(shadows.len(), 2, "one local and one cluster shadow");
+        let kept = shadows.iter().find(|r| r.origin == "local").unwrap();
+        assert_eq!(kept.ciphertext, vec![9; 32], "the first local row is kept");
+        let (deleted, restored) = s.purge_cluster_secrets().unwrap();
+        assert_eq!((deleted, restored), (0, 1));
+        let back = s.secret_row("x").unwrap().unwrap();
+        assert_eq!(back.origin, "local");
+        assert_eq!(back.ciphertext, vec![9; 32]);
+        assert_eq!(s.secret_shadows().unwrap().len(), 0);
     }
 }

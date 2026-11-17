@@ -2178,6 +2178,9 @@ Each member holds it encrypted under its own key ([`docs/secrets.md`](secrets.md
   the one place a change is made; the replica's copy follows within seconds.
 - **Deleting** a secret leaves a tombstone, so a member that was offline learns of it when it
   comes back. A delete is refused while any member's field still names the secret (`secret_in_use`).
+- **A deletion stays.** If a new primary lists a secret this node deleted at an older epoch as
+  live, the deletion is kept and the name is reported as a conflict (audited as `secret.conflict`).
+  Delete it again on the primary to settle it.
 - **Partitions keep the last set.** A member that can't reach the primary keeps the secrets it
   has. Nothing is removed because it went missing from an answer.
 - **Failover moves nothing.** A replica promoted to primary keeps every secret; a member that
@@ -2190,8 +2193,8 @@ Each member holds it encrypted under its own key ([`docs/secrets.md`](secrets.md
 
 A node that **joins** a cluster offers its own stored secrets to the primary, which takes the
 ones the cluster doesn't hold. Where the cluster holds a secret of the same name, the node's own
-copy is kept (shadowed, not used) and comes back if the cluster's copy is removed or the node
-leaves.
+copy is kept (shadowed, not used). It comes back when the cluster removes this node, which purges
+the cluster's copies. A full member keeps its copies until then: nothing else purges them.
 
 If a primary loses its key, the replicas keep their secrets; the primary refills its own from a
 replica that holds every one of them at the same stamp. Until then it reports the store locked

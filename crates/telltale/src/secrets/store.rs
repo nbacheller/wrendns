@@ -545,15 +545,23 @@ impl SecretStore {
                 return;
             }
         };
-        g.shadows = state
-            .secret_shadows()
-            .map(|v| v.into_iter().map(|r| r.name).collect::<BTreeSet<String>>())
-            .unwrap_or_default();
-        if !self.read_only
-            && paths.uses_data_key(&var)
-            && let Some(note) = recover_rotation(&paths.data_dir, &rows)
-        {
-            tracing::warn!("secrets key: {note}");
+        // REQ: CLU-015 (ADR-917 point 4) — shadows are sealed under the same keys as the rows, so
+        // every rotation step below covers them too.
+        let mut shadows = match state.secret_shadows() {
+            Ok(v) => v,
+            Err(e) => {
+                let why = format!("the secrets shadow table: {e}");
+                g.key_error = Some(why.clone());
+                Self::set_locked(g, why);
+                return;
+            }
+        };
+        g.shadows = shadows.iter().map(|r| r.name.clone()).collect();
+        if !self.read_only && paths.uses_data_key(&var) {
+            let all: Vec<SecretRow> = rows.iter().chain(shadows.iter()).cloned().collect();
+            if let Some(note) = recover_rotation(&paths.data_dir, &all) {
+                tracing::warn!("secrets key: {note}");
+            }
         }
         let keys = match super::load(&paths, &var, self.create && rows.is_empty()) {
             Ok(k) => Arc::new(k),
@@ -600,11 +608,12 @@ impl SecretStore {
         }
         if let Some(prev) = &keys.previous {
             if !self.read_only {
-                reencrypt(&state, &keys.current, prev, &mut rows);
+                reencrypt(&state, &keys.current, prev, &mut rows, &mut shadows);
             }
             let pid = prev.key_id();
             g.under_previous = rows
                 .iter()
+                .chain(shadows.iter())
                 .filter(|r| !r.deleted && r.key_id == pid)
                 .count();
         }
@@ -905,13 +914,25 @@ impl SecretStore {
         if g.rows.is_empty() || g.rows.values().any(|c| c.row.origin != "cluster") {
             return Err("some rows were made on this node: they aren't dropped".to_owned());
         }
+        // REQ: CLU-015 (ADR-917 points 4, 8) — an orphan isn't the primary's, so no fetch brings it
+        // back, and a local shadow is this node's own value: neither is dropped.
+        if g.rows.values().any(|c| c.row.orphaned) {
+            return Err(
+                "some rows are orphaned (kept, never dropped): they stay as they are".to_owned(),
+            );
+        }
         let Some(state) = g.state.clone() else {
             return Err("no state database".to_owned());
         };
+        let shadows = state.secret_shadows().map_err(|e| e.to_string())?;
+        if shadows.iter().any(|s| s.origin == "local") {
+            return Err("a local value is shadowed by a cluster row: it isn't dropped".to_owned());
+        }
         let n = state.clear_secret_rows().map_err(|e| e.to_string())?;
         tracing::warn!(
             dropped = n,
-            "secrets store: this replica couldn't read the cluster's secrets; it dropped them and fetches them again from the primary"
+            stale_shadows = shadows.len(),
+            "secrets store: this replica couldn't read the cluster's secrets; it dropped them (and the older copies it kept) and fetches them again from the primary"
         );
         g.rows.clear();
         self.load_into(&mut g);
@@ -997,6 +1018,10 @@ pub(crate) struct Applied {
     pub(crate) held: usize,
     pub(crate) orphaned: usize,
     pub(crate) shadowed: usize,
+    /// REQ: CLU-015 (ADR-917 point 10) — names a listing said were live but this node holds as a
+    /// tombstone of an older epoch: the tombstone is kept (a revoked secret is not resurrected),
+    /// and the name is reported as a conflict.
+    pub(crate) conflicts: Vec<String>,
     /// The head after the batch.
     pub(crate) head: (Stamp, [u8; 32]),
 }
@@ -1071,17 +1096,22 @@ impl SecretStore {
     /// under this node's key, upserted by stamp (a higher stamp wins, a tombstone deletes), a
     /// local row displaced into the shadow table, and cluster rows the primary doesn't list and an
     /// older epoch stamped after `base` marked orphaned. Rows are never deleted by absence.
+    ///
+    /// `authoritative` is false for an emergency primary's answer (ADR-903 §4, ADR-917 point 11):
+    /// it changes nothing it doesn't have to. A non-authoritative answer only fills rows by stamp:
+    /// no displacement, no shadow, no orphan.
     pub(crate) fn apply_remote(
         &self,
         items: &[Remote],
         primary_epoch: u64,
+        authoritative: bool,
         now: u64,
     ) -> Result<Applied, StoreError> {
         if self.paths().ephemeral {
             return Err(StoreError::Ephemeral);
         }
         let mut g = self.ready();
-        apply_inner(&mut g, items, primary_epoch, now)
+        apply_inner(&mut g, items, primary_epoch, authoritative, now)
     }
 
     /// REQ: CLU-015 (ADR-903 §6) — at `cluster init` (on the primary), a standalone node's rows
@@ -1168,6 +1198,24 @@ impl SecretStore {
         if g.rows.values().any(|c| c.row.origin != "cluster") {
             return Err("some rows were made on this node: they aren't replaced".to_owned());
         }
+        // REQ: CLU-015 (ADR-917 points 4, 8; L4) — orphans and local shadows are kept, never
+        // dropped: an orphan isn't in any replica's listing, and a shadow is a local value.
+        if g.rows.values().any(|c| c.row.orphaned) {
+            return Err(
+                "some rows are orphaned (kept, never dropped): they stay as they are".to_owned(),
+            );
+        }
+        let Some(state) = g.state.clone() else {
+            return Err("no state database".to_owned());
+        };
+        if state
+            .secret_shadows()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .any(|s| s.origin == "local")
+        {
+            return Err("a local value is shadowed by a cluster row: it stays as it is".to_owned());
+        }
         for c in g.rows.values().filter(|c| !c.row.orphaned) {
             let covered = items.iter().any(|it| {
                 it.name == c.row.name
@@ -1182,9 +1230,6 @@ impl SecretStore {
                 ));
             }
         }
-        let Some(state) = g.state.clone() else {
-            return Err("no state database".to_owned());
-        };
         let n = state.clear_secret_rows().map_err(|e| e.to_string())?;
         tracing::warn!(
             dropped = n,
@@ -1195,7 +1240,7 @@ impl SecretStore {
         if let Some(why) = g.locked.clone() {
             return Err(format!("still locked after the new key: {why}"));
         }
-        apply_inner(&mut g, items, 0, now).map_err(|e| e.to_string())
+        apply_inner(&mut g, items, 0, true, now).map_err(|e| e.to_string())
     }
 
     /// Live rows this node can't read (encrypted under a key it doesn't have, or damaged).
@@ -1212,14 +1257,19 @@ impl SecretStore {
 ///
 /// The primary's listing is the cluster's set. A listed name takes the primary's row when this
 /// node holds none, holds a standalone row (shadowed), holds a row an older epoch stamped (the
-/// primary's copy supersedes it, and the old one is shadowed), or holds an older stamp of the same
-/// epoch. A cluster row this node holds, from an older epoch, that the primary doesn't list is an
-/// orphan: kept, flagged, never used.
+/// primary's copy supersedes it, and the old one goes to its `cluster` shadow slot), or holds an
+/// older stamp of the same epoch. A cluster tombstone of an older epoch is not resurrected by a
+/// listing: it stays, and the name is a conflict (ADR-917 point 10). A cluster row this node holds,
+/// from an older epoch, that the primary doesn't list is an orphan: kept, flagged, never used.
+///
+/// A non-authoritative answer (an emergency primary's, ADR-917 point 11) fills a name only where
+/// this node holds no row, or an older cluster row, and changes nothing else.
 #[allow(clippy::too_many_lines)] // the rules in the order the ADR states them
 fn apply_inner(
     g: &mut Inner,
     items: &[Remote],
     primary_epoch: u64,
+    authoritative: bool,
     now: u64,
 ) -> Result<Applied, StoreError> {
     if let Some(why) = &g.locked {
@@ -1246,28 +1296,46 @@ fn apply_inner(
         }
         let kind = Kind::parse(&it.kind).map_err(StoreError::Invalid)?;
         let local = g.rows.get(&it.name).map(|c| c.row.clone());
-        // A row to keep under the shadow table: a standalone row, or a stale one of an older
-        // epoch whose stamp differs from the primary's.
-        let displaced = local.as_ref().is_some_and(|l| {
-            l.origin == "local" || (l.stamp.epoch < primary_epoch && l.stamp != it.stamp)
-        });
-        let take = match &local {
-            None => true,
-            Some(l) if l.origin == "local" => true,
-            Some(l) if l.stamp.epoch < primary_epoch => l.stamp != it.stamp,
-            Some(l) => it.stamp > l.stamp,
+        let (take, displaced) = if authoritative {
+            // REQ: CLU-015 (ADR-917 point 10) — a tombstone of an older epoch is a revocation this
+            // node has; a listing that calls the name live doesn't bring the value back.
+            if local.as_ref().is_some_and(|l| {
+                l.origin == "cluster" && l.deleted && !it.deleted && l.stamp.epoch < primary_epoch
+            }) {
+                out.conflicts.push(it.name.clone());
+                continue;
+            }
+            let displaced = local.as_ref().is_some_and(|l| {
+                // A standalone row, or a stale cluster row of an older epoch whose stamp differs.
+                l.origin == "local" || (l.stamp.epoch < primary_epoch && l.stamp != it.stamp)
+            });
+            let take = match &local {
+                None => true,
+                Some(l) if l.origin == "local" => true,
+                Some(l) if l.stamp.epoch < primary_epoch => l.stamp != it.stamp,
+                Some(l) => it.stamp > l.stamp,
+            };
+            (take, displaced)
+        } else {
+            // A non-authoritative answer fills by stamp, and displaces nothing.
+            let take = match &local {
+                None => true,
+                Some(l) => l.origin == "cluster" && it.stamp > l.stamp,
+            };
+            (take, false)
         };
         if !take {
             // The same change, or a newer one held here in this epoch: kept. A listed name is not
             // an orphan.
-            if let Some(mut l) = local.filter(|l| l.orphaned) {
+            if authoritative && let Some(mut l) = local.filter(|l| l.orphaned) {
                 l.orphaned = false;
                 upserts.insert(it.name.clone(), l);
             }
             continue;
         }
         if displaced && let Some(l) = local {
-            // REQ: CLU-015 — a displaced row is kept, not dropped (`secrets_shadow`).
+            // REQ: CLU-015 — a displaced row is kept, not dropped (`secrets_shadow`, one slot per
+            // name and origin).
             shadow.push(l);
             out.shadowed += 1;
         }
@@ -1312,22 +1380,25 @@ fn apply_inner(
         upserts.insert(it.name.clone(), row);
     }
     // REQ: CLU-015 (ADR-903 §6) — orphans: a live cluster row an older epoch stamped that the
-    // primary doesn't list. Never deleted, never used.
-    for c in g.rows.values() {
-        let r = &c.row;
-        if r.deleted
-            || r.origin != "cluster"
-            || r.orphaned
-            || listed.contains(r.name.as_str())
-            || upserts.contains_key(&r.name)
-        {
-            continue;
-        }
-        if r.stamp.epoch < primary_epoch {
-            let mut o = r.clone();
-            o.orphaned = true;
-            upserts.insert(r.name.clone(), o);
-            out.orphaned += 1;
+    // primary doesn't list. Never deleted, never used. An emergency primary's answer says nothing
+    // about what it doesn't list, so it flags nothing.
+    if authoritative {
+        for c in g.rows.values() {
+            let r = &c.row;
+            if r.deleted
+                || r.origin != "cluster"
+                || r.orphaned
+                || listed.contains(r.name.as_str())
+                || upserts.contains_key(&r.name)
+            {
+                continue;
+            }
+            if r.stamp.epoch < primary_epoch {
+                let mut o = r.clone();
+                o.orphaned = true;
+                upserts.insert(r.name.clone(), o);
+                out.orphaned += 1;
+            }
         }
     }
     let rows: Vec<SecretRow> = upserts.into_values().collect();
@@ -1351,7 +1422,7 @@ fn apply_inner(
     Ok(out)
 }
 
-/// REQ: CLU-015 (ADR-903 §6) — the head of the cluster's rows held here: every row but the
+// REQ: CLU-015 (ADR-903 §6) — the head of the cluster's rows held here: every row but the
 /// orphans (a row the cluster doesn't hold is not part of what members share).
 fn live_head(rows: &BTreeMap<String, Cached>) -> (Stamp, [u8; 32]) {
     head_of(rows.values().map(|c| &c.row).filter(|r| !r.orphaned))
@@ -1367,8 +1438,60 @@ pub(crate) fn warn_wal(what: &str) {
 
 /// REQ: OPS-014 (ADR-903 §3) — rows under the previous key, re-encrypted under the current one
 /// (same stamp, new nonce) in one transaction, then the WAL truncated. `rows` is updated in place.
-fn reencrypt(state: &State, current: &NodeKey, previous: &NodeKey, rows: &mut [SecretRow]) {
+fn reencrypt(
+    state: &State,
+    current: &NodeKey,
+    previous: &NodeKey,
+    rows: &mut [SecretRow],
+    shadows: &mut [SecretRow],
+) {
     let pid = previous.key_id();
+    let (Some(redone), Some(redone_shadows)) = (
+        reseal(current, previous, rows, &pid),
+        reseal(current, previous, shadows, &pid),
+    ) else {
+        return;
+    };
+    if redone.is_empty() && redone_shadows.is_empty() {
+        return;
+    }
+    match state.replace_secret_rows(&redone, &redone_shadows) {
+        Ok(clean) => {
+            if !clean {
+                warn_wal("ciphertext under the previous key");
+            }
+            tracing::info!(
+                count = redone.len() + redone_shadows.len(),
+                from = %hex(&pid),
+                to = %hex(&current.key_id()),
+                "re-encrypted stored secrets under the current key; the previous key can be removed"
+            );
+            for new in redone {
+                if let Some(r) = rows.iter_mut().find(|r| r.name == new.name) {
+                    *r = new;
+                }
+            }
+            for new in redone_shadows {
+                if let Some(r) = shadows
+                    .iter_mut()
+                    .find(|r| r.name == new.name && r.origin == new.origin)
+                {
+                    *r = new;
+                }
+            }
+        }
+        Err(e) => tracing::error!("re-encrypting stored secrets failed (kept as they were): {e}"),
+    }
+}
+
+/// The live rows under `previous` (`pid`), re-sealed under `current`: same stamp, new nonce. `None`
+/// (and nothing is written) when one of them can't be sealed.
+fn reseal(
+    current: &NodeKey,
+    previous: &NodeKey,
+    rows: &[SecretRow],
+    pid: &[u8],
+) -> Option<Vec<SecretRow>> {
     let mut redone = Vec::new();
     for r in rows.iter().filter(|r| !r.deleted && r.key_id == pid) {
         let Ok(v) = open(previous, r) else {
@@ -1383,32 +1506,11 @@ fn reencrypt(state: &State, current: &NodeKey, previous: &NodeKey, rows: &mut [S
             }),
             Err(e) => {
                 tracing::error!(name = %r.name, "a secret couldn't be re-encrypted: {e}");
-                return;
+                return None;
             }
         }
     }
-    if redone.is_empty() {
-        return;
-    }
-    match state.replace_secret_rows(&redone) {
-        Ok(clean) => {
-            if !clean {
-                warn_wal("ciphertext under the previous key");
-            }
-            tracing::info!(
-                count = redone.len(),
-                from = %hex(&pid),
-                to = %hex(&current.key_id()),
-                "re-encrypted stored secrets under the current key; the previous key can be removed"
-            );
-            for new in redone {
-                if let Some(r) = rows.iter_mut().find(|r| r.name == new.name) {
-                    *r = new;
-                }
-            }
-        }
-        Err(e) => tracing::error!("re-encrypting stored secrets failed (kept as they were): {e}"),
-    }
+    Some(redone)
 }
 
 /// REQ: OPS-014 (ADR-903 §3) — the store's upkeep on a full member: loaded at start (in a
