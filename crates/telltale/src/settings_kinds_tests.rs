@@ -1,4 +1,4 @@
-//! REQ: DNS-019 (T24.12), DNS-023 (T24.13, ADR-914, ADR-915) — the settings kinds through the
+//! REQ: DNS-019 (T24.12), DNS-023 (T24.13, ADR-914, ADR-918) — the settings kinds through the
 //! real write path (the route, `plan_settings`, the reload): the admin-only fields are refused
 //! for an operator and an agent over HTTP, a PUT applies through the reload, a DELETE brings the
 //! files' values back, a dry run and an `Idempotency-Key` replay behave as on every write, and a
@@ -285,7 +285,7 @@ async fn dns_019_set_by_file_marks_hold_on_a_merged_configuration() {
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
 }
 
-/// REQ: DNS-023, CLU-010 (M3, ADR-915) — a primary one version behind can't read the settings
+/// REQ: DNS-023, CLU-010 (M3, ADR-918) — a primary one version behind can't read the settings
 /// kinds: the replica refuses with 409 `upgrade_required` before forwarding. A primary at 0.8.0
 /// gets the write.
 #[tokio::test(flavor = "multi_thread")]

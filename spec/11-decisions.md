@@ -1293,7 +1293,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
-## ADR-915 — Shared settings sections: field-level file precedence, what a request may leave out, and admin-only fields (Proposed)
+## ADR-918 — Shared settings sections: field-level file precedence, what a request may leave out, and admin-only fields (Proposed)
 **Context:** T24.12 (`[special]`) and T24.13 (`[local]`, and `[clients]` with `mdns` only) make three one-entry sections changeable from the UI and API under ADR-914's tiers. The one-entry kinds so far (rate limit, exclusions, simulation) replace the file's whole section. For these, that would let an API value override a field the files set, which ADR-040 and ADR-914 forbid. ADR-914 didn't settle three details: which fields the files win over, what a request that leaves out a file-set field means, and what an empty `device_domain` means.
 **Decision:**
 - **Files win field by field.** The loader records the dotted keys (`special.ddr_name`, `local.device_domain`, `clients.mdns`) that the configuration files and environment set explicitly (`Config.file_set`). At merge time a stored field whose key is in that set is ignored, so the file's value applies. The UI shows it as "set by file".
