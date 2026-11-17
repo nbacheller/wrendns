@@ -45,6 +45,17 @@ use crate::wire::{
 
 /// Heartbeat interval; a peer silent for three intervals is down.
 pub const HEARTBEAT: Duration = Duration::from_secs(5);
+
+/// REQ: CLU-005 (ADR-051) — the primary sends its key share again this often, unchanged. A peer
+/// refuses a share from a node it doesn't yet know as primary: right after a promotion, the stream
+/// was opened before the election, so the Hello's flag is stale. The refusal isn't acknowledged, so
+/// the share is repeated.
+pub(crate) const KEY_SHARE_RESEND: Duration = Duration::from_secs(30);
+
+/// Whether a key share last sent at `last` is due again at `now` (never sent: due).
+pub(crate) fn key_share_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last.is_none_or(|t| now.saturating_duration_since(t) >= KEY_SHARE_RESEND)
+}
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// REQ: CLU-001 (ADR-051, GitHub issue #4) — how soon a replica whose stream is to another
@@ -2035,6 +2046,7 @@ impl Cluster {
                 issuer_fp,
                 ts_ms: now_ms(),
                 epoch: l.epoch.max(self.role().1),
+                primary: Some(self.is_primary()),
                 applied_seq: l.applied_seq,
                 qps: l.qps,
                 queries_last_minute: Some(l.queries_last_minute),
@@ -2259,6 +2271,10 @@ impl Cluster {
                         m.issuer_fp.clone_from(&hb.issuer_fp);
                     }
                     m.epoch = hb.epoch;
+                    // REQ: CLU-005 — a promotion after the stream opened: the Hello's flag is stale.
+                    if let Some(primary) = hb.primary {
+                        m.primary = primary;
+                    }
                     m.applied_seq = hb.applied_seq;
                     m.qps = hb.qps;
                     m.queries_last_minute = hb
@@ -2484,6 +2500,7 @@ async fn write_frames(
     // as soon as the registry lists them (checked again on every heartbeat), and again whenever
     // the share changes (a CA rotation adds the next key, T5.4c).
     let mut key_shared: Option<Vec<u8>> = None;
+    let mut key_sent_at: Option<std::time::Instant> = None;
     // The current manifest first (a peer that just connected), then whatever happens next:
     // the head for this peer, sent again only when it changes.
     manifests.borrow_and_update();
@@ -2493,11 +2510,13 @@ async fn write_frames(
     loop {
         if let Some(frame) = peer.as_deref().and_then(|p| cluster.key_share_for(p)) {
             let bytes = wire::encode(&frame);
-            if key_shared.as_deref() != Some(bytes.as_slice()) {
+            let now = std::time::Instant::now();
+            if key_shared.as_deref() != Some(bytes.as_slice()) || key_share_due(key_sent_at, now) {
                 if tx.send_data(Bytes::from(bytes.clone())).await.is_err() {
                     return;
                 }
                 key_shared = Some(bytes);
+                key_sent_at = Some(now);
             }
         }
         let frame = if let Some(m) = pending.take() {
