@@ -41,7 +41,7 @@ All performance gates are measured with the harness in `09`.
 | Added latency for cache hit / blocked answer (p99, at 50% of max load) | ≤ 250 µs |
 | Idle RSS, no lists | ≤ 20 MiB |
 | RSS with 1M blocklist domains + 100k cache entries + telemetry on | ≤ 64 MiB |
-| Compressed container image | ≤ 15 MiB per arch |
+| Compressed container image | ≤ 25 MiB per arch (fork, ADR-916; upstream ≤ 15 MiB) |
 | List recompile (2M domains, Pi 4) | ≤ 8 s, with p99 query-latency regression ≤ 10% during compile |
 | Cold start to serving (with compiled snapshot on disk) | ≤ 500 ms |
 | Query-log search, 30 days / 50M rows, filtered by client + domain substring, Pi 4 | ≤ 2 s |

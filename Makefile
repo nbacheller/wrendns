@@ -34,7 +34,7 @@ image:
 	docker buildx build --load -t telltale:dev .
 	deploy/image/smoke.sh telltale:dev
 
-# All three platforms into an OCI tarball, then the 15 MiB-per-arch size gate.
+# All three platforms into an OCI tarball, then the 25 MiB-per-arch size gate (ADR-916).
 image-all:
 	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 --output type=oci,dest=target/telltale-oci.tar .
 	python3 deploy/image/size.py --oci target/telltale-oci.tar

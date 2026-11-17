@@ -1293,6 +1293,12 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-916 — The fork's image gate is 25 MiB compressed per architecture (Accepted 2026-11-16)
+**Context:** `00` §5 and OPS-001 cap the image at 15 MiB compressed per architecture, from upstream's footprint priority. On 2026-11-16 the fork's merged work (the Pi-hole parity work, the upstream sync and M23 wave 1, about 17,500 lines) took amd64 from 14.76 to 15.13 MiB. Three cuts that drop nothing brought it back under (ADR-915), but M25 (an SNMP codec, `aes`, an XML parser), M26 (the map UI) and M27 (UI for every setting) will add more. The owner runs Pi 4/5 and Linux hosts, where 25 MiB pulls in seconds. Memory (RSS) is the budget that limits small hosts, and it is unchanged (`00` §5: idle ≤ 20 MiB, ≤ 64 MiB loaded).
+**Decision:** the owner chose to raise the fork's gate to **25 MiB compressed per architecture** (`deploy/image/size.py` `LIMIT`, `make image-all`, the image workflow). Upstream's 15 MiB stays upstream's. Every task still reports its image delta (`deploy/image/size.py --oci`) in its Done note, so growth stays visible, and a milestone that adds more than 2 MiB says why. ADR-915's cuts are kept. The RSS budgets, the `FROM scratch` image, the static musl binary and the multi-arch matrix are unchanged.
+**Alternatives rejected:** keeping 15 MiB (constant trimming work for little gain on the owner's hosts); 20 MiB (less room for M25–M27); no gate at all (growth goes unnoticed).
+**Consequences:** Pi Zero-class devices, OpenWrt or OPNsense packages (upstream #12, #49) are a poorer fit. A change from upstream that relies on the 15 MiB headroom needs no special handling, since the fork's gate is looser. On an upstream sync, keep `LIMIT` at 25 MiB.
+
 ## ADR-914 — Which settings the UI may change, and how risky ones are guarded (Proposed)
 **Context:** On 2026-11-16 the owner made a standing rule: every setting, route and tool gets a UI control (spec/10, API-901). An audit of the fork against the UI found settings with no control at all:
 - `[special]` (M24, ADR-904) and most of `[local]` (M22, ADR-901). Both are shared sections, not node-local (`telltale-config/src/shared.rs` `NODE_LOCAL`).

@@ -180,7 +180,7 @@ AGT-001..012 are defined in `13 §2`. Summary: agent-ready OpenAPI (P0); dry-run
 ## Deployment and operations (OPS) — see `08`
 | ID | Pri | Requirement |
 |---|---|---|
-| OPS-001 | P0 | Multi-arch OCI image (linux/amd64, linux/arm64, linux/arm/v7) built `FROM scratch`/distroless with a static musl binary; runs as non-root. |
+| OPS-001 | P0 | Multi-arch OCI image (linux/amd64, linux/arm64, linux/arm/v7) built `FROM scratch`/distroless with a static musl binary; runs as non-root. Compressed size ≤ 25 MiB per architecture in this fork (ADR-916; upstream 15 MiB). |
 | OPS-002 | P0 | Helm chart: resolver Deployment/DaemonSet, controller StatefulSet (or all-in-one), Services (UDP+TCP), PDB, HPA, ServiceMonitor, NetworkPolicy, probes, cert-manager integration. |
 | OPS-003 | P0 | Client-IP preservation guidance and defaults (externalTrafficPolicy: Local, hostNetwork option, PROXY protocol). The chart validates and warns when client IPs would be masked. |
 | OPS-004 | P0 | Raspberry Pi / Linux: the same image via Docker/Podman Compose (primary path); a static binary + systemd unit + install script (secondary path). |
