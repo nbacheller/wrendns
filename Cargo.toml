@@ -70,12 +70,6 @@ opt-level = "s"
 [profile.release.package.telltale-cluster]
 opt-level = "s"
 
-[profile.release.package.openidconnect]
-opt-level = "s"
-
-[profile.release.package.oauth2]
-opt-level = "s"
-
 [profile.release.package.utoipa]
 opt-level = "s"
 
@@ -122,15 +116,6 @@ opt-level = "s"
 opt-level = "s"
 
 [profile.release.package.url]
-opt-level = "s"
-
-[profile.release.package.chrono]
-opt-level = "s"
-
-[profile.release.package.rsa]
-opt-level = "s"
-
-[profile.release.package.num-bigint-dig]
 opt-level = "s"
 
 # Fast local benchmarking builds without fat LTO.
