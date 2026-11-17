@@ -5362,3 +5362,264 @@ test('dsc_001 a poll keeps unsaved edits', async () => {
   await expect(node).toHaveValue('pi-unsaved');
   await node.fill('');
 });
+
+// REQ: API-007 (T24.18, ADR-940) — importing a Pi-hole export from the admin page: the preview
+// lists what would change and writes nothing; applying needs the typed confirmation, writes the plan,
+// and is undone here by deleting what it added. The fixture is a small Teleporter (v5) archive.
+const PIHOLE_FIXTURE = resolve(import.meta.dirname, 'fixtures/pihole-v5-teleporter.tar.gz');
+
+// The same predicate must be passed to route and unroute: Playwright removes only the route that it matches.
+const PREVIEW_ROUTE = (url: URL) => url.pathname === '/api/v1/import/pihole';
+const STALE_APPLY_ROUTE = (url: URL) => url.pathname === '/api/v1/import/pihole/plans/stale-plan/apply';
+
+// A fresh load of the Import tab: a hash change alone keeps the page's state (a preview from an earlier test).
+async function openImport() {
+  await page.goto('/');
+  await page.goto('/#/settings?tab=pihole');
+  await expect(page.getByTestId('pihole-import')).toBeVisible({ timeout: 20_000 });
+}
+
+test('api_007 import from pi-hole with preview', async () => {
+  const r = page.request;
+  await openImport();
+  const panel = page.getByTestId('pihole-import');
+  await expect(panel.getByRole('heading', { name: 'Import from Pi-hole' })).toBeVisible();
+  await panel.getByTestId('pihole-file').setInputFiles(PIHOLE_FIXTURE);
+  await panel.getByTestId('pihole-preview').click();
+  await expect(panel.getByTestId('pihole-summary')).toContainText('to add', { timeout: 20_000 });
+  // The upstream, the local name and the deny entry are listed as adds; nothing is written yet.
+  const items = panel.getByTestId('pihole-item');
+  await expect(items.filter({ hasText: 'pihole-1' }).first()).toContainText('add');
+  await expect(items.filter({ hasText: 'import-test.lan' }).first()).toContainText('add');
+  const before = await r.get('/api/v1/config/entries?kind=upstream');
+  expect(JSON.stringify(await before.json())).not.toContain('pihole-1');
+
+  // Applying needs the typed confirmation.
+  await expect(panel.getByTestId('pihole-apply')).toBeDisabled();
+  await panel.getByTestId('pihole-confirm').fill('IMPORT');
+  await panel.getByTestId('pihole-apply').click();
+  await expect(panel.getByTestId('pihole-applied')).toContainText('Applied:', { timeout: 20_000 });
+
+  try {
+    const after = await r.get('/api/v1/config/entries?kind=upstream');
+    expect(JSON.stringify(await after.json())).toContain('pihole-1');
+  } finally {
+    // Undo what the import added: the default groups' overrides first, so nothing still uses the rest.
+    const h = { 'x-csrf-token': await csrfOf(r) };
+    await r.delete('/api/v1/groups/default', { headers: h });
+    await r.delete('/api/v1/upstream-groups/default', { headers: h });
+    await r.delete('/api/v1/lists/pihole-deny-exact', { headers: h });
+    await r.delete('/api/v1/upstreams/pihole-1', { headers: h });
+    await r.delete('/api/v1/records/import-test.lan', { headers: h });
+  }
+});
+
+// REQ: API-007 (T24.18) — an operator can't see the import tab at all.
+test('api_007 operator cannot see the import page', async () => {
+  const op = await operatorPage('operator1', 'operator long password');
+  try {
+    await op.p.goto('/#/settings?tab=pihole');
+    await expect(op.p.getByRole('tab', { name: 'Users' })).toHaveCount(0);
+    await expect(op.p.getByRole('tab', { name: 'Import from Pi-hole' })).toHaveCount(0);
+    await expect(op.p.getByTestId('pihole-import')).toHaveCount(0);
+    // The API says the same: an operator's upload is refused (admins only).
+    // The request runs in the operator's page, so it carries the operator's session cookie.
+    await expect(op.p.getByRole('tab', { name: 'Account' })).toBeVisible();
+    const post = await op.p.evaluate(async () => {
+      const st = await (await fetch('/api/v1/auth/status', { credentials: 'same-origin' })).json();
+      const res = await fetch('/api/v1/import/pihole', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'x-csrf-token': st.csrfToken, 'content-type': 'application/octet-stream' },
+        body: 'not a file',
+      });
+      return res.status;
+    });
+    expect(post).toBe(403);
+  } finally {
+    await op.close();
+  }
+});
+
+// REQ: API-007 (ADR-941) — the comparison's result, with the Pi-hole address given; the answers are mocked
+// because the e2e server has no Pi-hole to ask.
+test('api_007 compare shows the differences', async () => {
+  await page.route(PREVIEW_ROUTE, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        planId: 'mocked-plan',
+        expiresUnixSeconds: Math.floor(Date.now() / 1000) + 600,
+        configVersion: 0,
+        source: 'v5',
+        counts: '1 upstreams, 0 forwarded domains, 1 records, 1 lists, 1 groups, 0 devices',
+        summary: { add: 2, change: 0, skip: 0, samples: 3 },
+        items: [{ kind: 'upstream', name: 'pihole-1', action: 'add', reason: '' }],
+        itemsTotal: 1,
+        notes: [],
+        compare: {
+          names: 3,
+          agree: 2,
+          differences: [
+            { name: 'nas.lan', qtype: 'A', pihole: { rcode: 'NOERROR', values: ['192.168.1.10'] }, telltale: { rcode: 'NXDOMAIN', values: [] } },
+          ],
+          errors: [],
+        },
+      }),
+    });
+  });
+  try {
+    await openImport();
+    const panel = page.getByTestId('pihole-import');
+    await panel.getByTestId('pihole-file').setInputFiles(PIHOLE_FIXTURE);
+    await panel.getByTestId('pihole-compare-toggle').check();
+    await panel.getByTestId('pihole-address').fill('192.168.1.251');
+    await panel.getByTestId('pihole-preview').click();
+    await expect(panel.getByTestId('pihole-compare-summary')).toContainText('Compared 3 names: 2 agree, 1 differ.');
+    await expect(panel.getByTestId('pihole-compare-result')).toContainText('NXDOMAIN');
+  } finally {
+    await page.unroute(PREVIEW_ROUTE);
+  }
+});
+
+// REQ: API-007 (T24.18, ADR-940) — a preview the configuration has outrun is refused, and says so.
+test('api_007 a stale preview is refused', async () => {
+  await page.route(PREVIEW_ROUTE, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        planId: 'stale-plan',
+        expiresUnixSeconds: Math.floor(Date.now() / 1000) + 600,
+        configVersion: 1,
+        source: 'v5',
+        counts: '1 upstreams',
+        summary: { add: 1, change: 0, skip: 0, samples: 0 },
+        items: [{ kind: 'upstream', name: 'pihole-1', action: 'add', reason: '' }],
+        itemsTotal: 1,
+        notes: [],
+        compare: null,
+      }),
+    });
+  });
+  await page.route(STALE_APPLY_ROUTE, async (route) => {
+    await route.fulfill({
+      status: 409,
+      contentType: 'application/problem+json',
+      body: JSON.stringify({
+        type: 'https://telltaledns.dev/problems/conflict',
+        title: 'Conflict',
+        status: 409,
+        code: 'conflict',
+        detail: 'the configuration changed since the preview: preview the import again',
+      }),
+    });
+  });
+  try {
+    await openImport();
+    const panel = page.getByTestId('pihole-import');
+    await panel.getByTestId('pihole-file').setInputFiles(PIHOLE_FIXTURE);
+    await panel.getByTestId('pihole-preview').click();
+    await expect(panel.getByTestId('pihole-summary')).toContainText('to add');
+    await panel.getByTestId('pihole-confirm').fill('IMPORT');
+    await panel.getByTestId('pihole-apply').click();
+    await expect(panel.getByRole('alert')).toContainText('the configuration changed since the preview');
+    // The refusal is the expected answer: the browser logs its 409, and the test removes that entry.
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1);
+  } finally {
+    await page.unroute(STALE_APPLY_ROUTE);
+    await page.unroute(PREVIEW_ROUTE);
+  }
+});
+
+// REQ: API-007 (T24.18, ADR-939) — a damaged export is refused with the reason, by the real import worker;
+// the server keeps answering (the worker is a child process, so a bad file can't reach DNS).
+test('api_007 a damaged export is refused with a reason', async () => {
+  const panel = page.getByTestId('pihole-import');
+  await openImport();
+  await panel.getByTestId('pihole-file').setInputFiles({ name: 'damaged.zip', mimeType: 'application/zip', buffer: Buffer.from('PK\x03\x04 not really a zip') });
+  await panel.getByTestId('pihole-preview').click();
+  await expect(panel.getByRole('alert')).toContainText("this isn't a Pi-hole export the import can read", { timeout: 20_000 });
+  await expect(panel.getByTestId('pihole-preview-result')).toHaveCount(0);
+  // The refusal is the expected answer: the browser logs its 422, and the test removes that entry.
+  for (let i = problems.length - 1; i >= 0; i--) if (/status of 422/.test(problems[i])) problems.splice(i, 1);
+  // The server still answers, and DNS still answers a local name (the worker is a child process).
+  expect((await page.request.get('/livez')).status()).toBe(200);
+  expect(await query('nas.e2e.test')).toBe(0);
+});
+
+// REQ: API-007 (T24.18) — Discard forgets the preview: the plan is gone from the server, so applying
+// it is a 404, and nothing was written.
+test('api_007 discard forgets the preview', async () => {
+  const r = page.request;
+  await openImport();
+  const panel = page.getByTestId('pihole-import');
+  await panel.getByTestId('pihole-file').setInputFiles(PIHOLE_FIXTURE);
+  // The plan's ID is read from the answer: the route fetches it, reads it, and hands it to the page.
+  const planIds: string[] = [];
+  await page.route(PREVIEW_ROUTE, async (route) => {
+    const resp = await route.fetch();
+    planIds.push(JSON.parse(await resp.text()).planId as string);
+    await route.fulfill({ response: resp });
+  });
+  try {
+    await panel.getByTestId('pihole-preview').click();
+    await expect(panel.getByTestId('pihole-summary')).toContainText('to add', { timeout: 20_000 });
+    await expect.poll(() => planIds.length).toBe(1);
+  } finally {
+    await page.unroute(PREVIEW_ROUTE);
+  }
+  const planId = planIds[0];
+  await panel.getByTestId('pihole-discard').click();
+  await expect(panel.getByTestId('pihole-preview-result')).toHaveCount(0);
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const gone = await r.post(`/api/v1/import/pihole/plans/${encodeURIComponent(planId)}/apply`, { headers: h });
+  expect(gone.status()).toBe(404);
+  const after = await r.get('/api/v1/config/entries?kind=upstream');
+  expect(JSON.stringify(await after.json())).not.toContain('pihole-1');
+});
+
+// REQ: API-007 (ADR-941, T24.18) — the comparison's options reach the request: the Pi-hole, this
+// node's resolver, and the extra names. The answer is mocked (the e2e server has no Pi-hole to ask),
+// and it shows where an entry points.
+test('api_007 comparison options reach the request', async () => {
+  let asked = '';
+  await page.route(PREVIEW_ROUTE, async (route) => {
+    asked = route.request().url();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        planId: 'options-plan',
+        expiresUnixSeconds: Math.floor(Date.now() / 1000) + 600,
+        configVersion: 0,
+        source: 'v5',
+        counts: '1 upstreams',
+        summary: { add: 1, change: 0, skip: 0, samples: 2 },
+        items: [{ kind: 'upstream', name: 'pihole-1', action: 'add', reason: '', detail: 'udp://9.9.9.9:53' }],
+        itemsTotal: 1,
+        notes: [],
+        compare: { names: 2, agree: 2, differences: [], errors: [] },
+      }),
+    });
+  });
+  try {
+    await openImport();
+    const panel = page.getByTestId('pihole-import');
+    await panel.getByTestId('pihole-file').setInputFiles(PIHOLE_FIXTURE);
+    await panel.getByTestId('pihole-compare-toggle').check();
+    await panel.getByTestId('pihole-address').fill('192.168.1.251');
+    await panel.getByTestId('pihole-telltale-address').fill('127.0.0.1:15354');
+    await panel.getByTestId('pihole-samples').fill('example.com, nas.home');
+    await panel.getByTestId('pihole-preview').click();
+    await expect(panel.getByTestId('pihole-compare-summary')).toContainText('Compared 2 names');
+    const q = new URL(asked).searchParams;
+    expect(q.get('compare')).toBe('192.168.1.251');
+    expect(q.get('telltale')).toBe('127.0.0.1:15354');
+    expect(q.get('samples')).toBe('example.com, nas.home');
+    await expect(panel.getByTestId('pihole-detail').first()).toHaveText('udp://9.9.9.9:53');
+  } finally {
+    await page.unroute(PREVIEW_ROUTE);
+  }
+});

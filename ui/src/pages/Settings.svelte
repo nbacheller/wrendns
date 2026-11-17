@@ -13,6 +13,7 @@
   import WallDisplays from '../lib/components/WallDisplays.svelte';
   import SupportPackage from '../lib/components/SupportPackage.svelte';
   import SecretsPanel from '../lib/components/SecretsPanel.svelte';
+  import PiholeImport from '../lib/components/PiholeImport.svelte';
 
   const tabs = $derived<TabItem[]>(
     [
@@ -21,6 +22,8 @@
       // REQ: API-015 (T23.6) — stored secrets: operators see them, admins set them.
       ...(can('operator') ? [{ id: 'secrets', label: 'Integrations & secrets' }] : []),
       ...(can('admin') ? [{ id: 'users', label: 'Users' }, { id: 'audit', label: 'Audit log' }] : []),
+      // REQ: API-007 (T24.18) — importing a Pi-hole export is an admin's (never an agent's).
+      ...(can('admin') ? [{ id: 'pihole', label: 'Import from Pi-hole' }] : []),
       { id: 'system', label: 'System' },
       // REQ: API-005 (ADR-121) — how queries are handled (cache, rate limit, what's kept out of
       // the log, simulation), apart from the node's own housekeeping.
@@ -628,6 +631,9 @@
       </p>
     </section>
     <SecretsPanel />
+  {:else if tab === 'pihole' && can('admin')}
+    <!-- REQ: API-007 (T24.18, ADR-940) — the Import from Pi-hole tab (admins only). -->
+    <PiholeImport />
   {:else if tab === 'users' && can('admin')}
     <section class="card">
       <h2>Users<HelpButton id="users" /></h2>

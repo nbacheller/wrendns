@@ -123,6 +123,41 @@ impl State {
         Ok(next)
     }
 
+    /// REQ: API-007 (T24.18, ADR-940) — creates or replaces every `(kind, name, body)` in one
+    /// transaction, if the version is still `expect` (when given). The version moves once for
+    /// the whole batch, so a failed batch leaves nothing half-written.
+    pub fn put_managed_batch(
+        &self,
+        rows: &[(&str, &str, &str)],
+        expect: Option<u64>,
+        now: u64,
+        by: &str,
+    ) -> std::result::Result<u64, ManagedError> {
+        let conn = self.lock();
+        let tx = conn.unchecked_transaction()?;
+        let current = version(&tx)?;
+        if let Some(v) = expect
+            && v != current
+        {
+            return Err(ManagedError::VersionConflict { current });
+        }
+        for (kind, name, body) in rows {
+            tx.execute(
+                "INSERT INTO managed (kind, name, body, updated, updated_by) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(kind, name) DO UPDATE SET body = excluded.body,
+                     updated = excluded.updated, updated_by = excluded.updated_by",
+                params![kind, name, body, i(now), by],
+            )?;
+        }
+        let next = current + 1;
+        tx.execute(
+            "UPDATE meta SET value = ?1 WHERE key = 'config_version'",
+            [next.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(next)
+    }
+
     /// Deletes `name` if the version is still `expect` (when given). Returns the new version.
     pub fn delete_managed(
         &self,

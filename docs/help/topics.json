@@ -971,6 +971,26 @@
       "docs": "routers"
     },
     {
+      "id": "pihole-import",
+      "title": "Bring your Pi-hole setup over",
+      "term": "Import from Pi-hole",
+      "summary": "Reads a Pi-hole Teleporter export (or its gravity.db), shows what would be added, changed or skipped, and applies the preview as one change once you confirm it.",
+      "when": "You are moving from Pi-hole to TelltaleDNS, or want to see what a Pi-hole export holds before you decide.",
+      "example": "Upload the Teleporter zip from Pi-hole v6. The preview lists its upstreams, local names, lists and groups, and the notes say what has no equivalent, such as the DHCP server and the query history. Apply writes them in one change, which the audit log records as import.pihole.",
+      "caution": "Nothing changes until you apply. Names the config files define are skipped, and DNSSEC is set in the file, not here. The Points to column shows where each entry goes: a file list reads a file on this machine, and the notes say so. Discard forgets a preview without a change. Only admins can import, and agents can't. A preview expires after ten minutes; if the configuration changes meanwhile, preview again.",
+      "docs": "migrating-from-pihole"
+    },
+    {
+      "id": "pihole-compare",
+      "title": "Check the answers match",
+      "term": "Compare with Pi-hole",
+      "summary": "Resolves a sample of names (addresses for A and AAAA) through your Pi-hole and through TelltaleDNS, and lists each name whose answers differ. The sample is the import's own local names and CNAMEs, up to 20 blocked names, plus any extra names you type (comma-separated).",
+      "when": "Before you switch your network's DNS to TelltaleDNS, to see what would change for the names you use.",
+      "example": "The sample has your local names, the CNAMEs, and a few blocked domains. A difference such as NXDOMAIN on TelltaleDNS against an address on the Pi-hole means that name isn't answered the same yet.",
+      "caution": "TelltaleDNS answers from its running configuration. Run the imported configuration first, or the comparison shows what the node answers now. Each name costs two queries to each server, and the comparison stops after a minute.",
+      "docs": "migrating-from-pihole"
+    },
+    {
       "id": "network-inventory",
       "title": "Network inventory",
       "term": "Network inventory",
