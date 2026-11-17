@@ -12,6 +12,13 @@ ignore = [
     # provider's public keys: it holds no RSA private key to leak. No fixed version exists
     # yet. Revisit when one does (ADR-034).
     { id = "RUSTSEC-2023-0071", reason = "rsa is used for public-key signature verification only (OIDC ID tokens); no private keys" },
+    # RUSTSEC-2026-0543 (chrono, "unmaintained"): a notice, not a vulnerability: the advisory
+    # says every version is affected and offers no safe upgrade. `chrono` arrives through
+    # `oauth2` and `openidconnect` (OIDC sign-in, API-004), which use it for the times in tokens
+    # and ID-token claims; `telltale-api` uses it directly only in its tests. Revisit when those
+    # crates move to another time crate (the advisory suggests jiff or time) or a maintained
+    # chrono appears.
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained (informational, no vulnerability); used by oauth2/openidconnect for token times, and in tests; no safe upgrade exists" },
 ]
 
 [licenses]

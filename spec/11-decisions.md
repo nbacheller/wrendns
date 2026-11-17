@@ -1291,7 +1291,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
-## ADR-170 — Crates off the DNS path are built for size (Proposed)
+## ADR-170 — Crates off the DNS path are built for size (Accepted)
 **Context:** After ADR-168 and ADR-169 the images were 13.39, 12.66, and 13.10 MiB of the 15 MiB gate. The 2026-11-17 review found that building the crates that are not on the DNS path with `opt-level = "s"` instead of 3 makes the binary smaller, and asked for a benchmark first, because performance ranks above footprint. The owner chose to take it if it was safe ("Yes", 2026-11-17) and to measure SQLite's C code at `-Os` separately.
 **Measured (the build VM; release profile with fat LTO; binaries built from 938c9a9, stripped and gzipped as a stand-in for the layer):**
 - **The off-path list** (26 package specs in the measurement, `rusqlite` among them): 13,116 to 12,746 KiB, -0.36 MiB. Of the 1,737 functions in the DNS-path crates (`telltale-proto`, `-net`, `-cache`, `-filter`, `-policy`, `-telemetry`, `-upstream`), 1,724 are identical in size and 13 differ: startup and configuration code (the preset deserializers, a once-cell initializer, a telemetry drain), none per query. Rotated `bench-smoke` with an identical-binary control, five rounds, cache-hot median: baseline 526k queries/s, control 500k (-5.0%), this list 510k (-3.2%), inside the control's spread. Miss-heavy: flat.
