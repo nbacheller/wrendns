@@ -5111,9 +5111,20 @@ test('api_013 a made group draft does not reopen on reload', async () => {
 // and is undone here by deleting what it added. The fixture is a small Teleporter (v5) archive.
 const PIHOLE_FIXTURE = resolve(import.meta.dirname, 'fixtures/pihole-v5-teleporter.tar.gz');
 
+// The same predicate must be passed to route and unroute: Playwright removes only the route that it matches.
+const PREVIEW_ROUTE = (url: URL) => url.pathname === '/api/v1/import/pihole';
+const STALE_APPLY_ROUTE = (url: URL) => url.pathname === '/api/v1/import/pihole/plans/stale-plan/apply';
+
+// A fresh load of the Import tab: a hash change alone keeps the page's state (a preview from an earlier test).
+async function openImport() {
+  await page.goto('/');
+  await page.goto('/#/settings?tab=pihole');
+  await expect(page.getByTestId('pihole-import')).toBeVisible({ timeout: 20_000 });
+}
+
 test('api_007 import from pi-hole with preview', async () => {
   const r = page.request;
-  await page.goto('/#/settings?tab=pihole');
+  await openImport();
   const panel = page.getByTestId('pihole-import');
   await expect(panel.getByRole('heading', { name: 'Import from Pi-hole' })).toBeVisible();
   await panel.getByTestId('pihole-file').setInputFiles(PIHOLE_FIXTURE);
@@ -5176,7 +5187,7 @@ test('api_007 operator cannot see the import page', async () => {
 // REQ: API-007 (ADR-941) — the comparison's result, with the Pi-hole address given; the answers are mocked
 // because the e2e server has no Pi-hole to ask.
 test('api_007 compare shows the differences', async () => {
-  await page.route((url) => url.pathname === '/api/v1/import/pihole', async (route) => {
+  await page.route(PREVIEW_ROUTE, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -5202,7 +5213,7 @@ test('api_007 compare shows the differences', async () => {
     });
   });
   try {
-    await page.goto('/#/settings?tab=pihole');
+    await openImport();
     const panel = page.getByTestId('pihole-import');
     await panel.getByTestId('pihole-file').setInputFiles(PIHOLE_FIXTURE);
     await panel.getByTestId('pihole-compare-toggle').check();
@@ -5211,13 +5222,13 @@ test('api_007 compare shows the differences', async () => {
     await expect(panel.getByTestId('pihole-compare-summary')).toContainText('Compared 3 names: 2 agree, 1 differ.');
     await expect(panel.getByTestId('pihole-compare-result')).toContainText('NXDOMAIN');
   } finally {
-    await page.unroute((url) => url.pathname === '/api/v1/import/pihole');
+    await page.unroute(PREVIEW_ROUTE);
   }
 });
 
 // REQ: API-007 (T24.18, ADR-940) — a preview the configuration has outrun is refused, and says so.
 test('api_007 a stale preview is refused', async () => {
-  await page.route((url) => url.pathname === '/api/v1/import/pihole', async (route) => {
+  await page.route(PREVIEW_ROUTE, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -5235,7 +5246,7 @@ test('api_007 a stale preview is refused', async () => {
       }),
     });
   });
-  await page.route((url) => url.pathname === '/api/v1/import/pihole/plans/stale-plan/apply', async (route) => {
+  await page.route(STALE_APPLY_ROUTE, async (route) => {
     await route.fulfill({
       status: 409,
       contentType: 'application/problem+json',
@@ -5249,7 +5260,7 @@ test('api_007 a stale preview is refused', async () => {
     });
   });
   try {
-    await page.goto('/#/settings?tab=pihole');
+    await openImport();
     const panel = page.getByTestId('pihole-import');
     await panel.getByTestId('pihole-file').setInputFiles(PIHOLE_FIXTURE);
     await panel.getByTestId('pihole-preview').click();
@@ -5260,7 +5271,22 @@ test('api_007 a stale preview is refused', async () => {
     // The refusal is the expected answer: the browser logs its 409, and the test removes that entry.
     for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1);
   } finally {
-    await page.unroute((url) => url.pathname === '/api/v1/import/pihole/plans/stale-plan/apply');
-    await page.unroute((url) => url.pathname === '/api/v1/import/pihole');
+    await page.unroute(STALE_APPLY_ROUTE);
+    await page.unroute(PREVIEW_ROUTE);
   }
+});
+
+// REQ: API-007 (T24.18, ADR-939) — a damaged export is refused with the reason, by the real import worker;
+// the server keeps answering (the worker is a child process, so a bad file can't reach DNS).
+test('api_007 a damaged export is refused with a reason', async () => {
+  const panel = page.getByTestId('pihole-import');
+  await openImport();
+  await panel.getByTestId('pihole-file').setInputFiles({ name: 'damaged.zip', mimeType: 'application/zip', buffer: Buffer.from('PK\x03\x04 not really a zip') });
+  await panel.getByTestId('pihole-preview').click();
+  await expect(panel.getByRole('alert')).toContainText("this isn't a Pi-hole export the import can read", { timeout: 20_000 });
+  await expect(panel.getByTestId('pihole-preview-result')).toHaveCount(0);
+  // The refusal is the expected answer: the browser logs its 422, and the test removes that entry.
+  for (let i = problems.length - 1; i >= 0; i--) if (/status of 422/.test(problems[i])) problems.splice(i, 1);
+  // The server still answers.
+  expect((await page.request.get('/livez')).status()).toBe(200);
 });
