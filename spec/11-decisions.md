@@ -1293,6 +1293,14 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-942 — UniFi offline clients on the fork's router model: `offline_days` 0 keeps the reservations (Proposed)
+**Context:** The upstream merge brought T8.2's offline clients (ADR-166): the console's client history and the configured clients, named by their last address, for `offline_days` (30 by default, 0 for connected clients only). The fork had already made a DHCP reservation (T22.2, ADR-902) name its device while it is offline, whatever the history says. Both can't hold at `offline_days = 0`.
+**Decision (proposed; the conservative reading of both):**
+- The history and the configured clients without a reservation are read only while `offline_days` > 0, and only the dated rows inside the window name a device. A configured client with no reservation is not named from `rest/user` (the fork's test: its last address may belong to someone else by now).
+- A reservation names its device at any `offline_days`, including 0. It is the router's configuration, not a history, and the fork's T22.2 behaviour is kept. The Routers form's help topic (`router-offline-clients`) says so.
+- Offline devices stay out of "seen" (ADR-166), and the fork's reservations still count as seen (the T22.2 decision); a reservation is therefore not an offline device here.
+**Consequences:** `offline_days` = 0 means "no history names", not "no offline names". The owner may prefer the stricter reading (0 also drops reservations); that is a change to `unifi_reserved` in `routers.rs`, one line, and a test.
+
 ## ADR-937 — Per-list "Update now" and a Confirmed current column on the Lists page (Accepted 2026-11-17)
 **Context:** T24.17 (FLT-004, ADR-905) asks for an "Update now" in each row of the Lists status table, and a per-list freshness display. The API already takes `names` (ADR-905), so no server change is needed. The task doesn't say what an off list's row does (the server reports an off list as `skipped` and queues nothing), or what freshness an inline list has (inline rules have no download to confirm).
 **Decision:**
