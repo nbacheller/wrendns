@@ -374,7 +374,11 @@ async fn start_flow(h: &Harness, id: &str) -> (String, String, String) {
         .unwrap();
     assert_eq!(start.status(), StatusCode::FOUND);
     let to = start.headers()["location"].to_str().unwrap().to_owned();
-    assert!(to.contains("/authorize?"), "{to}");
+    let authorize = format!("{}/authorize?", h.idps[id].issuer);
+    assert!(
+        to.starts_with(&authorize),
+        "{to} should start with {authorize}"
+    );
     assert!(to.contains("code_challenge_method=S256"), "PKCE");
     assert!(
         to.contains(&format!(
