@@ -3,9 +3,9 @@
 name: home-assistant
 on:
   push:
-    paths: ["integrations/home-assistant/**", "crates/telltale/src/routers.rs", "crates/telltale/src/device_dns.rs", ".github/workflows/home-assistant.yml"]
+    paths: ["integrations/home-assistant/**", "crates/telltale/src/routers.rs", "crates/telltale/src/device_dns.rs", "deploy/ha-test/**", ".github/workflows/home-assistant.yml"]
   pull_request:
-    paths: ["integrations/home-assistant/**", "crates/telltale/src/routers.rs", "crates/telltale/src/device_dns.rs", ".github/workflows/home-assistant.yml"]
+    paths: ["integrations/home-assistant/**", "crates/telltale/src/routers.rs", "crates/telltale/src/device_dns.rs", "deploy/ha-test/**", ".github/workflows/home-assistant.yml"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -28,3 +28,15 @@ jobs:
       - name: Test
         working-directory: integrations/home-assistant
         run: pytest -q -p no:cacheprovider
+  # REQ: T24.21 — the TelltaleDNS Home Assistant source and integration against a throwaway
+  # Home Assistant (deploy/ha-test): devices named and addressed, the names in DNS, the sensors.
+  ha-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p telltale
+      - name: Home Assistant source against a throwaway Home Assistant
+        run: bash deploy/ha-test/e2e.sh target/debug/telltale

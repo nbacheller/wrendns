@@ -20,9 +20,11 @@
 >   - SNMP polling of your gateway and switches (which device is on which port);
 >   - more UniFi reads;
 >   - importing results from a scanner you run yourself.
-> - **M26, live network map (planned):** an animated map of your network and of where its lookups go, coloured green, yellow or red by health. A world view is optional.
+> - **M26, live network map (designed, [ADR-958](spec/11-decisions.md)):** an animated map of your network and of where its lookups go, coloured green, yellow or red by health, sampled off the DNS path. A world view is optional, with a country database you download only if you turn it on ([ADR-959](spec/11-decisions.md)).
 > - **A three-node test cluster (T21.5, [`deploy/cluster3`](deploy/cluster3/README.md)):** a primary and two replicas in containers, checked in CI on every change to the cluster code; it found and fixed a replica that followed a dead primary after a promotion.
-> - **M27, UI for everything (planned):** a UI control for every older setting too, with guarded admin controls for listeners, TLS, keys and cluster setup ([ADR-914](spec/11-decisions.md)).
+> - **Cluster alerts:** an alert and a health reason when a replica can't reach its primary (T24.5).
+> - **Test harnesses:** a throwaway Home Assistant in Docker for the Home Assistant source ([`deploy/ha-test`](deploy/ha-test/README.md), in CI).
+> - **M27, UI for everything (designed, [ADR-956](spec/11-decisions.md)):** a UI control for every older setting too, with guarded admin controls for listeners, TLS, keys and cluster setup ([ADR-914](spec/11-decisions.md)).
 >
 > **Every feature gets a UI control**, not only config, API or MCP. Fork issues are tracked [here](https://github.com/nbacheller/telltaledns/issues). Changes from upstream are merged regularly.
 >

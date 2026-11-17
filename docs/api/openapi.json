@@ -268,7 +268,7 @@
           "config"
         ],
         "summary": "Add or change an alert rule (OBS-010, T9.6).",
-        "description": "The body has the same fields as `[[alerts.rule]]` (the name comes from the path):\n`{\"when\": \"upstream_down\", \"for_secs\": 60, \"to\": [\"phone\"]}`. `when` is one of\n`upstream_down`, `node_down`, `list_failing`, `anomaly`, `servfail_rate`,\n`update_available`, `sync_lag`, `new_device`, `disk_full`, `plan_pending`.",
+        "description": "The body has the same fields as `[[alerts.rule]]` (the name comes from the path):\n`{\"when\": \"upstream_down\", \"for_secs\": 60, \"to\": [\"phone\"]}`. `when` is one of\n`upstream_down`, `node_down`, `list_failing`, `anomaly`, `servfail_rate`,\n`update_available`, `sync_lag`, `primary_unreachable`, `new_device`, `disk_full`, `plan_pending`.",
         "operationId": "put_alert_rule",
         "parameters": [
           {
@@ -12326,6 +12326,15 @@
               "null"
             ]
           },
+          "primarySilentSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "REQ: OBS-010 (T24.5, fork #2) — a replica's time without reaching its primary, in seconds\n(the `primary_unreachable` alert and the health icon read it). Absent when it reaches the\nprimary, is the primary, or isn't heard from.",
+            "minimum": 0
+          },
           "protocol": {
             "type": "integer",
             "format": "int32",
@@ -15037,7 +15046,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,\n`rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`.",
+            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,\n`rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`.",
             "example": "upstream_down"
           },
           "level": {

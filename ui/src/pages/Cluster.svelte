@@ -459,6 +459,13 @@ telltale cluster join tt_join_…</pre>
                     <div class="mono muted small" title={n.nodeId}>
                       {shortId(n.nodeId)}{#if n.configSource}{' · '}{n.configSource === 'gitops' ? 'Git-managed' : 'local file'}{/if}
                     </div>
+                    <!-- REQ: OBS-010 (T24.5, fork #2) — a replica that hasn't reached its primary for a while (a silent split). -->
+                    {#if n.primarySilentSeconds != null}
+                      <div class="small" data-testid="cluster-node-primary-silent">
+                        <span class="badge warn">no contact with the primary</span> for {duration(n.primarySilentSeconds)}
+                        <HelpButton id="primary-unreachable" />
+                      </div>
+                    {/if}
                     {#if n.pod}<div class="muted small" data-testid="cluster-node-pod">pod <span class="mono">{n.pod}</span>{#if n.kubeNode}{' on '}<span class="mono">{n.kubeNode}</span>{/if}</div>{/if}
                     <!-- REQ: OPS-010 — the window, and the actions for operators. -->
                     {#if n.maintenance}

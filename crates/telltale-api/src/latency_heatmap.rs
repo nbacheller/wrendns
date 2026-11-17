@@ -157,7 +157,7 @@ pub(crate) async fn latency_heatmap(
     State(b): State<Shared>,
     Query(p): Query<LatencyHeatmapParams>,
 ) -> Result<Json<LatencyHeatmap>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&crate::request_backend(&b), p.scope.as_deref())?;
     let now = b.now_unix_seconds();
     let (step, max_s) = match p.step.as_deref().unwrap_or("minute") {
         "minute" => (Step::Minute, 48 * 3600),
@@ -220,7 +220,7 @@ pub(crate) async fn latency_exemplars(
     State(b): State<Shared>,
     Query(p): Query<ExemplarParams>,
 ) -> Result<Json<LatencyExemplars>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&crate::request_backend(&b), p.scope.as_deref())?;
     let now = b.now_unix_seconds();
     let from = time_param(p.from.as_deref(), now.saturating_sub(6 * 3600), now, "from")?;
     let to = time_param(p.to.as_deref(), now + 1, now, "to")?;

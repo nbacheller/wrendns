@@ -243,3 +243,59 @@ fn clu_004_a_direct_federated_read_leaves_the_worker_free() {
         "three direct federated reads took {elapsed:?}, not about one deadline: a worker was held, or a read panicked"
     );
 }
+
+/// REQ: CLU-003, FLT-004 (T24.11) — concurrent requests on one shared backend each name only the
+/// nodes their own reads missed. The replica's `GET /lists` read misses its silent primary; a
+/// second request on the same backend answers from this node alone, and its `missingNodes` must
+/// stay empty even after the first request has recorded its miss.
+#[test]
+fn clu_003_concurrent_requests_name_only_their_own_missing_nodes() {
+    let (own, other) = finish_within(|| {
+        let rt = multi_thread_runtime(2);
+        let (h, replica, primary, stop, dirs) = rt.block_on(api_on_a_silent_primary());
+        let local: Shared = Arc::new(crate::api_backend::ApiBackend {
+            src: Arc::clone(&h.src),
+        });
+        let shared: Shared = Arc::new(crate::federated::Federated::new(
+            local,
+            Arc::clone(&replica),
+        ));
+        let out = rt.block_on(async {
+            let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+            let first = telltale_api::request_backend(&shared);
+            let second = telltale_api::request_backend(&shared);
+            let a = tokio::spawn(async move {
+                let answer = first.lists_and_hits();
+                let own = first.missing_nodes();
+                let _ = done_tx.send(());
+                (answer.missing, own)
+            });
+            let b = tokio::spawn(async move {
+                // A read that answers from this node alone, while the first request is in flight.
+                let _ = second.system_info();
+                let _ = done_rx.await;
+                second.missing_nodes()
+            });
+            let a = a.await.unwrap_or_default();
+            let b = b.await.unwrap_or_default();
+            (a, b)
+        });
+        let _ = stop.send(true);
+        rt.shutdown_background();
+        drop((h, replica, primary, dirs));
+        out
+    });
+    assert_eq!(
+        own.0, own.1,
+        "the request's answer and its missingNodes differ"
+    );
+    assert_eq!(
+        own.0.len(),
+        1,
+        "the first request names its silent primary: {own:?}"
+    );
+    assert!(
+        other.is_empty(),
+        "a request that missed nothing names {other:?}, another request's missing node"
+    );
+}

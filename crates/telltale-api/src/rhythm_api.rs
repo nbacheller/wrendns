@@ -215,6 +215,7 @@ pub(crate) async fn client_rhythm(
     Path(id): Path<String>,
     Query(p): Query<RhythmParams>,
 ) -> Result<Json<ClientRhythm>, Problem> {
+    let b = crate::request_backend(&b);
     let privacy = b.qlog_privacy_level();
     if privacy >= 1 {
         return Err(Problem::new(

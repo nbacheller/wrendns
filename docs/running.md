@@ -3012,6 +3012,7 @@ Rules watch:
 | `anomaly` | a [device anomaly](#device-anomalies) is found, unless it is acknowledged or [muted](#muting-a-kind-of-finding-for-a-device) | finding |
 | `update_available` | a newer TelltaleDNS build is out | version |
 | `sync_lag` | a replica is behind the primary's configuration (set `for_secs`, say 300, so a normal sync stays quiet) | node |
+| `primary_unreachable` | a replica hasn't reached its primary for `threshold` seconds (default 60, from 15 to 86400), so a silent split shows; witnesses and resolver pods are left out. It also shows as a degraded health reason and on the Cluster page | node |
 | `new_device` | a device TelltaleDNS has never seen starts asking, on any node (quiet for the first day after a fresh start, while every device is new) | device |
 | `disk_full` | a node's data disk is more than `threshold` % full (default 90) | node |
 | `plan_pending` | an AI agent's change waits for approval (`[agents] require_approval`) | plan |

@@ -885,6 +885,13 @@ fn alerts(cfg: &Config, r: &mut Report<'_>) {
             {
                 r.err(format!("{p}.threshold"), "days from 1 to 365");
             }
+        } else if x.when == crate::schema::AlertWhen::PrimaryUnreachable {
+            // REQ: OBS-010 (T24.5, fork #2) — seconds without reaching the primary.
+            if let Some(t) = x.threshold
+                && !(15.0..=86_400.0).contains(&t)
+            {
+                r.err(format!("{p}.threshold"), "seconds from 15 to 86400");
+            }
         } else if let Some(t) = x.threshold
             && !(0.0..=100.0).contains(&t)
         {

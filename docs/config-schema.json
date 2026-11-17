@@ -762,6 +762,11 @@
           "const": "sync_lag"
         },
         {
+          "description": "REQ: OBS-010 (T24.5, fork #2) — a replica hasn't reached its primary for `threshold`\nseconds (default 60; 15 to 86400), so a silent split is seen (one alert per replica).\nWitnesses and resolver pods are left out.",
+          "type": "string",
+          "const": "primary_unreachable"
+        },
+        {
           "description": "A device TelltaleDNS has never seen starts asking (once per device; quiet for the\nfirst day after a fresh start, while every device is new).",
           "type": "string",
           "const": "new_device"

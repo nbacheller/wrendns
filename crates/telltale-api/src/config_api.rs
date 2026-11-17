@@ -838,7 +838,7 @@ pub(crate) async fn delete_router(
 /// The body has the same fields as `[[alerts.rule]]` (the name comes from the path):
 /// `{"when": "upstream_down", "for_secs": 60, "to": ["phone"]}`. `when` is one of
 /// `upstream_down`, `node_down`, `list_failing`, `anomaly`, `servfail_rate`,
-/// `update_available`, `sync_lag`, `new_device`, `disk_full`, `plan_pending`.
+/// `update_available`, `sync_lag`, `primary_unreachable`, `new_device`, `disk_full`, `plan_pending`.
 #[utoipa::path(put, path = "/api/v1/alerts/rules/{name}", tag = "config",
     params(("name" = String, Path, description = "The name."), DryRun),
     request_body = Object,

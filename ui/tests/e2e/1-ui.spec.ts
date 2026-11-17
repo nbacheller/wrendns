@@ -1888,7 +1888,7 @@ test('obs_010 alerts page: destinations, test, rules', async () => {
     // exact: the config file's destination (file-ntfy) is listed too, and its name contains no ui-hook.
     await page.getByRole('group', { name: 'Send to' }).getByRole('checkbox', { name: 'ui-hook', exact: true }).check();
     await page.getByRole('spinbutton', { name: 'For at least (seconds)' }).fill('0');
-    await page.getByRole('spinbutton', { name: 'Threshold (%)' }).fill('0.1');
+    await page.getByRole('spinbutton', { name: 'Threshold' }).fill('0.1');
     await page.getByRole('button', { name: 'Check' }).click();
     await page.getByRole('button', { name: 'Apply' }).click();
     await expect(rules.getByTestId('entry-row').filter({ hasText: 'ui-disk' })).toContainText('disk_full → ui-hook');
@@ -4347,6 +4347,47 @@ test("clu_015 cluster page shows each member's secret state", async () => {
   await expect(page.locator('th', { hasText: 'Secrets' }).getByRole('button')).toBeVisible();
   // Drop the mock and reload: the next test's `goto` only changes the hash, so it would keep this view.
   await page.unroute('**/api/v1/cluster');
+  await page.reload();
+});
+
+// REQ: OBS-010 (T24.5, fork #2) — a replica that hasn't reached its primary shows on the Cluster
+// page (cluster mocked): the replica's row says how long, with the help button; the primary and
+// the replica that reaches it don't; the Alerts form offers the condition with its threshold.
+test('clu_004 primary unreachable shows on the cluster page', async () => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const node = (o: Record<string, unknown>) => ({
+    ephemeral: false, witness: false, protocol: 4, role: 'replica', thisNode: false, eligible: true, version: '0.8.0',
+    up: true, connected: true, link: 'inbound', lastSeenSecondsAgo: 1, rttMs: 3, configSeq: 12, configLag: 0, ready: true,
+    qps: 10, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, restarts: 0, ...o,
+  });
+  const view = {
+    enabled: true, clusterId: 'c1', name: 'home', thisNode: 'aaaa1111', newestConfigSeq: 12, healthy: true, checks: [],
+    events: [], conflicts: [], authority: 'api',
+    nodes: [
+      node({ nodeId: 'aaaa1111', site: 'k8s', role: 'primary', thisNode: true, link: 'self' }),
+      node({ nodeId: 'bbbb2222', site: 'pi', primarySilentSeconds: 95 }),
+      node({ nodeId: 'cccc3333', site: 'canary-box' }),
+    ],
+  };
+  await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: view }));
+  // Leave the page first: a hash-only goto to the page already shown keeps its old data until the next poll.
+  await page.goto('/#/alerts');
+  await page.goto('/#/cluster?tab=nodes');
+  const rows = page.getByTestId('cluster-node');
+  await expect(rows).toHaveCount(3);
+  const silent = rows.nth(1).getByTestId('cluster-node-primary-silent');
+  await expect(silent).toContainText('no contact with the primary');
+  await expect(silent).toContainText('for 1m');
+  await expect(silent.getByRole('button')).toBeVisible(); // the primary-unreachable help topic
+  await expect(rows.nth(0).getByTestId('cluster-node-primary-silent')).toHaveCount(0);
+  await expect(rows.nth(2).getByTestId('cluster-node-primary-silent')).toHaveCount(0);
+  // The alert condition is offered in the Alerts form (selecting it fails if it isn't).
+  await page.unroute('**/api/v1/cluster');
+  await page.goto('/#/alerts');
+  const rules = page.getByTestId('editor-alert_rule');
+  await rules.getByRole('button', { name: 'Add rule' }).click();
+  await page.getByLabel('When', { exact: true }).selectOption('primary_unreachable');
+  // Drop the form and the mock: the next test's `goto` only changes the hash.
   await page.reload();
 });
 
