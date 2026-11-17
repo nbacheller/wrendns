@@ -142,7 +142,10 @@
       groups = g.items;
       existing = c.items.find((x) => x.match.includes(ip)) ?? null;
       identity = id;
-      const suggested = leases?.items.find((l) => l.ip === ip)?.hostname;
+      // A live row's name first: an offline row's address may have been reused since.
+      const suggested =
+        leases?.items.find((l) => l.ip === ip && !l.offline)?.hostname ??
+        leases?.items.find((l) => l.ip === ip)?.hostname;
       // A guess only pre-fills the form (owner, 2026-10-09): it never becomes a name by itself.
       const guess = id?.available && id.level !== 'unknown' ? (id.product ?? undefined) : undefined;
       newName = existing?.name ?? name ?? suggested ?? guess ?? '';

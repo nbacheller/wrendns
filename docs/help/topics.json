@@ -973,7 +973,7 @@
       "id": "offline-leases",
       "title": "Offline devices in the leases",
       "term": "Offline",
-      "summary": "The leases (the Clients page's Discovered list and a network's device list) include the devices the router remembers but doesn't see now, marked offline. They show the address and the name the router gave, but no DNS name, and they don't count in a network's device total.",
+      "summary": "The leases (the Clients page's Discovered list and a network's device list) include the devices the router remembers but doesn't see now, marked offline. They show the address and the name the router gave, but no DNS name, and they don't count in a network's device total. So the Discovered tab's count can be higher than the device count on the Networks page.",
       "when": "You want to see a device that has left the network, or check why a known device has no DNS name.",
       "example": "A phone marked offline in Discovered still shows its name in the query log, but asking DNS for its name gets no answer until it is back on the network.",
       "caution": "An offline row is the router's memory, not a live answer. Its address may belong to another device by now, which is why it gives no DNS name and no binding to the device inventory.",

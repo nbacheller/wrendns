@@ -2505,8 +2505,13 @@ impl Backend for ApiBackend {
                 offline: l.offline,
             })
             .collect();
-        // REQ: T8.3, T8.6 — and the names devices announce over mDNS (routers win).
-        let known: std::collections::HashSet<String> = v.iter().map(|l| l.ip.clone()).collect();
+        // REQ: T8.3, T8.6 — and the names devices announce over mDNS (routers win). An offline
+        // client doesn't hold its address now (UniFi reuses it), so it doesn't hide a live device.
+        let known: std::collections::HashSet<String> = v
+            .iter()
+            .filter(|l| !l.offline)
+            .map(|l| l.ip.clone())
+            .collect();
         for l in self.src.pipeline.mdns_names.load().values() {
             if known.contains(&l.ip.to_string()) {
                 continue;
@@ -7263,5 +7268,49 @@ mod settings_keep_in_git_tests {
         let s = keep_in_git(ManagedKind::Local, "default", Some(&on), Some(&on));
         assert!(s.contains("device_domain = \"home.arpa\""), "{s}");
         toml::from_str::<toml::Table>(&s).unwrap_or_else(|e| panic!("{e}: {s}"));
+    }
+}
+
+#[cfg(test)]
+mod dhcp_lease_tests {
+    use super::*;
+
+    /// REQ: T8.2 (ADR-945) — an offline router client is listed with its mark, but it doesn't
+    /// hold its address now, so a live mDNS device at that address is still listed too.
+    #[test]
+    fn t8_2_offline_lease_does_not_hide_an_mdns_device() {
+        let src = Arc::new(crate::http::tests::sources());
+        let ip = std::net::Ipv4Addr::new(192, 168, 1, 50);
+        let offline = crate::devices::Lease {
+            mac: "aa:bb:cc:00:00:50".into(),
+            ip,
+            hostname: Some("old-tv".into()),
+            expires: 0,
+            router: None,
+            offline: true,
+        };
+        src.pipeline
+            .router_leases
+            .store(Arc::new([(ip, offline)].into_iter().collect()));
+        let mdns = crate::devices::Lease {
+            mac: String::new(),
+            ip,
+            hostname: Some("printer".into()),
+            expires: 0,
+            router: None,
+            offline: false,
+        };
+        src.pipeline
+            .mdns_names
+            .store(Arc::new([(ip, mdns)].into_iter().collect()));
+        let api = ApiBackend { src };
+        let rows = api.dhcp_leases();
+        let at: Vec<_> = rows.iter().filter(|l| l.ip == "192.168.1.50").collect();
+        assert_eq!(at.len(), 2, "{rows:?}");
+        assert!(
+            at.iter()
+                .any(|l| l.source == "router" && l.offline && l.dns_name.is_none())
+        );
+        assert!(at.iter().any(|l| l.source == "mdns" && !l.offline));
     }
 }

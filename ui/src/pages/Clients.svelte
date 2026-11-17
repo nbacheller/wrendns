@@ -288,7 +288,7 @@
         Names your routers know (UniFi, OPNsense, and Home Assistant, on the <a href="#/routers">Routers</a> page), or that
         devices announced themselves over mDNS (<code>[clients] mdns</code>). Unnamed devices already show these names; click an address to keep
         one, change it, or put the device in a group. A client marked <em>offline</em> is one the router remembers but doesn't see now: it
-        names nothing in DNS and isn't counted as a device.
+        names nothing in DNS and isn't counted as a device, so this list (and its count) can be longer than the device counts on the Networks page.
       </p>
       {#if found.length === 0}
         <p class="empty">Nothing discovered yet. Add a router on the <a href="#/routers">Routers</a> page, or set <code>[clients] mdns = true</code>.</p>
