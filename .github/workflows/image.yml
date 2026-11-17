@@ -63,7 +63,7 @@ jobs:
             --cache-from type=gha --cache-to type=gha,mode=max \
             --output type=oci,dest=image.tar .
 
-      - name: Size gate (≤ 15 MiB compressed per arch)
+      - name: Size gate (≤ 25 MiB compressed per arch, ADR-916)
         run: python3 deploy/image/size.py --oci image.tar
 
       # The build stage is cross-compiled, so these loads come from cache; only running the

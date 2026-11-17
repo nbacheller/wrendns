@@ -14,6 +14,7 @@ Support tiers: **Tier 1:** Helm on k8s/k3s (amd64, arm64); Docker/Podman Compose
 ## 2. Image (OPS-001)
 - Built with `cargo zigbuild` or `cross` for `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, and `armv7-unknown-linux-musleabihf`. Release profile: `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = true`, `opt-level = 3`. A profile-guided-optimization (PGO) build from the benchmark corpus is P1.
 - `USER 65532:65532`, read-only root filesystem, `/var/lib/telltale` as the only writable volume. Needs `NET_BIND_SERVICE` only if binding < 1024 inside the container. `NET_ADMIN`/netlink is *not* needed: neighbor-table reads use unprivileged `/proc/net/arp` + netlink route dumps, which work with host networking.
+- Tz database: the image ships `/usr/share/zoneinfo` without `right/` (leap-second zones), `*.tab`, `tzdata.zi` and `leap*` (ADR-915). Schedules read the TZif zones by name; a `right/...` name does not resolve.
 - Signed with cosign (keyless), SBOM attached, provenance (SLSA level 3 via GitHub Actions).
 - Tags: `X.Y.Z`, `X.Y`, `X`, `latest`, plus `edge` from main.
 
