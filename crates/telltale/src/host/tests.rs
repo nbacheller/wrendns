@@ -226,3 +226,68 @@ fn clu_008_history_keeps_one_hour() {
     assert_eq!(h.first().map(|s| s.ts_ms), Some(10));
     assert_eq!(m.latest().map(|s| s.ts_ms), Some(HISTORY as u64 + 9));
 }
+
+/// REQ: DSC-002 (ADR-934, `dsc_002_write_rate_survives_a_worker_spawn`) — the host's write-rate metric
+/// still has a value after a discovery worker's spawn made this process not dumpable. Run as uid
+/// 65534 (the systemd unit's, the image's and the chart's non-root user): there the file can't be
+/// opened again, so the value comes only from the descriptor pinned before the spawn. A root test
+/// process re-runs this test as that user, the way the worker tests do.
+#[cfg(target_os = "linux")]
+#[test]
+fn dsc_002_write_rate_survives_a_worker_spawn() {
+    const NAME: &str = "host::tests::dsc_002_write_rate_survives_a_worker_spawn";
+    if std::env::var_os("TT_HOST_CHILD").is_some() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut collector = Collector::new(tmp.path().to_path_buf());
+        let first = collector.sample();
+        assert!(
+            first.write_bytes_per_s.is_none(),
+            "the first sample has no rate yet"
+        );
+        let mut cmd = std::process::Command::new("/bin/true");
+        telltale_net::worker::prepare_spawn(&mut cmd).expect("prepare the spawn");
+        assert!(cmd.status().expect("run the worker stand-in").success());
+        // The process is not dumpable now. For a non-root uid a fresh open must fail, or the test
+        // proves nothing about the pinned descriptor.
+        if process_euid() != Some(0) {
+            assert!(
+                fs::File::open("/proc/self/io").is_err(),
+                "a non-root process must not reopen /proc/self/io once not dumpable"
+            );
+        }
+        let second = collector.sample();
+        assert!(
+            second.write_bytes_per_s.is_some(),
+            "the write rate must survive the spawn (ADR-934)"
+        );
+        return;
+    }
+    let is_root = process_euid() == Some(0);
+    let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+    cmd.args([NAME, "--exact", "--nocapture"])
+        .env("TT_HOST_CHILD", "1");
+    if is_root {
+        use std::os::unix::process::CommandExt as _;
+        cmd.uid(65534).gid(65534);
+    }
+    let out = cmd.output().expect("run the child test");
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The effective uid of this process, from `/proc/self/status` (Linux).
+#[cfg(target_os = "linux")]
+fn process_euid() -> Option<u32> {
+    fs::read_to_string("/proc/self/status")
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("Uid:"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}

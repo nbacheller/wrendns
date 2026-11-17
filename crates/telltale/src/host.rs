@@ -481,7 +481,15 @@ impl Collector {
             .ok()
             .map(|d| u32::try_from(d.count()).unwrap_or(u32::MAX));
         s.max_fds = read(&self.proc_root, "self/limits").and_then(|t| max_open_files(&t));
-        if let Some(w) = read(&self.proc_root, "self/io").and_then(|t| io_write_bytes(&t)) {
+        // REQ: DSC-002 (ADR-934) — on the real /proc, `/proc/self/io` comes from the descriptor the
+        // net crate opened before the discovery workers made this process not dumpable (a non-root
+        // process can't open it again). A test's own root reads its fake files.
+        let io = if self.proc_root == Path::new("/proc") {
+            telltale_net::self_io_text()
+        } else {
+            read(&self.proc_root, "self/io")
+        };
+        if let Some(w) = io.and_then(|t| io_write_bytes(&t)) {
             if let (Some(was), Some(dt)) = (self.prev.written, elapsed) {
                 let secs = dt.as_secs_f64().max(0.001);
                 s.write_bytes_per_s = Some((w.saturating_sub(was) as f64 / secs) as u64);

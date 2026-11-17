@@ -29,6 +29,8 @@
   import Clients from './pages/Clients.svelte';
   import Routers from './pages/Routers.svelte';
   import Networks from './pages/Networks.svelte';
+  // REQ: DSC-001 (T25.2) — the network inventory's settings and status, a lazy chunk.
+  import NetworkInventoryRoute from './pages/NetworkInventoryRoute.svelte';
   import Anomalies from './pages/Anomalies.svelte';
   import Cluster from './pages/Cluster.svelte';
   import Cache from './pages/Cache.svelte';
@@ -53,6 +55,8 @@
     { path: '/clients', label: 'Clients', page: Clients, icon: 'clients', section: 'Devices' },
     // REQ: API-013 (T24.15) — the networks the routers report, beside Clients.
     { path: '/networks', label: 'Networks', page: Networks, icon: 'networks', section: 'Devices' },
+    // REQ: DSC-001 (T25.2, ADR-907) — the network inventory: its settings (admins) and status.
+    { path: '/network-inventory', label: 'Network inventory', page: NetworkInventoryRoute, icon: 'networks', section: 'Devices' },
     { path: '/groups', label: 'Groups', page: Groups, icon: 'groups', section: 'Devices' },
     // REQ: API-016 (T23.8) — router integrations: the devices' names come from them.
     { path: '/routers', label: 'Routers', page: Routers, icon: 'cluster', section: 'Devices' },

@@ -80,6 +80,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     auth(cfg, &mut r);
     cluster(cfg, &mut r);
     secret_references(cfg, &mut r);
+    discovery(cfg, &mut r);
     r.warnings
 }
 
@@ -1859,6 +1860,62 @@ impl MatchKey {
             return Ok(Self::Mac(mac));
         }
         Err(format!("`{s}` is not an IP, CIDR, MAC, or id:<client-id>"))
+    }
+}
+
+// REQ: DSC-001 (T25.2, ADR-907) — `[discovery]`: private IPv4 subnets only (IPv6, 100.64/10 and
+// every other non-RFC 1918 range are refused), a worker memory limit in 32–128 MiB, a node name
+// when one is set, and no enable at privacy level 2 or more (the inventory names devices).
+fn discovery(cfg: &Config, r: &mut Report<'_>) {
+    let d = &cfg.discovery;
+    if let Some(n) = &d.node
+        && n.as_str().trim().is_empty()
+    {
+        r.err("discovery.node", "name a node, or leave it out");
+    }
+    if !(crate::discovery::WORKER_MEMORY_MIN_MIB..=crate::discovery::WORKER_MEMORY_MAX_MIB)
+        .contains(&d.worker_memory_mib)
+    {
+        r.err(
+            "discovery.worker_memory_mib",
+            "from 32 to 128 (MiB per discovery worker)",
+        );
+    }
+    for (i, s) in d.subnets.iter().enumerate() {
+        let path = format!("discovery.subnet[{i}].cidr");
+        if !matches!(s.cidr.addr, std::net::IpAddr::V4(_)) {
+            r.err(
+                path,
+                format!("`{}`: IPv6 isn't read yet (M25 is IPv4 only)", s.cidr),
+            );
+            continue;
+        }
+        if !crate::discovery::is_rfc1918_network(&s.cidr) {
+            r.err(
+                path,
+                format!("`{}` isn't a private (RFC 1918) network: only 10/8, 172.16/12 and 192.168/16 are read", s.cidr),
+            );
+            continue;
+        }
+        if d.subnets[..i].iter().any(|o| o.cidr == s.cidr) {
+            r.warn(format!("discovery.subnet: `{}` is listed twice", s.cidr));
+        }
+        for (net, what) in crate::discovery::OVERLAP_WARNINGS {
+            if let Ok(n) = crate::Cidr::parse(net)
+                && crate::discovery::overlaps(&s.cidr, &n)
+            {
+                r.warn(format!(
+                    "discovery.subnet `{}` overlaps {what} ({net}): pod and service addresses would be read",
+                    s.cidr
+                ));
+            }
+        }
+    }
+    if d.enabled && cfg.telemetry.qlog.privacy_level >= 2 {
+        r.err(
+            "discovery.enabled",
+            "the network inventory needs client addresses, which telemetry.qlog.privacy_level 2 and 3 hide: set it to 0 or 1 first",
+        );
     }
 }
 

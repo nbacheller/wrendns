@@ -3652,6 +3652,188 @@
         }
       }
     },
+    "/api/v1/discovery-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set the network inventory's settings (DSC-001, T25.2, ADR-907): whether it runs, the node that\nruns it, the subnets it may read, and the worker memory limit.",
+        "description": "Admin only: an operator's change is 403, and no agent can change it. The first write is refused\nwith 409 `members_too_old` while any member runs a version older than this one (ADR-907, CLU-010).\nThe configuration files win field by field (`set_by_file`).",
+        "operationId": "put_discovery_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin may change the network inventory; agents never.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`, or `members_too_old`: a member runs an older version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is unknown, or a subnet isn't a private IPv4 network.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Go back to the config file's `[discovery]` section (DSC-001).",
+        "description": "Removes what the API stored, so the file's settings apply again. Admin only; no agent.",
+        "operationId": "delete_discovery_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin may change the network inventory; agents never.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing was changed through the API: the file's settings are in effect already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/discovery/status": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "The network inventory's status (DSC-014).",
+        "description": "Whether the inventory runs on this node, and each discovery worker process. The inventory itself\n(`GET /api/v1/discovery`) comes with T25.12.",
+        "operationId": "discovery_status",
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/displays": {
       "get": {
         "tags": [
@@ -12549,6 +12731,7 @@
           "credential_reentry_required",
           "secrets_locked",
           "upgrade_required",
+          "members_too_old",
           "path_not_allowed",
           "set_by_file",
           "secret_missing",
@@ -13155,6 +13338,106 @@
           "source": {
             "type": "string",
             "description": "`router` (read from a `[[router]]`) or `mdns` (the name the device announces,\n`[clients] mdns`; no MAC)."
+          }
+        }
+      },
+      "DiscoveryStatus": {
+        "type": "object",
+        "description": "REQ: DSC-014 (T25.3, ADR-908) — the network inventory's status: whether it runs on this node,\nand each discovery worker process. Health reasons for the workers never mark DNS unhealthy.",
+        "required": [
+          "enabled",
+          "designated",
+          "workers"
+        ],
+        "properties": {
+          "designated": {
+            "type": "boolean",
+            "description": "Whether this node is the designated one (it runs the inventory and its workers)."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "`[discovery] enabled`."
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The designated node's name, when `[discovery] node` is set."
+          },
+          "workers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiscoveryWorker"
+            },
+            "description": "The worker processes this node runs (none unless enabled and designated)."
+          }
+        }
+      },
+      "DiscoveryWorker": {
+        "type": "object",
+        "description": "REQ: DSC-002 (T25.3, ADR-908) — one discovery worker process, as the supervisor sees it.",
+        "required": [
+          "worker",
+          "up",
+          "restarts",
+          "versionMismatch",
+          "failing"
+        ],
+        "properties": {
+          "dataLimitMib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The worker's `RLIMIT_DATA` in MiB, as it reported it at the handshake.",
+            "minimum": 0
+          },
+          "dumpable": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the worker reported it isn't dumpable (no core dumps, no /proc reads by others)."
+          },
+          "failing": {
+            "type": "boolean",
+            "description": "Three or more crashes in ten minutes: restarts are slowed (`discovery_worker_failing`)."
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last failure, in words (the stderr line is logged, rate-limited)."
+          },
+          "oomScoreAdj": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The worker's `oom_score_adj`, as it reported it."
+          },
+          "restarts": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Times the worker has been restarted since start.",
+            "minimum": 0
+          },
+          "up": {
+            "type": "boolean",
+            "description": "Running, with a handshake that matched."
+          },
+          "versionMismatch": {
+            "type": "boolean",
+            "description": "The worker's build differs from this node's: it is refused (`discovery_worker_version_mismatch`)."
+          },
+          "worker": {
+            "type": "string",
+            "description": "`snmp` (the SNMP poller) or `import` (the scan-import parser, short-lived).",
+            "example": "snmp"
           }
         }
       },
@@ -14523,7 +14806,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,\n`rollout_stuck`.",
+            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,\n`rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`.",
             "example": "upstream_down"
           },
           "level": {

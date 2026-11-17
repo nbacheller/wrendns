@@ -5105,3 +5105,148 @@ test('api_013 a made group draft does not reopen on reload', async () => {
     await page.unroute('**/api/v1/networks');
   }
 });
+
+// REQ: DSC-001 (T25.2, ADR-907, ADR-928) — the network inventory's settings are admin-only: an admin
+// sees the controls; an operator sees them read-only, and the server refuses an operator's write.
+test('dsc_001 network inventory settings are admin-only', async () => {
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  await expect(settings.getByRole('switch', { name: 'Turn the network inventory on' })).toBeEnabled();
+  await expect(settings.getByRole('button', { name: 'Check', exact: true })).toBeVisible();
+  const OPERATOR = { user: 'operator2', pass: 'operator long password' };
+  const csrf = await csrfOf(page.request);
+  await page.request.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: OPERATOR.user, password: OPERATOR.pass, role: 'operator' } });
+  const op = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  try {
+    const p = await op.newPage();
+    await p.goto('/#/network-inventory');
+    await p.getByLabel('Username', { exact: true }).fill(OPERATOR.user);
+    await p.getByLabel('Password', { exact: true }).fill(OPERATOR.pass);
+    await p.getByRole('button', { name: 'Sign in' }).click();
+    const mine = p.getByTestId('inventory-settings');
+    await expect(mine.getByText('Only an administrator can change the network inventory')).toBeVisible({ timeout: 30_000 });
+    await expect(mine.getByRole('button', { name: 'Check', exact: true })).toHaveCount(0);
+    await expect(mine.getByRole('switch', { name: 'Turn the network inventory on' })).toBeDisabled();
+    const ocsrf = await csrfOf(op.request);
+    const moved = await op.request.put('/api/v1/discovery-settings/default', { headers: { 'x-csrf-token': ocsrf }, data: { enabled: true, worker_memory_mib: 64 } });
+    expect(moved.status()).toBe(403);
+    expect(await moved.text()).toContain('enabled');
+  } finally {
+    await op.close();
+  }
+});
+
+// REQ: DSC-001 (T25.2, ADR-914) — a field the configuration files set is locked, and labelled as set
+// by file; the fields the files leave alone stay editable.
+test('dsc_001 file-set discovery shows set by file', async () => {
+  const entry = {
+    items: [{
+      kind: 'discovery', name: 'default', source: 'file',
+      definition: { enabled: true, node: null, worker_memory_mib: 64, subnet: [{ cidr: '192.168.1.0/24' }] },
+      redacted: [], credentialIssues: [], setByFile: ['enabled', 'subnet'], answering: null,
+    }],
+  };
+  await page.route(/\/api\/v1\/config\/entries\?kind=discovery/, (route) => route.fulfill({ json: entry }));
+  try {
+    // Leave the page first, so the page mounts again and reads the mocked entry.
+    await page.goto('/#/');
+    await page.goto('/#/network-inventory');
+    const settings = page.getByTestId('inventory-settings');
+    await expect(settings.getByTestId('set-by-file')).toHaveCount(2);
+    await expect(settings.getByRole('switch', { name: 'Turn the network inventory on' })).toBeDisabled();
+    await expect(settings.getByLabel('Subnets it may read')).toBeDisabled();
+    await expect(settings.getByLabel('Designated node')).toBeEnabled();
+  } finally {
+    await page.unroute(/\/api\/v1\/config\/entries\?kind=discovery/).catch(() => {});
+  }
+});
+
+// REQ: DSC-002 (T25.3, DSC-014, ADR-908) — a discovery worker that keeps stopping shows on the
+// network inventory page, with its restarts, and DNS is not mentioned as affected.
+test('dsc_002 failing worker shows on the inventory page', async () => {
+  const status = {
+    enabled: true, designated: true, node: null,
+    workers: [{
+      worker: 'snmp', up: false, restarts: 4, versionMismatch: false, failing: true,
+      lastError: 'the worker exited (signal: 6)', dataLimitMib: null, dumpable: false, oomScoreAdj: 1000,
+    }],
+  };
+  await page.route(/\/api\/v1\/discovery\/status/, (route) => route.fulfill({ json: status }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/network-inventory');
+    await expect(page.getByTestId('inventory-state')).toHaveText('Runs on this node');
+    const row = page.getByTestId('worker-snmp');
+    await expect(row.getByTestId('worker-failing')).toHaveText('failing');
+    await expect(row).toContainText('4');
+    await expect(page.getByTestId('inventory-status')).toContainText('the worker exited');
+  } finally {
+    await page.unroute(/\/api\/v1\/discovery\/status/).catch(() => {});
+  }
+});
+
+// REQ: DSC-001 (T25.2, ADR-928) — an admin checks a change, applies exactly what was checked, and then
+// drops the stored settings for the file's again. The real server answers every step.
+test('dsc_001 admin checks then applies, then uses the file settings', async () => {
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  await settings.getByLabel('Subnets it may read').fill('192.168.50.0/24');
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('inventory-preview')).toBeVisible();
+  await settings.getByRole('button', { name: 'Apply', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await expect(settings.getByLabel('Subnets it may read')).toHaveValue('192.168.50.0/24');
+  await settings.getByTestId('inventory-use-file').click();
+  await expect(page.getByRole('status').filter({ hasText: "Back to the configuration file's settings." })).toBeVisible();
+  await expect(settings.getByTestId('inventory-use-file')).toHaveCount(0);
+});
+
+// REQ: DSC-001 (T25.2, ADR-928) — a subnet outside RFC 1918 is refused with the server's message, and
+// nothing is applied: the Apply button is not offered for a refused check.
+test('dsc_001 a refused subnet shows the refusal', async () => {
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  await settings.getByLabel('Subnets it may read').fill('8.8.8.0/24');
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: "isn't a private (RFC 1918) network" })).toBeVisible();
+  await expect(settings.getByRole('button', { name: 'Apply', exact: true })).toHaveCount(0);
+  // The refusal is expected: the browser logs the 422 as a console error, which the test removes.
+  for (let i = problems.length - 1; i >= 0; i--) if (problems[i].includes('status of 422')) problems.splice(i, 1);
+});
+
+// REQ: DSC-001 (T25.2, ADR-928) — the first write is refused while a member is older than the release
+// that carries `[discovery]`; the refusal's own message is shown (the members are mocked).
+test('dsc_001 members too old is shown', async () => {
+  const detail = "the network inventory can't be turned on while pi-b runs an older version than this one: it can't read `[discovery]`";
+  await page.route(/\/api\/v1\/discovery-settings\/default/, (route) => {
+    if (route.request().method() !== 'PUT') return route.fallback();
+    return route.fulfill({ status: 409, json: { type: 'about:blank', title: 'Conflict', status: 409, detail, code: 'members_too_old' } });
+  });
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/network-inventory');
+    const settings = page.getByTestId('inventory-settings');
+    await settings.getByLabel('Subnets it may read').fill('192.168.60.0/24');
+    await settings.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'pi-b runs an older version' })).toBeVisible();
+    await expect(settings.getByRole('button', { name: 'Apply', exact: true })).toHaveCount(0);
+    // The refusal is expected: the browser logs the 409 as a console error, which the test removes.
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1);
+  } finally {
+    await page.unroute(/\/api\/v1\/discovery-settings\/default/).catch(() => {});
+    await page.goto('/#/network-inventory');
+  }
+});
+
+// REQ: DSC-001 (T25.2, ADR-928) — a poll does not overwrite what an admin is typing: the form is
+// refilled only while it still holds the stored settings.
+test('dsc_001 a poll keeps unsaved edits', async () => {
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  const node = settings.getByLabel('Designated node');
+  await node.fill('pi-unsaved');
+  // The page polls every 15 s; wait past one poll before looking again.
+  await page.waitForTimeout(16_000);
+  await expect(node).toHaveValue('pi-unsaved');
+  await node.fill('');
+});

@@ -24,6 +24,8 @@ telltale-telemetry = { path = "../crates/telltale-telemetry" }
 telltale-support = { path = "../crates/telltale-support" }
 telltale-snmp = { path = "../crates/telltale-snmp" }
 serde = { version = "1.0.229", features = ["derive"] }
+# The async frame reader (`discovery/frames.rs`) is fuzzed beside the sync one (DSC-002).
+tokio = { version = "1.53.1", features = ["io-util"] }
 
 [[bin]]
 name = "parse_query"
@@ -80,6 +82,13 @@ debug = 1
 [[bin]]
 name = "inventory_merge"
 path = "fuzz_targets/inventory_merge.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "worker_frames"
+path = "fuzz_targets/worker_frames.rs"
 test = false
 doc = false
 bench = false

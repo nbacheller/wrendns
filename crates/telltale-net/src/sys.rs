@@ -7,7 +7,11 @@
 // FFI glue: casts convert small compile-time sizes (struct sizes, batch caps <= 1024) and
 // AF_* constants into C types. Some casts look redundant on glibc but are required on musl,
 // where msghdr/cmsghdr field types differ (u32 vs usize).
-#![allow(clippy::cast_possible_truncation, clippy::unnecessary_cast)]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_lossless,
+    clippy::unnecessary_cast
+)]
 
 use std::io;
 use std::mem::{self, MaybeUninit};
@@ -706,6 +710,354 @@ pub(crate) fn trim_executable_pages() -> io::Result<u64> {
     }
     finish(cur.take());
     Ok(trimmed)
+}
+
+/// REQ: DSC-002 (ADR-908) — the discovery worker's `RLIMIT_DATA` at `data_bytes` (an allocation past
+/// it aborts the worker alone) and `RLIMIT_CORE` 0, so an abort never writes a core file. `RLIMIT_AS`
+/// is not used (ADR-908). Lowering both limits needs no privilege.
+pub(crate) fn set_worker_rlimits(data_bytes: u64) -> io::Result<()> {
+    let data = libc::rlimit {
+        rlim_cur: data_bytes as libc::rlim_t,
+        rlim_max: data_bytes as libc::rlim_t,
+    };
+    // SAFETY: setrlimit reads the struct it is given for the duration of the call; RLIMIT_DATA is
+    // a valid resource.
+    if unsafe { libc::setrlimit(libc::RLIMIT_DATA as _, &raw const data) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let core = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: as above, for RLIMIT_CORE: zero means no core file is ever written.
+    if unsafe { libc::setrlimit(libc::RLIMIT_CORE as _, &raw const core) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Linux capability header for `capset` (`struct __user_cap_header_struct`).
+#[repr(C)]
+struct CapHeader {
+    version: u32,
+    pid: i32,
+}
+
+/// One capability data word for `capset` (`struct __user_cap_data_struct`).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct CapData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+
+/// `_LINUX_CAPABILITY_VERSION_3`: two data words, so all 64 capability bits.
+const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+
+/// REQ: DSC-002 (ADR-908, ADR-934) — the discovery worker holds no capability: the ambient set is cleared,
+/// the permitted, effective and inheritable sets are emptied, and `no_new_privs` is set, so no exec
+/// can gain one. Dropping a capability needs no privilege. The worker needs none: it reads stdin,
+/// writes stdout, and lowers its own limits; its OOM score is raised before this runs.
+///
+/// `capset` is called only when the worker holds a permitted or effective capability. Under the
+/// systemd unit the worker is a non-root process whose parent cleared the ambient set before exec
+/// ([`clear_ambient_before_exec`]), so it holds none, and `capset` is in systemd's `@privileged` group:
+/// a call there is a SIGSYS kill, not an error (N1). A root worker still drops its capabilities.
+pub(crate) fn drop_worker_capabilities() -> io::Result<()> {
+    // SAFETY: PR_CAP_AMBIENT with PR_CAP_AMBIENT_CLEAR_ALL takes no pointers.
+    if unsafe {
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if thread_holds_capabilities()? {
+        let header = CapHeader {
+            version: LINUX_CAPABILITY_VERSION_3,
+            pid: 0,
+        };
+        let data = [CapData::default(); 2];
+        // SAFETY: capset reads the header and the two data words, both of which live for the call. A
+        // pid of 0 is the calling thread's process; empty sets are always a legal new value.
+        if unsafe { libc::syscall(libc::SYS_capset, &raw const header, data.as_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    // SAFETY: PR_SET_NO_NEW_PRIVS takes an integer flag and no pointers.
+    if unsafe {
+        libc::prctl(
+            libc::PR_SET_NO_NEW_PRIVS,
+            1 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Whether the calling thread has a non-empty permitted or effective capability set
+/// (`CapPrm`/`CapEff` in `/proc/thread-self/status`). An inheritable bit alone grants nothing: no
+/// exec file capability and no ambient capability can turn it into a permitted one.
+fn thread_holds_capabilities() -> io::Result<bool> {
+    let status = std::fs::read_to_string("/proc/thread-self/status")?;
+    Ok(status
+        .lines()
+        .filter(|l| l.starts_with("CapPrm:") || l.starts_with("CapEff:"))
+        .any(|l| l.split_whitespace().nth(1) != Some("0000000000000000")))
+}
+
+/// REQ: DSC-002 (ADR-934) — the child of a spawn clears its ambient capability set before it execs.
+/// A child inherits the ambient set across exec, so a worker started by a unit that grants
+/// `CAP_NET_BIND_SERVICE` (`AmbientCapabilities=`) would start holding it. The prctl runs in the
+/// forked child, takes no pointers, and is async-signal-safe.
+pub(crate) fn clear_ambient_before_exec(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure runs in the child between fork and exec and calls only prctl, which is
+    // async-signal-safe and allocates nothing. Its error (if any) aborts the spawn.
+    unsafe {
+        cmd.pre_exec(|| {
+            // SAFETY: PR_CAP_AMBIENT with PR_CAP_AMBIENT_CLEAR_ALL takes no pointers.
+            if libc::prctl(
+                libc::PR_CAP_AMBIENT,
+                libc::PR_CAP_AMBIENT_CLEAR_ALL as libc::c_ulong,
+                0 as libc::c_ulong,
+                0 as libc::c_ulong,
+                0 as libc::c_ulong,
+            ) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+/// The architecture this build's syscall numbers and filter are for (`AUDIT_ARCH_*`). A 32-bit ARM
+/// build uses the ARM EABI table, whose `bind`, `listen` and friends are direct calls (ADR-934).
+#[cfg(target_arch = "x86_64")]
+const AUDIT_ARCH_NATIVE: u32 = 0xC000_003E;
+#[cfg(target_arch = "aarch64")]
+const AUDIT_ARCH_NATIVE: u32 = 0xC000_00B7;
+#[cfg(target_arch = "arm")]
+const AUDIT_ARCH_NATIVE: u32 = 0x4000_0028;
+
+/// The syscalls a discovery worker never makes: a listening socket (`bind`, `listen`), a tracer
+/// (`ptrace`), another process's memory (`process_vm_readv`, `process_vm_writev`), and `io_uring`,
+/// whose bind and listen operations skip the syscall filter on kernels 6.11 and later (ADR-934).
+/// A compromised worker could otherwise take a share of the DNS port (`SO_REUSEPORT`) or read the
+/// parent (ADR-908).
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm"))]
+const WORKER_DENIED_SYSCALLS: [libc::c_long; 8] = [
+    libc::SYS_bind,
+    libc::SYS_listen,
+    libc::SYS_ptrace,
+    libc::SYS_process_vm_readv,
+    libc::SYS_process_vm_writev,
+    libc::SYS_io_uring_setup,
+    libc::SYS_io_uring_enter,
+    libc::SYS_io_uring_register,
+];
+
+/// The first syscall number of the x32 ABI (`__X32_SYSCALL_BIT`). On `x86_64` a call with this bit set
+/// (`nr | 0x40000000`) reaches the same handlers as the native call without matching the native
+/// number, so the filter refuses the whole range (ADR-934). No other architecture uses it.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm"))]
+const X32_SYSCALL_BIT: u32 = 0x4000_0000;
+
+/// REQ: DSC-002 (ADR-908, ADR-934) — installs the worker's seccomp filter: the denied syscalls fail with
+/// EPERM, every syscall in the x32 range fails with EPERM, every other syscall is allowed, and a call
+/// from another architecture (a 32-bit syscall entry, say) kills the process. Needs `no_new_privs`
+/// (set by [`drop_worker_capabilities`]). On an architecture with no filter the worker refuses to run
+/// (fail closed, see the other definition).
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm"))]
+pub(crate) fn install_worker_seccomp() -> io::Result<()> {
+    const BPF_LD_W_ABS: u16 = 0x20;
+    const BPF_JMP_JEQ_K: u16 = 0x15;
+    const BPF_JMP_JGE_K: u16 = 0x35;
+    const BPF_RET_K: u16 = 0x06;
+    const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
+    const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
+    const SECCOMP_RET_ERRNO_EPERM: u32 = 0x0005_0000 | 1;
+    // Offsets into `struct seccomp_data`: `nr`, then `arch`.
+    const OFFSET_NR: u32 = 0;
+    const OFFSET_ARCH: u32 = 4;
+    let stmt = |code: u16, k: u32| libc::sock_filter {
+        code,
+        jt: 0,
+        jf: 0,
+        k,
+    };
+    let denied = &WORKER_DENIED_SYSCALLS;
+    let n = denied.len();
+    // Layout: 0 arch, 1 (ours: skip 2), 2 kill, 3 nr, 4 x32 range -> EPERM, 5..5+n one test per denied
+    // call (a match jumps to EPERM), 5+n allow, 6+n EPERM.
+    let eperm_at = n + 6;
+    let mut prog: Vec<libc::sock_filter> = Vec::with_capacity(n + 7);
+    prog.push(stmt(BPF_LD_W_ABS, OFFSET_ARCH));
+    prog.push(libc::sock_filter {
+        code: BPF_JMP_JEQ_K,
+        jt: 1,
+        jf: 0,
+        k: AUDIT_ARCH_NATIVE,
+    });
+    prog.push(stmt(BPF_RET_K, SECCOMP_RET_KILL_PROCESS));
+    prog.push(stmt(BPF_LD_W_ABS, OFFSET_NR));
+    prog.push(libc::sock_filter {
+        code: BPF_JMP_JGE_K,
+        jt: u8::try_from(eperm_at - 5).map_err(|_| io::Error::other("seccomp: filter too long"))?,
+        jf: 0,
+        k: X32_SYSCALL_BIT,
+    });
+    for (i, nr) in denied.iter().enumerate() {
+        let jt = u8::try_from(n - i).map_err(|_| io::Error::other("seccomp: filter too long"))?;
+        let k = u32::try_from(*nr).map_err(|_| io::Error::other("seccomp: bad syscall number"))?;
+        prog.push(libc::sock_filter {
+            code: BPF_JMP_JEQ_K,
+            jt,
+            jf: 0,
+            k,
+        });
+    }
+    prog.push(stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
+    prog.push(stmt(BPF_RET_K, SECCOMP_RET_ERRNO_EPERM));
+    debug_assert_eq!(prog.len(), eperm_at + 1);
+    let len =
+        u16::try_from(prog.len()).map_err(|_| io::Error::other("seccomp: filter too long"))?;
+    let fprog = libc::sock_fprog {
+        len,
+        filter: prog.as_mut_ptr(),
+    };
+    // SAFETY: PR_SET_SECCOMP with SECCOMP_MODE_FILTER reads one `sock_fprog` whose filter points at
+    // `prog`, which lives for the call; the kernel copies the program. No_new_privs was set first,
+    // so this needs no privilege.
+    if unsafe {
+        libc::prctl(
+            libc::PR_SET_SECCOMP,
+            libc::c_ulong::from(libc::SECCOMP_MODE_FILTER),
+            ptr::from_ref(&fprog) as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Fails: this architecture has no worker filter, so the worker refuses to run (ADR-908).
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm")))]
+pub(crate) fn install_worker_seccomp() -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "no seccomp filter for this architecture",
+    ))
+}
+
+/// REQ: DSC-002 (ADR-934) — `/proc/self/io`, opened while this process is still dumpable. Once it is
+/// not dumpable the file belongs to root with mode 0400, so a non-root process can't open it again
+/// (EACCES), and the host's write-rate metric would stop. A descriptor opened earlier keeps working:
+/// `pread` at offset 0 regenerates the file. Set on the first call (`prepare_spawn` makes it before
+/// the process becomes not dumpable); `None` when the kernel has no such file.
+static SELF_IO: std::sync::OnceLock<Option<std::fs::File>> = std::sync::OnceLock::new();
+
+/// Opens [`SELF_IO`] if it isn't open yet. Call before [`set_dumpable`] with `false`.
+pub(crate) fn pin_self_io() {
+    SELF_IO.get_or_init(|| std::fs::File::open("/proc/self/io").ok());
+}
+
+/// The text of `/proc/self/io` as the pinned descriptor reads it now (see [`SELF_IO`]).
+pub(crate) fn self_io_text() -> Option<String> {
+    use std::os::unix::fs::FileExt as _;
+    let file = SELF_IO
+        .get_or_init(|| std::fs::File::open("/proc/self/io").ok())
+        .as_ref()?;
+    let mut buf = [0u8; 4096];
+    let n = file.read_at(&mut buf, 0).ok()?;
+    String::from_utf8(buf[..n].to_vec()).ok()
+}
+
+/// Sets `PR_SET_DUMPABLE`. The worker becomes not dumpable last: a non-dumpable process's `/proc/self`
+/// files belong to root, so anything that needs them is done first.
+pub(crate) fn set_dumpable(on: bool) -> io::Result<()> {
+    // SAFETY: PR_SET_DUMPABLE takes an integer flag and no pointers; 0 makes /proc/<pid> files and
+    // core dumps owned by root only.
+    if unsafe {
+        libc::prctl(
+            libc::PR_SET_DUMPABLE,
+            libc::c_ulong::from(on),
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// A `ptrace(PTRACE_TRACEME)` probe, for the test that the filter refuses it (`EPERM`).
+#[cfg(test)]
+pub(crate) fn ptrace_probe() -> io::Result<()> {
+    // SAFETY: PTRACE_TRACEME takes no pointers. The filter refuses it, so the call fails with EPERM
+    // and nothing is traced.
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_ptrace,
+            0 as libc::c_long, // PTRACE_TRACEME
+            0 as libc::c_long,
+            0 as libc::c_long,
+            0 as libc::c_long,
+        )
+    };
+    if rc == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// The process's current `RLIMIT_DATA` soft limit, in bytes (`RLIM_INFINITY` as `u64::MAX`).
+pub(crate) fn data_limit() -> io::Result<u64> {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit writes into the struct we pass, which lives for the call.
+    if unsafe { libc::getrlimit(libc::RLIMIT_DATA as _, &raw mut lim) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(if lim.rlim_cur == libc::RLIM_INFINITY {
+        u64::MAX
+    } else {
+        lim.rlim_cur as u64
+    })
+}
+
+/// Whether the process is dumpable (`PR_GET_DUMPABLE`).
+pub(crate) fn dumpable() -> bool {
+    // SAFETY: PR_GET_DUMPABLE takes no pointers and only reads the process's flag.
+    unsafe {
+        libc::prctl(
+            libc::PR_GET_DUMPABLE,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+        ) == 1
+    }
 }
 
 #[cfg(test)]

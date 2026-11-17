@@ -4,7 +4,7 @@
 //! merges, sweeps retention, and saves `inventory.json` on the write cadence. Nothing here
 //! answers a query, and a failure here only logs (CLU-004).
 //!
-//! Nothing starts this thread yet: `[discovery]` (T25.2) is the switch, and it is off by default.
+//! `[discovery]` is the switch that starts this thread on the designated node, and it is off by default.
 
 use std::io;
 use std::path::PathBuf;
@@ -20,6 +20,7 @@ use crate::devices::Leases;
 use super::inventory::{Inventory, Source};
 use super::sources::{Ipv4Subnet, ifindex_names, lease_observations, neighbour_observations};
 use super::store;
+use super::supervisor::{self, Board, Requests, Spec};
 
 /// How often the sources are read.
 pub(crate) const POLL_SECS: u64 = 60;
@@ -45,13 +46,23 @@ pub(crate) struct Providers {
     pub(crate) neighbours: bool,
     /// The interface table root. `None` means [`SYS_NET`].
     pub(crate) ifindex_root: Option<PathBuf>,
+    /// REQ: DSC-002 (T25.3) — the worker processes this thread supervises (empty: none).
+    pub(crate) workers: Vec<Spec>,
+    /// Where the workers' state is published (`None`: no workers).
+    pub(crate) board: Option<Board>,
+    /// The jobs queued for the workers.
+    pub(crate) requests: Requests,
+    /// Set to stop the workers (the thread's stop also does).
+    pub(crate) workers_stop: Arc<AtomicBool>,
 }
 
 /// A running inventory thread.
 pub(crate) struct Handle {
     /// The latest inventory, for readers (the API, T25.12).
+    #[allow(dead_code)] // REQ: DSC-013 — read by the API's device list (T25.12).
     pub(crate) shared: Arc<ArcSwap<Inventory>>,
     /// Set to make the next save follow the one-minute cadence (after an import or `public`).
+    #[allow(dead_code)] // REQ: DSC-008 — set by the import path (T25.11).
     pub(crate) fast_write: Arc<AtomicBool>,
     stop: mpsc::Sender<()>,
     join: JoinHandle<()>,
@@ -85,6 +96,7 @@ pub(crate) fn spawn(data_dir: PathBuf, providers: Providers) -> io::Result<Handl
             telltale_net::background_thread();
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_time()
+                .enable_io()
                 .build()
             {
                 Ok(rt) => rt,
@@ -118,6 +130,18 @@ async fn run(
     fast_write: Arc<AtomicBool>,
     stop: mpsc::Receiver<()>,
 ) {
+    // REQ: DSC-002 (T25.3) — the workers run on this thread's runtime, so a worker's failure or
+    // hang only ever waits here, never on the query runtime (CLU-004).
+    if let Some(board) = &providers.board {
+        for spec in &providers.workers {
+            tokio::spawn(supervisor::supervise(
+                spec.clone(),
+                Arc::clone(board),
+                Arc::clone(&providers.requests),
+                Arc::clone(&providers.workers_stop),
+            ));
+        }
+    }
     let mut next_poll = 0u64;
     let mut last_write = unix_now();
     loop {

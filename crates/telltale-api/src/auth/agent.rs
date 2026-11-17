@@ -281,6 +281,11 @@ pub fn required(method: &Method, path: &str) -> Need {
         if under("/api/v1/routers") {
             return Need::Forbidden;
         }
+        // REQ: DSC-001 (T25.2, ADR-907) — `[discovery]` and the inventory's status have no agent
+        // scope yet: `discovery:read` (DSC-013) comes with T25.12, and no agent writes the kind.
+        if under("/api/v1/discovery") {
+            return Need::Forbidden;
+        }
         // REQ: DNS-019 (T24.12) — `/clients-settings` has no scope: no agent writes `mdns`.
         if under("/api/v1/special-names") {
             return Need::Scope("config:write:special");
@@ -975,6 +980,11 @@ mod tests {
             );
             assert_eq!(
                 required(&m, "/api/v1/clients-settings/default"),
+                Forbidden,
+                "{m}"
+            );
+            assert_eq!(
+                required(&m, "/api/v1/discovery-settings/default"),
                 Forbidden,
                 "{m}"
             );

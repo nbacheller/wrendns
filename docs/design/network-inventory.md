@@ -1,6 +1,6 @@
 # Network inventory (M25) — design
 
-Status: design for M25 (DSC-001..015; ADR-907..913, 923..925). The model and merge are built (T25.1). The SNMP poller, imports, the API, the UI and the MCP tools come in later tasks.
+Status: design for M25 (DSC-001..015; ADR-907..913, 923..925, 928..930). The model and merge are built (T25.1); the `[discovery]` section, its admin-only settings page and the discovery worker processes with their status are built (T25.2, T25.3). The SNMP poller, imports, the inventory API, the rest of the UI and the MCP tools come in later tasks.
 
 ## What it is
 

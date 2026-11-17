@@ -969,6 +969,26 @@
       "example": "A check of a new UniFi router that reports 12 devices and 3 networks read, with nothing saved.",
       "caution": "When the address or the certificate differs from the saved router's, a stored credential isn't sent, and the check says so.",
       "docs": "routers"
+    },
+    {
+      "id": "network-inventory",
+      "title": "Network inventory",
+      "term": "Network inventory",
+      "summary": "TelltaleDNS can list the devices on your network that routers and Home Assistant already know, and read a few facts from your managed switches and gateway. It only reads: it never scans the network itself.",
+      "when": "Turn it on when you want to see devices that never ask DNS for anything, such as printers or devices with fixed addresses. Leave it off if you don't want TelltaleDNS reading switches or gateways at all.",
+      "example": "You list your gateway's subnet 192.168.1.0/24 and turn the inventory on. The gateway's ARP table then tells TelltaleDNS which MAC address sits behind each address on that subnet.",
+      "caution": "Only one node runs the inventory: the primary, or the node you name. Changes are for administrators only. Turning it on is refused while privacy level is 2 or 3, because the inventory needs client addresses.",
+      "docs": "network-inventory-devices-that-never-ask-dns"
+    },
+    {
+      "id": "discovery-workers",
+      "title": "Inventory workers",
+      "term": "Discovery worker",
+      "summary": "The inventory's SNMP reads run in a separate small process, so a problem there can't slow or stop DNS. TelltaleDNS restarts it when it stops, and waits longer each time it keeps failing.",
+      "when": "Look here when the inventory shows no data, or when the health icon names a discovery worker.",
+      "example": "A worker is refused because it was built from a different version than this node. Upgrade the node so both match, and the worker starts again.",
+      "caution": "A worker that keeps crashing is a sign of a fault in the inventory or in a device's reply. DNS keeps answering while it is down.",
+      "docs": "network-inventory-devices-that-never-ask-dns"
     }
   ]
 }

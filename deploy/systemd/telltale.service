@@ -15,6 +15,9 @@ Restart=on-failure
 RestartSec=2
 # Graceful drain (OPS-007) gets time to finish.
 TimeoutStopSec=30
+# REQ: DSC-002 (T25.3, ADR-908) — a kernel OOM kill of a discovery worker (a child of this unit)
+# must not stop the unit: DNS keeps answering, and the worker is restarted by the supervisor.
+OOMPolicy=continue
 Environment=TELLTALE_LOG=info
 # REQ: OPS-004 (ADR-046) — how this node updates (self-update).
 Environment=TELLTALE_INSTALL=native

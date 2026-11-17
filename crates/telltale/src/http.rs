@@ -108,6 +108,9 @@ pub(crate) struct Sources {
     /// REQ: OPS-014, API-014 (ADR-903 §2–3) — the secrets entered in the UI (encrypted) and the
     /// node key, loaded on first use.
     pub(crate) secrets: Arc<crate::secrets::SecretStore>,
+    /// REQ: DSC-001, DSC-002 (T25.2, T25.3) — the network inventory on this node: its thread and
+    /// workers, started only where `[discovery]` says this node runs them.
+    pub(crate) discovery: Arc<crate::discovery::runtime::Runtime>,
 }
 
 impl Sources {
@@ -705,6 +708,8 @@ pub(crate) fn render(src: &Sources) -> String {
     );
     cluster_metrics(src, &mut w);
     render_maintenance(src, &mut w);
+    // REQ: DSC-014 (T25.3) — the discovery workers, when this node runs them.
+    src.discovery.render_metrics(&mut w);
     crate::simulate::render(&mut w);
     src.identify.render(&mut w);
     // REQ: FLT-017 — the workload table's size, age, and the watcher's errors.

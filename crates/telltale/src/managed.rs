@@ -56,6 +56,8 @@ pub(crate) const SPECIAL: &str = "special";
 pub(crate) const LOCAL: &str = "local";
 /// REQ: DNS-023 (T24.13, ADR-914) — `[clients]`, which takes only `mdns` in M24.
 pub(crate) const CLIENTS: &str = "clients";
+/// REQ: DSC-001 (T25.2, ADR-907) — `[discovery]`: the network inventory's settings, one entry.
+pub(crate) const DISCOVERY: &str = "discovery";
 /// REQ: API-016 (T23.7, ADR-921) — `[[router]]` integrations, by name. Admin-only; a router the
 /// files define is read-only through the API (ADR-040), so these never override the files.
 pub(crate) const ROUTER: &str = "router";
@@ -178,6 +180,8 @@ pub(crate) struct Entries {
     pub(crate) local: Option<serde_json::Value>,
     /// REQ: DNS-023 (T24.13) — the stored `[clients]` fields (`mdns`), likewise.
     pub(crate) clients_settings: Option<serde_json::Value>,
+    /// REQ: DSC-001 (T25.2) — the stored `[discovery]` section, likewise.
+    pub(crate) discovery: Option<serde_json::Value>,
 }
 
 /// Where the state database lives.
@@ -282,6 +286,10 @@ pub(crate) fn entries(state: &State) -> Entries {
             .next()
             .map(|(_, v)| v),
         clients_settings: decode::<serde_json::Value>(state, CLIENTS)
+            .into_iter()
+            .next()
+            .map(|(_, v)| v),
+        discovery: decode::<serde_json::Value>(state, DISCOVERY)
             .into_iter()
             .next()
             .map(|(_, v)| v),

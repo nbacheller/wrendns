@@ -99,6 +99,9 @@ pub enum Code {
     /// `<redacted>` back, which an older primary would store as the value; or (T23.2) it
     /// touches a credential and was forwarded by a node too old to say who made it.
     UpgradeRequired,
+    /// REQ: DSC-001 (T25.2, ADR-907, CLU-010) — the network inventory's first write waits until no
+    /// member runs an older version than the one that knows `[discovery]`.
+    MembersTooOld,
     /// REQ: API-014 (T23.2, ADR-903 §4) — a path set through the API points where none may
     /// (under `/proc`, `/sys`, `/dev`, the data directory, or a key file), or a file holding a
     /// credential isn't under `[node] secret_file_dirs`.
@@ -163,6 +166,7 @@ impl Code {
             }
             Self::SecretsLocked => "https://telltaledns.dev/problems/secrets_locked",
             Self::UpgradeRequired => "https://telltaledns.dev/problems/upgrade_required",
+            Self::MembersTooOld => "https://telltaledns.dev/problems/members_too_old",
             Self::PathNotAllowed => "https://telltaledns.dev/problems/path_not_allowed",
             Self::SetByFile => "https://telltaledns.dev/problems/set_by_file",
             Self::SecretMissing => "https://telltaledns.dev/problems/secret_missing",
@@ -213,6 +217,7 @@ impl Code {
             Self::CredentialReentryRequired => "Enter the credential again",
             Self::SecretsLocked => "Secrets key unavailable",
             Self::UpgradeRequired => "Upgrade needed",
+            Self::MembersTooOld => "A member runs an older version",
             Self::PathNotAllowed => "Path not allowed",
             Self::SetByFile => "Set by the configuration files",
             Self::SecretMissing => "No such stored secret",
@@ -248,6 +253,7 @@ impl Code {
             | Self::NodeIsUp
             | Self::ListsNotHere
             | Self::UpgradeRequired
+            | Self::MembersTooOld
             | Self::SetByFile
             | Self::SecretInUse => StatusCode::CONFLICT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
