@@ -24,6 +24,8 @@
 > - **M27, UI for everything (planned):** a UI control for every older setting too, with guarded admin controls for listeners, TLS, keys and cluster setup ([ADR-914](spec/11-decisions.md)).
 >
 > **Every feature gets a UI control**, not only config, API or MCP. Fork issues are tracked [here](https://github.com/nbacheller/telltaledns/issues). Changes from upstream are merged regularly.
+>
+> **Upstream:** what the fork changed from upstream, the upstream issues it triaged, and how it syncs and watches upstream are in [`spec/upstream.md`](spec/upstream.md).
 
 [![CI](https://github.com/paimonsoror/telltaledns/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/paimonsoror/telltaledns/actions/workflows/ci.yml?query=branch%3Amain)
 [![CodeQL](https://github.com/paimonsoror/telltaledns/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/paimonsoror/telltaledns/security/code-scanning?query=branch%3Amain)
