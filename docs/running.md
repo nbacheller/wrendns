@@ -821,6 +821,8 @@ device_mdns = false           # also the names devices announce over mDNS ([clie
 - Your own records win: a `[[record]]`, a hosts-file entry, or a zone's own record for the same name answers instead. Inside a [zone](#local-zones), a device name answers before the zone's NXDOMAIN.
 - Names appear within about 10 seconds of a router read. `GET /api/v1/dhcp/leases` shows each device's `dnsName`, and **Explain** says when a device name answered.
 - `local` isn't accepted as the domain: it belongs to mDNS. No device gets the names `wpad` or `isatap` (a device that calls itself that could redirect other computers' proxy or tunnel settings), or `localhost`.
+- In the UI: **Local DNS → Device names in DNS** shows the domain, the TTLs, the reverse-name switch, the mDNS switch, and how many names are answered now. *Change device names* checks each change before it's applied (an empty domain turns names off). The mDNS switch for names is disabled, with a link, while `[clients] mdns` is off. The **Listen for mDNS announcements** switch on the same card is an admin's, because it opens multicast listening on every node; an operator sees it read-only, and no agent can change it. `mdns_port` and `hosts_files` are shown read-only (set in the file). API: `PUT`/`DELETE /api/v1/local-settings/default` (operator; agents with `config:write:local`) and `PUT`/`DELETE /api/v1/clients-settings/default` (admin only; no agent scope). MCP: `plan_set_device_names`.
+- The file's fields win over the UI's, field by field: a field `[local]` or `[clients]` sets in the file shows "set by file" and can't be changed in the UI, and a change that would set it there is refused (409 `set_by_file`).
 
 ### Local zones
 A zone makes TelltaleDNS the authority for a whole domain: names in it are answered from it, and names it doesn't have get NXDOMAIN (instead of going to the upstreams, as names not in `[[record]]` do).
@@ -1567,6 +1569,8 @@ $ dig +nsid example.com @10.50.5.112
 - Off by default: any client allowed to query sees the name. In a cluster, `[dns]` is shared, so one setting turns it on everywhere, and each node answers with its own name.
 
 ## Special names
+In the UI, **Settings → Query handling → Special names** has a switch for each of the switches below, and the encrypted DNS name (DDR). A change applies to the next query on every node, with no restart; a field the config file sets shows "set by file" and can't be changed there. The DDR name is admin-only: an operator sees it read-only, and no agent can change it. Explain names the rule that answered a query (`special`), and links to its switch and to the query log filtered to `special`. API: `PUT`/`DELETE /api/v1/special-names/default` (operator; agents with `config:write:special`, never `ddr_name`). MCP: `plan_set_special_names`.
+
 Handled before anything else. Each can be turned off under `[special]`, except `*.invalid` and `resolver.arpa`, which are always answered here:
 
 | Name | Answer | Why |
