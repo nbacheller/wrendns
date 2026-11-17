@@ -1,8 +1,10 @@
 //! The embedded web UI (REQ: API-005, ADR-009, ADR-030): `ui/dist` compiled into the binary,
 //! served at `/` on the API listener with a strict CSP (`spec/08` §6: no inline scripts,
 //! `X-Frame-Options: DENY`). Hashed assets are cached forever; `index.html` never is.
-//! `npm run build` writes a `.gz` next to each text file, served when the browser accepts
-//! gzip. A build without `ui/dist` still compiles and serves a short page saying so.
+//! `npm run build` writes a `.gz` for each text file that gzip shrinks and removes the raw copy
+//! (REQ: NFR-001, ADR-915). The gzip goes to browsers that accept it; any other client gets the
+//! same bytes inflated on the request. Binary files are embedded as they are. A build without
+//! `ui/dist` still compiles and serves a short page saying so.
 
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
@@ -66,6 +68,17 @@ fn accepts_gzip(headers: &HeaderMap) -> bool {
         })
 }
 
+/// Inflates a gzip member written by `ui/scripts/postbuild.mjs` (RFC 1952, no optional header
+/// fields: FLG is 0). `None` for anything else.
+fn gunzip(data: &[u8]) -> Option<Vec<u8>> {
+    const HEADER: usize = 10;
+    const TRAILER: usize = 8;
+    if data.len() < HEADER + TRAILER || data[..3] != [0x1f, 0x8b, 8] || data[3] != 0 {
+        return None;
+    }
+    miniz_oxide::inflate::decompress_to_vec(&data[HEADER..data.len() - TRAILER]).ok()
+}
+
 /// Serves a UI file (`/` is `index.html`); anything else is 404.
 pub fn serve(method: &Method, uri: &Uri, headers: &HeaderMap) -> Response {
     if method != Method::GET && method != Method::HEAD {
@@ -84,18 +97,18 @@ pub fn serve(method: &Method, uri: &Uri, headers: &HeaderMap) -> Response {
     {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let gz = accepts_gzip(headers)
-        .then(|| Assets::get(&format!("{path}.gz")))
-        .flatten();
-    let (body, encoded) = match gz {
-        Some(f) => (f.data, true),
-        None => match Assets::get(path) {
-            Some(f) => (f.data, false),
-            None if path == "index.html" => (MISSING.as_bytes().into(), false),
-            None => return StatusCode::NOT_FOUND.into_response(),
+    let gz = Assets::get(&format!("{path}.gz"));
+    let (body, encoded): (Vec<u8>, bool) = match (accepts_gzip(headers), gz, Assets::get(path)) {
+        (true, Some(f), _) => (f.data.into_owned(), true),
+        (_, _, Some(f)) => (f.data.into_owned(), false),
+        (false, Some(f), None) => match gunzip(&f.data) {
+            Some(plain) => (plain, false),
+            None => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         },
+        (_, _, None) if path == "index.html" => (MISSING.as_bytes().to_vec(), false),
+        _ => return StatusCode::NOT_FOUND.into_response(),
     };
-    let mut resp = body.into_owned().into_response();
+    let mut resp = body.into_response();
     let h = resp.headers_mut();
     h.insert(
         header::CONTENT_TYPE,
@@ -140,5 +153,19 @@ mod tests {
             "text/javascript; charset=utf-8"
         );
         assert_eq!(content_type("favicon.svg"), "image/svg+xml");
+    }
+
+    // REQ: NFR-001 (ADR-915) — `gzip.compress(b'hello, telltale\n', mtime=0)`, the form postbuild writes.
+    #[test]
+    fn ui_001_gunzip_inflates_the_postbuild_gzip() {
+        let gz = [
+            0x1f, 0x8b, 0x8, 0x0, 0x0, 0x0, 0x0, 0x0, 0x2, 0xff, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0xd7,
+            0x51, 0x28, 0x1, 0x52, 0x25, 0x89, 0x39, 0xa9, 0x5c, 0x0, 0x8a, 0x75, 0x12, 0x4c, 0x10,
+            0x0, 0x0, 0x0,
+        ];
+        assert_eq!(gunzip(&gz).as_deref(), Some(&b"hello, telltale
+"[..]));
+        assert_eq!(gunzip(b"not gzip at all, but long enough"), None);
+        assert_eq!(gunzip(&gz[..12]), None);
     }
 }
