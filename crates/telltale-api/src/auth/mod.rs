@@ -239,8 +239,13 @@ pub struct Settings {
     /// OIDC only: password sign-in and HTTP Basic just for admins from `admin_networks`
     /// (break-glass, API-004).
     pub disable_local_login: bool,
-    /// `(network, prefix length)`.
+    /// `(network, prefix length)`. The break-glass networks (ADR-944): loopback unless the
+    /// operator set `allowed_admin_networks`.
     pub admin_networks: Vec<(IpAddr, u8)>,
+    /// True when `admin_networks` is the loopback default (no `allowed_admin_networks` set).
+    /// Then a request that carries forwarding headers from an untrusted peer is never
+    /// break-glass: it may be a proxied client that arrived as loopback (ADR-944).
+    pub break_glass_default: bool,
     /// Proxies (ingress, reverse proxy) whose `X-Forwarded-For` names the real client.
     pub trusted_proxies: Vec<(IpAddr, u8)>,
 }
@@ -278,6 +283,7 @@ impl Default for Settings {
             setup_token_file: None,
             disable_local_login: false,
             admin_networks: Vec::new(),
+            break_glass_default: false,
             trusted_proxies: Vec::new(),
         }
     }
@@ -481,7 +487,8 @@ impl Auth {
                 .any(|(n, l)| in_network(ip, *n, *l))
     }
 
-    fn local_login_refused() -> Problem {
+    /// The refusal for password sign-in from an address outside the break-glass networks.
+    pub(crate) fn local_login_refused() -> Problem {
         Problem::new(Code::Forbidden, "password sign-in is off on this server")
             .hint("Use your sign-in provider. Admins can still sign in with a password from the break-glass networks.")
     }

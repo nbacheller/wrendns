@@ -107,7 +107,7 @@ services:
      - JIT provisioning, optional `require_verified_email`, and back-channel/RP-initiated logout.
      - The ID token is validated (iss/aud/exp/nonce, JWKS rotation). Sessions are local after login, so the IdP isn't needed per request.
      - Clustered nodes share the OIDC config via replication. Each node's redirect URI must be registered, or a single canonical `public_url` is used.
-     - Optional `oidc.disable_local_login` keeps one break-glass local admin usable only from `allowed_admin_networks`.
+     - Optional `oidc.disable_local_login` keeps one break-glass local admin usable only from `allowed_admin_networks`. The default is loopback only (ADR-944): a request with forwarding headers from an untrusted peer is never break-glass, the startup log warns while the list is unset, and an explicit list (even `[]`) replaces the default.
   - LDAP is a non-goal (API-009).
 - **RBAC roles:** `viewer` (dashboards, query log subject to privacy level), `operator` (pause, flush cache, manage lists/clients/groups), `admin` (everything incl. users, cluster, upstreams). A `family` role (P1) can only pause or unpause specific groups.
 - **First run:** no default password. A one-time setup token is printed to logs / available via `telltale ctl setup-token`; the Helm chart can set a bootstrap admin from a Secret.

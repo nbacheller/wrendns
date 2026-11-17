@@ -414,6 +414,16 @@
       "docs": "users-and-sign-in"
     },
     {
+      "id": "break-glass",
+      "title": "Signing in when the provider is down",
+      "term": "Break-glass sign-in",
+      "summary": "With local sign-in turned off, an admin can still sign in with a password from the break-glass networks. By default that is this computer only.",
+      "when": "Only if you turn off password sign-in for your provider (disable_local_login).",
+      "example": "Set allowed_admin_networks = [\"192.168.1.0/24\"] to allow your home network, or leave it out and sign in from the server itself.",
+      "caution": "Behind a reverse proxy on the same machine, or published through Docker, your sign-in may come from the proxy or the Docker gateway. Then it is refused unless the proxy is in trusted_proxies or the networks include it.",
+      "docs": "users-and-sign-in"
+    },
+    {
       "id": "api-tokens",
       "title": "Keys for scripts and dashboards",
       "term": "API tokens",

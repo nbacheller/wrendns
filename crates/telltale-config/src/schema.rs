@@ -2818,7 +2818,7 @@ impl Default for AuthConfig {
 /// `OpenID Connect` sign-in (API-004, `spec/08` §6, ADR-034). Each provider gets a "Sign in
 /// with ..." button; users are created on first sign-in and their role comes from a claim
 /// (groups) at every sign-in. Changes need a restart.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct OidcConfig {
     /// Where people open the UI, e.g. `https://dns.example.com` or `http://192.168.1.2:8053`.
@@ -2828,8 +2828,12 @@ pub struct OidcConfig {
     /// Turn off password sign-in (and HTTP Basic) except for admins signing in from
     /// `allowed_admin_networks` (break-glass, for when the provider is down).
     pub disable_local_login: bool,
-    /// Where break-glass admin sign-in is allowed. Default: private networks and loopback.
-    pub allowed_admin_networks: Vec<Cidr>,
+    /// Where break-glass admin sign-in is allowed. Absent: loopback only (`127.0.0.0/8`,
+    /// `::1`), so a reverse proxy or a Docker port publish on this host needs its own entry
+    /// here or `[api] trusted_proxies`. Set (even to `[]`, which allows nothing): exactly this
+    /// list. REQ: API-004 (ADR-944).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_admin_networks: Option<Vec<Cidr>>,
     pub provider: Vec<OidcProvider>,
     /// REQ: AGT-008 (T7.4) — MCP clients (AI assistants) sign in through this provider (its
     /// `id`) with OAuth 2.1: TelltaleDNS accepts the provider's JWT access tokens issued for
@@ -2839,16 +2843,22 @@ pub struct OidcConfig {
     pub mcp_audience: SafeString,
 }
 
-impl Default for OidcConfig {
-    fn default() -> Self {
-        Self {
-            public_url: SafeString::default(),
-            disable_local_login: false,
-            allowed_admin_networks: AccessConfig::default().allowed_networks,
-            provider: Vec::new(),
-            mcp_provider: SafeString::default(),
-            mcp_audience: SafeString::default(),
-        }
+impl OidcConfig {
+    /// The networks break-glass admin sign-in is allowed from: the configured list, or
+    /// loopback when none is set (ADR-944). REQ: API-004.
+    pub fn break_glass_networks(&self) -> Vec<Cidr> {
+        self.allowed_admin_networks.clone().unwrap_or_else(|| {
+            vec![
+                Cidr {
+                    addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    prefix: 8,
+                },
+                Cidr {
+                    addr: IpAddr::V6(Ipv6Addr::LOCALHOST),
+                    prefix: 128,
+                },
+            ]
+        })
     }
 }
 
@@ -2955,5 +2965,61 @@ impl Default for MetricsConfig {
             per_client_cap: 100,
             exemplars: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod api_004_break_glass_tests {
+    use super::OidcConfig;
+    use crate::types::Cidr;
+
+    // REQ: API-004 (ADR-944) - break-glass defaults to loopback; an explicit list wins, and
+    // an empty list is a choice too (absent and set differ).
+    #[test]
+    fn api_004_break_glass_defaults_to_loopback() {
+        let o = OidcConfig::default();
+        assert_eq!(o.allowed_admin_networks, None);
+        let nets = o.break_glass_networks();
+        assert!(
+            nets.iter()
+                .any(|n| n.contains("127.0.0.1".parse().unwrap()))
+        );
+        assert!(nets.iter().any(|n| n.contains("::1".parse().unwrap())));
+        assert!(
+            !nets
+                .iter()
+                .any(|n| n.contains("192.168.1.20".parse().unwrap()))
+        );
+    }
+
+    #[test]
+    fn api_004_set_break_glass_networks_are_not_overwritten() {
+        let lan = Cidr::parse("192.168.1.0/24").unwrap();
+        let set = OidcConfig {
+            allowed_admin_networks: Some(vec![lan]),
+            ..OidcConfig::default()
+        };
+        assert_eq!(set.break_glass_networks(), vec![lan]);
+        let none = OidcConfig {
+            allowed_admin_networks: Some(Vec::new()),
+            ..OidcConfig::default()
+        };
+        assert!(
+            none.break_glass_networks().is_empty(),
+            "an empty list allows nothing"
+        );
+    }
+
+    #[test]
+    fn api_004_absent_and_empty_parse_differently() {
+        let absent: OidcConfig = toml::from_str("disable_local_login = true").unwrap();
+        assert_eq!(absent.allowed_admin_networks, None);
+        let empty: OidcConfig = toml::from_str("allowed_admin_networks = []").unwrap();
+        assert_eq!(empty.allowed_admin_networks, Some(Vec::new()));
+        let back = toml::to_string(&absent).unwrap();
+        assert!(
+            !back.contains("allowed_admin_networks"),
+            "absent stays absent"
+        );
     }
 }

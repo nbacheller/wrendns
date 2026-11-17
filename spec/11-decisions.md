@@ -1293,12 +1293,25 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
-## ADR-943 — Svelte attribute quantifiers: `{n}` in a quoted attribute is written as a JS expression, and a guard keeps it that way (Accepted 2026-11-17 (owner decision))
+## ADR-944 — Break-glass sign-in defaults to loopback, and a proxied request is never break-glass (Proposed)
+**Context:** Upstream issue #63. The default `[auth.oidc] allowed_admin_networks` was the private networks plus loopback, so with `disable_local_login = true` any LAN device could try a password. The owner asked for a safer default. Two things make a loopback-only default need care: a reverse proxy on the same host is not in `[api] trusted_proxies`, so every proxied client arrives as `127.0.0.1` and would pass; and with Docker port publishing the peer is the bridge gateway, so an admin on the host is locked out of break-glass.
+
+**Decision:**
+- `allowed_admin_networks` is optional. Absent means loopback only (`127.0.0.0/8`, `::1`). Set means exactly that list, and `[]` allows nothing. The serde default distinguishes absent from set, so an explicit list is never overwritten by the default.
+- A request that carries `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Forwarded-Port`, `X-Real-IP` or `Forwarded` from a peer that is not a trusted proxy is never break-glass while the loopback default applies. Its address is the proxy's, so it can't be checked. This applies to form sign-in, HTTP Basic and the `/auth/status` `localLogin` flag. An explicit list skips this rule, because the operator chose those networks.
+- In-process MCP calls (`OnBehalfOf`) keep the address they were made with and are checked against the same networks.
+- Startup logs a WARN when `disable_local_login` is on and `allowed_admin_networks` is unset. It names the proxy and Docker cases. A trusted proxy in `[api] trusted_proxies` names the real client and is checked normally.
+- Recovery: `docker exec` into the container (loopback), or set `allowed_admin_networks` and restart. Settings are file-only and need a restart, so no API can widen break-glass remotely.
+- Migration: no file is rewritten. Operators who used the old private-network default and `disable_local_login` must set `allowed_admin_networks` explicitly; the startup WARN and `docs/running.md` say so.
+
+**Consequences:** Break-glass from the LAN now needs one config line. Docker and proxy setups need a documented path (`docker exec`, or the proxy listed). A proxy on the host that isn't listed locks its clients out of break-glass rather than letting them in. This is the conservative reading of the owner's request, and the owner can change the default by one line in `schema.rs` if they prefer private networks.
+
+## ADR-943 — Svelte attribute quantifiers: `{n}` in a quoted attribute is written as a JS expression, and a guard keeps it that way (Proposed)
 **Context:** Upstream issue #64, "2FA can't be enabled". Svelte 5 reads `{6}` inside a quoted attribute value as an expression, so `pattern="[0-9]{6}"` reached the browser as `[0-9]6` and no six-digit code matched. The TOTP enrolment (Settings) and the sign-in code (Login) both had the bug.
 
 **Decision:**
 - Every such attribute in `ui/src` is written as `pattern={"[0-9]{6}"}`, a string expression, so the braces reach the DOM unchanged.
-- `ui/scripts/check-quantifiers.mjs` runs first in `npm run check`. It fails when any quoted attribute in a `.svelte` file contains `{digits}` or `{digits,digits}`. It is a source check, so it catches the pattern before a build.
+- `ui/scripts/check-quantifiers.mjs` runs first in `npm run check`. It fails when any quoted attribute in a `.svelte` file, double- or single-quoted and across lines, contains `{digits}` or `{digits,digits}`. It is a source check, so it catches the pattern before a build.
 - The Playwright suite enrols TOTP with a real RFC 6238 code and signs in with one, so a regression that breaks the pattern also fails the suite.
 
 **Consequences:** A new quoted attribute with a quantifier fails `npm run check` until it is written as an expression.
