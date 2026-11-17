@@ -1695,6 +1695,150 @@ mod tests {
         assert_eq!(name(3).as_deref(), Some("nas"), "a name beats no name");
         assert_eq!(via(3).as_deref(), Some("opn"));
     }
+
+    /// REQ: T8.2 (ADR-166) — UniFi's offline known clients keep their names: the history (a bare
+    /// array) and `rest/user` give the named ones, most recently seen first; a connected client
+    /// keeps its address and only takes a name it lacks; an offline client never takes an address
+    /// a connected one holds, and a MAC counts once.
+    #[test]
+    fn t8_2_offline_known_names_and_held_addresses() {
+        let mut seen = unifi_clients(&serde_json::json!({"data": [
+            {"mac": "aa:bb:cc:00:00:01", "ip": "192.168.1.20", "name": "Kitchen tablet"},
+            {"mac": "aa:bb:cc:00:00:02", "ip": "192.168.1.21"}
+        ]}));
+        let history = serde_json::json!([
+            {"mac": "aa:bb:cc:00:00:10", "last_ip": "192.168.1.30", "hostname": "old-laptop", "last_seen": 100},
+            {"mac": "AA:BB:CC:00:00:11", "last_ip": "192.168.1.30", "name": "Work laptop", "last_seen": 200},
+            {"mac": "aa:bb:cc:00:00:12", "last_ip": "192.168.1.20", "name": "Old phone", "last_seen": 300},
+            {"mac": "aa:bb:cc:00:00:13", "last_ip": "192.168.1.31", "last_seen": 400},
+            {"mac": "aa:bb:cc:00:00:02", "last_ip": "192.168.1.21", "name": "Living room TV"},
+            {"hostname": "phone", "fixed_ip": "192.168.1.62", "use_fixedip": false, "last_ip": "192.168.1.63",
+             "mac": "aa:bb:cc:00:00:17", "name": "Spare phone", "last_seen": 150, "status": "offline"}
+        ]);
+        let users = serde_json::json!({"meta": {"rc": "ok"}, "data": [
+            {"mac": "aa:bb:cc:00:00:14", "fixed_ip": "192.168.1.40", "use_fixedip": true, "name": "Printer"},
+            {"mac": "aa:bb:cc:00:00:15", "name": "No address"},
+            {"mac": "aa:bb:cc:00:00:16", "fixed_ip": "192.168.1.41", "use_fixedip": false, "name": "Reservation off"}
+        ]});
+        let mut known = unifi_known(&history, 0);
+        known.extend(unifi_known(&users, 0));
+        unifi_fill_names(&mut seen, &known);
+        assert_eq!(seen[1].2.as_deref(), Some("Living room TV"));
+        assert_eq!(seen[0].2.as_deref(), Some("Kitchen tablet"));
+        assert_eq!(
+            unifi_offline(&seen, known),
+            vec![
+                (
+                    "aa:bb:cc:00:00:11".into(),
+                    Ipv4Addr::new(192, 168, 1, 30),
+                    Some("Work laptop".into())
+                ),
+                (
+                    "aa:bb:cc:00:00:17".into(),
+                    Ipv4Addr::new(192, 168, 1, 63),
+                    Some("Spare phone".into())
+                ),
+                (
+                    "aa:bb:cc:00:00:14".into(),
+                    Ipv4Addr::new(192, 168, 1, 40),
+                    Some("Printer".into())
+                ),
+            ]
+        );
+    }
+
+    /// REQ: T8.2 (ADR-166) — `offline_days`: a row last seen before the window is dropped, one with
+    /// no date stays, the most recently seen come first, and no more than `OFFLINE_MAX` are kept.
+    #[test]
+    fn t8_2_known_window_and_cap() {
+        let rows = serde_json::json!([
+            {"mac": "aa:bb:cc:00:01:01", "last_ip": "10.0.1.1", "name": "recent", "last_seen": 2_000_000},
+            {"mac": "aa:bb:cc:00:01:02", "last_ip": "10.0.1.2", "name": "old", "last_seen": 1_000_000},
+            {"mac": "aa:bb:cc:00:01:03", "last_ip": "10.0.1.3", "name": "undated"},
+            {"mac": "aa:bb:cc:00:01:04", "last_ip": "10.0.1.4", "name": "newest", "last_seen": 2_500_000},
+        ]);
+        let names = |s: Seen| s.into_iter().filter_map(|d| d.2).collect::<Vec<_>>();
+        assert_eq!(
+            names(unifi_known(&rows, 0)),
+            ["newest", "recent", "old", "undated"]
+        );
+        assert_eq!(
+            names(unifi_known(&rows, 1_500_000)),
+            ["newest", "recent", "undated"]
+        );
+        let many: Vec<Value> = (0..2 * OFFLINE_MAX)
+            .map(|i| {
+                serde_json::json!({
+                    "mac": format!("02:00:00:00:{:02x}:{:02x}", i / 256, i % 256),
+                    "last_ip": format!("10.1.{}.{}", i / 250, i % 250 + 1),
+                    "name": format!("c{i}"),
+                    "last_seen": 1_000 + i,
+                })
+            })
+            .collect();
+        let known = unifi_known(&Value::Array(many), 0);
+        assert_eq!(known.len(), OFFLINE_MAX);
+        let newest = format!("c{}", 2 * OFFLINE_MAX - 1);
+        assert_eq!(known[0].2.as_deref(), Some(newest.as_str()));
+    }
+
+    /// REQ: T8.2 (ADR-166) — the offline clients are capped, and a device or address the
+    /// connected ones hold is never offered again.
+    #[test]
+    fn t8_2_offline_is_capped_and_skips_held_devices() {
+        let ip = |n: u32| Ipv4Addr::from(0x0a00_0000 + n);
+        let held: Seen = vec![("aa:aa:aa:00:00:01".into(), ip(1), None)];
+        let mut known: Seen = vec![("aa:aa:aa:00:00:01".into(), ip(1), Some("TV".into()))];
+        known.extend((2..3000_u32).map(|n| {
+            (
+                format!("bb:00:00:00:{:02x}:{:02x}", n / 256, n % 256),
+                ip(n),
+                Some(format!("off{n}")),
+            )
+        }));
+        let offline = unifi_offline(&held, known);
+        assert_eq!(offline.len(), OFFLINE_MAX);
+        assert_eq!(offline[0].2.as_deref(), Some("off2"));
+    }
+
+    /// REQ: T8.2 (ADR-166) — an offline client names an address, marked as offline, only where no
+    /// router reports a connected device; connected ones are not marked.
+    #[test]
+    fn t8_2_offline_clients_never_replace_a_connected_device() {
+        let dev = |mac: &str, ip: [u8; 4], name: &str| -> Entry {
+            (mac.to_owned(), Ipv4Addr::from(ip), Some(name.to_owned()))
+        };
+        let mut parts = HashMap::new();
+        parts.insert(
+            "udm".to_owned(),
+            Polled {
+                seen: vec![(RANK_ROUTER, dev("aa:00:00:00:00:01", [10, 0, 0, 5], "Desk"))],
+                offline: vec![dev("aa:00:00:00:00:02", [10, 0, 0, 9], "Old phone")],
+                ..Polled::default()
+            },
+        );
+        parts.insert(
+            "other".to_owned(),
+            Polled {
+                offline: vec![dev("aa:00:00:00:00:03", [10, 0, 0, 5], "Gone laptop")],
+                ..Polled::default()
+            },
+        );
+        let order = ["udm".to_owned(), "other".to_owned()];
+        let view = ArcSwap::from_pointee(Leases::new());
+        rebuild(&order, &parts, &view);
+        let leases = view.load_full();
+        let desk = &leases[&Ipv4Addr::new(10, 0, 0, 5)];
+        assert_eq!(
+            (desk.hostname.as_deref(), desk.offline),
+            (Some("Desk"), false)
+        );
+        let phone = &leases[&Ipv4Addr::new(10, 0, 0, 9)];
+        assert_eq!(
+            (phone.hostname.as_deref(), phone.offline),
+            (Some("Old phone"), true)
+        );
+    }
 }
 
 #[cfg(test)]
