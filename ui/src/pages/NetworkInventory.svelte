@@ -22,12 +22,21 @@
   let memory = $state(64);
   let subnets = $state('');
   let preview = $state<S['ConfigChange'] | null>(null);
+  // The form as Check previewed it. Apply is offered only while the form still holds exactly that.
+  let previewedWith = $state<string | null>(null);
   let formError = $state<unknown>(null);
   let busy = $state(false);
+  // The form as the stored settings last filled it. A poll refills the form only while it still
+  // holds that, so an admin's unsaved edits are kept (REQ: DSC-001).
+  let filledWith = $state<string | null>(null);
 
   const writable = $derived(can('admin'));
   const fileSet = $derived(entry?.setByFile ?? []);
   const setByFile = (k: string) => fileSet.includes(k);
+  const snapshot = () => JSON.stringify([enabled, node, memory, subnets]);
+  const previewCurrent = $derived(preview !== null && previewedWith === snapshot());
+  // The stored settings are in use and an override of the files' settings (DSC-001).
+  const overridden = $derived(entry?.source === 'override');
 
   function fromEntry(e: Entry | null) {
     const d = (e?.definition ?? {}) as Record<string, unknown>;
@@ -38,12 +47,17 @@
     subnets = list.map((s) => s.cidr).join('\n');
   }
 
-  async function load() {
+  // Reads the stored settings. The form is refilled when `force` is set (after a save or a revert),
+  // or when the poll finds the form unchanged since the stored settings last filled it.
+  async function load(force = false) {
     try {
       const [cfg, st] = await Promise.all([api.configEntries('discovery'), api.discoveryStatus()]);
       entry = cfg.items[0] ?? null;
       status = st;
-      if (!busy) fromEntry(entry);
+      if (force || (!busy && (filledWith === null || filledWith === snapshot()))) {
+        fromEntry(entry);
+        filledWith = snapshot();
+      }
       error = null;
     } catch (e) {
       error = e;
@@ -74,10 +88,13 @@
     busy = true;
     formError = null;
     notice = '';
+    const asChecked = snapshot();
     try {
       preview = await api.putEntry('discovery-settings', 'default', body(), true);
+      previewedWith = asChecked;
     } catch (e) {
       preview = null;
+      previewedWith = null;
       formError = e;
     } finally {
       busy = false;
@@ -85,13 +102,33 @@
   }
 
   async function apply() {
+    if (!previewCurrent) return;
     busy = true;
     formError = null;
     try {
       await api.putEntry('discovery-settings', 'default', body(), false);
       preview = null;
+      previewedWith = null;
       notice = 'Saved. The inventory starts or stops on the designated node within a few seconds.';
-      await load();
+      await load(true);
+    } catch (e) {
+      formError = e;
+    } finally {
+      busy = false;
+    }
+  }
+
+  // Drops the stored settings: the files' settings apply again (REQ: DSC-001).
+  async function useFile() {
+    busy = true;
+    formError = null;
+    notice = '';
+    try {
+      await api.deleteEntry('discovery-settings', 'default');
+      preview = null;
+      previewedWith = null;
+      notice = "Back to the configuration file's settings.";
+      await load(true);
     } catch (e) {
       formError = e;
     } finally {
@@ -207,12 +244,20 @@
     {#if writable}
       <div class="row actions">
         <button onclick={check} disabled={busy}>Check</button>
-        {#if preview}
+        {#if previewCurrent}
           <button class="primary" onclick={apply} disabled={busy}>Apply</button>
         {/if}
+        {#if overridden}
+          <button class="link" onclick={useFile} disabled={busy} data-testid="inventory-use-file">
+            Use the file's settings
+          </button>
+        {/if}
       </div>
+      {#if preview && !previewCurrent}
+        <p class="small muted" data-testid="inventory-stale">The form changed after the Check. Check again before you apply.</p>
+      {/if}
     {/if}
-    {#if preview}
+    {#if previewCurrent && preview}
       <div data-testid="inventory-preview" class="card">
         <p>{preview.impact}</p>
         {#each preview.warnings as w (w)}<p class="small">{w}</p>{/each}

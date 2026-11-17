@@ -4884,3 +4884,69 @@ test('dsc_002 failing worker shows on the inventory page', async () => {
     await page.unroute(/\/api\/v1\/discovery\/status/).catch(() => {});
   }
 });
+
+// REQ: DSC-001 (T25.2, ADR-928) — an admin checks a change, applies exactly what was checked, and then
+// drops the stored settings for the file's again. The real server answers every step.
+test('dsc_001 admin checks then applies, then uses the file settings', async () => {
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  await settings.getByLabel('Subnets it may read').fill('192.168.50.0/24');
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('inventory-preview')).toBeVisible();
+  await settings.getByRole('button', { name: 'Apply', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await expect(settings.getByLabel('Subnets it may read')).toHaveValue('192.168.50.0/24');
+  await settings.getByTestId('inventory-use-file').click();
+  await expect(page.getByRole('status').filter({ hasText: "Back to the configuration file's settings." })).toBeVisible();
+  await expect(settings.getByTestId('inventory-use-file')).toHaveCount(0);
+});
+
+// REQ: DSC-001 (T25.2, ADR-928) — a subnet outside RFC 1918 is refused with the server's message, and
+// nothing is applied: the Apply button is not offered for a refused check.
+test('dsc_001 a refused subnet shows the refusal', async () => {
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  await settings.getByLabel('Subnets it may read').fill('8.8.8.0/24');
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: "isn't a private (RFC 1918) network" })).toBeVisible();
+  await expect(settings.getByRole('button', { name: 'Apply', exact: true })).toHaveCount(0);
+  // The refusal is expected: the browser logs the 422 as a console error, which the test removes.
+  for (let i = problems.length - 1; i >= 0; i--) if (problems[i].includes('status of 422')) problems.splice(i, 1);
+});
+
+// REQ: DSC-001 (T25.2, ADR-928) — the first write is refused while a member is older than the release
+// that carries `[discovery]`; the refusal's own message is shown (the members are mocked).
+test('dsc_001 members too old is shown', async () => {
+  const detail = "the network inventory can't be turned on while pi-b runs an older version than this one: it can't read `[discovery]`";
+  await page.route(/\/api\/v1\/discovery-settings\/default/, (route) => {
+    if (route.request().method() !== 'PUT') return route.fallback();
+    return route.fulfill({ status: 409, json: { type: 'about:blank', title: 'Conflict', status: 409, detail, code: 'members_too_old' } });
+  });
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/network-inventory');
+    const settings = page.getByTestId('inventory-settings');
+    await settings.getByLabel('Subnets it may read').fill('192.168.60.0/24');
+    await settings.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'pi-b runs an older version' })).toBeVisible();
+    await expect(settings.getByRole('button', { name: 'Apply', exact: true })).toHaveCount(0);
+    // The refusal is expected: the browser logs the 409 as a console error, which the test removes.
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1);
+  } finally {
+    await page.unroute(/\/api\/v1\/discovery-settings\/default/).catch(() => {});
+    await page.goto('/#/network-inventory');
+  }
+});
+
+// REQ: DSC-001 (T25.2, ADR-928) — a poll does not overwrite what an admin is typing: the form is
+// refilled only while it still holds the stored settings.
+test('dsc_001 a poll keeps unsaved edits', async () => {
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  const node = settings.getByLabel('Designated node');
+  await node.fill('pi-unsaved');
+  // The page polls every 15 s; wait past one poll before looking again.
+  await page.waitForTimeout(16_000);
+  await expect(node).toHaveValue('pi-unsaved');
+  await node.fill('');
+});
