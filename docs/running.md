@@ -1360,6 +1360,14 @@ The **Networks** page in the web UI (Devices, beside Clients) shows this list: e
 
 `GET /api/v1/networks` (and the MCP tool `list_networks`) lists the LANs and VLANs your UniFi console reports (name, subnet, VLAN, gateway, DHCP pool, domain), then any group's `networks` no router reported. For each: the group that covers it, its host addresses, the known devices in it (from the routers, Home Assistant, and mDNS), the share used, and how many devices sit outside the DHCP pool (reservations and fixed addresses). Agent tokens need `config:read`.
 
+### Network inventory (devices that never ask DNS)
+Some devices never ask TelltaleDNS for anything: a printer with a fixed address, a switch, a camera. The network inventory (off by default) lists them from what your network already knows, and only reads: it never scans the network itself (ADR-907).
+
+- Turn it on in **Network inventory** (under Devices; administrators only). Name the **designated node** (leave it blank for the primary, or for a standalone node), and list the **subnets** it may read, one per line, in private IPv4 space (`192.168.1.0/24`). IPv6 and networks outside `10/8`, `172.16/12` and `192.168/16` are refused.
+- Turning it on needs `telemetry.qlog.privacy_level` 0 or 1: the inventory needs the client addresses that levels 2 and 3 hide.
+- The inventory runs in its own threads and in separate worker processes, so a worker that crashes, hangs or runs out of memory never slows DNS. The page shows each worker's state; a worker that keeps stopping raises a degraded health reason (`discovery_worker_failing`), and one built from another version is refused (`discovery_worker_version_mismatch`).
+- In the file, the section is `[discovery]`, with `[[discovery.subnet]]` entries (see [Sections](configuration.md#sections)). Fields the file sets show "set by file" in the UI.
+
 ### Names devices announce (mDNS)
 Phones, speakers, printers, and NAS boxes announce themselves on the local network (`Kitchen-HomePod.local`). TelltaleDNS can listen and use those names for devices you haven't named:
 ```toml

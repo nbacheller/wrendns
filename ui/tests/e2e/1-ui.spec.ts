@@ -4848,6 +4848,8 @@ test('dsc_001 file-set discovery shows set by file', async () => {
   };
   await page.route(/\/api\/v1\/config\/entries\?kind=discovery/, (route) => route.fulfill({ json: entry }));
   try {
+    // Leave the page first, so the page mounts again and reads the mocked entry.
+    await page.goto('/#/');
     await page.goto('/#/network-inventory');
     const settings = page.getByTestId('inventory-settings');
     await expect(settings.getByTestId('set-by-file')).toHaveCount(2);
@@ -4871,6 +4873,7 @@ test('dsc_002 failing worker shows on the inventory page', async () => {
   };
   await page.route(/\/api\/v1\/discovery\/status/, (route) => route.fulfill({ json: status }));
   try {
+    await page.goto('/#/');
     await page.goto('/#/network-inventory');
     await expect(page.getByTestId('inventory-state')).toHaveText('Runs on this node');
     const row = page.getByTestId('worker-snmp');

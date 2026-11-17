@@ -1293,6 +1293,36 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-930 — The designated node, its names, and the audit of `[discovery]` (Proposed)
+**Context:** ADR-907 says `[discovery] node` names the node that runs discovery, else the primary or the standalone node, and never an ephemeral pod or a witness. It doesn't say what a name is matched against, or when the section is audited. T25.2 settles both.
+**Decision:**
+- `node` matches a member's cluster node ID or the node's configured name (`[node] name`, or the hostname). An operator who knows the name in the UI doesn't need the hash. A name that matches nothing runs nothing, and the status shows `designated: false` on every node.
+- An ephemeral pod or a witness is never designated, even when named (`gate::designated`).
+- The inventory thread and the workers start and stop at start-up and on every reload, from the same gate (`discovery::runtime::Runtime::reconcile`). An API change reaches the designated node through the reload it already triggers.
+- `[discovery]` is audited as `discovery.config_changed` with `source = file`: at start when the files set the section, and on a file reload that changes it. Changes made through the API are audited by the API with their author (as for every managed kind).
+**Alternatives rejected:** matching the node ID only (the hash is unreadable in the UI); auditing every reload whether or not the section changed (noise in the log every SIGHUP).
+**Consequences:** a node renamed in the file is no longer designated by that name, and the status says so. The owner confirms the name rule while this ADR is Proposed.
+
+## ADR-929 — Discovery worker protocol v1, its debug-only fault jobs, and the status API before T25.12 (Proposed)
+**Context:** T25.3 builds the worker processes of ADR-908 before the SNMP codec (T25.4) and the import parser (T25.11) exist. The worker needs a protocol that those tasks can build on, and a way for the tests to see a worker panic, hang or run out of memory without a test-only build of the server.
+**Decision:**
+- Frames are a u32 big-endian length (counting the kind byte), one kind byte, then the payload: kind 1 JSON (at most 1 MiB), kind 2 binary chunk (at most 512 KiB). The length is checked before any payload is read or allocated (`discovery::frames`).
+- Messages are JSON objects tagged by `t`: `hello`, `job`, `result`. Protocol 1. A `hello` mismatch of protocol or build is answered with the worker's own `hello` and an exit code of 3; the parent raises `discovery_worker_version_mismatch` and starts nothing else.
+- The `fault` job (`panic`, `hang`, `alloc`) exists only in debug builds, so the integration tests can run a real worker through a panic, a hang and an allocation past `RLIMIT_DATA`. A release worker answers it as an unknown op. The bench-only override of the pacing floor is T25.4's, with the pacing.
+- The status API `GET /api/v1/discovery/status` (DSC-014) is added now, for the worker card and the health reasons. It shows whether the node runs the inventory and each worker's state. It is `discovery:read` (DSC-013) only from T25.12, so agents get 403 on it until then (`auth::agent`).
+**Alternatives rejected:** a fault switch in an environment variable (the environment is cleared for the worker, and a variable the parent can't set would be a second channel); a test-only build (the systemd e2e needs the release binary).
+**Consequences:** the worker frame reader is the one piece of discovery code that reads bytes from a child process; it is fuzzed as `worker_frames` (ADR-908). The status API is read-only and unauthenticated only as far as every other status route is.
+
+## ADR-928 — `[discovery]` as a managed kind: admin-only, no agent scope, and the first write waits for N−1 members (Proposed)
+**Context:** ADR-907 makes `[discovery]` a shared section written through the config entries API as the managed kind `discovery`, admin-only, with dry run, `If-Match` and audit, and says the first write waits while any member runs N−1 (CLU-010). It doesn't say where the kind lives, what the version threshold is, or whether later writes wait too.
+**Decision:**
+- The kind is `discovery` at `/api/v1/discovery-settings/default`. The path is `-settings` because `/api/v1/discovery` is the inventory's own read (T25.12).
+- Every field is admin-only (`settings_kinds::admin_keys`): an operator's change is 403 naming the field, and an agent is 403 (`agent_not_allowed`). The auth table refuses the whole `/api/v1/discovery` prefix to agents until `discovery:read` exists.
+- The first write (none stored through the API yet) is refused with 409 `members_too_old` while any member reports a version older than `DISCOVERY_SINCE` = 0.9.0, or one that can't be read. Later writes don't wait: the members already took the first.
+- A forwarded write to a primary older than 0.9.0 is refused with 409 `upgrade_required` (as the other settings kinds are, CLU-010).
+**Alternatives rejected:** waiting on every write (a member that is upgraded and back would still need the first write to be accepted, so this only added a second wait); the threshold at 0.8.0 (0.8.0 can't read the section).
+**Consequences:** `DISCOVERY_SINCE` moves with the release that carries this section. The first write on a cluster with an older member is refused until that member is upgraded, which the UI says.
+
 ## ADR-925 — Inventory thread and its inputs before `[discovery]`: off by default, the Home Assistant feed deferred (Proposed)
 **Context:** T25.1 builds the inventory thread (`telltale-inventory`) and its read-only sources. The switch that starts them is `[discovery]`, which is T25.2. Nothing in the server reads Home Assistant's raw answer after `routers.rs` folds it into the lease view, and the owner has not yet decided how a discovery node is chosen.
 **Decision:**
