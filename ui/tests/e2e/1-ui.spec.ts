@@ -4022,7 +4022,9 @@ test('api_016 router with an unreadable credential shows the issue', async () =>
   await page.unroute('**/api/v1/routers');
 });
 
-test('api_016 delete a router from the UI', async ({ request }) => {
+test('api_016 delete a router from the UI', async () => {
+  // The page's session (the admin signed in above), not a fresh request context.
+  const request = page.request;
   const csrf = (await (await request.get('/api/v1/auth/status')).json()).csrfToken as string;
   const secret = await request.put('/api/v1/secrets/ha-e2e-token', { headers: { 'x-csrf-token': csrf }, data: { value: 'del-e2e-token-9', kind: 'text' } });
   expect(secret.status(), await secret.text()).toBe(200);
