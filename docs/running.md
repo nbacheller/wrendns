@@ -2030,9 +2030,15 @@ router, or small VM.
 # The token from `telltale cluster token create --witness` on the primary.
 telltale cluster join <token> --witness --advertise https://witness.lan:8443 -c witness.toml
 telltale cluster witness -c witness.toml      # run it as a service
-# On the primary, then restart it:
+# On the primary, before the replicas join (or while the whole cluster is stopped), then start it:
 telltale cluster set-failover auto
 ```
+- **Turn it on before the replicas join.** The replicas adopt `auto` from the signed records as
+  soon as the primary publishes it, but a primary still in manual mode renews no lease, so a
+  replica can elect a new primary within seconds and depose the healthy one. The CLI prints a
+  warning when you run `set-failover auto`. If you have to change it under a running cluster,
+  restart the primary straight after the change: a replica waits one lease period (15 s) before it
+  can stand, and a restarted primary stands at once and takes its lease.
 - **How it decides:** every eligible node and witness is a voter. The primary renews a 15 s
   *lease* with a majority every 5 s, and publishes only while the lease holds. If it disappears,
   the eligible nodes wait for the lease to run out, and one is elected by a majority vote in a
@@ -2229,6 +2235,8 @@ If a primary loses its key, the replicas keep their secrets; the primary refills
 replica that holds every one of them at the same stamp. Until then it reports the store locked
 and refuses secret writes, and DNS is unaffected.
 
+
+**Testing a cluster.** `deploy/cluster3/` runs a primary and two replicas in containers and checks joining, replication, forwarding, secrets, routers, the network-inventory settings, federated reads, failover, and rolling restarts. It's a throwaway test cluster, separate from any node you run (see its README). CI runs it on every change to the cluster code.
 
 ## Taking a node down for maintenance
 Swapping a Pi's SD card, moving a box, or upgrading a node by hand: put the node in maintenance

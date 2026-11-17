@@ -1,0 +1,66 @@
+# REQ: CLU-001..005, OPS-007 — the three-node test cluster (deploy/cluster3, T21.5): a primary and two
+# replicas from the Dockerfile's image, the checks in deploy/cluster3/e2e.sh. It runs for changes to
+# the cluster code; scheduled workflows run only from main, so the push and pull request paths
+# filter decides when it runs, and workflow_dispatch runs it by hand.
+name: cluster3
+on:
+  push:
+    branches: [main, 'feat/**', 'test/**']
+    paths:
+      - 'crates/telltale-cluster/**'
+      - 'crates/telltale/src/federated*'
+      - 'crates/telltale/src/replication*'
+      - 'crates/telltale/src/secrets*'
+      - 'crates/telltale/src/routers*'
+      - 'crates/telltale/src/discovery/**'
+      - 'crates/telltale/src/cluster.rs'
+      - 'crates/telltale/src/forward.rs'
+      - 'crates/telltale/src/settings_kinds.rs'
+      - 'crates/telltale/src/managed.rs'
+      - 'crates/telltale/src/api_backend.rs'
+      - 'crates/telltale/src/main.rs'
+      - 'crates/telltale-api/**'
+      - 'crates/telltale-store/**'
+      - 'crates/telltale-config/**'
+      - 'Cargo.lock'
+      - 'Dockerfile'
+      - 'deploy/cluster3/**'
+      - '.github/workflows/cluster3.yml'
+  pull_request:
+    paths:
+      - 'crates/telltale-cluster/**'
+      - 'crates/telltale/src/federated*'
+      - 'crates/telltale/src/replication*'
+      - 'crates/telltale/src/secrets*'
+      - 'crates/telltale/src/routers*'
+      - 'crates/telltale/src/discovery/**'
+      - 'crates/telltale/src/cluster.rs'
+      - 'crates/telltale/src/forward.rs'
+      - 'crates/telltale/src/settings_kinds.rs'
+      - 'crates/telltale/src/managed.rs'
+      - 'crates/telltale/src/api_backend.rs'
+      - 'crates/telltale/src/main.rs'
+      - 'crates/telltale-api/**'
+      - 'crates/telltale-store/**'
+      - 'crates/telltale-config/**'
+      - 'Cargo.lock'
+      - 'Dockerfile'
+      - 'deploy/cluster3/**'
+      - '.github/workflows/cluster3.yml'
+  workflow_dispatch:
+
+# Least privilege: the job reads the repository and nothing more.
+permissions:
+  contents: read
+
+jobs:
+  three-node:
+    runs-on: ubuntu-latest
+    # A cold image build on a 4-vCPU runner (the UI, then the workspace with thin LTO, and an empty
+    # build cache) takes well over the README's 3 to 6 minutes, which was measured on a warm 24-core
+    # host; the checks take about five more. 60 minutes leaves room for both.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Three nodes: join, replicate, fail over, restart (deploy/cluster3)"
+        run: bash deploy/cluster3/e2e.sh

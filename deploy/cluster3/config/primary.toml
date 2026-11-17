@@ -1,0 +1,38 @@
+# The primary of the throwaway 3-node test cluster (deploy/cluster3). It creates the cluster on
+# its first start ([cluster.init]); the replicas join with tokens (e2e.sh).
+#
+# TEST ONLY: allow_secrets_over_http lets the test write secrets through the API's plain HTTP
+# port, on a throwaway cluster nobody else can reach. Never set it on a real node.
+config_version = 1
+
+[node]
+name = "primary"
+
+[[listen]]
+proto = "udp"
+addr = "0.0.0.0:2153"
+[[listen]]
+proto = "tcp"
+addr = "0.0.0.0:2153"
+
+[api]
+listen = "0.0.0.0:8053"
+allow_secrets_over_http = true
+
+[cluster]
+name = "cluster3"
+site = "primary"
+listen = "0.0.0.0:8443"
+
+[cluster.init]
+advertise = ["https://primary:8443"]
+
+# Nothing answers here, so names that aren't local fail (SERVFAIL) and the test's own names,
+# which are local records, are the only answers a check can rely on.
+[[upstream]]
+name = "nowhere"
+url = "udp://127.0.0.1:9"
+
+[[upstream_group]]
+name = "default"
+members = ["nowhere"]
