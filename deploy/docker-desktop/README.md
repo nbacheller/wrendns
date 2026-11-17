@@ -80,19 +80,16 @@ Then open <http://localhost:8053/> and sign in with that token.
 ## 4. What to look at
 
 - **Clients → Discovered:** every device from the gateway and Home Assistant, with the name each one gave.
-- **Names in DNS:**
+- **Names in DNS.** Ask from a container, through the published port (`-port=1053` works there):
 
   ```sh
-  nslookup -port=1053 kitchen-tablet.home.arpa 127.0.0.1     # use a name from the list
-  nslookup -port=1053 192.0.2.21 127.0.0.1                 # reverse lookup
+  docker run --rm alpine nslookup -port=1053 kitchen-tablet.home.arpa host.docker.internal   # use a name from the list
+  docker run --rm alpine nslookup -port=1053 192.0.2.21 host.docker.internal               # reverse lookup
   ```
 
-  On Windows, `nslookup` gets no answer from a port other than 53 (`No response from server`), though TelltaleDNS answers. Ask from a container instead, through the same published port:
+  A reverse lookup for an address that no known device has answers `NXDOMAIN`, which is a correct answer.
 
-  ```sh
-  docker run --rm alpine nslookup -port=1053 kitchen-tablet.home.arpa host.docker.internal
-  docker run --rm alpine nslookup -port=1053 192.0.2.21 host.docker.internal
-  ```
+  **Why not `nslookup -port=1053 ... 127.0.0.1` on Windows?** Windows' `nslookup` ignores `-port`, and so does `set port=` in its interactive mode. It sends every UDP and TCP query to port 53 on the server address, where the bundle doesn't listen (it listens on 1053), so it prints `No response from server` (UDP) or `Unspecified error` (`-vc`). Captured on Windows 11 with a relay on port 53 in front of the bundle: `nslookup -port=2053 example.com 127.0.0.1` sent nothing to port 2053 and six packets to port 53 (a PTR for `1.0.0.127.in-addr.arpa`, then A and AAAA for the name); the bundle's answers were well formed and nslookup printed them. So this is the client, not TelltaleDNS. Python and other tools that honour a port work against `127.0.0.1:1053` from Windows.
 
 - **The inventory, through the API.** Create a token under **Settings → Users → API tokens**, then:
 
