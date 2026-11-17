@@ -948,6 +948,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/clients-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the `[clients]` setting this API changes (DNS-023, T24.13, ADR-914).
+         * @description Only `mdns` is here: when on, TelltaleDNS listens for mDNS announcements on every node, which
+         *     names devices that announce themselves (`[local] device_mdns` answers for them). `mdns_port`
+         *     stays in the file. This is admin-only: an operator's change is 403 naming `mdns`, and no agent
+         *     can change it.
+         */
+        put: operations["put_clients_settings"];
+        post?: never;
+        /**
+         * Go back to the config file's `[clients]` mdns setting (DNS-023).
+         * @description Removes what the API stored, so the file's `mdns` applies again on every node. Only an admin may
+         *     do this, and no agent can.
+         */
+        delete: operations["delete_clients_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clients/affinity": {
         parameters: {
             query?: never;
@@ -1896,6 +1924,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/local-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the device-name settings (DNS-023, ADR-901).
+         * @description The body has the fields of `[local]` that name devices: `device_domain` (a domain such as
+         *     `home.arpa`; `local` is refused), `device_ttl` (seconds), `device_mdns` (names devices announce
+         *     over mDNS, which needs `[clients] mdns`), `auto_ptr`, and `default_ttl`. `hosts_files` is set in
+         *     the file only. Like `PUT /special-names/default`, the file's fields win (409 `set_by_file`).
+         *     Names change within about 10 seconds on every node, with no restart.
+         */
+        put: operations["put_local"];
+        post?: never;
+        /**
+         * Go back to the config file's device-name settings (DNS-023).
+         * @description Removes what the API or UI stored: the fields the config files don't set go back to the file's
+         *     values (or the defaults), and the names change within about 10 seconds. Needs the operator role.
+         */
+        delete: operations["delete_local"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/networks": {
         parameters: {
             query?: never;
@@ -2433,6 +2490,37 @@ export interface paths {
          *     applies again. 404 when nothing was stored.
          */
         delete: operations["delete_simulate_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/special-names/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the special-name handling (DNS-019, ADR-904).
+         * @description The body has the fields of `[special]` in `telltale.toml`: `block_firefox_canary`, `localhost`,
+         *     `private_ptr_nxdomain`, `refuse_chaos`, `block_icloud_private_relay`, `single_label_nxdomain`,
+         *     and `ddr_name` (the name the encrypted listeners' certificates carry, for DDR). It replaces the
+         *     whole section (fields left out take the defaults), except fields the config files set: those
+         *     win, and a body that sets one to another value is 409 `set_by_file`. Applies on the next query,
+         *     with no restart. `ddr_name` is admin-only: an operator's change is 403 naming the field, and
+         *     no agent changes it.
+         */
+        put: operations["put_special"];
+        post?: never;
+        /**
+         * Go back to the config file's special-name handling (DNS-019).
+         * @description Removes what the API or UI stored, so `[special]` in the config files (or the defaults) applies
+         *     again. 404 when nothing was stored.
+         */
+        delete: operations["delete_special"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4409,6 +4497,12 @@ export interface components {
          */
         ConfigEntry: {
             /**
+             * Format: int64
+             * @description REQ: DNS-023 (T24.13) — how many names this entry answers right now (the device names
+             *     for `local`).
+             */
+            answering?: number | null;
+            /**
              * @description REQ: API-014 (T23.2, ADR-903 §4) — paths this entry sets through the UI or API that the
              *     path rules refuse (under `/proc` or the data directory, a key file, a credential file
              *     outside `[node] secret_file_dirs`): they aren't read until an admin sets another.
@@ -4428,6 +4522,12 @@ export interface components {
              *     are to keep the values.
              */
             redacted?: string[];
+            /**
+             * @description REQ: DNS-019, DNS-023 (ADR-914) — the fields of a shared settings section (`special`,
+             *     `local`, `clients`) that the config files set: the API can't change them, and the UI
+             *     shows them as "set by file".
+             */
+            setByFile?: string[];
             /**
              * @description `file` (the config files), `added` (made through the UI or API), `override` (replaces
              *     the files' entry of that name), or `hidden` (the files' entry is left out).
@@ -4953,6 +5053,12 @@ export interface components {
             pausedUntilUnixSeconds?: number | null;
             qtype: string;
             route?: components["schemas"]["ExplainRoute"] | null;
+            /**
+             * @description REQ: DNS-019 (T24.12, ADR-914) — for `special`, the special-name rule that answered:
+             *     `private_relay`, `single_label`, `resolver_arpa`, `ddr`, `firefox_canary`, `private_ptr`,
+             *     `chaos`, or `localhost` (the switch the UI links to is `[special]`'s field of that name).
+             */
+            special?: string | null;
             /** @description One sentence for people. */
             summary: string;
         };
@@ -5555,6 +5661,12 @@ export interface components {
         Items_ConfigEntry: {
             items: {
                 /**
+                 * Format: int64
+                 * @description REQ: DNS-023 (T24.13) — how many names this entry answers right now (the device names
+                 *     for `local`).
+                 */
+                answering?: number | null;
+                /**
                  * @description REQ: API-014 (T23.2, ADR-903 §4) — paths this entry sets through the UI or API that the
                  *     path rules refuse (under `/proc` or the data directory, a key file, a credential file
                  *     outside `[node] secret_file_dirs`): they aren't read until an admin sets another.
@@ -5574,6 +5686,12 @@ export interface components {
                  *     are to keep the values.
                  */
                 redacted?: string[];
+                /**
+                 * @description REQ: DNS-019, DNS-023 (ADR-914) — the fields of a shared settings section (`special`,
+                 *     `local`, `clients`) that the config files set: the API can't change them, and the UI
+                 *     shows them as "set by file".
+                 */
+                setByFile?: string[];
                 /**
                  * @description `file` (the config files), `added` (made through the UI or API), `override` (replaces
                  *     the files' entry of that name), or `hidden` (the files' entry is left out).
@@ -10146,6 +10264,125 @@ export interface operations {
             };
         };
     };
+    put_clients_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin may change `mdns`; agents never. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files set `mdns`, and they win. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is unknown (`mdns_port` is set in the file). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_clients_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin may change `mdns`; agents never. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's setting is in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     client_affinity: {
         parameters: {
             query?: {
@@ -12136,6 +12373,116 @@ export interface operations {
             };
         };
     };
+    put_local: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description `set_by_file`: the config files set that field, and they win. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong or unknown (a domain `local`, for one), or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_local: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     networks: {
         parameters: {
             query?: never;
@@ -13536,6 +13883,134 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_special: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description An operator changes `ddr_name` (admin-only), or an agent does. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files set that field, and they win. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong or unknown, or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_special: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The change would switch `ddr_name` off, and only an admin may. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
             /** @description Nothing was changed through the API: the file's settings are in effect already. */

@@ -11,6 +11,7 @@
   import HelpButton from '../lib/components/HelpButton.svelte';
   import ChangePreview from '../lib/components/ChangePreview.svelte';
   import Drawer from '../lib/components/Drawer.svelte';
+  import DeviceNamesCard from '../lib/components/DeviceNamesCard.svelte';
 
   let names = $state<S['LocalName'][]>([]);
   let forwards = $state<S['ForwardInfo'][]>([]);
@@ -165,6 +166,9 @@
       <button onclick={() => ((fw = { domain: '', servers: '', stub: false }), (formError = done = ''))}>Send a domain to another server</button>
     </div>
   {/if}
+
+  <!-- REQ: DNS-023 (T24.13, ADR-901, ADR-914) — device names in DNS, and the admin's mDNS switch. -->
+  <DeviceNamesCard />
 
   {#if groups.length === 0}
     <section class="card">
