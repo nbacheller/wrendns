@@ -15,3 +15,6 @@ ui/playwright-report/
 .git/
 **/*Zone.Identifier
 **/__pycache__/
+
+# Git worktrees used for parallel work (each has its own node_modules and build output).
+.wt/
