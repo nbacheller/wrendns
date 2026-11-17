@@ -1,0 +1,25 @@
+# A replica of the throwaway 3-node test cluster (deploy/cluster3). It joins the primary with a
+# token (e2e.sh); its configuration then comes from the primary, so the shared sections (upstreams,
+# lists, records) are left out here: a replica that set them would be told they're ignored (CLU-006).
+#
+# TEST ONLY: see primary.toml (allow_secrets_over_http).
+config_version = 1
+
+[node]
+name = "replica-b"
+
+[[listen]]
+proto = "udp"
+addr = "0.0.0.0:2153"
+[[listen]]
+proto = "tcp"
+addr = "0.0.0.0:2153"
+
+[api]
+listen = "0.0.0.0:8053"
+allow_secrets_over_http = true
+
+[cluster]
+name = "cluster3"
+site = "replica-b"
+listen = "0.0.0.0:8443"

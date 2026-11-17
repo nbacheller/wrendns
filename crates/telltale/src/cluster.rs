@@ -1379,6 +1379,15 @@ pub(crate) fn set_failover(
         out,
         "Failover is now `{mode}`. Restart telltale to publish it; every node follows."
     );
+    if mode == "auto" {
+        // REQ: CLU-005 (review of T21.5) — the replicas adopt `auto` from the signed records at once,
+        // but this primary runs `manual` until it restarts and renews no lease: until then a replica
+        // can be elected within seconds, deposing this one.
+        let _ = writeln!(
+            out,
+            "Warning: restart this primary now. Until it restarts it keeps running in manual mode              and renews no lease, and a replica can elect a new primary within seconds. On a new              cluster, set this before the replicas join."
+        );
+    }
     if mode == "auto" && voters < 3 {
         let _ = writeln!(
             out,

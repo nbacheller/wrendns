@@ -227,6 +227,13 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
             can_lead,
             load_ballot(cluster, now),
         );
+        // REQ: CLU-005 (ADR-947) — a node that isn't the primary waits one lease period before its
+        // first try: no lease exists yet, so without the wait it would stand against a primary that is
+        // up and about to take its lease. The primary itself doesn't wait: it stands at once and
+        // takes the lease (waiting too let a replica win the race, in the three-node run).
+        if !cluster.is_primary() {
+            el.defer_first_try(now + LEASE_MS);
+        }
         // A primary that restarts resumes its epoch if its own ballot is for it.
         let (role, epoch) = cluster.role();
         if role == Role::Primary

@@ -1603,6 +1603,12 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
         .enable_all()
         .thread_name("telltale-rt")
         .build()?;
+    // REQ: CLU-004 (upstream #7) — the runtime's own worker count (the container's CPU quota, on a
+    // 2-CPU replica): the three-node run asserts it, since the UDP workers are a different count.
+    info!(
+        runtime_workers = rt.metrics().num_workers(),
+        "tokio runtime ready"
+    );
     let data_dir = data_dir.to_owned();
     let served = rt.block_on(server::serve(files, cfg));
     if lock.is_some() {

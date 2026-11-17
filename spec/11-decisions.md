@@ -1297,7 +1297,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 **Context:** a replica that can't reach its primary keeps answering DNS from its last copy (CLU-004), but nothing said so: `node_down` only sees a node that's disconnected from the primary's view, and a replica that still reaches other members (after falling back to one of them) looks healthy while it is split off. Alerts are evaluated on the primary, so the primary has to learn the replica's view from the heartbeats it already receives (fork #2, T24.5).
 
 **Decision:**
-- A replica's heartbeat carries `primary_silent_s` (optional `uint64`, tag 39): how long it has gone without a heartbeat from its primary, when that is more than the `up` window (three heartbeats, 15 s); absent when it reaches the primary, is the primary, or is an older node. It is computed from the heartbeats already exchanged, on the cluster task, never on the DNS path. Older nodes ignore the tag (CLU-010).
+- A replica's heartbeat carries `primary_silent_s` (optional `uint64`, tag 40; tag 39 is the primary flag of ADR-947): how long it has gone without a heartbeat from its primary, when that is more than the `up` window (three heartbeats, 15 s); absent when it reaches the primary, is the primary, or is an older node. It is computed from the heartbeats already exchanged, on the cluster task, never on the DNS path. Older nodes ignore the tag (CLU-010).
 - The cluster view carries it as `primarySilentSeconds` on each replica (its own value, or the peer's while the peer is `up`).
 - The alert condition `primary_unreachable` fires for a replica whose silence is at least its rule's `threshold` in seconds (default 60; 15 to 86400), after `for_secs` as for every rule. One alert per replica; it clears when the replica reaches the primary again. Witnesses, resolver pods and nodes that aren't `up` are left out; so are nodes in maintenance.
 - The health level adds a degraded reason `primary_unreachable` (link `#/cluster`) for a replica silent for 60 s. The health icon uses the fixed 60 s, as ADR-104 fixes its thresholds; the alert's `threshold` doesn't change the icon. (Conservative choice: the health path has no access to the alert rules; making it follow the rule is a follow-up if the defaults don't fit.)
@@ -1307,6 +1307,40 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Maintenance. Health and the alert both leave out a replica in a maintenance window (the health filter checks the node's maintenance field directly; `exclude_maintenance` also drops its reasons).
 
 **Consequences:** one optional heartbeat field and one `ClusterNode` field; no new configuration key (the threshold is the rule's own). The UI shows the condition in the Alerts form (threshold, in seconds, is the field's help), the replica flag on the Cluster page with the `primary-unreachable` help topic, and the health reason. The timing is unit-tested at the boundary (`obs_010_t24_5_*`), and `clu_004` is the Playwright test.
+## ADR-947 — A promotion reaches every replica in the heartbeats; a key share repeats every 30 s (Accepted 2026-11-17)
+**Context:** the three-node run (`deploy/cluster3`, T21.5) killed the primary. The replica elected in its place became primary, and the other replica followed the dead old primary (its configuration fetch went to `primary:8443`) and missed every later version. Two causes in `telltale-cluster`:
+- a member's `primary` flag came only from its Hello, at connect time. A replica that connected before the election kept the old view, and `primary_urls` left the new primary's URL out as a replica's;
+- the primary sent its key share once per stream. A peer that refused it (the flag was stale, so the sender wasn't "the primary" yet) never got another, so it could not be promoted later.
+
+**Decision:**
+- The heartbeat carries the sender's primary flag as an optional field (tag 39). A sender sets it at every heartbeat, and the receiver updates the member's flag. An older node sends no flag, and the flag a peer holds stays. Both directions are compatible without a protocol bump (CLU-010).
+- The primary sends its key share to an eligible peer again every 30 s (`KEY_SHARE_RESEND`), unchanged. The acceptance check is unchanged: the sender must be the primary in the receiver's view, at the same epoch or a newer one.
+
+**Alternatives rejected:**
+- *A protocol version bump.* The field is optional both ways, so a bump would only force a mixed cluster to upgrade together.
+- *Deriving the primary from the epoch.* A node's epoch alone doesn't say whether it holds the role now, and a former primary keeps the epoch it had.
+- *Acknowledging key shares.* A wire change for a refusal that a resend already covers.
+
+**Consequences:** a primary's heartbeat grows by two bytes, and an eligible peer gets about 2 KiB every 30 s. A replica takes a new primary from the next heartbeat after the promotion. Tests: `clu_005_a_promotion_reaches_a_replica_in_the_heartbeats`, `clu_005_a_key_share_is_sent_again_after_its_interval`, `clu_005_the_heartbeat_primary_flag_is_optional_both_ways`.
+
+**Addendum (T21.5 review, 2026-11-17).** The three-node run also showed how an election starts. A node's election state is made when automatic failover turns on, and again when the voter set changes. Such a node had no lease to go by (none was granted yet), so its first try came at once: a replica stood 70 ms after the third voter joined and deposed a primary that had not renewed yet. A node that isn't the primary now waits one lease period (`LEASE_MS`, 15 s) before its first try (`Elector::defer_first_try`). The primary doesn't wait: it stands at once and takes its lease. Safety is unchanged (a voter still refuses a newer epoch while a lease it granted runs); the first election after a start is later, by up to 15 s. Tests: `clu_005_d_a_new_candidate_waits_a_lease_before_its_first_try`. The primary's key-share send is one decision (`key_share_send`: a changed frame at once, the same frame every 30 s), tested by `clu_005_c_the_key_share_is_sent_on_change_and_on_the_interval`. A repeat of the next CA key that the trust doesn't include yet doesn't rewrite `ca-pending.key` when the file already holds that key (`clu_005_b_a_pending_ca_key_is_written_once`).
+
+## ADR-948 — The `[discovery]` first write, and members that are stopped or run a dev build (Accepted 2026-11-17, owner decision)
+**Context:** ADR-928's title says "the first write waits for N−1 members". Its decision says the first write is refused with 409 `members_too_old` while a member runs a version older than `DISCOVERY_SINCE` (0.8.0), or one that can't be read. The three-node run checked both readings. With all three up, the first write passes when the replicas report 0.8.0. With replica-b stopped, the real first write also passes: the gate reads the version the cluster recorded for it, and a stopped member is neither older nor unreadable. A cluster of `dev` builds does refuse the first write, since a peer's `dev` is unreadable to the gate, and the refusal names both replicas. The run's image therefore stamps the release version (0.8.0), the way CI stamps a release build.
+
+**Decision (proposed):** keep the gate as ADR-928's decision states it: members are judged by the version the cluster recorded for them, not by whether they are up. The test follows that. The title of ADR-928 says "waits", which this doesn't do.
+
+**Open for the owner:**
+- Should a stopped member block the first write until it is back (the title's reading)? That is a new rule: a member that's down would hold up a setting, and the first write has no later retry.
+- Should a `dev` build report a readable version to its peers, so a dev cluster can use `[discovery]`? Today it can't, and the refusal is correct for the decision as written.
+
+**Consequences:** no code change until the owner decides. The test pins the current behaviour (`deploy/cluster3/e2e.sh`, check e).
+
+**Owner decision (2026-11-17):**
+- A stopped member doesn't block the first write. Members are judged by the version the cluster recorded for them, as above. The title of ADR-928 is read as its decision.
+- A build without a release stamp reports the crate version with a `-dev` suffix (for example `0.8.0-dev`) instead of `dev`, and peers and the gate read it as that version. A dev cluster can then use `[discovery]` without a release stamp. This is T21.6.
+
+**Addendum (T21.5 review, 2026-11-17).** A `[discovery]` the primary sets with a value that isn't the default was refused by every replica whose own section was at its defaults. The section is left out of a node's serialization at its defaults (CLU-010), so the configuration merge didn't know the key and refused the whole version ("the primary sent a setting this version doesn't know"). The merge now always has the `discovery` key: at its default when the primary doesn't send one (so a cleared section resets the replicas, as the other shared sections do), and the primary's value when it does. Test: `clu_010_a_discovery_section_is_shared_both_ways` (`telltale-config`). Check (e) of the three-node run writes `worker_memory_mib = 48` and reads it back on replica-b, which is what found it.
 
 ## ADR-946 — Federated reads run off the runtime workers: `block_in_place` under the blocking helper (Accepted 2026-11-17)
 **Context:** upstream #7. `call_one` and `gather` in `crates/telltale/src/federated.rs` run a plain thread that blocks on the runtime. Called from a worker, the worker is held while the cluster stream's writer and reader tasks need workers to finish the call, so two concurrent reads to a peer that doesn't answer wedged a two-worker runtime. Several async handlers called a federated read directly on a worker.
