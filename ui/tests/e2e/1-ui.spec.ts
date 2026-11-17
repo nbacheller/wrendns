@@ -5105,3 +5105,162 @@ test('api_013 a made group draft does not reopen on reload', async () => {
     await page.unroute('**/api/v1/networks');
   }
 });
+
+// REQ: API-007 (T24.18, ADR-940) — importing a Pi-hole export from the admin page: the preview
+// lists what would change and writes nothing; applying needs the typed confirmation, writes the plan,
+// and is undone here by deleting what it added. The fixture is a small Teleporter (v5) archive.
+const PIHOLE_FIXTURE = resolve(import.meta.dirname, 'fixtures/pihole-v5-teleporter.tar.gz');
+
+test('api_007 import from pi-hole with preview', async () => {
+  const r = page.request;
+  await page.goto('/#/settings?tab=pihole');
+  const panel = page.getByTestId('pihole-import');
+  await expect(panel.getByRole('heading', { name: 'Import from Pi-hole' })).toBeVisible();
+  await panel.getByTestId('pihole-file').setInputFiles(PIHOLE_FIXTURE);
+  await panel.getByTestId('pihole-preview').click();
+  await expect(panel.getByTestId('pihole-summary')).toContainText('to add', { timeout: 20_000 });
+  // The upstream, the local name and the deny entry are listed as adds; nothing is written yet.
+  const items = panel.getByTestId('pihole-item');
+  await expect(items.filter({ hasText: 'pihole-1' }).first()).toContainText('add');
+  await expect(items.filter({ hasText: 'import-test.lan' }).first()).toContainText('add');
+  const before = await r.get('/api/v1/config/entries?kind=upstream');
+  expect(JSON.stringify(await before.json())).not.toContain('pihole-1');
+
+  // Applying needs the typed confirmation.
+  await expect(panel.getByTestId('pihole-apply')).toBeDisabled();
+  await panel.getByTestId('pihole-confirm').fill('IMPORT');
+  await panel.getByTestId('pihole-apply').click();
+  await expect(panel.getByTestId('pihole-applied')).toContainText('Applied:', { timeout: 20_000 });
+
+  try {
+    const after = await r.get('/api/v1/config/entries?kind=upstream');
+    expect(JSON.stringify(await after.json())).toContain('pihole-1');
+  } finally {
+    // Undo what the import added: the default groups' overrides first, so nothing still uses the rest.
+    const h = { 'x-csrf-token': await csrfOf(r) };
+    await r.delete('/api/v1/groups/default', { headers: h });
+    await r.delete('/api/v1/upstream-groups/default', { headers: h });
+    await r.delete('/api/v1/lists/pihole-deny-exact', { headers: h });
+    await r.delete('/api/v1/upstreams/pihole-1', { headers: h });
+    await r.delete('/api/v1/records/import-test.lan', { headers: h });
+  }
+});
+
+// REQ: API-007 (T24.18) — an operator can't see the import tab at all.
+test('api_007 operator cannot see the import page', async () => {
+  const op = await operatorPage('operator1', 'operator long password');
+  try {
+    await op.p.goto('/#/settings?tab=pihole');
+    await expect(op.p.getByRole('tab', { name: 'Users' })).toHaveCount(0);
+    await expect(op.p.getByRole('tab', { name: 'Import from Pi-hole' })).toHaveCount(0);
+    await expect(op.p.getByTestId('pihole-import')).toHaveCount(0);
+    // The API says the same: an operator's upload is refused (admins only).
+    // The request runs in the operator's page, so it carries the operator's session cookie.
+    await expect(op.p.getByRole('tab', { name: 'Account' })).toBeVisible();
+    const post = await op.p.evaluate(async () => {
+      const st = await (await fetch('/api/v1/auth/status', { credentials: 'same-origin' })).json();
+      const res = await fetch('/api/v1/import/pihole', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'x-csrf-token': st.csrfToken, 'content-type': 'application/octet-stream' },
+        body: 'not a file',
+      });
+      return res.status;
+    });
+    expect(post).toBe(403);
+  } finally {
+    await op.close();
+  }
+});
+
+// REQ: API-007 (ADR-941) — the comparison's result, with the Pi-hole address given; the answers are mocked
+// because the e2e server has no Pi-hole to ask.
+test('api_007 compare shows the differences', async () => {
+  await page.route((url) => url.pathname === '/api/v1/import/pihole', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        planId: 'mocked-plan',
+        expiresUnixSeconds: Math.floor(Date.now() / 1000) + 600,
+        configVersion: 0,
+        source: 'v5',
+        counts: '1 upstreams, 0 forwarded domains, 1 records, 1 lists, 1 groups, 0 devices',
+        summary: { add: 2, change: 0, skip: 0, samples: 3 },
+        items: [{ kind: 'upstream', name: 'pihole-1', action: 'add', reason: '' }],
+        itemsTotal: 1,
+        notes: [],
+        compare: {
+          names: 3,
+          agree: 2,
+          differences: [
+            { name: 'nas.lan', qtype: 'A', pihole: { rcode: 'NOERROR', values: ['192.168.1.10'] }, telltale: { rcode: 'NXDOMAIN', values: [] } },
+          ],
+          errors: [],
+        },
+      }),
+    });
+  });
+  try {
+    await page.goto('/#/settings?tab=pihole');
+    const panel = page.getByTestId('pihole-import');
+    await panel.getByTestId('pihole-file').setInputFiles(PIHOLE_FIXTURE);
+    await panel.getByTestId('pihole-compare-toggle').check();
+    await panel.getByTestId('pihole-address').fill('192.168.1.251');
+    await panel.getByTestId('pihole-preview').click();
+    await expect(panel.getByTestId('pihole-compare-summary')).toContainText('Compared 3 names: 2 agree, 1 differ.');
+    await expect(panel.getByTestId('pihole-compare-result')).toContainText('NXDOMAIN');
+  } finally {
+    await page.unroute((url) => url.pathname === '/api/v1/import/pihole');
+  }
+});
+
+// REQ: API-007 (T24.18, ADR-940) — a preview the configuration has outrun is refused, and says so.
+test('api_007 a stale preview is refused', async () => {
+  await page.route((url) => url.pathname === '/api/v1/import/pihole', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        planId: 'stale-plan',
+        expiresUnixSeconds: Math.floor(Date.now() / 1000) + 600,
+        configVersion: 1,
+        source: 'v5',
+        counts: '1 upstreams',
+        summary: { add: 1, change: 0, skip: 0, samples: 0 },
+        items: [{ kind: 'upstream', name: 'pihole-1', action: 'add', reason: '' }],
+        itemsTotal: 1,
+        notes: [],
+        compare: null,
+      }),
+    });
+  });
+  await page.route((url) => url.pathname === '/api/v1/import/pihole/plans/stale-plan/apply', async (route) => {
+    await route.fulfill({
+      status: 409,
+      contentType: 'application/problem+json',
+      body: JSON.stringify({
+        type: 'https://telltaledns.dev/problems/conflict',
+        title: 'Conflict',
+        status: 409,
+        code: 'conflict',
+        detail: 'the configuration changed since the preview: preview the import again',
+      }),
+    });
+  });
+  try {
+    await page.goto('/#/settings?tab=pihole');
+    const panel = page.getByTestId('pihole-import');
+    await panel.getByTestId('pihole-file').setInputFiles(PIHOLE_FIXTURE);
+    await panel.getByTestId('pihole-preview').click();
+    await expect(panel.getByTestId('pihole-summary')).toContainText('to add');
+    await panel.getByTestId('pihole-confirm').fill('IMPORT');
+    await panel.getByTestId('pihole-apply').click();
+    await expect(panel.getByRole('alert')).toContainText('the configuration changed since the preview');
+    // The refusal is the expected answer: the browser logs its 409, and the test removes that entry.
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1);
+  } finally {
+    await page.unroute((url) => url.pathname === '/api/v1/import/pihole/plans/stale-plan/apply');
+    await page.unroute((url) => url.pathname === '/api/v1/import/pihole');
+  }
+});

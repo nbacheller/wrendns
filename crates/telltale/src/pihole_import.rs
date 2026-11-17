@@ -326,10 +326,23 @@ pub(crate) fn build(
         .filter(|g| !route_only(g.name.as_str()))
     {
         let name = g.name.as_str();
-        let exists = current
+        let cur = current
             .upstream_group
             .iter()
-            .any(|x| x.name.as_str() == name);
+            .find(|x| x.name.as_str() == name);
+        // The default group keeps its own strategy: Pi-hole's upstreams join its members.
+        let merged = match cur {
+            Some(c) if name == "default" => {
+                let mut m = c.clone();
+                for member in &g.members {
+                    if !m.members.iter().any(|x| x.as_str() == member.as_str()) {
+                        m.members.push(member.clone());
+                    }
+                }
+                m
+            }
+            _ => g.clone(),
+        };
         let in_files = file.upstream_group.iter().any(|x| x.name.as_str() == name);
         write_item(
             &mut items,
@@ -337,10 +350,16 @@ pub(crate) fn build(
             "upstream group",
             managed::UPSTREAM_GROUP,
             name,
-            exists,
+            cur.is_some(),
             in_files,
-            json_of(g)?,
+            json_of(&merged)?,
         );
+        if name == "default" {
+            set_reason(
+                &mut items,
+                "adds Pi-hole's upstreams to the default group; its strategy stays",
+            );
+        }
     }
     for l in &cfg.list {
         let name = l.name.as_str();
@@ -359,7 +378,23 @@ pub(crate) fn build(
     }
     for g in &cfg.group {
         let name = g.name.as_str();
-        let exists = current.group.iter().any(|x| x.name.as_str() == name);
+        let cur = current.group.iter().find(|x| x.name.as_str() == name);
+        // The default group keeps its own settings: Pi-hole's lists join its list. Omitted
+        // lists mean every list already, so they stay omitted.
+        let merged = match cur {
+            Some(c) if name == "default" => {
+                let mut m = c.clone();
+                if let (Some(mine), Some(theirs)) = (m.lists.as_mut(), g.lists.as_ref()) {
+                    for l in theirs {
+                        if !mine.iter().any(|x| x.as_str() == l.as_str()) {
+                            mine.push(l.clone());
+                        }
+                    }
+                }
+                m
+            }
+            _ => g.clone(),
+        };
         let in_files = file.group.iter().any(|x| x.name.as_str() == name);
         write_item(
             &mut items,
@@ -367,10 +402,16 @@ pub(crate) fn build(
             "group",
             managed::GROUP,
             name,
-            exists,
+            cur.is_some(),
             in_files,
-            json_of(g)?,
+            json_of(&merged)?,
         );
+        if name == "default" {
+            set_reason(
+                &mut items,
+                "adds Pi-hole's lists to the default group; its other settings stay",
+            );
+        }
     }
     for c in &cfg.client {
         let name = c.name.as_str();
@@ -531,6 +572,13 @@ pub(crate) fn build(
         compare,
         samples: wire.samples.len(),
     })
+}
+
+/// Gives the item just added its reason (the default groups' merges say what they keep).
+fn set_reason(items: &mut [Item], reason: &str) {
+    if let Some(i) = items.last_mut() {
+        reason.clone_into(&mut i.reason);
+    }
 }
 
 fn skip(kind: &'static str, name: &str, reason: &str) -> Item {

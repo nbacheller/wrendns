@@ -1293,6 +1293,66 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-941 — The Pi-hole import's comparison: the sample, the resolver it asks, and when it stops (Proposed 2026-11-17)
+**Context:** T24.6 asks for `telltale import pihole --compare`, which resolves a sample through the Pi-hole and TelltaleDNS and reports the differences. The task text doesn't say which names, which TelltaleDNS, or what happens when a server doesn't answer.
+
+**Decision:**
+- **Sample.** The imported local names and CNAME names, up to 20 exact deny entries, and the names given with `--sample`. A and AAAA are asked of both servers. At most 200 names.
+- **The TelltaleDNS side.** The node's own resolver at `--telltale` (`127.0.0.1:53` by default). It answers from its running configuration, so before the import is applied the report shows what the node answers now, and the help says so.
+- **Transport.** Plain UDP, two seconds a query, no retries. A server that doesn't answer five queries in a row is named in the report and isn't asked again; when neither answers, the comparison stops.
+- **What counts as a difference.** The rcode, or the sorted addresses and names of the answer. TTLs are ignored.
+- **Read-only.** It sends standard queries and nothing else. The import page's comparison (T24.18) is the same function.
+
+**Alternatives rejected:**
+- *Comparing the configuration offline.* It wouldn't show what a client gets over DNS (rewrites, blocking, the cache and the special names all act in the resolver).
+- *TCP or DoT to the Pi-hole.* What the household's devices get is the UDP answer; the comparison should match that.
+- *Retrying silent servers.* A wrong address would then cost minutes; five silent queries say it clearly.
+
+**Consequences:**
+- A comparison in the UI asks the node that serves the page. In a cluster, it's that node's resolver.
+- The sample is a sample: a difference in a name that isn't in it goes unreported.
+
+## ADR-940 — Importing a Pi-hole export: a plan, applied as one configuration change, admins only (Proposed 2026-11-17)
+**Context:** T24.18 puts the Pi-hole import on the admin page: upload, preview, apply. An import replaces configuration in bulk, and the API writes configuration one entry at a time (ADR-069). ADR-040 makes the config files' names read-only through the API. ADR-914 says bulk changes are admin changes with a typed confirmation and an audit record.
+
+**Decision:**
+- **Who.** Admins only. An agent's token is refused by the auth layer (403 `forbidden`) and by the handler (`agent_not_allowed`); operators and viewers get 403. spec/13 §3 lists the import among the operations no agent may make.
+- **Preview.** Changes nothing. It returns a plan: a `planId`, what would be added, changed or skipped (each with its reason), the notes, and the comparison when asked (ADR-941). A plan is held in this node's memory for ten minutes (at most eight are kept), like an agent's plan (AGT-007). A restart discards them.
+- **Apply.** The plan's writes go in one transaction (`put_managed_batch`), and the version moves once. Before the write, the merged configuration (the files plus the stored entries plus the plan) must load; the configuration version must still be the preview's, or the answer is 409 and the preview is run again. The node then reloads.
+- **Names.** An entry of a name that exists is replaced (`change`), as an API override replaces the file's (ADR-069); the file's entry comes back when the override is deleted. A name the config files define is `skip`ped for local names and conditional forwards, because ADR-040 keeps those read-only through the API.
+- **The default groups.** Pi-hole's lists join the default group's lists, and Pi-hole's upstreams join the default upstream group's members. Their other settings stay. An omitted list means every list (`lists` omitted), so the merge keeps it omitted.
+- **Conditional forwards.** Each Pi-hole route is a forward entry with the servers of its group's upstreams. The `pihole-forward-N` upstreams and groups aren't written.
+- **DNSSEC.** The mode is a file setting, not an API one, so it's reported as skipped with the line to add to the file.
+- **Audit.** Applying is audited as `import.pihole` with the counts and the configuration version. A preview isn't written to the audit log.
+- **The UI.** The apply needs the word `IMPORT` typed in. The page is a Settings tab that admins alone see.
+
+**Alternatives rejected:**
+- *Writing the file.* The API can't write the configuration files (ADR-040), and the CLI already writes them for a person who reads the output.
+- *One request per entry.* A failure in the middle would leave half an import in place, and each write re-checks the whole configuration.
+- *Keeping plans in the state database.* An import is short-lived, like an agent's plan; a restart discards it, which is the safe side.
+
+**Consequences:**
+- Undoing an import means deleting the entries it added. The audit record lists the counts; the preview lists the names.
+- A `change` replaces an entry of the same name: the import page says so before the apply.
+- The plan's bodies are the entries the store keeps: a credential isn't part of a Pi-hole import, so no secret passes through it.
+
+## ADR-939 — The Pi-hole import's worker: a child process with an empty environment (Proposed 2026-11-17)
+**Context:** An uploaded Pi-hole export is untrusted input. A zip bomb, a malformed archive or a gravity.db built to crash the reader must not reach the DNS process (ADR-913 says why: a panic or an allocation failure in an in-process parser aborts DNS). ADR-913 names a worker mode (`telltale discovery-worker --import`) that lives on the M25 branch, not in this tree.
+
+**Decision:**
+- **The worker.** A hidden subcommand, `telltale pihole-import-worker PATH`, run by the server as a child process of the same binary. It reads the file, converts it with the importer (`pihole::convert`), and prints one JSON object. It has no configuration, no state database and no secrets.
+- **Isolation.** `env_clear()`, stdin null, stdout piped with a 64 MiB cap, a 60-second timeout, and kill on drop. The upload is written to a `0600` temporary file that's removed after the worker returns.
+- **Limits.** The HTTP body limit is 64 MiB. The archive reader's limits apply (`archive.rs`: 512 MiB per entry and in all, no zip64, no encrypted entries, CRC checked, no path is written). A gravity.db is opened read-only from a temporary copy.
+- **Failures.** A file the importer can't read is 422 with the reason; a worker that stops, or takes too long, is 422 too, and DNS keeps answering.
+
+**Alternatives rejected:**
+- *Parsing in the server process.* A panic there aborts DNS; the worker's crash is contained.
+- *Reusing ADR-913's `--import` worker now.* It isn't in this tree. When the M25 branch lands, the two can share one worker mode; the import would then use that mode.
+
+**Consequences:**
+- The `tokio` crate's `process` feature is enabled, which adds no crate. The image delta is the feature's code; not measured here (the release image build measures it).
+- The worker runs the same binary, so it has the same version as the server.
+
 ## ADR-932 — Credential file open: no followed symlink, no FIFO block, and the `libc` constants (Accepted 2026-11-17)
 **Context:** The m25-snmp review (2026-11-17) found two races in `telltale-snmp`'s credential read. The path was canonicalized and then opened by name, so a link swapped in between pointed outside the secret directories. A FIFO was opened before its metadata was checked, so the open could block.
 **Decision:**

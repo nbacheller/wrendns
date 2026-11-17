@@ -102,10 +102,11 @@ function qs(q?: Query): string {
 async function call<T>(
   method: string,
   path: string,
-  opts: { query?: Query; body?: unknown; headers?: Record<string, string> } = {},
+  opts: { query?: Query; body?: unknown; raw?: Blob; headers?: Record<string, string> } = {},
 ): Promise<T> {
   const headers: Record<string, string> = { accept: 'application/json', ...opts.headers };
-  if (opts.body !== undefined) headers['content-type'] = 'application/json';
+  if (opts.raw) headers['content-type'] = 'application/octet-stream';
+  else if (opts.body !== undefined) headers['content-type'] = 'application/json';
   if (method !== 'GET' && csrf) headers['x-csrf-token'] = csrf;
   let res: Response;
   try {
@@ -113,7 +114,7 @@ async function call<T>(
       method,
       headers,
       credentials: 'same-origin',
-      body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+      body: opts.raw ?? (opts.body === undefined ? undefined : JSON.stringify(opts.body)),
     });
   } catch {
     throw new ApiError({ status: 0, code: 'unavailable', detail: 'cannot reach the server' });
@@ -194,7 +195,50 @@ async function callFile(method: string, path: string, body: unknown): Promise<Re
 const get = <T>(path: string, query?: Query) => call<T>('GET', path, { query });
 const post = <T>(path: string, body?: unknown) => call<T>('POST', path, { body: body ?? {} });
 
+/** REQ: API-007 (T24.18, ADR-940) — one Pi-hole import item: what it would do, and why not. */
+export type PiholeItem = { kind: string; name: string; action: 'add' | 'change' | 'skip'; reason: string };
+
+/** REQ: API-007, ADR-941 — the comparison of a sample through a Pi-hole and TelltaleDNS. */
+export type PiholeCompare = {
+  names: number;
+  agree: number;
+  differences: { name: string; qtype: string; pihole: { rcode: string; values: string[] }; telltale: { rcode: string; values: string[] } }[];
+  errors: string[];
+};
+
+/** REQ: API-007 (T24.18) — a preview: a plan the same admin applies, with its counts. */
+export type PiholePreview = {
+  planId: string;
+  expiresUnixSeconds: number;
+  configVersion: number;
+  source: string;
+  counts: string;
+  summary: { add: number; change: number; skip: number; samples: number };
+  items: PiholeItem[];
+  itemsTotal: number;
+  notes: string[];
+  compare: PiholeCompare | null;
+};
+
+/** REQ: API-007 (T24.18) — what applying a plan changed. */
+export type PiholeApplied = {
+  applied: boolean;
+  configVersion: number;
+  added: number;
+  changed: number;
+  skipped: number;
+  entries: number;
+  counts: string;
+  source: string;
+};
+
 export const api = {
+  // REQ: API-007 (T24.18, ADR-940) — importing a Pi-hole export: admins only. The file is the body;
+  // nothing changes until its plan is applied.
+  piholePreview: (file: Blob, q: { compare?: string; telltale?: string; samples?: string } = {}) =>
+    call<PiholePreview>('POST', '/import/pihole', { raw: file, query: q }),
+  piholeApply: (planId: string) => post<PiholeApplied>(`/import/pihole/plans/${encodeURIComponent(planId)}/apply`),
+  piholeDiscard: (planId: string) => call<{ discarded: boolean }>('DELETE', `/import/pihole/plans/${encodeURIComponent(planId)}`),
   // Sign-in (API-003)
   status: () => get<S['AuthStatus']>('/auth/status'),
   setup: (b: S['SetupRequest']) => post<S['LoginResponse']>('/auth/setup', b),
