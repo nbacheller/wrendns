@@ -164,6 +164,7 @@ role = "viewer"</code></pre></li>
     <li class="step"><b>Make sure the ID token carries the groups</b> (see the tabs below).</li>
     <li class="step"><b>Restart TelltaleDNS.</b> Changes to <code>[auth.oidc]</code> need a restart.</li>
   </ol>
+  <p>What a sign-in accepts: the provider's ID token must be signed with an RSA key of at least 2048 bits, an EC key on P-256 or P-384, or an Ed25519 key, and must be for this client alone. An HTTPS issuer needs HTTPS endpoints. A client without a client secret is a public client (PKCE), and the key set is refetched at most once a minute when a token's key is unknown. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md">The details are in the running guide</a>.</p>
   <div class="tabs">
     <div role="tablist" aria-label="Identity provider">
       <button role="tab" type="button">Authentik</button>
