@@ -1704,8 +1704,43 @@ impl Backend for Federated {
     // When the primary doesn't answer, it is named in `missingNodes` (so the UI and
     // `ctl lists refresh --wait` know the download state shown is this node's own).
     // `GET /lists` swaps in the cluster's hits too (OBS-009).
+    // REQ: FLT-004, CLU-003, OBS-009 (T24.11) — only the primary's download state is asked here;
+    // the peers' hits go out in `lists_and_hits` (the `/lists` handler), not on every call.
     fn lists(&self) -> Vec<ListInfo> {
-        self.lists_and_hits().lists
+        let mine = self.local.lists();
+        let primary = self
+            .cluster
+            .members()
+            .into_iter()
+            .find(|m| m.primary)
+            .map(|m| m.node_id);
+        let primary = match primary {
+            Some(p) if !self.cluster.is_primary() => p,
+            // The primary itself, or no primary known yet: this node's view is the answer.
+            _ => {
+                self.record_missing(Vec::new());
+                return mine;
+            }
+        };
+        let theirs = self
+            .cluster
+            .reachable_primary()
+            .and_then(|p| self.call_one(&p, &Read::Lists, DEADLINE))
+            .and_then(|r| {
+                r.map_err(|e| tracing::debug!(error = %e, "the primary's lists unread"))
+                    .ok()
+            })
+            .and_then(|body| lists_from_primary(&body));
+        let missing = if theirs.is_some() {
+            Vec::new()
+        } else {
+            vec![self.label_of(&primary)]
+        };
+        self.record_missing(missing);
+        match theirs {
+            Some(theirs) => merge_lists(&mine, theirs),
+            None => mine,
+        }
     }
     // REQ: FLT-004, CLU-003, OBS-009 (T24.11) — the primary's lists and every node's hits go out in
     // one round (a replica used to ask the primary, then the peers, a deadline each). The missing
