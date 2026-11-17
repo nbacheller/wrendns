@@ -1467,6 +1467,14 @@ async fn blocking<T: Send + 'static>(
         .unwrap_or_else(|e| Err(Problem::internal(format!("request worker failed: {e}"))))
 }
 
+/// The configuration version as an `ETag` (ADR-040, for `If-Match`). A replica asks its
+/// primary for the version, so it is read off the runtime (CLU-004, upstream #7).
+async fn config_etag(b: &Shared) -> Result<String, Problem> {
+    let bk = Arc::clone(b);
+    let version = blocking(move || Ok(bk.config_version())).await?;
+    Ok(format!("\"{version}\""))
+}
+
 /// Node and build information.
 ///
 /// Version, role, uptime, listeners, whether the query log is on, and the active filter
@@ -2049,10 +2057,16 @@ async fn groups(State(b): State<Shared>) -> Json<Items<GroupInfo>> {
 /// priority order (the first group's settings apply). Unknown devices use the `default` group.
 #[utoipa::path(get, path = "/api/v1/clients", tag = "config",
     responses((status = 200, body = Items<ClientInfo>, description = "The result.")))]
-async fn clients(State(b): State<Shared>, ext: axum::http::Extensions) -> impl IntoResponse {
-    // The config version for `If-Match` on writes (ADR-040).
-    let etag = format!("\"{}\"", b.config_version());
-    let mut items = b.clients();
+async fn clients(State(b): State<Shared>, ext: axum::http::Extensions) -> axum::response::Response {
+    // The config version for `If-Match` on writes (ADR-040), and the devices: both are
+    // federated reads that wait on the cluster, so they run off the runtime (CLU-004).
+    let bk = Arc::clone(&b);
+    let (version, mut items) = match blocking(move || Ok((bk.config_version(), bk.clients()))).await
+    {
+        Ok(read) => read,
+        Err(e) => return e.into_response(),
+    };
+    let etag = format!("\"{version}\"");
     // REQ: AGT-004 — a group-restricted agent sees its group's devices only.
     if let Some(g) = ext
         .get::<auth::Principal>()
@@ -2070,6 +2084,7 @@ async fn clients(State(b): State<Shared>, ext: axum::http::Extensions) -> impl I
             items,
         }),
     )
+        .into_response()
 }
 
 /// Device anomalies: rate spikes, heavy volume to one domain, drift, beaconing (OBS-013).
@@ -2252,8 +2267,11 @@ async fn zones(State(b): State<Shared>) -> Json<Items<ZoneInfo>> {
 /// editable with `PUT /records/{name}`). The `ETag` is the config version for `If-Match`.
 #[utoipa::path(get, path = "/api/v1/records", tag = "config",
     responses((status = 200, body = Items<LocalName>, description = "The result.")))]
-async fn local_names(State(b): State<Shared>) -> impl IntoResponse {
-    let etag = format!("\"{}\"", b.config_version());
+async fn local_names(State(b): State<Shared>) -> axum::response::Response {
+    let etag = match config_etag(&b).await {
+        Ok(etag) => etag,
+        Err(e) => return e.into_response(),
+    };
     (
         [(axum::http::header::ETAG, etag)],
         Json(Items {
@@ -2261,6 +2279,7 @@ async fn local_names(State(b): State<Shared>) -> impl IntoResponse {
             items: b.local_names(),
         }),
     )
+        .into_response()
 }
 
 /// Domains sent to other DNS servers (conditional forwarding).
@@ -2269,8 +2288,11 @@ async fn local_names(State(b): State<Shared>) -> impl IntoResponse {
 /// with where it's defined (`file` or `api`). The `ETag` is the config version for `If-Match`.
 #[utoipa::path(get, path = "/api/v1/forwards", tag = "config",
     responses((status = 200, body = Items<ForwardInfo>, description = "The result.")))]
-async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
-    let etag = format!("\"{}\"", b.config_version());
+async fn forwards(State(b): State<Shared>) -> axum::response::Response {
+    let etag = match config_etag(&b).await {
+        Ok(etag) => etag,
+        Err(e) => return e.into_response(),
+    };
     (
         [(axum::http::header::ETAG, etag)],
         Json(Items {
@@ -2278,6 +2300,7 @@ async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
             items: b.forwards(),
         }),
     )
+        .into_response()
 }
 
 /// The configuration's upstreams, upstream groups, lists, and groups, with their sources.
@@ -2300,11 +2323,14 @@ async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
 async fn config_entries(
     State(b): State<Shared>,
     Query(q): Query<EntriesQuery>,
-) -> Json<Items<ConfigEntry>> {
-    Json(Items {
+) -> Result<Json<Items<ConfigEntry>>, Problem> {
+    // A replica's entries come from its primary (CLU-002): the read waits on the cluster.
+    let bk = Arc::clone(&b);
+    let items = blocking(move || Ok(bk.config_entries(q.kind.as_deref()))).await?;
+    Ok(Json(Items {
         missing_nodes: Vec::new(),
-        items: b.config_entries(q.kind.as_deref()),
-    })
+        items,
+    }))
 }
 
 /// Quick rules: per-device and per-group allow and block (T6.12, ADR-067).
@@ -2315,8 +2341,11 @@ async fn config_entries(
 /// `If-Match`.
 #[utoipa::path(get, path = "/api/v1/rules", tag = "config",
     responses((status = 200, body = Items<crate::model::RuleInfo>, description = "The result.")))]
-async fn rules(State(b): State<Shared>) -> impl IntoResponse {
-    let etag = format!("\"{}\"", b.config_version());
+async fn rules(State(b): State<Shared>) -> axum::response::Response {
+    let etag = match config_etag(&b).await {
+        Ok(etag) => etag,
+        Err(e) => return e.into_response(),
+    };
     (
         [(axum::http::header::ETAG, etag)],
         Json(Items {
@@ -2324,6 +2353,7 @@ async fn rules(State(b): State<Shared>) -> impl IntoResponse {
             items: b.rules(),
         }),
     )
+        .into_response()
 }
 
 /// Upstream servers with health and latency.

@@ -183,6 +183,27 @@ enum Read {
     SecretRefs,
 }
 
+/// REQ: CLU-004 (upstream #7) — runs a federated read's future to completion on `rt` from
+/// synchronous code, without holding a runtime worker, and gives `None` if it panics. On a
+/// multi-thread runtime the calling worker hands its queued tasks to another thread first
+/// (`block_in_place`), so the peer's stream can still be written and read. `block_in_place`
+/// does nothing off a runtime, so a blocking-pool caller takes the same path. A current-thread
+/// runtime has no other thread to take over, so its future runs on a scoped thread instead.
+fn run_off_the_worker<F>(rt: &tokio::runtime::Handle, fut: F) -> Option<F::Output>
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    match rt.runtime_flavor() {
+        tokio::runtime::RuntimeFlavor::MultiThread => {
+            let run =
+                std::panic::AssertUnwindSafe(|| tokio::task::block_in_place(|| rt.block_on(fut)));
+            std::panic::catch_unwind(run).ok()
+        }
+        _ => std::thread::scope(|s| s.spawn(|| rt.block_on(fut)).join().ok()),
+    }
+}
+
 /// The reads that change the answering node: operational actions a user asked for on the
 /// entry node (T7.1 pauses, T6.13 flushes).
 fn changes_state(r: &Read) -> bool {
@@ -860,11 +881,11 @@ impl Federated {
         let body = serde_json::to_vec(read).ok()?;
         let rt = tokio::runtime::Handle::try_current().ok()?;
         let cluster = Arc::clone(&self.cluster);
-        std::thread::scope(|s| {
-            s.spawn(|| rt.block_on(cluster.call(peer, KIND, body, timeout)))
-                .join()
-                .ok()
-        })
+        // REQ: CLU-004 — the call runs off the runtime worker (see `run_off_the_worker`).
+        run_off_the_worker(
+            &rt,
+            async move { cluster.call(peer, KIND, body, timeout).await },
+        )
     }
 
     fn own_label(&self) -> String {
@@ -900,33 +921,27 @@ impl Federated {
         let answers = match tokio::runtime::Handle::try_current() {
             Ok(rt) if !calls.is_empty() => {
                 let cluster = Arc::clone(&self.cluster);
-                // A plain thread blocks on the runtime, so this works whether the caller is a
-                // blocking worker or not.
-                std::thread::scope(|s| {
-                    s.spawn(|| {
-                        rt.block_on(async {
-                            let tasks: Vec<_> = calls
-                                .into_iter()
-                                .map(|(peer, body)| {
-                                    let c = Arc::clone(&cluster);
-                                    tokio::spawn(async move {
-                                        let r = c.call(&peer, KIND, body, DEADLINE).await;
-                                        (peer, r)
-                                    })
-                                })
-                                .collect();
-                            let mut out = Vec::new();
-                            for t in tasks {
-                                if let Ok(r) = t.await {
-                                    out.push(r);
-                                }
-                            }
-                            out
+                // REQ: CLU-004 — the calls run to completion off the runtime worker.
+                run_off_the_worker(&rt, async move {
+                    let tasks: Vec<_> = calls
+                        .into_iter()
+                        .map(|(peer, body)| {
+                            let c = Arc::clone(&cluster);
+                            tokio::spawn(async move {
+                                let r = c.call(&peer, KIND, body, DEADLINE).await;
+                                (peer, r)
+                            })
                         })
-                    })
-                    .join()
-                    .unwrap_or_default()
+                        .collect();
+                    let mut out = Vec::new();
+                    for t in tasks {
+                        if let Ok(r) = t.await {
+                            out.push(r);
+                        }
+                    }
+                    out
                 })
+                .unwrap_or_default()
             }
             _ => Vec::new(),
         };
