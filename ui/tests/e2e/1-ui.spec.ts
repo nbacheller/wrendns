@@ -3874,6 +3874,8 @@ test('api_016 trust the console certificate', async () => {
   await page.getByRole('button', { name: 'Trust this certificate' }).click();
   await expect(page.getByRole('textbox', { name: 'Certificate (PEM)' })).toHaveValue(/BEGIN CERTIFICATE/);
   await expect(page.getByRole('textbox', { name: 'Name the certificate checks' })).toHaveValue('unifi.local');
+  // A UniFi router needs a credential (its key, or a user and password): store one, as the form does.
+  await fillCredential('API key', 'unifi-cert-key-5531');
   // Never offered: skipping verification isn't a choice on this page.
   await expect(page.getByText(/skip/i)).toHaveCount(0);
   const put = page.waitForRequest((r) => r.method() === 'PUT' && r.url().includes('/api/v1/routers/lab-cert'));
@@ -3927,7 +3929,9 @@ test('api_016 file router shows set by file', async () => {
       },
     }),
   );
+  // The page is already on this route (a hash change doesn't reload it): reload to take the answer.
   await page.goto('/#/routers');
+  await page.reload();
   const card = page.getByTestId('router-card').filter({ hasText: 'filed-udm' });
   await expect(card.getByTestId('router-file')).toHaveText('Set by file');
   await expect(card.getByRole('button', { name: 'Change' })).toHaveCount(0);
@@ -4004,7 +4008,7 @@ test('api_016 router with an unreadable credential shows the issue', async () =>
             source: 'api',
             definition: { name: 'lost-key', type: 'unifi', url: 'https://192.168.1.2', api_key_ref: 'unifi.lost-key.api_key' },
             setByFile: [],
-            credentials: [{ field: 'api_key', source: 'stored', secret: 'unifi.lost-key.api_key', readable: false, issue: "no secret of that name is stored" }],
+            credentials: [{ field: 'api_key', source: 'stored', secret: 'unifi.lost-key.api_key', readable: false, issue: "secret `unifi.lost-key.api_key` can't be read on this node (no secret of that name is stored)" }],
             status: { polledBy: 'this node', state: 'failing', lastPoll: 1, error: 'https://192.168.1.2/proxy/network/api/s/default/stat/sta: HTTP 401', devices: 0, networks: 0, intervalSecs: 300 },
           },
         ],
@@ -4012,6 +4016,7 @@ test('api_016 router with an unreadable credential shows the issue', async () =>
     }),
   );
   await page.goto('/#/routers');
+  await page.reload();
   const card = page.getByTestId('router-card').filter({ hasText: 'lost-key' });
   await expect(card.getByTestId('router-credential-issue')).toContainText("can't be read on this node");
   await page.unroute('**/api/v1/routers');
