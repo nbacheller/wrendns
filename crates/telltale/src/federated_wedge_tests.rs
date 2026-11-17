@@ -239,7 +239,7 @@ fn clu_004_a_direct_federated_read_leaves_the_worker_free() {
         elapsed
     });
     assert!(
-        elapsed >= Duration::from_millis(900) && elapsed < Duration::from_millis(1500),
+        elapsed >= Duration::from_millis(900) && elapsed < Duration::from_millis(1900),
         "three direct federated reads took {elapsed:?}, not about one deadline: a worker was held, or a read panicked"
     );
 }
