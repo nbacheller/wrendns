@@ -109,13 +109,15 @@ impl Polled {
     }
 }
 
-fn secret(path: Option<&telltale_config::SafeString>) -> Result<Option<String>, String> {
-    path.map(|p| {
-        std::fs::read_to_string(p.as_str())
-            .map(|s| s.trim().to_owned())
-            .map_err(|e| format!("{}: {e}", p.as_str()))
-    })
-    .transpose()
+/// REQ: OPS-014 (ADR-903 §2) — a router credential: its file, or the stored secret it names.
+fn secret(
+    file: Option<&telltale_config::SafeString>,
+    reference: Option<&telltale_config::SafeString>,
+    store: &crate::secrets::SecretStore,
+) -> Result<Option<crate::secrets::SecretValue>, String> {
+    crate::secrets::Credential::of(file, reference)
+        .resolve(Some(store))
+        .map(|r| r.map(|r| r.value))
 }
 
 fn base64(input: &[u8]) -> String {
@@ -151,7 +153,8 @@ async fn call(
     client: &telltale_filter::fetch::Client,
     req: http::Request<Vec<u8>>,
 ) -> Result<(http::StatusCode, http::HeaderMap, Value), String> {
-    let url = req.uri().to_string();
+    // REQ: API-014 — an error never quotes a password in the URL.
+    let url = telltale_config::credentials::url_shown(&req.uri().to_string());
     let resp = tokio::time::timeout(Duration::from_secs(15), client.request(req, MAX_ANSWER))
         .await
         .map_err(|_| format!("{url}: timed out"))?
@@ -324,8 +327,9 @@ pub(crate) fn opnsense_leases(v: &Value) -> Seen {
 
 /// How a UniFi request authenticates.
 enum UnifiAuth {
-    Key(String),
-    Cookie(String),
+    /// REQ: OPS-014 — wiped when the poll ends (ADR-903 note 37).
+    Key(zeroize::Zeroizing<String>),
+    Cookie(zeroize::Zeroizing<String>),
 }
 
 impl UnifiAuth {
@@ -398,26 +402,36 @@ async fn read_unifi(
 async fn poll_unifi(
     client: &telltale_filter::fetch::Client,
     c: &RouterConfig,
+    store: &crate::secrets::SecretStore,
 ) -> Result<Polled, String> {
     let base = c.url.trim_end_matches('/');
     let site = c.site.as_deref().unwrap_or("default");
-    if let Some(key) = secret(c.api_key_file.as_ref())? {
+    if let Some(key) = secret(c.api_key_file.as_ref(), c.api_key_ref.as_ref(), store)? {
         let api = format!("{base}/proxy/network/api/s/{site}");
-        return read_unifi(client, &UnifiAuth::Key(key), &api, &c.name).await;
+        return read_unifi(
+            client,
+            &UnifiAuth::Key(zeroize::Zeroizing::new(key.expose().to_owned())),
+            &api,
+            &c.name,
+        )
+        .await;
     }
     let user = c
         .username
         .as_deref()
         .ok_or("set api_key_file, or username and password_file")?;
-    let pass = secret(c.password_file.as_ref())?.ok_or("set password_file")?;
-    let body =
-        serde_json::json!({"username": user, "password": pass, "remember": false}).to_string();
+    let pass = secret(c.password_file.as_ref(), c.password_ref.as_ref(), store)?
+        .ok_or("set password_file")?;
+    let body = zeroize::Zeroizing::new(
+        serde_json::json!({"username": user, "password": pass.expose(), "remember": false})
+            .to_string(),
+    );
     // UniFi OS consoles first, then the classic Network application.
     for (login, prefix) in [("/api/auth/login", "/proxy/network"), ("/api/login", "")] {
         let req = http::Request::post(format!("{base}{login}"))
             .header("content-type", "application/json")
             .header("accept", "application/json")
-            .body(body.clone().into_bytes())
+            .body(body.as_bytes().to_vec())
             .map_err(|e| e.to_string())?;
         let (status, headers, _) = call(client, req).await?;
         if status == http::StatusCode::NOT_FOUND {
@@ -429,7 +443,13 @@ async fn poll_unifi(
             ));
         }
         let api = format!("{base}{prefix}/api/s/{site}");
-        return read_unifi(client, &UnifiAuth::Cookie(cookies(&headers)), &api, &c.name).await;
+        return read_unifi(
+            client,
+            &UnifiAuth::Cookie(zeroize::Zeroizing::new(cookies(&headers))),
+            &api,
+            &c.name,
+        )
+        .await;
     }
     Err(format!(
         "{base}: neither a UniFi OS console nor a Network application"
@@ -440,11 +460,15 @@ async fn poll_unifi(
 async fn poll_opnsense(
     client: &telltale_filter::fetch::Client,
     c: &RouterConfig,
+    store: &crate::secrets::SecretStore,
 ) -> Result<Polled, String> {
     let base = c.url.trim_end_matches('/');
-    let key = secret(c.api_key_file.as_ref())?.ok_or("set api_key_file")?;
-    let sec = secret(c.api_secret_file.as_ref())?.ok_or("set api_secret_file")?;
-    let auth = format!("Basic {}", base64(format!("{key}:{sec}").as_bytes()));
+    let key = secret(c.api_key_file.as_ref(), c.api_key_ref.as_ref(), store)?
+        .ok_or("set api_key_file")?;
+    let sec = secret(c.api_secret_file.as_ref(), c.api_secret_ref.as_ref(), store)?
+        .ok_or("set api_secret_file")?;
+    let pair = zeroize::Zeroizing::new(format!("{}:{}", key.expose(), sec.expose()));
+    let auth = format!("Basic {}", base64(pair.as_bytes()));
     let mut last = String::new();
     for path in [
         "/api/dnsmasq/leases/search",
@@ -580,13 +604,15 @@ fn ha_seen(
 async fn poll_home_assistant(
     client: &telltale_filter::fetch::Client,
     c: &RouterConfig,
+    store: &crate::secrets::SecretStore,
 ) -> Result<(Vec<HaDevice>, HashMap<String, Ipv4Addr>), String> {
     let base = c.url.trim_end_matches('/');
-    let token = secret(c.api_key_file.as_ref())?.ok_or("set api_key_file")?;
+    let token = secret(c.api_key_file.as_ref(), c.api_key_ref.as_ref(), store)?
+        .ok_or("set api_key_file")?;
     let url = format!("{base}/api/template");
     let body = serde_json::json!({ "template": HA_TEMPLATE }).to_string();
     let req = http::Request::post(url.as_str())
-        .header("authorization", format!("Bearer {token}"))
+        .header("authorization", format!("Bearer {}", token.expose()))
         .header("content-type", "application/json")
         .header("accept", "text/plain, application/json")
         .body(body.into_bytes())
@@ -730,6 +756,7 @@ pub(crate) async fn run(
     networks: Arc<ArcSwap<Vec<Network>>>,
     mut stop: tokio::sync::watch::Receiver<bool>,
     resolver_pod: bool,
+    store: Arc<crate::secrets::SecretStore>,
 ) {
     if routers.is_empty() {
         return;
@@ -772,12 +799,14 @@ pub(crate) async fn run(
                 }
             };
             let result = match r.kind {
-                RouterKind::Unifi => poll_unifi(&client, r).await,
-                RouterKind::Opnsense => poll_opnsense(&client, r).await,
-                RouterKind::HomeAssistant => poll_home_assistant(&client, r).await.map(|raw| {
-                    ha_raw.insert(r.name.to_string(), raw);
-                    Polled::default()
-                }),
+                RouterKind::Unifi => poll_unifi(&client, r, &store).await,
+                RouterKind::Opnsense => poll_opnsense(&client, r, &store).await,
+                RouterKind::HomeAssistant => {
+                    poll_home_assistant(&client, r, &store).await.map(|raw| {
+                        ha_raw.insert(r.name.to_string(), raw);
+                        Polled::default()
+                    })
+                }
             };
             let was_failing = failing.get(r.name.as_str()).copied().unwrap_or(false);
             match result {
@@ -799,6 +828,11 @@ pub(crate) async fn run(
                     failing.insert(r.name.to_string(), false);
                 }
                 Err(e) => {
+                    // REQ: API-014 — nor does the log.
+                    let e = e.replace(
+                        r.url.as_str(),
+                        &telltale_config::credentials::url_shown(r.url.as_str()),
+                    );
                     if !was_failing {
                         if resolver_pod {
                             info!(router = %r.name, error = %e, "router integration failed on this resolver pod (the controller reads the router)");

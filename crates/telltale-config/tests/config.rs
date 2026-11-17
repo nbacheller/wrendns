@@ -1437,3 +1437,160 @@ note = "hourly reverse-DNS sweep"
         assert!(err.contains(why), "{why}: {err}");
     }
 }
+
+/// Every field a stored secret can fill, set twice (with a bad name and an inline OTLP header).
+const BOTH: &str = r#"
+[[router]]
+name = "unifi"
+type = "unifi"
+url = "https://192.168.1.1"
+api_key_file = "/run/secrets/unifi"
+api_key_ref = "unifi"
+[[router]]
+name = "opn"
+type = "opnsense"
+url = "https://opnsense.lan"
+api_key_ref = "opn.key"
+api_secret_file = "/run/secrets/opn"
+api_secret_ref = "opn.secret"
+[[alerts.destination]]
+name = "phone"
+type = "ntfy"
+url = "https://ntfy.sh/t"
+token_file = "/run/secrets/ntfy"
+token_ref = "ntfy"
+[[alerts.destination]]
+name = "mail"
+type = "email"
+url = "smtp://smtp.example:587"
+from = "a@example.com"
+to = ["a@example.com"]
+username = "a@example.com"
+password_file = "/run/secrets/smtp"
+password_ref = "smtp"
+[[telemetry.sink]]
+name = "splunk"
+type = "webhook"
+url = "https://hec.example/services/collector"
+token_file = "/run/secrets/hec"
+token_ref = "hec"
+[telemetry.otlp]
+endpoint = "https://otel.example"
+headers = { api-key = "inline" }
+header_refs = { api-key = "otlp", x-other = "Bad Name" }
+[auth.oidc]
+public_url = "https://dns.example.com"
+[[auth.oidc.provider]]
+id = "kc"
+issuer = "https://kc.example/realms/home"
+client_id = "telltale"
+client_secret = "inline"
+client_secret_ref = "kc"
+[cluster.git]
+repo = "https://git.example/r.git"
+path = "t.toml"
+credentials_file = "/run/secrets/git"
+credentials_ref = "git"
+webhook_secret_file = "/run/secrets/hook"
+webhook_secret_ref = "hook"
+"#;
+
+/// One each, by reference.
+const REFS: &str = r#"
+[[router]]
+name = "unifi"
+type = "unifi"
+url = "https://192.168.1.1"
+api_key_ref = "router.unifi.api_key"
+[[router]]
+name = "ha"
+type = "home_assistant"
+url = "http://ha:8123"
+api_key_ref = "ha"
+[[alerts.destination]]
+name = "mail"
+type = "email"
+url = "smtp://smtp.example:587"
+from = "a@example.com"
+to = ["a@example.com"]
+username = "a@example.com"
+password_ref = "smtp"
+"#;
+
+/// REQ: OPS-014 (AC7, ADR-903 §2) — a credential comes from one of its inline value, its
+/// `_file` and its `_ref`: two of them is an error at the reference's path, for every field a
+/// stored secret can fill; a reference's name is checked; an OTLP header is in `headers` or
+/// `header_refs`; `<redacted>` in the files is an error; and the fields a kind needs may come
+/// from a reference.
+#[test]
+fn ops_014_file_inline_ref_mutually_exclusive() {
+    let errs = load_str(BOTH).unwrap_err();
+    let p = paths(&errs);
+    for want in [
+        "router[0].api_key_ref",
+        "router[1].api_secret_ref",
+        "alerts.destination[0].token_ref",
+        "alerts.destination[1].password_ref",
+        "telemetry.sink[0].token_ref",
+        "telemetry.otlp.header_refs.api-key",
+        "telemetry.otlp.header_refs.x-other",
+        "auth.oidc.provider[0].client_secret_ref",
+        "cluster.git.credentials_ref",
+        "cluster.git.webhook_secret_ref",
+    ] {
+        assert!(p.contains(&want), "{want} not in {p:?}");
+    }
+    assert!(
+        !p.contains(&"router[1]"),
+        "OPNsense's key and secret may be references: {p:?}"
+    );
+    // One each, by reference: valid, and the kinds' needs are met.
+    let loaded = load_str(REFS).unwrap();
+    assert_eq!(
+        loaded.config.router[0].api_key_ref.as_deref(),
+        Some("router.unifi.api_key")
+    );
+    // Serialized only when set: a configuration without references reads as before.
+    let plain = toml::to_string(&load_str("").unwrap().config).unwrap();
+    assert!(
+        !plain.contains("_ref =") && !plain.contains("header_refs"),
+        "{plain}"
+    );
+    let back = toml::to_string(&loaded.config).unwrap();
+    assert!(
+        back.contains("api_key_ref = \"router.unifi.api_key\""),
+        "{back}"
+    );
+    // The redaction marker is never a value.
+    let errs = load_str(
+        r#"
+[[upstream]]
+name = "doh"
+url = "https://doh.example/dns-query"
+headers = { Authorization = "<redacted>" }
+[[upstream_group]]
+name = "default"
+members = ["doh"]
+"#,
+    )
+    .unwrap_err();
+    assert_eq!(paths(&errs), ["upstream[0].headers.Authorization"]);
+    // A URL's password too, wherever a credential path has one (what `config check --print`
+    // shows for it).
+    let errs = load_str(
+        r#"
+[[alerts.destination]]
+name = "hook"
+type = "webhook"
+url = "https://u:<redacted>@hooks.example/x"
+[cluster.git]
+repo = "https://git:<redacted>@git.example/cfg.git"
+path = "telltale/shared.toml"
+"#,
+    )
+    .unwrap_err();
+    let p = paths(&errs);
+    for want in ["alerts.destination[0].url", "cluster.git.repo"] {
+        assert!(p.contains(&want), "{want} not in {p:?}");
+    }
+}

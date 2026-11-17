@@ -301,6 +301,13 @@
         "maintenance_default_secs": 3600,
         "name": "",
         "role": "all",
+        "secret_file_dirs": [
+          "/run/secrets",
+          "/var/run/secrets",
+          "/etc/telltale/secrets"
+        ],
+        "secrets_key_file": "",
+        "secrets_previous_key_file": "",
         "workers": 0
       }
     },
@@ -585,6 +592,14 @@
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "password_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding the password.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "tls_ca": {
           "description": "`email`: a PEM file with the mail server's certificate (or its CA), for a private\nserver; public ones are trusted already.",
           "type": [
@@ -603,6 +618,14 @@
         },
         "token_file": {
           "description": "A file holding the token (ntfy access token, Gotify application token), so it stays\nout of the config and Git.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "token_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding the token; at most one of `token_file` and `token_ref`.",
           "type": [
             "string",
             "null"
@@ -799,6 +822,11 @@
           "description": "REQ: CLU-014 — a failover drill's report is ready (scheduled or started by hand; once\nper drill): who followed, who was stuck, coverage.",
           "type": "string",
           "const": "drill_report"
+        },
+        {
+          "description": "REQ: API-014 (T23.2, ADR-903 §4) — an admin changed where an entry's credential is sent\n(an upstream's URL or TLS name, an alert destination's URL): once per change, from the\naudit log's `credential.redirect` records.",
+          "type": "string",
+          "const": "credential_redirected"
         }
       ]
     },
@@ -1004,6 +1032,10 @@
       "description": "REST API listener (API-001). It also serves `/metrics` (signed in) and the health probes,\nonly to clients in `[access] allowed_networks` (ADR-029).",
       "type": "object",
       "properties": {
+        "allow_secrets_over_http": {
+          "description": "REQ: API-015 (ADR-903 §4) — accept stored secrets' values (`PUT /api/v1/secrets`) over\nplain HTTP from other hosts. Off (the default): a value is taken only over HTTPS (`tls`\nabove, or a proxy in `trusted_proxies` saying `X-Forwarded-Proto: https`) or from the node\nitself (loopback, with no `X-Forwarded-For`/`Forwarded`/`X-Real-IP`), since over plain\nHTTP it would cross the network in clear. A forwarded request's `X-Forwarded-Proto` counts\nonly from `trusted_proxies` here, loopback included: list `127.0.0.1/32` for a TLS proxy\non the same host. Read from this node's own files; the API can't set it.",
+          "type": "boolean"
+        },
         "enabled": {
           "type": "boolean",
           "default": true
@@ -1025,7 +1057,7 @@
           ]
         },
         "trusted_proxies": {
-          "description": "Reverse proxies or ingress controllers in front of the API (e.g. the pod network,\n`10.0.0.0/8`). For requests from them, the client address comes from\n`X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log), and\n`X-Forwarded-Proto: https` counts as HTTPS (HTTP Basic, the `Secure` cookie flag); from\nanyone else that header is ignored. Loopback always counts for `X-Forwarded-Proto`, so\na TLS terminator on the same host needs nothing here. Default: none (the connection's\naddress is the client).",
+          "description": "Reverse proxies or ingress controllers in front of the API (e.g. the pod network,\n`10.0.0.0/8`). For requests from them, the client address comes from\n`X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log), and\n`X-Forwarded-Proto: https` counts as HTTPS (HTTP Basic, the `Secure` cookie flag); from\nanyone else that header is ignored. Loopback always counts for `X-Forwarded-Proto`, so\na TLS terminator on the same host needs nothing here (except to take stored secrets'\nvalues, see `allow_secrets_over_http`). Default: none (the connection's\naddress is the client).",
           "type": "array",
           "default": [],
           "items": {
@@ -2011,6 +2043,14 @@
           "default": null,
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "credentials_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding it (Settings → Integrations & secrets); at most one of `credentials_file` and `credentials_ref`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "max_bytes": {
           "description": "Largest file accepted.",
           "default": "1MiB",
@@ -2060,6 +2100,14 @@
             "null"
           ],
           "default": null,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "webhook_secret_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding it; at most one of `webhook_secret_file` and `webhook_secret_ref`.",
+          "type": [
+            "string",
+            "null"
+          ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         }
       },
@@ -2623,6 +2671,31 @@
           "$ref": "#/$defs/Role",
           "default": "all"
         },
+        "secret_file_dirs": {
+          "description": "REQ: API-014 (ADR-903 §4) — where a file holding a credential (an alert destination's\n`token_file` or `password_file`, an upstream's `tls_client_key`) set through the UI or\nAPI may be. Paths in the config files aren't limited. Only this node's own files set it:\nthe cluster never shares it.",
+          "type": "array",
+          "default": [
+            "/run/secrets",
+            "/var/run/secrets",
+            "/etc/telltale/secrets"
+          ],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "secrets_key_file": {
+          "description": "REQ: OPS-014, API-014 (ADR-903 §3) — a file holding this node's secrets key\n(`ttsk1:...`), for example a mounted Kubernetes Secret. It keys the hashes kept for\n`Idempotency-Key` retries. Empty: the `TELLTALE_SECRETS_KEY` variable, else\n`<data_dir>/secrets.key` (made, mode 0600, on first start). Set it from the environment as\n`TELLTALE_NODE_SECRETS_KEY_FILE`.",
+          "type": "string",
+          "default": "",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "secrets_previous_key_file": {
+          "description": "REQ: OPS-014 — the key before a rotation, in a file (or `TELLTALE_SECRETS_PREVIOUS_KEY`).",
+          "type": "string",
+          "default": "",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "workers": {
           "description": "UDP worker threads; 0 means `min(cgroup CPU limit, cores)`.",
           "type": "integer",
@@ -2714,6 +2787,14 @@
             "null"
           ],
           "default": null,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "client_secret_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — ... or the name of a stored secret holding it. At most one of the three.",
+          "type": [
+            "string",
+            "null"
+          ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "default_role": {
@@ -2819,6 +2900,17 @@
             "null"
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "header_refs": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — headers whose values are stored secrets, by header:\n`header_refs = { api-key = \"otlp\" }`. A header may be in `headers` or here, not both.",
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[^\\u0000-\\u001F\\u007F-\\u009F]*$": {
+              "type": "string",
+              "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+            }
+          }
         },
         "headers": {
           "description": "Extra headers (an API key for a hosted collector).",
@@ -3203,8 +3295,24 @@
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "api_key_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding it (`api_key_ref = \"unifi\"`); at most one of `api_key_file` and `api_key_ref`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "api_secret_file": {
           "description": "OPNsense: the API secret (a file).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "api_secret_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding it.",
           "type": [
             "string",
             "null"
@@ -3224,6 +3332,14 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "password_file": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "password_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding the password.",
           "type": [
             "string",
             "null"
@@ -3675,6 +3791,14 @@
         },
         "token_file": {
           "description": "`webhook`: a file holding a token sent as `Authorization: <token_scheme> <token>`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "token_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — `webhook`: or the name of a stored secret holding the token.",
           "type": [
             "string",
             "null"

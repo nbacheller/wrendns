@@ -19,6 +19,10 @@
      *  windows as `weekdays 21:00-07:00`). `fromText` throws to report a bad line. */
     toText?: (v: unknown) => string;
     fromText?: (s: string) => unknown;
+    /** REQ: API-014 (T23.2) — only an admin changes it (a file holding a credential, or where
+     *  one is sent): shown read-only to others. A function decides from the entry as it was
+     *  read (`{}` for a new one). */
+    admin?: boolean | ((original: Record<string, unknown>) => boolean);
   };
 </script>
 
@@ -90,6 +94,13 @@
   let entries = $state<S['ConfigEntry'][]>([]);
   let error = $state<unknown>(null);
   let editing = $state<{ name: string; isNew: boolean; values: Record<string, unknown> } | null>(null);
+  // The entry as it was read, for fields only an admin changes (T23.2).
+  let original = $state<Record<string, unknown>>({});
+  const isAdmin = $derived(can('admin'));
+  function locked(f: Field): boolean {
+    if (isAdmin || !f.admin) return false;
+    return typeof f.admin === 'function' ? f.admin(original) : true;
+  }
   // Text of fields with `toText`/`fromText`, while editing.
   let texts = $state<Record<string, string>>({});
   let preview = $state<S['ConfigChange'] | null>(null);
@@ -126,6 +137,7 @@
     formError = null;
     formOut = null;
     const def = (e?.definition ?? {}) as Record<string, unknown>;
+    original = { ...def };
     const initial = e ? {} : Object.fromEntries(fields.filter((f) => f.initial !== undefined).map((f) => [f.key, f.initial]));
     editing = { name: e?.name ?? '', isNew: !e, values: { ...initial, ...def } };
     texts = Object.fromEntries(fields.filter((f) => f.toText).map((f) => [f.key, f.toText!(editing!.values[f.key])]));
@@ -212,7 +224,13 @@
           {#each entries as e (e.name)}
             {@const [label, cls] = badge[e.source] ?? [e.source, '']}
             <tr data-testid="entry-row">
-              <td><strong>{e.name}</strong><span class="badge {cls}">{label}</span></td>
+              <td>
+                <strong>{e.name}</strong><span class="badge {cls}">{label}</span>
+                <!-- REQ: API-014 (T23.2) — a stored path the node refuses to read. -->
+                {#each e.credentialIssues ?? [] as i (i.field)}
+                  <span class="badge bad" title={i.reason} data-testid="credential-issue">{i.field} not read</span>
+                {/each}
+              </td>
               <td class="small muted">{e.definition ? summary(e.definition as Record<string, unknown>) : 'left out of the configuration'}</td>
               {#if writable}
                 <td class="actions">
@@ -256,7 +274,7 @@
           <label>
             {f.label}
             {#if f.type === 'select'}
-              <select bind:value={editing.values[f.key]} aria-label={f.label}>
+              <select bind:value={editing.values[f.key]} aria-label={f.label} disabled={locked(f)}>
                 <option value={undefined}>(default)</option>
                 {#each f.options ?? [] as o (o)}<option value={o}>{o}</option>{/each}
               </select>
@@ -301,8 +319,9 @@
               <!-- step="any": thresholds such as 0.5 % are allowed. -->
               <input type="number" step="any" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} />
             {:else}
-              <input class="mono" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} />
+              <input class="mono" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} />
             {/if}
+            {#if locked(f)}<span class="muted small" data-testid="admin-only">Only an admin can change this.</span>{/if}
             {#if f.help}<span class="muted small">{f.help}</span>{/if}
           </label>
         {/each}

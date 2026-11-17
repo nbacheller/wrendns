@@ -161,3 +161,18 @@ async fn ops_004_refuses_bad_signature_or_checksum() {
             .is_err()
     );
 }
+
+/// REQ: OPS-014, API-014 (ADR-903 §3) — the self-update's checks and restart don't inherit the
+/// secrets keys, the bootstrap password, or the API token.
+#[test]
+fn ops_014_self_update_commands_have_no_secrets_key() {
+    let c = scrubbed("systemctl");
+    let removed: Vec<String> = c
+        .get_envs()
+        .filter(|(_, v)| v.is_none())
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .collect();
+    for k in telltale_config::NEVER_INHERITED {
+        assert!(removed.iter().any(|r| r == k), "{k}: {removed:?}");
+    }
+}

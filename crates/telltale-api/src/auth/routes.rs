@@ -129,7 +129,8 @@ pub(crate) fn is_https(auth: &Auth, req_ext: &axum::http::Extensions, headers: &
         return says;
     }
     req_ext.get::<ConnectInfo<SocketAddr>>().is_some_and(|c| {
-        let ip = c.0.ip();
+        // `::ffff:127.0.0.1` (a `[::]` listener) is loopback too.
+        let ip = c.0.ip().to_canonical();
         ip.is_loopback()
             || auth
                 .settings()

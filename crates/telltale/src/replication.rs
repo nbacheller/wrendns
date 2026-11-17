@@ -127,7 +127,9 @@ pub(crate) fn unpinned(file: &Config) -> Config {
         warn_ignored_once(telltale_config::shared::ignored_on_replica(file));
     }
     match merged(file, &m) {
-        Ok(c) if with_managed => crate::managed::effective(&c),
+        // REQ: API-014 (review of T23.2) — the stored paths are judged against this node's own
+        // files, not the version it builds on.
+        Ok(c) if with_managed => crate::managed::effective_on(&c, file),
         Ok(c) => c,
         Err(e) => {
             error!(

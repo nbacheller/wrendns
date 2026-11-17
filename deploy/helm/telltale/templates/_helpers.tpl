@@ -64,6 +64,16 @@ app.kubernetes.io/component: resolver
 {{- define "telltale.clusterSecret" -}}
 {{- .Values.cluster.bootstrapSecret.existingSecret | default (printf "%s-cluster" (include "telltale.fullname" .)) }}
 {{- end }}
+{{/* REQ: OPS-014 (ADR-903 §3) — the Secret holding the secrets store's key, mounted on the
+controller (or allInOne pod) only: `secretsKey.existingSecret`, the chart's own with
+`secretsKey.generate`, or nothing (the key is made in the data directory). */}}
+{{- define "telltale.secretsKeySecret" -}}
+{{- if .Values.secretsKey.existingSecret }}
+{{- .Values.secretsKey.existingSecret }}
+{{- else if .Values.secretsKey.generate }}
+{{- printf "%s-secrets-key" (include "telltale.fullname" .) }}
+{{- end }}
+{{- end }}
 {{/* REQ: FLT-017 — the ServiceAccount the controller (or allInOne pod) uses to watch pods. */}}
 {{- define "telltale.serviceAccountName" -}}
 {{- .Values.kubernetes.rbac.serviceAccountName | default (printf "%s-workloads" (include "telltale.fullname" .)) }}

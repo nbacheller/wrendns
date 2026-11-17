@@ -216,10 +216,19 @@ pub(crate) async fn refresh_lists(
         .and_then(|v| v.to_str().ok())
         .map(|k| format!("{}:{}", p.user_id, k.trim()))
         .filter(|k| !dry_run && k.len() > 2);
+    // REQ: API-014 (ADR-903 §4) — the record keeps a keyed hash of the request, never its text.
+    let fingerprint = if key.is_some() {
+        match backend.idempotency_request(None, &request, None) {
+            Ok(f) => Some(f),
+            Err(e) => return e.into_response(),
+        }
+    } else {
+        None
+    };
     let now = backend.now_unix_seconds();
     if let Some(k) = &key {
         match auth.state().idempotent(k, now) {
-            Ok(Some(r)) if r.request == request.as_bytes() => {
+            Ok(Some(r)) if fingerprint.as_ref() == Some(&r.request) => {
                 return crate::config_api::replay(&r);
             }
             Ok(Some(_)) => {
@@ -256,9 +265,9 @@ pub(crate) async fn refresh_lists(
                 );
             }
             let text = serde_json::to_string(&r).unwrap_or_default();
-            if let Some(k) = &key {
+            if let (Some(k), Some(fp)) = (&key, &fingerprint) {
                 let rep = Replay {
-                    request: request.into_bytes(),
+                    request: fp.clone(),
                     status: StatusCode::ACCEPTED.as_u16(),
                     response: text,
                 };

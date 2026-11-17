@@ -137,6 +137,7 @@ fn one_off(w: AlertWhen) -> bool {
             | AlertWhen::PlanPending
             | AlertWhen::RolloutFailed
             | AlertWhen::DrillReport
+            | AlertWhen::CredentialRedirected
     )
 }
 
@@ -252,7 +253,11 @@ impl Engine {
 }
 
 /// REQ: OBS-010 (T9.6) — a test message to `d`, from `node`.
-pub(crate) async fn send_test(d: &AlertDestination, node: &str) -> Result<(), String> {
+pub(crate) async fn send_test(
+    d: &AlertDestination,
+    node: &str,
+    store: &crate::secrets::SecretStore,
+) -> Result<(), String> {
     let n = Notice {
         rule: 0,
         subject: "test".to_owned(),
@@ -264,7 +269,7 @@ pub(crate) async fn send_test(d: &AlertDestination, node: &str) -> Result<(), St
     };
     let client =
         telltale_filter::fetch::Client::new(Arc::new(telltale_filter::fetch::SystemResolver), &[])?;
-    deliver(&client, d, "Test", &n, node).await
+    deliver(&client, d, "Test", &n, node, store).await
 }
 
 /// Records a delivery's outcome for the status API (the latest per destination).
@@ -285,13 +290,15 @@ fn record_delivery(sources: &crate::http::Sources, destination: &str, r: &Result
 }
 
 /// What `rule` sees now, read from `b` (blocking: run it on a blocking thread). `pending`:
-/// agents' plans waiting for approval on this node, as `(id, summary)`.
+/// agents' plans waiting for approval on this node, as `(id, summary)`; `redirects`: this node's
+/// recent `credential.redirect` audit records, likewise.
 #[allow(clippy::too_many_lines)] // one arm per condition
 fn observe(
     b: &dyn Backend,
     rule: &AlertRule,
     now: u64,
     pending: &[(String, String)],
+    redirects: &[(String, String)],
     m: &Paused,
 ) -> Observed {
     let node_label = |n: &telltale_api::model::ClusterNode| {
@@ -382,6 +389,8 @@ fn observe(
                 })
                 .collect()
         }
+        // REQ: API-014 (T23.2, ADR-903 §4) — once per change of where a credential goes.
+        AlertWhen::CredentialRedirected => redirects.to_vec(),
         AlertWhen::PlanPending => pending
             .iter()
             .map(|(id, summary)| {
@@ -732,16 +741,15 @@ async fn deliver_email(
     rule: &str,
     n: &Notice,
     node: &str,
+    store: &crate::secrets::SecretStore,
 ) -> Result<(), String> {
     let (host, port, security) = crate::smtp::parse_url(d.url.as_str())?;
-    let login = match (&d.username, &d.password_file) {
-        (Some(u), Some(f)) => Some((
-            u.to_string(),
-            std::fs::read_to_string(f.as_str())
-                .map_err(|e| format!("{}: {e}", f.as_str()))?
-                .trim()
-                .to_owned(),
-        )),
+    // REQ: OPS-014 (ADR-903 §2) — the password from its file or the store.
+    let password =
+        crate::secrets::Credential::of(d.password_file.as_ref(), d.password_ref.as_ref())
+            .resolve(Some(store))?;
+    let login = match (&d.username, password) {
+        (Some(u), Some(p)) => Some((u.to_string(), p.value.expose().to_owned())),
         _ => None,
     };
     let extra_roots = match &d.tls_ca {
@@ -802,26 +810,24 @@ async fn deliver(
     rule: &str,
     n: &Notice,
     node: &str,
+    store: &crate::secrets::SecretStore,
 ) -> Result<(), String> {
     if d.kind == AlertKind::Email {
-        return deliver_email(d, rule, n, node).await;
+        return deliver_email(d, rule, n, node, store).await;
     }
-    let token = match &d.token_file {
-        Some(f) => Some(
-            std::fs::read_to_string(f.as_str())
-                .map_err(|e| format!("{}: {e}", f.as_str()))?
-                .trim()
-                .to_owned(),
-        ),
-        None => None,
-    };
-    let (body, ct, headers) = render(d, token.as_deref(), rule, n, node);
+    // REQ: OPS-014 (ADR-903 §2) — the token from its file or the store.
+    let token = crate::secrets::Credential::of(d.token_file.as_ref(), d.token_ref.as_ref())
+        .resolve(Some(store))?
+        .map(|r| r.value);
+    let token = token.as_ref().map(crate::secrets::SecretValue::expose);
+    let (body, ct, headers) = render(d, token, rule, n, node);
     let mut url = d.url.to_string();
     if d.kind == AlertKind::Gotify {
+        // REQ: API-014 (ADR-903 §4) — the token is one query value, whatever it holds.
         url = format!(
             "{}/message?token={}",
             url.trim_end_matches('/'),
-            token.as_deref().unwrap_or_default()
+            crate::kubernetes::encode(token.unwrap_or_default())
         );
     }
     let mut req = http::Request::post(url)
@@ -834,7 +840,18 @@ async fn deliver(
     let resp = tokio::time::timeout(Duration::from_secs(10), client.request(req, 64 * 1024))
         .await
         .map_err(|_| "timed out".to_owned())?
-        .map_err(|e| e.message)?;
+        .map_err(|e| match token.filter(|t| !t.is_empty()) {
+            // REQ: API-014 — an error that quotes the request never shows the token.
+            // The URL carries it percent-encoded: both forms go.
+            Some(t) => e
+                .message
+                .replace(t, telltale_config::credentials::MARKER)
+                .replace(
+                    &crate::kubernetes::encode(t),
+                    telltale_config::credentials::MARKER,
+                ),
+            None => e.message,
+        })?;
     if resp.status().is_success() {
         Ok(())
     } else {
@@ -887,6 +904,62 @@ fn pending_plans(sources: &crate::http::Sources) -> Vec<(String, String)> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// How far back the `credential_redirected` alert looks: a restart doesn't send older ones again.
+const REDIRECT_WINDOW_SECS: u64 = 3600;
+
+/// REQ: API-014 (T23.2, ADR-903 §4) — this node's `credential.redirect` audit records of the last
+/// hour, as `(subject, summary)`: the subject is the record's sequence number, so each change
+/// goes out once. Only the primary (or a standalone node) applies changes, and so records them.
+pub(crate) fn recent_redirects(sources: &crate::http::Sources, now: u64) -> Vec<(String, String)> {
+    let Some(auth) = sources.auth.get() else {
+        return Vec::new();
+    };
+    let since = now.saturating_sub(REDIRECT_WINDOW_SECS);
+    auth.state()
+        .audit_page(
+            None,
+            50,
+            Some(crate::credential_rules::REDIRECT_ACTION),
+            None,
+        )
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.action == crate::credential_rules::REDIRECT_ACTION && e.ts >= since)
+        .map(|e| {
+            let d: serde_json::Value = serde_json::from_str(&e.detail).unwrap_or_default();
+            let field = d["field"].as_str().unwrap_or("url");
+            // REQ: API-014 (review of T23.2) — only where it goes: a URL's scheme and host. Its
+            // path can hold a secret (a Slack or webhook URL), and the alert reaches every
+            // destination of the rule; the audit record has the rest.
+            let to = match &d["to"] {
+                serde_json::Value::String(s) => url_origin(s),
+                serde_json::Value::Null => "nothing".to_owned(),
+                other => other.to_string(),
+            };
+            (
+                e.seq.to_string(),
+                format!(
+                    "{} changed where {} {}'s credential is sent: {field} is now {to}",
+                    e.actor,
+                    d["kind"].as_str().unwrap_or("entry").replace('_', " "),
+                    e.target
+                ),
+            )
+        })
+        .collect()
+}
+
+/// `scheme://host[:port]` of a URL, without its user information or path; anything else as is.
+fn url_origin(s: &str) -> String {
+    let Some(i) = s.find("://") else {
+        return s.to_owned();
+    };
+    let rest = &s[i + 3..];
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    format!("{}://{host}", &s[..i])
 }
 
 /// REQ: OPS-010 — which nodes are in maintenance now (from heartbeats, or this node's own
@@ -970,9 +1043,10 @@ pub(crate) async fn run(
             let rs = rules.clone();
             let in_maintenance = Arc::clone(&paused);
             let pending = pending_plans(&sources);
+            let redirects = recent_redirects(&sources, now);
             let observed = tokio::task::spawn_blocking(move || {
                 rs.iter()
-                    .map(|r| observe(b.as_ref(), r, now, &pending, &in_maintenance))
+                    .map(|r| observe(b.as_ref(), r, now, &pending, &redirects, &in_maintenance))
                     .collect::<Vec<_>>()
             })
             .await
@@ -999,7 +1073,7 @@ pub(crate) async fn run(
                         Arc::clone(&sources),
                     );
                     tokio::spawn(async move {
-                        let r = deliver(&client, &d, &rname, &n, &node).await;
+                        let r = deliver(&client, &d, &rname, &n, &node, &src.secrets).await;
                         if let Err(e) = &r {
                             warn!(destination = %d.name, error = %e, "alert not delivered");
                         }
@@ -1162,7 +1236,7 @@ mod tests {
             probes: Vec::new(),
             findings: vec![finding("beacon", false), finding("chatty_loop", true)],
         };
-        let o = |w: AlertWhen| observe(&b, &rule(w, 0), 1000, &[], &Paused::default());
+        let o = |w: AlertWhen| observe(&b, &rule(w, 0), 1000, &[], &[], &Paused::default());
         let anomaly = o(AlertWhen::Anomaly);
         let chatty = o(AlertWhen::ChattyLoop);
         assert_eq!(anomaly.len(), 1, "{anomaly:?}");
@@ -1329,7 +1403,7 @@ mod tests {
         let seen = |backend: &Stub, paused: &Paused| -> Vec<Observed> {
             rules
                 .iter()
-                .map(|r| observe(backend, r, 1000, &[], paused))
+                .map(|r| observe(backend, r, 1000, &[], &[], paused))
                 .collect()
         };
         let subjects = |o: &Observed| o.iter().map(|(x, _)| x.clone()).collect::<Vec<_>>();
@@ -1408,10 +1482,12 @@ mod tests {
             kind,
             url: telltale_config::SafeString::new("https://example.test/x").unwrap(),
             token_file: None,
+            token_ref: None,
             from: None,
             to: Vec::new(),
             username: None,
             password_file: None,
+            password_ref: None,
             tls_ca: None,
         };
         let n = Notice {
@@ -1490,7 +1566,7 @@ mod tests {
             };
             rules
                 .iter()
-                .map(|x| observe(&b, x, 1000, &[], &Paused::default()))
+                .map(|x| observe(&b, x, 1000, &[], &[], &Paused::default()))
                 .collect()
         };
         let mut e = Engine::default();

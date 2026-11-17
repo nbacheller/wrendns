@@ -16,6 +16,11 @@ mod cache_history;
 mod cache_sizing;
 mod checks;
 mod cluster;
+mod credential_rules;
+#[cfg(test)]
+mod credential_rules_tests;
+#[cfg(test)]
+mod credential_tests;
 mod ctl;
 mod datadir;
 mod device_dns;
@@ -46,11 +51,18 @@ mod privacy;
 mod probes;
 mod qlog_cli;
 mod readiness;
+mod redact;
 mod replay;
 mod replication;
 mod rollout;
 mod rollups;
 mod routers;
+#[cfg(test)]
+mod secret_store_tests;
+mod secrets;
+mod secrets_api;
+#[cfg(test)]
+mod secrets_api_tests;
 mod selfupdate;
 mod server;
 mod shadow;
@@ -143,6 +155,16 @@ enum Command {
     Auth {
         #[command(subcommand)]
         command: AuthCommand,
+    },
+    /// The secrets entered in the UI: the store's state and key, and a new key. Run on the node,
+    /// with the same configuration and environment as the server.
+    // REQ: OPS-014 (ADR-903 §3)
+    Secrets {
+        #[command(subcommand)]
+        command: SecretsCommand,
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config", global = true)]
+        config: Vec<PathBuf>,
     },
     /// Search the query log (newest first), offline from the data directory.
     // REQ: OBS-003
@@ -501,6 +523,19 @@ enum AuthCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum SecretsCommand {
+    /// The store (ready, locked, or ephemeral), its key's source and ID (never the key), each
+    /// stored secret without its value, and every credential field with its source and whether
+    /// this node can read it. Exits 1 when the store is locked. Changes nothing (no key made, no
+    /// rotation finished, nothing re-encrypted), so it's safe beside a running server.
+    Status,
+    /// Replace the data-directory key (`secrets.key`): every stored secret is re-encrypted under a
+    /// new one. Stop TelltaleDNS first. A key from `TELLTALE_SECRETS_KEY` or
+    /// `[node] secrets_key_file` is rotated by setting the old one as the previous key instead.
+    RotateKey,
+}
+
+#[derive(Debug, Subcommand)]
 enum AuditCommand {
     /// Check the audit log's hash chain; exits non-zero if an entry was changed or removed.
     // REQ: API-006
@@ -641,9 +676,14 @@ enum ConfigCommand {
         /// Ignore TELLTALE_* environment variables.
         #[arg(long)]
         no_env: bool,
-        /// Print the effective config (defaults + files + env) as TOML.
+        /// Print the effective config (defaults + files + env) as TOML. Credentials (upstream
+        /// headers and args, passwords in URLs, an OIDC client secret, OTLP headers) print as
+        /// `<redacted>`.
         #[arg(long)]
         print: bool,
+        /// With --print: print credentials as they are (REQ: API-014).
+        #[arg(long, requires = "print")]
+        show_secrets: bool,
     },
     /// Print the JSON Schema for telltale.toml (for editor completion).
     Schema,
@@ -729,6 +769,7 @@ fn main() -> ExitCode {
             )
         }
         Command::Auth { command } => Ok(run_auth(command)),
+        Command::Secrets { command, config } => Ok(run_secrets(&command, config)),
         Command::Audit { command } => Ok(run_audit(command)),
         Command::Explain {
             name,
@@ -1017,6 +1058,49 @@ fn run_mcp(
             ExitCode::FAILURE
         }
     }
+}
+
+// REQ: OPS-014 (ADR-903 §3)
+fn run_secrets(command: &SecretsCommand, config: Vec<PathBuf>) -> ExitCode {
+    let files = config_files(config);
+    let Some(cfg) = server::load(&files) else {
+        return ExitCode::FAILURE;
+    };
+    let env = secrets::cli::env();
+    let result = match command {
+        SecretsCommand::Status => secrets::cli::status(&cfg, env, &mut io::stdout().lock())
+            .map_err(|e| e.to_string())
+            .map(|ok| {
+                if ok {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                }
+            }),
+        SecretsCommand::RotateKey => {
+            secrets::cli::rotate_key(&cfg, &env, secrets::cli::Until::Done).map(|r| {
+                eprintln!(
+                    "rotated the secrets key: key_id {} -> {}; {} secret(s) re-encrypted{}",
+                    r.from,
+                    r.to,
+                    r.reencrypted,
+                    if r.skipped > 0 {
+                        format!(
+                            ", {} left as they were (not readable under the old key either)",
+                            r.skipped
+                        )
+                    } else {
+                        String::new()
+                    }
+                );
+                ExitCode::SUCCESS
+            })
+        }
+    };
+    result.unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        ExitCode::FAILURE
+    })
 }
 
 // REQ: API-007 (T6.7, ADR-063)
@@ -1597,6 +1681,7 @@ fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
             files,
             no_env,
             print,
+            show_secrets,
         } => {
             let mut loader = files.iter().fold(Loader::new(), Loader::file);
             if !no_env {
@@ -1620,7 +1705,7 @@ fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
                         return Ok(ExitCode::FAILURE);
                     }
                     if print {
-                        let text = toml::to_string(&cfg.config).map_err(io::Error::other)?;
+                        let text = printed_config(&cfg.config, show_secrets)?;
                         write!(out, "{text}")?;
                     } else {
                         writeln!(out, "config OK")?;
@@ -1637,6 +1722,17 @@ fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
             }
         }
     }
+}
+
+/// REQ: API-014 (ADR-903 §4) — `config check --print`: the effective configuration as TOML,
+/// its credentials redacted unless `show_secrets`.
+fn printed_config(cfg: &telltale_config::Config, show_secrets: bool) -> io::Result<String> {
+    if show_secrets {
+        return toml::to_string(cfg).map_err(io::Error::other);
+    }
+    let mut shown = cfg.clone();
+    telltale_config::credentials::redact_config(&mut shown);
+    toml::to_string(&shown).map_err(io::Error::other)
 }
 
 /// `telltale services list`.

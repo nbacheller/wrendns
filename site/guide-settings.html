@@ -142,6 +142,26 @@ path = "telltale/shared.toml"
     <li class="step"><b>In a cluster, the primary.</b> Its shared settings replace the shared sections of every other node's own files.</li>
   </ol>
   <p class="muted"><code>telltale config check telltale.toml --print</code> shows layers 1 to 4 merged. The UI's entries are listed with their source by <code>GET /api/v1/config/entries</code>.</p>
+  <p class="muted"><b>Credentials are never shown.</b> An upstream's <code>headers</code> and <code>args</code>, a password in any URL, an OIDC <code>client_secret</code>, and OTLP headers read <code>&lt;redacted&gt;</code> in the API, the audit log, the TOML to keep in Git, agents' plans, MCP, and <code>--print</code> (<code>--show-secrets</code> prints them on the node). Editing an entry keeps them while it points where it did; change its URL, proxy, TLS name, CA, bootstrap addresses, certificate checks (skip verify, pins) or an alert destination's type and the credential has to be typed again. <b>Test it</b> never uses a stored credential: type it into the draft. On a replica, keeping a credential this way needs a primary on the same version (until then, <code>409 upgrade_required</code>).</p>
+</section>
+
+<section id="secrets">
+  <h2>Credentials: in the file, in a file, or stored</h2>
+  <p>A router's API key, an alert destination's token, an OIDC client secret, a sink's token, OTLP headers, and the Git source's credentials can each come from one of three places, never two:</p>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Where</th><th>Config file</th><th>Good for</th></tr></thead>
+    <tbody>
+      <tr><td>A file the node reads when it needs it</td><td><code>api_key_file = "/run/secrets/unifi"</code></td><td>Docker and Kubernetes Secrets, a key mounted read-only</td></tr>
+      <tr><td>A secret stored on the node, encrypted</td><td><code>api_key_ref = "unifi"</code></td><td>Entering it in the UI instead of on the machine</td></tr>
+      <tr><td>Inline (OIDC client secret and OTLP headers only)</td><td><code>client_secret = "..."</code></td><td>Trying something out</td></tr>
+    </tbody>
+  </table></div>
+  <p>A stored secret is write-only: nothing shows it again, admins included. It is encrypted in <code>state.db</code> with the node's own key (<code>secrets.key</code> in the data directory, made on the first start, or one you keep elsewhere with <code>TELLTALE_SECRETS_KEY</code> or <code>[node] secrets_key_file</code>; the Helm chart's <code>secretsKey.existingSecret</code>). Backups never include stored secrets or the key, and resolver pods hold neither.</p>
+  <pre><code>telltale ctl secrets set unifi --from-file /root/unifi-key   # or: ... set unifi &lt; key
+telltale ctl secrets list                                     # names and users, never a value
+telltale ctl secrets clear unifi                              # refused while a field names it</code></pre>
+  <p class="muted"><b>Who sets one.</b> Admins only (<code>PUT /api/v1/secrets/&lt;name&gt;</code> with <code>{"value": "..."}</code>), never an agent token (<code>403 agent_not_allowed</code>), and only over HTTPS or on the node itself: plain HTTP from another machine is <code>403 insecure_transport</code> unless <code>[api] allow_secrets_over_http = true</code> (turn on <code>[api] tls = { self_signed = true }</code> instead). A TLS proxy in front, even one on the same host, must be listed in <code>[api] trusted_proxies</code> for this. Operators and agents with <code>config:read</code> see the names, who set them, and which fields use them (<code>GET /api/v1/secrets</code>, the MCP tool <code>secrets_status</code>). In a cluster the primary keeps them; a replica sends the change there. A secret a field still uses can't be deleted (<code>409 secret_in_use</code>).</p>
+  <p class="muted"><b>The files win.</b> A credential the config file sets can't be changed in the UI (<code>409 set_by_file</code>). <b>If the key is missing or wrong</b>, the store is locked: integrations that use a stored secret say "not configured", health is degraded (<code>secrets_locked</code>), and DNS keeps answering. <code>telltale secrets status</code> shows what the node can read; <code>telltale secrets rotate-key</code> replaces the key. Custody, rotation and recovery: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/secrets.md">docs/secrets.md</a>.</p>
 </section>
 
 <section id="shared">

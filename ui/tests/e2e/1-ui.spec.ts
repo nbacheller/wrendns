@@ -1792,6 +1792,59 @@ test('obs_010 alerts page: destinations, test, rules', async () => {
   }
 });
 
+// REQ: API-014 (T23.2) — the Alerts page shows an operator the fields only an admin changes
+// read-only: a destination's token and password files always, and its address and CA once it
+// holds a credential; the server refuses them anyway.
+test('api_014 alerts page: operators see credential fields read-only', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const r = page.request;
+  const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const h = { 'x-csrf-token': csrf };
+  const OPERATOR = { user: 'operator1', pass: 'operator long password' };
+  const made = await r.post('/api/v1/users', { headers: h, data: { username: OPERATOR.user, password: OPERATOR.pass, role: 'operator' } });
+  expect([200, 201, 409]).toContain(made.status());
+  const put = await r.put('/api/v1/alerts/destinations/ui-ntfy', {
+    headers: h,
+    data: { type: 'ntfy', url: 'https://ntfy.e2e.test/topic', token_file: '/run/secrets/ntfy-token' },
+  });
+  expect(put.status(), await put.text()).toBe(200);
+  const op = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  try {
+    const p = await op.newPage();
+    await p.goto('/#/alerts');
+    await p.getByLabel('Username', { exact: true }).fill(OPERATOR.user);
+    await p.getByLabel('Password', { exact: true }).fill(OPERATOR.pass);
+    await p.getByRole('button', { name: 'Sign in' }).click();
+    await expect(p.locator('h1', { hasText: 'Alerts' })).toBeVisible({ timeout: 30_000 });
+    await p.getByRole('button', { name: 'Advanced', exact: true }).click();
+    const dests = p.getByTestId('editor-alert_destination');
+    await dests.getByTestId('entry-row').filter({ hasText: 'ui-ntfy' }).getByRole('button', { name: 'Edit' }).click();
+    await expect(p.getByRole('textbox', { name: 'Token file (ntfy, Gotify)' })).toHaveAttribute('readonly', '');
+    await expect(p.getByRole('textbox', { name: 'Password file (email)' })).toHaveAttribute('readonly', '');
+    await expect(p.getByRole('textbox', { name: 'Address', exact: true })).toHaveAttribute('readonly', '');
+    await expect(p.getByRole('textbox', { name: 'Private CA (email)' })).toHaveAttribute('readonly', '');
+    await expect(p.getByRole('textbox', { name: 'From (email)' })).not.toHaveAttribute('readonly', '');
+    await expect(p.getByTestId('admin-only').first()).toContainText('Only an admin can change this.');
+    // A new destination: its files are still an admin's, its address the operator's. The
+    // drawer of the entry above is still open (a hash change doesn't reload), so reload first.
+    await p.reload();
+    await p.getByTestId('editor-alert_destination').getByRole('button', { name: 'Add destination' }).click();
+    await expect(p.getByRole('textbox', { name: 'Token file (ntfy, Gotify)' })).toHaveAttribute('readonly', '');
+    await expect(p.getByRole('textbox', { name: 'Address', exact: true })).not.toHaveAttribute('readonly', '');
+    // And the server says no whatever the form does.
+    const ocsrf = (await (await op.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+    const moved = await op.request.put('/api/v1/alerts/destinations/ui-ntfy', {
+      headers: { 'x-csrf-token': ocsrf },
+      data: { type: 'ntfy', url: 'https://elsewhere.e2e.test/topic', token_file: '/run/secrets/ntfy-token' },
+    });
+    expect(moved.status()).toBe(403);
+    await p.getByRole('button', { name: 'Simple', exact: true }).click({ timeout: 5_000 }).catch(() => {});
+  } finally {
+    await op.close();
+    await r.delete('/api/v1/alerts/destinations/ui-ntfy', { headers: h });
+  }
+});
+
 // REQ: FLT-010 (T9.7) — schedules from the UI: a bad window is explained, a good one saved;
 // a group follows it (on now), then both are undone.
 test('flt_010 schedules are edited from the UI', async () => {

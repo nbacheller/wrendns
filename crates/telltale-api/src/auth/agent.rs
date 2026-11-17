@@ -205,11 +205,15 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/config/entries"
             // REQ: API-013 (T22.2) — the device inventory and the networks it sits in.
             | "/api/v1/dhcp/leases"
-            | "/api/v1/networks" => {
+            | "/api/v1/networks"
+            // REQ: API-015, AGT-001 (ADR-903 §5) — stored secrets' metadata, never a value.
+            | "/api/v1/secrets" => {
                 return Need::Scope("config:read");
             }
             // REQ: OBS-034 — a device's names bin by bin reads like its query log.
             _ if timeline_path(p) => return Need::Scope("querylog:read"),
+            // REQ: API-015 — one stored secret's metadata.
+            _ if secret_path(p) => return Need::Scope("config:read"),
             _ if under("/api/v1/stats") || under("/api/v1/analytics") => {
                 return Need::Scope("analytics:read");
             }
@@ -277,6 +281,26 @@ pub fn required(method: &Method, path: &str) -> Need {
         return need;
     }
     Need::Forbidden
+}
+
+/// REQ: API-015 — `/api/v1/secrets/{name}`.
+fn secret_path(p: &str) -> bool {
+    p.strip_prefix("/api/v1/secrets/")
+        .is_some_and(|n| !n.is_empty() && !n.contains('/'))
+}
+
+/// REQ: API-015, AGT-004 (ADR-903 §5) — what agent tokens never do, whatever their scopes
+/// (refused with `agent_not_allowed`): setting or clearing a stored secret, a backup (it holds
+/// password hashes, and with a passphrase the secrets), and checking a router draft (it carries
+/// the router's credential). A value would otherwise sit in an agent's plan, the approval diff
+/// and the agent's transcript.
+pub fn never_for_agents(method: &Method, path: &str) -> bool {
+    let p = path.trim_end_matches('/');
+    let secret = p == "/api/v1/secrets" || secret_path(p);
+    let write = *method == Method::PUT || *method == Method::DELETE || *method == Method::POST;
+    (secret && write)
+        || (*method == Method::POST
+            && (p == "/api/v1/backup" || p.starts_with("/api/v1/checks/router")))
 }
 
 /// REQ: OBS-034 — `/api/v1/clients/{id}/timeline`.
@@ -504,6 +528,13 @@ pub fn check(
         )
         .retry_after(wait));
     }
+    if never_for_agents(method, path) {
+        return Err(Problem::new(
+            Code::AgentNotAllowed,
+            format!("agent tokens can't use {method} {path}, whatever their scopes"),
+        )
+        .hint("Stored secrets, backups, and router checks are for people: a value would sit in the agent's plan and transcript."));
+    }
     match required(method, path) {
         Need::Forbidden => {
             return Err(Problem::new(
@@ -604,9 +635,77 @@ mod tests {
             (Method::PUT, "/api/v1/clients"),
             (Method::GET, "/api/v1/stats"),
             (Method::GET, "/api/v1/something-new"),
+            // REQ: API-015 (ADR-903 §5) — secret writes, backups, router checks.
+            (Method::PUT, "/api/v1/secrets/unifi"),
+            (Method::DELETE, "/api/v1/secrets/unifi"),
+            (Method::POST, "/api/v1/backup"),
+            (Method::POST, "/api/v1/checks/router"),
         ] {
             assert_eq!(required(&m, p), Forbidden, "{m} {p}");
         }
+    }
+
+    /// REQ: API-015, AGT-004 (ADR-903 §5) — agents read stored secrets' metadata with
+    /// `config:read`, and never write one (nor take a backup or check a router), whatever their
+    /// scopes: `agent_not_allowed`.
+    #[test]
+    fn api_015_agent_secret_routes() {
+        assert_eq!(
+            required(&Method::GET, "/api/v1/secrets"),
+            Need::Scope("config:read")
+        );
+        assert_eq!(
+            required(&Method::GET, "/api/v1/secrets/unifi"),
+            Need::Scope("config:read")
+        );
+        assert_eq!(
+            required(&Method::GET, "/api/v1/secrets/a/b"),
+            Need::Forbidden
+        );
+        for (m, p) in [
+            (Method::PUT, "/api/v1/secrets/unifi"),
+            (Method::DELETE, "/api/v1/secrets/unifi/"),
+            (Method::POST, "/api/v1/secrets"),
+            (Method::POST, "/api/v1/backup"),
+            (Method::POST, "/api/v1/checks/router"),
+            (Method::POST, "/api/v1/checks/router/unifi"),
+        ] {
+            assert!(never_for_agents(&m, p), "{m} {p}");
+        }
+        assert!(!never_for_agents(&Method::GET, "/api/v1/secrets"));
+        assert!(!never_for_agents(&Method::POST, "/api/v1/checks/upstream"));
+        let every: Vec<String> = SCOPES.iter().map(|(n, _)| (*n).to_owned()).collect();
+        let g = super::super::AgentGrant {
+            token_name: "helper".into(),
+            scopes: every.into_iter().collect(),
+            group: None,
+            rate_per_minute: None,
+            client: None,
+        };
+        let policy = Policy::default();
+        let e = check(
+            &policy,
+            &g,
+            "t1",
+            &Method::PUT,
+            "/api/v1/secrets/unifi",
+            Some("rotate"),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!((e.code, e.status), (Code::AgentNotAllowed, 403));
+        assert!(
+            check(
+                &policy,
+                &g,
+                "t1",
+                &Method::GET,
+                "/api/v1/secrets",
+                None,
+                None
+            )
+            .is_ok()
+        );
     }
 
     /// REQ: AGT-004 (T6.12) — quick rules: reading needs `config:read`, changing needs

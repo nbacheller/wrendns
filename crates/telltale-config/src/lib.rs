@@ -13,11 +13,13 @@
 // REQ: NFR-003 — no unsafe outside telltale-net.
 #![forbid(unsafe_code)]
 
+pub mod credentials;
 mod env;
 pub mod mute;
 pub mod safesearch;
 pub mod schedule;
 pub mod schema;
+pub mod secret_refs;
 pub mod services;
 pub mod shared;
 mod types;
@@ -28,7 +30,7 @@ use std::path::Path;
 
 use toml::{Table, Value};
 
-pub use env::ENV_PREFIX;
+pub use env::{ENV_PREFIX, NEVER_INHERITED};
 pub use schema::*;
 pub use types::{ByteSize, Cidr, SafeString, parse_rfc3339};
 pub use validate::{MAX_LISTS, MatchKey, UPSTREAM_SCHEMES, probe_target, valid_list_name};

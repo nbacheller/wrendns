@@ -34,6 +34,7 @@ pub mod plans;
 pub mod problem;
 pub mod rhythm_api;
 pub mod rollout_api;
+pub mod secrets_api;
 pub mod simulate_api;
 pub mod slo;
 pub mod support_api;
@@ -508,6 +509,23 @@ pub trait Backend: Send + Sync + 'static {
     fn config_version(&self) -> u64 {
         0
     }
+    /// REQ: API-014 (ADR-903 §4, AGT-003) — what an `Idempotency-Key` record keeps of a write:
+    /// never its text, a hash of it. The node keys it under its secrets key; `kind` and `body`
+    /// say whether the body sets a credential, which can't be kept without that key (503
+    /// `secrets_locked`). This default (an unkeyed hash) is for backends that hold no
+    /// configuration.
+    fn idempotency_request(
+        &self,
+        kind: Option<ManagedKind>,
+        request: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<Vec<u8>, Problem> {
+        let _ = (kind, body);
+        Ok(blake3::hash(request.as_bytes())
+            .to_hex()
+            .as_bytes()
+            .to_vec())
+    }
     /// REQ: OBS-025 (T13.3) — what each device seen lately looks like.
     fn identities(&self) -> Vec<model::DeviceIdentity> {
         Vec::new()
@@ -654,6 +672,44 @@ pub trait Backend: Send + Sync + 'static {
     fn remove_node(&self, w: NodeRemoveWrite) -> BoxFuture<Result<model::NodeRemoval, Problem>> {
         let _ = w;
         Box::pin(async { Err(cluster_nodes_api::no_cluster()) })
+    }
+    /// REQ: API-015 (ADR-903 §4) — the stored secrets (never a value), this node's store and its
+    /// credential fields; on a replica, the primary's list when it answers. Called on a blocking
+    /// thread.
+    fn secrets_status(&self) -> Result<secrets_api::SecretsStatus, Problem> {
+        Err(Problem::unavailable(
+            "stored secrets aren't available on this node",
+        ))
+    }
+    /// REQ: API-015 (ADR-903 §4, §6) — the references this node's own configuration makes to
+    /// stored secrets, each with the secret's name (what a delete on the primary checks across
+    /// nodes).
+    fn secret_refs(&self) -> Vec<(String, secrets_api::SecretUse)> {
+        Vec::new()
+    }
+    /// REQ: API-015 — sets or deletes a stored secret (on the primary; a replica forwards it).
+    fn secret_write(
+        &self,
+        w: secrets_api::SecretWrite,
+    ) -> BoxFuture<Result<secrets_api::SecretChange, Problem>> {
+        let _ = w;
+        secrets_api::unavailable()
+    }
+    /// REQ: AGT-003 (ADR-903 §4) — what an `Idempotency-Key` record of a secret write keeps:
+    /// `request` and the keyed hash of the value under the node key's idempotency subkey.
+    fn secret_idempotency(
+        &self,
+        request: &str,
+        value: Option<&secrets_api::SecretText>,
+    ) -> Result<Vec<u8>, Problem> {
+        let _ = (request, value);
+        Err(Problem::unavailable(
+            "stored secrets aren't available on this node",
+        ))
+    }
+    /// REQ: API-015 — `[api] allow_secrets_over_http`: secret values may come over plain HTTP.
+    fn secrets_over_http_allowed(&self) -> bool {
+        false
     }
 }
 
@@ -843,6 +899,13 @@ pub struct ManagedWrite {
     pub by: String,
     /// REQ: OBS-024 — with `dry_run`: also replay the query log (`simulation`).
     pub simulate: Option<SimulateOpts>,
+    /// REQ: API-014, CLU-010 (T23.2, ADR-903 §4) — the role of whoever asks (a token's scope
+    /// applied). `None`: not known, as for a write an older node forwarded; a change that
+    /// touches a credential is then refused (409 `upgrade_required`).
+    pub role: Option<auth::Role>,
+    /// REQ: API-014 — the agent token's name when an agent asks: agents never make the
+    /// admin-only credential changes, whatever their scopes.
+    pub agent: Option<String>,
 }
 
 /// REQ: OBS-024 (T13.1) — a dry run's `simulate` and `simulateUntil` parameters.
@@ -1105,6 +1168,9 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
             support_api::admin_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_admin)),
         )
+        // REQ: API-015 (ADR-903 §4) — stored secrets: operators read metadata, admins set and
+        // clear values (never agents); each route checks its own role.
+        .merge(secrets_api::routes(Arc::clone(&backend), Arc::clone(&auth)))
         .layer(from_fn_with_state(
             Arc::clone(&auth),
             auth::routes::authenticate,
@@ -1146,7 +1212,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, system_health, system_probes, maintenance_api::start, maintenance_api::end, drill_api::start, drill_api::end, drill_api::active, drill_api::list, drill_api::report, drill_api::affinity, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, compare::cluster_compare, rhythm_api::client_rhythm, timeline::client_timeline, config_api::cluster_promote, config_api::backup_download, support_api::make, support_api::map, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, attribution::slo_attribution, heatmap::stats_heatmap, flow::stats_flow, latency_heatmap::latency_heatmap, latency_heatmap::latency_exemplars, queries,
+        system_info, system_health, system_probes, maintenance_api::start, maintenance_api::end, drill_api::start, drill_api::end, drill_api::active, drill_api::list, drill_api::report, drill_api::affinity, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, compare::cluster_compare, rhythm_api::client_rhythm, timeline::client_timeline, config_api::cluster_promote, config_api::backup_download, secrets_api::list_secrets, secrets_api::get_secret, secrets_api::put_secret, secrets_api::delete_secret, support_api::make, support_api::map, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, attribution::slo_attribution, heatmap::stats_heatmap, flow::stats_flow, latency_heatmap::latency_heatmap, latency_heatmap::latency_exemplars, queries,
         queries_stream,
         explain, lists, groups, services, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -1161,10 +1227,10 @@ async fn fallback(
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::ListsRefreshRequest, model::ListsRefreshResult, model::ListRefreshSkip, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
+        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::ListsRefreshRequest, model::ListsRefreshResult, model::ListRefreshSkip, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, model::CredentialIssue, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Annotation, model::AnnotationPage, model::NoteRequest, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::DrillAll, model::DrillTargets, model::DrillRequest, model::DrillMode, model::DrillCheck, model::DrillTargetDevice, model::DrillStart, model::ActiveDrill, model::DrillDevice, model::DrillNodeCount, model::DrillSummary, model::DrillReport, model::DrillPage, model::AffinityNode, model::AffinityRow, model::AffinityPage, model::GuardReadings, model::ClusterPin, model::ClusterRollout, model::RolloutFailure, model::RolloutNode, model::RolloutStatus, model::ClusterVersion, model::ClusterVersions, model::PinRequest, model::RolloutAction, model::NodeRemoval, model::SupportPackageRequest, model::DeviceIdentity, model::IdentityEvidence, model::WorkloadEvidence, model::ExplainWorkload, model::WorkloadInfo, model::WorkloadPod, model::WorkloadPage, model::KubernetesStatus, model::MatchedDomain, model::IdentityRunnerUp, model::Simulation, model::SimulatedClass, model::SimulatedName, model::SimulatedDevice, model::SimulatedGroup, model::SimulateRequest, model::SloStatus, attribution::SloAttribution, attribution::AttributionBudget, attribution::AttributionPoint, attribution::AttributionRow, attribution::AttributionCoverage, heatmap::Heatmap, flow::QueryFlow, flow::FlowNode, flow::FlowLink, compare::NodeCompare, compare::NodeNumbers, compare::NodeSeries, compare::NodeFinding, rhythm_api::ClientRhythm, rhythm_api::RhythmDomain, timeline::DeviceTimeline, timeline::TimelineLane, timeline::TimelineEvent, latency_heatmap::LatencyHeatmap, latency_heatmap::LatencyExemplar, latency_heatmap::LatencyExemplars, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, model::NetworkInfo, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Annotation, model::AnnotationPage, model::NoteRequest, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::DrillAll, model::DrillTargets, model::DrillRequest, model::DrillMode, model::DrillCheck, model::DrillTargetDevice, model::DrillStart, model::ActiveDrill, model::DrillDevice, model::DrillNodeCount, model::DrillSummary, model::DrillReport, model::DrillPage, model::AffinityNode, model::AffinityRow, model::AffinityPage, model::GuardReadings, model::ClusterPin, model::ClusterRollout, model::RolloutFailure, model::RolloutNode, model::RolloutStatus, model::ClusterVersion, model::ClusterVersions, model::PinRequest, model::RolloutAction, model::NodeRemoval, model::SupportPackageRequest, secrets_api::SecretPut, secrets_api::SecretStamp, secrets_api::SecretsHead, secrets_api::SecretUse, secrets_api::SecretNode, secrets_api::SecretMeta, secrets_api::CredentialField, secrets_api::SecretsStore, secrets_api::SecretsStatus, secrets_api::SecretChange, model::DeviceIdentity, model::IdentityEvidence, model::WorkloadEvidence, model::ExplainWorkload, model::WorkloadInfo, model::WorkloadPod, model::WorkloadPage, model::KubernetesStatus, model::MatchedDomain, model::IdentityRunnerUp, model::Simulation, model::SimulatedClass, model::SimulatedName, model::SimulatedDevice, model::SimulatedGroup, model::SimulateRequest, model::SloStatus, attribution::SloAttribution, attribution::AttributionBudget, attribution::AttributionPoint, attribution::AttributionRow, attribution::AttributionCoverage, heatmap::Heatmap, flow::QueryFlow, flow::FlowNode, flow::FlowLink, compare::NodeCompare, compare::NodeNumbers, compare::NodeSeries, compare::NodeFinding, rhythm_api::ClientRhythm, rhythm_api::RhythmDomain, timeline::DeviceTimeline, timeline::TimelineLane, timeline::TimelineEvent, latency_heatmap::LatencyHeatmap, latency_heatmap::LatencyExemplar, latency_heatmap::LatencyExemplars, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, model::NetworkInfo, UpstreamInfo, Step, TopKind,
         Hour, model::TopHour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
@@ -2099,7 +2165,14 @@ async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
 /// from (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the
 /// config files' entry of the same name), or `hidden` (the files' entry is left out; listed so
 /// it can be brought back). `DELETE` on an override's or a hidden entry's path brings the
-/// files' version back. Secrets aren't part of these sections.
+/// files' version back.
+///
+/// Credentials never come back (API-014): upstream `headers` and `args`, and the password in a
+/// URL (`https://me:<redacted>@host/`) read `<redacted>`, and `redacted` lists where. Sending
+/// `<redacted>` back in a `PUT` keeps the stored value while the entry's destination (`url`,
+/// `proxy`, `host`, `tls_server_name`, `tls_ca`, `bootstrap`, `tls_insecure_skip_verify`,
+/// `spki_pins`, a destination's `type`) is unchanged; with a new destination the
+/// credential has to be entered again (422 `credential_reentry_required`).
 #[utoipa::path(get, path = "/api/v1/config/entries", tag = "config",
     params(EntriesQuery),
     responses((status = 200, body = Items<ConfigEntry>, description = "The entries, by kind and name.")))]

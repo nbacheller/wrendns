@@ -75,12 +75,36 @@ fn served_shared(src: &Sources) -> serde_json::Value {
     shared_part(&src.config.load())
 }
 
+/// REQ: API-014 — a patch between two shared configurations, with their credentials redacted
+/// first: a pin's diff is shown in the API and the 409, and never carries a value. A credential
+/// that changed while reading the same redacted (only a header's value, only a URL's password)
+/// still shows, as a `replace` with the marker as its value.
+pub(crate) fn shared_diff(a: &serde_json::Value, b: &serde_json::Value) -> Vec<serde_json::Value> {
+    use telltale_config::credentials::{MARKER, hidden_changes, redact_json};
+    let hidden = hidden_changes(a, b);
+    let (mut ra, mut rb) = (a.clone(), b.clone());
+    redact_json(&mut ra);
+    redact_json(&mut rb);
+    let mut ops = json_diff(&ra, &rb);
+    for ptr in hidden {
+        let covered = ops.iter().any(|o| {
+            o["path"]
+                .as_str()
+                .is_some_and(|p| ptr == p || ptr.starts_with(&format!("{p}/")))
+        });
+        if !covered {
+            ops.push(serde_json::json!({"op": "replace", "path": ptr, "value": MARKER}));
+        }
+    }
+    ops
+}
+
 /// REQ: CLU-013 — what a pin holds back: JSON Patch from the pinned version to what this
 /// primary would publish, and one sentence per section.
 pub(crate) fn pin_diff(src: &Sources) -> Option<(Vec<serde_json::Value>, Vec<String>)> {
     let m = super::pinned_manifest(&cluster_dir(src))?;
     let pinned = shared_of(&store(src)?, &m.config)?;
-    let ops = json_diff(&pinned, &unpinned_shared(src)?);
+    let ops = shared_diff(&pinned, &unpinned_shared(src)?);
     let sentences = diff_sentences(&ops);
     Some((ops, sentences))
 }
@@ -364,7 +388,7 @@ pub(crate) async fn command(
                 ));
             }
             if let Some(target) = shared_of(&st, &entry.config) {
-                out.diff = json_diff(&served_shared(src), &target);
+                out.diff = shared_diff(&served_shared(src), &target);
                 out.changes = diff_sentences(&out.diff);
             }
             if dry_run {

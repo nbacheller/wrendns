@@ -1523,9 +1523,29 @@ pub struct ConfigEntry {
     /// the files' entry of that name), or `hidden` (the files' entry is left out).
     pub source: String,
     /// The definition in effect, with the same fields as in `telltale.toml` (absent when
-    /// hidden).
+    /// hidden). Credentials read `<redacted>` (API-014).
     #[schema(value_type = Option<Object>)]
     pub definition: Option<serde_json::Value>,
+    /// REQ: API-014 — the fields of `definition` that hold a credential and read `<redacted>`
+    /// (`headers.Authorization`, `args[1]`, `url` for a URL's password). Send them back as they
+    /// are to keep the values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redacted: Vec<String>,
+    /// REQ: API-014 (T23.2, ADR-903 §4) — paths this entry sets through the UI or API that the
+    /// path rules refuse (under `/proc` or the data directory, a key file, a credential file
+    /// outside `[node] secret_file_dirs`): they aren't read until an admin sets another.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_issues: Vec<CredentialIssue>,
+}
+
+/// REQ: API-014 (T23.2) — a stored path that isn't read, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialIssue {
+    /// The entry's field (`token_file`, `tls_ca`, `path`).
+    pub field: String,
+    /// Why it isn't read.
+    pub reason: String,
 }
 
 /// `GET /api/v1/config/entries` parameters.

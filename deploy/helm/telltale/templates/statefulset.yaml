@@ -101,6 +101,18 @@ spec:
               valueFrom:
                 secretKeyRef: { name: {{ . }}, key: {{ $.Values.auth.bootstrapAdmin.passwordHashKey }}, optional: true }
             {{- end }}
+            {{- if include "telltale.secretsKeySecret" . }}
+            # REQ: OPS-014 (ADR-903 §3) — the secrets store's key, from a Secret mounted read-only
+            # (this pod only: resolver pods hold no stored secrets).
+            - name: TELLTALE_NODE_SECRETS_KEY_FILE
+              value: /etc/telltale-secrets-key/{{ .Values.secretsKey.key }}
+            {{- end }}
+            {{- if not .Values.persistence.enabled }}
+            # REQ: OPS-014 — the data directory isn't kept: stored secrets don't survive a restart
+            # (health: `secrets_ephemeral`).
+            - name: TELLTALE_DATA_EPHEMERAL
+              value: "1"
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -179,6 +191,11 @@ spec:
               mountPath: /etc/telltale-secrets/{{ .name }}
               readOnly: true
             {{- end }}
+            {{- if include "telltale.secretsKeySecret" . }}
+            - name: secrets-key
+              mountPath: /etc/telltale-secrets-key
+              readOnly: true
+            {{- end }}
             {{- if include "telltale.scaled" . }}
             - name: cluster-secret
               mountPath: /etc/telltale-cluster
@@ -203,6 +220,15 @@ spec:
           secret:
             secretName: {{ .secretName }}
             optional: {{ .optional | default false }}
+        {{- end }}
+        {{- with include "telltale.secretsKeySecret" . }}
+        - name: secrets-key
+          secret:
+            secretName: {{ . }}
+            defaultMode: 0440
+            items:
+              - key: {{ $.Values.secretsKey.key }}
+                path: {{ $.Values.secretsKey.key }}
         {{- end }}
         {{- if not .Values.persistence.enabled }}
         - name: data

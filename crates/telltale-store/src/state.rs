@@ -7,8 +7,9 @@
 
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 /// Schema migrations, applied in order; `meta.schema` records how many ran.
 const MIGRATIONS: &[&str] = &[
@@ -125,7 +126,54 @@ const MIGRATIONS: &[&str] = &[
     // `display`, optionally limited to some networks, exchanged once for a display session.
     "ALTER TABLE tokens ADD COLUMN display_networks TEXT;
     ALTER TABLE sessions ADD COLUMN display_token TEXT;",
+    // 10: REQ: API-014 (ADR-903 §4) — idempotency records used to keep the request's text, which
+    // could hold an upstream's headers; they now keep a keyed hash. The old ones go (with
+    // `secure_delete` on, their pages are overwritten; `init` then truncates the WAL).
+    "DELETE FROM idempotency;",
+    // 11: REQ: OPS-014 (ADR-903 §2) — secrets entered in the UI, encrypted under the node's key
+    // (`key_id`), stamped `(epoch, seq)`; a deleted one is a tombstone without ciphertext.
+    "CREATE TABLE secrets (
+        name TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        key_id BLOB,
+        nonce BLOB,
+        ciphertext BLOB,
+        stamp_epoch INTEGER NOT NULL,
+        stamp_seq INTEGER NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        origin TEXT NOT NULL,
+        updated INTEGER NOT NULL,
+        updated_by TEXT NOT NULL
+    );",
 ];
+
+/// REQ: API-014 — the migration that purges the old idempotency records.
+const PURGE_IDEMPOTENCY: usize = 10;
+
+/// REQ: OPS-014 — serializes `State::init` across threads of this process.
+static FIRST_OPEN: Mutex<()> = Mutex::new(());
+
+/// REQ: OPS-014 — `journal_mode=WAL` needs the write lock, and SQLite does not always run the
+/// busy handler for it, so a busy answer is retried with a bounded backoff (50 × 20 ms).
+fn enable_wal(conn: &Connection) -> Result<()> {
+    const TRIES: u32 = 50;
+    for attempt in 1..=TRIES {
+        match conn.pragma_update(None, "journal_mode", "WAL") {
+            Ok(()) => return Ok(()),
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if attempt < TRIES
+                    && matches!(
+                        e.code,
+                        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                    ) =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
 
 /// REQ: OBS-035 (T14.13) — the pseudo agent scope that marks a display token. An older node
 /// reads it as an agent scope that allows nothing, so a display token can't act as a token there.
@@ -134,14 +182,26 @@ pub const DISPLAY_SCOPE: &str = "display";
 /// Stored for OIDC users: no password matches it (they sign in at their provider).
 pub const NO_PASSWORD: &str = "!oidc";
 
+/// `PRAGMA wal_checkpoint(TRUNCATE)` (a no-op on a database in memory). `false` when another
+/// connection kept it from finishing within the busy timeout (`busy` = 1): pages of the WAL may
+/// then survive until a later checkpoint (REQ: OPS-014, ADR-903 §3).
+fn checkpoint_truncate(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .map(|busy| busy == 0)
+}
+
 pub mod acks;
 pub mod audit;
 pub mod identity;
 pub mod managed;
+pub mod secrets;
 pub use acks::AnomalyAck;
 pub use audit::{AuditEntry, NewAudit, Verify};
 pub use identity::{IdRecovery, IdToken, IdUser, Identities, ImportReport};
 pub use managed::{Managed, ManagedError, Replay};
+pub use secrets::{SecretRow, Stamp};
 
 /// A user row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,37 +306,62 @@ impl State {
         Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+    fn init(mut conn: Connection) -> Result<Self> {
+        // REQ: OPS-014 — one first open at a time in this process (the secrets store and the user
+        // database open the same file from different threads at start). The busy timeout is set
+        // before any statement: a journal-mode change can return SQLITE_BUSY without the handler.
+        let _first_open = FIRST_OPEN.lock().unwrap_or_else(PoisonError::into_inner);
+        conn.busy_timeout(Duration::from_secs(5))?;
+        enable_wal(&conn)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         // ADR-124 — no temp files (read-only root filesystems have nowhere to put them).
         conn.pragma_update(None, "temp_store", "MEMORY")?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // REQ: API-014 (ADR-903 §4) — deleted rows are overwritten, not left in free pages.
+        conn.pragma_update(None, "secure_delete", "ON")?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
             [],
         )?;
-        let done: usize = conn
-            .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
-                r.get::<_, String>(0)
-            })
-            .optional()?
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
-        for (n, sql) in MIGRATIONS.iter().enumerate().skip(done) {
-            let tx = conn.unchecked_transaction()?;
+        // REQ: OPS-014, API-003 — each migration reads the schema version and applies itself in
+        // one immediate transaction: the secrets store and the user database open this file from
+        // different threads at start, and a read taken outside the write lock let both apply
+        // migration 1 (`table users already exists`, and the API stayed off).
+        loop {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let done: usize = tx
+                .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .optional()?
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            let Some(sql) = MIGRATIONS.get(done) else {
+                break;
+            };
             tx.execute_batch(sql)?;
             tx.execute(
                 "INSERT INTO meta (key, value) VALUES ('schema', ?1)
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [(n + 1).to_string()],
+                [(done + 1).to_string()],
             )?;
             tx.commit()?;
+            // REQ: API-014 — and their old page images leave the WAL too.
+            if done + 1 == PURGE_IDEMPOTENCY {
+                checkpoint_truncate(&conn)?;
+            }
         }
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// REQ: API-014 (ADR-903 §4) — copies the WAL into the database and truncates it, so pages
+    /// overwritten by `secure_delete` don't survive there (after the idempotency purge; the
+    /// secrets store's rotation and deletes use it too). `false`: another connection kept it from
+    /// finishing.
+    pub fn checkpoint(&self) -> Result<bool> {
+        self.with(checkpoint_truncate)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -785,6 +870,56 @@ impl State {
 mod tests {
     use super::*;
 
+    /// REQ: API-014 (ADR-903 §4) — a `state.db` from before migration 10 had idempotency records
+    /// holding request text (an upstream's headers): after the upgrade, neither the database nor
+    /// its WAL holds a byte of it, and replays start over. Deletes overwrite from then on.
+    #[test]
+    fn api_014_idempotency_purge_leaves_no_residue() {
+        const PLANTED: &str = "Bearer planted-s3cret-0123456789";
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+            for sql in &MIGRATIONS[..PURGE_IDEMPOTENCY - 1] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute("INSERT INTO meta (key, value) VALUES ('schema', '9')", [])
+                .unwrap();
+            let body =
+                format!("PUT /upstreams/x {{\"headers\":{{\"Authorization\":\"{PLANTED}\"}}}}");
+            for i in 0..50 {
+                conn.execute(
+                    "INSERT INTO idempotency (key, request, status, response, created) VALUES (?1, ?2, 200, ?3, 1)",
+                    params![format!("1:k{i}"), body.as_bytes(), body],
+                )
+                .unwrap();
+            }
+        }
+        let raw = |p: &Path| std::fs::read(p).unwrap_or_default();
+        let wal = tmp.path().join("state.db-wal");
+        let has = |b: &[u8]| b.windows(PLANTED.len()).any(|w| w == PLANTED.as_bytes());
+        assert!(
+            has(&raw(&path)) || has(&raw(&wal)),
+            "planted before the upgrade"
+        );
+        let s = State::open(&path).unwrap();
+        assert!(!has(&raw(&path)), "state.db holds the old request");
+        assert!(!has(&raw(&wal)), "the WAL holds the old request");
+        assert_eq!(s.idempotent("1:k0", 2).unwrap(), None);
+        let secure: i64 = s
+            .lock()
+            .query_row("PRAGMA secure_delete", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(secure, 1);
+        s.checkpoint().unwrap();
+    }
+
     // REQ: OPS-001, ADR-124 — no temp files: the image's root filesystem is read-only.
     #[test]
     fn ops_001_state_db_keeps_temporary_data_in_memory() {
@@ -857,5 +992,29 @@ mod tests {
         // Reopening keeps data and doesn't re-run migrations.
         let s = State::open(&path).unwrap();
         assert_eq!(s.user_count().unwrap(), 1);
+    }
+
+    /// REQ: OPS-014, API-003 — connections opened on a fresh file at the same time (the secrets
+    /// store and the user database at start) all come up, and the schema is the latest once.
+    #[test]
+    fn ops_014_concurrent_first_open_migrates_once() {
+        for _ in 0..5 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.db");
+            let opened: Vec<_> = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..4)
+                    .map(|_| scope.spawn(|| State::open(&path).map(drop)))
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            assert!(opened.iter().all(Result::is_ok), "{opened:?}");
+            let conn = Connection::open(&path).unwrap();
+            let v: String = conn
+                .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(v, MIGRATIONS.len().to_string());
+        }
     }
 }

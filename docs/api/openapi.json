@@ -37,7 +37,7 @@
           "config"
         ],
         "summary": "Add or change an alert destination (OBS-010, T9.6).",
-        "description": "The body has the same fields as `[[alerts.destination]]` (the name comes from the path):\n`{\"type\": \"ntfy\", \"url\": \"https://ntfy.sh/my-topic\"}`, or for email\n`{\"type\": \"email\", \"url\": \"smtp://smtp.gmail.com:587\", \"from\": \"me@gmail.com\", \"to\":\n[\"me@gmail.com\"], \"username\": \"me@gmail.com\", \"password_file\": \"/run/secrets/smtp\"}`.\nSecrets stay in files on the node (`token_file`, `password_file`): only the path is sent.\nA destination the config files define is overridden until this one is deleted.",
+        "description": "The body has the same fields as `[[alerts.destination]]` (the name comes from the path):\n`{\"type\": \"ntfy\", \"url\": \"https://ntfy.sh/my-topic\"}`, or for email\n`{\"type\": \"email\", \"url\": \"smtp://smtp.gmail.com:587\", \"from\": \"me@gmail.com\", \"to\":\n[\"me@gmail.com\"], \"username\": \"me@gmail.com\", \"password_file\": \"/run/secrets/smtp\"}`.\nSecrets stay in files on the node (`token_file`, `password_file`) or in its encrypted store\n(`token_ref`, `password_ref` name a stored secret: 422 `secret_missing` when none has that\nname): only the path or the name is sent, and a password in `url` reads `<redacted>` wherever\nthe destination is shown (API-014; send it back as it is to keep it, as long as the URL's host\nis unchanged). Setting a file or a reference is an admin's (OPS-014).\nA destination the config files define is overridden until this one is deleted; a credential\nthe files set for it stays as they set it: left out of the body, it is kept, and a body that\nsets, replaces or removes it is refused (409 `set_by_file`).",
         "operationId": "put_alert_destination",
         "parameters": [
           {
@@ -98,6 +98,16 @@
               }
             }
           },
+          "409": {
+            "description": "`set_by_file`: the config files set this destination's credential, and they win.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "412": {
             "description": "The configuration changed since the If-Match version: re-read it and retry.",
             "content": {
@@ -109,7 +119,7 @@
             }
           },
           "422": {
-            "description": "A field is wrong, or the configuration wouldn't be valid: problem+json says which.",
+            "description": "A field is wrong, a reference names no stored secret (`secret_missing`), or the configuration wouldn't be valid: problem+json says which.",
             "content": {
               "application/json": {
                 "schema": {
@@ -125,7 +135,7 @@
           "config"
         ],
         "summary": "Remove an alert destination (OBS-010, T9.6).",
-        "description": "Rules that still send to it make the configuration invalid (422 says which).",
+        "description": "Rules that still send to it make the configuration invalid (422 says which). A destination\nthe config files define, with a credential they set, can't be hidden (409 `set_by_file`).",
         "operationId": "delete_alert_destination",
         "parameters": [
           {
@@ -178,6 +188,16 @@
           },
           "404": {
             "description": "No entry by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files define it with a credential.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3309,7 +3329,7 @@
           "config"
         ],
         "summary": "The configuration's upstreams, upstream groups, lists, and groups, with their sources.",
-        "description": "Each definition in effect, with the same fields as in `telltale.toml`, and where it comes\nfrom (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the\nconfig files' entry of the same name), or `hidden` (the files' entry is left out; listed so\nit can be brought back). `DELETE` on an override's or a hidden entry's path brings the\nfiles' version back. Secrets aren't part of these sections.",
+        "description": "Each definition in effect, with the same fields as in `telltale.toml`, and where it comes\nfrom (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the\nconfig files' entry of the same name), or `hidden` (the files' entry is left out; listed so\nit can be brought back). `DELETE` on an override's or a hidden entry's path brings the\nfiles' version back.\n\nCredentials never come back (API-014): upstream `headers` and `args`, and the password in a\nURL (`https://me:<redacted>@host/`) read `<redacted>`, and `redacted` lists where. Sending\n`<redacted>` back in a `PUT` keeps the stored value while the entry's destination (`url`,\n`proxy`, `host`, `tls_server_name`, `tls_ca`, `bootstrap`, `tls_insecure_skip_verify`,\n`spki_pins`, a destination's `type`) is unchanged; with a new destination the\ncredential has to be entered again (422 `credential_reentry_required`).",
         "operationId": "config_entries",
         "parameters": [
           {
@@ -6328,6 +6348,289 @@
           },
           "422": {
             "description": "A group still uses it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/secrets": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "List the stored secrets (never a value).",
+        "description": "Every stored secret with its kind, stamp, who set it when, the credential fields that name it\n(`usedBy`), and which nodes hold it and can read it; names a reference uses that aren't set\ncome with `set: false`. Also this node's secrets store (ready, locked and why, the key's\nsource and ID: never the key) and every credential field of this node's configuration with\nits source: `inline` or `file` (the configuration files set it, and win: the UI shows it\nread-only), or `stored`, and whether this node can read it. On a replica the list is the\nprimary's when it answers, otherwise this node's with `stale: true`. The answer's `ETag` is the\nsecrets head, for `If-Match` on a write. Operators and admins; agents with `config:read`\n(MCP `secrets_status`).",
+        "operationId": "list_secrets",
+        "responses": {
+          "200": {
+            "description": "The stored secrets, without values.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretsStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Viewers don't see them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/secrets/{name}": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "One stored secret (never its value).",
+        "description": "As in the list: its kind, stamp, who set it when, which fields name it, and which nodes hold\nit. 404 when no secret of that name is stored and nothing names it.",
+        "operationId": "get_secret",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The secret's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The secret, without its value.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretMeta"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No secret of that name, and nothing names one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set (or replace) a stored secret.",
+        "description": "Stores `value`, encrypted with the node's key, under `name` (lowercase letters, digits, `.`,\n`_` and `-`, starting with a letter or digit, at most 63). Entries name it in their `*_ref`\nfields (`api_key_ref = \"unifi\"`). The value is write-only: the answer, every read, the audit\nentry (`secret.put`: name, kind, stamp, users) and the logs hold only metadata. In a cluster a\nreplica sends it to the primary (`secret.put` over the cluster channel); pins and staged\nrollouts don't hold it back, and a configuration managed in Git doesn't refuse it (secrets\nare state, never in Git). Refused on an emergency primary, a primary without its lease, or\nwith no primary reachable (409).\n\nAdmins only: agent tokens get 403 `agent_not_allowed`, whatever their scopes. Only over HTTPS\nor from the node itself (403 `insecure_transport`; `[api] allow_secrets_over_http` lifts it).\n`?dryRun=true` checks the name, kind and value and reports `wouldCreate`/`wouldReplace` and the\nfields that would become configured, storing nothing. `Idempotency-Key` replays the first\nanswer for the same value (another value with the same key is 409); `If-Match` takes the\nsecrets head's `ETag` (412 when it moved).",
+        "operationId": "put_secret",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The secret's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Check and report without changing anything.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "description": "`DELETE` only: go ahead although a full member's references can't be read now (it is\noffline). References that are known still refuse.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecretPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Stored (or, with dryRun, what would be). Metadata only.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretChange"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The name, kind or value isn't acceptable (empty, over 8 KiB, a control character, `<redacted>`; a webhook secret under 16 characters), or 128 secrets are stored (`invalid_parameter`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an admin, an agent token (`agent_not_allowed`), or plain HTTP from another host (`insecure_transport`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No primary to take it, an emergency primary or one without its lease, a primary too old to store secrets (`upgrade_required`), the configuration files set that credential (`set_by_file`), or an Idempotency-Key reused with another value.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "If-Match: the secrets head moved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The node's secrets key can't be read (`secrets_locked`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Delete a stored secret.",
+        "description": "Removes the value (a deletion record stays, so members that were offline learn of it). Refused\nwith 409 `secret_in_use` while a field names it, on any node (the answer lists them): change\nthose entries first. When a full member's references can't be read now (it is offline), the\ndelete needs `?force=true`. Admins only (never agents), audited as `secret.delete`; the same\ndry run, `Idempotency-Key`, `If-Match` and HTTPS rule as setting one.",
+        "operationId": "delete_secret",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The secret's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Check and report without changing anything.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "description": "`DELETE` only: go ahead although a full member's references can't be read now (it is\noffline). References that are known still refuse.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted (or, with dryRun, what would be).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an admin, an agent token, or plain HTTP from another host.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No secret of that name is stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Still named by a field (`secret_in_use`; or a member's references are unknown: `?force=true`), or no primary to take it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "If-Match: the secrets head moved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The node's secrets key can't be read (`secrets_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -11376,7 +11679,16 @@
           "drill_targets",
           "node_is_primary",
           "node_is_up",
-          "lists_not_here"
+          "lists_not_here",
+          "credential_reentry_required",
+          "secrets_locked",
+          "upgrade_required",
+          "path_not_allowed",
+          "set_by_file",
+          "secret_missing",
+          "secret_in_use",
+          "insecure_transport",
+          "agent_not_allowed"
         ]
       },
       "ConfigChange": {
@@ -11458,12 +11770,19 @@
           "source"
         ],
         "properties": {
+          "credentialIssues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CredentialIssue"
+            },
+            "description": "REQ: API-014 (T23.2, ADR-903 §4) — paths this entry sets through the UI or API that the\npath rules refuse (under `/proc` or the data directory, a key file, a credential file\noutside `[node] secret_file_dirs`): they aren't read until an admin sets another."
+          },
           "definition": {
             "type": [
               "object",
               "null"
             ],
-            "description": "The definition in effect, with the same fields as in `telltale.toml` (absent when\nhidden)."
+            "description": "The definition in effect, with the same fields as in `telltale.toml` (absent when\nhidden). Credentials read `<redacted>` (API-014)."
           },
           "kind": {
             "type": "string",
@@ -11471,6 +11790,13 @@
           },
           "name": {
             "type": "string"
+          },
+          "redacted": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "REQ: API-014 — the fields of `definition` that hold a credential and read `<redacted>`\n(`headers.Authorization`, `args[1]`, `url` for a URL's password). Send them back as they\nare to keep the values."
           },
           "source": {
             "type": "string",
@@ -11597,6 +11923,74 @@
           },
           "username": {
             "type": "string"
+          }
+        }
+      },
+      "CredentialField": {
+        "type": "object",
+        "description": "A credential field of a node's configuration, with where its value comes from.",
+        "required": [
+          "kind",
+          "entry",
+          "field",
+          "source",
+          "readable",
+          "node"
+        ],
+        "properties": {
+          "at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The file's path, or the stored secret's name (never a value)."
+          },
+          "entry": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string",
+            "description": "`api_key`, `token`, `header:api-key`, ..."
+          },
+          "kind": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string",
+            "description": "The node this is about."
+          },
+          "readable": {
+            "type": "boolean",
+            "description": "This node can read it (a file is opened without being read; a stored secret is judged by\nits row, not decrypted)."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why not."
+          },
+          "source": {
+            "type": "string",
+            "description": "`inline` or `file` (set by the configuration files: the UI won't edit it), or `stored`."
+          }
+        }
+      },
+      "CredentialIssue": {
+        "type": "object",
+        "description": "REQ: API-014 (T23.2) — a stored path that isn't read, and why.",
+        "required": [
+          "field",
+          "reason"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "The entry's field (`token_file`, `tls_ca`, `path`)."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why it isn't read."
           }
         }
       },
@@ -14280,12 +14674,19 @@
                 "source"
               ],
               "properties": {
+                "credentialIssues": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CredentialIssue"
+                  },
+                  "description": "REQ: API-014 (T23.2, ADR-903 §4) — paths this entry sets through the UI or API that the\npath rules refuse (under `/proc` or the data directory, a key file, a credential file\noutside `[node] secret_file_dirs`): they aren't read until an admin sets another."
+                },
                 "definition": {
                   "type": [
                     "object",
                     "null"
                   ],
-                  "description": "The definition in effect, with the same fields as in `telltale.toml` (absent when\nhidden)."
+                  "description": "The definition in effect, with the same fields as in `telltale.toml` (absent when\nhidden). Credentials read `<redacted>` (API-014)."
                 },
                 "kind": {
                   "type": "string",
@@ -14293,6 +14694,13 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "redacted": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "REQ: API-014 — the fields of `definition` that hold a credential and read `<redacted>`\n(`headers.Authorization`, `args[1]`, `url` for a URL's password). Send them back as they\nare to keep the values."
                 },
                 "source": {
                   "type": "string",
@@ -15284,7 +15692,8 @@
                   "type": [
                     "object",
                     "null"
-                  ]
+                  ],
+                  "description": "The write's body as shown: credentials read `<redacted>` (API-014)."
                 },
                 "configVersion": {
                   "type": "integer",
@@ -17995,7 +18404,8 @@
             "type": [
               "object",
               "null"
-            ]
+            ],
+            "description": "The write's body as shown: credentials read `<redacted>` (API-014)."
           },
           "configVersion": {
             "type": "integer",
@@ -19087,6 +19497,345 @@
           "write",
           "admin"
         ]
+      },
+      "SecretChange": {
+        "type": "object",
+        "description": "REQ: API-015, AGT-002 — what a `PUT` or `DELETE` did (or, with `dryRun`, would do).",
+        "required": [
+          "applied",
+          "dryRun",
+          "wouldCreate",
+          "wouldReplace",
+          "wouldDelete",
+          "usedBy",
+          "secret",
+          "head",
+          "warnings"
+        ],
+        "properties": {
+          "applied": {
+            "type": "boolean"
+          },
+          "dryRun": {
+            "type": "boolean"
+          },
+          "head": {
+            "$ref": "#/components/schemas/SecretsHead",
+            "description": "The head after the change (its `etag` for the next `If-Match`)."
+          },
+          "secret": {
+            "$ref": "#/components/schemas/SecretMeta"
+          },
+          "usedBy": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SecretUse"
+            },
+            "description": "The fields that name it: they become configured with it (or lose it, on delete)."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "wouldCreate": {
+            "type": "boolean",
+            "description": "A new secret."
+          },
+          "wouldDelete": {
+            "type": "boolean"
+          },
+          "wouldReplace": {
+            "type": "boolean",
+            "description": "One that was set already."
+          }
+        }
+      },
+      "SecretMeta": {
+        "type": "object",
+        "description": "A stored secret: never its value.",
+        "required": [
+          "name",
+          "kind",
+          "set",
+          "stamp",
+          "usedBy",
+          "nodes"
+        ],
+        "properties": {
+          "health": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "On the answering node: `readable`, `unreadable` (another key made it) or `corrupt`."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`text`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SecretNode"
+            },
+            "description": "Which nodes hold it, and whether they can read it."
+          },
+          "origin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`local` (made on this node) or `cluster` (the primary's)."
+          },
+          "set": {
+            "type": "boolean",
+            "description": "Stored now (false: a reference names it but it isn't set, or it was deleted)."
+          },
+          "stamp": {
+            "$ref": "#/components/schemas/SecretStamp"
+          },
+          "updated": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it was set or deleted (RFC 3339)."
+          },
+          "updatedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usedBy": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SecretUse"
+            },
+            "description": "The credential fields that name it."
+          }
+        }
+      },
+      "SecretNode": {
+        "type": "object",
+        "description": "How one node holds a secret.",
+        "required": [
+          "node",
+          "applied",
+          "unreadable"
+        ],
+        "properties": {
+          "applied": {
+            "type": "boolean",
+            "description": "It holds this stamp."
+          },
+          "node": {
+            "type": "string"
+          },
+          "unreadable": {
+            "type": "boolean",
+            "description": "It holds it but can't read it (another key made it, or it's damaged)."
+          }
+        }
+      },
+      "SecretPut": {
+        "type": "object",
+        "description": "The body of `PUT /api/v1/secrets/{name}`.",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`text` (the default). `pem` is reserved."
+          },
+          "value": {
+            "type": "string",
+            "description": "The value: one line of text (a token, a password, an API key), at most 8 KiB, trimmed, no\ncontrol characters. Write-only: no answer, read, log, audit entry or backup without a\npassphrase ever holds it.",
+            "example": "s3cr3t-token",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SecretStamp": {
+        "type": "object",
+        "description": "A stamp: the epoch (0 on a standalone node) and the change's number in it.",
+        "required": [
+          "epoch",
+          "seq"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "SecretUse": {
+        "type": "object",
+        "description": "A credential field that names a secret.",
+        "required": [
+          "kind",
+          "name",
+          "field",
+          "source"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "The reference (`api_key_ref`, `header_refs.api-key`)."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`router`, `alert_destination`, `oidc_provider`, `sink`, `git`, `otlp`."
+          },
+          "name": {
+            "type": "string",
+            "description": "The entry's name (`default` for the Git source and OTLP)."
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node whose own (node-local) configuration holds the reference; absent: the cluster's."
+          },
+          "source": {
+            "type": "string",
+            "description": "`stored`: the field takes the secret."
+          }
+        }
+      },
+      "SecretsHead": {
+        "type": "object",
+        "description": "REQ: API-015 (ADR-903 §2) — the secrets head: the highest stamp and a digest of every\nsecret's name, kind, stamp and deletion (no value, no value hash). `etag` is what `If-Match`\ntakes.",
+        "required": [
+          "epoch",
+          "seq",
+          "digest",
+          "etag"
+        ],
+        "properties": {
+          "digest": {
+            "type": "string",
+            "description": "BLAKE3, hex."
+          },
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "etag": {
+            "type": "string",
+            "description": "`\"<epoch>.<seq>.<first 16 digits of digest>\"`: send it as `If-Match`."
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "SecretsStatus": {
+        "type": "object",
+        "description": "REQ: API-015 — `GET /api/v1/secrets`.",
+        "required": [
+          "stale",
+          "head",
+          "store",
+          "items",
+          "credentials"
+        ],
+        "properties": {
+          "credentials": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CredentialField"
+            },
+            "description": "This node's credential fields."
+          },
+          "head": {
+            "$ref": "#/components/schemas/SecretsHead"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SecretMeta"
+            },
+            "description": "Stored secrets (and names a reference uses that aren't set), by name."
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "From this node's own copy: the primary couldn't be asked."
+          },
+          "store": {
+            "$ref": "#/components/schemas/SecretsStore",
+            "description": "This node's store."
+          }
+        }
+      },
+      "SecretsStore": {
+        "type": "object",
+        "description": "The answering node's secrets store.",
+        "required": [
+          "node",
+          "state",
+          "dataEphemeral"
+        ],
+        "properties": {
+          "dataEphemeral": {
+            "type": "boolean",
+            "description": "The data directory isn't kept across restarts (stored secrets would be lost)."
+          },
+          "keyId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The key's ID (8 bytes, hex)."
+          },
+          "keySource": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the key came from (the environment, or a file's path); never the key."
+          },
+          "node": {
+            "type": "string"
+          },
+          "previousKeyId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "description": "`starting`, `ready`, `locked`, or `ephemeral` (a resolver pod: it holds none)."
+          }
+        }
       },
       "ServiceInfo": {
         "type": "object",

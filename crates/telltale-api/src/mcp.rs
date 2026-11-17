@@ -268,6 +268,13 @@ pub fn tools() -> Vec<Tool> {
                 ])
             },
         },
+        // REQ: API-015, AGT-001 (ADR-903 §5) — metadata only; setting a value is for people.
+        Tool {
+            name: "secrets_status",
+            description: "Read-only. The stored secrets (routers', alert destinations', OIDC providers', sinks', Git's and OTLP's credentials entered in the UI): each one's name, kind, when and by whom it was set, the credential fields that name it (usedBy), and which nodes hold it and can read it. Never a value. Also this node's secrets store (ready, or locked and why; the key's source and ID, never the key) and every credential field of its configuration with its source: inline or file (set by the configuration files, which win) or stored, and whether this node can read it. On a replica, stale=true means the primary couldn't be asked. There is no tool to set or clear a secret: a person does that (Settings → Integrations & secrets, or telltale ctl secrets). Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("secrets".into(), "/api/v1/secrets".into())]),
+        },
         // REQ: FLT-017 (T15.1)
         Tool {
             name: "list_workloads",
@@ -1442,7 +1449,7 @@ pub fn write_tools() -> Vec<WriteTool> {
         },
         WriteTool {
             name: "plan_update_upstreams",
-            description: "Plans a change (nothing changes until apply_plan). Changes (or adds) an upstream server (`url`) or an upstream group (`members`, `strategy`: failover, round_robin, weighted, fastest, parallel). Fields left out keep their current values. Needs config:write:upstreams (and config:read to read the current entry).",
+            description: "Plans a change (nothing changes until apply_plan). Changes (or adds) an upstream server (`url`) or an upstream group (`members`, `strategy`: failover, round_robin, weighted, fastest, parallel). Fields left out keep their current values. Needs config:write:upstreams (and config:read to read the current entry). Moving an upstream that holds a credential (headers, a client key, a password in its URL) and exec:// or unix:// upstreams are an admin's in the UI: such a plan is refused (403).",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "kind": {"type": "string", "enum": ["upstream", "upstream_group"], "description": "A server or a group."},
@@ -2498,6 +2505,7 @@ impl Mcp {
             method: w.method.to_owned(),
             path: w.path,
             body: w.body,
+            write_body: None,
             preview,
             config_version: version,
             reason,
@@ -2658,7 +2666,8 @@ impl Mcp {
             .send(
                 &plan.method,
                 &plan.path,
-                plan.body.as_ref(),
+                // REQ: API-014 — the body as the agent gave it (`body` is shown redacted).
+                plan.write_body.as_ref(),
                 auth,
                 client,
                 &extra,

@@ -216,6 +216,10 @@ jobs:
       # REQ: OPS-003 (GitHub issue #2) — the install notes warn about alsoServe next to resolver pods.
       - name: Install notes warn about alsoServe
         run: bash deploy/helm/notes-test.sh
+      # REQ: OPS-014 (T23.3) — the secrets key is mounted on the controller only, never on
+      # resolver pods, with persistence on and off.
+      - name: Secrets key only on the controller
+        run: bash deploy/helm/secrets-key-test.sh
       # REQ: OBS-016 — the standalone SLO rules file is rendered from the chart.
       - name: Standalone SLO rules are current
         # Its own virtualenv: chart-testing-action 2.9 leaves one active that has no pip.
