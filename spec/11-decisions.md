@@ -1293,7 +1293,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
-## ADR-915 — Replication details for stored secrets: orphans by epoch, a joining node's hand-over, the shadow table, and the reverse heal (Proposed)
+## ADR-917 — Replication details for stored secrets: orphans by epoch, a joining node's hand-over, the shadow table, and the reverse heal (Proposed)
 
 **Context:** ADR-903 §6 fixes what replicates (stamped rows over the cluster channel, tombstones, orphans, re-encryption under each member's key, the reverse heal). Building it left points it doesn't settle, which T23.5 had to decide.
 
@@ -1314,7 +1314,13 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 
 **Status:** Proposed. The owner decides points 1 and 5 (both deviate from ADR-903 §6's wording) before T23.5 is accepted.
 
-## ADR-914 — Which settings the UI may change, and how risky ones are guarded (Proposed)
+## ADR-916 — The fork's image gate is 25 MiB compressed per architecture (Accepted 2026-11-16)
+**Context:** `00` §5 and OPS-001 cap the image at 15 MiB compressed per architecture, from upstream's footprint priority. On 2026-11-16 the fork's merged work (the Pi-hole parity work, the upstream sync and M23 wave 1, about 17,500 lines) took amd64 from 14.76 to 15.13 MiB. Three cuts that drop nothing brought it back under (ADR-915), but M25 (an SNMP codec, `aes`, an XML parser), M26 (the map UI) and M27 (UI for every setting) will add more. The owner runs Pi 4/5 and Linux hosts, where 25 MiB pulls in seconds. Memory (RSS) is the budget that limits small hosts, and it is unchanged (`00` §5: idle ≤ 20 MiB, ≤ 64 MiB loaded).
+**Decision:** the owner chose to raise the fork's gate to **25 MiB compressed per architecture** (`deploy/image/size.py` `LIMIT`, `make image-all`, the image workflow). Upstream's 15 MiB stays upstream's. Every task still reports its image delta (`deploy/image/size.py --oci`) in its Done note, so growth stays visible, and a milestone that adds more than 2 MiB says why. ADR-915's cuts are kept. The RSS budgets, the `FROM scratch` image, the static musl binary and the multi-arch matrix are unchanged.
+**Alternatives rejected:** keeping 15 MiB (constant trimming work for little gain on the owner's hosts); 20 MiB (less room for M25–M27); no gate at all (growth goes unnoticed).
+**Consequences:** Pi Zero-class devices, OpenWrt or OPNsense packages (upstream #12, #49) are a poorer fit. A change from upstream that relies on the 15 MiB headroom needs no special handling, since the fork's gate is looser. On an upstream sync, keep `LIMIT` at 25 MiB.
+
+## ADR-914 — Which settings the UI may change, and how risky ones are guarded (Accepted 2026-11-16)
 **Context:** On 2026-11-16 the owner made a standing rule: every setting, route and tool gets a UI control (spec/10, API-901). An audit of the fork against the UI found settings with no control at all:
 - `[special]` (M24, ADR-904) and most of `[local]` (M22, ADR-901). Both are shared sections, not node-local (`telltale-config/src/shared.rs` `NODE_LOCAL`).
 - `[clients] mdns`, which `[local] device_mdns` needs before it does anything.
@@ -1400,7 +1406,7 @@ The audit recommended showing the last group read-only. The owner chose admin co
 - Amends ADR-040 (UI values for the sections above) and AGT-009 (the kill switch's role rule). T23.12's "`[cluster.git]` itself stays file-only" becomes a guarded wizard step (T27.16).
 - Tasks: T24.12 (`special`), T24.13 (`local`, `clients` mdns), T24.18 (Pi-hole import, admin-only), T25.16 (`device_inventory_addresses`), T23.11 (`otlp`), T27.6 (`agents`), T27.13 to T27.17 (the guarded tier).
 
-## ADR-913 — Importing scan results the owner produced: nmap XML and a simple CSV (Proposed)
+## ADR-913 — Importing scan results the owner produced: nmap XML and a simple CSV (Accepted 2026-11-16)
 **Context:** Only a scanner can find devices that no source sees. The owner runs one themselves, for example `nmap -sn -oX` or `nmap -sS -p … -oX` on a host on that VLAN.
 
 TelltaleDNS has no XML parser, and the uploaded file is untrusted input. The usual risks are XXE, entity expansion and very large files. Two existing stores would also hold whole bodies:
@@ -1480,7 +1486,7 @@ TelltaleDNS has no XML parser, and the uploaded file is untrusted input. The usu
 - Imported addresses get no SNMP identity reads until a class 1–3 source sees them.
 - Imports are lost when the designated node changes.
 
-## ADR-912 — Extra read-only UniFi reads for the inventory (Proposed)
+## ADR-912 — Extra read-only UniFi reads for the inventory (Accepted 2026-11-16)
 **Context:** ADR-080 and ADR-902 read `stat/sta`, `rest/user` (reservations only) and `rest/networkconf`. UniFi also knows:
 - offline and historical clients (`stat/alluser`);
 - switch-port MAC tables with VLAN, and LLDP (`stat/device`);
@@ -1516,7 +1522,7 @@ UniFi has no ARP endpoint. ADR-902 rejected known clients without a reservation 
 - On UniFi switches, wired static devices show their switch port without SNMP.
 - The field names come from reverse-engineered docs and are checked against the owner's console in e2e.
 
-## ADR-911 — Dependency `aes` 0.8 for SNMPv3 privacy (Proposed)
+## ADR-911 — Dependency `aes` 0.8 for SNMPv3 privacy (Accepted 2026-11-16)
 **Context:** The owner asked for authPriv. RFC 3826 needs AES-128 in CFB-128 mode. `ring` exposes AES only inside AEADs and QUIC header protection. `cipher` 0.4.4, `inout`, `crypto-common` and `cpufeatures` 0.2.17 are already in `Cargo.lock`, pulled in through `crypto_box` and `chacha20`.
 
 **Decision:**
@@ -1538,7 +1544,7 @@ UniFi has no ARP endpoint. ADR-902 rejected known clients without a reservation 
 - About 12–20 KiB per architecture, to be measured.
 - A Pi 4 has no AES instructions, so it uses constant-time software AES. At SNMP rates the cost is negligible.
 
-## ADR-910 — Inventory merge model: keyed by MAC, address bindings with a time limit, never DNS policy (Proposed)
+## ADR-910 — Inventory merge model: keyed by MAC, address bindings with a time limit, never DNS policy (Accepted 2026-11-16)
 **Context:** Sources disagree, and each has its own trust:
 - UniFi current clients and reservations;
 - OPNsense leases;
@@ -1654,7 +1660,7 @@ Constraints:
 - SNMP identity does not improve identify's class guesses in M25. Left Open.
 - Closes T22.3's *Open* item "the neighbor table as a MAC → address source".
 
-## ADR-909 — The `public` community for identity reads, by explicit per-subnet opt-in (Proposed)
+## ADR-909 — The `public` community for identity reads, by explicit per-subnet opt-in (Accepted 2026-11-16)
 **Context:** Many printers and cheap devices answer v2c `public`. The owner approved trying it on 2026-11-16, with four conditions: an explicit per-subnet opt-in, off by default, audited, and with the IDS risk written down.
 
 An IDS reads this traffic as credential guessing. Snort 1:1411 "SNMP public access udp" and the ET SNMP rules fire on it. UniFi IPS with "Block Source IP" could block the DNS host itself, and the whole LAN would lose DNS.
@@ -1704,7 +1710,7 @@ An IDS reads this traffic as credential guessing. Snort 1:1411 "SNMP public acce
   - how to allow-list the host;
   - a note that a device answering `public` is itself a security finding.
 
-## ADR-908 — SNMP poller: v2c and v3 USM, read-only, in a worker process (Proposed)
+## ADR-908 — SNMP poller: v2c and v3 USM, read-only, in a worker process (Accepted 2026-11-16)
 **Context:** On the owner's network, the most valuable SNMP data is the gateway's ARP table: `ipNetToPhysicalTable` (1.3.6.1.2.1.4.35), falling back to `ipNetToMediaTable` (1.3.6.1.2.1.4.22). It gives a MAC for every address on every VLAN. Next in value:
 - managed switches' forwarding tables per VLAN, mapped to ports;
 - LLDP neighbours;
@@ -1812,7 +1818,7 @@ The repo has no SNMP code. Constraints:
 - When a switch shows a MAC on several ports at once (a loop, or a move in progress), the most recently seen port is recorded.
 - On Kubernetes outside the host network, the SNMP source address is the node IP after SNAT. Device access lists must allow that address.
 
-## ADR-907 — Network inventory scope: SNMP, gateway reads and imported scans; no built-in probing (Proposed)
+## ADR-907 — Network inventory scope: SNMP, gateway reads and imported scans; no built-in probing (Accepted 2026-11-16)
 **Context:** On 2026-11-16 the owner asked what TelltaleDNS can learn about devices that never use DNS or DHCP. Some sources already exist:
 - the routers' leases and networks (ADR-080, ADR-902);
 - Home Assistant names by MAC (ADR-902);
@@ -2405,7 +2411,7 @@ Non-secret settings that exist only in files are phased with the forms that need
 57. **List fetches never send user information.** A list URL with `user:pass@` is refused as a fatal fetch error (the URL is not quoted); `Host` carries the host and port only. Basic auth isn't built, as no base64 dependency is wanted for it.
 58. **Open serialization (OPS-014).** `State::open` runs its setup under a process-wide lock and sets the busy timeout first; `journal_mode=WAL` is retried on busy with a bounded backoff (50 × 20 ms), since SQLite doesn't always run the busy handler for it.
 
-## ADR-902 — More naming sources: UniFi reservations and networks, Home Assistant through a template, and a fixed order when sources disagree (Proposed)
+## ADR-902 — More naming sources: UniFi reservations and networks, Home Assistant through a template, and a fixed order when sources disagree (Accepted 2026-11-16)
 **Context:** T22.2, T22.3 (API-012, API-013). ADR-080 left UniFi's offline known clients undone; Home Assistant knows curated names for IoT devices (by MAC, not IP); a home has a router *and* Home Assistant naming the same address. ADR-080's lease view kept whichever router was read last (a `HashMap` walk).
 **Decision:**
 - **UniFi:** after `stat/sta`, read `rest/user` and `rest/networkconf` with the same key or session. Only known clients with `use_fixedip` and a `fixed_ip` are kept (a last address may belong to someone else by now); a connected device's current address wins over its reservation. Networks: the ones with an `ip_subnet`, not WAN or VPN; the subnet from the gateway's address and prefix; the VLAN only when enabled; the pool only when DHCP is on. Both reads are optional: refused or failed, the connected clients still name devices, and one log line says what was skipped (again only when that changes).
@@ -2415,7 +2421,7 @@ Non-secret settings that exist only in files are phased with the forms that need
 **Alternatives rejected:** a WebSocket client for Home Assistant's registry (a new dependency on the binary for one read); Home Assistant's names always winning (its integrations' default names are model names, worse than a router's alias); known UniFi clients without a reservation (stale addresses would name the wrong device in DNS, T22.1).
 **Consequences:** two more GETs per UniFi poll; one template render per Home Assistant poll (sub-second on a few thousand entities); names in the query log and DNS can now come from Home Assistant.
 
-## ADR-901 — Device names in DNS: built off the path from the names TelltaleDNS already has, after configured data, one label each (Proposed)
+## ADR-901 — Device names in DNS: built off the path from the names TelltaleDNS already has, after configured data, one label each (Accepted 2026-11-16)
 **Context:** T22.1 (DNS-023). People want DNS kept in step with DHCP leases (dnsmasq's and Technitium's DHCP do it) but ADR-091 keeps DHCP with the router. TelltaleDNS already holds the routers' leases, Home Assistant's names, mDNS names, and named devices, by address.
 **Decision:**
 - **Off by default.** `[local] device_domain` turns it on (`home.arpa`, RFC 8375, in the docs); `local` is refused (RFC 6762). `device_ttl` 60 s (names follow DHCP). mDNS names only with `device_mdns` and the listener on.
@@ -3640,3 +3646,19 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - Assistants connect with SSO and the user's consent, and no long-lived token is stored in the assistant.
 - Each request verifies a signature (keys cached with discovery, refreshed on rotation); no per-token cache is kept.
 - Providers that only issue opaque access tokens need a token per agent instead, until introspection is added.
+
+## ADR-915 — Image size: optimize cold code for size, embed only the gzip UI, and ship only the tz database the code reads (Accepted 2026-11-16)
+**Context:** NFR-001 (`01`, `00 §5`) caps the compressed image at 15 MiB per architecture (`deploy/image/size.py`). At 7db1908 the amd64 image measured 15.13 MiB, up from 14.76 MiB at a708f7f. The new code (secrets, credential rules, lists refresh, federated paths, ctl, OpenAPI schemas) grew the stripped binary by 0.91 MiB. The dependency and UI changes added almost nothing. The binary is already at `opt-level = 3`, fat LTO, one codegen unit and `panic = "abort"`, so the remaining savings come from what is compiled at a lower opt-level and from what is embedded.
+
+**Decision:** Reduce the image in the order of saving against risk, without dropping a feature and without touching the DNS hot path (`02 §3`):
+1. **API and MCP code at `opt-level = "s"`.** `[profile.release.package.telltale-api]` takes opt-level `s`; the rest of the workspace keeps opt-level 3. `telltale-api` holds the handlers, OpenAPI and MCP code, which are cold next to the DNS path. Measured: amd64 15.13 to 14.58 MiB.
+2. **Tz database without `right/`.** The image ships the TZif zones that `jiff` reads (schedules, FLT-010), without the `right/` leap-second zones, `tzdata.zi`, `*.tab` and `leap*` files. Measured: 14.58 to 14.39 MiB. Known effect: a schedule that names a `right/...` zone no longer resolves. Schedules use the ordinary zone names.
+3. **Embed only the gzip of each text UI file.** `ui/scripts/postbuild.mjs` removes the raw copy of a text file once its `.gz` is written. The binary embeds the `.gz`. A client that accepts gzip gets it as before. Any other client gets the same bytes inflated on the request, with `miniz_oxide` (already in the lock file, so no new package). Binary files (PNG, ICO, WOFF2) stay raw. Measured: 14.39 to 14.16 MiB. The postbuild script also resolves its `dist` path on Windows, where it failed before.
+
+Final amd64 image: 14.16 MiB (headroom 0.84 MiB under NFR-001, 0.69 MiB under the 14.85 MiB target).
+
+**Consequences:**
+- The API and MCP handlers run as size-optimized code. The DNS path crates keep opt-level 3, and their code is unchanged, so `make bench-smoke` is not required by rule 4 for these changes. The API latency at opt-level `s` was not benchmarked here and is a follow-up.
+- A `right/...` zone name stops resolving in a schedule, with an error that names the zone. No feature is lost.
+- The UI's raw text files are no longer in `ui/dist`. Tools that read `dist` directly (for example `vite preview`) must use `ui/dist/*.gz`, or run `npm run build` without the postbuild step.
+- Not taken, recorded here for the owner: `telltale-config` at opt-level `s` (about 0.2 MiB more, with per-query helpers in the policy path, so it needs a benchmark first), `opt-level = "z"` (about 0.5 MiB more, slower API handling), dropping the system CA bundle (0.12 MiB, needs its own ADR because the spec says the image ships one), and trimming serde code for `Config` (0.1 to 0.2 MiB, a refactor).

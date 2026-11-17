@@ -1283,7 +1283,8 @@ schedules = ["bedtime", "school-hours"]
 [[schedule]]
 name = "bedtime"
 action = "block_all"                        # everything is blocked during the windows
-tz = "Europe/Berlin"                        # default: the system's time zone
+tz = "Europe/Berlin"                        # default: the system's time zone (the image ships the
+                                            # normal zones, not the leap-second `right/...` ones)
 window = [
   { days = ["sun", "mon", "tue", "wed", "thu"], start = "21:00", end = "07:00" },
   { days = ["fri", "sat"], start = "22:30", end = "08:00" },
