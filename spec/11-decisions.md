@@ -1293,6 +1293,20 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-946 — Federated reads run off the runtime workers: `block_in_place` under the blocking helper (Proposed)
+**Context:** upstream #7. `call_one` and `gather` in `crates/telltale/src/federated.rs` run a plain thread that blocks on the runtime. Called from a worker, the worker is held while the cluster stream's writer and reader tasks need workers to finish the call, so two concurrent reads to a peer that doesn't answer wedged a two-worker runtime. Several async handlers called a federated read directly on a worker.
+
+**Decision:**
+- **The wait.** `call_one` and `gather` run their wait under `off_the_worker`: on a multi-thread runtime, `block_in_place`, which hands the worker's queued tasks to another thread first. A current-thread runtime has no other thread to take them, so it waits as before. `block_in_place` is a no-op off a runtime, so a blocking-pool caller is unchanged.
+- **The handlers.** A federated read in an async handler runs through `blocking()`. The `Backend` methods that can reach `call_one` or `gather` are `annotations`, `anomalies`, `blocking_pause`, `blocking_resume`, `blocking_state`, `cache_entries`, `cache_flush`, `cache_lookup`, `cache_stats`, `client_rhythm`, `clients`, `config_entries`, `config_version`, `exemplars`, `health`, `heatmap_network`, `identities`, `identity`, `kubernetes_workloads`, `latency`, `lists`, `list_hits`, `new_devices`, `overblocking`, `probes`, `queries`, `secrets_status`, `shadow_lists`, `timeseries`, `top`, `top_clients_rolling`, `top_in_group`, `top_range` and `upstream_checks`. Every async caller of one of them now uses `blocking()` or `spawn_blocking`. The ones that didn't were `clients`, `config_entries`, the ETag reads (`local_names`, `forwards`, `rules`, a config write's response), and a config write's group check, which reads the devices for a group-restricted agent only. The other `Backend` methods read local state and stay direct.
+- **No worker floor.** The optional floor of runtime workers is not added. The Pi-profile RSS can't be measured here, and the fix doesn't depend on the count: the regression test passes on two workers.
+
+**Alternatives rejected:**
+- *Refusing federated reads on a worker in debug builds.* It catches the mistake in tests, but a release build would still wedge.
+- *Making the `Backend` methods async.* Every method and its local store would need async plumbing for no gain: `blocking()` is the existing pattern for backend reads.
+
+**Consequences:** a federated read on a worker costs a hand-off rather than wedging the node. A new async caller of a federated read must use `blocking()`, and a new `Backend` method that reaches `call_one` or `gather` joins the list above.
+
 ## ADR-944 — Break-glass sign-in defaults to loopback, and a proxied request is never break-glass (Accepted 2026-11-17, owner decision)
 **Context:** Upstream issue #63. The default `[auth.oidc] allowed_admin_networks` was the private networks plus loopback, so with `disable_local_login = true` any LAN device could try a password. The owner asked for a safer default. Two things make a loopback-only default need care: a reverse proxy on the same host is not in `[api] trusted_proxies`, so every proxied client arrives as `127.0.0.1` and would pass; and with Docker port publishing the peer is the bridge gateway, so an admin on the host is locked out of break-glass.
 
