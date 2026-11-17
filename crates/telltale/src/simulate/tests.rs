@@ -456,13 +456,39 @@ fn obs_024_bounds() {
         started.elapsed()
     );
 
-    let w = window(&lab.current.simulate, Some("8d"), None, t0_s()).unwrap_err();
+    let w = window(&lab.current.simulate, Some("8d"), None, t0_s() * 1_000).unwrap_err();
     assert_eq!(w.code, Code::SimulationWindow);
     assert_eq!(w.status, 422);
-    assert!(window(&lab.current.simulate, Some("soon"), None, t0_s()).is_err());
-    let w = window(&lab.current.simulate, None, Some(t0_s()), t0_s() + 99).unwrap();
+    assert!(window(&lab.current.simulate, Some("soon"), None, t0_s() * 1_000).is_err());
+    let w = window(
+        &lab.current.simulate,
+        None,
+        Some(t0_s()),
+        (t0_s() + 99) * 1_000,
+    )
+    .unwrap();
     assert_eq!(w.to_us, t0_s() * 1_000_000);
     assert_eq!(w.from_us, (t0_s() - 86_400) * 1_000_000);
+}
+
+// REQ: OBS-024 (T10.7) — a simulation made at 0.7 s into a second replays the rows logged
+// earlier in that same second (0.4 s): the default window ends at the request's instant, not
+// at the start of its second (the window is `[from, to)`, so a truncated end drops them).
+#[test]
+fn obs_024_the_current_second_is_replayed() {
+    let lab = Lab::new("");
+    let now_ms = t0_s() * 1_000 + 700;
+    let w = window(&lab.current.simulate, None, None, now_ms).unwrap();
+    let row_us = t0_s() * 1_000_000 + 400_000;
+    assert!(
+        w.from_us <= row_us && row_us < w.to_us,
+        "row at {row_us} is outside {w:?}"
+    );
+    // A row logged at the request's own microsecond is still inside.
+    assert!(now_ms * 1_000 < w.to_us, "{w:?}");
+    // An explicit `until` keeps its whole-second end.
+    let w = window(&lab.current.simulate, None, Some(t0_s()), now_ms).unwrap();
+    assert_eq!(w.to_us, t0_s() * 1_000_000);
 }
 
 // REQ: OBS-024 — AC (4): privacy level 1 can't replay names; a change to devices only still
