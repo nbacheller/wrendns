@@ -80,19 +80,26 @@ Then open <http://localhost:8053/> and sign in with that token.
 ## 4. What to look at
 
 - **Clients → Discovered:** every device from the gateway and Home Assistant, with the name each one gave.
-- **Names in DNS:**
+- **Names in DNS.** Ask from a container, through the published port (`-port=1053` works there):
 
   ```sh
-  nslookup -port=1053 kitchen-tablet.home.arpa 127.0.0.1     # use a name from the list
-  nslookup -port=1053 192.0.2.21 127.0.0.1                 # reverse lookup
+  docker run --rm alpine nslookup -port=1053 kitchen-tablet.home.arpa host.docker.internal   # use a name from the list
+  docker run --rm alpine nslookup -port=1053 192.0.2.21 host.docker.internal               # reverse lookup
   ```
 
-  On Windows, `nslookup` gets no answer from a port other than 53 (`No response from server`), though TelltaleDNS answers. Ask from a container instead, through the same published port:
+  A reverse lookup for an address that no known device has answers `NXDOMAIN`, which is a correct answer.
 
-  ```sh
-  docker run --rm alpine nslookup -port=1053 kitchen-tablet.home.arpa host.docker.internal
-  docker run --rm alpine nslookup -port=1053 192.0.2.21 host.docker.internal
+  `host.docker.internal` is a name that Docker Desktop (Windows and macOS) sets up for the host. The container commands above need Docker Desktop; on a Linux Docker Engine, use the host's LAN address instead.
+
+  **Why not `nslookup -port=1053 ... 127.0.0.1` on Windows?** On Windows 11 (build 10.0.26200), `nslookup -port=1053`, the interactive `set port=1053`, and `-vc` all fail against this bundle: UDP prints `No response from server` and `-vc` prints `Unspecified error`. These results were re-checked on 2026-11-17 on one Windows 11 build. An earlier capture, not repeated, used a relay on port 53 in front of the bundle: nslookup sent nothing to the chosen port and six packets to port 53, and the bundle's answers were well formed and printed. So the fault is in the client, not in TelltaleDNS, but the cause of nslookup's port handling is not documented by Microsoft. Use a tool that honours a port from Windows instead, such as Python (which needs no extra install):
+
+  ```powershell
+  python -c "import socket,struct;q=struct.pack('>HHHHHH',0x1234,0x100,1,0,0,0)+b'\x07example\x03com\x00'+struct.pack('>HH',1,1);s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(3);s.sendto(q,('127.0.0.1',1053));r=s.recv(512);print('flags',r[2:4].hex(),'answers',struct.unpack('>H',r[6:8])[0])"
   ```
+
+  It prints `flags 8180 answers 2` when the bundle answers `example.com` (a public name, so the answers depend on upstream DNS).
+
+  A made-up name such as `definitely-not-here-xyz.example` gets `NXDOMAIN`, so the bundle has no wildcard record. A public name such as `example.com` is answered from upstream DNS, not from a home-network record.
 
 - **The inventory, through the API.** Create a token under **Settings → Users → API tokens**, then:
 

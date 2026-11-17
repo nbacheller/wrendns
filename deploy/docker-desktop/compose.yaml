@@ -32,7 +32,9 @@ services:
     security_opt: ["no-new-privileges:true"]
     read_only: true
     ports:
-      - "1053:1053/udp"   # DNS: nslookup -port=1053 nas.home.arpa 127.0.0.1
+      # DNS. From Windows, nslookup ignores -port and queries port 53, so ask from a container:
+      #   docker run --rm alpine nslookup -port=1053 nas.home.arpa host.docker.internal   (README.md, section 4)
+      - "1053:1053/udp"
       - "1053:1053/tcp"
       - "8053:8053"       # the web UI and API
     volumes:
