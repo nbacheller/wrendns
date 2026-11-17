@@ -776,7 +776,13 @@ impl Inventory {
     }
 
     /// Folds one observation into an entry the merge owns.
-    fn fold(&mut self, entry: &mut Entry, o: &Observation, import_bit: Option<u8>, ip: Option<IpAddr>) {
+    fn fold(
+        &mut self,
+        entry: &mut Entry,
+        o: &Observation,
+        import_bit: Option<u8>,
+        ip: Option<IpAddr>,
+    ) {
         if let Some(a) = ip {
             self.resolve_conflicts(entry, a, o);
             let b = Binding {
@@ -798,10 +804,7 @@ impl Inventory {
         if let Some((kind, raw)) = &o.name {
             let label = sanitize(raw, NAME_MAX);
             if !label.is_empty() {
-                let name = NameEntry {
-                    kind: *kind,
-                    label,
-                };
+                let name = NameEntry { kind: *kind, label };
                 if !entry.names.contains(&name) {
                     entry.names.push(name);
                 }
@@ -840,11 +843,7 @@ impl Inventory {
             if *k == entry.key {
                 continue;
             }
-            let Some(pos) = other
-                .addrs
-                .iter()
-                .position(|b| b.ip == a && b.class() <= 3)
-            else {
+            let Some(pos) = other.addrs.iter().position(|b| b.ip == a && b.class() <= 3) else {
                 continue;
             };
             let other_seen = other.addrs.get(pos).map_or(0, |b| b.seen);

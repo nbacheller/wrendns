@@ -30,7 +30,9 @@ impl Ipv4Subnet {
         if prefix > 32 {
             return None;
         }
-        let mask = u32::MAX.checked_shl(32u32.checked_sub(prefix)?).unwrap_or(0);
+        let mask = u32::MAX
+            .checked_shl(32u32.checked_sub(prefix)?)
+            .unwrap_or(0);
         Some(Self {
             net: u32::from(addr) & mask,
             mask,

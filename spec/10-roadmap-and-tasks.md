@@ -1505,6 +1505,8 @@ In the fork `nbacheller/telltaledns`: the IP and DNS side of a small network, wi
 - [x] **T22.5 Docker Desktop bundle.** *(OPS-004)* `deploy/docker-desktop/`: Compose (the fork built with `PROFILE=bench-fast`, DNS on 1053 as the unprivileged user, the API on 8053, secrets read-only, named volumes; an optional test Home Assistant with the integration mounted), a starter configuration for a UniFi gateway and Home Assistant with device names and a quarantine group, and a step-by-step README with what Docker Desktop can't show.
   - *Done 2026-11-16:* `telltale config check` passes; the configuration starts and serves with both sources unreachable; `docker compose config` validates. No UI: a deploy bundle. *Open:* the image build itself wasn't run here (Docker Hub refused anonymous pulls with 429).
 
+M25 ("Network inventory: SNMP, gateway reads and imported scans") extends this inventory with an SNMP poller, more UniFi and Home Assistant reads, uploaded scans and one MAC-keyed inventory across every source. T25.1 is the inventory itself and closes this milestone's neighbour-table *Open* item (inventory only; the neighbour table never feeds policy, ADR-910).
+
 ## M21 — Hangs: a watchdog and debug files (GitHub issue #7)
 The owner held 0.7.0 for this (2026-11-16): the reply on #7 promised "debug symbols with 0.7.0, and a watchdog so a wedged node restarts itself and leaves a dump".
 

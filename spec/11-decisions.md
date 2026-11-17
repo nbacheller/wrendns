@@ -1293,6 +1293,39 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-925 — Inventory thread and its inputs before `[discovery]`: off by default, the Home Assistant feed deferred (Proposed)
+**Context:** T25.1 builds the inventory thread (`telltale-inventory`) and its read-only sources. The switch that starts them is `[discovery]`, which is T25.2. Nothing in the server reads Home Assistant's raw answer after `routers.rs` folds it into the lease view, and the owner has not yet decided how a discovery node is chosen.
+**Decision:**
+- The thread's `spawn` exists and is tested through `tick`, but no startup path calls it. T25.2 wires it behind `[discovery] enabled` (default false) and the designated-node rule (DSC-001). `discovery/mod.rs` allows dead code for that reason.
+- Sources wired in T25.1: the filtered kernel neighbour table, the routers' lease view (`devices::Leases`, class 1, a lease with a `router` name), and the passive mDNS lease view (class 2, IP-only when no MAC). Home Assistant's named devices are a pure function (`sources::ha_observations`, tested on fixtures). Its live feed needs `routers.rs` to keep the last raw answer, and that stays Open until T25.10 (DSC-009) reads Home Assistant's registry anyway.
+- `inventory_merge` is a fuzz target that includes `crates/telltale/src/discovery/inventory.rs` by path, so the fuzzer runs the same source the server builds, without a dependency on the binary crate.
+**Alternatives rejected:** starting the thread now (an off-by-default feature would then run on every node); a separate `telltale-inventory` crate (the module needs `devices` and `routers`, which live in the binary crate, and the merge is small).
+**Consequences:** the inventory is not visible to any API until T25.12. Nothing in `telltale` reads `inventory.json` yet. The Home Assistant feed is Open.
+
+## ADR-924 — Inventory retention and expiry: two missed polls, per-entry caps, and the import rules (Proposed)
+**Context:** ADR-910 fixes the caps and says a host counts as absent only after two polls in a row miss it, without saying how a poll interval maps to time, or what an entry with no address left should do.
+**Decision:**
+- A source's binding expires when `seen + max_age < now`. `max_age` is twice the source's poll interval: 120 s for the neighbour table (polled every 60 s), 900 s for the routers and mDNS (their cadence is "every few minutes", `devices.rs`).
+- An entry with no address, no import, and no change for `retention_days` (7) is removed. An entry with only a name and no address stays until that retention passes; names are not expired separately.
+- Imports: an import past `[discovery.import] retention_days` (30) is removed with all its rows. Deleting an import removes its bindings, clears its ports when no other import holds the entry, drops import-only names, and removes entries left empty.
+- Caps: the oldest MAC entry (by `last_seen`) goes at 4,096, the oldest IP-only entry at 1,024, and the oldest import goes first when the import count reaches 16 or the import rows pass 8,192. A single import over 4,096 rows is refused.
+- A conflict flag clears on the sweep once no two entries claim the address.
+- The import ports (open TCP) are kept on the entry, sorted and capped at 16. They are cleared when the last import holding the entry goes.
+**Alternatives rejected:** a fixed per-source TTL with no link to the poll interval (it would drop hosts on a slow router poll); per-row import expiry (more state for the same effect).
+**Consequences:** a host the neighbour table drops for two minutes loses its neighbour binding, and it keeps its other bindings. A router that is slow to answer keeps its binding for 15 minutes.
+
+## ADR-923 — Source classes for the sources ADR-910 leaves open: Home Assistant, mDNS, configured names (Proposed)
+**Context:** ADR-910 sets the precedence classes for UniFi and OPNsense (class 1), the neighbour table (class 2), SNMP ARP (class 3), imports (class 4) and UniFi history (class 5). It does not place Home Assistant, passive mDNS, SNMP identity or the configured client name.
+**Decision:**
+- Home Assistant trackers and passive mDNS announcements bind addresses at class 2, with the neighbour table. Both come from the device or its tracker, not from a router's own table, so they rank below a router and above an import.
+- SNMP identity (sysName and printer names) carries names only. An SNMP ARP binding is class 3, and the identity observation has no address.
+- The configured client name (`[[client]]`) is a name at rank 1 and carries source `config`. It attaches to an entry and never creates one.
+- Name ranks follow ADR-910 exactly. A name's label is labelled with its source for ranks 6 and 7.
+- Conflicts: the newest class 1–3 claim wins the address. A class 4 or 5 claim never removes a class 1–3 binding. Both entries are flagged `ip_conflict` either way, and the flag clears when the address has one owner again.
+- A randomised MAC (the locally administered bit set) gets `randomized` and never raises `new_device`.
+**Alternatives rejected:** Home Assistant at class 1 (its trackers come from a template, not a router's table, so a stale tracker would outrank a live neighbour entry).
+**Consequences:** a device seen by Home Assistant and by the neighbour table has one current address, the neighbour's, and Home Assistant's stays an alias. The owner should confirm the class of Home Assistant and mDNS.
+
 ## ADR-918 — Shared settings sections: field-level file precedence, what a request may leave out, and admin-only fields (Proposed)
 **Context:** T24.12 (`[special]`) and T24.13 (`[local]`, and `[clients]` with `mdns` only) make three one-entry sections changeable from the UI and API under ADR-914's tiers. The one-entry kinds so far (rate limit, exclusions, simulation) replace the file's whole section. For these, that would let an API value override a field the files set, which ADR-040 and ADR-914 forbid. ADR-914 didn't settle three details: which fields the files win over, what a request that leaves out a file-set field means, and what an empty `device_domain` means.
 **Decision:**
