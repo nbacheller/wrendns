@@ -1254,9 +1254,9 @@ pub(crate) async fn check_draft(
         // REQ: API-016 (NEW-1/NEW-2 of the review, ADR-922) — a secret another entry of any kind
         // (router, alert destination, sink, OIDC provider, Git source) also uses is never sent
         // for this router's name.
-        let used_elsewhere = references_all.iter().any(|o| {
-            o.name == value && !(o.kind == "router" && o.entry == router_name)
-        });
+        let used_elsewhere = references_all
+            .iter()
+            .any(|o| o.name == value && !(o.kind == "router" && o.entry == router_name));
         if !ref_sent(
             &value,
             &named,
