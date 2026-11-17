@@ -897,7 +897,7 @@ Order:
     - `dsc_002_worker_rlimit_aborts_alone` runs against the debug build (fault jobs exist only there, by design); the release build has no fault job, checked by `dsc_002_release_has_no_fault_ops` in release builds only.
     - `dsc_002_bench_override_absent_in_release` and the pacing floor: the bench override lifts the SNMP pacing floor, which T25.4 creates. Not built.
     - The systemd e2e (a kernel OOM kill of the worker under the unit, `OOMPolicy=continue`) needs a systemd host and the release image; not run here.
-    - `make bench-smoke` with the bench feature (an SNMP walk and repeated imports against `snmpd` on an RFC 1918 Docker network) needs T25.4 and T25.11. The plain bench-smoke ran on this host in T25.1 and fails the loss gate here for the host's UDP cost (`bench/README.md`); not rerun for T25.3.
+    - `make bench-smoke` with the bench feature (an SNMP walk and repeated imports against `snmpd` on an RFC 1918 Docker network) needs T25.4 and T25.11. The plain bench-smoke was run for T25.3 (`telltale-net` changed): it fails the loss gate on this host (cache-hot 38.7% loss, miss-heavy 68.6%), with the host's UDP bind cost of 10.2 ms that `bench/README.md` warns about, as it did for T25.1. The result says nothing about the server; a run on the reference box is needed.
     - The image delta: not measured (the image job; T25.0's baseline is Open).
     - The inventory thread's RSS with the thread on (Open from T25.1) is not measured here.
 - [ ] **T25.4 `telltale-snmp`: BER and v2c.** *(DSC-003; ADR-908)* Depends on T25.2, T25.3, T23.1–T23.3 (or a local `SecretValue`).
