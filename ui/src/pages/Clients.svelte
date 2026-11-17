@@ -31,6 +31,25 @@
   // REQ: T8.2, T8.3 (T8.6) — devices found by the routers' DHCP or mDNS.
   let found = $state<S['DhcpLease'][]>([]);
   const sourceText: Record<string, string> = { router: 'router', mdns: 'mDNS' };
+  // REQ: T24.14 (API-012) — name the router that named the device ("udm", "home-assistant"),
+  // not the bare word "router". Its type (UniFi, Home Assistant) comes from GET /api/v1/routers (T23.7).
+  const sourceLabel = (l: S['DhcpLease']) => (l.source === 'router' && l.router ? `router: ${l.router}` : (sourceText[l.source] ?? l.source));
+  // REQ: DNS-023 (T24.14) — copy a device's DNS name.
+  // Per row (keyed by address, so two rows with the same name don't share a status); cleared after 1.5 s.
+  let copied = $state<{ ip: string; ok: boolean } | null>(null);
+  let copyTimer: ReturnType<typeof setTimeout> | undefined;
+  async function copyName(ip: string, n: string) {
+    let ok = true;
+    try {
+      await navigator.clipboard.writeText(n);
+    } catch {
+      // No clipboard here (plain HTTP on the LAN): the name is selectable, so say so.
+      ok = false;
+    }
+    copied = { ip, ok };
+    clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => (copied = null), 1500);
+  }
   const named = (ip: string) => configured.some((c) => c.match.includes(ip));
   // REQ: OBS-025 — what each device looks like, by address.
   let identities = $state<Record<string, S['DeviceIdentity']>>({});
@@ -264,13 +283,20 @@
       {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Address</th><th>Name it gave</th><th>From</th><th>MAC</th><th>In TelltaleDNS</th></tr></thead>
+            <thead><tr><th>Address</th><th>Name it gave</th><th>DNS name</th><th>From</th><th>MAC</th><th>In TelltaleDNS</th></tr></thead>
             <tbody>
               {#each found as l (l.ip)}
                 <tr>
                   <td class="mono"><ClientChip ip={l.ip} onchanged={load} /></td>
                   <td>{l.hostname ?? ''}</td>
-                  <td><span class="badge info">{sourceText[l.source] ?? l.source}</span></td>
+                  <td class="mono small" data-testid="dns-name">
+                    {#if l.dnsName}
+                      {l.dnsName}
+                      <button type="button" class="link small copy-btn" aria-label={'Copy ' + l.dnsName} onclick={() => copyName(l.ip, l.dnsName ?? '')}>Copy</button>
+                      <span class="small muted" role="status" aria-live="polite" data-testid="copy-status">{copied?.ip === l.ip ? (copied.ok ? 'Copied' : 'Select to copy') : ''}</span>
+                    {:else}<span class="muted">none</span>{/if}
+                  </td>
+                  <td><span class="badge info" data-testid="named-by">{sourceLabel(l)}</span></td>
                   <td class="mono small">{l.mac}</td>
                   <td class="small">{#if named(l.ip)}<strong>{l.clientName}</strong>{:else}<span class="muted">not named yet</span>{/if}</td>
                 </tr>
@@ -308,6 +334,11 @@
 </div>
 
 <style>
+  /* A larger tap target for the row's Copy button (it sits in a table cell). */
+  .copy-btn {
+    min-height: 32px;
+    padding: 6px 8px;
+  }
   /* REQ: FLT-017 — a workload's name on one line (the table scrolls instead). */
   .nowrap {
     white-space: nowrap;

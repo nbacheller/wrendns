@@ -1356,6 +1356,8 @@ On the Routers page, choose **Home Assistant** and enter the address and the tok
 - `GET /api/v1/dhcp/leases` shows which `[[router]]` named each device (`router`). Read every `interval_secs` like the routers.
 
 ### Networks your routers report
+The **Networks** page in the web UI (Devices, beside Clients) shows this list: each row has the group that covers the network, how many devices are on it and how full it is, and a row opens its devices with their DNS names. An operator can use **Make a group from this network** on a network no group covers; it opens the Groups editor with the network filled in.
+
 `GET /api/v1/networks` (and the MCP tool `list_networks`) lists the LANs and VLANs your UniFi console reports (name, subnet, VLAN, gateway, DHCP pool, domain), then any group's `networks` no router reported. For each: the group that covers it, its host addresses, the known devices in it (from the routers, Home Assistant, and mDNS), the share used, and how many devices sit outside the DHCP pool (reservations and fixed addresses). Agent tokens need `config:read`.
 
 ### Names devices announce (mDNS)

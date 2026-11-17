@@ -111,6 +111,17 @@ block_mode = "nxdomain"</code></pre>
   <p class="muted">Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#groups-for-your-networks-vlans">Groups for your networks</a> and <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#upstream-servers-per-group">Upstream servers per group</a> in the docs.</p>
 </section>
 
+<section id="networks">
+  <h2>See your networks</h2>
+  <p class="muted">The <b>Networks</b> page, in the Devices section beside Clients, lists the LANs and VLANs your routers report, with the group that covers each one.</p>
+  <ul>
+    <li><b>Each row</b> shows the subnet, VLAN, DHCP pool, domain, router, group, how many devices are on it, and how full it is. A network that only a group names is marked <b>group only</b>.</li>
+    <li><b>Click a row</b> to see the devices on that network, with the DNS name each one answers as.</li>
+    <li><b>Operators</b> get <b>Make a group from this network</b> on a network no group covers. It opens the Groups editor with the network already in <b>Networks</b>, so you only pick its lists.</li>
+    <li><b>Viewers</b> read the page. Scripts get the same list from <code>GET /api/v1/networks</code>.</li>
+  </ul>
+</section>
+
 <section id="name">
   <h2>Name your devices</h2>
   <p class="muted">A name shows everywhere at once, including on past queries: names are looked up when data is read, so renaming relabels history.</p>

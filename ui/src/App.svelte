@@ -28,6 +28,7 @@
   import Analyze from './pages/Analyze.svelte';
   import Clients from './pages/Clients.svelte';
 import Routers from './pages/Routers.svelte';
+  import Networks from './pages/Networks.svelte';
   import Anomalies from './pages/Anomalies.svelte';
   import Cluster from './pages/Cluster.svelte';
   import Cache from './pages/Cache.svelte';
@@ -50,6 +51,8 @@ import Routers from './pages/Routers.svelte';
     { path: '/explain', label: 'Explain', page: Explain, icon: 'explain', section: 'Monitor' },
     { path: '/anomalies', label: 'Anomalies', page: Anomalies, icon: 'anomalies', section: 'Monitor' },
     { path: '/clients', label: 'Clients', page: Clients, icon: 'clients', section: 'Devices' },
+    // REQ: API-013 (T24.15) — the networks the routers report, beside Clients.
+    { path: '/networks', label: 'Networks', page: Networks, icon: 'networks', section: 'Devices' },
     { path: '/groups', label: 'Groups', page: Groups, icon: 'groups', section: 'Devices' },
     // REQ: API-016 (T23.8) — router integrations: the devices' names come from them.
     { path: '/routers', label: 'Routers', page: Routers, icon: 'cluster', section: 'Devices' },
