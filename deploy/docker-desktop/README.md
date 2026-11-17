@@ -127,6 +127,8 @@ You get:
 - actions: pause, resume, quarantine a device, release it, and acknowledge anomalies;
 - a `telltale_anomaly` event for each new device anomaly.
 
+To check the source and the integration against a throwaway Home Assistant without starting this bundle's services, run `deploy/ha-test/e2e.sh` (its own Compose project; see `deploy/ha-test/README.md`).
+
 `integrations/home-assistant/README.md` has example automations. When you're happy with it, copy `integrations/home-assistant/custom_components/telltale` into your real Home Assistant's `config/custom_components/` and restart. Then use `http://<this computer's LAN address>:8053` as the address; you may need to allow port 8053 through your computer's firewall.
 
 ## Stopping and cleaning up

@@ -1342,6 +1342,23 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 
 **Addendum (T21.5 review, 2026-11-17).** A `[discovery]` the primary sets with a value that isn't the default was refused by every replica whose own section was at its defaults. The section is left out of a node's serialization at its defaults (CLU-010), so the configuration merge didn't know the key and refused the whole version ("the primary sent a setting this version doesn't know"). The merge now always has the `discovery` key: at its default when the primary doesn't send one (so a cleared section resets the replicas, as the other shared sections do), and the primary's value when it does. Test: `clu_010_a_discovery_section_is_shared_both_ways` (`telltale-config`). Check (e) of the three-node run writes `worker_memory_mib = 48` and reads it back on replica-b, which is what found it.
 
+## ADR-955 — The Home Assistant source test: a throwaway Home Assistant in its own Compose project, seeded by a test fixture (Proposed 2026-11-17)
+**Context:** T24.21 (fork #12). The owner chose a test container, never the owner's Home Assistant. The bundle's `test-ha` profile (`deploy/docker-desktop/compose.yaml`) brings up its `homeassistant` service with `depends_on: telltale`, so starting it from the bundle's project would also drive the running `telltale-dev` container. Home Assistant's device registry has no REST or websocket call that gives a device a MAC connection, which is what TelltaleDNS reads (`/api/template`, `device_attr(d, 'connections')`).
+
+**Decision:**
+- **The container.** `deploy/ha-test/compose.yaml` is its own Compose project (`telltale-hatest`), with the integration under test and a fixture mounted. It publishes on `127.0.0.1` only. The bundle's `test-ha` profile stays as it is for manual use.
+- **Onboarding and the token.** The script onboards the owner over `/api/onboarding/*`, exchanges the code, and makes a long-lived token over the websocket API (`auth/long_lived_access_token`) from inside the container. The token and the generated password go only to a file in a temporary directory that the trap removes; neither is printed.
+- **Fake devices.** A test-only fixture integration (`deploy/ha-test/fixtures/telltale_seed`, never shipped) creates devices with MAC connections and an entity each, through its config flow. Addresses come from `device_tracker` states set over REST, the states TelltaleDNS matches on.
+- **The node.** A TelltaleDNS build runs in a throwaway `ubuntu:24.04` container on the same network. Its binary comes from a bind mount (CI) or from another container's volumes (the dev container). The integration's token is an agent token with `analytics:read` and `config:read`.
+- **Checks.** The names, MACs and addresses the node reports (a device with no address is absent), the names over DNS, and the integration's sensors (`known_devices`, `health`, `problem`, `queries_24_h`, `version`).
+
+**Alternatives rejected:**
+- *Starting the bundle's `test-ha` profile.* It would start `telltale` through `depends_on`, which touches the running dev container.
+- *Writing the device registry as a file before first start.* It is undocumented for this purpose, and it breaks when the storage format changes.
+- *Using Home Assistant's demo integration.* Its devices carry no MAC connections, so the template can't name them.
+
+**Consequences:** the test needs a pulled Home Assistant image (about a few minutes on first run) and runs in CI as its own job (`.github/workflows/home-assistant.yml`, `ha-test`, 20 minutes). The fixture is a test-only integration that will need updating when Home Assistant changes its device or entity registry API.
+
 ## ADR-946 — Federated reads run off the runtime workers: `block_in_place` under the blocking helper (Accepted 2026-11-17)
 **Context:** upstream #7. `call_one` and `gather` in `crates/telltale/src/federated.rs` run a plain thread that blocks on the runtime. Called from a worker, the worker is held while the cluster stream's writer and reader tasks need workers to finish the call, so two concurrent reads to a peer that doesn't answer wedged a two-worker runtime. Several async handlers called a federated read directly on a worker.
 
