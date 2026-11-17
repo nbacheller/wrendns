@@ -217,6 +217,8 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/dhcp/leases"
             | "/api/v1/networks"
             // REQ: API-015, AGT-001 (ADR-903 §5) — stored secrets' metadata, never a value.
+            // REQ: API-016 (T23.7) — router settings and status (secrets as names only).
+            | "/api/v1/routers"
             | "/api/v1/secrets" => {
                 return Need::Scope("config:read");
             }
@@ -274,6 +276,10 @@ pub fn required(method: &Method, path: &str) -> Need {
         // REQ: OBS-024 (T13.1)
         if under("/api/v1/simulate-settings") {
             return Need::Scope("config:write:simulate");
+        }
+        // REQ: API-016 (T23.7, ADR-903 §5) — routers are admin-only and have no agent scope.
+        if under("/api/v1/routers") {
+            return Need::Forbidden;
         }
         // REQ: DNS-019 (T24.12) — `/clients-settings` has no scope: no agent writes `mdns`.
         if under("/api/v1/special-names") {

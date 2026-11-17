@@ -3362,6 +3362,13 @@
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "tls_ca_pem": {
+          "description": "REQ: API-016 (T23.7, ADR-921) — the same certificate as PEM text, for a router entered\nthrough the API or UI (16 KiB at most). Exclusive with `tls_ca`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "tls_insecure_skip_verify": {
           "description": "Skip certificate verification (dangerous; logs a warning).",
           "type": "boolean"

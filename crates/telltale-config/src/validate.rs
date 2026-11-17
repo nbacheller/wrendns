@@ -85,6 +85,20 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
 
 // REQ: UPS-011 (T7.16) — TLS settings only for TLS upstreams; both halves of a client
 // certificate; pins that look like base64 SHA-256.
+/// REQ: API-016 (review of T23.7, ADR-921) — whether `pem` holds at least one PEM certificate
+/// that decodes: the BEGIN marker alone isn't one (a body that isn't base64 fails at poll time).
+fn valid_pem_certificate(pem: &str) -> bool {
+    use rustls_pki_types::pem::PemObject;
+    let mut any = false;
+    for c in rustls_pki_types::CertificateDer::pem_slice_iter(pem.as_bytes()) {
+        if c.is_err() {
+            return false;
+        }
+        any = true;
+    }
+    any
+}
+
 fn upstream_tls(u: &crate::schema::Upstream, s: &str, p: &str, r: &mut Report<'_>) {
     let tls = matches!(s, "tls" | "https" | "h3" | "quic");
     for (set, what) in [
@@ -352,6 +366,30 @@ fn routers(cfg: &Config, r: &mut Report<'_>) {
         }
         if x.interval_secs < 30 {
             r.err(format!("{p}.interval_secs"), "at least 30 seconds");
+        }
+        // REQ: API-016 (T23.7, ADR-921) — the certificate as text: one source of trust, at most
+        // 16 KiB, and a PEM certificate.
+        if let Some(pem) = &x.tls_ca_pem {
+            if x.tls_ca.is_some() {
+                r.err(
+                    format!("{p}.tls_ca_pem"),
+                    "exclusive with tls_ca: give the certificate one way",
+                );
+            }
+            if pem.len() > 16 * 1024 {
+                r.err(format!("{p}.tls_ca_pem"), "at most 16 KiB");
+            } else if !valid_pem_certificate(pem) {
+                r.err(
+                    format!("{p}.tls_ca_pem"),
+                    "a PEM certificate (the text between -----BEGIN CERTIFICATE----- and -----END CERTIFICATE-----)",
+                );
+            }
+            if x.tls_insecure_skip_verify {
+                r.err(
+                    format!("{p}.tls_ca_pem"),
+                    "has no effect with tls_insecure_skip_verify (the certificate isn't checked)",
+                );
+            }
         }
         if x.tls_insecure_skip_verify {
             r.warn(format!("{p}.tls_insecure_skip_verify: the router's certificate isn't checked (prefer tls_ca, with tls_server_name if the certificate doesn't name the address)"));
@@ -2070,5 +2108,28 @@ fn secret_references(cfg: &Config, r: &mut Report<'_>) {
                 ),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_pem_certificate;
+
+    /// REQ: API-016 (review of T23.7, ADR-921) — a router's certificate must be PEM that decodes to
+    /// at least one certificate: the BEGIN marker alone, or a body that isn't base64, is refused.
+    #[test]
+    fn api_016_pem_check_needs_a_certificate() {
+        // The base64 of a small DER sequence: the PEM decodes, whatever the certificate inside.
+        assert!(valid_pem_certificate(
+            "-----BEGIN CERTIFICATE-----\nMAMCAQU=\n-----END CERTIFICATE-----\n"
+        ));
+        assert!(!valid_pem_certificate("MIIBfake"));
+        assert!(!valid_pem_certificate(
+            "-----BEGIN CERTIFICATE-----\nnot base64 !!\n-----END CERTIFICATE-----\n"
+        ));
+        assert!(!valid_pem_certificate(
+            "-----BEGIN CERTIFICATE-----\nMAMCAQU=\n"
+        ));
+        assert!(!valid_pem_certificate(""));
     }
 }

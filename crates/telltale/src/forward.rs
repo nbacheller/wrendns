@@ -216,6 +216,7 @@ pub(crate) async fn handle(
 }
 
 /// Applies a forwarded write here (the primary) for `peer` (shown as `via`), and audits it.
+#[allow(clippy::too_many_lines)] // one branch per kind of entry
 async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -> Answer {
     let (action, target, result, kind) = match w {
         Write::Managed {
@@ -239,6 +240,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                 ManagedKind::Group => "group",
                 ManagedKind::AlertDestination => "alert_destination",
                 ManagedKind::AlertRule => "alert_rule",
+                ManagedKind::Router => "router",
                 ManagedKind::Schedule => "schedule",
                 ManagedKind::AnomalyMute => "anomaly_mute",
                 ManagedKind::RateLimit => "ratelimit",

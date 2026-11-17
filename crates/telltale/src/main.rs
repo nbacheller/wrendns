@@ -56,6 +56,8 @@ mod replay;
 mod replication;
 mod rollout;
 mod rollups;
+mod router_cert;
+mod router_settings;
 mod routers;
 #[cfg(test)]
 mod secret_store_tests;

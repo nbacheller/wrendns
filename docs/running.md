@@ -1305,8 +1305,13 @@ window = [{ days = ["weekdays"], start = "08:00", end = "15:00" }]
 - The Groups page shows each group's schedules and which are **on now**; the query log shows blocks as **schedule**.
 - **In the UI:** **Groups → Schedules** adds, changes, or removes schedules (windows one per line, like `weekdays 21:00-07:00`), and a group's editor picks the schedules it follows. Through the API: `PUT`/`DELETE /api/v1/schedules/{name}` with the same fields as `[[schedule]]` (agents need `config:write:groups`, and AI agents can plan one with the MCP tool `plan_set_schedule`).
 
+<a id="routers"></a>
 ### Names from your router (UniFi, OPNsense)
-TelltaleDNS doesn't hand out addresses: your router's DHCP does that, and TelltaleDNS can read its client list, so devices show up by name:
+TelltaleDNS doesn't hand out addresses: your router's DHCP does that, and TelltaleDNS can read its client list, so devices show up by name.
+
+**In the UI:** an admin sets routers up on the **Routers** page (Devices → Routers): pick the kind, the address, and the credentials, then **Fetch the console's certificate** and **Trust this certificate** for a self-signed console. Trusting saves the certificate chain the console presents (its certificate and any CA certificates it sends, so a console signed by a private CA is trusted too); nothing else is trusted for that router. **Check it** reads the router once and saves nothing. Each router's card shows its last read on this node, what it reported, and where each credential comes from. Changes made there take effect at the next read, with no restart. Its credentials are entered once, stored encrypted on the node (`api_key_ref`), and never shown again. Operators and viewers see the cards read-only. The API is `PUT`/`DELETE /api/v1/routers/{name}` (admins only; a router the files define is read-only there), and `GET /api/v1/routers` lists them with their status.
+
+Or in the configuration file:
 ```toml
 [[router]]
 name = "udm"
@@ -1318,6 +1323,7 @@ api_key_file = "/etc/telltale/unifi-key"   # UniFi Network 9+ (Settings → Cont
 # site = "default"
 tls_ca = "/etc/telltale/udm.pem"       # the console's own certificate (self-signed)
 tls_server_name = "unifi.local"        # the name in it (UniFi consoles name themselves unifi.local)
+# tls_ca_pem = "-----BEGIN CERTIFICATE-----…"   # the same certificate as text (the Routers page stores it this way); exclusive with tls_ca
 
 [[router]]
 name = "firewall"
@@ -1331,7 +1337,7 @@ api_secret_file = "/etc/telltale/opn-secret"
 - A self-signed console: save its certificate (`openssl s_client -connect 192.168.1.1:443 </dev/null | openssl x509 > udm.pem`) as `tls_ca`. Its certificate names `unifi.local`, not the address you reach it at, so set `tls_server_name` to the name in it (`openssl x509 -in udm.pem -noout -ext subjectAltName` shows it): the console is then verified, and only that certificate is trusted. `tls_insecure_skip_verify = true` also works, but then anything on your network could pose as the console and receive the API key.
 - Read every `interval_secs` (300); a router that doesn't answer is asked again after 15 seconds and keeps its last list meanwhile.
 - Names you give devices in TelltaleDNS win; then the routers'. `GET /api/v1/dhcp/leases` lists them (`source = router`).
-- Credentials stay in files, out of the configuration. Changes to `[[router]]` need a restart.
+- Credentials can stay in files (`api_key_file`), or be stored (`api_key_ref = "udm"`, the name the Routers page gives them). A change made on the Routers page takes effect at the next read; a change to the file takes effect on a reload (`SIGHUP`) or a restart.
 - In a cluster, only one node needs to read the router (or hear mDNS). Every node asks the others for the device names they know, once a minute, so a resolver pod without the router's key names devices the same way the primary does.
 
 ### Names from Home Assistant
@@ -1343,6 +1349,7 @@ type = "home_assistant"
 url = "http://192.0.2.20:8123"
 api_key_file = "/etc/telltale/ha-token"   # Profile → Security → Long-lived access tokens
 ```
+On the Routers page, choose **Home Assistant** and enter the address and the token (stored, never shown again). The token belongs to an administrator's account; Home Assistant renders the template only with one.
 - Home Assistant knows devices by **MAC address** (Shelly, ESPHome, Sonos, Chromecast, TVs; Zigbee, Z-Wave, and Thread devices never use DNS, so they don't matter here). The address comes from your other `[[router]]` entries, else from Home Assistant's own `device_tracker` entities (its UniFi, Fritz!Box, or nmap integrations). A device whose MAC has no address anywhere is skipped.
 - **Which name wins** for one address: a name you gave the device in Home Assistant, then the routers' names (in the order of your `[[router]]` entries), then the name a Home Assistant integration gave it (often the model, like *Shelly Plus 1PM*). Names you give devices in TelltaleDNS win over all of them.
 - TelltaleDNS reads the registry with one request to `/api/template` (Home Assistant renders a fixed, read-only template), so the token must belong to an **administrator**. Use a dedicated Home Assistant user for it, and keep the token in a file.

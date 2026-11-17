@@ -4294,6 +4294,270 @@ test('obs_037 internal names', async () => {
   await expect(ptr).toHaveCount(0);
 });
 
+// REQ: API-016 (T23.8, ADR-903 §9, ADR-120) — the Routers page: a UniFi console is added with its key
+// stored (write-only: the value never reaches the page again), a Home Assistant and an OPNsense
+// source too, a console's certificate is fetched and trusted, a check reports a wrong key without
+// saving, a router the files define shows as set by file, an operator reads the cards, and a
+// router is removed. Checks and certificates are mocked: the e2e server has no router to ask.
+const ROUTER_CERT = {
+  names: ['unifi.local', 'localhost'],
+  fingerprintSha256: 'AB:CD:EF',
+  // A PEM body the server decodes: a bare marker, or a body that isn't base64, is refused (API-016).
+  pem: '-----BEGIN CERTIFICATE-----\nMAMCAQU=\n-----END CERTIFICATE-----\n',
+  suggestedTlsServerName: 'unifi.local',
+};
+
+async function fillCredential(label: string, value: string) {
+  const box = page.getByTestId('credential-input').filter({ hasText: label });
+  await box.getByRole('textbox', { name: `${label}: new value` }).fill(value);
+  await box.getByRole('button', { name: 'Store the value' }).click();
+  await expect(box.getByTestId('credential-name')).toBeVisible({ timeout: 10_000 });
+}
+
+test('api_016 add a UniFi router from the UI', async () => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto('/#/routers');
+  await expect(page.locator('h1', { hasText: 'Routers' })).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId('routers-add').click();
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('lab-udm');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('https://127.0.0.1:9');
+  await fillCredential('API key', 'unifi-e2e-key-7781');
+  // Write-only: the value is never shown again, in the DOM or in the field.
+  await expect(page.locator('body')).not.toContainText('unifi-e2e-key-7781');
+  await expect(page.getByRole('textbox', { name: 'API key: new value' })).toHaveValue('');
+  await page.getByRole('button', { name: 'Save the router' }).click();
+  const card = page.getByTestId('router-card').filter({ hasText: 'lab-udm' });
+  await expect(card).toBeVisible({ timeout: 10_000 });
+  await expect(card).toContainText('UniFi');
+  await expect(card).toContainText('unifi.lab-udm.api_key');
+  await expect(card.getByTestId('router-state')).toContainText(/Failing|Not read yet/);
+});
+
+test('api_016 trust the console certificate', async () => {
+  await page.route('**/api/v1/checks/router-certificate', (route) => route.fulfill({ json: ROUTER_CERT }));
+  await page.goto('/#/routers');
+  await page.getByTestId('routers-add').click();
+  await page.getByRole('combobox', { name: 'Kind' }).selectOption('unifi');
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('lab-cert');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('https://127.0.0.1:9');
+  await page.getByRole('button', { name: "Fetch the console's certificate" }).click();
+  await expect(page.getByTestId('routers-cert')).toContainText('unifi.local');
+  await page.getByRole('button', { name: 'Trust this certificate' }).click();
+  await expect(page.getByRole('textbox', { name: 'Certificate (PEM)' })).toHaveValue(/BEGIN CERTIFICATE/);
+  await expect(page.getByRole('textbox', { name: 'Name the certificate checks' })).toHaveValue('unifi.local');
+  // A UniFi router needs a credential (its key, or a user and password): store one, as the form does.
+  await fillCredential('API key', 'unifi-cert-key-5531');
+  // Never offered: skipping verification isn't a choice on this page.
+  await expect(page.getByText(/skip/i)).toHaveCount(0);
+  const put = page.waitForRequest((r) => r.method() === 'PUT' && r.url().includes('/api/v1/routers/lab-cert'));
+  await page.getByRole('button', { name: 'Save the router' }).click();
+  const body = (await put).postDataJSON();
+  expect(body.tls_ca_pem).toContain('BEGIN CERTIFICATE');
+  expect(body.tls_insecure_skip_verify).toBeUndefined();
+  await page.unroute('**/api/v1/checks/router-certificate');
+});
+
+test('api_016 check reports a wrong key without saving', async () => {
+  await page.route('**/api/v1/checks/router', (route) =>
+    route.fulfill({ json: { ok: false, devices: 0, networks: 0, error: 'https://127.0.0.1:9/proxy/network/api/s/default/stat/sta: HTTP 401 (check the API key)', credentialSent: true } }),
+  );
+  let saves = 0;
+  const count = (r: { method(): string }) => {
+    if (r.method() === 'PUT') saves++;
+  };
+  page.on('request', count);
+  await page.goto('/#/routers');
+  await page.getByTestId('routers-add').click();
+  await page.getByRole('combobox', { name: 'Kind' }).selectOption('unifi');
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('lab-wrong');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('https://127.0.0.1:9');
+  await page.getByTestId('routers-check-button').click();
+  await expect(page.getByTestId('routers-check')).toContainText('check the API key');
+  await expect(page.getByTestId('routers-check')).toContainText('Nothing was saved.');
+  page.off('request', count);
+  expect(saves).toBe(0);
+  await page.unroute('**/api/v1/checks/router');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+});
+
+test('api_016 file router shows set by file', async () => {
+  await page.route('**/api/v1/routers', (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            name: 'filed-udm',
+            kind: 'unifi',
+            url: 'https://192.168.1.1',
+            source: 'file',
+            definition: { name: 'filed-udm', type: 'unifi', url: 'https://192.168.1.1', api_key_file: '/etc/telltale/unifi-key' },
+            setByFile: ['api_key_file'],
+            credentials: [{ field: 'api_key', source: 'file', readable: true }],
+            status: { polledBy: 'this node', state: 'ok', lastPoll: 1, devices: 4, networks: 2, intervalSecs: 300 },
+          },
+        ],
+      },
+    }),
+  );
+  // The page is already on this route (a hash change doesn't reload it): reload to take the answer.
+  await page.goto('/#/routers');
+  await page.reload();
+  const card = page.getByTestId('router-card').filter({ hasText: 'filed-udm' });
+  await expect(card.getByTestId('router-file')).toHaveText('Set by file');
+  await expect(card.getByRole('button', { name: 'Change' })).toHaveCount(0);
+  await expect(card).toContainText("The configuration file defines this router, so it's read-only here.");
+  await page.unroute('**/api/v1/routers');
+});
+
+test('api_016 add a Home Assistant source from the UI', async () => {
+  await page.goto('/#/routers');
+  await page.getByTestId('routers-add').click();
+  await page.getByRole('combobox', { name: 'Kind' }).selectOption('home_assistant');
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ha-e2e');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('http://127.0.0.1:8123');
+  await fillCredential('Long-lived access token', 'ha-e2e-token-5520');
+  await page.getByRole('button', { name: 'Save the router' }).click();
+  const card = page.getByTestId('router-card').filter({ hasText: 'ha-e2e' });
+  await expect(card).toContainText('Home Assistant', { timeout: 10_000 });
+  await expect(card).toContainText('home_assistant.ha-e2e.api_key');
+});
+
+test('api_016 add an OPNsense router from the UI', async () => {
+  await page.goto('/#/routers');
+  await page.getByTestId('routers-add').click();
+  await page.getByRole('combobox', { name: 'Kind' }).selectOption('opnsense');
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('opn-e2e');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('https://127.0.0.1:9');
+  await fillCredential('API key', 'opn-e2e-key-1');
+  await fillCredential('API secret', 'opn-e2e-secret-2');
+  await page.getByRole('button', { name: 'Save the router' }).click();
+  const card = page.getByTestId('router-card').filter({ hasText: 'opn-e2e' });
+  await expect(card).toContainText('OPNsense', { timeout: 10_000 });
+  await expect(card).toContainText('opnsense.opn-e2e.api_secret');
+});
+
+// REQ: API-016 (T23.8, ADR-922) — Change edits a router in place: the name is fixed, and Save sends the
+// new interval.
+test('api_016 change a router from the UI', async () => {
+  await page.goto('/#/routers');
+  await page.reload();
+  const card = page.getByTestId('router-card').filter({ hasText: 'lab-udm' });
+  await expect(card).toBeVisible({ timeout: 10_000 });
+  await card.getByTestId('router-edit').click();
+  const editor = page.getByTestId('routers-editor');
+  await expect(editor.getByRole('heading', { name: 'Change lab-udm' })).toBeVisible();
+  await expect(editor.getByRole('textbox', { name: 'Name', exact: true })).toBeDisabled();
+  await editor.getByRole('spinbutton', { name: 'Read every (seconds)' }).fill('600');
+  const put = page.waitForRequest((r) => r.method() === 'PUT' && r.url().includes('/api/v1/routers/lab-udm'));
+  await page.getByRole('button', { name: 'Save the router' }).click();
+  expect((await put).postDataJSON().interval_secs).toBe(600);
+  await expect(page.getByTestId('routers-notice')).toContainText('Saved lab-udm');
+  await expect(page.getByTestId('routers-editor')).toHaveCount(0);
+});
+
+// REQ: API-016 (review of T23.8) — Add never replaces a router: a name another router holds is refused
+// before anything is stored, and Save stays off.
+test('api_016 a name in use is refused when adding', async () => {
+  await page.goto('/#/routers');
+  await page.getByTestId('routers-add').click();
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('lab-udm');
+  await expect(page.getByTestId('routers-name-taken')).toContainText('A router named lab-udm exists');
+  await expect(page.getByRole('button', { name: 'Save the router' })).toBeDisabled();
+  await expect(page.getByTestId('credential-input')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByTestId('routers-editor')).toHaveCount(0);
+});
+
+// REQ: API-016 (review of T23.8, ADR-922) — a check that drops a stored credential says so.
+test('api_016 a check says when a stored credential was not sent', async () => {
+  await page.route('**/api/v1/checks/router', (route) =>
+    route.fulfill({ json: { ok: false, devices: 0, networks: 0, error: 'HTTP 401 (check the long-lived access token)', credentialSent: false } }),
+  );
+  await page.goto('/#/routers');
+  await page.getByTestId('routers-add').click();
+  await page.getByRole('combobox', { name: 'Kind' }).selectOption('home_assistant');
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ha-moved');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('http://127.0.0.1:8125');
+  await page.getByTestId('routers-check-button').click();
+  await expect(page.getByTestId('routers-check')).toContainText("A stored credential wasn't sent");
+  await expect(page.getByTestId('routers-check')).toContainText('Nothing was saved.');
+  await page.unroute('**/api/v1/checks/router');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+});
+
+test('api_016 operator sees routers read-only', async () => {
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const made = await page.request.post('/api/v1/users', {
+    headers: { 'x-csrf-token': csrf },
+    data: { username: 'routers-viewer', password: 'viewer routers password', role: 'operator' },
+  });
+  expect([200, 201, 409]).toContain(made.status());
+  const op = await page.context().browser()!.newContext({ baseURL: page.url().split('/#/')[0] });
+  try {
+    const p = await op.newPage();
+    await p.goto('/#/routers');
+    await p.getByLabel('Username', { exact: true }).fill('routers-viewer');
+    await p.getByLabel('Password', { exact: true }).fill('viewer routers password');
+    await p.getByRole('button', { name: 'Sign in' }).click();
+    const card = p.getByTestId('router-card').filter({ hasText: 'lab-udm' });
+    await expect(card).toBeVisible({ timeout: 30_000 });
+    await expect(p.getByTestId('routers-add')).toHaveCount(0);
+    await expect(card.getByRole('button', { name: 'Change' })).toHaveCount(0);
+    await expect(card.getByRole('button', { name: 'Remove' })).toHaveCount(0);
+    await expect(card.getByTestId('router-state')).toBeVisible();
+    // And the server says no to a write whatever the page does.
+    const ocsrf = (await (await op.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+    const put = await op.request.put('/api/v1/routers/lab-udm', { headers: { 'x-csrf-token': ocsrf }, data: { type: 'unifi', url: 'https://127.0.0.1:9' } });
+    expect(put.status()).toBe(403);
+  } finally {
+    await op.close();
+  }
+});
+
+test('api_016 router with an unreadable credential shows the issue', async () => {
+  await page.route('**/api/v1/routers', (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            name: 'lost-key',
+            kind: 'unifi',
+            url: 'https://192.168.1.2',
+            source: 'api',
+            definition: { name: 'lost-key', type: 'unifi', url: 'https://192.168.1.2', api_key_ref: 'unifi.lost-key.api_key' },
+            setByFile: [],
+            credentials: [{ field: 'api_key', source: 'stored', secret: 'unifi.lost-key.api_key', readable: false, issue: "secret `unifi.lost-key.api_key` can't be read on this node (no secret of that name is stored)" }],
+            status: { polledBy: 'this node', state: 'failing', lastPoll: 1, error: 'https://192.168.1.2/proxy/network/api/s/default/stat/sta: HTTP 401', devices: 0, networks: 0, intervalSecs: 300 },
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto('/#/routers');
+  await page.reload();
+  const card = page.getByTestId('router-card').filter({ hasText: 'lost-key' });
+  await expect(card.getByTestId('router-credential-issue')).toContainText("can't be read on this node");
+  await page.unroute('**/api/v1/routers');
+});
+
+test('api_016 delete a router from the UI', async () => {
+  // The page's session (the admin signed in above), not a fresh request context.
+  const request = page.request;
+  const csrf = (await (await request.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const secret = await request.put('/api/v1/secrets/ha-e2e-token', { headers: { 'x-csrf-token': csrf }, data: { value: 'del-e2e-token-9', kind: 'text' } });
+  expect(secret.status(), await secret.text()).toBe(200);
+  const made = await request.put('/api/v1/routers/del-e2e', { headers: { 'x-csrf-token': csrf }, data: { type: 'home_assistant', url: 'http://127.0.0.1:8124', api_key_ref: 'ha-e2e-token' } });
+  expect(made.status(), await made.text()).toBe(200);
+  // The page is already on this route, and a hash change keeps its last mocked list: reload.
+  await page.goto('/#/routers');
+  await page.reload();
+  const card = page.getByTestId('router-card').filter({ hasText: 'del-e2e' });
+  await expect(card).toBeVisible({ timeout: 10_000 });
+  await card.getByTestId('router-delete').click();
+  await card.getByTestId('router-delete-confirm').click();
+  await expect(page.getByTestId('router-card').filter({ hasText: 'del-e2e' })).toHaveCount(0, { timeout: 10_000 });
+});
+
 // REQ: DNS-023 (T24.14) — a discovered device shows the DNS name it answers as, and the name is copyable.
 test('dns_023 discovered devices show their DNS name', async () => {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);

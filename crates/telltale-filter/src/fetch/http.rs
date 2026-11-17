@@ -194,6 +194,42 @@ impl Client {
         Self::new(resolver, &roots)
     }
 
+    /// REQ: API-016 (T23.7, ADR-120) — a client that trusts only the certificates in `pem`
+    /// (a router console's own certificate, or its private CA), not the built-in public roots:
+    /// a certificate from a public CA is then refused for a console. Errors name no key material.
+    pub fn with_ca_pem(resolver: Arc<dyn Resolve>, pem: &str) -> Result<Self, String> {
+        use rustls::pki_types::pem::PemObject;
+        let roots = CertificateDer::pem_slice_iter(pem.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("the certificate PEM: {e}"))?;
+        if roots.is_empty() {
+            return Err("the certificate PEM holds no certificate".to_owned());
+        }
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let mut store = RootCertStore::empty();
+        for der in roots {
+            store
+                .add(der)
+                .map_err(|e| format!("the certificate PEM: {e}"))?;
+        }
+        let mut cfg = ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|e| e.to_string())?
+            .with_root_certificates(store)
+            .with_no_client_auth();
+        cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+        Ok(Self {
+            tls: TlsConnector::from(Arc::new(cfg)),
+            resolver,
+            user_agent: format!(
+                "TelltaleDNS/{} (+https://github.com/paimonsoror/telltaledns)",
+                env!("CARGO_PKG_VERSION")
+            ),
+            link_local: false,
+            server_name: None,
+        })
+    }
+
     /// A client that skips certificate verification (signatures are still checked, so the
     /// handshake is sound, but not the server's identity): only for the explicit
     /// `tls_insecure_skip_verify` of router integrations with self-signed consoles.

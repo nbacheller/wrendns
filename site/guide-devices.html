@@ -165,6 +165,8 @@ match = ["10.0.5.0/24"]       # no groups: its network's group, else "default"</
 <section id="router">
   <h2>Names from your router and mDNS</h2>
   <p>Your router's DHCP hands out addresses; TelltaleDNS can read its client list, so devices show up by name without any typing.</p>
+  <p>An admin sets a router up on the <b>Routers</b> page (Devices → Routers): choose the kind, enter the address, store the credential (it's never shown again), then fetch the console's certificate and trust it. Check it reads the router once and saves nothing. Each router's card shows its last read and where each credential comes from. Changes there take effect with no restart.</p>
+  <p>Or in the configuration file:</p>
 <pre><code>[[router]]
 name = "udm"
 type = "unifi"                         # UniFi OS consoles and the Network application
@@ -182,7 +184,7 @@ api_secret_file = "/etc/telltale/opn-secret"</code></pre>
   <ul>
     <li><b>UniFi</b> gives the connected clients, named by their UniFi alias, else their host name. <b>OPNsense</b> gives its DHCP leases (Dnsmasq, Kea, or ISC).</li>
     <li><b>A self-signed UniFi console:</b> save its certificate as <code>tls_ca</code> (<code>openssl s_client -connect 192.168.1.1:443 &lt;/dev/null | openssl x509 &gt; udm.pem</code>). It names <code>unifi.local</code>, not the address you reach it at, so set <code>tls_server_name</code> to that name. The console is then verified, and only that certificate is trusted.</li>
-    <li>Credentials stay in files. Routers are read every <code>interval_secs</code> (300). Changes to <code>[[router]]</code> need a restart.</li>
+    <li>Credentials can stay in files, or be stored on the node (<code>api_key_ref</code>). Routers are read every <code>interval_secs</code> (300). A change on the Routers page takes effect at the next read; a change to the file needs a reload or a restart.</li>
   </ul>
   <p><b>mDNS:</b> phones, speakers, printers, and NAS boxes announce names like <code>Kitchen-HomePod.local</code>. To use them for devices you haven't named:</p>
 <pre><code>[clients]

@@ -60,6 +60,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
 webpki-roots = "1.0.9"
+# REQ: API-016 (T23.8, ADR-120) — the console certificate's names on the Routers page; already in
+# the tree (rcgen's X.509 reader), so the image doesn't grow.
+x509-parser = "0.18.1"
 # float_roundtrip: saved anomaly baselines reload bit-exact (OBS-013 determinism).
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 bytes = "1.12.1"

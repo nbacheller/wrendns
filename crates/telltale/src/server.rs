@@ -1028,6 +1028,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         cluster,
         ship: Arc::default(),
         git_poke: Arc::default(),
+        routers: Arc::default(),
+        routers_changed: Arc::default(),
         reload: reload_tx,
         config_writes: tokio::sync::Mutex::new(()),
         probes: Arc::default(),
@@ -1121,14 +1123,11 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         Arc::clone(&sources),
         http_stopped.clone(),
     ));
-    // REQ: T8.2 — device names from the routers' DHCP (read at startup).
+    // REQ: T8.2 — device names from the routers' DHCP; API-016 (T23.7) — the live list: a router
+    // the API or UI changes is read again without a restart.
     tokio::spawn(crate::routers::run(
-        cfg.router.clone(),
-        Arc::clone(&pipeline.router_leases),
-        Arc::clone(&pipeline.router_networks),
+        Arc::clone(&sources),
         http_stopped.clone(),
-        cfg.cluster.ephemeral,
-        Arc::clone(&sources.secrets),
     ));
     // REQ: DNS-023 (T22.1) — device names answered in DNS (`[local] device_domain`), rebuilt
     // off the query path; follows reloads.
@@ -1433,6 +1432,8 @@ async fn reload(
     }
     pipeline.reload(router, policy);
     pipeline.set_dnssec(&new);
+    // REQ: API-016 (T23.7, ADR-922) — the router poll loop reads the new list at once.
+    sources.routers_changed.notify_one();
     pipeline.set_upstream_check(&new);
     let stats = listeners.stats();
     sources.udp.store(Arc::new(stats.udp));

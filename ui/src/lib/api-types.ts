@@ -903,6 +903,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/checks/router": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check a router draft: one read, nothing saved.
+         * @description It needs an admin (agents never). A stored credential is sent only to the address and TLS settings
+         *     it was saved with: with another address the check runs without it (`credentialSent: false`), so a
+         *     stored key never goes to a new address (API-016, T23.8, ADR-922).
+         */
+        post: operations["check_router"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/checks/router-certificate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The certificate a router console presents at `url`.
+         * @description Its names, fingerprint and PEM, and the name to set as `tls_server_name` when it names something
+         *     else. Admin-only. The check trusts nothing it reads: the PEM is saved only when the admin submits
+         *     the form (API-016, T23.8, ADR-120).
+         */
+        post: operations["check_router_certificate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/checks/upstream": {
         parameters: {
             query?: never;
@@ -2254,6 +2298,59 @@ export interface paths {
          *     usual. Names from the config files can't be removed here (409).
          */
         delete: operations["delete_records"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/routers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The routers in the configuration, with their status.
+         * @description Each router comes with its settings (secrets as names, never values), where it comes from (the
+         *     files or the API), and what this node's last read did (API-016, T23.8). A replica answers with
+         *     its own reads: the primary is the one that reads a router that stores its credential.
+         */
+        get: operations["list_routers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/routers/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add or change a router integration.
+         * @description API-016 (T23.7, ADR-921). The body has the same fields as `[[router]]` (the name comes from the path). Secrets are
+         *     named, never sent: `api_key_ref`, `api_secret_ref` and `password_ref` name stored secrets
+         *     (422 `secret_missing` when none has that name), entered through Settings → Integrations &
+         *     secrets. A certificate is sent as text in `tls_ca_pem`. The API takes no file paths for a
+         *     router (`api_key_file`, `api_secret_file`, `password_file`, `tls_ca`): those are set in the
+         *     configuration file. Admins only: an operator or an agent is refused (403).
+         *     A router the config files define is read-only here (409 `set_by_file`).
+         */
+        put: operations["put_router"];
+        post?: never;
+        /**
+         * Remove a router integration that the API added.
+         * @description API-016 (T23.7). Its leases go with it at the next read; the routers that stay keep their last
+         *     answers.
+         */
+        delete: operations["delete_router"];
         options?: never;
         head?: never;
         patch?: never;
@@ -7639,6 +7736,98 @@ export interface components {
             /** @description Since when a change has waited for a canary (RFC 3339). */
             waitingSince?: string | null;
         };
+        /**
+         * @description REQ: API-016 (T23.8) — a router's certificate as the console presents it
+         *     (`POST /checks/router-certificate`).
+         */
+        RouterCertificate: {
+            /** @description SHA-256 of the DER, as colon-separated hex. */
+            fingerprintSha256: string;
+            /** @description The names it carries (subject and subject alternative names). */
+            names: string[];
+            /** @description The PEM text, ready to paste into `tls_ca_pem`. */
+            pem: string;
+            /**
+             * @description The name to set as `tls_server_name` when the certificate names something other than the
+             *     address.
+             */
+            suggestedTlsServerName?: string | null;
+        };
+        /** @description REQ: API-016 (T23.8) — a read-only poll of a router as a draft (`POST /checks/router`). */
+        RouterCheck: {
+            /**
+             * @description Whether a stored credential went to the address (it's sent only to the address it was
+             *     saved for; see the check's help).
+             */
+            credentialSent: boolean;
+            /** Format: int32 */
+            devices: number;
+            /** @description Why it failed, with the address's password removed. */
+            error?: string | null;
+            /** Format: int32 */
+            networks: number;
+            ok: boolean;
+        };
+        /** @description REQ: API-016 (T23.7) — one credential field of a router and where it stands on this node. */
+        RouterCredential: {
+            /** @description `api_key`, `api_secret`, or `password`. */
+            field: string;
+            /** @description Why it can't be used here (named, never valued), when it can't. */
+            issue?: string | null;
+            /** @description Whether this node can read it now; `None` when nothing is set. */
+            readable?: boolean | null;
+            /** @description The stored secret's name, when `source` is `stored`. */
+            secret?: string | null;
+            /** @description `file` (read as it is), `stored` (the encrypted store, by name), or `none`. */
+            source: string;
+        };
+        /**
+         * @description REQ: API-016 (T23.7, ADR-921) — one router integration as the API shows it: its settings
+         *     (secrets as names, never values), where it comes from, and what this node's poll of it did.
+         */
+        RouterEntry: {
+            /** @description Each credential this entry uses, where it comes from, and whether this node can read it. */
+            credentials: components["schemas"]["RouterCredential"][];
+            /** @description The settings in effect: the `[[router]]` fields as JSON, with `*_ref` names. */
+            definition: unknown;
+            /** @description `unifi`, `opnsense`, or `home_assistant`. */
+            kind: string;
+            name: string;
+            /** @description The fields the configuration files set (`api_key_file`, `tls_ca`...), shown as set by file. */
+            setByFile: string[];
+            /** @description `file` (the configuration files define it; read-only here) or `api`. */
+            source: string;
+            status: components["schemas"]["RouterStatus"];
+            /** @description The address, with any password in it removed (API-014). */
+            url: string;
+        };
+        /** @description REQ: API-016 (T23.8, ADR-903 §9) — `GET /api/v1/routers`. */
+        RouterList: {
+            items: components["schemas"]["RouterEntry"][];
+        };
+        /** @description REQ: API-016 (T23.7) — what this node's poll of a router last did. */
+        RouterStatus: {
+            /** Format: int32 */
+            devices: number;
+            /** @description Why the last read failed (the address has no password in it). */
+            error?: string | null;
+            /** Format: int32 */
+            intervalSecs: number;
+            /**
+             * Format: int64
+             * @description Unix seconds of the last read attempt.
+             */
+            lastPoll?: number | null;
+            /** Format: int32 */
+            networks: number;
+            /**
+             * @description `this node`, `the primary` (a stored credential polls there only), or `skipped` with the
+             *     reason (a resolver pod).
+             */
+            polledBy: string;
+            /** @description `waiting` (not read yet), `ok`, `failing` (keeping the last answer), or `skipped`. */
+            state: string;
+        };
         /** @description A quick rule (files and API), with how long it has left. */
         RuleInfo: {
             /** @description `allow` or `block`. */
@@ -10226,6 +10415,99 @@ export interface operations {
             };
             /** @description The body isn't a list (an unknown or mistyped field), or it has no url or rules. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    check_router: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description What the read found. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RouterCheck"];
+                };
+            };
+            /** @description Only an admin can check a router (agents never). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The draft is not a router. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    check_router_certificate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description The certificate. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RouterCertificate"];
+                };
+            };
+            /** @description The URL is not an https address. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Only an admin can check a router (agents never). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The console didn't answer, or presented no certificate. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13261,6 +13543,169 @@ export interface operations {
             };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_routers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The routers, by name. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RouterList"];
+                };
+            };
+        };
+    };
+    put_router: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change a router. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define this router, which is read-only here. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, a reference names no stored secret (`secret_missing`), a file path is set through the API, or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_router: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can remove a router. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No router by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define it. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

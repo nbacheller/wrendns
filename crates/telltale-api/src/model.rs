@@ -3639,3 +3639,102 @@ pub struct KubernetesStatus {
     /// Pod addresses left out past the table's cap (20,000).
     pub addresses_dropped: u64,
 }
+
+/// REQ: API-016 (T23.7, ADR-921) — one router integration as the API shows it: its settings
+/// (secrets as names, never values), where it comes from, and what this node's poll of it did.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterEntry {
+    pub name: String,
+    /// `unifi`, `opnsense`, or `home_assistant`.
+    pub kind: String,
+    /// The address, with any password in it removed (API-014).
+    pub url: String,
+    /// `file` (the configuration files define it; read-only here) or `api`.
+    pub source: String,
+    /// The settings in effect: the `[[router]]` fields as JSON, with `*_ref` names.
+    pub definition: serde_json::Value,
+    /// The fields the configuration files set (`api_key_file`, `tls_ca`...), shown as set by file.
+    pub set_by_file: Vec<String>,
+    /// Each credential this entry uses, where it comes from, and whether this node can read it.
+    pub credentials: Vec<RouterCredential>,
+    pub status: RouterStatus,
+}
+
+/// REQ: API-016 (T23.7) — one credential field of a router and where it stands on this node.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterCredential {
+    /// `api_key`, `api_secret`, or `password`.
+    pub field: String,
+    /// `file` (read as it is), `stored` (the encrypted store, by name), or `none`.
+    pub source: String,
+    /// The stored secret's name, when `source` is `stored`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// Whether this node can read it now; `None` when nothing is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readable: Option<bool>,
+    /// Why it can't be used here (named, never valued), when it can't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issue: Option<String>,
+}
+
+/// REQ: API-016 (T23.7) — what this node's poll of a router last did.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterStatus {
+    /// `this node`, `the primary` (a stored credential polls there only), or `skipped` with the
+    /// reason (a resolver pod).
+    pub polled_by: String,
+    /// `waiting` (not read yet), `ok`, `failing` (keeping the last answer), or `skipped`.
+    pub state: String,
+    /// Unix seconds of the last read attempt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_poll: Option<u64>,
+    /// Why the last read failed (the address has no password in it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub devices: u32,
+    pub networks: u32,
+    pub interval_secs: u32,
+}
+
+/// REQ: API-016 (T23.8, ADR-903 §9) — `GET /api/v1/routers`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterList {
+    pub items: Vec<RouterEntry>,
+}
+
+/// REQ: API-016 (T23.8) — a read-only poll of a router as a draft (`POST /checks/router`).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterCheck {
+    pub ok: bool,
+    pub devices: u32,
+    pub networks: u32,
+    /// Why it failed, with the address's password removed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Whether a stored credential went to the address (it's sent only to the address it was
+    /// saved for; see the check's help).
+    pub credential_sent: bool,
+}
+
+/// REQ: API-016 (T23.8) — a router's certificate as the console presents it
+/// (`POST /checks/router-certificate`).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterCertificate {
+    /// The names it carries (subject and subject alternative names).
+    pub names: Vec<String>,
+    /// SHA-256 of the DER, as colon-separated hex.
+    pub fingerprint_sha256: String,
+    /// The PEM text, ready to paste into `tls_ca_pem`.
+    pub pem: String,
+    /// The name to set as `tls_server_name` when the certificate names something other than the
+    /// address.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested_tls_server_name: Option<String>,
+}

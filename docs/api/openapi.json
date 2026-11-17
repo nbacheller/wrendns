@@ -2061,6 +2061,120 @@
         }
       }
     },
+    "/api/v1/checks/router": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Check a router draft: one read, nothing saved.",
+        "description": "It needs an admin (agents never). A stored credential is sent only to the address and TLS settings\nit was saved with: with another address the check runs without it (`credentialSent: false`), so a\nstored key never goes to a new address (API-016, T23.8, ADR-922).",
+        "operationId": "check_router",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What the read found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouterCheck"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can check a router (agents never).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The draft is not a router.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/checks/router-certificate": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The certificate a router console presents at `url`.",
+        "description": "Its names, fingerprint and PEM, and the name to set as `tls_server_name` when it names something\nelse. Admin-only. The check trusts nothing it reads: the PEM is saved only when the admin submits\nthe form (API-016, T23.8, ADR-120).",
+        "operationId": "check_router_certificate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The certificate.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouterCertificate"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The URL is not an https address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can check a router (agents never).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The console didn't answer, or presented no certificate.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/checks/upstream": {
       "post": {
         "tags": [
@@ -6280,6 +6394,226 @@
           },
           "412": {
             "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/routers": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The routers in the configuration, with their status.",
+        "description": "Each router comes with its settings (secrets as names, never values), where it comes from (the\nfiles or the API), and what this node's last read did (API-016, T23.8). A replica answers with\nits own reads: the primary is the one that reads a router that stores its credential.",
+        "operationId": "list_routers",
+        "responses": {
+          "200": {
+            "description": "The routers, by name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouterList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/routers/{name}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Add or change a router integration.",
+        "description": "API-016 (T23.7, ADR-921). The body has the same fields as `[[router]]` (the name comes from the path). Secrets are\nnamed, never sent: `api_key_ref`, `api_secret_ref` and `password_ref` name stored secrets\n(422 `secret_missing` when none has that name), entered through Settings → Integrations &\nsecrets. A certificate is sent as text in `tls_ca_pem`. The API takes no file paths for a\nrouter (`api_key_file`, `api_secret_file`, `password_file`, `tls_ca`): those are set in the\nconfiguration file. Admins only: an operator or an agent is refused (403).\nA router the config files define is read-only here (409 `set_by_file`).",
+        "operationId": "put_router",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change a router.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files define this router, which is read-only here.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong, a reference names no stored secret (`secret_missing`), a file path is set through the API, or the configuration wouldn't be valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove a router integration that the API added.",
+        "description": "API-016 (T23.7). Its leases go with it at the next read; the routers that stay keep their last\nanswers.",
+        "operationId": "delete_router",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can remove a router.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No router by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files define it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -19898,6 +20232,232 @@
               "null"
             ],
             "description": "Since when a change has waited for a canary (RFC 3339)."
+          }
+        }
+      },
+      "RouterCertificate": {
+        "type": "object",
+        "description": "REQ: API-016 (T23.8) — a router's certificate as the console presents it\n(`POST /checks/router-certificate`).",
+        "required": [
+          "names",
+          "fingerprintSha256",
+          "pem"
+        ],
+        "properties": {
+          "fingerprintSha256": {
+            "type": "string",
+            "description": "SHA-256 of the DER, as colon-separated hex."
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The names it carries (subject and subject alternative names)."
+          },
+          "pem": {
+            "type": "string",
+            "description": "The PEM text, ready to paste into `tls_ca_pem`."
+          },
+          "suggestedTlsServerName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name to set as `tls_server_name` when the certificate names something other than the\naddress."
+          }
+        }
+      },
+      "RouterCheck": {
+        "type": "object",
+        "description": "REQ: API-016 (T23.8) — a read-only poll of a router as a draft (`POST /checks/router`).",
+        "required": [
+          "ok",
+          "devices",
+          "networks",
+          "credentialSent"
+        ],
+        "properties": {
+          "credentialSent": {
+            "type": "boolean",
+            "description": "Whether a stored credential went to the address (it's sent only to the address it was\nsaved for; see the check's help)."
+          },
+          "devices": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it failed, with the address's password removed."
+          },
+          "networks": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "RouterCredential": {
+        "type": "object",
+        "description": "REQ: API-016 (T23.7) — one credential field of a router and where it stands on this node.",
+        "required": [
+          "field",
+          "source"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "`api_key`, `api_secret`, or `password`."
+          },
+          "issue": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it can't be used here (named, never valued), when it can't."
+          },
+          "readable": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether this node can read it now; `None` when nothing is set."
+          },
+          "secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stored secret's name, when `source` is `stored`."
+          },
+          "source": {
+            "type": "string",
+            "description": "`file` (read as it is), `stored` (the encrypted store, by name), or `none`."
+          }
+        }
+      },
+      "RouterEntry": {
+        "type": "object",
+        "description": "REQ: API-016 (T23.7, ADR-921) — one router integration as the API shows it: its settings\n(secrets as names, never values), where it comes from, and what this node's poll of it did.",
+        "required": [
+          "name",
+          "kind",
+          "url",
+          "source",
+          "definition",
+          "setByFile",
+          "credentials",
+          "status"
+        ],
+        "properties": {
+          "credentials": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouterCredential"
+            },
+            "description": "Each credential this entry uses, where it comes from, and whether this node can read it."
+          },
+          "definition": {
+            "description": "The settings in effect: the `[[router]]` fields as JSON, with `*_ref` names."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`unifi`, `opnsense`, or `home_assistant`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "setByFile": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The fields the configuration files set (`api_key_file`, `tls_ca`...), shown as set by file."
+          },
+          "source": {
+            "type": "string",
+            "description": "`file` (the configuration files define it; read-only here) or `api`."
+          },
+          "status": {
+            "$ref": "#/components/schemas/RouterStatus"
+          },
+          "url": {
+            "type": "string",
+            "description": "The address, with any password in it removed (API-014)."
+          }
+        }
+      },
+      "RouterList": {
+        "type": "object",
+        "description": "REQ: API-016 (T23.8, ADR-903 §9) — `GET /api/v1/routers`.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouterEntry"
+            }
+          }
+        }
+      },
+      "RouterStatus": {
+        "type": "object",
+        "description": "REQ: API-016 (T23.7) — what this node's poll of a router last did.",
+        "required": [
+          "polledBy",
+          "state",
+          "devices",
+          "networks",
+          "intervalSecs"
+        ],
+        "properties": {
+          "devices": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last read failed (the address has no password in it)."
+          },
+          "intervalSecs": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "lastPoll": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds of the last read attempt.",
+            "minimum": 0
+          },
+          "networks": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "polledBy": {
+            "type": "string",
+            "description": "`this node`, `the primary` (a stored credential polls there only), or `skipped` with the\nreason (a resolver pod)."
+          },
+          "state": {
+            "type": "string",
+            "description": "`waiting` (not read yet), `ok`, `failing` (keeping the last answer), or `skipped`."
           }
         }
       },

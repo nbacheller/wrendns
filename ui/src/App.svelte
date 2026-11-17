@@ -27,6 +27,7 @@
   import Explain from './pages/Explain.svelte';
   import Analyze from './pages/Analyze.svelte';
   import Clients from './pages/Clients.svelte';
+  import Routers from './pages/Routers.svelte';
   import Networks from './pages/Networks.svelte';
   import Anomalies from './pages/Anomalies.svelte';
   import Cluster from './pages/Cluster.svelte';
@@ -53,6 +54,8 @@
     // REQ: API-013 (T24.15) — the networks the routers report, beside Clients.
     { path: '/networks', label: 'Networks', page: Networks, icon: 'networks', section: 'Devices' },
     { path: '/groups', label: 'Groups', page: Groups, icon: 'groups', section: 'Devices' },
+    // REQ: API-016 (T23.8) — router integrations: the devices' names come from them.
+    { path: '/routers', label: 'Routers', page: Routers, icon: 'cluster', section: 'Devices' },
     { path: '/lists', label: 'Lists', page: Lists, icon: 'lists', section: 'Filtering & DNS' },
     { path: '/rules', label: 'Quick rules', page: Rules, icon: 'rules', section: 'Filtering & DNS' },
     { path: '/upstreams', label: 'Upstreams', page: Upstreams, icon: 'upstreams', section: 'Filtering & DNS' },

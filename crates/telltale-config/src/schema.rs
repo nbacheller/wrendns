@@ -1321,6 +1321,10 @@ pub struct RouterConfig {
     /// A PEM file with the console's certificate (or its CA), for self-signed consoles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_ca: Option<SafeString>,
+    /// REQ: API-016 (T23.7, ADR-921) — the same certificate as PEM text, for a router entered
+    /// through the API or UI (16 KiB at most). Exclusive with `tls_ca`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_ca_pem: Option<String>,
     /// The name the console's certificate is checked against, when `url` uses another (its
     /// address). A UniFi console's own certificate names `unifi.local`: with that here and the
     /// certificate as `tls_ca`, it's verified.
