@@ -1293,6 +1293,24 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-915 — Shared settings sections: field-level file precedence, what a request may leave out, and admin-only fields (Proposed)
+**Context:** T24.12 (`[special]`) and T24.13 (`[local]`, and `[clients]` with `mdns` only) make three one-entry sections changeable from the UI and API under ADR-914's tiers. The one-entry kinds so far (rate limit, exclusions, simulation) replace the file's whole section. For these, that would let an API value override a field the files set, which ADR-040 and ADR-914 forbid. ADR-914 didn't settle three details: which fields the files win over, what a request that leaves out a file-set field means, and what an empty `device_domain` means.
+**Decision:**
+- **Files win field by field.** The loader records the dotted keys (`special.ddr_name`, `local.device_domain`, `clients.mdns`) that the configuration files and environment set explicitly (`Config.file_set`). At merge time a stored field whose key is in that set is ignored, so the file's value applies. The UI shows it as "set by file".
+- **Requests.** A `PUT` stores every editable field (fields left out take their defaults, as the other one-entry kinds do), except a file-set field left out, which keeps the file's value (as a credential does under ADR-903 §2). A `PUT` that sets a file-set field to another value is 409 `set_by_file` naming the field. Setting it to the file's own value changes nothing and is accepted.
+- **Read-only fields.** `hosts_files` and `mdns_port` are shown in the entry and can't be set here: sending back the value the entry shows is accepted, another value is refused (422, naming the field).
+- **`device_domain`.** An empty string or `null` means no device names (off). It isn't an invalid domain.
+- **Admin-only fields** (`special.ddr_name`, `clients.mdns`). A change to one is checked on the server: an agent's is 403 `agent_not_allowed`; an operator's is 403 naming the field; a change forwarded from a node too old to say who made it is 409 `upgrade_required`. An agent can't write `[clients]` at all: no agent scope reaches `/api/v1/clients-settings/default`.
+- **Plans.** The MCP plans for these sections fill the fields left out from the entry as it is now, as the other plans do.
+**Alternatives rejected:**
+- A stored partial section laid over the file: a file change would then leave an old API value hidden under a field the file no longer sets. Full sections are stored instead.
+- Silently ignoring a file-set field in a request: the UI would show a value it can't set. A 409 naming the field says so.
+- Treating `device_domain = ""` as invalid: the UI and agents both need a way to turn names off with the same form.
+**Consequences:**
+- `ConfigEntry` gains `setByFile` and `answering` (optional fields, so an older node's answers still read). `Explanation` gains `special` (optional).
+- Environment-set keys count as file-set, so the UI says "set by file" for them too. A separate "set by environment" label is a follow-up.
+- A file change takes effect on the next reload. A stored value for a field the file now sets is ignored at once, and kept in `state.db` until someone reverts it.
+
 ## ADR-914 — Which settings the UI may change, and how risky ones are guarded (Proposed)
 **Context:** On 2026-11-16 the owner made a standing rule: every setting, route and tool gets a UI control (spec/10, API-901). An audit of the fork against the UI found settings with no control at all:
 - `[special]` (M24, ADR-904) and most of `[local]` (M22, ADR-901). Both are shared sections, not node-local (`telltale-config/src/shared.rs` `NODE_LOCAL`).

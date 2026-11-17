@@ -570,3 +570,28 @@ fn dns_019_special_names_are_explained() {
     // resolver.arpa has no switch: never forwarded.
     assert!(served(&p, "x.resolver.arpa", "10.0.0.9").is_some());
 }
+
+/// REQ: DNS-019 (T24.12, ADR-914) — a special-name outcome names the rule that answered, so the
+/// UI can link it to its switch (the `special` field: `private_relay`, `single_label`,
+/// `resolver_arpa`, `firefox_canary`, `localhost`). A name with no switch names none.
+#[test]
+fn dns_019_explain_names_the_special_rule() {
+    let (p, sources) = setup_with("[special]\nsingle_label_nxdomain = true\n");
+    for (name, key) in [
+        ("mask.icloud.com", Some("private_relay")),
+        ("printer", Some("single_label")),
+        ("_dns.resolver.arpa", Some("resolver_arpa")),
+        ("localhost", Some("localhost")),
+        ("use-application-dns.net", Some("firefox_canary")),
+        ("node.invalid", None),
+        ("ads.example.com", None),
+    ] {
+        let e = ask(&p, &sources, name, "10.0.0.9");
+        assert_eq!(e.special, key, "{name}: {}", e.summary);
+    }
+    let (p, sources) = setup_with("[special]\nblock_icloud_private_relay = false\n");
+    assert_eq!(
+        ask(&p, &sources, "mask.icloud.com", "10.0.0.9").special,
+        None
+    );
+}

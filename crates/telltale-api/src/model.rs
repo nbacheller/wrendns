@@ -612,6 +612,11 @@ pub struct Explanation {
     pub client: ExplainClient,
     /// `refused`, `special`, `local`, `blocked`, `allowed`, or `resolved`.
     pub outcome: String,
+    /// REQ: DNS-019 (T24.12, ADR-914) — for `special`, the special-name rule that answered:
+    /// `private_relay`, `single_label`, `resolver_arpa`, `ddr`, `firefox_canary`, `private_ptr`,
+    /// `chaos`, or `localhost` (the switch the UI links to is `[special]`'s field of that name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub special: Option<String>,
     /// One sentence for people.
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1536,6 +1541,15 @@ pub struct ConfigEntry {
     /// outside `[node] secret_file_dirs`): they aren't read until an admin sets another.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub credential_issues: Vec<CredentialIssue>,
+    /// REQ: DNS-019, DNS-023 (ADR-914) — the fields of a shared settings section (`special`,
+    /// `local`, `clients`) that the config files set: the API can't change them, and the UI
+    /// shows them as "set by file".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub set_by_file: Vec<String>,
+    /// REQ: DNS-023 (T24.13) — how many names this entry answers right now (the device names
+    /// for `local`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answering: Option<u64>,
 }
 
 /// REQ: API-014 (T23.2) — a stored path that isn't read, and why.

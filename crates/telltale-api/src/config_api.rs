@@ -157,6 +157,20 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/simulate-settings/default",
             put(put_simulate_settings).delete(delete_simulate_settings),
         )
+        // REQ: DNS-019 (T24.12, ADR-904, ADR-914) — `[special]`.
+        .route(
+            "/api/v1/special-names/default",
+            put(put_special).delete(delete_special),
+        )
+        // REQ: DNS-023 (T24.13, ADR-901, ADR-914) — `[local]`, and `[clients]` (`mdns` only).
+        .route(
+            "/api/v1/local-settings/default",
+            put(put_local).delete(delete_local),
+        )
+        .route(
+            "/api/v1/clients-settings/default",
+            put(put_clients_settings).delete(delete_clients_settings),
+        )
         .with_state((backend, auth))
 }
 
@@ -1461,6 +1475,255 @@ pub(crate) async fn delete_simulate_settings(
     .await
 }
 
+/// Set the special-name handling (DNS-019, ADR-904).
+///
+/// The body has the fields of `[special]` in `telltale.toml`: `block_firefox_canary`, `localhost`,
+/// `private_ptr_nxdomain`, `refuse_chaos`, `block_icloud_private_relay`, `single_label_nxdomain`,
+/// and `ddr_name` (the name the encrypted listeners' certificates carry, for DDR). It replaces the
+/// whole section (fields left out take the defaults), except fields the config files set: those
+/// win, and a body that sets one to another value is 409 `set_by_file`. Applies on the next query,
+/// with no restart. `ddr_name` is admin-only: an operator's change is 403 naming the field, and
+/// no agent changes it.
+#[utoipa::path(put, path = "/api/v1/special-names/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "An operator changes `ddr_name` (admin-only), or an agent does."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files set that field, and they win."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A field is wrong or unknown, or the configuration wouldn't be valid."),
+    ))]
+pub(crate) async fn put_special(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::Special,
+        "/special-names/default",
+    )
+    .await
+}
+
+/// Go back to the config file's special-name handling (DNS-019).
+///
+/// Removes what the API or UI stored, so `[special]` in the config files (or the defaults) applies
+/// again. 404 when nothing was stored.
+#[utoipa::path(delete, path = "/api/v1/special-names/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "The change would switch `ddr_name` off, and only an admin may."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+    ))]
+pub(crate) async fn delete_special(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::Special,
+        "DELETE /special-names/default",
+    )
+    .await
+}
+
+/// Set the device-name settings (DNS-023, ADR-901).
+///
+/// The body has the fields of `[local]` that name devices: `device_domain` (a domain such as
+/// `home.arpa`; `local` is refused), `device_ttl` (seconds), `device_mdns` (names devices announce
+/// over mDNS, which needs `[clients] mdns`), `auto_ptr`, and `default_ttl`. `hosts_files` is set in
+/// the file only. Like `PUT /special-names/default`, the file's fields win (409 `set_by_file`).
+/// Names change within about 10 seconds on every node, with no restart.
+#[utoipa::path(put, path = "/api/v1/local-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files set that field, and they win."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A field is wrong or unknown (a domain `local`, for one), or the configuration wouldn't be valid."),
+    ))]
+pub(crate) async fn put_local(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::Local,
+        "/local-settings/default",
+    )
+    .await
+}
+
+/// Go back to the config file's device-name settings (DNS-023).
+///
+/// Removes what the API or UI stored: the fields the config files don't set go back to the file's
+/// values (or the defaults), and the names change within about 10 seconds. Needs the operator role.
+#[utoipa::path(delete, path = "/api/v1/local-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+    ))]
+pub(crate) async fn delete_local(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::Local,
+        "DELETE /local-settings/default",
+    )
+    .await
+}
+
+/// Set the `[clients]` setting this API changes (DNS-023, T24.13, ADR-914).
+///
+/// Only `mdns` is here: when on, TelltaleDNS listens for mDNS announcements on every node, which
+/// names devices that announce themselves (`[local] device_mdns` answers for them). `mdns_port`
+/// stays in the file. This is admin-only: an operator's change is 403 naming `mdns`, and no agent
+/// can change it.
+#[utoipa::path(put, path = "/api/v1/clients-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Only an admin may change `mdns`; agents never."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files set `mdns`, and they win."),
+        (status = 422, body = Problem, description = "A field is unknown (`mdns_port` is set in the file)."),
+    ))]
+pub(crate) async fn put_clients_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::Clients,
+        "/clients-settings/default",
+    )
+    .await
+}
+
+/// Go back to the config file's `[clients]` mdns setting (DNS-023).
+///
+/// Removes what the API stored, so the file's `mdns` applies again on every node. Only an admin may
+/// do this, and no agent can.
+#[utoipa::path(delete, path = "/api/v1/clients-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Only an admin may change `mdns`; agents never."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's setting is in effect already."),
+    ))]
+pub(crate) async fn delete_clients_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::Clients,
+        "DELETE /clients-settings/default",
+    )
+    .await
+}
+
+/// The shared body of the three `PUT`s above.
+#[allow(clippy::too_many_arguments)] // the extractors, plus the kind and the request line
+async fn put_settings(
+    backend: Arc<dyn Backend>,
+    auth: Arc<Auth>,
+    q: DryRun,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+    kind: ManagedKind,
+    path: &str,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT {path} {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        "default".to_owned(),
+        Op::Managed(kind, Some(input)),
+    )
+    .await
+}
+
+/// The shared body of the three `DELETE`s above.
+async fn delete_settings(
+    backend: Arc<dyn Backend>,
+    auth: Arc<Auth>,
+    q: DryRun,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    kind: ManagedKind,
+    request: &str,
+) -> Response {
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request.to_owned(),
+        "default".to_owned(),
+        Op::Managed(kind, None),
+    )
+    .await
+}
+
 /// What a write changes.
 enum Op {
     Client(Option<ClientInput>),
@@ -1487,6 +1750,9 @@ impl Op {
             Self::Managed(ManagedKind::Simulate, _) => "simulate",
             Self::Managed(ManagedKind::Rollout, _) => "rollout_settings",
             Self::Managed(ManagedKind::KubernetesMap, _) => "kubernetes_map",
+            Self::Managed(ManagedKind::Special, _) => "special",
+            Self::Managed(ManagedKind::Local, _) => "local",
+            Self::Managed(ManagedKind::Clients, _) => "clients",
         }
     }
     fn deleting(&self) -> bool {
