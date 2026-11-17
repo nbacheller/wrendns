@@ -691,7 +691,7 @@ Two tasks from the design session of 2026-10-18, built in order T15.1 → T15.2 
   - *Done 2026-11-16:* (1) the e2e suite (74 tests) passes on the VM and in CI, with the tests that found cards by class moved to the new hooks; (2)–(4) `SmoothChart`, `TopList` and `names.ts` as in ADR-157, looked at on the demo network and on the live cluster's name shapes (read-only); (5) the e2e test `api_005 the previous dashboard is reachable and remembered`; (6) `npm run check` clean, bundle 229.9 KiB gzipped. The contributor's #31 (per-device status split, issue #30, ADR-159), #34 (lists follow the range, ADR-160), #36 (legend width) and #42 (rolling last hour, ADR-158) were ported onto it (the split also rides on range reads), and the PRs closed with a note.
   - *Open:* the owner's acceptance of ADR-157 to ADR-160; when to remove the previous dashboard; a server-side option to fold pods' search suffixes in the top lists; the rolling hour (ADR-158) has no per-device status split.
 
-## M27 — UI for everything (pre-fork features) (owner request 2026-11-16)
+## M27 — UI for everything (pre-fork features) (owner request 2026-11-16) [fork #16]
 
 Settings, routes and actions that came from upstream before the fork and still have no UI control (the 2026-11-16 UI audit). Listed in owner-priority order: the cheapest fix first, then cache, upstreams, groups, tuning, auth and agents, then the rest. The last tasks give admins guarded controls for the security and bootstrap settings (ADR-914, owner decision 2026-11-16: admin controls, not a read-only view). Every task follows the standing rule at the top of this file. Role checks are on the server; node-local sections (`NODE_LOCAL`) go through `node_managed` (T23.10), so T27.2, T27.5, T27.6, T27.11 and T27.13 onward depend on T23.10. Each task records its bundle size (under 400 KiB) and updates `docs/` and the matching `site/` page (DOC-006).
 
@@ -743,7 +743,7 @@ An animated, live map of the network and of where its lookups go, coloured by he
 - [ ] **T26.5 World view.** *(OBS-902)* Animated arcs from the network to where answers point, coloured by health, with the same filters; without a database it says so. *AC:* Playwright tests for both states; help topic `world-view`.
 - [ ] **T26.6 Thresholds and sampling in the UI; docs.** *(OBS-901, DOC-006)* Warning and error thresholds and the event rate in the map's settings; `docs/running.md` and a site page; README fork block. *AC:* Playwright `obs_901 change map thresholds` and `obs_901 viewer sees map settings read-only`; help topic `map-thresholds`.
 
-## M25 — Network inventory: SNMP, gateway reads and imported scans (owner request 2026-11-16)
+## M25 — Network inventory: SNMP, gateway reads and imported scans (owner request 2026-11-16) [fork #15]
 
 This milestone gathers what the network already knows, and what the owner's own scans found. It follows on from M22 ("Network inventory and home integrations"):
 - a read-only SNMP poller of listed gateways and switches, plus identity reads of hosts that routers or L2 tables already see;
