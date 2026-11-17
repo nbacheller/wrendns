@@ -33,7 +33,14 @@
   const sourceText: Record<string, string> = { router: 'router', mdns: 'mDNS' };
   // REQ: T24.14 (API-012) — name the router that named the device ("udm", "home-assistant"),
   // not the bare word "router". Its type (UniFi, Home Assistant) comes from GET /api/v1/routers (T23.7).
-  const sourceLabel = (l: S['DhcpLease']) => (l.source === 'router' && l.router ? `router: ${l.router}` : (sourceText[l.source] ?? l.source));
+  // REQ: API-012 (T24.14) — the router's type, from GET /api/v1/routers (T23.7), when it's known.
+  let routerKinds = $state<Record<string, string>>({});
+  const routerKindText: Record<string, string> = { unifi: 'UniFi', opnsense: 'OPNsense', home_assistant: 'Home Assistant' };
+  const sourceLabel = (l: S['DhcpLease']) => {
+    if (l.source !== 'router' || !l.router) return sourceText[l.source] ?? l.source;
+    const k = routerKinds[l.router];
+    return `router: ${l.router}${k ? ` (${routerKindText[k] ?? k})` : ''}`;
+  };
   // REQ: DNS-023 (T24.14) — copy a device's DNS name.
   // Per row (keyed by address, so two rows with the same name don't share a status); cleared after 1.5 s.
   let copied = $state<{ ip: string; ok: boolean } | null>(null);
@@ -69,6 +76,10 @@
       .dhcpLeases()
       .then((l) => (found = l.items))
       .catch(() => (found = []));
+    api
+      .routers()
+      .then((r) => (routerKinds = Object.fromEntries(r.items.map((x) => [x.name, x.kind]))))
+      .catch(() => (routerKinds = {}));
     api
       .identities()
       .then((r) => (identities = Object.fromEntries(r.items.map((i) => [i.client, i]))))

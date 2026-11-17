@@ -21,8 +21,8 @@
     fromText?: (s: string) => unknown;
     /** REQ: API-014 (T23.2) — only an admin changes it (a file holding a credential, or where
      *  one is sent): shown read-only to others. A function decides from the entry as it was
-     *  read (`{}` for a new one). */
-    admin?: boolean | ((original: Record<string, unknown>) => boolean);
+     *  read (`{}` for a new one) and the credential paths the entry keeps (`redacted`, T24.16). */
+    admin?: boolean | ((original: Record<string, unknown>, redacted: string[]) => boolean);
     /** REQ: API-015 (T23.6) — a `secret` field: `key` is the `*_ref` it writes, `fileKey` the
      *  `*_file` it replaces (read-only when the configuration files set it), `secretName` the
      *  name a new secret is saved under for this entry. */
@@ -58,6 +58,7 @@
     role,
     note,
     draft = null,
+    adminOnly,
   }: {
     kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit' | 'exclusions' | 'simulate' | 'rollout' | 'special' | 'local' | 'clients';
     path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings';
@@ -81,6 +82,11 @@
      *  this network"). A new object each time it should open; operators only. `onused` runs once it
      *  has been taken (the page clears the URL so a reload or Back doesn't reopen it). */
     draft?: { name?: string; values: Record<string, unknown>; onused?: () => void } | null;
+    /** REQ: API-014 (T24.16, ADR-926 §1) — what a draft needs an admin for (a program address): the
+     *  reason, for a non-admin, which holds Check and Apply; the server refuses it too. `saved` is the
+     *  entry as it was read (null for a new entry), so a draft that leaves a saved program address
+     *  alone isn't held. */
+    adminOnly?: (draft: Record<string, unknown>, saved: Record<string, unknown> | null) => string | null;
   } = $props();
   let formOut = $state<{ ok: boolean; text: string } | null>(null);
   async function runFormAction() {
@@ -107,8 +113,12 @@
   let entriesLoaded = $state(false);
   let error = $state<unknown>(null);
   let editing = $state<{ name: string; isNew: boolean; values: Record<string, unknown> } | null>(null);
-  // The entry as it was read, for fields only an admin changes (T23.2).
+  // The entry as it was read, for fields only an admin changes (T23.2), and the credential paths
+  // it keeps (`redacted`, T24.16).
   let original = $state<Record<string, unknown>>({});
+  let originalRedacted = $state<string[]>([]);
+  // REQ: API-014 (T24.16) — a non-admin's draft that needs an admin: the reason, or null.
+  const draftBlock = $derived(!can('admin') && editing && adminOnly ? adminOnly(editing.values, editing.isNew ? null : original) : null);
   // REQ: DNS-019, DNS-023 (ADR-914) — the fields the config files set: the API keeps their value.
   let fileSet = $state<string[]>([]);
   // REQ: API-015 (T23.6, ADR-903 §9) — this node's credential fields: a secret field reads whether
@@ -121,7 +131,7 @@
   function locked(f: Field): boolean {
     if (fileSet.includes(f.key)) return true;
     if (isAdmin || !f.admin) return false;
-    return typeof f.admin === 'function' ? f.admin(original) : true;
+    return typeof f.admin === 'function' ? f.admin(original, originalRedacted) : true;
   }
   // Text of fields with `toText`/`fromText`, while editing.
   let texts = $state<Record<string, string>>({});
@@ -162,6 +172,7 @@
     formOut = null;
     const def = (e?.definition ?? {}) as Record<string, unknown>;
     original = { ...def };
+    originalRedacted = e?.redacted ?? [];
     fileSet = e?.setByFile ?? [];
     dirtyFields = {};
     credentials = [];
@@ -296,6 +307,8 @@
               <td>
                 <strong>{e.name}</strong><span class="badge {cls}">{label}</span>
                 <!-- REQ: API-014 (T23.2) — a stored path the node refuses to read. -->
+                <!-- REQ: API-014 (T24.16) — the entry keeps a credential the API can't show: enter it again to change it. -->
+                {#if e.redacted?.length}<span class="badge" title={e.redacted.join(', ')} data-testid="kept-badge">kept: re-enter to change</span> <HelpButton id="credentials-in-forms" />{/if}
                 {#each e.credentialIssues ?? [] as i (i.field)}
                   <span class="badge bad" title={i.reason} data-testid="credential-issue">{i.field} not read</span>
                 {/each}
@@ -416,7 +429,7 @@
             {:else}
               <input class="mono" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} />
             {/if}
-            {#if fileSet.includes(f.key)}<span class="muted small" data-testid="set-by-file">Set by the configuration file: change it there.</span>{:else if locked(f)}<span class="muted small" data-testid="admin-only">Only an admin can change this.</span>{/if}
+            {#if fileSet.includes(f.key)}<span class="muted small" data-testid="set-by-file">Set by the configuration file: change it there.</span>{:else if locked(f)}<span class="muted small" data-testid="admin-only">Only an admin can change this.</span> <HelpButton id="credentials-in-forms" />{/if}
             {#if f.help}<span class="muted small">{f.help}</span>{/if}
           </label>
           {/if}
@@ -431,14 +444,15 @@
           </div>
           {#if anyDirty}<p class="notice warn small" data-testid="secret-unsaved">Save or discard the secret you typed first; Apply waits for it.</p>{/if}
           <div class="row">
-            <button type="button" class="primary" disabled={busy || anyDirty} onclick={apply}>Apply</button>
+            <button type="button" class="primary" disabled={busy || anyDirty || draftBlock !== null} onclick={apply}>Apply</button>
             <button type="button" onclick={() => (preview = null)}>Change it</button>
           </div>
         {:else}
+          {#if draftBlock}<p class="notice warn small" role="status" data-testid="admin-only-draft">{draftBlock} <HelpButton id="credentials-in-forms" /></p>{/if}
           {#if anyDirty}<p class="notice warn small" data-testid="secret-unsaved">Save or discard the secret you typed first; Check waits for it.</p>{/if}
           <div class="row">
-            <button class="primary" disabled={busy || !editing.name.trim() || anyDirty}>Check</button>
-            {#if formAction}<button type="button" onclick={runFormAction}>{formAction.label}</button>{/if}
+            <button class="primary" disabled={busy || !editing.name.trim() || anyDirty || draftBlock !== null}>Check</button>
+            {#if formAction}<button type="button" onclick={runFormAction} disabled={draftBlock !== null}>{formAction.label}</button>{/if}
           </div>
         {/if}
         {#if formOut}

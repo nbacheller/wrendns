@@ -202,6 +202,25 @@ async fn api_014_file_reference_change_needs_admin() {
     assert_eq!(s, StatusCode::OK, "{v}");
 }
 
+/// REQ: API-014 (T24.16, ADR-926 §2) — the alert destination's `type` is a destination field
+/// too: the same ntfy address and token file, sent as a webhook, is refused.
+#[tokio::test]
+async fn api_014_operator_cannot_change_alert_type() {
+    let (h, _dir, token_file) = with_secret_dir();
+    let op = token(&h, "olive", auth::Role::Operator, None);
+    ntfy(&h, &token_file).await;
+    let (s, v) = call(
+        &h,
+        &op,
+        "PUT",
+        "/api/v1/alerts/destinations/phone",
+        Some(&json!({"type": "webhook", "url": "https://ntfy.sh/my-topic", "token_file": token_file})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(v["detail"].as_str().unwrap().contains("`type`"), "{v}");
+}
+
 /// REQ: API-014 (T23.2) — an operator can't send a credential somewhere else: an upstream with
 /// headers and an alert destination with a `token_file` both give 403 on a URL change (typed
 /// values or not), while other edits of the same entries go through.

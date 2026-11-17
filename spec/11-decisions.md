@@ -1356,7 +1356,35 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 **Alternatives rejected:** waiting on every write (a member that is upgraded and back would still need the first write to be accepted, so this only added a second wait); the threshold at 0.9.0 (the workspace is 0.8.0 until it ships, so every node, the node itself included, counted as too old and the first write could never succeed); a feature flag advertised by each member (it would need a new field in the membership record; the version already says what a member knows, and the gate is the same check the other kinds make).
 **Consequences:** `DISCOVERY_SINCE` moves with the release that carries this section. The first write on a cluster with an older member is refused until that member is upgraded, which the UI says.
 
-## ADR-925 — Inventory thread and its inputs before `[discovery]`: off by default, the Home Assistant feed deferred (Proposed)
+## ADR-932 — Credential file open: no followed symlink, no FIFO block, and the `libc` constants (Accepted 2026-11-17)
+**Context:** The m25-snmp review (2026-11-17) found two races in `telltale-snmp`'s credential read. The path was canonicalized and then opened by name, so a link swapped in between pointed outside the secret directories. A FIFO was opened before its metadata was checked, so the open could block.
+**Decision:**
+- The file is opened with `O_NOFOLLOW | O_NONBLOCK` (`libc` 0.2, the constants only, through `OpenOptionsExt::custom_flags`, which is safe code). A final symlink fails the open, and a FIFO does not block.
+- The metadata is read from the handle, and only a regular file of at most 4096 bytes is read.
+- The canonical path is canonicalized again after the open. Its device and inode must match the handle's (Unix; off Unix the canonical path alone is the check).
+- The read buffer is allocated for the cap (4097 bytes) up front, so a read never reallocates and leaves no unzeroized copy.
+- The decoded v2c community is held in `Zeroizing`.
+**Alternatives rejected:** a `std`-only check (`symlink_metadata` before the open) leaves the same race; an `openat` walk of each path component is more code than the risk needs for admin-owned secret directories.
+**Consequences:**
+- A swap of a directory on the path between the last identity check and the read is not detected. The secret directories are admin-owned (`[node] secret_file_dirs`), so this is accepted.
+- `libc` is a dependency of `telltale-snmp` only. The lock already has it, so no new package enters the tree. The image delta is 0 bytes until T25.6 links the crate into `telltale`.
+- Owner decision: accept or reject the `libc` constants.
+
+## ADR-931 — SNMPv3 time window: only authenticated Reports move the clock; an authNoPriv Report answers an authPriv request (Accepted 2026-11-17)
+**Context:** The m25-snmp review (2026-11-17) found that the ADR-908 amendment of the same day moved the one-per-minute resync limit from unauthenticated to authenticated Reports, and that an authPriv request could not be resynced at all. RFC 3414 §3.2.7a says a notInTimeWindow Report is sent at authNoPriv, and the agent checks the time before it decrypts the scopedPDU. The agent's Report therefore arrived at a level the client dropped, and it often carried request-ID 0. An agent that answers discovery with boots and time 0/0 (RFC 3414 §4 allows this) never worked at authPriv.
+**Decision (proposed):**
+- An unauthenticated Report never sets the agent's clock. Only a Report whose MAC verifies may.
+- For an authPriv request, a Report at authNoPriv is accepted if its MAC verifies, and its request ID is 0 or the request's ID. Any other reply at authNoPriv is dropped.
+- At most one authenticated time resync per agent per minute. The request is sent once more, with the new boots and time.
+- The window follows RFC 3414 §3.2.7b: boots at 2^31 - 1 are stale, and equal boots more than 150 s behind are stale.
+**Alternatives rejected:**
+- Downgrading the request to authNoPriv after a failure: weakens the level the owner configured.
+- Keeping an unauthenticated resync with a per-minute limit: a spoofed Report could still move the clock once a minute.
+**Consequences:**
+- The ADR-908 amendment (2026-11-17) that describes the resync is kept as written, and this ADR governs the rule. Owner decision: accept this ADR, which then supersedes the one-per-minute wording of ADR-908.
+- Interop with the owner's net-snmp v3 agents is Open until the `TT_SNMPD_*` values are supplied.
+
+## ADR-925 — Inventory thread and its inputs before `[discovery]`: off by default, the Home Assistant feed deferred (Accepted 2026-11-17)
 **Context:** T25.1 builds the inventory thread (`telltale-inventory`) and its read-only sources. The switch that starts them is `[discovery]`, which is T25.2. Nothing in the server reads Home Assistant's raw answer after `routers.rs` folds it into the lease view, and the owner has not yet decided how a discovery node is chosen.
 **Decision:**
 - The thread's `spawn` exists and is tested through `tick`, but no startup path calls it. T25.2 wires it behind `[discovery] enabled` (default false) and the designated-node rule (DSC-001). `discovery/mod.rs` allows dead code for that reason.
@@ -1365,7 +1393,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 **Alternatives rejected:** starting the thread now (an off-by-default feature would then run on every node); a separate `telltale-inventory` crate (the module needs `devices` and `routers`, which live in the binary crate, and the merge is small).
 **Consequences:** the inventory is not visible to any API until T25.12. Nothing in `telltale` reads `inventory.json` yet. The Home Assistant feed is Open.
 
-## ADR-924 — Inventory retention and expiry: two missed polls, per-entry caps, and the import rules (Proposed)
+## ADR-924 — Inventory retention and expiry: two missed polls, per-entry caps, and the import rules (Accepted 2026-11-17)
 **Context:** ADR-910 fixes the caps and says a host counts as absent only after two polls in a row miss it, without saying how a poll interval maps to time, or what an entry with no address left should do.
 **Decision:**
 - A source's binding expires when `seen + max_age < now`. `max_age` is twice the source's poll interval: 120 s for the neighbour table (polled every 60 s), 900 s for the routers and mDNS (their cadence is "every few minutes", `devices.rs`).
@@ -1380,7 +1408,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 **Alternatives rejected:** a fixed per-source TTL with no link to the poll interval (it would drop hosts on a slow router poll); per-row import expiry (more state for the same effect).
 **Consequences:** a host the neighbour table drops for two minutes loses its neighbour binding, and it keeps its other bindings. A router that is slow to answer keeps its binding for 15 minutes.
 
-## ADR-923 — Source classes for the sources ADR-910 leaves open: Home Assistant, mDNS, configured names (Proposed)
+## ADR-923 — Source classes for the sources ADR-910 leaves open: Home Assistant, mDNS, configured names (Accepted 2026-11-17)
 **Context:** ADR-910 sets the precedence classes for UniFi and OPNsense (class 1), the neighbour table (class 2), SNMP ARP (class 3), imports (class 4) and UniFi history (class 5). It does not place Home Assistant, passive mDNS, SNMP identity or the configured client name. The first draft of this ADR put Home Assistant and mDNS at class 2. The T25.1 review (2026-11-17) found that an unauthenticated mDNS announcement would then make its address an SNMP destination (ADR-907), and that an identity answer would back its own eligibility.
 **Decision:**
 - Home Assistant trackers and passive mDNS announcements carry their addresses as claims with no class. They never make an address current, never make it an SNMP destination (ADR-907), and never win a conflict. They sort after the classed bindings, with imports. Both come from the device or its tracker, not from a router's own table.
@@ -1393,7 +1421,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - A randomised MAC (the locally administered bit set) gets `randomized` and never raises `new_device`.
 **Alternatives rejected:** Home Assistant at class 1 (its trackers come from a template, not a router's table, so a stale tracker would outrank a live neighbour entry). Home Assistant and mDNS at class 2 (the first draft: an unauthenticated mDNS announcement would make its address SNMP-eligible).
 **Consequences:** a device seen by Home Assistant and by the neighbour table has one current address, the neighbour's, and Home Assistant's stays a claim. The address that ADR-910's DNS opt-in (DSC-012) may use therefore comes only from classes 2 and 3; an mDNS-only address never supplies one. The owner confirms the classes at the T25.0 review. Until then this conservative choice stands.
-## ADR-922 — Router hot reload: the live list, per-router state, debounced reads, and checks that never send a stored key to a new address (Proposed)
+## ADR-922 — Router hot reload: the live list, per-router state, debounced reads, and checks that never send a stored key to a new address (Accepted 2026-11-17)
 **Context:** `routers::run` took the `[[router]]` list at start-up and returned at once when it was empty (T8.2). T23.7 needs a router added, changed, or removed through the API to take effect without a restart, with the others' names kept (CLU-004, 02 §8), and T23.8 needs a check of a draft that reads a router once.
 **Decision:**
 - **The live list.** The poll loop reads `Sources.config` each round. A reload (any node's configuration change, or a secret the store changes) wakes it at once (`Sources.routers_changed`).
@@ -1407,7 +1435,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Residual (review NEW-1): a new router that reuses the name of a deleted router can have that router's leftover named secret sent to its new address, since no saved entry under the name records the old address. Deleting a router does not remove its secret; the admin can delete the secret itself.
 - A router whose console renews its certificate fails until the new certificate is saved (ADR-120).
 - The poll loop, its reads, and its failures are tested with local fake routers only (HTTP, and TLS on 127.0.0.1).
-## ADR-921 — Router integrations as a managed kind: admin-only, file-read-only, named secrets, no file paths through the API (Proposed)
+## ADR-921 — Router integrations as a managed kind: admin-only, file-read-only, named secrets, no file paths through the API (Accepted 2026-11-17)
 **Context:** T23.7 makes `[[router]]` a kind the API and UI change (ADR-903 §2, §7; API-016). ADR-903 §2 says `router` follows ADR-040 (names the files define are read-only through the API) and §9 says every credential is entered through `SecretField`. It doesn't settle three details: who may write a router, whether an API body may name a file path, and how a certificate is entered, since `tls_ca` is a file and ADR-903 §1 says the router's CA "becomes an inline `tls_ca_pem` (T23.8)" without a field.
 **Decision:**
 - **Admin only.** Creating, changing, or removing a router is an admin's (403 for operators; agents never, by their forbidden list and scopes). A forwarded write without a role (an older node) is 409 `upgrade_required`, as credential writes are (ADR-903 §4).
@@ -1420,7 +1448,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - `tls_insecure_skip_verify` is not offered by the UI and is still file-only.
 - The MCP surface gets `list_routers` (read-only). No MCP tool, and no agent scope, writes or checks a router (ADR-903 §5).
 
-## ADR-919 — Secret fields in the UI: save writes the secret first, clear unlinks, and a file the configuration sets stays read-only (Proposed)
+## ADR-919 — Secret fields in the UI: save writes the secret first, clear unlinks, and a file the configuration sets stays read-only (Accepted 2026-11-17)
 **Context:** T23.6 adds the Integrations & secrets page and `SecretField`, the one control every credential is entered through (ADR-903 §9). The API has two rules that shape the form: a `*_ref` naming an unset secret is refused (422 `secret_missing`), and a delete of a secret a field still names is refused (409 `secret_in_use`). So a form can't save an entry and its new secret in one request, and can't delete a secret through an entry that still names it.
 **Decision:**
 - **Save writes the secret at once.** "Save secret" stores the value (`PUT /api/v1/secrets/{name}`) before the entry is applied, then sets the entry's `*_ref` in the draft. The stored value exists even if the entry is never applied; the Integrations & secrets page lists it as unused.
@@ -1443,8 +1471,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - `SecretField` is reusable: the routers (T23.8) and the other forms (T24.16) pass the draft's `*_ref`, the `*_file` path and the role, and get the same states.
 - Operators see status only: the Integrations & secrets tab and the field show the same states, with the controls left out.
 - The image gate is unaffected unless the bundle grows past the budget (400 KiB gzipped; now about 252 KiB).
-## ADR-917 — Replication details for stored secrets: orphans by epoch, a joining node's hand-over, the shadow table, and the reverse heal (Proposed)
-
+## ADR-917 — Replication details for stored secrets: orphans by epoch, a joining node's hand-over, the shadow table, and the reverse heal (Accepted 2026-11-17)
 **Context:** ADR-903 §6 fixes what replicates (stamped rows over the cluster channel, tombstones, orphans, re-encryption under each member's key, the reverse heal). Building it left points it doesn't settle, which T23.5 had to decide.
 
 **Decision:**
@@ -1470,7 +1497,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 
 **Status:** Accepted 2026-11-17. The owner accepted every ADR for the overnight run. Points 1 and 5 deviate from ADR-903 §6's wording. Points 10, 14 and 15 are the review fixes of 2026-11-17 (N1 to N3 of the second review), and point 10 supersedes the epoch-only rule of its first form.
 
-## ADR-918 — Shared settings sections: field-level file precedence, what a request may leave out, and admin-only fields (Proposed)
+## ADR-918 — Shared settings sections: field-level file precedence, what a request may leave out, and admin-only fields (Accepted 2026-11-17)
 **Context:** T24.12 (`[special]`) and T24.13 (`[local]`, and `[clients]` with `mdns` only) make three one-entry sections changeable from the UI and API under ADR-914's tiers. The one-entry kinds so far (rate limit, exclusions, simulation) replace the file's whole section. For these, that would let an API value override a field the files set, which ADR-040 and ADR-914 forbid. ADR-914 didn't settle three details: which fields the files win over, what a request that leaves out a file-set field means, and what an empty `device_domain` means.
 **Decision:**
 - **Files win field by field.** The loader records the dotted keys (`special.ddr_name`, `local.device_domain`, `clients.mdns`) that the configuration files and environment set explicitly (`Config.file_set`). At merge time a stored field whose key is in that set is ignored, so the file's value applies. The UI shows it as "set by file".
@@ -1910,7 +1937,9 @@ The repo has no SNMP code. Constraints:
   - It is off the hot path and not on the AGENTS.md bench-smoke list.
 - **PDUs.** It sends GET, GETNEXT and GETBULK, and receives Response and Report. The encoder has no SetRequest type, and no other write PDU type or tag constant. A CI grep test checks this.
 - **v3 USM** (RFC 3414, RFC 7860, RFC 3826).
-  - Engine discovery uses Report messages. Replies must match `msgID` and `requestID`. At most one unauthenticated time resync per agent per minute.
+  - Engine discovery uses Report messages. Replies must match `msgID` and `requestID`. At most one unauthenticated time resync per agent per minute. *Superseded in part by the 2026-11-17 amendment below and ADR-931 (Proposed): only an authenticated Report moves the clock.*
+  - *Amended 2026-11-17 (m25-snmp review):* unauthenticated Reports are never used for the clock. Discovery accepts only a noAuthNoPriv Report whose varbind is `usmStatsUnknownEngineIDs`. An authenticated notInTimeWindow Report takes the agent's clock, at most once per agent per minute, and the request is sent once more. Message and request IDs start at a random value on separate counters, so a spoofed datagram cannot guess them. A v3 reply must match the request's security level, engine ID and user. The cached engine is dropped after a failed exchange, so a forged engine ID cannot stay in place. The MAC is compared in constant time, and the community is compared the same way. *Credential files (2026-11-17, m25-snmp review):* the file is opened no-follow and non-blocking, and its identity is checked against the canonical path (ADR-932, Proposed). An authPriv request accepts an authNoPriv time-window Report with request ID 0 or the request's ID, when its MAC verifies (ADR-931, Proposed).
+  - *Key handling (amended 2026-11-17):* Ku and Kul are held in `Zeroizing`, and the privacy key is zeroized, with `aes` built with its `zeroize` feature. `ring`'s digest and HMAC contexts keep password-derived state that cannot be zeroized; this is accepted, because they are dropped at the end of the round and never cached. The privacy salt is eight random octets per message (64 bits from `SystemRandom`), not RFC 3826's seeded counter: no counter state is kept across restarts, and the repeat chance under one key is negligible.
   - Ku is the 1 MiB password-to-key expansion. It is computed once per credential per poll round with `ring::digest`, held in a `Zeroizing` buffer, and dropped at the end of the round.
   - Kul, the key localised per engine, is one short hash. It is computed on demand and never cached.
   - Authentication: HMAC-SHA-96, and HMAC-SHA-256/384/512 truncated per RFC 7860 (`ring::hmac`).
@@ -3840,3 +3869,35 @@ Final amd64 image: 14.16 MiB (headroom 0.84 MiB under NFR-001, 0.69 MiB under th
 - A `right/...` zone name stops resolving in a schedule, with an error that names the zone. No feature is lost.
 - The UI's raw text files are no longer in `ui/dist`. Tools that read `dist` directly (for example `vite preview`) must use `ui/dist/*.gz`, or run `npm run build` without the postbuild step.
 - Not taken, recorded here for the owner: `telltale-config` at opt-level `s` (about 0.2 MiB more, with per-query helpers in the policy path, so it needs a benchmark first), `opt-level = "z"` (about 0.5 MiB more, slower API handling), dropping the system CA bundle (0.12 MiB, needs its own ADR because the spec says the image ships one), and trimming serde code for `Config` (0.1 to 0.2 MiB, a refactor).
+
+## ADR-926 — Credential rules in the forms: judged from the saved entry, and a draft that needs an admin is held (Accepted 2026-11-17)
+
+**Context:** T24.16 puts ADR-903 §4's admin rules in every form (API-014). The server already refuses each change; the forms must show the owner who may make it and why, and must not let an operator fill in a change that will be refused. Two details are open: a form's lock can only use what is saved, and the upstream headers and arguments have no field in the form until T27.3.
+
+**Decision:**
+1. **Locks are judged from the saved entry.** A field's `admin` rule reads the entry as it was read, and the credential paths it keeps (`ConfigEntry.redacted`: headers, arguments, a password in an address). A draft's own value doesn't make a field read-only, since a field that locks while it's being typed can't be corrected. A draft that switches to a program address (`exec://`, `unix://`), or changes a saved program entry's arguments, instead holds Check and Apply with the reason (`ConfigEditor` `adminOnly`, which is given the saved entry, or none for a new one), and the server refuses it too. A saved program entry changed only in its weight, timeout or other fields is not held.
+2. **The rules as the forms apply them.**
+   - Upstreams: `url` is an admin's when the entry keeps a credential or runs a program (saved); `tls_server_name` when it keeps one. "Keeps a credential" is the server's `holds_credential`: a redacted path, a credential file (`tls_client_key`), or a stored reference (`*_ref`, `*_refs`).
+   - Alerts: `type` is an admin's when the destination holds a credential (the existing `url`, `tls_ca` and secret rules are unchanged).
+   - Names on my network, forwards: a server that is `exec://` or `unix://` is an admin's, and Save is off for an operator.
+   - Every kept credential shows the badge "kept: re-enter to change" in its row.
+3. **Headers and arguments.** They have no field in the upstream form until T27.3. A change of the address that the server refuses for a kept header says which field, and that the form can't enter it: use `telltale ctl` or the configuration file. No headers field is added here, so the message is the resolution this task owes (T24.16's "or the message above").
+
+**Consequences:**
+- A form can be stale about a rule the server adds later. The server stays the authority: every refusal still comes back as a problem code, and its message reads as a sentence (ADR-927).
+- An operator who pastes an `exec://` address sees the reason and a disabled Save, not a refusal after the fact.
+
+## ADR-927 — Problem codes read as sentences in the UI; the server's detail stays on the error (Accepted 2026-11-17)
+
+**Context:** T24.16 asks that `ApiError` give readable messages for the credential codes (`path_not_allowed`, `set_by_file`, `credential_reentry_required`, `upgrade_required`, `secret_missing`, `secret_in_use`, `secrets_locked`, `insecure_transport`, `lists_not_here`). Until now `ApiError.message` was the server's `detail`, which names the field well but reads as a log line. Two places (`SecretField`, `SecretsPanel`) matched the detail's text to recognise a secret that is in use elsewhere.
+
+**Decision:**
+1. The problem `code` is the contract. `ui/src/lib/api.ts` maps each listed code to a sentence, which becomes `ApiError.message`. The server's text stays on `ApiError.detail`, unchanged.
+2. A code with no sentence reads as the server's detail, as before.
+3. Recognition of a case by its text uses `detail`, never the sentence (`secret_in_use` "can't be read now").
+4. The field a detail names (its first backquoted token, never the `<redacted>` marker) is quoted in the sentence, so the owner sees which setting to change. A `credential_reentry_required` sentence follows the detail's case: a check never uses a stored value (Test it), no stored value to keep, or the destination changed. A header or an argument's hint is not shown beside its sentence, since the sentence already says how to enter it.
+5. The Routers page's credential input (`CredentialInput.svelte`, T23.8's open item) is replaced by `SecretField` and removed. Its Playwright tests use the field's `data-mode` and its save button.
+
+**Consequences:**
+- A sentence is text the owner reads, so changing one is a UI change: the Playwright test `api_015 errors read as sentences` names each code and the words it must show.
+- The sentences are in English only, as the rest of the UI is.

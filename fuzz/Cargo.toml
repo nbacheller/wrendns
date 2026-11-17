@@ -22,6 +22,7 @@ regex-syntax = "0.8"
 telltale-store = { path = "../crates/telltale-store" }
 telltale-telemetry = { path = "../crates/telltale-telemetry" }
 telltale-support = { path = "../crates/telltale-support" }
+telltale-snmp = { path = "../crates/telltale-snmp" }
 serde = { version = "1.0.229", features = ["derive"] }
 # The async frame reader (`discovery/frames.rs`) is fuzzed beside the sync one (DSC-002).
 tokio = { version = "1.53.1", features = ["io-util"] }
@@ -90,3 +91,25 @@ name = "worker_frames"
 path = "fuzz_targets/worker_frames.rs"
 test = false
 doc = false
+bench = false
+
+[[bin]]
+name = "snmp_ber"
+path = "fuzz_targets/snmp_ber.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snmp_walk"
+path = "fuzz_targets/snmp_walk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snmp_usm"
+path = "fuzz_targets/snmp_usm.rs"
+test = false
+doc = false
+bench = false

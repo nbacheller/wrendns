@@ -210,7 +210,7 @@
       "id": "devices",
       "title": "Name your devices",
       "term": "Clients",
-      "summary": "Give an address (or a MAC, or a client ID) a name so every view shows \"Living room TV\" instead of 192.168.1.42, and put it in groups. Under Discovered on your network, each device shows the DNS name it answers as (copyable) and the router that named it (for example \"router: udm\" or \"router: home-assistant\").",
+      "summary": "Give an address (or a MAC, or a client ID) a name so every view shows \"Living room TV\" instead of 192.168.1.42, and put it in groups. Under Discovered on your network, each device shows the DNS name it answers as (copyable) and the router that named it (for example \"router: udm (UniFi)\" or \"router: home-assistant (Home Assistant)\"). Routers are added on the Routers page, under Devices.",
       "when": "You see an address you don't recognize, or want different rules for one device.",
       "example": "Name 192.168.1.42 \"Living room TV\" and add it to the kids group: its history relabels at once.",
       "caution": "Addresses can change when a device reconnects; match by MAC for devices that don't keep their address (a DHCP reservation also works).",
@@ -868,6 +868,16 @@
       "when": "You'd rather type a password or token into the UI than put a file on the machine.",
       "example": "api_key_ref = \"unifi\" uses the stored secret named unifi as the UniFi console's API key.",
       "caution": "A credential set in the config file wins and can't be changed in the UI. Keep a copy of the node's key: without it, stored secrets can't be read. Backups never include them.",
+      "docs": "stored-secrets"
+    },
+    {
+      "id": "credentials-in-forms",
+      "title": "Who may change a credential",
+      "term": "Credential rules in forms",
+      "summary": "Some fields send a password or a token somewhere, or run a program. Only an admin changes those. An operator sees them read-only, with the reason. A value kept on this node isn't shown again: the entry says kept, and changing where it goes means entering the value again.",
+      "when": "A form shows 'Only an admin can change this', or a saved entry shows 'kept: re-enter to change'.",
+      "example": "An alert destination with a stored token: an operator can rename it, but only an admin can change its address or type, because that is where the token goes.",
+      "caution": "A change that would send a kept credential to a new address is refused with a message that names the field. Enter the value again if you are the admin, or change the file if the form can't enter it.",
       "docs": "stored-secrets"
     },
     {

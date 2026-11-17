@@ -126,6 +126,9 @@
         : `Every name under ${fw.domain.trim() || '…'} is asked of ${fw.servers.trim() || '…'} instead of the public DNS servers; your local names still answer first.`
       : '',
   );
+  // REQ: API-014 (T24.16, ADR-926) — a server that runs a program (exec://, unix://) is an admin's.
+  const runsProgram = (servers: string) => servers.split(/[\s,]+/).some((s) => /^(exec|unix):\/\//i.test(s));
+  const forwardBlocked = $derived(Boolean(fw && session.user?.role !== 'admin' && runsProgram(fw.servers)));
   async function saveForward(ev: SubmitEvent) {
     ev.preventDefault();
     if (!fw) return;
@@ -326,9 +329,10 @@
       {#if fw.domain.trim() && fw.servers.trim()}
         <ChangePreview highlight="route" device="Any device" name={`anything.${fw.domain.trim()}`} sentence={fwSentence} />
       {/if}
+      {#if forwardBlocked}<p class="notice warn small" role="status" data-testid="admin-only-forward">Only an admin can send names to a program (an exec:// or unix:// server). <HelpButton id="credentials-in-forms" /></p>{/if}
       {#if formError}<p class="notice bad" role="alert">{formError}</p>{/if}
       {#if done}<p class="notice ok" role="status">{done}</p>{/if}
-      <div class="row"><button type="submit" class="primary" disabled={busy}>{busy ? 'Saving…' : 'Save'}</button></div>
+      <div class="row"><button type="submit" class="primary" disabled={busy || forwardBlocked}>{busy ? 'Saving…' : 'Save'}</button></div>
     </form>
   </Drawer>
 {/if}
