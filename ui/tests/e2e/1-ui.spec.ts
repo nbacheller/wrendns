@@ -4034,6 +4034,8 @@ test('api_016 delete a router from the UI', async ({ request }) => {
   await card.getByTestId('router-delete').click();
   await card.getByTestId('router-delete-confirm').click();
   await expect(page.getByTestId('router-card').filter({ hasText: 'del-e2e' })).toHaveCount(0, { timeout: 10_000 });
+});
+
 // REQ: DNS-023 (T24.14) — a discovered device shows the DNS name it answers as, and the name is copyable.
 test('dns_023 discovered devices show their DNS name', async () => {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
