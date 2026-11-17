@@ -1,2 +1,6 @@
+# Every text file is checked out with LF, whatever core.autocrlf says, so byte-exact tests
+# (golden files, snapshots, `Cargo.toml` lint checks) pass on Windows checkouts too (fork #10).
+* text=auto eol=lf
+
 # List fixtures are byte-exact test inputs (CRLF, BOM, trailing spaces).
 crates/telltale-filter/tests/fixtures/** -text
