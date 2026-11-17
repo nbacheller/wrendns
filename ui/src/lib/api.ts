@@ -7,10 +7,29 @@ export type S = components['schemas'];
 export type Problem = S['Problem'];
 
 /** The first `code` names a field the server's detail quotes in backticks (`token_file`). */
+// `<redacted>` is the marker for a kept value, never a field, so it is skipped (ADR-927 §4).
 const fieldIn = (detail: string): string => {
-  const f = /`([^`]+)`/.exec(detail)?.[1];
+  const f = [...detail.matchAll(/`([^`]+)`/g)].map((m) => m[1]).find((t) => t !== '<redacted>');
   return f ? ` \`${f}\`` : '';
 };
+
+/**
+ * REQ: API-014, API-015 (T24.16, ADR-926 §3, ADR-927) — a kept credential that must be entered again.
+ * The server's detail says which of three cases it is, and the sentence follows the case: a check
+ * never uses a stored value; there is no stored value to keep; or the destination changed.
+ */
+function reentry(d: string): string {
+  if (/never uses stored values/.test(d)) {
+    return "A check can't use a stored credential. Enter it in the draft to check it, or save the upstream unchanged and check it from the Upstreams page.";
+  }
+  const field = fieldIn(d);
+  // Headers and arguments have no field in the forms: only telltale ctl or the file can enter them.
+  const how = /`(headers|args)/.test(d)
+    ? "This form can't enter it: change it with telltale ctl, or in the configuration file."
+    : 'Enter it again on this form (an admin does this).';
+  if (/no stored value to keep/.test(d)) return `The stored credential${field} has no value to keep. ${how}`;
+  return `The stored credential${field} isn't kept, because this entry now points somewhere else. ${how}`;
+}
 
 /**
  * REQ: API-015, API-014 (T24.16, ADR-926) — the sentence a person reads for a problem code. The
@@ -22,13 +41,7 @@ const READABLE: Record<string, (detail: string) => string> = {
     `That file path can't be used${fieldIn(d)}: TelltaleDNS won't read from there. Pick another path, or set it in the configuration file on this node.`,
   set_by_file: (d) =>
     `The configuration file sets${fieldIn(d) || ' this credential'}, and it wins over the UI and the API. Change it in the file.`,
-  credential_reentry_required: (d) =>
-    `The stored credential${fieldIn(d)} isn't kept, because this entry now points somewhere else. ${
-      // Headers and arguments have no field in this form: the form can't enter them.
-      /`(headers|args)/.test(d)
-        ? "This form can't enter it: change it with telltale ctl, or in the configuration file."
-        : 'Enter it again on this form (an admin does this).'
-    }`,
+  credential_reentry_required: (d) => reentry(d),
   upgrade_required: () =>
     'This change touches a credential, and this node is too old to send it to the primary. Upgrade this node, or make the change on the primary.',
   secret_missing: (d) =>
@@ -55,7 +68,9 @@ export class ApiError extends Error {
     this.detail = detail;
     this.status = p.status;
     this.code = p.code ?? 'internal';
-    this.hint = p.hint ?? undefined;
+    // A header or an argument has no field in the form, and the sentence already says how to enter it:
+    // the server's hint ("send the value itself") would contradict it, so it isn't kept.
+    this.hint = p.code === 'credential_reentry_required' && /`(headers|args)/.test(detail) ? undefined : (p.hint ?? undefined);
   }
 }
 

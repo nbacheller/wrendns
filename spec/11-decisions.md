@@ -3783,9 +3783,9 @@ Final amd64 image: 14.16 MiB (headroom 0.84 MiB under NFR-001, 0.69 MiB under th
 **Context:** T24.16 puts ADR-903 §4's admin rules in every form (API-014). The server already refuses each change; the forms must show the owner who may make it and why, and must not let an operator fill in a change that will be refused. Two details are open: a form's lock can only use what is saved, and the upstream headers and arguments have no field in the form until T27.3.
 
 **Decision:**
-1. **Locks are judged from the saved entry.** A field's `admin` rule reads the entry as it was read, and the credential paths it keeps (`ConfigEntry.redacted`: headers, arguments, a password in an address). A draft's own value doesn't make a field read-only, since a field that locks while it's being typed can't be corrected. A draft that switches to a program address (`exec://`, `unix://`) instead holds Check and Apply with the reason (`ConfigEditor` `adminOnly`), and the server refuses it too.
+1. **Locks are judged from the saved entry.** A field's `admin` rule reads the entry as it was read, and the credential paths it keeps (`ConfigEntry.redacted`: headers, arguments, a password in an address). A draft's own value doesn't make a field read-only, since a field that locks while it's being typed can't be corrected. A draft that switches to a program address (`exec://`, `unix://`), or changes a saved program entry's arguments, instead holds Check and Apply with the reason (`ConfigEditor` `adminOnly`, which is given the saved entry, or none for a new one), and the server refuses it too. A saved program entry changed only in its weight, timeout or other fields is not held.
 2. **The rules as the forms apply them.**
-   - Upstreams: `url` is an admin's when the entry keeps a credential or runs a program (saved); `tls_server_name` when it keeps one.
+   - Upstreams: `url` is an admin's when the entry keeps a credential or runs a program (saved); `tls_server_name` when it keeps one. "Keeps a credential" is the server's `holds_credential`: a redacted path, a credential file (`tls_client_key`), or a stored reference (`*_ref`, `*_refs`).
    - Alerts: `type` is an admin's when the destination holds a credential (the existing `url`, `tls_ca` and secret rules are unchanged).
    - Names on my network, forwards: a server that is `exec://` or `unix://` is an admin's, and Save is off for an operator.
    - Every kept credential shows the badge "kept: re-enter to change" in its row.
@@ -3803,7 +3803,7 @@ Final amd64 image: 14.16 MiB (headroom 0.84 MiB under NFR-001, 0.69 MiB under th
 1. The problem `code` is the contract. `ui/src/lib/api.ts` maps each listed code to a sentence, which becomes `ApiError.message`. The server's text stays on `ApiError.detail`, unchanged.
 2. A code with no sentence reads as the server's detail, as before.
 3. Recognition of a case by its text uses `detail`, never the sentence (`secret_in_use` "can't be read now").
-4. The field a detail names (its first backquoted token) is quoted in the sentence, so the owner sees which setting to change.
+4. The field a detail names (its first backquoted token, never the `<redacted>` marker) is quoted in the sentence, so the owner sees which setting to change. A `credential_reentry_required` sentence follows the detail's case: a check never uses a stored value (Test it), no stored value to keep, or the destination changed. A header or an argument's hint is not shown beside its sentence, since the sentence already says how to enter it.
 5. The Routers page's credential input (`CredentialInput.svelte`, T23.8's open item) is replaced by `SecretField` and removed. Its Playwright tests use the field's `data-mode` and its save button.
 
 **Consequences:**

@@ -62,7 +62,22 @@
   // admin's, and so is any change to an upstream that keeps a credential (its headers, its
   // arguments or a password in its address): the entry's `redacted` paths say which it keeps.
   const isProgram = (u: unknown) => /^(exec|unix):\/\//i.test(String(u ?? '').trim());
-  const keepsCredential = (_d: Record<string, unknown>, redacted: string[]) => redacted.length > 0;
+  // Set in the entry, not an empty string, `[]` or `{}` (the server's `normalized`).
+  const filled = (v: unknown) =>
+    v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && v.length === 0) &&
+    !(typeof v === 'object' && !Array.isArray(v) && Object.keys(v as object).length === 0);
+  // The server's holds_credential: a redacted path, a credential file (tls_client_key), or a stored
+  // reference (`*_ref`, `*_refs`, such as header_refs). The redacted paths alone miss the last two.
+  const keepsCredential = (d: Record<string, unknown>, redacted: string[]) =>
+    redacted.length > 0 || filled(d.tls_client_key) || Object.keys(d).some((k) => /_refs?$/.test(k) && filled(d[k]));
+  // ADR-926 §1: a draft holds only when it switches to a program address or changes its arguments.
+  // A saved program entry that is only re-weighted or re-timed is the operator's to change.
+  const programDraft = (d: Record<string, unknown>, saved: Record<string, unknown> | null) => {
+    if (!isProgram(d.url)) return false;
+    if (!saved) return true;
+    const args = (v: unknown) => (filled(v) ? JSON.stringify(v) : 'null');
+    return String(saved.url ?? '').trim() !== String(d.url ?? '').trim() || args(saved.args) !== args(d.args);
+  };
   const upstreamFields: Field[] = [
     { key: 'url', label: 'Address', type: 'text', placeholder: 'tls://9.9.9.9 or https://dns.quad9.net/dns-query',
       help: 'udp://, tcp://, tls:// (DNS over TLS), https:// (DNS over HTTPS), or quic://. An exec:// or unix:// address runs a program: only an admin sets one.',
@@ -219,7 +234,7 @@
   </section>
   <ConfigEditor kind="upstream" path="upstreams" title="Upstream servers" noun="upstream" fields={upstreamFields}
     summary={(d) => String(d.url ?? '')} onchanged={reload} formAction={tryUpstream}
-    adminOnly={(d) => (isProgram(d.url) ? 'Only an admin can set an address that runs a program (exec:// or unix://).' : null)} />
+    adminOnly={(d, saved) => (programDraft(d, saved) ? 'Only an admin can set an address that runs a program (exec:// or unix://).' : null)} />
   <ConfigEditor kind="upstream_group" path="upstream-groups" title="Upstream groups" noun="upstream group" fields={groupFields}
     summary={(d) => `${String(d.strategy ?? 'failover')}: ${((d.members as string[]) ?? []).join(', ')}`} onchanged={reload} />
   <p class="muted small">

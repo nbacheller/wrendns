@@ -1861,10 +1861,10 @@ function forgetRefusals() {
 // REQ: API-014 (T24.16, ADR-926) — the credential rules in every form. An operator sees the fields only an
 // admin changes read-only (with the reason), a credential kept on the node says so, and a change the
 // server refuses for a kept credential says which one to enter again.
-async function operatorPage(user: string, pass: string) {
+async function operatorPage(user: string, pass: string, role: 'operator' | 'viewer' = 'operator') {
   const r = page.request;
   const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
-  const made = await r.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: user, password: pass, role: 'operator' } });
+  const made = await r.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: user, password: pass, role } });
   expect([200, 201, 409]).toContain(made.status());
   const ctx = await page.context().browser()!.newContext({ baseURL: page.url().split('/#/')[0] });
   const p = await ctx.newPage();
@@ -1883,6 +1883,7 @@ test('api_014 upstream url is admin-only when it holds a credential', async () =
   const op = await operatorPage('operator1', 'operator long password');
   try {
     await op.p.goto('/#/upstreams');
+    await op.p.getByRole('button', { name: 'Advanced', exact: true }).click();
     const row = op.p.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'ui-cred-up' });
     await expect(row.getByTestId('kept-badge')).toHaveText('kept: re-enter to change', { timeout: 20_000 });
     // The value itself never reaches the page.
@@ -1890,9 +1891,103 @@ test('api_014 upstream url is admin-only when it holds a credential', async () =
     await row.getByRole('button', { name: 'Edit' }).click();
     await expect(op.p.getByRole('textbox', { name: 'Address', exact: true })).toHaveAttribute('readonly', '');
     await expect(op.p.getByTestId('admin-only').first()).toContainText('Only an admin can change this.');
+    // REQ: API-014 (T24.16, ADR-926 §2) — the TLS server name is an admin's too while the entry keeps a credential.
+    await expect(op.p.getByRole('textbox', { name: 'TLS server name', exact: true })).toHaveAttribute('readonly', '');
   } finally {
     await op.close();
     await r.delete('/api/v1/upstreams/ui-cred-up', { headers: h });
+  }
+});
+
+// REQ: API-014 (T24.16, ADR-926 §2) — a credential file on an upstream keeps a credential as much as a
+// header does: its address and TLS name are an admin's (the server's holds_credential). A PUT needs a
+// real cert and key pair, so the entry is added to the list the operator's page reads instead.
+test('api_014 a credential file on an upstream holds its address too', async () => {
+  const op = await operatorPage('operator1', 'operator long password');
+  try {
+    await op.p.route((url) => url.pathname.endsWith('/api/v1/config/entries') && url.searchParams.get('kind') === 'upstream', async (route) => {
+      const res = await route.fetch();
+      const body = await res.json();
+      const proto = body.items?.[0] ?? {};
+      body.items = [...(body.items ?? []), { ...proto, name: 'ui-keyfile-up', kind: 'upstream', definition: { url: 'https://dns.e2e.test/dns-query', tls_client_key: '/run/secrets/ui-up-key' }, redacted: [] }];
+      await route.fulfill({ response: res, json: body });
+    });
+    await op.p.goto('/#/upstreams');
+    await op.p.getByRole('button', { name: 'Advanced', exact: true }).click();
+    const row = op.p.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'ui-keyfile-up' });
+    await row.getByRole('button', { name: 'Edit' }).click();
+    await expect(op.p.getByRole('textbox', { name: 'Address', exact: true })).toHaveAttribute('readonly', '');
+    await expect(op.p.getByRole('textbox', { name: 'TLS server name', exact: true })).toHaveAttribute('readonly', '');
+  } finally {
+    await op.close();
+  }
+});
+
+// REQ: API-014 (T24.16, ADR-926 §1) — a new draft that switches to a program address is held for an operator.
+test('api_014 upstream exec draft is held for an operator', async () => {
+  const op = await operatorPage('operator1', 'operator long password');
+  try {
+    await op.p.goto('/#/upstreams');
+    await op.p.getByRole('button', { name: 'Add upstream', exact: true }).click();
+    await op.p.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-exec-draft');
+    await op.p.getByRole('textbox', { name: 'Address', exact: true }).fill('exec:///usr/bin/true');
+    await expect(op.p.getByTestId('admin-only-draft')).toContainText('Only an admin can set an address that runs a program');
+    await expect(op.p.getByRole('button', { name: 'Check', exact: true })).toBeDisabled();
+    await op.p.getByRole('textbox', { name: 'Address', exact: true }).fill('10.0.0.53');
+    await expect(op.p.getByTestId('admin-only-draft')).toHaveCount(0);
+  } finally {
+    await op.close();
+  }
+});
+
+// REQ: API-014 (T24.16, ADR-926 §1) — a saved program address that an operator only re-times is not held:
+// the server allows it (only a switch to a program, or its arguments, is an admin's).
+test('api_014 operator re-times a saved program upstream', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const put = await r.put('/api/v1/upstreams/ui-exec-up', { headers: h, data: { url: 'exec:///usr/bin/true' } });
+  expect(put.status(), await put.text()).toBe(200);
+  const op = await operatorPage('operator1', 'operator long password');
+  try {
+    await op.p.goto('/#/upstreams');
+    await op.p.getByRole('button', { name: 'Advanced', exact: true }).click();
+    const row = op.p.getByTestId('editor-upstream').getByTestId('entry-row').filter({ hasText: 'ui-exec-up' });
+    await row.getByRole('button', { name: 'Edit' }).click();
+    await expect(op.p.getByRole('textbox', { name: 'Address', exact: true })).toHaveAttribute('readonly', '');
+    await expect(op.p.getByTestId('admin-only-draft')).toHaveCount(0);
+    await op.p.getByRole('spinbutton', { name: 'Timeout (ms)', exact: true }).fill('3000');
+    await expect(op.p.getByTestId('admin-only-draft')).toHaveCount(0);
+    await op.p.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(op.p.getByRole('button', { name: 'Apply', exact: true })).toBeEnabled({ timeout: 15_000 });
+    await op.p.getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect.poll(async () => {
+      const items = (await (await r.get('/api/v1/config/entries?kind=upstream')).json()).items as { name: string; definition?: { timeout_ms?: number } }[];
+      return items.find((e) => e.name === 'ui-exec-up')?.definition?.timeout_ms;
+    }, { timeout: 15_000 }).toBe(3000);
+  } finally {
+    await op.close();
+    await r.delete('/api/v1/upstreams/ui-exec-up', { headers: h });
+  }
+});
+
+// REQ: API-014, API-015 (T24.16) — a viewer sees the kept credentials, and no control that changes them.
+test('api_014 a viewer sees credential entries and changes nothing', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const put = await r.put('/api/v1/upstreams/ui-view-up', { headers: h, data: { url: 'https://dns.e2e.test/dns-query', headers: { Authorization: 'Bearer view-7733' } } });
+  expect(put.status(), await put.text()).toBe(200);
+  const v = await operatorPage(VIEWER.user, VIEWER.pass, 'viewer');
+  try {
+    await v.p.goto('/#/upstreams');
+    const editor = v.p.getByTestId('editor-upstream');
+    const row = editor.getByTestId('entry-row').filter({ hasText: 'ui-view-up' });
+    await expect(row.getByTestId('kept-badge')).toBeVisible({ timeout: 20_000 });
+    await expect(row.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+    await expect(editor.getByRole('button', { name: 'Add upstream', exact: true })).toHaveCount(0);
+    await expect(v.p.locator('body')).not.toContainText('view-7733');
+  } finally {
+    await v.close();
+    await r.delete('/api/v1/upstreams/ui-view-up', { headers: h });
   }
 });
 
@@ -1967,7 +2062,10 @@ test('api_015 errors read as sentences', async () => {
   const cases: [number, string, string, RegExp][] = [
     [422, 'path_not_allowed', '`token_file`: under /proc, which TelltaleDNS never reads', /can't be used/],
     [409, 'set_by_file', '`url` is set by the configuration file', /The configuration file sets/],
-    [422, 'credential_reentry_required', '`headers.Authorization` is `<redacted>`, and there is no stored value to keep', /headers\.Authorization.*telltale ctl/],
+    [422, 'credential_reentry_required', '`headers.Authorization` is `<redacted>`, and there is no stored value to keep', /has no value to keep\. This form can't enter it: change it with telltale ctl/],
+    // The destination changed: the field is named, the marker is not, and the form can enter it.
+    [422, 'credential_reentry_required', '`url` is `<redacted>`, and `tls_server_name` changed: a credential isn\'t sent to a new destination without being entered again', /The stored credential `url` isn't kept, because this entry now points somewhere else\. Enter it again on this form/],
+    [422, 'credential_reentry_required', '`password` is `<redacted>`, and there is no stored value to keep', /The stored credential `password` has no value to keep\. Enter it again on this form/],
     [409, 'upgrade_required', 'a newer primary is needed', /too old/],
     [422, 'secret_missing', '`token_ref` names no stored secret', /doesn't store/],
     [409, 'secret_in_use', "`alert.ui-used.token` is used by alert ui-used", /still in use/],
@@ -1993,8 +2091,20 @@ test('api_015 errors read as sentences', async () => {
       await expect(alert, c[1]).toBeVisible();
       await expect(alert, c[1]).not.toContainText(c[1]);
     }
+    // "Test it" runs a check, which never uses a stored value: its refusal reads as a sentence in the
+    // result line (ADR-927 §3), with the server's own wording kept on the error.
+    await page.route('**/api/v1/checks/upstream', (route) =>
+      route.fulfill({
+        status: 422,
+        json: { status: 422, code: 'credential_reentry_required', title: 'credential_reentry_required', detail: 'the draft sends `<redacted>` for a credential, and a check never uses stored values' },
+      }),
+    );
+    await page.getByRole('button', { name: 'Test it', exact: true }).click();
+    await expect(page.getByTestId('form-action-result')).toContainText("A check can't use a stored credential");
+    await expect(page.getByTestId('form-action-result')).not.toContainText('<redacted>');
   } finally {
     forgetRefusals();
+    await page.unroute('**/api/v1/checks/upstream');
     await page.unroute('**/api/v1/upstreams/ui-err-up*');
     await page.reload();
   }
@@ -4456,6 +4566,27 @@ const ROUTER_CERT = {
   pem: '-----BEGIN CERTIFICATE-----\nMAMCAQU=\n-----END CERTIFICATE-----\n',
   suggestedTlsServerName: 'unifi.local',
 };
+
+// REQ: API-015 (T24.16) — a credential typed into a router's secret field and not saved holds Save the
+// router: the router is never saved without the credential the admin typed.
+test('api_015 a typed router credential holds Save the router', async () => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto('/#/routers');
+  await expect(page.locator('h1', { hasText: 'Routers' })).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId('routers-add').click();
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('lab-dirty');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('https://127.0.0.1:9');
+  const field = page.getByTestId('router-secret-api_key');
+  await field.getByLabel('API key', { exact: true }).fill('typed-not-saved-4410');
+  await expect(page.getByTestId('routers-secret-unsaved')).toBeVisible();
+  await expect(page.getByTestId('routers-save')).toBeDisabled();
+  await expect(page.locator('body')).not.toContainText('typed-not-saved-4410');
+  // Discarding the typed value (clearing the field) lets the router be saved again.
+  await field.getByLabel('API key', { exact: true }).fill('');
+  await expect(page.getByTestId('routers-secret-unsaved')).toHaveCount(0);
+  await expect(page.getByTestId('routers-save')).toBeEnabled();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+});
 
 // REQ: API-015 (T24.16) — a router's credential goes through SecretField: the value is typed into the
 // field, saved as a stored secret, and the field then says it is set (never the value).

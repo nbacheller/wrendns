@@ -72,6 +72,10 @@
   let certError = $state('');
   let busy = $state(false);
   let confirmDelete = $state<string | null>(null);
+  // REQ: API-015 (T24.16) — a credential typed in a secret field and not yet saved: Save the router
+  // waits for it, so the router is never saved without the credential the admin typed.
+  let secretDirty = $state<Record<string, boolean>>({});
+  const anySecretDirty = $derived(Object.values(secretDirty).some(Boolean));
 
   function blank(): Form {
     return { original: null, name: '', kind: 'unifi', url: 'https://', site: 'default', username: '', api_key_ref: undefined, api_secret_ref: undefined, password_ref: undefined, tls_ca_pem: '', tls_server_name: '', interval_secs: 300 };
@@ -312,12 +316,14 @@
             reference={refOf(form, field)}
             defaultName={secretName(form, field)}
             canSet={isAdmin}
+            ondirty={(d) => (secretDirty[field] = d)}
             onreference={(n) => form && setRef(form, field, n)}
           />
         {/each}
       {:else if !nameTaken}
         <p class="small muted">Enter a name first: the stored secrets are named after the router.</p>
       {/if}
+      {#if anySecretDirty}<p class="notice warn small" role="status" data-testid="routers-secret-unsaved">Save or discard the secret you typed first; Save the router waits for it.</p>{/if}
 
       <h3>Certificate <HelpButton id="router-certificate" /></h3>
       <p class="small muted">A console's own certificate names <span class="mono">unifi.local</span>, not its address. Fetch it from the console and trust it: nothing else is trusted for this router.</p>
@@ -347,7 +353,7 @@
       <div class="row-actions">
         <button type="button" class="btn" data-testid="routers-check-button" onclick={check} disabled={busy || !form.url.trim()}>Check it</button>
         <HelpButton id="router-check" />
-        <button type="button" class="btn primary" data-testid="routers-save" onclick={save} disabled={busy || nameTaken}>Save the router</button>
+        <button type="button" class="btn primary" data-testid="routers-save" onclick={save} disabled={busy || nameTaken || anySecretDirty}>Save the router</button>
         <button type="button" class="btn" onclick={closeForm}>Cancel</button>
       </div>
     </section>

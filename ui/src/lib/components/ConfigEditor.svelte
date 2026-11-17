@@ -82,9 +82,11 @@
      *  this network"). A new object each time it should open; operators only. `onused` runs once it
      *  has been taken (the page clears the URL so a reload or Back doesn't reopen it). */
     draft?: { name?: string; values: Record<string, unknown>; onused?: () => void } | null;
-    /** REQ: API-014 (T24.16, ADR-926) — what a draft needs an admin for (a program address): the
-     *  reason, for a non-admin, which holds Check and Apply; the server refuses it too. */
-    adminOnly?: (draft: Record<string, unknown>) => string | null;
+    /** REQ: API-014 (T24.16, ADR-926 §1) — what a draft needs an admin for (a program address): the
+     *  reason, for a non-admin, which holds Check and Apply; the server refuses it too. `saved` is the
+     *  entry as it was read (null for a new entry), so a draft that leaves a saved program address
+     *  alone isn't held. */
+    adminOnly?: (draft: Record<string, unknown>, saved: Record<string, unknown> | null) => string | null;
   } = $props();
   let formOut = $state<{ ok: boolean; text: string } | null>(null);
   async function runFormAction() {
@@ -111,12 +113,12 @@
   let entriesLoaded = $state(false);
   let error = $state<unknown>(null);
   let editing = $state<{ name: string; isNew: boolean; values: Record<string, unknown> } | null>(null);
-  // REQ: API-014 (T24.16) — a non-admin's draft that needs an admin: the reason, or null.
-  const draftBlock = $derived(!can('admin') && editing && adminOnly ? adminOnly(editing.values) : null);
   // The entry as it was read, for fields only an admin changes (T23.2), and the credential paths
   // it keeps (`redacted`, T24.16).
   let original = $state<Record<string, unknown>>({});
   let originalRedacted = $state<string[]>([]);
+  // REQ: API-014 (T24.16) — a non-admin's draft that needs an admin: the reason, or null.
+  const draftBlock = $derived(!can('admin') && editing && adminOnly ? adminOnly(editing.values, editing.isNew ? null : original) : null);
   // REQ: DNS-019, DNS-023 (ADR-914) — the fields the config files set: the API keeps their value.
   let fileSet = $state<string[]>([]);
   // REQ: API-015 (T23.6, ADR-903 §9) — this node's credential fields: a secret field reads whether
@@ -306,7 +308,7 @@
                 <strong>{e.name}</strong><span class="badge {cls}">{label}</span>
                 <!-- REQ: API-014 (T23.2) — a stored path the node refuses to read. -->
                 <!-- REQ: API-014 (T24.16) — the entry keeps a credential the API can't show: enter it again to change it. -->
-                {#if e.redacted?.length}<span class="badge" title={e.redacted.join(', ')} data-testid="kept-badge">kept: re-enter to change</span>{/if}
+                {#if e.redacted?.length}<span class="badge" title={e.redacted.join(', ')} data-testid="kept-badge">kept: re-enter to change</span> <HelpButton id="credentials-in-forms" />{/if}
                 {#each e.credentialIssues ?? [] as i (i.field)}
                   <span class="badge bad" title={i.reason} data-testid="credential-issue">{i.field} not read</span>
                 {/each}
