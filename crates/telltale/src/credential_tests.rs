@@ -114,14 +114,27 @@ pub(crate) fn harness_in(
     extra: &str,
     cluster: Option<Arc<telltale_cluster::net::Cluster>>,
 ) -> Harness {
+    harness_from(
+        extra,
+        cluster,
+        vec![telltale_config::Cidr::parse("127.0.0.0/8").unwrap()],
+    )
+}
+
+/// [`harness_in`] answering clients in `allowed` (`[access] allowed_networks`).
+pub(crate) fn harness_from(
+    extra: &str,
+    cluster: Option<Arc<telltale_cluster::net::Cluster>>,
+    allowed: Vec<telltale_config::Cidr>,
+) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = config(&planted_toml(extra));
     cfg.node.data_dir = telltale_config::SafeString::new(dir.path().to_str().unwrap()).unwrap();
     let (reload, mut reloads) = tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<bool>>(4);
     let src = Arc::new(Sources {
-        reload,
-        allowed: vec![telltale_config::Cidr::parse("127.0.0.0/8").unwrap()],
+        allowed,
         cluster,
+        reload,
         ..crate::http::tests::sources_in(dir.path())
     });
     src.config.store(Arc::new(cfg.clone()));

@@ -3145,6 +3145,37 @@ impl Backend for ApiBackend {
             .to_vec())
     }
 
+    // REQ: API-015 (ADR-167 §4) — stored secrets: metadata only.
+    fn secrets_status(&self) -> Result<telltale_api::secrets_api::SecretsStatus, Problem> {
+        Ok(crate::secrets_api::status(&self.src))
+    }
+
+    fn secret_refs(&self) -> Vec<(String, telltale_api::secrets_api::SecretUse)> {
+        crate::secrets_api::refs(&self.src)
+    }
+
+    // REQ: API-015 — applied here (a standalone node, or the primary: the rules refuse anywhere
+    // else).
+    fn secret_write(
+        &self,
+        w: telltale_api::secrets_api::SecretWrite,
+    ) -> BoxFuture<Result<telltale_api::secrets_api::SecretChange, Problem>> {
+        Box::pin(crate::secrets_api::write_here(Arc::clone(&self.src), w))
+    }
+
+    fn secret_idempotency(
+        &self,
+        request: &str,
+        value: Option<&telltale_api::secrets_api::SecretText>,
+    ) -> Result<Vec<u8>, Problem> {
+        crate::secrets_api::idempotency(&self.src, request, value)
+    }
+
+    // REQ: API-015 — `[api] allow_secrets_over_http`, from this node's files.
+    fn secrets_over_http_allowed(&self) -> bool {
+        self.src.config.load().api.allow_secrets_over_http
+    }
+
     // REQ: OPS-004 (ADR-046) — "Check now" in Settings.
     fn check_updates(
         &self,
@@ -4988,6 +5019,12 @@ fn plan_override(
         _ => named_json(&merged.group, &name),
     };
     let mut warnings: Vec<String> = telltale_config::validate_config(&merged).unwrap_or_default();
+    warnings.extend(mixed_version_warning(
+        src,
+        w.kind,
+        named_json(&before_cfg.alerts.destination, &name).as_ref(),
+        body_in,
+    ));
     if let Some(r) = &redirect {
         warnings.push(format!(
             "This sends `{name}`'s credential somewhere new (`{}` changes): the change is audited as credential.redirect and raises the credential_redirected alert.",
@@ -5057,6 +5094,53 @@ fn set_by_file(
     telltale_config::secret_refs::carry_file_credentials(kind, &in_files, &mut out)
         .map_err(|f| refused(f.field, f.file))?;
     Ok(Some(out))
+}
+
+/// REQ: OPS-014, CLU-010 (ADR-167 "Mixed versions") — a write that adds a `*_ref` the entry
+/// didn't have: members older than 0.8.0 don't know the field and refuse the configuration
+/// version that carries it (keeping their last good one until upgraded), so the answer names them.
+fn mixed_version_warning(
+    src: &Sources,
+    kind: ManagedKind,
+    before: Option<&serde_json::Value>,
+    body: Option<&serde_json::Value>,
+) -> Option<String> {
+    let k = match kind {
+        ManagedKind::AlertDestination => "alert_destination",
+        _ => return None,
+    };
+    let body = body?;
+    let set = |v: Option<&serde_json::Value>| {
+        v.and_then(serde_json::Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty())
+    };
+    let adds = telltale_config::secret_refs::fields_of(k)
+        .any(|f| set(body.get(f.reference)) && !set(before.and_then(|b| b.get(f.reference))));
+    if !adds {
+        return None;
+    }
+    let older: Vec<String> = src
+        .cluster
+        .as_ref()?
+        .members()
+        .into_iter()
+        .filter(|m| !crate::forward::version_at_least(&m.version, crate::forward::MARKERS_SINCE))
+        .map(|m| {
+            let who = if m.site.is_empty() { m.node_id } else { m.site };
+            let v = if m.version.is_empty() {
+                "version unknown".to_owned()
+            } else {
+                m.version
+            };
+            format!("{who} ({v})")
+        })
+        .collect();
+    (!older.is_empty()).then(|| {
+        format!(
+            "Members older than 0.8.0 don't know `*_ref` fields: they refuse the configuration version this makes and keep their last good one until upgraded ({}).",
+            older.join(", ")
+        )
+    })
 }
 
 /// REQ: OPS-014 (ADR-167 §2, §4) — the references an entry body makes to stored secrets: each

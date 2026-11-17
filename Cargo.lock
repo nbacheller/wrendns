@@ -3528,6 +3528,7 @@ dependencies = [
  "tower",
  "tracing",
  "utoipa",
+ "zeroize",
 ]
 
 [[package]]

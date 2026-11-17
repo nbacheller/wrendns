@@ -242,6 +242,21 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. The stored secrets (routers', alert destinations', OIDC providers', sinks', Git's and OTLP's credentials entered in the UI): each one's name, kind, when and by whom it was set, the credential fields that name it (usedBy), and which nodes hold it and can read it. Never a value. Also this node's secrets store (ready, or locked and why; the key's source and ID, never the key) and every credential field of its configuration with its source: inline or file (set by the configuration files, which win) or stored, and whether this node can read it. On a replica, stale=true means the primary couldn't be asked. There is no tool to set or clear a secret: a person does that (Settings → Integrations & secrets, or telltale ctl secrets). Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "secrets_status"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. The Kubernetes workloads TelltaleDNS names as devices: namespace/kind/name (a Deployment's replicas are one device across rollouts), the group and where it came from (pod label, namespace label, map rule, or default group), the pods and their addresses, queries and blocked answers in the last 24 hours (every node's), and when it last asked. Filter by namespace or group (`none` for workloads without one). A workload's name works as `client` in search_queries, get_client_profile, device_timeline, and activity_heatmap. Errors with kubernetes_disabled when the feature is off. Needs analytics:read.",
     "inputSchema": {
       "additionalProperties": false,

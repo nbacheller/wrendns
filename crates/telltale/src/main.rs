@@ -60,6 +60,9 @@ mod routers;
 #[cfg(test)]
 mod secret_store_tests;
 mod secrets;
+mod secrets_api;
+#[cfg(test)]
+mod secrets_api_tests;
 mod selfupdate;
 mod server;
 mod shadow;

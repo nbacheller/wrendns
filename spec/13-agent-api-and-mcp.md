@@ -56,12 +56,14 @@ Implement with the official Rust MCP SDK (`rmcp`) or a minimal compliant impleme
 | `cluster_status` | Members, roles, epochs, lag, versions, primary reachability; each node's maintenance window when set (OPS-010) |
 | `drill_report` | Failover drills, newest first (coverage, verdict counts), or one report: per device followed / stuck / quiet / elsewhere, unanswered queries, time to failover, returned or sticky; queries per node (CLU-014) |
 | `get_config` | Config section (secrets redacted) + current version |
+| `secrets_status` | Stored secrets' metadata (name, kind, stamp, who set it when, `usedBy`, per-node readability), the node's store state and key ID, and every credential field with its source; never a value (API-015, ADR-167 §5; `config:read`) |
 | `test_resolution` | Resolve a name through a given upstream/group *without* caching or logging, to diagnose |
 
 ### 3.2 Write (P1, plan/apply)
 `plan_block_domain`, `plan_allow_domain`, `plan_add_list`, `plan_update_group`, `plan_assign_client`, `plan_rename_client` (API-010), `plan_update_upstreams`, `plan_set_schedule`, `plan_set_ratelimit`, `plan_set_exclusions` (OBS-022), `plan_pin_version` / `plan_unpin` (CLU-013; `cluster:admin`), `plan_failover_drill` (CLU-014; `ops:drill`, never a default scope; the preview lists the preconditions, the baseline, and the devices) → `apply_plan`, `discard_plan`. Plans that change filtering or policy carry an `impact` (OBS-024) when the agent passes `simulate` (a window, e.g. `"24h"`) or `[simulate] plans_by_default` is on, and the node could simulate within its budget; they say so when it couldn't.
 Immediate low-risk ops (scope-gated, still audited, no plan): `pause_blocking` (max 60 min for agents), `resume_blocking`, `flush_cache`, `acknowledge_anomalies` (`ops:anomalies`; `undo` takes it back; OBS-014), `start_maintenance` / `end_maintenance` (`ops:maintenance`; agents at most 2 h, a reason required; OPS-010). Pre-save checks (T9.12; change nothing, need the entry's write scope): `check_upstream`, `check_list`.
 `cluster_promote` is excluded from agents unless `cluster:admin` scope **and** human approval are both configured.
+**Not for agents, whatever the scopes** (ADR-167 §5; 403 `agent_not_allowed`, no tool, no plan): setting or clearing a stored secret (`PUT`/`DELETE /api/v1/secrets/{name}`), a backup (`POST /api/v1/backup`), and router checks (`POST /api/v1/checks/router*`). A value would otherwise sit in AGT-007 plan memory, the approval diff and the agent's transcript (as with OPS-011 and ADR-156). The same holds for writes of the `router`, `oidc_provider`, `sink` and `identify-settings` kinds when they come (T23.7, T23.10, T23.11, T23.13): admin-only, no agent scope.
 
 ### 3.3 Example interaction
 > **User → agent:** "Why is the living-room TV slow tonight?"

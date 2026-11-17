@@ -8,6 +8,7 @@ TelltaleDNS reads a credential (a router's API key, an alert destination's token
 - **Encrypted per node.** Each value is encrypted in `state.db` with ChaCha20-Poly1305 under a key that belongs to this node, with a random 96-bit nonce. The ciphertext is bound to the key's ID, the secret's kind and name, and the stamp of its last change, so a row copied over another one (or given another stamp) fails to decrypt and is reported `corrupt`.
 - **Kept in memory as ciphertext.** The node decrypts a value only when an integration uses it, and wipes its own copy afterwards. That covers TelltaleDNS's own buffers; what the HTTP, TLS and protobuf libraries copy while sending a request isn't wiped.
 - **The files win.** A credential set inline or by file in the configuration files is used, and the API can't replace it (409 `set_by_file`).
+- **Entered by admins, over HTTPS.** Only an admin sets or clears one (`PUT`/`DELETE /api/v1/secrets/<name>`, or `telltale ctl secrets set`), never an agent token, and only over HTTPS or on the node itself, unless `[api] allow_secrets_over_http` says otherwise ([Running TelltaleDNS](running.md#setting-a-stored-secret)). The value crosses the HTTP and JSON layers on its way in, and in a cluster the mTLS channel to the primary; those copies aren't wiped either.
 - **Limits.** At most 128 stored secrets, each a single line of up to 8 KiB (no line breaks, tabs or other control characters), and never the text `<redacted>`. Names are lowercase letters, digits, `.`, `_` and `-`, up to 63, starting with a letter or digit.
 
 ## Threat model

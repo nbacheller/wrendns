@@ -418,10 +418,10 @@ async fn send<T: serde::de::DeserializeOwned>(
 }
 
 /// The first version whose primary applies the marker rule (ADR-167 §4).
-const MARKERS_SINCE: (u64, u64, u64) = (0, 8, 0);
+pub(crate) const MARKERS_SINCE: (u64, u64, u64) = (0, 8, 0);
 
 /// Whether a version string (`0.8.0`, `v0.8.1-rc.1`) is at least `min`; unreadable is not.
-fn version_at_least(v: &str, min: (u64, u64, u64)) -> bool {
+pub(crate) fn version_at_least(v: &str, min: (u64, u64, u64)) -> bool {
     let core = v.trim().trim_start_matches('v');
     let core = core.split(['-', '+']).next().unwrap_or_default();
     let mut parts = core.split('.').map(|p| p.parse::<u64>().ok());

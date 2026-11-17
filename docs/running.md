@@ -3053,7 +3053,30 @@ api_key_ref = "unifi"     # the secret named `unifi`
 - **Backups never hold them**: the rows, their deletion records and the node key are left out of every backup (`telltale backup create`). A restored node has no stored secrets; set them again.
 - **Metrics:** `telltale_secrets{state="readable|unreadable|corrupt"}`.
 
-Values are entered through the API and Settings → Integrations & secrets, which come with the secrets API (admins only); until then a reference names no stored secret and is reported as missing.
+##### Setting a stored secret
+
+Values go in through the API (or `telltale ctl secrets`), and come back out nowhere: every answer, read, log line and audit entry holds only the secret's name, kind, stamp, who set it when, and which fields use it. The Settings page for them (Integrations & secrets) isn't in yet.
+
+```sh
+telltale ctl secrets set unifi --from-file /root/unifi-key   # or pipe it in: `... set unifi < key`
+telltale ctl secrets list                                     # names, users, readable per node; never a value
+telltale ctl secrets clear unifi                              # refused while a field names it
+```
+
+| Endpoint | What it does |
+|---|---|
+| `GET /api/v1/secrets` | every stored secret (name, kind, `stamp`, `updated`, `updatedBy`, `origin`, `usedBy`, `nodes` with whether each can read it), names a `*_ref` uses that aren't set (`set: false`), this node's store (state, key source and `key_id`), and every credential field of this node with its source (`inline`, `file`, `stored`) and whether it's readable here. Operators and admins; agents with `config:read` (MCP `secrets_status`). The ETag is the secrets head |
+| `GET /api/v1/secrets/<name>` | one of them |
+| `PUT /api/v1/secrets/<name>` with `{"value": "...", "kind": "text"}` | set or replace it (admins) |
+| `DELETE /api/v1/secrets/<name>` | delete it (admins); `?force=true` when a cluster member's references can't be read |
+
+- **Admins only, never agents.** An operator gets 403; an agent token gets 403 `agent_not_allowed` whatever its scopes (a value would sit in its plan and transcript), and has no MCP tool to set one.
+- **HTTPS or the node itself.** A `PUT` or `DELETE` over plain HTTP from another host is refused with 403 `insecure_transport`: turn on `[api] tls = { self_signed = true }` (or your own certificate), put a TLS proxy in front (listed in `[api] trusted_proxies`, sending `X-Forwarded-Proto: https`), or run the command on the node (`http://127.0.0.1` counts; a request a proxy forwarded doesn't). `[api] allow_secrets_over_http = true` in the node's own files lifts the check; the value then crosses the network in clear.
+- **Checks.** `?dryRun=true` checks the name, kind and value and answers `wouldCreate` or `wouldReplace` with the fields that would use it, storing nothing. `Idempotency-Key` replays the first answer for the same value (the record keeps the request line and a hash keyed with the node's secrets key, never the value; another value with the same key is 409). `If-Match` takes the ETag of `GET /api/v1/secrets` (412 when another change came first). `X-Telltale-Reason` goes into the audit log, which records `secret.put` and `secret.delete` with the name, kind, stamp and users, never the value or its length. Answers carry `Cache-Control: no-store`.
+- **Values.** One line of text, at most 8 KiB, trimmed; empty, control characters, `<redacted>` and the reserved kind `pem` are refused (400), and so is a 129th secret. A secret a `webhook_secret_ref` names needs at least 16 characters. The name the UI gives a credential (`<kind>.<entry>.<field>`, such as `router.unifi.api_key`) is refused with 409 `set_by_file` when the configuration files already set that credential.
+- **Deleting** a secret a field still names, on any node, is refused with 409 `secret_in_use`, listing the fields (a node-local one, such as an OIDC provider in a replica's own files, with its node). When a full member can't be asked (it's offline, or too old to say), the delete needs `?force=true`; fields that are known to use it refuse even then.
+- **In a cluster** the primary keeps the set: a replica sends the change there over the cluster channel (`secret.put`, `secret.delete`) and logs only the operation and the name. With no primary reachable the answer is 409; a primary too old to know the call gives 409 `upgrade_required`. Secret writes go through while the configuration is managed in Git (secrets are state, never in Git) and while the cluster is pinned or a rollout is baking (they aren't configuration versions); an emergency primary and a primary without its lease refuse them (409). For now a secret set in a cluster is stored on the primary only (replication to the other full members isn't in yet): integrations that read it on another member report it as not set there. `GET /api/v1/secrets` on a replica shows the primary's list (with `stale: true` when the primary can't be asked).
+- **Mixed versions.** An older replica forwards no secret writes (it doesn't know the call), and an older primary refuses them.
 
 #### Who may point a credential somewhere
 
@@ -3129,6 +3152,7 @@ telltale ctl maintenance start --for 30m --reason "SD card swap"   # `ctl mainte
 telltale ctl flush --name example.com --subtree
 telltale ctl lists                           # with unique names and hits
 telltale ctl plans                           # agents' pending changes; `ctl approve <id>` / `ctl reject <id>`
+telltale ctl secrets list                    # stored secrets, never a value; `secrets set NAME --from-file F`, `secrets clear NAME`
 telltale ctl get stats/latency by=upstream   # any endpoint (raw JSON)
 telltale ctl put groups/kids --data '{"lists": ["oisd-small"]}'
 ```
@@ -3155,6 +3179,7 @@ The default is `analytics:read` and `config:read`: read-only, without the query 
 
 **What an agent can't do:**
 - Anything not listed above is refused. That covers users, tokens, passwords, backups, and the audit log.
+- Setting or clearing a [stored secret](#setting-a-stored-secret), taking a backup, and checking a router are refused with 403 `agent_not_allowed` whatever the scopes: a value would sit in the agent's plan and transcript. Reading the secrets' metadata (`GET /api/v1/secrets`, the tool `secrets_status`) needs `config:read`.
 - With `group`, it sees and changes only that group's devices and queries, and other views are refused.
 
 **Every change from an agent:**
@@ -3198,6 +3223,7 @@ For agents that start their tools as a subprocess, use the stdio transport. It r
 | `plan_failover_drill` | plan a [failover drill](#failover-drills): the preview lists every precondition, the baseline, and the devices (needs `ops:drill` to apply; never a default scope) |
 | `drill_report` | the newest drills, or one report: who followed, who was stuck, time to failover, who came back |
 | `get_config` | one configuration section (no secrets) |
+| `secrets_status` | the [stored secrets](#setting-a-stored-secret): names, who set them when, the fields that use them, which nodes can read them, never a value; and every credential field with its source (needs `config:read`; there's no tool to set one) |
 
 ### Analytics in one query (vqlog)
 `vqlog` is a small query language over the query log, for agents and for you: one query instead of many narrow tools, and never SQL. Stages are separated by `|`:

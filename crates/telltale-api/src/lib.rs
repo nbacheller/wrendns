@@ -33,6 +33,7 @@ pub mod plans;
 pub mod problem;
 pub mod rhythm_api;
 pub mod rollout_api;
+pub mod secrets_api;
 pub mod simulate_api;
 pub mod slo;
 pub mod support_api;
@@ -648,6 +649,44 @@ pub trait Backend: Send + Sync + 'static {
         let _ = w;
         Box::pin(async { Err(cluster_nodes_api::no_cluster()) })
     }
+    /// REQ: API-015 (ADR-167 §4) — the stored secrets (never a value), this node's store and its
+    /// credential fields; on a replica, the primary's list when it answers. Called on a blocking
+    /// thread.
+    fn secrets_status(&self) -> Result<secrets_api::SecretsStatus, Problem> {
+        Err(Problem::unavailable(
+            "stored secrets aren't available on this node",
+        ))
+    }
+    /// REQ: API-015 (ADR-167 §4, §6) — the references this node's own configuration makes to
+    /// stored secrets, each with the secret's name (what a delete on the primary checks across
+    /// nodes).
+    fn secret_refs(&self) -> Vec<(String, secrets_api::SecretUse)> {
+        Vec::new()
+    }
+    /// REQ: API-015 — sets or deletes a stored secret (on the primary; a replica forwards it).
+    fn secret_write(
+        &self,
+        w: secrets_api::SecretWrite,
+    ) -> BoxFuture<Result<secrets_api::SecretChange, Problem>> {
+        let _ = w;
+        secrets_api::unavailable()
+    }
+    /// REQ: AGT-003 (ADR-167 §4) — what an `Idempotency-Key` record of a secret write keeps:
+    /// `request` and the keyed hash of the value under the node key's idempotency subkey.
+    fn secret_idempotency(
+        &self,
+        request: &str,
+        value: Option<&secrets_api::SecretText>,
+    ) -> Result<Vec<u8>, Problem> {
+        let _ = (request, value);
+        Err(Problem::unavailable(
+            "stored secrets aren't available on this node",
+        ))
+    }
+    /// REQ: API-015 — `[api] allow_secrets_over_http`: secret values may come over plain HTTP.
+    fn secrets_over_http_allowed(&self) -> bool {
+        false
+    }
 }
 
 /// REQ: CLU-001 (ADR-155) — a request to remove a node, as the API checked it (and as it crosses
@@ -1085,6 +1124,9 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
             support_api::admin_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_admin)),
         )
+        // REQ: API-015 (ADR-167 §4) — stored secrets: operators read metadata, admins set and
+        // clear values (never agents); each route checks its own role.
+        .merge(secrets_api::routes(Arc::clone(&backend), Arc::clone(&auth)))
         .layer(from_fn_with_state(
             Arc::clone(&auth),
             auth::routes::authenticate,
@@ -1126,7 +1168,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, system_health, system_probes, maintenance_api::start, maintenance_api::end, drill_api::start, drill_api::end, drill_api::active, drill_api::list, drill_api::report, drill_api::affinity, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, compare::cluster_compare, rhythm_api::client_rhythm, timeline::client_timeline, config_api::cluster_promote, config_api::backup_download, support_api::make, support_api::map, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, attribution::slo_attribution, heatmap::stats_heatmap, flow::stats_flow, latency_heatmap::latency_heatmap, latency_heatmap::latency_exemplars, queries,
+        system_info, system_health, system_probes, maintenance_api::start, maintenance_api::end, drill_api::start, drill_api::end, drill_api::active, drill_api::list, drill_api::report, drill_api::affinity, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, compare::cluster_compare, rhythm_api::client_rhythm, timeline::client_timeline, config_api::cluster_promote, config_api::backup_download, secrets_api::list_secrets, secrets_api::get_secret, secrets_api::put_secret, secrets_api::delete_secret, support_api::make, support_api::map, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, attribution::slo_attribution, heatmap::stats_heatmap, flow::stats_flow, latency_heatmap::latency_heatmap, latency_heatmap::latency_exemplars, queries,
         queries_stream,
         explain, lists, groups, services, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -1144,7 +1186,7 @@ async fn fallback(
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, model::CredentialIssue, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Annotation, model::AnnotationPage, model::NoteRequest, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::DrillAll, model::DrillTargets, model::DrillRequest, model::DrillMode, model::DrillCheck, model::DrillTargetDevice, model::DrillStart, model::ActiveDrill, model::DrillDevice, model::DrillNodeCount, model::DrillSummary, model::DrillReport, model::DrillPage, model::AffinityNode, model::AffinityRow, model::AffinityPage, model::GuardReadings, model::ClusterPin, model::ClusterRollout, model::RolloutFailure, model::RolloutNode, model::RolloutStatus, model::ClusterVersion, model::ClusterVersions, model::PinRequest, model::RolloutAction, model::NodeRemoval, model::SupportPackageRequest, model::DeviceIdentity, model::IdentityEvidence, model::WorkloadEvidence, model::ExplainWorkload, model::WorkloadInfo, model::WorkloadPod, model::WorkloadPage, model::KubernetesStatus, model::MatchedDomain, model::IdentityRunnerUp, model::Simulation, model::SimulatedClass, model::SimulatedName, model::SimulatedDevice, model::SimulatedGroup, model::SimulateRequest, model::SloStatus, attribution::SloAttribution, attribution::AttributionBudget, attribution::AttributionPoint, attribution::AttributionRow, attribution::AttributionCoverage, heatmap::Heatmap, flow::QueryFlow, flow::FlowNode, flow::FlowLink, compare::NodeCompare, compare::NodeNumbers, compare::NodeSeries, compare::NodeFinding, rhythm_api::ClientRhythm, rhythm_api::RhythmDomain, timeline::DeviceTimeline, timeline::TimelineLane, timeline::TimelineEvent, latency_heatmap::LatencyHeatmap, latency_heatmap::LatencyExemplar, latency_heatmap::LatencyExemplars, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, model::NetworkInfo, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Annotation, model::AnnotationPage, model::NoteRequest, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::DrillAll, model::DrillTargets, model::DrillRequest, model::DrillMode, model::DrillCheck, model::DrillTargetDevice, model::DrillStart, model::ActiveDrill, model::DrillDevice, model::DrillNodeCount, model::DrillSummary, model::DrillReport, model::DrillPage, model::AffinityNode, model::AffinityRow, model::AffinityPage, model::GuardReadings, model::ClusterPin, model::ClusterRollout, model::RolloutFailure, model::RolloutNode, model::RolloutStatus, model::ClusterVersion, model::ClusterVersions, model::PinRequest, model::RolloutAction, model::NodeRemoval, model::SupportPackageRequest, secrets_api::SecretPut, secrets_api::SecretStamp, secrets_api::SecretsHead, secrets_api::SecretUse, secrets_api::SecretNode, secrets_api::SecretMeta, secrets_api::CredentialField, secrets_api::SecretsStore, secrets_api::SecretsStatus, secrets_api::SecretChange, model::DeviceIdentity, model::IdentityEvidence, model::WorkloadEvidence, model::ExplainWorkload, model::WorkloadInfo, model::WorkloadPod, model::WorkloadPage, model::KubernetesStatus, model::MatchedDomain, model::IdentityRunnerUp, model::Simulation, model::SimulatedClass, model::SimulatedName, model::SimulatedDevice, model::SimulatedGroup, model::SimulateRequest, model::SloStatus, attribution::SloAttribution, attribution::AttributionBudget, attribution::AttributionPoint, attribution::AttributionRow, attribution::AttributionCoverage, heatmap::Heatmap, flow::QueryFlow, flow::FlowNode, flow::FlowLink, compare::NodeCompare, compare::NodeNumbers, compare::NodeSeries, compare::NodeFinding, rhythm_api::ClientRhythm, rhythm_api::RhythmDomain, timeline::DeviceTimeline, timeline::TimelineLane, timeline::TimelineEvent, latency_heatmap::LatencyHeatmap, latency_heatmap::LatencyExemplar, latency_heatmap::LatencyExemplars, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, model::NetworkInfo, UpstreamInfo, Step, TopKind,
         Hour, model::TopHour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,

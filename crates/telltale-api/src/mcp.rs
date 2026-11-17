@@ -268,6 +268,13 @@ pub fn tools() -> Vec<Tool> {
                 ])
             },
         },
+        // REQ: API-015, AGT-001 (ADR-167 §5) — metadata only; setting a value is for people.
+        Tool {
+            name: "secrets_status",
+            description: "Read-only. The stored secrets (routers', alert destinations', OIDC providers', sinks', Git's and OTLP's credentials entered in the UI): each one's name, kind, when and by whom it was set, the credential fields that name it (usedBy), and which nodes hold it and can read it. Never a value. Also this node's secrets store (ready, or locked and why; the key's source and ID, never the key) and every credential field of its configuration with its source: inline or file (set by the configuration files, which win) or stored, and whether this node can read it. On a replica, stale=true means the primary couldn't be asked. There is no tool to set or clear a secret: a person does that (Settings → Integrations & secrets, or telltale ctl secrets). Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("secrets".into(), "/api/v1/secrets".into())]),
+        },
         // REQ: FLT-017 (T15.1)
         Tool {
             name: "list_workloads",

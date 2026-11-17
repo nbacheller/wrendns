@@ -105,6 +105,15 @@ pub enum Code {
     SetByFile,
     /// REQ: OPS-014 (ADR-167 §2) — a `*_ref` names a secret this node doesn't store.
     SecretMissing,
+    /// REQ: API-015 (ADR-167 §4) — an entry or a node still uses the secret: remove those
+    /// references first (or, when a member's references can't be read, `?force=true`).
+    SecretInUse,
+    /// REQ: API-015 (ADR-167 §4) — a secret's value (or a backup's passphrase) would cross the
+    /// network in clear: use HTTPS, or the node itself (loopback).
+    InsecureTransport,
+    /// REQ: API-015, AGT-004 (ADR-167 §5) — agent tokens never do this, whatever their scopes
+    /// (secret values, backups, router checks: a value would sit in an agent's plan and transcript).
+    AgentNotAllowed,
 }
 
 impl Code {
@@ -153,6 +162,9 @@ impl Code {
             Self::PathNotAllowed => "https://telltaledns.dev/problems/path_not_allowed",
             Self::SetByFile => "https://telltaledns.dev/problems/set_by_file",
             Self::SecretMissing => "https://telltaledns.dev/problems/secret_missing",
+            Self::SecretInUse => "https://telltaledns.dev/problems/secret_in_use",
+            Self::InsecureTransport => "https://telltaledns.dev/problems/insecure_transport",
+            Self::AgentNotAllowed => "https://telltaledns.dev/problems/agent_not_allowed",
         }
     }
 
@@ -199,6 +211,9 @@ impl Code {
             Self::PathNotAllowed => "Path not allowed",
             Self::SetByFile => "Set by the configuration files",
             Self::SecretMissing => "No such stored secret",
+            Self::SecretInUse => "Secret in use",
+            Self::InsecureTransport => "HTTPS needed",
+            Self::AgentNotAllowed => "Not for agents",
         }
     }
 
@@ -211,7 +226,10 @@ impl Code {
             }
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Unauthorized | Self::TotpRequired => StatusCode::UNAUTHORIZED,
-            Self::Forbidden | Self::CsrfRejected => StatusCode::FORBIDDEN,
+            Self::Forbidden
+            | Self::CsrfRejected
+            | Self::InsecureTransport
+            | Self::AgentNotAllowed => StatusCode::FORBIDDEN,
             Self::Conflict
             | Self::GitopsManaged
             | Self::SimulationBusy
@@ -224,7 +242,8 @@ impl Code {
             | Self::NodeIsPrimary
             | Self::NodeIsUp
             | Self::UpgradeRequired
-            | Self::SetByFile => StatusCode::CONFLICT,
+            | Self::SetByFile
+            | Self::SecretInUse => StatusCode::CONFLICT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::VersionConflict => StatusCode::PRECONDITION_FAILED,
             Self::InvalidConfig

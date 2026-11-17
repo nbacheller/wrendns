@@ -8,13 +8,6 @@ use telltale_config::credentials::MARKER;
 use zeroize::Zeroizing;
 
 /// The largest value stored (UTF-8 bytes, after trimming).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the write API (`PUT`/`DELETE /api/v1/secrets`, T23.4) and replication (T23.5) use it"
-    )
-)]
 pub(crate) const MAX_VALUE: usize = 8 * 1024;
 
 /// A secret's value.
@@ -48,13 +41,6 @@ impl SecretValue {
         Self(Zeroizing::new(t.to_owned()))
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the write API (`PUT`/`DELETE /api/v1/secrets`, T23.4) and replication (T23.5) use it"
-        )
-    )]
     /// REQ: OPS-014 (ADR-167 §2) — a value to store, of kind `kind`: UTF-8, trimmed, not empty, at
     /// most [`MAX_VALUE`] bytes, no control characters (`text`), and not the redaction marker.
     pub(crate) fn new(kind: Kind, raw: Zeroizing<String>) -> Result<Self, ValueError> {
@@ -83,26 +69,12 @@ impl SecretValue {
 
 /// What a stored secret holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the write API (`PUT`/`DELETE /api/v1/secrets`, T23.4) and replication (T23.5) use it"
-    )
-)]
 pub(crate) enum Kind {
     /// One line of text: a token, a password, an API key.
     Text,
 }
 
 impl Kind {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the write API (`PUT`/`DELETE /api/v1/secrets`, T23.4) and replication (T23.5) use it"
-        )
-    )]
     /// `text`; `pem` is reserved (PEM blocks, with their line breaks) and not taken yet.
     pub(crate) fn parse(s: &str) -> Result<Self, ValueError> {
         match s {
@@ -121,13 +93,6 @@ impl Kind {
 
 /// Why a value can't be stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the write API (`PUT`/`DELETE /api/v1/secrets`, T23.4) and replication (T23.5) use it"
-    )
-)]
 pub(crate) enum ValueError {
     Empty,
     TooLong,

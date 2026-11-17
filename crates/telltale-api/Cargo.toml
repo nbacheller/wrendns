@@ -35,6 +35,9 @@ totp-rs = { version = "6.0.0", default-features = false, features = ["std"] }
 # REQ: AGT-006 (ADR-065) — MCP tools call the REST routes in-process (already in the tree via
 # axum).
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
+# REQ: API-015 (ADR-167) — a secret's value is wiped once it leaves the request (already in the
+# tree through argon2 and rustls; a direct edge, no new crate).
+zeroize = "1.9.0"
 utoipa = { version = "6.0.0", features = ["macros"] }
 
 [dev-dependencies]

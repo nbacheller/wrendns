@@ -45,7 +45,10 @@ pub(crate) struct Resolved {
     pub(crate) value: SecretValue,
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "`GET /api/v1/secrets` reports it (T23.4)")
+        expect(
+            dead_code,
+            reason = "the integrations' status reads report it (T23.7, T23.10, T23.11)"
+        )
     )]
     pub(crate) source: Source,
 }

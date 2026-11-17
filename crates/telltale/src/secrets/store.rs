@@ -31,13 +31,6 @@ use super::value::{Kind, SecretValue, ValueError};
 use super::{AEAD_CONTEXT, KeyPaths, Keys, NEW_KEY_FILE, NodeKey, hex};
 
 /// At most this many live secrets (ADR-167 §2).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the write API (`PUT`/`DELETE /api/v1/secrets`, T23.4) and replication (T23.5) use it"
-    )
-)]
 pub(crate) const MAX_SECRETS: usize = 128;
 /// How long a failed load is kept before the next use tries again.
 pub(crate) const RETRY_AFTER: Duration = Duration::from_secs(30);
@@ -102,13 +95,6 @@ impl fmt::Display for Unavailable {
 
 /// Why a change to the store was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the write API (`PUT`/`DELETE /api/v1/secrets`, T23.4) and replication (T23.5) use it"
-    )
-)]
 pub(crate) enum StoreError {
     Locked(String),
     Ephemeral,
@@ -130,13 +116,6 @@ impl fmt::Display for StoreError {
 }
 
 impl StoreError {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the write API (`PUT`/`DELETE /api/v1/secrets`, T23.4) and replication (T23.5) use it"
-        )
-    )]
     /// REQ: OPS-014 — the API's answer: 503 `secrets_locked` while locked.
     pub(crate) fn problem(&self) -> Problem {
         match self {
@@ -748,13 +727,6 @@ impl SecretStore {
         self.ready().rows.get(name).is_some_and(|c| !c.row.deleted)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the write API (`PUT`/`DELETE /api/v1/secrets`, T23.4) and replication (T23.5) use it"
-        )
-    )]
     /// REQ: OPS-014 (ADR-167 §2) — stores `value` as `name`, stamped in `epoch` (0 on a
     /// standalone node), as `origin` (`local` or `cluster`). Refused while locked.
     #[allow(clippy::too_many_arguments)] // a stored secret's parts, each a column
@@ -822,13 +794,6 @@ impl SecretStore {
         Ok(info)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the write API (`PUT`/`DELETE /api/v1/secrets`, T23.4) and replication (T23.5) use it"
-        )
-    )]
     /// REQ: OPS-014 (ADR-167 §2) — deletes `name`, leaving a tombstone with a new stamp. `None`:
     /// nothing of that name was stored.
     pub(crate) fn delete(
@@ -926,13 +891,6 @@ impl SecretStore {
         Ok(n)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the write API (`PUT`/`DELETE /api/v1/secrets`, T23.4) and replication (T23.5) use it"
-        )
-    )]
     /// REQ: OPS-014 (ADR-167 §2) — the secrets head: the highest stamp, and BLAKE3 over the
     /// sorted `(name, kind, stamp, deleted)` list (no value, no value hash).
     pub(crate) fn head(&self) -> (Stamp, [u8; 32]) {
@@ -941,13 +899,6 @@ impl SecretStore {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the write API (`PUT`/`DELETE /api/v1/secrets`, T23.4) and replication (T23.5) use it"
-    )
-)]
 fn info_of(r: &SecretRow, health: RowHealth) -> SecretInfo {
     SecretInfo {
         name: r.name.clone(),
@@ -962,13 +913,6 @@ fn info_of(r: &SecretRow, health: RowHealth) -> SecretInfo {
 }
 
 /// The head of a set of rows (they come sorted by name from the table and the cache).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the write API (`PUT`/`DELETE /api/v1/secrets`, T23.4) and replication (T23.5) use it"
-    )
-)]
 pub(crate) fn head_of<'a>(rows: impl Iterator<Item = &'a SecretRow>) -> (Stamp, [u8; 32]) {
     let mut h = blake3::Hasher::new();
     let mut top = Stamp::default();

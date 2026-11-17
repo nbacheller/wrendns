@@ -2683,6 +2683,12 @@ pub struct ApiConfig {
     /// probes. Default: none (plain HTTP, for a TLS proxy or ingress in front).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls: Option<ApiTls>,
+    /// REQ: API-015 (ADR-167 §4) — accept stored secrets' values (`PUT /api/v1/secrets`) over
+    /// plain HTTP from other hosts. Off (the default): a value is taken only over HTTPS (`tls`
+    /// above, or a proxy in `trusted_proxies` saying `X-Forwarded-Proto: https`) or from the node
+    /// itself (loopback), since over plain HTTP it would cross the network in clear. Read from
+    /// this node's own files; the API can't set it.
+    pub allow_secrets_over_http: bool,
 }
 
 impl Default for ApiConfig {
@@ -2692,6 +2698,7 @@ impl Default for ApiConfig {
             listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8053),
             trusted_proxies: Vec::new(),
             tls: None,
+            allow_secrets_over_http: false,
         }
     }
 }
