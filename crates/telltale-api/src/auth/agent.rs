@@ -73,6 +73,16 @@ pub const SCOPES: &[(&str, &str)] = &[
         "config:write:simulate",
         "change the change-simulation settings (on/off, bounds, plans simulating by default)",
     ),
+    // REQ: DNS-019 (T24.12, ADR-914) — the special-name switches; `ddr_name` is an admin's.
+    (
+        "config:write:special",
+        "change the special-name switches (iCloud Private Relay, domain-needed, ...); never ddr_name",
+    ),
+    // REQ: DNS-023 (T24.13, ADR-901) — the device-name settings; `[clients] mdns` is an admin's.
+    (
+        "config:write:local",
+        "change the device-name settings (device domain, TTLs, auto PTR, device mDNS names)",
+    ),
     ("ops:pause", "pause and resume blocking"),
     ("ops:cache", "flush the cache"),
     (
@@ -264,6 +274,14 @@ pub fn required(method: &Method, path: &str) -> Need {
         // REQ: OBS-024 (T13.1)
         if under("/api/v1/simulate-settings") {
             return Need::Scope("config:write:simulate");
+        }
+        // REQ: DNS-019 (T24.12) — `/clients-settings` has no scope: no agent writes `mdns`.
+        if under("/api/v1/special-names") {
+            return Need::Scope("config:write:special");
+        }
+        // REQ: DNS-023 (T24.13)
+        if under("/api/v1/local-settings") {
+            return Need::Scope("config:write:local");
         }
         // REQ: CLU-013 (T13.2) — what every node serves.
         if under("/api/v1/cluster/rollout-settings") {
@@ -933,13 +951,47 @@ mod tests {
         );
     }
 
+    /// REQ: DNS-019, DNS-023 (T24.12, T24.13) — the settings sections have their own scopes
+    /// (operators' areas), and no scope reaches `[clients]`: an agent can't write `mdns`.
+    #[test]
+    fn dns_019_settings_sections_need_their_scopes() {
+        use Need::{Forbidden, Scope};
+        for m in [Method::PUT, Method::DELETE] {
+            assert_eq!(
+                required(&m, "/api/v1/special-names/default"),
+                Scope("config:write:special"),
+                "{m}"
+            );
+            assert_eq!(
+                required(&m, "/api/v1/local-settings/default"),
+                Scope("config:write:local"),
+                "{m}"
+            );
+            assert_eq!(
+                required(&m, "/api/v1/clients-settings/default"),
+                Forbidden,
+                "{m}"
+            );
+        }
+        assert_eq!(
+            required(&Method::GET, "/api/v1/config/entries"),
+            Scope("config:read")
+        );
+        for scope in ["config:write:special", "config:write:local"] {
+            assert_eq!(
+                implied_role(&parse_scopes(&[scope.into()]).unwrap()),
+                Role::Operator
+            );
+        }
+    }
+
     #[test]
     fn agt_004_scopes_parse_and_imply_roles() {
         let s = parse_scopes(&["config:write:*".into(), "analytics:read".into()]).unwrap();
         assert_eq!(
             s.len(),
-            13,
-            "twelve write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts, ratelimit, anomalies, exclusions, simulate) + analytics"
+            15,
+            "fourteen write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts, ratelimit, anomalies, exclusions, simulate, special, local) + analytics"
         );
         assert!(s.contains("config:write:upstreams") && s.contains("config:write:lists"));
         assert!(s.contains("config:write:rules"));

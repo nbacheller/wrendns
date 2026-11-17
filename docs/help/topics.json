@@ -860,6 +860,36 @@
       "caution": "A credential set in the config file wins and can't be changed in the UI. Keep a copy of the node's key: without it, stored secrets can't be read. Backups never include them.",
       "docs": "stored-secrets",
       "general": true
+    },
+    {
+      "id": "special-names",
+      "title": "Names with a special meaning",
+      "term": "Special names",
+      "summary": "Names that have a standard meaning are answered here, not on the internet: iCloud Private Relay's names, Firefox's DoH canary, localhost, CHAOS queries, reverse lookups of private addresses, and one-label names like nas.",
+      "when": "Apple devices bypass your filters because Private Relay is on, a bare name like nas goes out to the internet, or a browser setting skips this resolver.",
+      "example": "Leave Private Relay names blocked: an iPhone on your Wi-Fi then uses this resolver and its filters. It shows Private Relay as off for this network, which is what Apple expects.",
+      "caution": "Turning a switch off sends its names to the internet again, at once and on every node. The DDR name is one name for the whole cluster, and it must be on every encrypted listener's certificate: only an admin sets it.",
+      "docs": "special-names"
+    },
+    {
+      "id": "ddr",
+      "title": "Find encrypted DNS by itself (DDR)",
+      "term": "DDR (RFC 9462)",
+      "summary": "Devices that support it ask resolver.arpa where an encrypted resolver is. With a DDR name set, this node answers with its DoT, DoH, and DoQ listeners.",
+      "when": "Windows 11, iOS 16 and later, and macOS 13 and later should use encrypted DNS on your network without a profile.",
+      "example": "Set dns.home.arpa on a node whose certificate carries that name: a device that asks learns the listeners and uses them.",
+      "caution": "A listener bound to loopback, or one behind PROXY protocol, isn't advertised. The certificate must cover the name and the address the device connects to; the listener checks show whether it does.",
+      "docs": "special-names"
+    },
+    {
+      "id": "device-names-dns",
+      "title": "Name devices in DNS",
+      "term": "Device names",
+      "summary": "Devices TelltaleDNS knows by name answer as name.domain, such as kitchen-tablet.home.arpa, with a reverse name too. Names come from your devices, your routers' DHCP leases, Home Assistant, and mDNS when it's on.",
+      "when": "You want to open kitchen-tablet or nas by name from any device, and the router's DHCP names aren't in DNS.",
+      "example": "Set home.arpa: a router lease for kitchen-tablet answers kitchen-tablet.home.arpa within about 10 seconds, and the reverse lookup gives the name back.",
+      "caution": "local is refused: mDNS owns it. mDNS names need the mDNS switch, which only an admin turns on, because it opens multicast listening on every node. That switch takes effect after a restart on every node.",
+      "docs": "device-names-in-dns"
     }
   ]
 }

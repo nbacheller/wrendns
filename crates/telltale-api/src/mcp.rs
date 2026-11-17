@@ -1354,6 +1354,96 @@ pub fn write_tools() -> Vec<WriteTool> {
                 })
             },
         },
+        // REQ: DNS-019 (T24.12, ADR-904, ADR-914), AGT-007 — the special-name switches, as a plan.
+        WriteTool {
+            name: "plan_set_special_names",
+            description: "Plans a change (nothing changes until apply_plan). Changes the special-name handling: iCloud Private Relay names answered NXDOMAIN (blockIcloudPrivateRelay), single-label names kept off upstreams (singleLabelNxdomain, domain-needed), the Firefox canary, private reverse lookups, CHAOS queries, localhost, and ddrName (the name the encrypted listeners' certificates carry, for DDR). Fields left out keep their current values. A field the config files set can't be changed here. ddrName is admin-only: an agent can't plan it (refused). Applies on the next query, with no restart. Needs config:write:special (and config:read to read the current settings).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "blockIcloudPrivateRelay": {"type": "boolean", "description": "mask.icloud.com and mask-h2.icloud.com answer NXDOMAIN, so Apple devices turn Private Relay off here."},
+                "singleLabelNxdomain": {"type": "boolean", "description": "One-label names asked for A, AAAA or HTTPS that nothing local answers get NXDOMAIN without upstreams."},
+                "blockFirefoxCanary": {"type": "boolean", "description": "use-application-dns.net answers NXDOMAIN, so Firefox keeps the network's DNS."},
+                "privatePtrNxdomain": {"type": "boolean", "description": "Reverse lookups for private addresses answer NXDOMAIN unless local data or a route covers them."},
+                "refuseChaos": {"type": "boolean", "description": "CHAOS-class queries (version.bind, id.server) are REFUSED."},
+                "localhost": {"type": "boolean", "description": "localhost names answer loopback addresses."},
+                "ddrName": {"type": "string", "description": "The host name on the encrypted listeners' certificates (DDR). Admin-only: an agent can't set it."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let body = pick(
+                    a,
+                    &[
+                        ("blockIcloudPrivateRelay", "block_icloud_private_relay"),
+                        ("singleLabelNxdomain", "single_label_nxdomain"),
+                        ("blockFirefoxCanary", "block_firefox_canary"),
+                        ("privatePtrNxdomain", "private_ptr_nxdomain"),
+                        ("refuseChaos", "refuse_chaos"),
+                        ("localhost", "localhost"),
+                        ("ddrName", "ddr_name"),
+                    ],
+                );
+                if body.is_empty() {
+                    return Err("give at least one setting to change".into());
+                }
+                let summary = format!(
+                    "Set the special names ({})",
+                    body.keys().cloned().collect::<Vec<_>>().join(", ")
+                );
+                Ok(Write {
+                    method: "PUT",
+                    path: "/api/v1/special-names/default".to_owned(),
+                    summary,
+                    body: Some(Value::Object(body)),
+                    merge: Some(("special", "default".to_owned())),
+                })
+            },
+        },
+        // REQ: DNS-023 (T24.13, ADR-901, AGT-007) — the device-name settings, as a plan.
+        WriteTool {
+            name: "plan_set_device_names",
+            description: "Plans a change (nothing changes until apply_plan). Changes the device-name settings: the domain devices get names under (deviceDomain, e.g. home.arpa; local is refused), the TTL of those answers (deviceTtl), whether names devices announce over mDNS count (deviceMdns; needs the mDNS switch on, which an admin sets), automatic reverse names (autoPtr), and the TTL of other local names (defaultTtl). Fields left out keep their current values; a field the config files set can't be changed here. Names change within about 10 seconds, with no restart. Needs config:write:local (and config:read to read the current settings).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "deviceDomain": {"type": "string", "description": "The domain, such as home.arpa (not local). Empty turns device names off."},
+                "deviceTtl": {"type": "integer", "minimum": 0, "description": "Seconds for device names (they follow DHCP, so keep it short; 60 by default)."},
+                "deviceMdns": {"type": "boolean", "description": "Also name devices by the names they announce over mDNS."},
+                "autoPtr": {"type": "boolean", "description": "Make reverse names for every local address record."},
+                "defaultTtl": {"type": "integer", "minimum": 0, "description": "Seconds for local names without their own TTL."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let body = pick(
+                    a,
+                    &[
+                        ("deviceDomain", "device_domain"),
+                        ("deviceTtl", "device_ttl"),
+                        ("deviceMdns", "device_mdns"),
+                        ("autoPtr", "auto_ptr"),
+                        ("defaultTtl", "default_ttl"),
+                    ],
+                );
+                if body.is_empty() {
+                    return Err("give at least one setting to change".into());
+                }
+                let summary = format!(
+                    "Set the device-name settings ({})",
+                    body.keys().cloned().collect::<Vec<_>>().join(", ")
+                );
+                Ok(Write {
+                    method: "PUT",
+                    path: "/api/v1/local-settings/default".to_owned(),
+                    summary,
+                    body: Some(Value::Object(body)),
+                    merge: Some(("local", "default".to_owned())),
+                })
+            },
+        },
         // REQ: OBS-022, AGT-007 (T12.1) — names and devices kept out of the log, as a plan.
         WriteTool {
             name: "plan_set_exclusions",

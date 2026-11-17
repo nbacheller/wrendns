@@ -138,8 +138,12 @@ impl Loader {
             return Err(errors);
         }
 
-        let config: Config = match serde_path_to_error::deserialize(Value::Table(root)) {
-            Ok(c) => c,
+        let file_set = explicit_keys(&root);
+        let config = match serde_path_to_error::deserialize::<_, Config>(Value::Table(root)) {
+            Ok(mut c) => {
+                c.file_set = file_set;
+                c
+            }
             Err(e) => {
                 let path = e.path().to_string();
                 let path = if path == "." {
@@ -161,6 +165,19 @@ impl Loader {
             Err(errors)
         }
     }
+}
+
+/// REQ: API-010 (ADR-914) — the keys of the sections the API can change that the layers set
+/// explicitly (`special.ddr_name`, ...), so an API value for one of them can be refused or
+/// overridden by the file.
+fn explicit_keys(root: &Table) -> Vec<String> {
+    let mut keys = Vec::new();
+    for section in ["special", "local", "clients"] {
+        if let Some(Value::Table(t)) = root.get(section) {
+            keys.extend(t.keys().map(|k| format!("{section}.{k}")));
+        }
+    }
+    keys
 }
 
 /// Deep-merges `over` into `base`: tables merge recursively, everything else replaces.

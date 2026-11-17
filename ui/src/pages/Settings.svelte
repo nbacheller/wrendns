@@ -98,6 +98,41 @@
     const secs = Number(v.bake_secs ?? 300);
     return `Changes reach ${named} (and the primary) first, and the rest after ${secs >= 120 ? `${Math.round(secs / 60)} minutes` : `${secs} s`} if nothing fails.`;
   };
+  // REQ: DNS-019 (T24.12, ADR-904, ADR-914) — the fields of `[special]`. `ddr_name` is an admin's.
+  const specialFields: Field[] = [
+    { key: 'block_icloud_private_relay', label: 'Block iCloud Private Relay names', type: 'bool', initial: true,
+      help: "mask.icloud.com and mask-h2.icloud.com answer NXDOMAIN. Apple devices then turn Private Relay off on this network and keep using this resolver, so the filters apply (Pi-hole's default)." },
+    { key: 'single_label_nxdomain', label: 'Keep one-label names off the internet', type: 'bool', initial: false,
+      help: 'A name with no dot (nas) that nothing local answers gets NXDOMAIN, instead of a lookup on the internet. A route for it still applies.' },
+    { key: 'block_firefox_canary', label: "Answer Firefox's DoH canary NXDOMAIN", type: 'bool', initial: true, advanced: true,
+      help: "use-application-dns.net. Firefox then keeps the network's DNS instead of switching to its own encrypted resolver." },
+    { key: 'private_ptr_nxdomain', label: 'Private reverse lookups get NXDOMAIN', type: 'bool', initial: true, advanced: true,
+      help: "Reverse lookups for private addresses don't go to the internet, unless a local record or a route covers them (RFC 6303)." },
+    { key: 'refuse_chaos', label: 'Refuse CHAOS queries', type: 'bool', initial: true, advanced: true,
+      help: 'version.bind, id.server, and the like get REFUSED.' },
+    { key: 'localhost', label: 'Answer localhost', type: 'bool', initial: true, advanced: true,
+      help: 'localhost and *.localhost answer 127.0.0.1 and ::1.' },
+    { key: 'ddr_name', label: 'Encrypted DNS name (DDR)', type: 'text', placeholder: 'dns.example.com', admin: true,
+      help: "The name on this node's encrypted listeners' certificates. Windows 11, iOS, and macOS then find those listeners by themselves. Only an admin sets it: it is one name for the whole cluster." },
+  ];
+  // REQ: DNS-019 (ADR-904) — the DDR hint: the encrypted listeners of every node, and whether the
+  // name is on their certificates (the listener checks' results).
+  function ddrHint(name: string, results: S['ProbeResult'][] | null): string {
+    if (results === null) return 'Checking the listeners…';
+    const enc = results.filter((p) => p.listener && ['dot', 'doh', 'doq', 'doh3'].includes(p.proto));
+    const where = (p: S['ProbeResult']) => `${p.node ?? 'this node'} ${p.proto}`;
+    if (enc.length === 0) {
+      return name
+        ? "Can't check the certificates: the listener checks are off or have no results yet ([probe] enabled)."
+        : 'No encrypted listeners on this node: nothing to advertise.';
+    }
+    const list = enc.map(where).join(', ');
+    if (!name) return `Encrypted listeners: ${list}. Enter a name to advertise them.`;
+    const missing = enc.filter((p) => !(p.certNames ?? []).some((n) => n.toLowerCase() === name.toLowerCase()));
+    if (missing.length === 0) return `Every encrypted listener's certificate covers ${name}: ${list}.`;
+    return `Not on the certificate of ${missing.map(where).join(', ')}: a device that uses ${name} would refuse it. Listeners: ${list}.`;
+  }
+  const ddrNote = (v: Record<string, unknown>) => ddrHint(String(v.ddr_name ?? '').trim(), probes);
   const tab = $derived(activeTab(tabs));
 
   // ---- account
@@ -387,6 +422,9 @@
   });
   $effect(() => {
     if (tab === 'system') return poll(loadProbes, 10_000);
+  });
+  $effect(() => {
+    if (tab === 'queries') void loadProbes();
   });
   const certText = (p: S['ProbeResult']) =>
     p.certDaysLeft == null
@@ -871,6 +909,15 @@
       <h2>Cache</h2>
       <p class="small">Hit rates, what's cached, settings, lookups, and flushing are on the <a href="#/cache">Cache page</a>.</p>
     </section>
+    <!-- REQ: DNS-019 (T24.12, ADR-904, ADR-914) — the special names: switches, and the DDR name (admin). -->
+    <ConfigEditor kind="special" path="special-names" singleton title="Special names" noun="special names" fields={specialFields}
+      help="special-names" note={ddrNote}
+      summary={(d) =>
+        `${d.block_icloud_private_relay === false ? 'Private Relay allowed' : 'Private Relay blocked'}, ${d.single_label_nxdomain ? 'bare names kept local' : 'bare names go upstream'}, ${d.ddr_name ? `DDR name ${String(d.ddr_name)}` : 'no DDR name'}`} />
+    <p class="muted small">
+      Names with a special meaning, answered without asking the internet. A change applies to the next query on every node, with no restart.
+      Lists and rules still apply to everything else.<HelpButton id="special-names" /> The encrypted DNS name is how devices find this node's encrypted listeners by themselves.<HelpButton id="ddr" />
+    </p>
     <!-- REQ: DNS-014 (review 01 q1) — the per-client rate limit, adjustable here and in the config file. -->
     <ConfigEditor kind="ratelimit" path="ratelimit" singleton title="Rate limit" noun="rate limit" fields={rateLimitFields}
       summary={(d) => (d.enabled === false ? 'off' : `${String(d.queries)} queries per ${String(d.window_secs)} s per client, then ${String(d.action)}`)} />

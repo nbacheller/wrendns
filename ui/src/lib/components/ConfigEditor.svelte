@@ -53,8 +53,8 @@
     note,
     draft = null,
   }: {
-    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit' | 'exclusions' | 'simulate' | 'rollout';
-    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings';
+    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit' | 'exclusions' | 'simulate' | 'rollout' | 'special' | 'local' | 'clients';
+    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings';
     title: string;
     noun: string;
     fields: Field[];
@@ -103,8 +103,11 @@
   let editing = $state<{ name: string; isNew: boolean; values: Record<string, unknown> } | null>(null);
   // The entry as it was read, for fields only an admin changes (T23.2).
   let original = $state<Record<string, unknown>>({});
+  // REQ: DNS-019, DNS-023 (ADR-914) — the fields the config files set: the API keeps their value.
+  let fileSet = $state<string[]>([]);
   const isAdmin = $derived(can('admin'));
   function locked(f: Field): boolean {
+    if (fileSet.includes(f.key)) return true;
     if (isAdmin || !f.admin) return false;
     return typeof f.admin === 'function' ? f.admin(original) : true;
   }
@@ -147,6 +150,7 @@
     formOut = null;
     const def = (e?.definition ?? {}) as Record<string, unknown>;
     original = { ...def };
+    fileSet = e?.setByFile ?? [];
     const initial = e ? {} : Object.fromEntries(fields.filter((f) => f.initial !== undefined).map((f) => [f.key, f.initial]));
     editing = { name: e?.name ?? name, isNew: !e, values: { ...initial, ...def, ...fill } };
     texts = Object.fromEntries(fields.filter((f) => f.toText).map((f) => [f.key, f.toText!(editing!.values[f.key])]));
@@ -362,14 +366,14 @@
                 oninput={(ev) => (editing!.values[f.key] = toLines((ev.currentTarget as HTMLTextAreaElement).value))}
               ></textarea>
             {:else if f.type === 'bool'}
-              <input type="checkbox" role="switch" bind:checked={editing.values[f.key] as boolean} aria-label={f.label} />
+              <input type="checkbox" role="switch" bind:checked={editing.values[f.key] as boolean} aria-label={f.label} disabled={locked(f)} />
             {:else if f.type === 'number'}
               <!-- step="any": thresholds such as 0.5 % are allowed. -->
-              <input type="number" step="any" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} />
+              <input type="number" step="any" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} />
             {:else}
               <input class="mono" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} />
             {/if}
-            {#if locked(f)}<span class="muted small" data-testid="admin-only">Only an admin can change this.</span>{/if}
+            {#if fileSet.includes(f.key)}<span class="muted small" data-testid="set-by-file">Set by the configuration file: change it there.</span>{:else if locked(f)}<span class="muted small" data-testid="admin-only">Only an admin can change this.</span>{/if}
             {#if f.help}<span class="muted small">{f.help}</span>{/if}
           </label>
         {/each}

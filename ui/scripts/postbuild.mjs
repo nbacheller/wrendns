@@ -1,10 +1,13 @@
-// Precompresses dist/ for the embedded server (it serves `x.gz` when the browser accepts
-// gzip) and enforces the bundle budget: ≤ 400 KiB gzipped in total (`spec/07` §3, API-005).
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+// Precompresses dist/ for the embedded server and enforces the bundle budget: ≤ 400 KiB gzipped
+// in total (`spec/07` §3, API-005). A text file that gzip shrinks is kept only as `x.gz`: the
+// binary embeds that, serves it to browsers that accept gzip, and inflates it for the rest
+// (REQ: NFR-001, ADR-915), so the raw copy is removed. Binary files stay as they are.
+import { readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { gzipSync, constants } from 'node:zlib';
+import { fileURLToPath } from 'node:url';
 
-const DIST = new URL('../dist/', import.meta.url).pathname;
+const DIST = fileURLToPath(new URL('../dist/', import.meta.url));
 const BUDGET = 400 * 1024;
 const TEXT = /\.(html|js|css|svg|json|txt|map)$/;
 
@@ -25,7 +28,10 @@ for (const file of [...walk(DIST)]) {
   if (TEXT.test(file)) {
     const gz = gzipSync(raw, { level: constants.Z_BEST_COMPRESSION });
     size = gz.length;
-    if (gz.length < raw.length) writeFileSync(`${file}.gz`, gz);
+    if (gz.length < raw.length) {
+      writeFileSync(`${file}.gz`, gz);
+      rmSync(file);
+    }
   }
   total += size;
   rows.push([relative(DIST, file), raw.length, size]);
