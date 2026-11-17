@@ -1,0 +1,50 @@
+# REQ: OPS-004, DOC-006. Daily watch on the upstream project; the report goes to the fork's "Upstream watch" issue.
+# Ledger: spec/upstream.md (read from feat/ipam-integrations; this file is read from main, so both branches need the watch).
+# Nothing is written to the upstream repo. The checkout is pinned to a commit SHA (actions/checkout v4).
+name: upstream-watch
+
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the fork's ledger branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: feat/ipam-integrations
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check that the watch script is on the ledger branch
+        run: |
+          if [ ! -f .github/scripts/upstream_watch.py ]; then
+            echo "::error::.github/scripts/upstream_watch.py is missing on feat/ipam-integrations. Merge the watch into that branch; main alone is not enough."
+            exit 1
+          fi
+
+      - name: Run the upstream watch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A transient gh or git network error retries; a deterministic failure fails after three tries.
+          for attempt in 1 2 3; do
+            if python3 .github/scripts/upstream_watch.py; then
+              exit 0
+            fi
+            echo "::warning::upstream watch attempt ${attempt} failed"
+            sleep 60
+          done
+          exit 1
