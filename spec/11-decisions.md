@@ -1293,7 +1293,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
-## ADR-954 — A replica reports how long it has been without its primary; `primary_unreachable` alerts on it (Proposed)
+## ADR-954 — A replica reports how long it has been without its primary; `primary_unreachable` alerts on it (Accepted 2026-11-17)
 **Context:** a replica that can't reach its primary keeps answering DNS from its last copy (CLU-004), but nothing said so: `node_down` only sees a node that's disconnected from the primary's view, and a replica that still reaches other members (after falling back to one of them) looks healthy while it is split off. Alerts are evaluated on the primary, so the primary has to learn the replica's view from the heartbeats it already receives (fork #2, T24.5).
 
 **Decision:**
@@ -1342,7 +1342,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 
 **Addendum (T21.5 review, 2026-11-17).** A `[discovery]` the primary sets with a value that isn't the default was refused by every replica whose own section was at its defaults. The section is left out of a node's serialization at its defaults (CLU-010), so the configuration merge didn't know the key and refused the whole version ("the primary sent a setting this version doesn't know"). The merge now always has the `discovery` key: at its default when the primary doesn't send one (so a cleared section resets the replicas, as the other shared sections do), and the primary's value when it does. Test: `clu_010_a_discovery_section_is_shared_both_ways` (`telltale-config`). Check (e) of the three-node run writes `worker_memory_mib = 48` and reads it back on replica-b, which is what found it.
 
-## ADR-955 — The Home Assistant source test: a throwaway Home Assistant in its own Compose project, seeded by a test fixture (Proposed 2026-11-17)
+## ADR-955 — The Home Assistant source test: a throwaway Home Assistant in its own Compose project, seeded by a test fixture (Accepted 2026-11-17)
 **Context:** T24.21 (fork #12). The owner chose a test container, never the owner's Home Assistant. The bundle's `test-ha` profile (`deploy/docker-desktop/compose.yaml`) brings up its `homeassistant` service with `depends_on: telltale`, so starting it from the bundle's project would also drive the running `telltale-dev` container. Home Assistant's device registry has no REST or websocket call that gives a device a MAC connection, which is what TelltaleDNS reads (`/api/template`, `device_attr(d, 'connections')`).
 
 **Decision:**
@@ -1425,6 +1425,12 @@ Why guarded at all: each is a setting that can lock every admin out (listeners, 
 - A guarded request on a node that is itself failing may be refused; the CLI and file remain.
 - Amends ADR-914 in two places (the data directory is file-only; only the primary forwards), recorded here because ADR-914 is Accepted; the owner confirms by accepting this ADR.
 - Open for the owner: whether to add an optional "restart now" for a supervised install (a later ADR); `watchdog` and `file-paths` are `immediate` here, and can move to `window` if wanted.
+
+**Owner decisions (2026-11-17), to fold into this ADR and T27.13 to T27.17 before it is accepted:**
+- **The data directory keeps a guarded UI control** (overrules "file-only" in §1(a)). The change is `staged`, needs the typed confirmation, and its preview says plainly that admin accounts, sessions, the cluster identity and `secrets.key` don't carry over unless copied, and what to copy. ADR-914 is not amended on this point.
+- **A "Restart now" action** for a guarded change that needs a restart, offered only when the node runs under a supervisor that restarts it (systemd, Docker with a restart policy, Kubernetes). It has its own confirmation and audit entry, and is refused to agents and MCP.
+- **`watchdog` and `file-paths` stay `immediate`.**
+- Only the primary forwards guarded changes (the other amendment to ADR-914) is accepted as written.
 
 ## ADR-957 — Lockout recovery for guarded settings: the file, an offline CLI and a start-up switch (Proposed 2026-11-17)
 **Context:** ADR-956's window protects an admin who is still at the UI. It does not help when a confirmed value is wrong in a way found later (a certificate that expires, a proxy list that hides every client), when the primary is gone, or when no admin can sign in. ADR-914 says only "a node can always be recovered by editing its file and restarting". In a container the file is often a read-only ConfigMap, and a guarded entry lives in `state.db`, which the file cannot override unless it sets the same field.
@@ -4248,7 +4254,7 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - A sentence is text the owner reads, so changing one is a UI change: the Playwright test `api_015 errors read as sentences` names each code and the words it must show.
 - The sentences are in English only, as the rest of the UI is.
 
-## ADR-958 — The live network map: a sampled, bounded window on the aggregator thread, SVG drawn from a rate snapshot (Proposed)
+## ADR-958 — The live network map: a sampled, bounded window on the aggregator thread, SVG drawn from a rate snapshot (Accepted 2026-11-17)
 **Context:** M26 (fork #14, OBS-901, OBS-902). The owner wants an animated map of the network (gateway, networks and VLANs, devices, TelltaleDNS nodes, upstreams) and of where answers point, coloured green, yellow or red, built on existing data, with nothing added to the DNS path (02 §3, CLU-004), the UI inside its 400 KiB budget, and every control in the UI. This ADR fixes the design the M26 tasks build. The GeoIP database is ADR-959. Facts checked in the code: the aggregator thread already drains the worker rings and fans out to subscribers (live tail, sinks) through bounded queues, after the exclusions and the privacy level have been applied (ADR-102); `QueryEvent` carries client, group, status, rcode, upstream, `t_total_us` and `answers` (a count), but **no answer address**; ADR-132's flow counters are per minute and have no per-device joint; the health level (ADR-104) and the SLO (`[slo] latency_ms`) exist; `GET /api/v1/networks` and the device identities give the networks and names; M25's switch and port data is not built yet.
 
 **Decision:**
@@ -4289,7 +4295,7 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 
 **Consequences:** the map is an estimate under load (the sample rate is shown) and shows at most the 200 busiest devices; a quiet device is grey, not green; the world view depends on the answer-address field and a downloaded database and degrades to a clear message without either. Where a choice is between memory and disk (the owner's note on the footprint: more disk cache is fine, RAM is the budget), the map keeps its window small in memory and puts anything large on disk (ADR-959).
 
-## ADR-959 — The GeoIP database: DB-IP Country Lite, downloaded on an admin's opt-in, verified, kept on disk, never on the query path (Proposed)
+## ADR-959 — The GeoIP database: DB-IP Country Lite, downloaded on an admin's opt-in, verified, kept on disk, never on the query path (Accepted 2026-11-17)
 **Context:** OBS-902 needs the country of an answer address. NFR-001 and the owner's rule forbid shipping a database in the image; ADR-916's gate is for the image, and RSS is the hard budget on small hosts. The owner's note (2026-11-17) is that where it matters the footprint can use more disk cache rather than RAM.
 
 **Decision:**
