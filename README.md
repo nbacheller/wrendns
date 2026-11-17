@@ -14,8 +14,8 @@
 >   - **Update lists now** (Pi-hole's "Update Gravity");
 >   - in the UI: special names and DDR, device names in DNS, DNS names and naming sources on the Clients page, and a **Networks** page (make a group from a network);
 >   - still to come: keepalived failover, importer gaps, IPv6 device names.
-> - **M23, secrets and integrations in the UI (wave 1 done):** secrets store, write-only API, no credential on any read surface; UI next. Once the UI lands (T23.6), anything set up through a secret file can also be entered there, and the files still win.
-> - **M25, network inventory beyond the gateway (planned):**
+> - **M23, secrets and integrations in the UI (in progress):** secrets store, write-only API, no credential on any read surface; secrets replicated to every full cluster member; a **Secrets** page, and credentials (alerts, routers) entered in the UI, write-only, while a secret file still wins; routers (UniFi, Home Assistant) added, checked and changed from a **Routers** page without a restart. Still to come: encrypted backups, OIDC, sinks.
+> - **M25, network inventory beyond the gateway (started):** the inventory model, which merges devices by MAC, is in; still to come:
 >   - SNMP from your gateway and switches (which device is on which port);
 >   - more UniFi reads;
 >   - importing results from a scanner you run yourself.
