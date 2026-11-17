@@ -19,7 +19,12 @@ const SPECIAL: &str = "/api/v1/special-names/default";
 const CLIENTS: &str = "/api/v1/clients-settings/default";
 
 /// A token for a new user of `role`; with `agent_scopes`, an agent token owned by that user.
-fn token(h: &Harness, user: &str, role: auth::Role, agent_scopes: Option<&str>) -> String {
+pub(crate) fn token(
+    h: &Harness,
+    user: &str,
+    role: auth::Role,
+    agent_scopes: Option<&str>,
+) -> String {
     let now = crate::pipeline::unix_now();
     let u = h
         .auth
@@ -51,7 +56,7 @@ fn token(h: &Harness, user: &str, role: auth::Role, agent_scopes: Option<&str>) 
 
 /// Sends `method uri` with `bearer` (an agent must give a reason, AGT-005) and `extra` headers;
 /// the status, the response headers, and the JSON body.
-async fn call_as(
+pub(crate) async fn call_as(
     h: &Harness,
     bearer: &str,
     method: &str,

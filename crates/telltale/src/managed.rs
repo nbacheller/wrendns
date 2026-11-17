@@ -56,6 +56,9 @@ pub(crate) const SPECIAL: &str = "special";
 pub(crate) const LOCAL: &str = "local";
 /// REQ: DNS-023 (T24.13, ADR-914) — `[clients]`, which takes only `mdns` in M24.
 pub(crate) const CLIENTS: &str = "clients";
+/// REQ: API-016 (T23.7, ADR-921) — `[[router]]` integrations, by name. Admin-only; a router the
+/// files define is read-only through the API (ADR-040), so these never override the files.
+pub(crate) const ROUTER: &str = "router";
 
 /// An API entry for a kind that can override the files (ADR-069): a definition, or the
 /// files' entry of that name left out.
@@ -107,6 +110,11 @@ impl Named for telltale_config::AnomalyMuteConfig {
         self.name.as_str()
     }
 }
+impl Named for telltale_config::RouterConfig {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+}
 impl Named for telltale_config::AlertRule {
     fn name(&self) -> &str {
         self.name.as_str()
@@ -148,6 +156,8 @@ pub(crate) struct Entries {
     pub(crate) groups: Vec<(String, Ovr<GroupConfig>)>,
     pub(crate) alert_destinations: Vec<(String, Ovr<telltale_config::AlertDestination>)>,
     pub(crate) alert_rules: Vec<(String, Ovr<telltale_config::AlertRule>)>,
+    /// REQ: API-016 (T23.7) — the routers made through the API or UI.
+    pub(crate) routers: Vec<(String, Ovr<telltale_config::RouterConfig>)>,
     pub(crate) schedules: Vec<(String, Ovr<telltale_config::ScheduleConfig>)>,
     /// REQ: OBS-038 — anomaly mutes.
     pub(crate) anomaly_mutes: Vec<(String, Ovr<telltale_config::AnomalyMuteConfig>)>,
@@ -243,6 +253,7 @@ pub(crate) fn entries(state: &State) -> Entries {
         groups: decode_ovr(state, GROUP),
         alert_destinations: decode_ovr(state, ALERT_DESTINATION),
         alert_rules: decode_ovr(state, ALERT_RULE),
+        routers: decode_ovr(state, ROUTER),
         schedules: decode_ovr(state, SCHEDULE),
         anomaly_mutes: decode_ovr(state, ANOMALY_MUTE),
         ratelimit: decode::<telltale_config::RateLimitConfig>(state, RATELIMIT)
@@ -392,6 +403,16 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
         }
     }
     apply_ovr(&mut cfg.alerts.rule, &e.alert_rules);
+    // REQ: API-016 (T23.7, ADR-040) — a router the files define is read-only here: the API's
+    // entry of that name is left out (the files' applies), and a new name is added.
+    for (name, o) in &e.routers {
+        if let Ovr::Set(r) = o
+            && !file.router.iter().any(|f| f.name.as_str() == name)
+        {
+            cfg.router.retain(|f| f.name.as_str() != name);
+            cfg.router.push(r.clone());
+        }
+    }
     apply_ovr(&mut cfg.schedule, &e.schedules);
     apply_ovr(&mut cfg.anomaly_mute, &e.anomaly_mutes);
     apply_kubernetes_map(&mut cfg, &e.kubernetes_map);

@@ -353,6 +353,30 @@ fn routers(cfg: &Config, r: &mut Report<'_>) {
         if x.interval_secs < 30 {
             r.err(format!("{p}.interval_secs"), "at least 30 seconds");
         }
+        // REQ: API-016 (T23.7, ADR-921) — the certificate as text: one source of trust, at most
+        // 16 KiB, and a PEM certificate.
+        if let Some(pem) = &x.tls_ca_pem {
+            if x.tls_ca.is_some() {
+                r.err(
+                    format!("{p}.tls_ca_pem"),
+                    "exclusive with tls_ca: give the certificate one way",
+                );
+            }
+            if pem.len() > 16 * 1024 {
+                r.err(format!("{p}.tls_ca_pem"), "at most 16 KiB");
+            } else if !pem.contains("-----BEGIN CERTIFICATE-----") {
+                r.err(
+                    format!("{p}.tls_ca_pem"),
+                    "a PEM certificate (the text between -----BEGIN CERTIFICATE----- and -----END CERTIFICATE-----)",
+                );
+            }
+            if x.tls_insecure_skip_verify {
+                r.err(
+                    format!("{p}.tls_ca_pem"),
+                    "has no effect with tls_insecure_skip_verify (the certificate isn't checked)",
+                );
+            }
+        }
         if x.tls_insecure_skip_verify {
             r.warn(format!("{p}.tls_insecure_skip_verify: the router's certificate isn't checked (prefer tls_ca, with tls_server_name if the certificate doesn't name the address)"));
         }

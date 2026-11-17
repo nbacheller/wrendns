@@ -2243,6 +2243,27 @@ impl Backend for Federated {
     fn networks(&self) -> Vec<telltale_api::model::NetworkInfo> {
         self.local.networks()
     }
+    // REQ: API-016 (T23.7) — the settings are the replicated configuration; the status is this node's.
+    fn router_entries(&self) -> Vec<telltale_api::model::RouterEntry> {
+        self.local.router_entries()
+    }
+    // REQ: API-016 (T23.8) — the checks run on the node that answers (an admin's draft).
+    fn check_router(
+        &self,
+        draft: serde_json::Value,
+    ) -> telltale_api::BoxFuture<
+        Result<telltale_api::model::RouterCheck, telltale_api::problem::Problem>,
+    > {
+        self.local.check_router(draft)
+    }
+    fn router_certificate(
+        &self,
+        url: String,
+    ) -> telltale_api::BoxFuture<
+        Result<telltale_api::model::RouterCertificate, telltale_api::problem::Problem>,
+    > {
+        self.local.router_certificate(url)
+    }
     fn new_domains(
         &self,
         since_s: u64,

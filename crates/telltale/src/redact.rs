@@ -20,6 +20,7 @@ pub(crate) const fn api_kind(kind: ManagedKind) -> &'static str {
         ManagedKind::Group => "group",
         ManagedKind::AlertDestination => "alert_destination",
         ManagedKind::AlertRule => "alert_rule",
+        ManagedKind::Router => "router",
         ManagedKind::Schedule => "schedule",
         ManagedKind::AnomalyMute => "anomaly_mute",
         ManagedKind::RateLimit => "ratelimit",

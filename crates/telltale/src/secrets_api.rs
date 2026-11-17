@@ -519,6 +519,8 @@ pub(crate) fn apply(
                 .put(&name, kind, &value, epoch, &w.by, origin, now)
                 .map_err(|e| e.problem())?;
             drop(value);
+            // REQ: API-016 (T23.7) — a router's stored credential changed: its read runs again.
+            src.routers_changed.notify_one();
             tracing::info!(name = %name, stamp = ?info.stamp, "stored secret set");
             Ok(SecretChange {
                 applied: true,
@@ -582,6 +584,9 @@ pub(crate) fn apply(
                 .delete(&name, epoch, &w.by, now)
                 .map_err(|e| e.problem())?
                 .ok_or_else(|| Problem::not_found(format!("no secret named `{name}` is stored")))?;
+            // REQ: API-016 (T23.7) — a deleted secret a router used: its read runs again (and fails
+            // with the reason, keeping the last answer).
+            src.routers_changed.notify_one();
             tracing::info!(name = %name, stamp = ?info.stamp, "stored secret deleted");
             Ok(SecretChange {
                 applied: true,

@@ -117,6 +117,11 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/alerts/rules/{name}",
             put(put_alert_rule).delete(delete_alert_rule),
         )
+        // REQ: API-016 (T23.7, ADR-921) — router integrations (admin-only).
+        .route(
+            "/api/v1/routers/{name}",
+            put(put_router).delete(delete_router),
+        )
         .route(
             "/api/v1/alerts/destinations/{name}/test",
             axum::routing::post(test_alert_destination),
@@ -740,6 +745,84 @@ pub(crate) async fn delete_alert_destination(
         request,
         name,
         Op::Managed(ManagedKind::AlertDestination, None),
+    )
+    .await
+}
+
+/// Add or change a router integration.
+///
+/// API-016 (T23.7, ADR-921). The body has the same fields as `[[router]]` (the name comes from the path). Secrets are
+/// named, never sent: `api_key_ref`, `api_secret_ref` and `password_ref` name stored secrets
+/// (422 `secret_missing` when none has that name), entered through Settings → Integrations &
+/// secrets. A certificate is sent as text in `tls_ca_pem`. The API takes no file paths for a
+/// router (`api_key_file`, `api_secret_file`, `password_file`, `tls_ca`): those are set in the
+/// configuration file. Admins only: an operator or an agent is refused (403).
+/// A router the config files define is read-only here (409 `set_by_file`).
+#[utoipa::path(put, path = "/api/v1/routers/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Only an admin can change a router."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files define this router, which is read-only here."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A field is wrong, a reference names no stored secret (`secret_missing`), a file path is set through the API, or the configuration wouldn't be valid."),
+    ))]
+pub(crate) async fn put_router(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /routers/{name} {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::Router, Some(input)),
+    )
+    .await
+}
+
+/// Remove a router integration that the API added.
+///
+/// API-016 (T23.7). Its leases go with it at the next read; the routers that stay keep their last
+/// answers.
+#[utoipa::path(delete, path = "/api/v1/routers/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Only an admin can remove a router."),
+        (status = 404, body = Problem, description = "No router by that name."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files define it."),
+    ))]
+pub(crate) async fn delete_router(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /routers/{name}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::Router, None),
     )
     .await
 }
@@ -1743,6 +1826,7 @@ impl Op {
             Self::Managed(ManagedKind::Group, _) => "group",
             Self::Managed(ManagedKind::AlertDestination, _) => "alert_destination",
             Self::Managed(ManagedKind::AlertRule, _) => "alert_rule",
+            Self::Managed(ManagedKind::Router, _) => "router",
             Self::Managed(ManagedKind::Schedule, _) => "schedule",
             Self::Managed(ManagedKind::AnomalyMute, _) => "anomaly_mute",
             Self::Managed(ManagedKind::RateLimit, _) => "ratelimit",

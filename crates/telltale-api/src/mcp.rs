@@ -275,6 +275,14 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("secrets".into(), "/api/v1/secrets".into())]),
         },
+        // REQ: API-016 (T23.7, ADR-903 §5) — router settings and status, secrets by name only; no
+        // tool sets a router (admin-only, no agent scope).
+        Tool {
+            name: "list_routers",
+            description: "Read-only. The router integrations in the configuration (UniFi, OPNsense, Home Assistant): each one's name, kind and address (no password), its settings with stored secrets named (never their values), whether the configuration files define it, each credential's source and whether this node can read it, and the last read: its state (ok, failing, waiting, or skipped and why), when, the error, and the devices and networks it reported. There is no tool to add, change or check a router: an admin does that in Settings or the Routers page. Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("routers".into(), "/api/v1/routers".into())]),
+        },
         // REQ: FLT-017 (T15.1)
         Tool {
             name: "list_workloads",

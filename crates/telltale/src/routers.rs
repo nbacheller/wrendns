@@ -23,15 +23,26 @@
 //! wins, then the routers' (in configuration order), then the name a Home Assistant
 //! integration gave it.
 
+// REQ: API-016 (ADR-922) — the release build aborts on panic, so this module's runtime code uses no
+// unwrap, expect, or unchecked indexing (malformed answers are tested).
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)
+)]
+
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::time::Instant;
+
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use telltale_api::model::{RouterCheck, RouterStatus};
 use telltale_config::{RouterConfig, RouterKind};
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::devices::{Lease, Leases};
@@ -124,17 +135,14 @@ fn base64(input: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for chunk in input.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        let b0 = chunk.first().copied().unwrap_or(0);
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+        let n = (u32::from(b0) << 16) | (u32::from(b1) << 8) | u32::from(b2);
         for i in 0..4 {
             if i <= chunk.len() {
-                out.push(char::from(
-                    T[usize::try_from((n >> (18 - 6 * i)) & 63).unwrap_or(0)],
-                ));
+                let idx = usize::try_from((n >> (18 - 6 * i)) & 63).unwrap_or(0);
+                out.push(char::from(T.get(idx).copied().unwrap_or(b'=')));
             } else {
                 out.push('=');
             }
@@ -710,8 +718,14 @@ fn http_client(
 ) -> Result<telltale_filter::fetch::Client, String> {
     let client = if r.tls_insecure_skip_verify {
         telltale_filter::fetch::Client::insecure(Arc::clone(resolver))
+    } else if let Some(pem) = &r.tls_ca_pem {
+        // REQ: API-016 (ADR-921) — the certificate entered as text: only it is trusted.
+        telltale_filter::fetch::Client::with_ca_pem(Arc::clone(resolver), pem)
     } else if let Some(p) = &r.tls_ca {
-        telltale_filter::fetch::Client::with_ca_file(Arc::clone(resolver), p.as_str())
+        // REQ: API-016 (ADR-120) — the file's certificate is the only one trusted.
+        std::fs::read_to_string(p.as_str())
+            .map_err(|e| format!("{p}: {e}"))
+            .and_then(|pem| telltale_filter::fetch::Client::with_ca_pem(Arc::clone(resolver), &pem))
     } else {
         telltale_filter::fetch::Client::new(Arc::clone(resolver), &[])
     }?;
@@ -747,117 +761,464 @@ fn match_home_assistant(
     }
 }
 
-/// Polls every `[[router]]` until `stop`. `resolver_pod`: a Helm resolver pod, which has the
-/// routers' settings but not their key files (ADR-120), logs its failures as info; the
-/// controller, which serves the names in the UI, warns.
-pub(crate) async fn run(
-    routers: Vec<RouterConfig>,
-    view: Arc<ArcSwap<Leases>>,
-    networks: Arc<ArcSwap<Vec<Network>>>,
-    mut stop: tokio::sync::watch::Receiver<bool>,
-    resolver_pod: bool,
-    store: Arc<crate::secrets::SecretStore>,
+/// REQ: API-016 (T23.7, ADR-922) — what each router's last read did, for the API and the Routers
+/// page. Written by the poll loop, read by the API; never on the DNS path.
+#[derive(Debug, Default)]
+pub(crate) struct Board(std::sync::Mutex<HashMap<String, RouterStatus>>);
+
+impl Board {
+    /// Every router's status, by name.
+    pub(crate) fn snapshot(&self) -> HashMap<String, RouterStatus> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn put(&self, name: &str, status: RouterStatus) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(name.to_owned(), status);
+    }
+
+    fn keep_only(&self, names: &[String]) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|n, _| names.iter().any(|k| k == n));
+    }
+}
+
+/// REQ: API-016 (ADR-922) — the least time between two reads of one router after its settings
+/// or a stored secret change (a burst of changes is one read).
+const DEBOUNCE: Duration = Duration::from_secs(5);
+/// REQ: API-016 — a router that failed is asked again within this (it may still be booting).
+const RETRY: Duration = Duration::from_secs(15);
+
+/// One router's read state, as the loop keeps it between rounds.
+struct Slot {
+    config: RouterConfig,
+    /// Bumped when the settings change: a read still running for the old settings is dropped.
+    generation: u64,
+    /// When the next read is due.
+    due: Instant,
+    /// When the last read started.
+    last: Option<Instant>,
+    in_flight: bool,
+    failing: bool,
+    /// Whether a read has ever succeeded for these settings (for the log).
+    read_once: bool,
+    /// Why this node doesn't read the router now (`resolver pod`, or `primary`).
+    skipped: Option<&'static str>,
+    part: Polled,
+    /// Home Assistant's raw devices and trackers (matched to addresses each round).
+    ha: Option<(Vec<HaDevice>, HashMap<String, Ipv4Addr>)>,
+    last_unix: Option<u64>,
+    error: Option<String>,
+}
+
+/// One finished read, back on the loop.
+struct Done {
+    name: String,
+    generation: u64,
+    at_unix: u64,
+    result: Result<Read, String>,
+}
+
+/// What a read produced.
+enum Read {
+    Routed(Polled),
+    Ha(Vec<HaDevice>, HashMap<String, Ipv4Addr>),
+}
+
+/// Home Assistant's devices and trackers by router name.
+type HaRaw = HashMap<String, (Vec<HaDevice>, HashMap<String, Ipv4Addr>)>;
+
+/// One read of one router: its HTTP client and the kind's poll.
+async fn read_one(
+    r: &RouterConfig,
+    resolver: &Arc<dyn telltale_filter::fetch::Resolve>,
+    store: &crate::secrets::SecretStore,
+) -> Result<Read, String> {
+    let client = http_client(r, resolver)?;
+    match r.kind {
+        RouterKind::Unifi => poll_unifi(&client, r, store).await.map(Read::Routed),
+        RouterKind::Opnsense => poll_opnsense(&client, r, store).await.map(Read::Routed),
+        RouterKind::HomeAssistant => poll_home_assistant(&client, r, store)
+            .await
+            .map(|(d, t)| Read::Ha(d, t)),
+    }
+}
+
+/// Whether a router with a stored credential is read here: only on the primary (or a standalone
+/// node). A replica gets its names through the primary's leases (ADR-903 §1, ADR-125).
+fn read_here(r: &RouterConfig, primary: bool) -> bool {
+    let stored = r.api_key_ref.is_some() || r.api_secret_ref.is_some() || r.password_ref.is_some();
+    !stored || primary
+}
+
+/// Brings the slots in line with the configuration: a new or changed router is due (debounced
+/// when it changed), a removed one is dropped, and a router whose secret changed is read again.
+fn reconcile(
+    slots: &mut HashMap<String, Slot>,
+    order: &mut Vec<String>,
+    routers: &[RouterConfig],
+    secrets_changed: bool,
+    now: Instant,
+    generation: &mut u64,
+    board: &Board,
 ) {
-    if routers.is_empty() {
+    let names: Vec<String> = routers.iter().map(|r| r.name.to_string()).collect();
+    slots.retain(|n, _| names.contains(n));
+    board.keep_only(&names);
+    *order = names;
+    for r in routers {
+        let name = r.name.to_string();
+        let stored =
+            r.api_key_ref.is_some() || r.api_secret_ref.is_some() || r.password_ref.is_some();
+        match slots.get_mut(&name) {
+            Some(s) if s.config != *r => {
+                *generation += 1;
+                s.config = r.clone();
+                s.generation = *generation;
+                s.due = debounced(s.last, now);
+                s.part = Polled::default();
+                s.ha = None;
+                s.in_flight = false;
+                s.failing = false;
+                s.read_once = false;
+                s.error = None;
+            }
+            Some(s) if secrets_changed && stored => {
+                s.due = debounced(s.last, now);
+            }
+            Some(_) => {}
+            None => {
+                *generation += 1;
+                slots.insert(
+                    name,
+                    Slot {
+                        config: r.clone(),
+                        generation: *generation,
+                        due: now,
+                        last: None,
+                        in_flight: false,
+                        failing: false,
+                        read_once: false,
+                        skipped: None,
+                        part: Polled::default(),
+                        ha: None,
+                        last_unix: None,
+                        error: None,
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// `now`, or later if the router was read less than [`DEBOUNCE`] ago.
+fn debounced(last: Option<Instant>, now: Instant) -> Instant {
+    last.map_or(now, |l| now.max(l + DEBOUNCE))
+}
+
+/// Starts the reads that are due, each on its own task, so a slow or failing router delays no
+/// other (failure isolation, ADR-922).
+fn start_due(
+    slots: &mut HashMap<String, Slot>,
+    now: Instant,
+    ephemeral: bool,
+    primary: bool,
+    resolver: &Arc<dyn telltale_filter::fetch::Resolve>,
+    store: &Arc<crate::secrets::SecretStore>,
+    done: &mpsc::UnboundedSender<Done>,
+) {
+    for (name, s) in slots.iter_mut() {
+        // REQ: API-016 (ADR-921) — a resolver pod reads no router: it holds no secrets, and the
+        // controller reads the router for the UI.
+        let skip = if ephemeral {
+            Some("resolver pod")
+        } else if !read_here(&s.config, primary) {
+            Some("primary")
+        } else {
+            None
+        };
+        if let Some(why) = skip {
+            s.skipped = Some(why);
+            s.part = Polled::default();
+            s.ha = None;
+            s.due = now;
+            continue;
+        }
+        s.skipped = None;
+        if s.in_flight || s.due > now {
+            continue;
+        }
+        s.in_flight = true;
+        s.last = Some(now);
+        let (r, generation, name) = (s.config.clone(), s.generation, name.clone());
+        let (resolver, store, done) = (Arc::clone(resolver), Arc::clone(store), done.clone());
+        tokio::spawn(async move {
+            let result = read_one(&r, &resolver, &store).await;
+            let _ = done.send(Done {
+                name,
+                generation,
+                at_unix: crate::pipeline::unix_now(),
+                result,
+            });
+        });
+    }
+}
+
+/// Applies one finished read to its slot (a read for settings since changed is dropped).
+fn finish(slots: &mut HashMap<String, Slot>, d: Done, now: Instant) {
+    let Some(s) = slots.get_mut(&d.name) else {
         return;
+    };
+    if s.generation != d.generation {
+        return;
+    }
+    s.in_flight = false;
+    s.last_unix = Some(d.at_unix);
+    let interval = Duration::from_secs(u64::from(s.config.interval_secs.max(30)));
+    let name = d.name.as_str();
+    match d.result {
+        Ok(Read::Routed(p)) => {
+            if s.failing || !s.read_once {
+                info!(router = %name, devices = p.seen.len(), networks = p.networks.len(), "router integration: devices read");
+            }
+            if !p.notes.is_empty() && p.notes != s.part.notes {
+                info!(router = %name, skipped = %p.notes.join("; "), "router integration: some optional reads didn't work (names of connected devices still come through)");
+            }
+            s.part = p;
+            s.read_once = true;
+            s.error = None;
+            s.failing = false;
+            s.due = now + interval;
+        }
+        Ok(Read::Ha(devices, trackers)) => {
+            if s.failing || !s.read_once {
+                info!(router = %name, devices = devices.len(), "Home Assistant: devices read");
+            }
+            s.ha = Some((devices, trackers));
+            s.read_once = true;
+            s.error = None;
+            s.failing = false;
+            s.due = now + interval;
+        }
+        Err(e) => {
+            // REQ: API-014 — nor does the log.
+            let e = e.replace(
+                s.config.url.as_str(),
+                &telltale_config::credentials::url_shown(s.config.url.as_str()),
+            );
+            if !s.failing {
+                warn!(router = %name, error = %e, "router integration failed (keeping its last answer)");
+            }
+            s.error = Some(e);
+            s.failing = true;
+            s.due = now + interval.min(RETRY);
+        }
+    }
+}
+
+/// The routers' parts (for the leases and networks) and Home Assistant's raw answers, from the
+/// slots in configuration order.
+fn parts_of(
+    slots: &HashMap<String, Slot>,
+    order: &[String],
+) -> (HashMap<String, Polled>, Vec<String>, HaRaw) {
+    let mut parts = HashMap::new();
+    let mut ha_names = Vec::new();
+    let mut ha_raw = HashMap::new();
+    for n in order {
+        let Some(s) = slots.get(n) else {
+            continue;
+        };
+        if s.config.kind == RouterKind::HomeAssistant {
+            ha_names.push(n.clone());
+            if let Some(raw) = &s.ha {
+                ha_raw.insert(n.clone(), raw.clone());
+            }
+        } else {
+            parts.insert(n.clone(), s.part.clone());
+        }
+    }
+    (parts, ha_names, ha_raw)
+}
+
+/// Writes each router's status to the board, for the API and the Routers page.
+fn publish(slots: &HashMap<String, Slot>, board: &Board) {
+    for (name, s) in slots {
+        let state = if s.skipped.is_some() {
+            "skipped"
+        } else if s.last.is_none() {
+            "waiting"
+        } else if s.error.is_some() {
+            "failing"
+        } else {
+            "ok"
+        };
+        let polled_by = match s.skipped {
+            Some("resolver pod") => "skipped: resolver pod".to_owned(),
+            Some(_) => "the primary".to_owned(),
+            None => "this node".to_owned(),
+        };
+        let (devices, networks) = match &s.ha {
+            Some((d, _)) if s.config.kind == RouterKind::HomeAssistant => (d.len(), 0),
+            _ => (s.part.seen.len(), s.part.networks.len()),
+        };
+        board.put(
+            name,
+            RouterStatus {
+                polled_by,
+                state: state.to_owned(),
+                last_poll: s.last_unix,
+                error: s.error.clone(),
+                devices: u32::try_from(devices).unwrap_or(u32::MAX),
+                networks: u32::try_from(networks).unwrap_or(u32::MAX),
+                interval_secs: s.config.interval_secs,
+            },
+        );
+    }
+}
+
+/// Polls every `[[router]]` until `stop`, reading the live configuration each round (REQ:
+/// API-016, T23.7, ADR-922): a router the API or UI adds, changes or removes takes effect here
+/// without a restart, and a failing router keeps the others' names. Nothing here is on the query
+/// path; DNS keeps its last names when a router fails.
+pub(crate) async fn run(
+    src: Arc<crate::http::Sources>,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
+    let resolver: Arc<dyn telltale_filter::fetch::Resolve> =
+        Arc::new(telltale_filter::fetch::SystemResolver);
+    let (done_tx, mut done_rx) = mpsc::unbounded_channel::<Done>();
+    let mut slots: HashMap<String, Slot> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    let mut generation: u64 = 0;
+    // Set when the loop was woken by a secret or configuration change (see below).
+    let mut poked = false;
+    let store = Arc::clone(&src.secrets);
+    loop {
+        let cfg = src.config.load_full();
+        let now = Instant::now();
+        let ephemeral = cfg.cluster.ephemeral;
+        let primary = src.cluster.as_ref().is_none_or(|c| c.is_primary());
+        // A stored secret that changed may be a router's credential: a wake from the secrets API
+        // (or a reload) reads those routers again, debounced. The store isn't asked here: this loop
+        // runs on a runtime worker, and the store's lock can be held by a load at start-up.
+        let secrets_changed = std::mem::take(&mut poked);
+        reconcile(
+            &mut slots,
+            &mut order,
+            &cfg.router,
+            secrets_changed,
+            now,
+            &mut generation,
+            &src.routers,
+        );
+        start_due(
+            &mut slots, now, ephemeral, primary, &resolver, &store, &done_tx,
+        );
+        let (mut parts, ha_names, ha_raw) = parts_of(&slots, &order);
+        match_home_assistant(&ha_names, &ha_raw, &mut parts);
+        rebuild(&order, &parts, &src.pipeline.router_leases);
+        rebuild_networks(&order, &parts, &src.pipeline.router_networks);
+        publish(&slots, &src.routers);
+        // Wake for the next read due (at most every RETRY, so a change of role is seen), a
+        // finished read, a changed configuration or secret, or a stop.
+        let next = slots
+            .values()
+            .filter(|s| !s.in_flight && s.skipped.is_none())
+            .map(|s| s.due)
+            .min()
+            .map_or(now + RETRY, |d| d.min(now + RETRY));
+        let wait = next
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(50));
+        tokio::select! {
+            _ = stop.changed() => return,
+            Some(d) = done_rx.recv() => {
+                finish(&mut slots, d, Instant::now());
+                while let Ok(d) = done_rx.try_recv() {
+                    finish(&mut slots, d, Instant::now());
+                }
+            }
+            () = src.routers_changed.notified() => { poked = true; }
+            () = tokio::time::sleep(wait) => {}
+        }
+    }
+}
+
+/// REQ: API-016 (T23.8, ADR-922) — one read of a router draft, without saving it. A stored
+/// credential is sent only when the draft's address and TLS settings are the saved ones: a draft
+/// aimed elsewhere runs without it (`credential_sent: false`), so a stored key never goes to a new
+/// address. Draft files are refused (ADR-921).
+pub(crate) async fn check_draft(
+    src: &crate::http::Sources,
+    draft: Value,
+) -> Result<RouterCheck, telltale_api::problem::Problem> {
+    let mut draft = draft;
+    if let Some(o) = draft.as_object_mut().filter(|o| !o.contains_key("name")) {
+        o.insert("name".to_owned(), Value::String("draft".to_owned()));
+    }
+    let name = draft
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("draft")
+        .to_owned();
+    let mut r = crate::router_settings::parse(&name, &draft)?;
+    let cfg = src.config.load_full();
+    let saved = cfg.router.iter().find(|s| s.name == r.name);
+    let same_target = saved.is_some_and(|s| {
+        s.url == r.url
+            && s.tls_ca == r.tls_ca
+            && s.tls_ca_pem == r.tls_ca_pem
+            && s.tls_server_name == r.tls_server_name
+            && s.tls_insecure_skip_verify == r.tls_insecure_skip_verify
+    });
+    let mut credential_sent = true;
+    if !same_target {
+        let had_ref =
+            r.api_key_ref.is_some() || r.api_secret_ref.is_some() || r.password_ref.is_some();
+        if had_ref {
+            credential_sent = false;
+        }
+        r.api_key_ref = None;
+        r.api_secret_ref = None;
+        r.password_ref = None;
     }
     let resolver: Arc<dyn telltale_filter::fetch::Resolve> =
         Arc::new(telltale_filter::fetch::SystemResolver);
-    let order: Vec<String> = routers.iter().map(|r| r.name.to_string()).collect();
-    let ha_names: Vec<String> = routers
-        .iter()
-        .filter(|r| r.kind == RouterKind::HomeAssistant)
-        .map(|r| r.name.to_string())
-        .collect();
-    // Routers first, so Home Assistant's devices find the addresses their MACs have now.
-    let mut polling: Vec<&RouterConfig> = routers.iter().collect();
-    polling.sort_by_key(|r| r.kind == RouterKind::HomeAssistant);
-    let mut parts: HashMap<String, Polled> = HashMap::new();
-    let mut ha_raw: HashMap<String, (Vec<HaDevice>, HashMap<String, Ipv4Addr>)> = HashMap::new();
-    let mut failing: HashMap<String, bool> = HashMap::new();
-    let interval = routers
-        .iter()
-        .map(|r| r.interval_secs.max(30))
-        .min()
-        .unwrap_or(300);
-    loop {
-        for r in &polling {
-            // Like a failed poll, a TLS setting that can't load (a node without the CA file, ADR-120)
-            // is logged once until it works.
-            let client = match http_client(r, &resolver) {
-                Ok(c) => c,
-                Err(e) => {
-                    if !failing.get(r.name.as_str()).copied().unwrap_or(false) {
-                        if resolver_pod {
-                            info!(router = %r.name, error = %e, "router integration: TLS settings (not on this resolver pod; the controller reads the router)");
-                        } else {
-                            warn!(router = %r.name, error = %e, "router integration: TLS settings");
-                        }
-                    }
-                    failing.insert(r.name.to_string(), true);
-                    continue;
-                }
-            };
-            let result = match r.kind {
-                RouterKind::Unifi => poll_unifi(&client, r, &store).await,
-                RouterKind::Opnsense => poll_opnsense(&client, r, &store).await,
-                RouterKind::HomeAssistant => {
-                    poll_home_assistant(&client, r, &store).await.map(|raw| {
-                        ha_raw.insert(r.name.to_string(), raw);
-                        Polled::default()
-                    })
-                }
-            };
-            let was_failing = failing.get(r.name.as_str()).copied().unwrap_or(false);
-            match result {
-                Ok(polled) => {
-                    if r.kind != RouterKind::HomeAssistant {
-                        let noted = parts
-                            .get(r.name.as_str())
-                            .is_some_and(|p| p.notes == polled.notes);
-                        if was_failing || !parts.contains_key(r.name.as_str()) {
-                            info!(router = %r.name, devices = polled.seen.len(), networks = polled.networks.len(), "router integration: devices read");
-                        }
-                        // REQ: T22.2 — reservations and networks are optional reads; say once
-                        // when they stop (or start) working, rather than every poll.
-                        if !noted && !polled.notes.is_empty() {
-                            info!(router = %r.name, skipped = %polled.notes.join("; "), "router integration: some optional reads didn't work (names of connected devices still come through)");
-                        }
-                        parts.insert(r.name.to_string(), polled);
-                    }
-                    failing.insert(r.name.to_string(), false);
-                }
-                Err(e) => {
-                    // REQ: API-014 — nor does the log.
-                    let e = e.replace(
-                        r.url.as_str(),
-                        &telltale_config::credentials::url_shown(r.url.as_str()),
-                    );
-                    if !was_failing {
-                        if resolver_pod {
-                            info!(router = %r.name, error = %e, "router integration failed on this resolver pod (the controller reads the router)");
-                        } else {
-                            warn!(router = %r.name, error = %e, "router integration failed (keeping its last answer)");
-                        }
-                    }
-                    failing.insert(r.name.to_string(), true);
-                }
-            }
-        }
-        match_home_assistant(&ha_names, &ha_raw, &mut parts);
-        rebuild(&order, &parts, &view);
-        rebuild_networks(&order, &parts, &networks);
-        // A router that failed (it may still be booting) is asked again soon.
-        let wait = if failing.values().any(|f| *f) {
-            interval.min(15)
-        } else {
-            interval
-        };
-        tokio::select! {
-            _ = stop.changed() => return,
-            () = tokio::time::sleep(Duration::from_secs(u64::from(wait))) => {}
-        }
-    }
+    let out = match read_one(&r, &resolver, &src.secrets).await {
+        Ok(Read::Routed(p)) => RouterCheck {
+            ok: true,
+            devices: u32::try_from(p.seen.len()).unwrap_or(u32::MAX),
+            networks: u32::try_from(p.networks.len()).unwrap_or(u32::MAX),
+            error: None,
+            credential_sent,
+        },
+        Ok(Read::Ha(devices, _)) => RouterCheck {
+            ok: true,
+            devices: u32::try_from(devices.len()).unwrap_or(u32::MAX),
+            networks: 0,
+            error: None,
+            credential_sent,
+        },
+        Err(e) => RouterCheck {
+            ok: false,
+            devices: 0,
+            networks: 0,
+            error: Some(e.replace(
+                r.url.as_str(),
+                &telltale_config::credentials::url_shown(r.url.as_str()),
+            )),
+            credential_sent,
+        },
+    };
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1133,3 +1494,7 @@ mod tests {
         assert_eq!(via(3).as_deref(), Some("opn"));
     }
 }
+
+#[cfg(test)]
+#[path = "routers_tests.rs"]
+mod routers_tests;

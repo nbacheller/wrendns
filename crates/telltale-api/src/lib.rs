@@ -34,6 +34,7 @@ pub mod plans;
 pub mod problem;
 pub mod rhythm_api;
 pub mod rollout_api;
+pub mod routers_api;
 pub mod secrets_api;
 pub mod simulate_api;
 pub mod slo;
@@ -400,6 +401,27 @@ pub trait Backend: Send + Sync + 'static {
     /// REQ: API-013 (T22.2) — the networks the routers reported and the groups' networks.
     fn networks(&self) -> Vec<model::NetworkInfo> {
         Vec::new()
+    }
+    /// REQ: API-016 (T23.7, T23.8) — the router integrations in the configuration, with each one's
+    /// status on this node.
+    fn router_entries(&self) -> Vec<model::RouterEntry> {
+        Vec::new()
+    }
+    /// REQ: API-016 (T23.8) — one read of a router draft (`POST /checks/router`).
+    fn check_router(
+        &self,
+        draft: serde_json::Value,
+    ) -> BoxFuture<Result<model::RouterCheck, Problem>> {
+        let _ = draft;
+        Box::pin(async { Err(Problem::unavailable("checks aren't available on this node")) })
+    }
+    /// REQ: API-016 (T23.8) — the certificate a router console presents at `url`.
+    fn router_certificate(
+        &self,
+        url: String,
+    ) -> BoxFuture<Result<model::RouterCertificate, Problem>> {
+        let _ = url;
+        Box::pin(async { Err(Problem::unavailable("checks aren't available on this node")) })
     }
     /// REQ: AGT-012 — runs a parsed `vqlog` query over `[from_us, to_us)` (or only
     /// estimates its cost).
@@ -863,6 +885,9 @@ pub enum ManagedKind {
     AlertDestination,
     /// An alert rule (`/alerts/rules/{name}`).
     AlertRule,
+    /// REQ: API-016 (T23.7, ADR-921) — a router integration (`/routers/{name}`): admin-only; a
+    /// router the config files define is read-only through the API (ADR-040).
+    Router,
     /// REQ: FLT-010 (T9.7) — a schedule (`/schedules/{name}`).
     Schedule,
     /// REQ: OBS-038 (ADR-161) — an anomaly mute (`/anomaly-mutes/{name}`): kinds of finding that
@@ -1076,6 +1101,8 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .merge(plans::read_routes(Arc::clone(&auth)))
         // REQ: OBS-024 — a simulation changes nothing: viewers may run one.
         .merge(simulate_api::routes(Arc::clone(&backend)))
+        // REQ: API-016 (T23.8) — the admin-only checks of a router draft.
+        .merge(routers_api::check_routes(Arc::clone(&backend)))
         // REQ: OBS-025 — what kind of device each address is.
         .merge(identify_api::routes(Arc::clone(&backend)))
         // REQ: FLT-017 — Kubernetes workloads and the watcher's status.
@@ -1086,6 +1113,8 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .merge(timeline::routes(Arc::clone(&backend)))
         // REQ: CLU-013 — the rollout in progress and the kept versions.
         .merge(rollout_api::read_routes(Arc::clone(&backend)))
+        // REQ: API-016 (T23.8) — router integrations and their status.
+        .merge(routers_api::read_routes(Arc::clone(&backend)))
         .route_layer(from_fn(auth::routes::require_viewer));
     let protected = data
         .merge(auth::routes::self_service(Arc::clone(&auth)))
@@ -1232,10 +1261,11 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
+        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule, config_api::put_router, config_api::delete_router, routers_api::list_routers, routers_api::check_router, routers_api::check_router_certificate,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
+        model::RouterEntry, model::RouterCredential, model::RouterStatus, model::RouterList, model::RouterCheck, model::RouterCertificate,
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::ListsRefreshRequest, model::ListsRefreshResult, model::ListRefreshSkip, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, model::CredentialIssue, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,

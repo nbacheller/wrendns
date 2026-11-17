@@ -2521,6 +2521,31 @@ impl Backend for ApiBackend {
 
     // REQ: API-013 (T22.2) — the routers' networks, then the groups' networks no router
     // reported, each with its group and how many known devices are in it.
+    // REQ: API-016 (T23.7, T23.8) — the routers in the configuration, with this node's status.
+    fn router_entries(&self) -> Vec<telltale_api::model::RouterEntry> {
+        let cfg = self.src.config.load_full();
+        let file = self.src.file_config.load_full();
+        let status = self.src.routers.snapshot();
+        cfg.router
+            .iter()
+            .map(|r| router_entry(&self.src, r, &file, status.get(r.name.as_str())))
+            .collect()
+    }
+    // REQ: API-016 (T23.8) — one read of a draft, without saving it (admin; see the route).
+    fn check_router(
+        &self,
+        draft: serde_json::Value,
+    ) -> BoxFuture<Result<telltale_api::model::RouterCheck, Problem>> {
+        let src = Arc::clone(&self.src);
+        Box::pin(async move { crate::routers::check_draft(&src, draft).await })
+    }
+    // REQ: API-016 (T23.8, ADR-120) — the certificate a console presents (admin; see the route).
+    fn router_certificate(
+        &self,
+        url: String,
+    ) -> BoxFuture<Result<telltale_api::model::RouterCertificate, Problem>> {
+        Box::pin(async move { crate::router_cert::fetch(&url).await })
+    }
     fn networks(&self) -> Vec<telltale_api::model::NetworkInfo> {
         use std::net::{IpAddr, Ipv4Addr};
         let state = self.src.pipeline.current();
@@ -4024,6 +4049,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Special => crate::managed::SPECIAL,
         ManagedKind::Local => crate::managed::LOCAL,
         ManagedKind::Clients => crate::managed::CLIENTS,
+        ManagedKind::Router => crate::managed::ROUTER,
     }
 }
 
@@ -4229,28 +4255,124 @@ fn rule_impact(src: &Sources, rule: &telltale_config::RuleConfig, setting: bool)
 }
 
 /// A local name or domain as stored: lowercase, no trailing dot.
+/// REQ: API-016 (T23.7, T23.8, ADR-903 §9) — one router as the API shows it: its settings (the
+/// address without its password, secrets by name), whether the files set it, and each credential's
+/// source and whether this node can read it.
+fn router_entry(
+    src: &Sources,
+    r: &telltale_config::RouterConfig,
+    file: &telltale_config::Config,
+    status: Option<&telltale_api::model::RouterStatus>,
+) -> telltale_api::model::RouterEntry {
+    use telltale_api::model::{RouterCredential, RouterStatus};
+    let from_file = file.router.iter().find(|f| f.name == r.name);
+    let mut definition = serde_json::to_value(r).unwrap_or_default();
+    definition["url"] =
+        serde_json::Value::String(telltale_config::credentials::url_shown(r.url.as_str()));
+    let set_by_file = from_file
+        .and_then(|f| serde_json::to_value(f).ok())
+        .map(|v| {
+            v.as_object()
+                .map(|o| {
+                    o.iter()
+                        .filter(|(k, v)| {
+                            !v.is_null()
+                                && (k.ends_with("_file")
+                                    || k.ends_with("_ref")
+                                    || k.starts_with("tls_ca"))
+                        })
+                        .map(|(k, _)| k.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    let fields = [
+        ("api_key", r.api_key_file.as_ref(), r.api_key_ref.as_ref()),
+        (
+            "api_secret",
+            r.api_secret_file.as_ref(),
+            r.api_secret_ref.as_ref(),
+        ),
+        (
+            "password",
+            r.password_file.as_ref(),
+            r.password_ref.as_ref(),
+        ),
+    ];
+    let mut credentials = Vec::new();
+    for (field, file_path, reference) in fields {
+        if file_path.is_none() && reference.is_none() {
+            continue;
+        }
+        let resolved =
+            crate::secrets::Credential::of(file_path, reference).resolve(Some(&src.secrets));
+        let (readable, issue) = match resolved {
+            Ok(Some(_)) => (Some(true), None),
+            Ok(None) => (None, None),
+            Err(e) => (Some(false), Some(e)),
+        };
+        credentials.push(RouterCredential {
+            field: field.to_owned(),
+            source: if file_path.is_some() {
+                "file"
+            } else {
+                "stored"
+            }
+            .to_owned(),
+            secret: reference.map(|r| r.as_str().to_owned()),
+            readable,
+            issue,
+        });
+    }
+    let kind = match r.kind {
+        telltale_config::RouterKind::Unifi => "unifi",
+        telltale_config::RouterKind::Opnsense => "opnsense",
+        telltale_config::RouterKind::HomeAssistant => "home_assistant",
+    };
+    let status = status.cloned().unwrap_or(RouterStatus {
+        polled_by: "this node".to_owned(),
+        state: "waiting".to_owned(),
+        last_poll: None,
+        error: None,
+        devices: 0,
+        networks: 0,
+        interval_secs: r.interval_secs,
+    });
+    telltale_api::model::RouterEntry {
+        name: r.name.to_string(),
+        kind: kind.to_owned(),
+        url: telltale_config::credentials::url_shown(r.url.as_str()),
+        source: if from_file.is_some() { "file" } else { "api" }.to_owned(),
+        definition,
+        set_by_file,
+        credentials,
+        status,
+    }
+}
+
 fn norm(name: &str) -> String {
     name.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
 /// A validated change to a local name or forwarded domain.
-struct ManagedPlan {
-    name: String,
-    before: Option<serde_json::Value>,
-    after: Option<serde_json::Value>,
+pub(crate) struct ManagedPlan {
+    pub(crate) name: String,
+    pub(crate) before: Option<serde_json::Value>,
+    pub(crate) after: Option<serde_json::Value>,
     /// What to store (`None` deletes).
-    body: Option<String>,
-    recent_queries: u64,
-    impact: String,
-    warnings: Vec<String>,
+    pub(crate) body: Option<String>,
+    pub(crate) recent_queries: u64,
+    pub(crate) impact: String,
+    pub(crate) warnings: Vec<String>,
     /// REQ: API-002 (T9.22) — entries the change also needs, stored first: removing an
     /// upstream takes it out of the upstream groups that use it. (kind, name, body).
-    also: AlsoStored,
+    pub(crate) also: AlsoStored,
     /// REQ: OBS-024 — the merged configuration with the change (for `simulate`).
-    candidate: telltale_config::Config,
+    pub(crate) candidate: telltale_config::Config,
     /// REQ: API-014 (T23.2) — an admin changes where a credential goes: the
     /// `credential.redirect` audit detail.
-    redirect: Option<serde_json::Value>,
+    pub(crate) redirect: Option<serde_json::Value>,
 }
 
 /// Parses a records body into stored form.
@@ -4350,6 +4472,9 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
             "Names under `{name}` go back to the default upstreams; {recent_queries} queries for them in the last two hours (at least)."
         ),
         (ManagedKind::Rule, _) => String::new(), // rule_impact says it better
+        (ManagedKind::Router, _) => {
+            "Polled by this node at its interval (by the primary, for a stored credential); the names it reports reach DNS after the next poll.".into()
+        }
         (ManagedKind::Upstream | ManagedKind::UpstreamGroup, _) => {
             "Applies on the next query; answers already cached stay until they expire.".into()
         }
@@ -4427,6 +4552,10 @@ fn plan_managed(
     }
     if crate::settings_kinds::is_settings(w.kind) {
         return plan_settings(src, state, w);
+    }
+    // REQ: API-016 (T23.7, ADR-921) — routers have their own plan (admin-only, file-read-only).
+    if w.kind == ManagedKind::Router {
+        return crate::router_settings::plan(src, state, w);
     }
     if matches!(
         w.kind,
@@ -5362,7 +5491,7 @@ fn mixed_version_warning(
 /// REQ: OPS-014 (ADR-903 §2, §4) — the references an entry body makes to stored secrets: each
 /// must name one this node stores (422 `secret_missing`), and a reference changed to a secret
 /// that an entry of another kind uses is audited as `credential.redirect` (the detail returned).
-fn secret_references(
+pub(crate) fn secret_references(
     src: &Sources,
     w: &ManagedWrite,
     name: &str,
@@ -5371,9 +5500,13 @@ fn secret_references(
 ) -> Result<Option<serde_json::Value>, Problem> {
     let kind = match w.kind {
         ManagedKind::AlertDestination => "alert_destination",
+        ManagedKind::Router => "router",
         _ => return Ok(None),
     };
-    let before = named_json(&current.alerts.destination, name);
+    let before = match w.kind {
+        ManagedKind::Router => named_json(&current.router, name),
+        _ => named_json(&current.alerts.destination, name),
+    };
     let used = telltale_config::secret_refs::references(current);
     let mut redirect = None;
     for f in telltale_config::secret_refs::fields_of(kind) {
@@ -5909,6 +6042,7 @@ fn keep_in_git(
         ManagedKind::Group => "group",
         ManagedKind::AlertDestination => "alerts.destination",
         ManagedKind::AlertRule => "alerts.rule",
+        ManagedKind::Router => "router",
         ManagedKind::Schedule => "schedule",
         ManagedKind::AnomalyMute => "anomaly_mute",
         ManagedKind::RateLimit => "ratelimit",
