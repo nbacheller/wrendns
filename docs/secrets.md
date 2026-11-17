@@ -87,7 +87,7 @@ What to do:
 | `secrets_key_file` not mounted yet, or unreadable | Mount it (or fix its permissions); the node picks it up within 30 seconds. |
 | `secrets.key` deleted or lost | Put the saved copy back. TelltaleDNS never makes a new key while secrets are stored, so nothing is overwritten. |
 | The wrong key is configured | Configure the right one; or, if the old key is known, give it as the previous key and the node re-encrypts under the new one. |
-| The key is gone for good | The stored secrets can't be recovered. A cluster replica whose secrets all came from the primary drops them and makes a new key by itself, to receive them again. Elsewhere the store stays locked while it holds secrets nothing can read (it never discards them on its own); file-based credentials keep working meanwhile. Keep a copy of the key so this never happens. |
+| The key is gone for good | The stored secrets can't be recovered. A cluster member whose secrets all came from the primary drops them and makes a new key by itself, to receive them again. A primary in that state takes them back from a replica that holds every one of them at the same stamp (its store stays locked until one does). Elsewhere the store stays locked while it holds secrets nothing can read (it never discards them on its own); file-based credentials keep working meanwhile. Keep a copy of the key so this never happens. |
 | One secret `unreadable` or `corrupt` | Set it again; nothing else is affected. |
 | Data directory not kept (Helm `persistence.enabled: false`) | Health says `secrets_ephemeral` while secrets are stored: they're lost at every restart. Turn persistence on, or use files. |
 
