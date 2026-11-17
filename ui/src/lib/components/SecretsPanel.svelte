@@ -233,7 +233,7 @@
   }
   .facts {
     display: grid;
-    grid-template-columns: max-content 1fr;
+    grid-template-columns: max-content minmax(0, 1fr);
     gap: 4px 14px;
     margin: 8px 0;
   }
@@ -242,6 +242,8 @@
   }
   .facts dd {
     margin: 0;
+    /* A key file's path or a key ID has no spaces; let it wrap at phone width. */
+    overflow-wrap: anywhere;
   }
   .actions {
     text-align: right;
