@@ -1,7 +1,7 @@
 //! The network inventory (M25, ADR-907..913). It only reads: the local neighbour table, the
 //! routers' and mDNS lease views, and scans the owner uploads. It never probes, sweeps or
 //! schedules scans (ADR-907), and its data never reaches DNS names, policy or client matching
-//! (ADR-910). Nothing starts it until `[discovery]` (T25.2) exists, so it is off by default.
+//! (ADR-910). `[discovery]` is the switch, and it is off by default (DSC-001).
 //!
 //! Module lints as in ADR-908: no `unsafe`, no indexing, no unchecked arithmetic, no panics.
 
@@ -12,10 +12,21 @@
     clippy::panic,
     clippy::unreachable
 )]
-// REQ: DSC-001 — nothing spawns the thread until T25.2's `[discovery]` section exists.
-#![allow(dead_code)]
-
+pub(crate) mod frames;
+pub(crate) mod gate;
+// REQ: DSC-008, DSC-009 — the readers of these modules are used by the API (T25.12) and the
+// import parser (T25.11); until those land, the tests are their only callers.
+#[allow(dead_code)]
 pub(crate) mod inventory;
+pub(crate) mod runtime;
+// REQ: DSC-008, DSC-009 — the readers of these modules are used by the API (T25.12) and the
+// import parser (T25.11); until those land, the tests are their only callers.
+#[allow(dead_code)]
 pub(crate) mod sources;
+// REQ: DSC-008, DSC-009 — the readers of these modules are used by the API (T25.12) and the
+// import parser (T25.11); until those land, the tests are their only callers.
+#[allow(dead_code)]
 pub(crate) mod store;
+pub(crate) mod supervisor;
 pub(crate) mod thread;
+pub(crate) mod worker;

@@ -2210,6 +2210,10 @@ impl Backend for Federated {
     fn alerts_status(&self) -> telltale_api::model::AlertsStatus {
         self.local.alerts_status()
     }
+    // REQ: DSC-014 (T25.3) — this node's own inventory status: each node runs its own workers.
+    fn discovery_status(&self) -> telltale_api::model::DiscoveryStatus {
+        self.local.discovery_status()
+    }
     fn alert_test(
         &self,
         name: &str,

@@ -1625,6 +1625,118 @@ test('flt_004 update lists now', async () => {
   await viewer.close();
 });
 
+// REQ: FLT-004 (T24.17) — each list's row has its own "Update now" (names: [that list]), disabled
+// while the list downloads or is off, and "Confirmed current" shows when it last downloaded fine.
+test('flt_004 update one list now', async () => {
+  await page.goto('/#/lists');
+  const row = page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: /^e2e-block$/ }) });
+  const rowBtn = row.getByTestId('list-update-now');
+  await expect(rowBtn).toHaveText('Update now');
+  await expect(rowBtn).toBeEnabled();
+  const queued = page.waitForResponse((r) => r.url().endsWith('/api/v1/lists/refresh') && r.request().method() === 'POST');
+  await rowBtn.click();
+  const res = await queued;
+  expect(res.status()).toBe(202);
+  expect(res.request().postDataJSON()).toEqual({ names: ['e2e-block'] });
+  const body = await res.json();
+  expect(body.queued).toEqual(['e2e-block']);
+  await expect(page.getByTestId('lists-refresh-status')).toContainText('e2e-block updated', { timeout: 15_000 });
+  await expect(rowBtn).toHaveText('Update now');
+  await expect(rowBtn).toBeEnabled();
+
+  // While a list downloads, its row's button says so and is disabled; the others stay enabled.
+  let downloading = true;
+  await page.route('**/api/v1/lists', async (route) => {
+    const r = await route.fetch();
+    const json = await r.json();
+    if (downloading) json.items = json.items.map((l: { name: string }) => (l.name === 'e2e-block' ? { ...l, refreshing: true } : l));
+    await route.fulfill({ response: r, json });
+  });
+  await page.reload();
+  await expect(rowBtn).toBeDisabled();
+  await expect(rowBtn).toHaveText('Updating…');
+  await expect(page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: /^e2e-shadow$/ }) }).getByTestId('list-update-now')).toBeEnabled();
+  downloading = false;
+  await page.unroute('**/api/v1/lists');
+  await page.reload();
+  await expect(rowBtn).toBeEnabled();
+
+  // "Confirmed current" reads the last successful download; an inline list has none to confirm.
+  await page.route('**/api/v1/lists', async (route) => {
+    const r = await route.fetch();
+    const json = await r.json();
+    const now = Date.now() / 1000;
+    json.items = json.items.map((l: { name: string }) =>
+      l.name === 'e2e-block' ? { ...l, source: 'https://lists.e2e.test/block.txt', lastSuccessUnixSeconds: Math.floor(now - 7260) } : l,
+    );
+    await route.fulfill({ response: r, json });
+  });
+  await page.reload();
+  await expect(row.getByTestId('list-confirmed')).toContainText('2h 1m ago');
+  await expect(page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: /^e2e-shadow$/ }) }).getByTestId('list-confirmed')).toHaveText('inline');
+  await page.unroute('**/api/v1/lists');
+  await page.reload();
+});
+
+// REQ: FLT-004 (T24.17) — a viewer sees the lists and when each was confirmed, with no update button.
+test('flt_004 viewer sees no update buttons', async ({ browser }) => {
+  const viewer = await browser.newContext({ baseURL: page.url().split('/#')[0] || 'http://127.0.0.1:18054' });
+  const vpage = await viewer.newPage();
+  await vpage.goto('/');
+  await vpage.getByLabel('Username', { exact: true }).fill(VIEWER.user);
+  await vpage.getByLabel('Password', { exact: true }).fill(VIEWER.pass);
+  await vpage.getByRole('button', { name: 'Sign in' }).click();
+  await expect(vpage.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 30_000 });
+  await vpage.goto('/#/lists');
+  await expect(vpage.getByRole('heading', { name: /^Lists/ })).toBeVisible();
+  await expect(vpage.locator('table:not(.compact) tbody tr').filter({ has: vpage.locator('strong', { hasText: /^e2e-block$/ }) })).toBeVisible();
+  await expect(vpage.getByRole('columnheader', { name: 'Confirmed current' })).toBeVisible();
+  await expect(vpage.getByTestId('list-update-now')).toHaveCount(0);
+  await expect(vpage.getByTestId('lists-update-now')).toHaveCount(0);
+  await viewer.close();
+});
+
+// REQ: FLT-004 (T24.17) — while a row's request is in flight, the status says it is downloading and
+// the page-wide "Update now" is disabled, so two refreshes can't start at once.
+test('flt_004 a row update says it is downloading before the answer', async () => {
+  await page.goto('/#/lists');
+  const row = page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: /^e2e-block$/ }) });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  await page.route('**/api/v1/lists/refresh', async (route) => {
+    await gate;
+    await route.continue();
+  });
+  try {
+    await row.getByTestId('list-update-now').click();
+    await expect(page.getByTestId('lists-refresh-status')).toContainText('Downloading e2e-block', { timeout: 10_000 });
+    await expect(row.getByTestId('list-update-now')).toHaveText('Updating…');
+    await expect(row.getByTestId('list-update-now')).toBeDisabled();
+    await expect(page.getByTestId('lists-update-now')).toBeDisabled();
+    release();
+    await expect(page.getByTestId('lists-refresh-status')).toContainText('e2e-block updated', { timeout: 15_000 });
+    await expect(row.getByTestId('list-update-now')).toBeEnabled();
+  } finally {
+    release();
+    await page.unroute('**/api/v1/lists/refresh');
+  }
+});
+
+// REQ: FLT-004 (T24.17) — the lists table fits a phone (375 px): the page itself doesn't scroll sideways.
+test('flt_004 lists fit a phone width (375 px)', async () => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  try {
+    await page.goto('/#/lists');
+    await expect(page.getByRole('heading', { name: /^Lists/ })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Confirmed current' })).toBeAttached();
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+    await expect(page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: /^e2e-block$/ }) }).getByRole('button', { name: 'Update e2e-block now' })).toBeVisible();
+  } finally {
+    await page.setViewportSize({ width: 1280, height: 800 });
+  }
+});
+
 test('api_002 upstreams and lists can be added, overridden, and reverted', async () => {
   const r = page.request;
   const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
@@ -5104,6 +5216,151 @@ test('api_013 a made group draft does not reopen on reload', async () => {
   } finally {
     await page.unroute('**/api/v1/networks');
   }
+});
+
+// REQ: DSC-001 (T25.2, ADR-907, ADR-928) — the network inventory's settings are admin-only: an admin
+// sees the controls; an operator sees them read-only, and the server refuses an operator's write.
+test('dsc_001 network inventory settings are admin-only', async () => {
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  await expect(settings.getByRole('switch', { name: 'Turn the network inventory on' })).toBeEnabled();
+  await expect(settings.getByRole('button', { name: 'Check', exact: true })).toBeVisible();
+  const OPERATOR = { user: 'operator2', pass: 'operator long password' };
+  const csrf = await csrfOf(page.request);
+  await page.request.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: OPERATOR.user, password: OPERATOR.pass, role: 'operator' } });
+  const op = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  try {
+    const p = await op.newPage();
+    await p.goto('/#/network-inventory');
+    await p.getByLabel('Username', { exact: true }).fill(OPERATOR.user);
+    await p.getByLabel('Password', { exact: true }).fill(OPERATOR.pass);
+    await p.getByRole('button', { name: 'Sign in' }).click();
+    const mine = p.getByTestId('inventory-settings');
+    await expect(mine.getByText('Only an administrator can change the network inventory')).toBeVisible({ timeout: 30_000 });
+    await expect(mine.getByRole('button', { name: 'Check', exact: true })).toHaveCount(0);
+    await expect(mine.getByRole('switch', { name: 'Turn the network inventory on' })).toBeDisabled();
+    const ocsrf = await csrfOf(op.request);
+    const moved = await op.request.put('/api/v1/discovery-settings/default', { headers: { 'x-csrf-token': ocsrf }, data: { enabled: true, worker_memory_mib: 64 } });
+    expect(moved.status()).toBe(403);
+    expect(await moved.text()).toContain('enabled');
+  } finally {
+    await op.close();
+  }
+});
+
+// REQ: DSC-001 (T25.2, ADR-914) — a field the configuration files set is locked, and labelled as set
+// by file; the fields the files leave alone stay editable.
+test('dsc_001 file-set discovery shows set by file', async () => {
+  const entry = {
+    items: [{
+      kind: 'discovery', name: 'default', source: 'file',
+      definition: { enabled: true, node: null, worker_memory_mib: 64, subnet: [{ cidr: '192.168.1.0/24' }] },
+      redacted: [], credentialIssues: [], setByFile: ['enabled', 'subnet'], answering: null,
+    }],
+  };
+  await page.route(/\/api\/v1\/config\/entries\?kind=discovery/, (route) => route.fulfill({ json: entry }));
+  try {
+    // Leave the page first, so the page mounts again and reads the mocked entry.
+    await page.goto('/#/');
+    await page.goto('/#/network-inventory');
+    const settings = page.getByTestId('inventory-settings');
+    await expect(settings.getByTestId('set-by-file')).toHaveCount(2);
+    await expect(settings.getByRole('switch', { name: 'Turn the network inventory on' })).toBeDisabled();
+    await expect(settings.getByLabel('Subnets it may read')).toBeDisabled();
+    await expect(settings.getByLabel('Designated node')).toBeEnabled();
+  } finally {
+    await page.unroute(/\/api\/v1\/config\/entries\?kind=discovery/).catch(() => {});
+  }
+});
+
+// REQ: DSC-002 (T25.3, DSC-014, ADR-908) — a discovery worker that keeps stopping shows on the
+// network inventory page, with its restarts, and DNS is not mentioned as affected.
+test('dsc_002 failing worker shows on the inventory page', async () => {
+  const status = {
+    enabled: true, designated: true, node: null,
+    workers: [{
+      worker: 'snmp', up: false, restarts: 4, versionMismatch: false, failing: true,
+      lastError: 'the worker exited (signal: 6)', dataLimitMib: null, dumpable: false, oomScoreAdj: 1000,
+    }],
+  };
+  await page.route(/\/api\/v1\/discovery\/status/, (route) => route.fulfill({ json: status }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/network-inventory');
+    await expect(page.getByTestId('inventory-state')).toHaveText('Runs on this node');
+    const row = page.getByTestId('worker-snmp');
+    await expect(row.getByTestId('worker-failing')).toHaveText('failing');
+    await expect(row).toContainText('4');
+    await expect(page.getByTestId('inventory-status')).toContainText('the worker exited');
+  } finally {
+    await page.unroute(/\/api\/v1\/discovery\/status/).catch(() => {});
+  }
+});
+
+// REQ: DSC-001 (T25.2, ADR-928) — an admin checks a change, applies exactly what was checked, and then
+// drops the stored settings for the file's again. The real server answers every step.
+test('dsc_001 admin checks then applies, then uses the file settings', async () => {
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  await settings.getByLabel('Subnets it may read').fill('192.168.50.0/24');
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('inventory-preview')).toBeVisible();
+  await settings.getByRole('button', { name: 'Apply', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await expect(settings.getByLabel('Subnets it may read')).toHaveValue('192.168.50.0/24');
+  await settings.getByTestId('inventory-use-file').click();
+  await expect(page.getByRole('status').filter({ hasText: "Back to the configuration file's settings." })).toBeVisible();
+  await expect(settings.getByTestId('inventory-use-file')).toHaveCount(0);
+});
+
+// REQ: DSC-001 (T25.2, ADR-928) — a subnet outside RFC 1918 is refused with the server's message, and
+// nothing is applied: the Apply button is not offered for a refused check.
+test('dsc_001 a refused subnet shows the refusal', async () => {
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  await settings.getByLabel('Subnets it may read').fill('8.8.8.0/24');
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: "isn't a private (RFC 1918) network" })).toBeVisible();
+  await expect(settings.getByRole('button', { name: 'Apply', exact: true })).toHaveCount(0);
+  // The refusal is expected: the browser logs the 422 as a console error, which the test removes.
+  for (let i = problems.length - 1; i >= 0; i--) if (problems[i].includes('status of 422')) problems.splice(i, 1);
+});
+
+// REQ: DSC-001 (T25.2, ADR-928) — the first write is refused while a member is older than the release
+// that carries `[discovery]`; the refusal's own message is shown (the members are mocked).
+test('dsc_001 members too old is shown', async () => {
+  const detail = "the network inventory can't be turned on while pi-b runs an older version than this one: it can't read `[discovery]`";
+  await page.route(/\/api\/v1\/discovery-settings\/default/, (route) => {
+    if (route.request().method() !== 'PUT') return route.fallback();
+    return route.fulfill({ status: 409, json: { type: 'about:blank', title: 'Conflict', status: 409, detail, code: 'members_too_old' } });
+  });
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/network-inventory');
+    const settings = page.getByTestId('inventory-settings');
+    await settings.getByLabel('Subnets it may read').fill('192.168.60.0/24');
+    await settings.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'pi-b runs an older version' })).toBeVisible();
+    await expect(settings.getByRole('button', { name: 'Apply', exact: true })).toHaveCount(0);
+    // The refusal is expected: the browser logs the 409 as a console error, which the test removes.
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1);
+  } finally {
+    await page.unroute(/\/api\/v1\/discovery-settings\/default/).catch(() => {});
+    await page.goto('/#/network-inventory');
+  }
+});
+
+// REQ: DSC-001 (T25.2, ADR-928) — a poll does not overwrite what an admin is typing: the form is
+// refilled only while it still holds the stored settings.
+test('dsc_001 a poll keeps unsaved edits', async () => {
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  const node = settings.getByLabel('Designated node');
+  await node.fill('pi-unsaved');
+  // The page polls every 15 s; wait past one poll before looking again.
+  await page.waitForTimeout(16_000);
+  await expect(node).toHaveValue('pi-unsaved');
+  await node.fill('');
 });
 
 // REQ: API-007 (T24.18, ADR-940) — importing a Pi-hole export from the admin page: the preview

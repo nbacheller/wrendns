@@ -301,10 +301,10 @@
       "id": "list-update-now",
       "title": "Update lists now",
       "term": "Update now (list refresh)",
-      "summary": "Downloads every enabled list again right away instead of waiting for its schedule, like Pi-hole's Update Gravity. The page shows progress; each list's State says \"updating\" until its download ends.",
-      "when": "A list maintainer fixed a false positive or added new names, or you just added a list.",
-      "example": "A site broke because of a list entry the maintainer removed this morning: Update now picks up the fix without waiting a day.",
-      "caution": "Unchanged lists cost one small request each, and blocking only changes if a list did. In a cluster the primary downloads the lists for every node. Agents need the config:write:lists scope.",
+      "summary": "Downloads every enabled list again right away instead of waiting for its schedule, like Pi-hole's Update Gravity. Each list's row has its own Update now to download just that one. The page shows progress; each list's State says \"updating\" until its download ends, and Confirmed current shows when the list last downloaded fine.",
+      "when": "A list maintainer fixed a false positive or added new names, or you just added a list. Use a row's Update now when only one list is in question.",
+      "example": "A site broke because of a list entry the maintainer removed this morning: the list's row Update now picks up the fix without waiting a day.",
+      "caution": "Unchanged lists cost one small request each, and blocking only changes if a list did. An off list can't be updated until it's on. In a cluster the primary downloads the lists for every node. Agents need the config:write:lists scope.",
       "docs": "filter-lists"
     },
     {
@@ -989,6 +989,26 @@
       "example": "The sample has your local names, the CNAMEs, and a few blocked domains. A difference such as NXDOMAIN on TelltaleDNS against an address on the Pi-hole means that name isn't answered the same yet.",
       "caution": "TelltaleDNS answers from its running configuration. Run the imported configuration first, or the comparison shows what the node answers now. Each name costs two queries to each server.",
       "docs": "migrating-from-pihole"
+    },
+    {
+      "id": "network-inventory",
+      "title": "Network inventory",
+      "term": "Network inventory",
+      "summary": "TelltaleDNS can list the devices on your network that routers and Home Assistant already know, and read a few facts from your managed switches and gateway. It only reads: it never scans the network itself.",
+      "when": "Turn it on when you want to see devices that never ask DNS for anything, such as printers or devices with fixed addresses. Leave it off if you don't want TelltaleDNS reading switches or gateways at all.",
+      "example": "You list your gateway's subnet 192.168.1.0/24 and turn the inventory on. The gateway's ARP table then tells TelltaleDNS which MAC address sits behind each address on that subnet.",
+      "caution": "Only one node runs the inventory: the primary, or the node you name. Changes are for administrators only. Turning it on is refused while privacy level is 2 or 3, because the inventory needs client addresses.",
+      "docs": "network-inventory-devices-that-never-ask-dns"
+    },
+    {
+      "id": "discovery-workers",
+      "title": "Inventory workers",
+      "term": "Discovery worker",
+      "summary": "The inventory's SNMP reads run in a separate small process, so a problem there can't slow or stop DNS. TelltaleDNS restarts it when it stops, and waits longer each time it keeps failing.",
+      "when": "Look here when the inventory shows no data, or when the health icon names a discovery worker.",
+      "example": "A worker is refused because it was built from a different version than this node. Upgrade the node so both match, and the worker starts again.",
+      "caution": "A worker that keeps crashing is a sign of a fault in the inventory or in a device's reply. DNS keeps answering while it is down.",
+      "docs": "network-inventory-devices-that-never-ask-dns"
     }
   ]
 }

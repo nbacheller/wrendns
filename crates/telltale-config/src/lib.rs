@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 pub mod credentials;
+pub mod discovery;
 mod env;
 pub mod mute;
 pub mod safesearch;
@@ -30,6 +31,7 @@ use std::path::Path;
 
 use toml::{Table, Value};
 
+pub use discovery::{DiscoveryConfig, DiscoverySubnet};
 pub use env::{ENV_PREFIX, NEVER_INHERITED};
 pub use schema::*;
 pub use types::{ByteSize, Cidr, SafeString, parse_rfc3339};
@@ -172,7 +174,7 @@ impl Loader {
 /// overridden by the file.
 fn explicit_keys(root: &Table) -> Vec<String> {
     let mut keys = Vec::new();
-    for section in ["special", "local", "clients"] {
+    for section in ["special", "local", "clients", "discovery"] {
         if let Some(Value::Table(t)) = root.get(section) {
             keys.extend(t.keys().map(|k| format!("{section}.{k}")));
         }

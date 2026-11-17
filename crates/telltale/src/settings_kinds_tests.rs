@@ -11,6 +11,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use telltale_api::auth;
+use telltale_config::{Config, Loader};
 use tower::ServiceExt as _;
 
 use crate::credential_tests::{Harness, harness, harness_in, older_primary_and_replica};
@@ -318,4 +319,147 @@ async fn dns_023_older_primary_is_refused_before_forwarding() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(current.got.lock().unwrap().len(), 1, "forwarded");
     let _ = current.stop.send(true);
+}
+
+// ---- REQ: DSC-001 (T25.2, ADR-907, ADR-928) — the network inventory's settings ----
+
+const DISCOVERY: &str = "/api/v1/discovery-settings/default";
+
+/// REQ: DSC-001 (`dsc_001_write_is_admin_only_and_audited`) — an admin's change is checked (a dry run
+/// changes nothing) and applied; an operator's is refused (403 naming the field).
+#[tokio::test]
+async fn dsc_001_write_is_admin_only_and_audited() {
+    let h = harness("");
+    let op = token(&h, "olive", auth::Role::Operator, None);
+    let on = json!({ "enabled": true, "node": null, "worker_memory_mib": 64,
+        "subnet": [{ "cidr": "192.168.1.0/24" }] });
+    let (s, _, v) = call_as(&h, &op, "PUT", DISCOVERY, Some(&on), &[]).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(v["detail"].as_str().unwrap().contains("enabled"), "{v}");
+    assert!(!h.src.config.load().discovery.enabled);
+
+    let dry = format!("{DISCOVERY}?dryRun=true");
+    let (s, _, v) = h.call("PUT", &dry, Some(&on)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(
+        !h.src.config.load().discovery.enabled,
+        "a dry run changes nothing"
+    );
+
+    let (s, _, v) = h.call("PUT", DISCOVERY, Some(&on)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _, v) = h
+        .call("GET", "/api/v1/config/entries?kind=discovery", None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["items"][0]["source"], "override", "{v}");
+    assert_eq!(
+        v["items"][0]["definition"]["subnet"][0]["cidr"], "192.168.1.0/24",
+        "{v}"
+    );
+    // The admin's write is audited with what changed (ADR-928): the record names the action and
+    // carries the section after the change.
+    let audit = h.audit_text();
+    assert!(audit.contains("discovery.put"), "{audit}");
+    assert!(audit.contains("192.168.1.0/24"), "{audit}");
+}
+
+/// REQ: DSC-001 (`dsc_001_agents_cannot_write_kind`) — no agent writes the network inventory's
+/// settings, whatever its scopes; the auth table refuses the kind (`agent_not_allowed`).
+#[tokio::test]
+async fn dsc_001_agents_cannot_write_kind() {
+    let h = harness("");
+    let bot = token(
+        &h,
+        "bot-owner",
+        auth::Role::Admin,
+        Some("config:read config:write:special config:write:local"),
+    );
+    let on = json!({ "enabled": true, "worker_memory_mib": 64 });
+    let (s, _, v) = call_as(&h, &bot, "PUT", DISCOVERY, Some(&on), &[]).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(!h.src.config.load().discovery.enabled);
+}
+
+/// REQ: DSC-001 (`dsc_001_n1_member_refuses_first_write`) — the first write waits while any member
+/// runs an older version than the one that knows `[discovery]`, and a member whose version can't be
+/// read counts as older.
+#[test]
+fn dsc_001_n1_member_refuses_first_write() {
+    let since = crate::forward::DISCOVERY_SINCE;
+    let old = vec![
+        ("pi-a".to_owned(), "0.8.0".to_owned()),
+        ("pi-b".to_owned(), "0.7.9".to_owned()),
+    ];
+    let refused =
+        crate::settings_kinds::members_too_old(&old, since).expect("an N-1 member refuses");
+    assert_eq!(refused.code_status(), StatusCode::CONFLICT);
+    assert!(
+        refused.detail.contains("pi-b") && !refused.detail.contains("pi-a"),
+        "{}",
+        refused.detail
+    );
+    let unknown = vec![("pi-c".to_owned(), "dev".to_owned())];
+    assert!(crate::settings_kinds::members_too_old(&unknown, since).is_some());
+    let current = vec![("pi-a".to_owned(), "0.8.0".to_owned())];
+    assert!(crate::settings_kinds::members_too_old(&current, since).is_none());
+    let later = vec![("pi-a".to_owned(), "0.8.1-rc.1".to_owned())];
+    assert!(crate::settings_kinds::members_too_old(&later, since).is_none());
+}
+
+/// REQ: DSC-001 (`dsc_001_current_build_passes_the_gate`, ADR-928) — through the real route and the
+/// real build version: a write from a replica to a primary at the release that carries `[discovery]`
+/// goes through (this node's own `VERSION` counts as the crate's when it is a `dev` build), and to a
+/// primary at an older release it is refused with 409 and never forwarded.
+#[tokio::test(flavor = "multi_thread")]
+async fn dsc_001_current_build_passes_the_gate() {
+    let body = json!({"enabled": false, "node": null, "worker_memory_mib": 64,
+        "subnet": [{ "cidr": "192.168.1.0/24" }] });
+    let (replica, current) = older_primary_and_replica(env!("CARGO_PKG_VERSION")).await;
+    let h = harness_in("", Some(replica));
+    let mut req = h.request("PUT", DISCOVERY, Some(&body));
+    req.headers_mut()
+        .insert("idempotency-key", "gate-current".parse().unwrap());
+    let (s, _, text) = h.send(req).await;
+    assert_eq!(s, StatusCode::OK, "{text}");
+    assert_eq!(
+        current.got.lock().unwrap().len(),
+        1,
+        "forwarded to the primary"
+    );
+
+    let (older_replica, older) = older_primary_and_replica("0.7.4").await;
+    let h = harness_in("", Some(older_replica));
+    let mut req = h.request("PUT", DISCOVERY, Some(&body));
+    req.headers_mut()
+        .insert("idempotency-key", "gate-older".parse().unwrap());
+    let (s, _, text) = h.send(req).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{text}");
+    assert!(
+        text.contains("members_too_old") || text.contains("upgrade_required"),
+        "{text}"
+    );
+    assert!(older.got.lock().unwrap().is_empty(), "never forwarded");
+}
+
+/// REQ: DSC-001 (`dsc_001_file_edit_audited_at_start`) — the file's `[discovery]` is audited at start
+/// when it is set, and on a reload that changes it; an unchanged section is not audited again.
+#[test]
+fn dsc_001_file_edit_audited_at_start() {
+    let set = Loader::new()
+        .toml_str("t", "[discovery]\nenabled = true\n")
+        .load()
+        .unwrap()
+        .config;
+    let unset = Config::default();
+    assert!(
+        crate::server::discovery_audit_detail(None, &unset).is_none(),
+        "unset: nothing to record"
+    );
+    let at_start = crate::server::discovery_audit_detail(None, &set).expect("start records it");
+    assert_eq!(at_start["source"], "file");
+    assert_eq!(at_start["discovery"]["enabled"], true);
+    assert!(crate::server::discovery_audit_detail(Some(&set.discovery), &set).is_none());
+    let changed = crate::server::discovery_audit_detail(Some(&unset.discovery), &set);
+    assert!(changed.is_some(), "a reload that turns it on is recorded");
 }

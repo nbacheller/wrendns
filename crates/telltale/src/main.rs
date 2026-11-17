@@ -342,6 +342,15 @@ enum Command {
         #[arg(long)]
         restart: bool,
     },
+    /// REQ: DSC-002 (T25.3, ADR-908) — a network-inventory worker process: started by the node
+    /// (never by hand), it reads the stdin frames and answers them on stdout. `--import` is the
+    /// scan-import parser, with no credentials (ADR-913).
+    #[command(hide = true)]
+    DiscoveryWorker {
+        /// The scan-import parser instead of the SNMP poller.
+        #[arg(long)]
+        import: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -824,6 +833,10 @@ fn main() -> ExitCode {
             check,
             restart,
         } => Ok(run_self_update(channel, check, restart)),
+        // REQ: DSC-002 (T25.3) — the worker's exit code says why it stopped (discovery::worker).
+        Command::DiscoveryWorker { import } => Ok(ExitCode::from(
+            u8::try_from(discovery::worker::main(import)).unwrap_or(1),
+        )),
         Command::Import { command } => Ok(run_import(command)),
         Command::PiholeImportWorker { path } => Ok(pihole_import::run_worker(&path)),
         Command::Backup { command } => Ok(run_backup(command)),

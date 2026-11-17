@@ -276,6 +276,16 @@
       ],
       "summary": "A Kubernetes workload counts in the analytics under one key, whichever pods ask: an address inside 100::/64, which is set aside for discarding traffic and never routes, so a key can't be mistaken for a real device. The query log keeps each pod's own address.",
       "diagram": "rfc6666"
+    },
+    {
+      "rfc": "1918",
+      "title": "Address Allocation for Private Internets",
+      "status": "supported",
+      "reqs": [
+        "DSC-001"
+      ],
+      "summary": "The network inventory reads only the private IPv4 networks 10/8, 172.16/12 and 192.168/16 that the configuration lists. Anything else, including the shared 100.64/10 range, is refused, and a subnet is a filter on addresses the inventory already has, never a range to scan.",
+      "diagram": "rfc1918"
     }
   ]
 }

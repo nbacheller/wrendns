@@ -20,6 +20,7 @@ mod sys;
 pub mod tcp;
 pub mod tls;
 pub mod udp;
+pub mod worker;
 
 pub use doh::{DohConfig, DohServer, DohStats};
 pub use doh3::{Doh3Config, Doh3Server};
@@ -101,6 +102,20 @@ pub fn default_workers() -> usize {
 pub fn allocator_purge_at_once() {
     #[cfg(target_os = "linux")]
     sys::allocator_purge_at_once();
+}
+
+/// REQ: DSC-002 (ADR-934) — the text of this process's `/proc/self/io`, read through a descriptor
+/// opened before [`worker::prepare_spawn`] made the process not dumpable (a non-root process
+/// can't open the file itself after that). `None` off Linux or without the file.
+pub fn self_io_text() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        sys::self_io_text()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
 
 /// REQ: NFR-001 (T10.2) — drops this process's resident copies of its executable's code and

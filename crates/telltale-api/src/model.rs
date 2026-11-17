@@ -1252,6 +1252,46 @@ pub struct AlertDelivery {
     pub error: Option<String>,
 }
 
+/// REQ: DSC-014 (T25.3, ADR-908) — the network inventory's status: whether it runs on this node,
+/// and each discovery worker process. Health reasons for the workers never mark DNS unhealthy.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryStatus {
+    /// `[discovery] enabled`.
+    pub enabled: bool,
+    /// Whether this node is the designated one (it runs the inventory and its workers).
+    pub designated: bool,
+    /// The designated node's name, when `[discovery] node` is set.
+    pub node: Option<String>,
+    /// The worker processes this node runs (none unless enabled and designated).
+    pub workers: Vec<DiscoveryWorker>,
+}
+
+/// REQ: DSC-002 (T25.3, ADR-908) — one discovery worker process, as the supervisor sees it.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryWorker {
+    /// `snmp` (the SNMP poller) or `import` (the scan-import parser, short-lived).
+    #[schema(example = "snmp")]
+    pub worker: String,
+    /// Running, with a handshake that matched.
+    pub up: bool,
+    /// Times the worker has been restarted since start.
+    pub restarts: u64,
+    /// The worker's build differs from this node's: it is refused (`discovery_worker_version_mismatch`).
+    pub version_mismatch: bool,
+    /// Three or more crashes in ten minutes: restarts are slowed (`discovery_worker_failing`).
+    pub failing: bool,
+    /// The last failure, in words (the stderr line is logged, rate-limited).
+    pub last_error: Option<String>,
+    /// The worker's `RLIMIT_DATA` in MiB, as it reported it at the handshake.
+    pub data_limit_mib: Option<u64>,
+    /// Whether the worker reported it isn't dumpable (no core dumps, no /proc reads by others).
+    pub dumpable: Option<bool>,
+    /// The worker's `oom_score_adj`, as it reported it.
+    pub oom_score_adj: Option<i32>,
+}
+
 /// REQ: OBS-010 (T9.6) — alerts now: what fires, and how deliveries went.
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -2809,7 +2849,7 @@ pub struct HealthReason {
     /// Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,
     /// `sync_lag`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
     /// `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
-    /// `rollout_stuck`.
+    /// `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`.
     #[schema(example = "upstream_down")]
     pub code: String,
     /// In words, with the numbers.

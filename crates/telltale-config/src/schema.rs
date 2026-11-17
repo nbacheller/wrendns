@@ -90,6 +90,13 @@ pub struct Config {
     pub dns: DnsConfig,
     /// Special-name handling (RFC 6761 etc.).
     pub special: SpecialConfig,
+    /// REQ: DSC-001 (T25.2, ADR-907) — the network inventory (`[discovery]`): off by default,
+    /// one designated node, admin-only writes. Serialized only when set (CLU-010).
+    #[serde(
+        default,
+        skip_serializing_if = "crate::discovery::DiscoveryConfig::is_default"
+    )]
+    pub discovery: crate::discovery::DiscoveryConfig,
     /// Response cache.
     pub cache: CacheConfig,
     /// DNSSEC validation of forwarded answers (DNS-011).
@@ -164,6 +171,7 @@ impl Default for Config {
             drill: DrillConfig::default(),
             dns: DnsConfig::default(),
             special: SpecialConfig::default(),
+            discovery: crate::discovery::DiscoveryConfig::default(),
             file_set: Vec::new(),
             cache: CacheConfig::default(),
             dnssec: DnssecConfig::default(),
