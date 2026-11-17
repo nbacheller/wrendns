@@ -1293,6 +1293,16 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-943 — Svelte attribute quantifiers: `{n}` in a quoted attribute is written as a JS expression, and a guard keeps it that way (Accepted 2026-11-17 (owner decision))
+**Context:** Upstream issue #64, "2FA can't be enabled". Svelte 5 reads `{6}` inside a quoted attribute value as an expression, so `pattern="[0-9]{6}"` reached the browser as `[0-9]6` and no six-digit code matched. The TOTP enrolment (Settings) and the sign-in code (Login) both had the bug.
+
+**Decision:**
+- Every such attribute in `ui/src` is written as `pattern={"[0-9]{6}"}`, a string expression, so the braces reach the DOM unchanged.
+- `ui/scripts/check-quantifiers.mjs` runs first in `npm run check`. It fails when any quoted attribute in a `.svelte` file contains `{digits}` or `{digits,digits}`. It is a source check, so it catches the pattern before a build.
+- The Playwright suite enrols TOTP with a real RFC 6238 code and signs in with one, so a regression that breaks the pattern also fails the suite.
+
+**Consequences:** A new quoted attribute with a quantifier fails `npm run check` until it is written as an expression.
+
 ## ADR-942 — UniFi offline clients on the fork's router model: `offline_days` 0 keeps the reservations (Accepted 2026-11-17)
 **Context:** The upstream merge brought T8.2's offline clients (ADR-166): the console's client history and the configured clients, named by their last address, for `offline_days` (30 by default, 0 for connected clients only). The fork had already made a DHCP reservation (T22.2, ADR-902) name its device while it is offline, whatever the history says. Both can't hold at `offline_days = 0`.
 **Decision (proposed; the conservative reading of both):**
