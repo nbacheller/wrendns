@@ -997,3 +997,68 @@ async fn api_016_check_sends_only_its_own_secret() {
     // The check saved nothing.
     assert_eq!(h.src.config.load().router.len(), 1);
 }
+
+/// REQ: API-016 (NEW-1/NEW-2 of the review, ADR-922) — a form-named secret (`<kind>.<name>.<field>`)
+/// is sent only at the address its router was saved for. A saved router's named key aimed at a new
+/// address is dropped even though the name matches; a new router's named secret that another
+/// entry of any kind (here an alert destination) uses is dropped too.
+#[tokio::test]
+async fn api_016_form_named_secret_stays_at_its_address() {
+    let addr = fake_router(HA_ANSWER).await;
+    let h = with_secret(&format!(
+        "[[router]]
+name = \"lab\"
+type = \"home_assistant\"
+url = \"http://{addr}\"
+api_key_ref = \"home_assistant.lab.api_key\"
+         [alerts]
+interval_secs = 60
+[[alerts.destination]]
+name = \"ntfy\"
+type = \"ntfy\"
+url = \"https://ntfy.sh/t\"
+token_ref = \"home_assistant.fresh3.api_key\"
+"
+    ));
+    store_secret(&h, "home_assistant.lab.api_key", "tok-lab");
+    store_secret(&h, "home_assistant.fresh3.api_key", "tok-shared");
+    store_secret(&h, "home_assistant.fresh2.api_key", "tok-fresh2");
+    let draft = |name: &str, url: &str, reference: &str| {
+        let mut v = ha_body(url);
+        v["name"] = json!(name);
+        v["api_key_ref"] = json!(reference);
+        v
+    };
+    let here = format!("http://{addr}");
+    // The saved router's named key, at the saved address: sent.
+    let own = super::check_draft(&h.src, draft("lab", &here, "home_assistant.lab.api_key"))
+        .await
+        .unwrap();
+    assert!(own.credential_sent && own.ok, "{own:?}");
+    // The same named key, aimed at a new address: dropped (the probe case of NEW-1).
+    let moved = super::check_draft(
+        &h.src,
+        draft("lab", "http://127.0.0.1:9", "home_assistant.lab.api_key"),
+    )
+    .await
+    .unwrap();
+    assert!(!moved.credential_sent && !moved.ok, "{moved:?}");
+    // A new router's named key at a new address: sent (no saved router, nobody else uses it).
+    let fresh = super::check_draft(
+        &h.src,
+        draft("fresh2", &here, "home_assistant.fresh2.api_key"),
+    )
+    .await
+    .unwrap();
+    assert!(fresh.credential_sent, "{fresh:?}");
+    // A new router's named key that an alert destination uses: dropped.
+    let shared = super::check_draft(
+        &h.src,
+        draft("fresh3", &here, "home_assistant.fresh3.api_key"),
+    )
+    .await
+    .unwrap();
+    assert!(!shared.credential_sent, "{shared:?}");
+    // The check saved nothing.
+    assert_eq!(h.src.config.load().router.len(), 1);
+}

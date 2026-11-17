@@ -1172,13 +1172,17 @@ fn ref_sent(
     reference: &str,
     named_for_router: &str,
     saved_ref: Option<&telltale_config::SafeString>,
+    saved_missing: bool,
     same_target: bool,
     used_elsewhere: bool,
 ) -> bool {
     if same_target && saved_ref.is_some_and(|s| s.as_str() == reference) {
         return true;
     }
-    reference == named_for_router && !used_elsewhere
+    // The secret the form names for this router goes only where the router was saved for it:
+    // a new router (no saved entry under the draft's name), or a saved one at its own address.
+    // A saved router aimed elsewhere never receives its stored key (ADR-922, NEW-1 of the review).
+    reference == named_for_router && (saved_missing || same_target) && !used_elsewhere
 }
 
 /// REQ: API-016 (T23.8, ADR-922) — one read of a router draft, without saving it. A stored
@@ -1220,6 +1224,7 @@ pub(crate) async fn check_draft(
     };
     let router_name = r.name.as_str().to_owned();
     let mut credential_sent = true;
+    let references_all = telltale_config::secret_refs::references(&cfg);
     let fields: [(
         &str,
         &mut Option<telltale_config::SafeString>,
@@ -1246,14 +1251,20 @@ pub(crate) async fn check_draft(
             continue;
         };
         let named = format!("{kind}.{router_name}.{field}");
-        let used_elsewhere = cfg.router.iter().any(|o| {
-            o.name.as_str() != router_name
-                && [&o.api_key_ref, &o.api_secret_ref, &o.password_ref]
-                    .into_iter()
-                    .flatten()
-                    .any(|s| s.as_str() == value)
+        // REQ: API-016 (NEW-1/NEW-2 of the review, ADR-922) — a secret another entry of any kind
+        // (router, alert destination, sink, OIDC provider, Git source) also uses is never sent
+        // for this router's name.
+        let used_elsewhere = references_all.iter().any(|o| {
+            o.name == value && !(o.kind == "router" && o.entry == router_name)
         });
-        if !ref_sent(&value, &named, saved_ref, same_target, used_elsewhere) {
+        if !ref_sent(
+            &value,
+            &named,
+            saved_ref,
+            saved.is_none(),
+            same_target,
+            used_elsewhere,
+        ) {
             *reference = None;
             credential_sent = false;
         }
