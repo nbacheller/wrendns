@@ -18,6 +18,7 @@
 >   - SNMP from your gateway and switches (which device is on which port);
 >   - more UniFi reads;
 >   - importing results from a scanner you run yourself.
+> - **M26, live network map (planned):** an animated map of your network and of where its lookups go, coloured green, yellow or red by health. A world view is optional.
 >
 > **Every feature gets a UI control**, not only config, API or MCP. Fork issues are tracked [here](https://github.com/nbacheller/telltaledns/issues). Changes from upstream are merged regularly.
 
