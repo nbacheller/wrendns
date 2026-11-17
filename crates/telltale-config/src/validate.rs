@@ -85,6 +85,20 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
 
 // REQ: UPS-011 (T7.16) â€” TLS settings only for TLS upstreams; both halves of a client
 // certificate; pins that look like base64 SHA-256.
+/// REQ: API-016 (review of T23.7, ADR-921) — whether `pem` holds at least one PEM certificate
+/// that decodes: the BEGIN marker alone isn't one (a body that isn't base64 fails at poll time).
+fn valid_pem_certificate(pem: &str) -> bool {
+    use rustls_pki_types::pem::PemObject;
+    let mut any = false;
+    for c in rustls_pki_types::CertificateDer::pem_slice_iter(pem.as_bytes()) {
+        if c.is_err() {
+            return false;
+        }
+        any = true;
+    }
+    any
+}
+
 fn upstream_tls(u: &crate::schema::Upstream, s: &str, p: &str, r: &mut Report<'_>) {
     let tls = matches!(s, "tls" | "https" | "h3" | "quic");
     for (set, what) in [
@@ -364,7 +378,7 @@ fn routers(cfg: &Config, r: &mut Report<'_>) {
             }
             if pem.len() > 16 * 1024 {
                 r.err(format!("{p}.tls_ca_pem"), "at most 16 KiB");
-            } else if !pem.contains("-----BEGIN CERTIFICATE-----") {
+            } else if !valid_pem_certificate(pem) {
                 r.err(
                     format!("{p}.tls_ca_pem"),
                     "a PEM certificate (the text between -----BEGIN CERTIFICATE----- and -----END CERTIFICATE-----)",

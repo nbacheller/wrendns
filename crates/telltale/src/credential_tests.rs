@@ -242,7 +242,7 @@ impl Harness {
         (s, h, serde_json::from_str(&t).unwrap_or(Value::String(t)))
     }
 
-    fn audit_text(&self) -> String {
+    pub(crate) fn audit_text(&self) -> String {
         self.auth
             .state()
             .audit_page(None, 100, None, None)

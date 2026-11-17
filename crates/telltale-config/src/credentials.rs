@@ -271,6 +271,8 @@ pub fn entry_prefix(kind: &str) -> Option<&'static str> {
         "upstream" => Some("upstream[]"),
         "alert_destination" => Some("alerts.destination[]"),
         "list" => Some("list[]"),
+        // REQ: API-016 (review of T23.7) — a router's URL can carry a password, as a list's can.
+        "router" => Some("router[]"),
         _ => None,
     }
 }

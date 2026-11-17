@@ -64,6 +64,18 @@ pub(crate) fn parse(name: &str, body: &serde_json::Value) -> Result<RouterConfig
             .hint("Put the file in the configuration file, or use a stored secret (`*_ref`) or `tls_ca_pem` for the certificate text."));
         }
     }
+    // REQ: API-016 (review of T23.7, ADR-921) — certificate checking is turned off in the file
+    // only. An API router has no file of its own, so only `false` (the default) is taken.
+    if obj
+        .get("tls_insecure_skip_verify")
+        .is_some_and(|v| v.as_bool() != Some(false))
+    {
+        return Err(Problem::new(
+            Code::InvalidConfig,
+            "`tls_insecure_skip_verify`: a router's certificate can't be left unchecked through the API",
+        )
+        .hint("Trust the console's certificate with `tls_ca_pem` instead (the form's trust step)."));
+    }
     let mut v = body.clone();
     // The path names the router; a body that also names it must agree.
     if let Some(n) = obj.get("name").and_then(serde_json::Value::as_str)

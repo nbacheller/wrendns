@@ -328,6 +328,69 @@ async fn api_016_routers_are_config_entries() {
     assert!(!list.to_string().contains("tok-planted"));
 }
 
+/// REQ: API-016 (review of T23.7, API-014) — a password in a router's URL is redacted everywhere a
+/// body leaves the node: the `PUT` answer, the config entries, `GET /routers`, the audit record and
+/// the TOML kept in Git. The stored URL still keeps it for the poll.
+#[tokio::test]
+async fn api_016_router_url_password_redacted() {
+    const PW: &str = "UrlPw4242";
+    let h = with_secret("");
+    let body = json!({
+        "type": "home_assistant",
+        "url": format!("https://ro:{PW}@127.0.0.1:9"),
+        "api_key_ref": "ha",
+        "interval_secs": 60
+    });
+    let (s, _, answer) = h.call("PUT", "/api/v1/routers/leak", Some(&body)).await;
+    assert_eq!(s, StatusCode::OK, "{answer}");
+    assert!(!answer.to_string().contains(PW), "{answer}");
+    assert!(answer.to_string().contains("<redacted>"), "{answer}");
+    let (_, _, entries) = h.call("GET", "/api/v1/config/entries?kind=router", None).await;
+    assert!(!entries.to_string().contains(PW), "{entries}");
+    let (_, _, routers) = h.call("GET", ROUTERS, None).await;
+    assert!(!routers.to_string().contains(PW), "{routers}");
+    assert!(!h.audit_text().contains(PW), "{}", h.audit_text());
+    // The TOML kept in Git, from the redacted body the write path builds it from.
+    let shown = crate::redact::body(telltale_api::ManagedKind::Router, Some(&body))
+        .unwrap_or_default()
+        .to_string();
+    assert!(!shown.contains(PW), "{shown}");
+    // The stored URL keeps the password: the poll still needs it.
+    let stored = h
+        .src
+        .config
+        .load()
+        .router
+        .iter()
+        .find(|r| r.name.as_str() == "leak")
+        .map(|r| r.url.as_str().to_owned())
+        .unwrap_or_default();
+    assert!(stored.contains(PW), "{stored}");
+}
+
+/// REQ: API-016 (review of T23.7, ADR-921) — `tls_insecure_skip_verify` is file-only: the API
+/// refuses `true` (422), and takes the default `false`.
+#[tokio::test]
+async fn api_016_insecure_is_file_only() {
+    let h = with_secret("");
+    let mut body = ha_body("https://127.0.0.1:9");
+    body["tls_insecure_skip_verify"] = json!(true);
+    let (s, _, answer) = h.call("PUT", "/api/v1/routers/lab", Some(&body)).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    assert_eq!(answer["code"], "invalid_config");
+    assert!(
+        !h.src
+            .config
+            .load()
+            .router
+            .iter()
+            .any(|r| r.name.as_str() == "lab")
+    );
+    body["tls_insecure_skip_verify"] = json!(false);
+    let (s, _, answer) = h.call("PUT", "/api/v1/routers/lab", Some(&body)).await;
+    assert_eq!(s, StatusCode::OK, "{answer}");
+}
+
 /// REQ: API-016 (T23.7) — `DELETE` of an API router drops it; its leases go with it at the next
 /// read, and the routers that stay keep their names.
 #[tokio::test]
