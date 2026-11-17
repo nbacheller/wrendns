@@ -210,7 +210,7 @@
       "id": "devices",
       "title": "Name your devices",
       "term": "Clients",
-      "summary": "Give an address (or a MAC, or a client ID) a name so every view shows \"Living room TV\" instead of 192.168.1.42, and put it in groups.",
+      "summary": "Give an address (or a MAC, or a client ID) a name so every view shows \"Living room TV\" instead of 192.168.1.42, and put it in groups. Under Discovered on your network, each device shows the DNS name it answers as (copyable) and the router that named it (for example \"router: udm\" or \"router: home-assistant\").",
       "when": "You see an address you don't recognize, or want different rules for one device.",
       "example": "Name 192.168.1.42 \"Living room TV\" and add it to the kids group: its history relabels at once.",
       "caution": "Addresses can change when a device reconnects; match by MAC for devices that don't keep their address (a DHCP reservation also works).",

@@ -3533,3 +3533,36 @@ test('obs_037 internal names', async () => {
   await card.getByRole('button', { name: 'Internet', exact: true }).click();
   await expect(ptr).toHaveCount(0);
 });
+
+// REQ: DNS-023 (T24.14) — a discovered device shows the DNS name it answers as, and the name is copyable.
+test('dns_023 discovered devices show their DNS name', async () => {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  const items = [
+    { ip: '10.20.2.31', mac: 'aa:bb:cc:dd:ee:31', hostname: 'kitchen-tablet', dnsName: 'kitchen-tablet.home.arpa', source: 'router', router: 'udm', expiresUnixSeconds: 0 },
+    { ip: '10.20.2.32', mac: '', hostname: 'printer', source: 'mdns', expiresUnixSeconds: 0 },
+  ];
+  await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items } }));
+  await page.goto('/#/clients?tab=discovered');
+  const row = page.getByRole('row').filter({ hasText: '10.20.2.31' });
+  await expect(row.getByTestId('dns-name')).toContainText('kitchen-tablet.home.arpa');
+  await expect(page.getByRole('row').filter({ hasText: '10.20.2.32' }).getByTestId('dns-name')).toContainText('none');
+  await row.getByRole('button', { name: 'Copy', exact: true }).click();
+  await expect(row.getByRole('button', { name: 'Copied', exact: true })).toBeVisible();
+  await page.unroute('**/api/v1/dhcp/leases');
+});
+
+// REQ: API-012 (T24.14) — the discovered table names the router that named each device, not the bare "router".
+test('api_012 discovered devices name the router that named them', async () => {
+  const items = [
+    { ip: '10.20.2.41', mac: 'aa:bb:cc:dd:ee:41', hostname: 'hall-light', source: 'router', router: 'home-assistant', expiresUnixSeconds: 0 },
+    { ip: '10.20.2.42', mac: 'aa:bb:cc:dd:ee:42', hostname: 'laptop', source: 'router', router: 'udm', expiresUnixSeconds: 0 },
+    { ip: '10.20.2.43', mac: '', hostname: 'speaker', source: 'mdns', expiresUnixSeconds: 0 },
+  ];
+  await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items } }));
+  await page.goto('/#/clients?tab=discovered');
+  await expect(page.getByRole('row').filter({ hasText: '10.20.2.41' }).getByTestId('named-by')).toHaveText('router: home-assistant');
+  await expect(page.getByRole('row').filter({ hasText: '10.20.2.42' }).getByTestId('named-by')).toHaveText('router: udm');
+  await expect(page.getByRole('row').filter({ hasText: '10.20.2.43' }).getByTestId('named-by')).toHaveText('mDNS');
+  await expect(page.getByTestId('discovered')).toContainText('Home Assistant');
+  await page.unroute('**/api/v1/dhcp/leases');
+});

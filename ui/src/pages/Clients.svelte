@@ -31,6 +31,19 @@
   // REQ: T8.2, T8.3 (T8.6) — devices found by the routers' DHCP or mDNS.
   let found = $state<S['DhcpLease'][]>([]);
   const sourceText: Record<string, string> = { router: 'router', mdns: 'mDNS' };
+  // REQ: T24.14 (API-012) — name the router that named the device ("udm", "home-assistant"),
+  // not the bare word "router". Its type (UniFi, Home Assistant) comes from GET /api/v1/routers (T23.7).
+  const sourceLabel = (l: S['DhcpLease']) => (l.source === 'router' && l.router ? `router: ${l.router}` : (sourceText[l.source] ?? l.source));
+  // REQ: DNS-023 (T24.14) — copy a device's DNS name.
+  let copiedName = $state('');
+  async function copyName(n: string) {
+    try {
+      await navigator.clipboard.writeText(n);
+      copiedName = n;
+    } catch {
+      copiedName = '';
+    }
+  }
   const named = (ip: string) => configured.some((c) => c.match.includes(ip));
   // REQ: OBS-025 — what each device looks like, by address.
   let identities = $state<Record<string, S['DeviceIdentity']>>({});
@@ -255,22 +268,28 @@
     <section class="card" data-testid="discovered">
       <h2>Discovered on your network</h2>
       <p class="muted small">
-        Names your router's DHCP knows (<code>[[router]]</code>: UniFi, OPNsense), or that devices announced
-        themselves over mDNS (<code>[clients] mdns</code>). Unnamed devices already show these names; click an address to keep
+        Names your router's DHCP knows (<code>[[router]]</code>: UniFi, OPNsense, or Home Assistant's device registry),
+        or that devices announced themselves over mDNS (<code>[clients] mdns</code>). Unnamed devices already show these names; click an address to keep
         one, change it, or put the device in a group.
       </p>
       {#if found.length === 0}
-        <p class="empty">Nothing discovered yet. Connect your router (<code>[[router]]</code>) or set <code>[clients] mdns = true</code>.</p>
+        <p class="empty">Nothing discovered yet. Connect your router or Home Assistant (<code>[[router]]</code>) or set <code>[clients] mdns = true</code>.</p>
       {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Address</th><th>Name it gave</th><th>From</th><th>MAC</th><th>In TelltaleDNS</th></tr></thead>
+            <thead><tr><th>Address</th><th>Name it gave</th><th>DNS name</th><th>From</th><th>MAC</th><th>In TelltaleDNS</th></tr></thead>
             <tbody>
               {#each found as l (l.ip)}
                 <tr>
                   <td class="mono"><ClientChip ip={l.ip} onchanged={load} /></td>
                   <td>{l.hostname ?? ''}</td>
-                  <td><span class="badge info">{sourceText[l.source] ?? l.source}</span></td>
+                  <td class="mono small" data-testid="dns-name">
+                    {#if l.dnsName}
+                      {l.dnsName}
+                      <button type="button" class="link small" onclick={() => copyName(l.dnsName ?? '')}>{copiedName === l.dnsName ? 'Copied' : 'Copy'}</button>
+                    {:else}<span class="muted">none</span>{/if}
+                  </td>
+                  <td><span class="badge info" data-testid="named-by">{sourceLabel(l)}</span></td>
                   <td class="mono small">{l.mac}</td>
                   <td class="small">{#if named(l.ip)}<strong>{l.clientName}</strong>{:else}<span class="muted">not named yet</span>{/if}</td>
                 </tr>
