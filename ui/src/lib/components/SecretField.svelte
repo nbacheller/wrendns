@@ -181,7 +181,7 @@
   function explain(e: unknown) {
     error = e;
     refused = e instanceof ApiError && e.code === 'insecure_transport';
-    forceable = e instanceof ApiError && e.code === 'secret_in_use' && /can't be read now/.test(e.message);
+    forceable = e instanceof ApiError && e.code === 'secret_in_use' && /can't be read now/.test(e.detail);
     if (e instanceof ApiError && e.status === 412) {
       // Another admin changed the stored secrets since this page read them: show the list again.
       error = new Error('Someone else changed the stored secrets since this page was read. The list is reloaded: check it, then save again.');

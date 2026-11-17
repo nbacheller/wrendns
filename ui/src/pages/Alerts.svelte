@@ -31,8 +31,9 @@
   const holdsCredential = (d: Record<string, unknown>) =>
     Boolean(d.token_file || d.password_file || d.token_ref || d.password_ref || /:\/\/[^/?#]*:[^/?#@]*@/.test(String(d.url ?? '')));
   const destinationFields: Field[] = [
-    { key: 'type', label: 'Type', type: 'select', options: kinds, initial: 'email',
-      help: 'email (any provider’s SMTP), ntfy or Gotify (phone push), slack (Slack, Mattermost, Discord), or a JSON webhook.' },
+    // REQ: API-014 (T24.16) — a destination that holds a credential keeps its kind (where it sends it) for an admin.
+    { key: 'type', label: 'Type', type: 'select', options: kinds, initial: 'email', admin: (d, r) => holdsCredential(d) || r.length > 0,
+      help: 'email (any provider’s SMTP), ntfy or Gotify (phone push), slack (Slack, Mattermost, Discord), or a JSON webhook. A destination with a stored or file credential is changed by an admin.' },
     { key: 'url', label: 'Address', type: 'text', placeholder: 'smtp://smtp.gmail.com:587 or https://ntfy.sh/my-topic',
       help: 'Email: smtp://host:587 (STARTTLS) or smtps://host:465. Others: the https:// URL.', admin: holdsCredential },
     { key: 'from', label: 'From (email)', type: 'text', placeholder: 'you@gmail.com' },
