@@ -1293,6 +1293,15 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-937 — Per-list "Update now" and a Confirmed current column on the Lists page (Proposed 2026-11-17)
+**Context:** T24.17 (FLT-004, ADR-905) asks for an "Update now" in each row of the Lists status table, and a per-list freshness display. The API already takes `names` (ADR-905), so no server change is needed. The task doesn't say what an off list's row does (the server reports an off list as `skipped` and queues nothing), or what freshness an inline list has (inline rules have no download to confirm).
+**Decision:**
+- A row's **Update now** sends `POST /api/v1/lists/refresh` with `{"names": ["<that list>"]}`, the same request as the page-wide button. It shows for operators only (`can('operator')`), and is disabled while that list is refreshing, while any row's request is in flight, and when the list is off. The off row's tooltip says to turn the list on; the server is not asked.
+- A refresh of one list reads "<name> updated" in the status line; the whole-set sentence ("every enabled list confirmed current …") stays for a refresh of every enabled list.
+- **Confirmed current** (for every role) shows `ago(lastSuccessUnixSeconds)`, which reads "never" for an enabled download list that never downloaded. An inline list reads "inline", since it has no download to confirm.
+- No dry-run control: `dryRun` stays for agents and `telltale ctl`.
+**Consequences:** no API, OpenAPI, MCP or config change; the help topic `list-update-now` covers per-row updates. The per-row request is audited as `lists.refresh` with its names, like the page-wide one.
+
 ## ADR-932 — Credential file open: no followed symlink, no FIFO block, and the `libc` constants (Accepted 2026-11-17)
 **Context:** The m25-snmp review (2026-11-17) found two races in `telltale-snmp`'s credential read. The path was canonicalized and then opened by name, so a link swapped in between pointed outside the secret directories. A FIFO was opened before its metadata was checked, so the open could block.
 **Decision:**

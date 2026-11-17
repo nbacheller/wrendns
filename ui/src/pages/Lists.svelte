@@ -77,9 +77,14 @@
   let refresh = $state<S['ListsRefreshResult'] | null>(null);
   let refreshError = $state<unknown>(null);
   let starting = $state(false);
+  // REQ: FLT-004 (T24.17) — the list whose row's "Update now" is waiting for its answer.
+  let startingRow = $state<string | null>(null);
   const updating = $derived(
     starting || (refresh !== null && lists.some((l) => l.refreshing && refresh!.queued.includes(l.name))),
   );
+  const busy = $derived(updating || startingRow !== null);
+  // A refresh of every enabled list, or of some of them (a row's "Update now" queues one).
+  const wholeSet = $derived(refresh !== null && refresh.queued.length >= lists.filter((l) => l.enabled).length);
   // The oldest enabled list's last confirmation, so one fresh list can't hide a stale one. A
   // list never downloaded makes it null.
   const lastUpdated = $derived.by(() => {
@@ -106,9 +111,23 @@
       starting = false;
     }
   }
+  // REQ: FLT-004 (T24.17) — one list's "Update now": the same request with that list's name.
+  async function updateOne(name: string) {
+    startingRow = name;
+    refreshError = null;
+    try {
+      refresh = await api.refreshLists([name]);
+      ({ items: lists, missingNodes: unread = [] } = await api.lists());
+    } catch (e) {
+      refreshError = e;
+      refresh = null;
+    } finally {
+      startingRow = null;
+    }
+  }
   // While lists download, check every 2 s instead of every 15 s.
   $effect(() => {
-    if (!updating) return;
+    if (!busy) return;
     const t = setInterval(async () => {
       try {
         ({ items: lists, missingNodes: unread = [] } = await api.lists());
@@ -167,6 +186,8 @@
       {:else if refresh && failed.length}
         <span class="err" data-testid="lists-refresh-failed">{failed.length} of {refresh.queued.length} {refresh.queued.length === 1 ? 'list' : 'lists'} failed to download{refresh.node ? ` on ${refresh.node}` : ''}: {failed.map((l) => `${l.name} (${l.error ?? 'failed'})`).join('; ')}.</span>
         They keep their last good copy.
+      {:else if refresh && !wholeSet}
+        {refresh.queued.join(', ')} updated{refresh.node ? ` on ${refresh.node}` : ''}. Unchanged lists keep their copy; the snapshot follows within seconds if anything changed.
       {:else if refresh}
         Lists updated{refresh.node ? ` on ${refresh.node}` : ''}: {lastUpdated ? `every enabled list confirmed current ${ago(lastUpdated)} or later` : 'some lists have never downloaded'}. Unchanged lists keep their copy; the snapshot follows within seconds if anything changed.
       {:else if lastUpdated}
@@ -186,7 +207,7 @@
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>List</th><th>Kind<HelpButton id="list-kind" /></th><th>State<HelpButton id="list-refresh" /></th><th class="num">Names used</th><th class="num">Unique<HelpButton id="list-overlap" /></th><th class="num">Hits</th>{#if advanced}<th class="num">Lines</th><th class="num">Size</th>{/if}<th>Checked</th><th>Changed</th></tr>
+            <tr><th>List</th><th>Kind<HelpButton id="list-kind" /></th><th>State<HelpButton id="list-refresh" /></th><th class="num">Names used</th><th class="num">Unique<HelpButton id="list-overlap" /></th><th class="num">Hits</th>{#if advanced}<th class="num">Lines</th><th class="num">Size</th>{/if}<th>Checked</th><th>Changed</th><th>Confirmed current</th>{#if can('operator')}<th></th>{/if}</tr>
           </thead>
           <tbody>
             {#each lists as l (l.name)}
@@ -220,6 +241,20 @@
                 {/if}
                 <td class="small">{ago(l.lastCheckedUnixSeconds)}</td>
                 <td class="small">{ago(l.lastChangedUnixSeconds)}</td>
+                <!-- REQ: FLT-004 (T24.17) — when the list was last confirmed current (its download succeeded). -->
+                <td class="small" data-testid="list-confirmed">
+                  {#if l.source === 'inline'}<span class="muted" title="Inline rules have no download to confirm">inline</span>{:else}{ago(l.lastSuccessUnixSeconds)}{/if}
+                </td>
+                {#if can('operator')}
+                  <!-- REQ: FLT-004 (T24.17) — download this one list now; off lists are left out by the server. -->
+                  <td>
+                    <button class="row-update" onclick={() => updateOne(l.name)} data-testid="list-update-now"
+                      disabled={starting || startingRow !== null || l.refreshing || !l.enabled}
+                      title={l.enabled ? `Download ${l.name} again now` : 'Turn the list on to update it'}>
+                      {l.refreshing || startingRow === l.name ? 'Updating…' : 'Update now'}
+                    </button>
+                  </td>
+                {/if}
               </tr>
             {/each}
           </tbody>
@@ -288,6 +323,9 @@
   }
   .refresh-status {
     margin: 0 0 8px;
+  }
+  .row-update {
+    white-space: nowrap;
   }
   .src {
     word-break: break-all;
