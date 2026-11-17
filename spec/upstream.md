@@ -84,6 +84,14 @@ Every upstream issue the fork has triaged. "Fork action" is what the fork does; 
 
 The fork's merge check for the closed-and-fixed rows was mechanical: every added line of each fix commit is still in the fork's file. `#59`, `#43` and `#6` sit next to heavy fork edits and are the best candidates for a closer read.
 
+## Upstream pull requests
+
+Open upstream PRs that touch a fork deviation, and what the fork does with them at the next sync.
+
+| PR | Title | Touches | Fork plan | Upstream comment |
+|---|---|---|---|---|
+| [#66](https://github.com/paimonsoror/telltaledns/pull/66) | feat(routers): add and change routers in the UI, keys pasted and saved as files (ADR-171) | routers, secrets, managed kinds, agent scopes | The fork already ships this with a different design (ADR-903/917/919/921/922). If it merges as is: keep the fork's side in `routers.rs`, the router hunks of `api_backend.rs`, `server.rs`, `auth/agent.rs` (no `config:write:routers`), `managed.rs`, `forward.rs`, `config_api.rs`, `lib.rs`, `ConfigEditor.svelte`, `Clients.svelte`, OpenAPI and `api.ts`; keep ADR-171 verbatim with a fork ADR that supersedes it for the fork; adopt a binary-level e2e like `deploy/routers-ui-e2e.sh`, rewritten for `*_ref`. | [review](https://github.com/paimonsoror/telltaledns/pull/66#issuecomment-6960942714): API file paths can send any readable file to the router URL, a URL change reuses the saved key, write order, delete scope, keys lost on failover |
+
 ## Watch
 
 The workflow `.github/workflows/upstream-watch.yml` runs daily at 06:23 UTC and on demand, with the GitHub token only (`contents: read`, `issues: write`). It runs `.github/scripts/upstream_watch.py` from the fork's `feat/ipam-integrations` checkout. The workflow file is read from `main`, but the script and the ledger come from `feat/ipam-integrations`, so both branches need them. If the script is missing from `feat/ipam-integrations`, the job stops at a check step that says so. The checkout is pinned to a commit SHA and does not keep its token, and the script is retried up to three times.
