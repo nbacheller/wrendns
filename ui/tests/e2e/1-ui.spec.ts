@@ -3,6 +3,7 @@
 // phone-width layout, and the masked-client-IP banner. Any CSP violation or page error fails the suite.
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { readFileSync } from 'node:fs';
+import { BASE_URL, DNS_PORT, MDNS_PORT } from './ports';
 import { resolve } from 'node:path';
 import { query } from './dns';
 import { FrameHub, Loop, PANEL_MIN, Particles, Ticker, chooseLayout, dotBudget, lerpBoxes, motionAllowed, parseEvery, parseLayout, parsePanels, screenClass, screenClassStable, type Box } from '../../src/lib/wall';
@@ -512,7 +513,7 @@ test('obs_020 listener checks', async () => {
   await page.goto('/#/settings?tab=system');
   const card = page.getByTestId('probes');
   await expect(card).toContainText('Listener checks');
-  await expect(card).toContainText('udp://127.0.0.1:15354', { timeout: 15_000 });
+  await expect(card).toContainText(`udp://127.0.0.1:${DNS_PORT}`, { timeout: 15_000 });
   await expect(card).toContainText('answers');
   const log = await page.evaluate(async () =>
     (await fetch('/api/v1/queries?name=probe.telltale.invalid&limit=5')).json(),
@@ -1680,7 +1681,7 @@ test('flt_004 update one list now', async () => {
 
 // REQ: FLT-004 (T24.17) — a viewer sees the lists and when each was confirmed, with no update button.
 test('flt_004 viewer sees no update buttons', async ({ browser }) => {
-  const viewer = await browser.newContext({ baseURL: page.url().split('/#')[0] || 'http://127.0.0.1:18054' });
+  const viewer = await browser.newContext({ baseURL: page.url().split('/#')[0] || BASE_URL });
   const vpage = await viewer.newPage();
   await vpage.goto('/');
   await vpage.getByLabel('Username', { exact: true }).fill(VIEWER.user);
@@ -1818,7 +1819,7 @@ test('t8_6 discovered devices, group settings, and zones', async () => {
     Buffer.from([0, 0, 1, 0x80, 1, 0, 0, 0, 120, 0, 4, 127, 0, 0, 9]),
   ]);
   const sock = createSocket('udp4');
-  await new Promise<void>((done) => sock.send(msg, 15353, '127.0.0.1', () => done()));
+  await new Promise<void>((done) => sock.send(msg, MDNS_PORT, '127.0.0.1', () => done()));
   sock.close();
   await page.goto('/#/clients?tab=discovered');
   const found = page.getByTestId('discovered');
@@ -2858,7 +2859,7 @@ test('dns_023 turn on device names from the local DNS page', async () => {
 // `clients` entry from page.route (ADR: the e2e server has no such source), and the rest check
 // what the real server does.
 const clientsEntry = (mdns: boolean, setByFile: string[] = []) => ({
-  items: [{ kind: 'clients', name: 'default', source: 'file', definition: { mdns, mdns_port: 15353 }, redacted: [], credentialIssues: [], setByFile }],
+  items: [{ kind: 'clients', name: 'default', source: 'file', definition: { mdns, mdns_port: MDNS_PORT }, redacted: [], credentialIssues: [], setByFile }],
 });
 
 // REQ: DNS-023 (T24.13, ADR-914) — the mDNS switch for names is disabled, and says why, while
@@ -3253,7 +3254,7 @@ test('obs_025 a device that talks to roku.com looks like a Roku player', async (
   const roku = '127.0.0.77';
   // Their upstream is unreachable in this test: the answers don't matter, the questions do.
   await Promise.all(
-    ['api.roku.com', 'time.rokutime.com', 'ads.ravm.tv', 'scribe.roku.com'].map((n) => query(n, 1, 15354, roku).catch(() => -1)),
+    ['api.roku.com', 'time.rokutime.com', 'ads.ravm.tv', 'scribe.roku.com'].map((n) => query(n, 1, DNS_PORT, roku).catch(() => -1)),
   );
   // Identities refresh when asked for and over 15 s old (the first right away).
   await page.goto('/#/clients');
@@ -4254,7 +4255,7 @@ test('clu_002 the footer names the node and its role', async () => {
 test('flt_017 workloads', async () => {
   test.setTimeout(90_000);
   await page.setViewportSize({ width: 1280, height: 800 });
-  for (const ip of ['127.0.0.81', '127.0.0.82', '127.0.0.83']) await query('nas.e2e.test', 1, 15354, ip);
+  for (const ip of ['127.0.0.81', '127.0.0.82', '127.0.0.83']) await query('nas.e2e.test', 1, DNS_PORT, ip);
   await page.goto('/#/clients?tab=workloads');
   const rows = page.getByTestId('workload-row');
   await expect(rows).toHaveCount(3);
@@ -4290,7 +4291,7 @@ test('flt_017 workloads', async () => {
   await expect
     .poll(
       async () => {
-        await query('flt017.nas.e2e.test', 1, 15354, '127.0.0.82').catch(() => -1);
+        await query('flt017.nas.e2e.test', 1, DNS_PORT, '127.0.0.82').catch(() => -1);
         const r = await page.request.get('/api/v1/queries?name=flt017.nas.e2e.test&match=exact&limit=1');
         const row = (await r.json()).items?.[0];
         return row ? `${row.group} ${row.clientName}` : '';
@@ -5764,13 +5765,13 @@ test('api_007 comparison options reach the request', async () => {
     await panel.getByTestId('pihole-file').setInputFiles(PIHOLE_FIXTURE);
     await panel.getByTestId('pihole-compare-toggle').check();
     await panel.getByTestId('pihole-address').fill('192.168.1.251');
-    await panel.getByTestId('pihole-telltale-address').fill('127.0.0.1:15354');
+    await panel.getByTestId('pihole-telltale-address').fill(`127.0.0.1:${DNS_PORT}`);
     await panel.getByTestId('pihole-samples').fill('example.com, nas.home');
     await panel.getByTestId('pihole-preview').click();
     await expect(panel.getByTestId('pihole-compare-summary')).toContainText('Compared 2 names');
     const q = new URL(asked).searchParams;
     expect(q.get('compare')).toBe('192.168.1.251');
-    expect(q.get('telltale')).toBe('127.0.0.1:15354');
+    expect(q.get('telltale')).toBe(`127.0.0.1:${DNS_PORT}`);
     expect(q.get('samples')).toBe('example.com, nas.home');
     await expect(panel.getByTestId('pihole-detail').first()).toHaveText('udp://9.9.9.9:53');
   } finally {

@@ -63,17 +63,6 @@
         "allow_insecure_basic": false,
         "audit_retention_days": 365,
         "oidc": {
-          "allowed_admin_networks": [
-            "10.0.0.0/8",
-            "172.16.0.0/12",
-            "192.168.0.0/16",
-            "100.64.0.0/10",
-            "169.254.0.0/16",
-            "127.0.0.0/8",
-            "fc00::/7",
-            "fe80::/10",
-            "::1/128"
-          ],
           "disable_local_login": false,
           "mcp_audience": "",
           "mcp_provider": "",
@@ -1120,17 +1109,6 @@
           "description": "Sign-in through `OpenID Connect` providers (Keycloak, Authentik, ...; API-004).",
           "$ref": "#/$defs/OidcConfig",
           "default": {
-            "allowed_admin_networks": [
-              "10.0.0.0/8",
-              "172.16.0.0/12",
-              "192.168.0.0/16",
-              "100.64.0.0/10",
-              "169.254.0.0/16",
-              "127.0.0.0/8",
-              "fc00::/7",
-              "fe80::/10",
-              "::1/128"
-            ],
             "disable_local_login": false,
             "mcp_audience": "",
             "mcp_provider": "",
@@ -2765,18 +2743,10 @@
       "type": "object",
       "properties": {
         "allowed_admin_networks": {
-          "description": "Where break-glass admin sign-in is allowed. Default: private networks and loopback.",
-          "type": "array",
-          "default": [
-            "10.0.0.0/8",
-            "172.16.0.0/12",
-            "192.168.0.0/16",
-            "100.64.0.0/10",
-            "169.254.0.0/16",
-            "127.0.0.0/8",
-            "fc00::/7",
-            "fe80::/10",
-            "::1/128"
+          "description": "Where break-glass admin sign-in is allowed. Absent: loopback only (`127.0.0.0/8`,\n`::1`), so a reverse proxy or a Docker port publish on this host needs its own entry\nhere or `[api] trusted_proxies`. Set (even to `[]`, which allows nothing): exactly this\nlist. REQ: API-004 (ADR-944).",
+          "type": [
+            "array",
+            "null"
           ],
           "items": {
             "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host).",

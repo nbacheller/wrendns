@@ -617,3 +617,77 @@ fn obs_035_display_link_session_and_revocation() {
     assert!(a.authenticate(&p(IP), later).unwrap().is_none());
     assert!(a.open_display(code, IP, later).is_err());
 }
+
+// REQ: API-004 (ADR-944) - with local sign-in off and the loopback default, password sign-in
+// is break-glass on every path: form, HTTP Basic, and an address that is not loopback.
+#[test]
+fn api_004_break_glass_default_refuses_lan_on_every_path() {
+    let loopback = (IpAddr::V4(Ipv4Addr::LOCALHOST), 8);
+    let a = auth(Settings {
+        disable_local_login: true,
+        admin_networks: vec![loopback],
+        break_glass_default: true,
+        ..Settings::default()
+    });
+    a.create_user("root", "correct horse battery", Role::Admin, true, T0)
+        .unwrap();
+    let lan = IP;
+    let lo = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    // Form sign-in.
+    assert_eq!(
+        a.login("root", "correct horse battery", None, None, lan, T0)
+            .unwrap_err()
+            .code,
+        Code::Forbidden
+    );
+    assert!(
+        a.login("root", "correct horse battery", None, None, lo, T0 + 1)
+            .is_ok()
+    );
+    // HTTP Basic, from the LAN and with the address unknown (fails closed).
+    let basic = |remote| Presented {
+        session: None,
+        bearer: None,
+        basic: Some(("root".into(), "correct horse battery".into())),
+        https: true,
+        remote,
+    };
+    assert_eq!(
+        a.authenticate(&basic(Some(lan)), T0 + 2).unwrap_err().code,
+        Code::Forbidden
+    );
+    assert_eq!(
+        a.authenticate(&basic(None), T0 + 2).unwrap_err().code,
+        Code::Forbidden
+    );
+    assert!(a.authenticate(&basic(Some(lo)), T0 + 3).unwrap().is_some());
+}
+
+// REQ: API-004 (ADR-944) - an explicit `allowed_admin_networks` replaces the loopback default.
+#[test]
+fn api_004_explicit_break_glass_networks_are_used() {
+    let a = auth(Settings {
+        disable_local_login: true,
+        admin_networks: vec![(IP, 32)],
+        break_glass_default: false,
+        ..Settings::default()
+    });
+    a.create_user("root", "correct horse battery", Role::Admin, false, T0)
+        .unwrap();
+    assert!(
+        a.login("root", "correct horse battery", None, None, IP, T0)
+            .is_ok()
+    );
+    assert!(
+        a.login(
+            "root",
+            "correct horse battery",
+            None,
+            None,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            T0 + 1
+        )
+        .is_err(),
+        "loopback is not listed, so it is refused"
+    );
+}

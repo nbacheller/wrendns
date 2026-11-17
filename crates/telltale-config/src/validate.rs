@@ -2076,6 +2076,16 @@ fn cache_and_telemetry(cfg: &Config, r: &mut Report<'_>) {
         r.warn("access.allowed_networks: allows every address; TelltaleDNS is an open resolver if reachable from the internet");
     }
 
+    if cfg
+        .auth
+        .oidc
+        .allowed_admin_networks
+        .as_ref()
+        .is_some_and(|v| v.iter().any(|n| n.prefix == 0))
+    {
+        r.warn("auth.oidc.allowed_admin_networks: allows every address to sign in with a password while disable_local_login is on");
+    }
+
     let t = &cfg.telemetry;
     if !t.ring_slots.is_power_of_two() || t.ring_slots < 1024 {
         r.err(
