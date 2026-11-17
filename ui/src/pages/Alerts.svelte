@@ -50,7 +50,7 @@
     { key: 'tls_ca', label: 'Private CA (email)', type: 'text', placeholder: '/etc/telltale/mail-ca.pem', advanced: true, admin: holdsCredential },
   ];
   const conditions = [
-    'upstream_down', 'node_down', 'sync_lag', 'list_failing', 'list_stale', 'servfail_rate', 'anomaly', 'new_device',
+    'upstream_down', 'node_down', 'sync_lag', 'primary_unreachable', 'list_failing', 'list_stale', 'servfail_rate', 'anomaly', 'new_device',
     'disk_full', 'plan_pending', 'update_available', 'maintenance', 'credential_redirected',
   ];
   const ruleFields = $derived<Field[]>([
@@ -58,7 +58,9 @@
     { key: 'to', label: 'Send to', type: 'multi', options: destinations },
     { key: 'for_secs', label: 'For at least (seconds)', type: 'number', placeholder: '60',
       help: 'How long the condition must hold before the alert goes out, so short blips stay quiet.' },
-    { key: 'threshold', label: 'Threshold (%)', type: 'number', placeholder: '5 (servfail_rate) or 90 (disk_full)', advanced: true },
+    // REQ: OBS-010 (T24.5, fork #2) — the unit depends on the condition: a percentage, days, or seconds.
+    { key: 'threshold', label: 'Threshold', type: 'number', placeholder: '5 (servfail_rate), 90 (disk_full), 60 s (primary_unreachable)', advanced: true,
+      help: 'The unit depends on the condition: a percentage for servfail_rate (default 5) and disk_full (default 90), days for cert_expiring (default 14), and seconds for primary_unreachable (default 60, from 15 to 86400): how long a replica may go without reaching its primary before the alert.' },
     { key: 'enabled', label: 'On', type: 'bool', initial: true },
   ]);
   const test = {
