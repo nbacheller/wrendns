@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# REQ: OPS-001 — start the developer container wrendns-dev2 from telltale-dev:1 (Git Bash on Windows).
+# Start the developer container wrendns-dev2 from telltale-dev:1 (Git Bash on Windows).
 #
 #   deploy/dev/up.sh            create volumes, build the image if missing, clone the repo once,
 #                               start wrendns-dev2 (or start it again if it is stopped)
@@ -13,10 +13,11 @@
 #
 # Volumes (never removed by this script):
 #   tt-src      /src          Linux clone of the repo at /src/telltale; worktrees in /src/telltale/.wt/
-#   tt-cargo    /root/.cargo/registry  crates.io index and sources
-#   tt-sccache  /sccache      sccache objects (RUSTC_WRAPPER)
+#   tt-cargo2   /root/.cargo/registry  crates.io index and sources (dedicated to wrendns-dev2)
+#   tt-sccache  /sccache      sccache objects (used only when RUSTC_WRAPPER=sccache is set)
 #   tt-target2  /target       CARGO_TARGET_DIR
-# The running wrendns-dev container and its tt-target, tt-cargo volumes are not touched.
+# This script mounts no volume of the older wrendns-dev container (tt-target, tt-cargo). Do not point
+# wrendns-dev2 at tt-cargo: that volume is the whole CARGO_HOME of wrendns-dev.
 set -euo pipefail
 # Git Bash rewrites /paths for docker; the dk wrapper turns that off for docker calls only,
 # because native git on Windows needs the /e/... form the rewrite would break.
@@ -34,7 +35,7 @@ MODE="${1:-up}"
 if [[ "$MODE" == "--rebuild" || -z "$(dk image ls -q "$IMAGE")" ]]; then
   dk build -t "$IMAGE" "$HERE"
 fi
-for v in tt-src tt-cargo tt-sccache tt-target2; do
+for v in tt-src tt-cargo2 tt-sccache tt-target2; do
   dk volume inspect "$v" >/dev/null 2>&1 || dk volume create "$v" >/dev/null
 done
 
@@ -42,7 +43,18 @@ done
 WIN_MOUNT=(-v "$REPO_WIN:/mnt/win:ro")
 
 if [[ "$MODE" == "--sync" ]]; then
-  dk exec "$NAME" bash -lc 'cd /src/telltale && git fetch /mnt/win "+refs/heads/*:refs/remotes/win/*" --prune && git fetch --all --prune && git status -sb | head -1'
+  if [[ "$(dk container inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null || true)" != "true" ]]; then
+    echo "error: $NAME is not running. Start it with deploy/dev/up.sh first." >&2
+    exit 1
+  fi
+  # The clone's remote "winrepo" is the Windows checkout (/mnt/win). The origin fetch is optional:
+  # the container has no credentials for it, so a failure there must not fail the sync.
+  dk exec "$NAME" bash -lc '
+    cd /src/telltale
+    git fetch winrepo --prune
+    git fetch origin --prune || echo "note: origin fetch skipped (no access from the container)"
+    git status -sb | head -1
+  '
   exit 0
 fi
 
@@ -66,7 +78,7 @@ if dk container inspect "$NAME" >/dev/null 2>&1; then
 else
   dk run -d --name "$NAME" --restart unless-stopped \
     -v tt-src:/src \
-    -v tt-cargo:/root/.cargo/registry \
+    -v tt-cargo2:/root/.cargo/registry \
     -v tt-sccache:/sccache \
     -v tt-target2:/target \
     "${WIN_MOUNT[@]}" \
