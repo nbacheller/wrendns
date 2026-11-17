@@ -1320,51 +1320,78 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 
 **Consequences:** Break-glass from the LAN now needs one config line. Docker and proxy setups need a documented path (the bridge gateway in `allowed_admin_networks`, or the proxy listed). A proxy on the host that isn't listed locks its clients out of break-glass rather than letting them in. This is the conservative reading of the owner's request, and the owner can change the default by one line in `schema.rs` if they prefer private networks.
 
-## ADR-951 — OIDC without chrono: a verifier on crates the tree already has, or a new verifier dependency chosen by spike (Proposed 2026-11-17)
-**Context:** `openidconnect` and `oauth2` pull `chrono` (RUSTSEC-2026-0543, unmaintained), which `deny.toml:15-18` ignores (fork #17, T24.23). `cargo tree -i chrono` shows `chrono` arriving only through `oauth2 v5.0.0` and `openidconnect v4.1.0`. `telltale-api` has its own `chrono` (`crates/telltale-api/Cargo.toml:47`), used only in `crates/telltale-api/src/auth/oidc/flow_tests.rs:100,104,691`. `Cargo.toml:73,76,127` holds dead `[profile.release.package.openidconnect|oauth2|chrono]` entries to remove. `rsa` (via `openidconnect`) carries RUSTSEC-2023-0071 (`deny.toml:14`). The lockfile has `rsa`, `p256`, `p384`, `ecdsa`, `signature`, `sha2`, `base64`, `hmac`, `ring`, `rustls`, `hyper` and `hyper-util`. It has no `jsonwebtoken` and no `reqwest` entry.
+## ADR-951 — OIDC without chrono: an in-tree claims layer on jsonwebtoken 9 (ring backend), replacing openidconnect and oauth2 (Proposed 2026-11-17)
+**Context:** `openidconnect` 4.x and `oauth2` 5.x pull `chrono` (RUSTSEC-2026-0543, unmaintained, no patched version), which `deny.toml` ignores (fork #17, T24.23). `cargo tree -i chrono` shows `chrono` arriving only through `oauth2 v5.0.0` and `openidconnect v4.1.0`, and `openidconnect` only through `telltale-api`. `rsa v0.9.10` (RUSTSEC-2023-0071, ignored in `deny.toml`) also arrives only through `openidconnect`. `telltale-api` has its own `chrono` (`crates/telltale-api/Cargo.toml:47`), used only in `crates/telltale-api/src/auth/oidc/flow_tests.rs:100,104,691`. The `openidconnect` subtree is 133 packages, some shared with other crates. `Cargo.toml:73,76,127` holds `[profile.release.package.openidconnect|oauth2|chrono]` entries to drop. `ring 0.17.14` is already a normal runtime dependency (via `rustls`, `rcgen`, `hickory-proto` and others), so it adds nothing to the tree.
+
+**Current behaviour** (`crates/telltale-api/src/auth/oidc.rs`) that the replacement must keep:
+- Discovery (`:209-250`): `CoreProviderMetadata::discover_async`, which requires the document's `issuer` to equal the configured issuer, plus a second fetch for `end_session_endpoint`. Cached for 1 h (`DISCOVERY_TTL`).
+- Start (`:256-300`) and finish (`:306-330`): authorization code with PKCE S256; random state and nonce; a flow lives 10 min (`FLOW_TTL`), at most 1000 (`MAX_FLOWS`), is single-use, and is bound to the browser cookie and the provider.
+- Token exchange (`:340-360`): `exchange_code` with the PKCE verifier. Client authentication is the openidconnect default, which the spike confirms from source (expected: HTTP Basic, `client_secret_basic`).
+- ID token (`:362-400`): `set_allowed_algs(algs())` with nine algorithms: RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, EdDSA (`:568-580`). On a signature failure it runs a full discovery refresh and one retry, with no rate limit. An unauthenticated caller who starts flows can therefore force refetches; this ADR fixes that.
+- MCP access tokens (`verify_access_token`, `:440-527`): own checks. `iss` (trailing slash ignored), `aud` (string or array) equals `mcp.audience`, `exp` and `nbf` with 60 s leeway, key chosen by `kid` from the JWKS, algorithms from `algs()`. No `iat`, `azp` or nonce check.
+- Config (`crates/telltale-config/src/validate.rs:1375`): the issuer must start with `https://` or `http://`, so HTTP issuers are accepted today.
+- Claims mapping (`identity`, `role_for`, `username_for`, `:595-690`) and the agent role cap (`:746-747`) are pure functions of verified claims. This ADR does not change them.
 
 **Options:**
-- (a) Keep `openidconnect` and accept `chrono`. Rejected: the ignore stays and the unmaintained crate stays in the tree.
-- (b) An in-tree ID-token verifier, with the existing `hyper` and `rustls` client for discovery, JWKS and the token exchange. No new runtime dependency. Two sub-options:
-  - (b-ring) Verify signatures with `ring`, which is already a normal runtime dependency (pulled in by `rustls`, `quinn-proto`, `hickory-proto`, `hickory-net` and `rcgen`). `ring` verifies RS256 (`RSA_PKCS1_2048_8192_SHA256`) and ES256 (`ECDSA_P256_SHA256_FIXED`). This drops `rsa` from the tree, so RUSTSEC-2023-0071 can be removed (ADR-952). `cargo tree -i rsa` shows `rsa` arriving only through `openidconnect`.
-  - (b-p256) Verify signatures with `rsa`, `p256` and `ecdsa`. `rsa` stays for RS256, so RUSTSEC-2023-0071 stays ignored (ADR-952).
-- (c) Add `jsonwebtoken` as a new runtime dependency for ID-token verification, with a one-line justification and a measured image delta (gate 25 MiB/arch, ADR-916). It needs `rsa` or `ring` for signatures, so the RUSTSEC-2023-0071 question stays.
-- (d) Another OIDC client library. Rejected until its tree is checked for `chrono`.
+- (a) Keep `openidconnect` and `oauth2`. Rejected: `chrono` and the ignore stay.
+- (b-ring) An in-tree verifier on `ring`. We write the JWK-to-key conversion (RSA `n`/`e`, EC `x`/`y` to an uncompressed point, OKP `x` for Ed25519) and the JWS verification for the nine algorithms, plus all claims checks. No new crate. Removes `rsa`, `p256`, `p384`, `ecdsa` and `ed25519-dalek` unless something else uses them (the spike measures). Rejected for now: the signature and key-conversion glue is the riskiest code, and it would be ours to audit. It is the fallback if (c-9) fails the spike.
+- (b-p256) The same verifier on `rsa`, `p256` and `ecdsa`. Rejected: `rsa` stays, so RUSTSEC-2023-0071 stays.
+- (c-9) `jsonwebtoken` 9.3.1 with its default ring backend. Its normal dependencies on crates.io are `base64`, `ring` (non-wasm), `serde` and `serde_json`; `pem` and `simple_asn1` are optional. No `chrono`, no `rsa`. It provides signature verification, JWK-to-key conversion (`DecodingKey::from_rsa_components`, `from_ec_components`, `from_ed_components`), an algorithm allow-list in `Validation`, and `exp`, `nbf`, `iss` and `aud` checks with leeway. MIT licence; repository `Keats/jsonwebtoken`; latest 9.x is 9.3.1 (2025-02-06). Adds one small crate; the image estimate is well under 0.2 MiB, to be measured.
+- (c-10) `jsonwebtoken` 10.x. Its crypto backend is an optional feature: `aws-lc-rs` (a C build with a large image, rejected) or the RustCrypto set, which includes `rsa` (RUSTSEC-2023-0071 stays; rejected).
+- (d) Another OIDC client library. Not chosen. The two OIDC clients checked both list `chrono` as a normal dependency on crates.io (`openidconnect` 4.0.1 and `oauth2` 4.4.2). Other crates were not surveyed exhaustively offline; reopen only if a candidate is shown chrono-free.
 
-**Recommendation (for owner decision):** (b-ring), chosen by a spike that measures the dependency tree and image delta of (b-ring), (b-p256) and (c), gated by `cargo deny`. (b-ring) needs no new dependency and removes `rsa`. Whichever is chosen, the `chrono` ignore and the `telltale-api` `chrono` uses go.
+**Recommendation:** (c-9). It removes `chrono` and `rsa` from the tree, adds one permissive crate that uses the `ring` already in the tree, and keeps signature and key-conversion code out of our hands. All OIDC policy (claims, nonce, state, discovery, key rotation) stays in `telltale-api` and is pinned by tests. Fallback: (b-ring), if the spike finds that jsonwebtoken 9 cannot enforce the algorithm and key-kind rules below.
 
-**Current behaviour to carry over exactly** (`crates/telltale-api/src/auth/oidc.rs`):
-- `groups_claim` dotted-path lookup (`:595-613`) and `username_claim`.
-- `[[auth.oidc.provider.role]]` mapping, highest role wins, and `default_role` (`:640`).
-- The no-role error and its hint (`:548-561`).
-- The agent scope role cap (`:746-747`).
-- `mcp_provider`, `disable_local_login`, and multiple providers.
+**Decisions for owner acceptance** (each has a recommended answer; the owner accepts or changes it):
+1. Library: (c-9).
+2. Parity: observable behaviour stays the same, except for these tightenings: (i) the allowed algorithms are the nine above, intersected with the provider's `id_token_signing_alg_values_supported` when the discovery document lists it (an empty intersection rejects every token); (ii) a signature failure refetches the JWKS only (not discovery), at most once per provider per 60 s; (iii) `none` and HS* are never accepted.
+3. HTTP issuers stay accepted, as today (`validate.rs:1375`). A startup warning is logged for a non-loopback `http://` issuer. This adds no setting, so it needs no UI control or help topic. `ui/tests/oidc/compose.yml` runs Keycloak over HTTP, and the `3-oidc` spec must pass unchanged.
+4. Clock skew: 60 s for `exp`, `nbf` and `iat`, the value the MCP path already uses. The spike records openidconnect's effective ID-token skew. If it is larger, the difference is recorded here before acceptance.
+5. Keys: RSA keys shorter than 2048 bits are rejected (ring's limit). EC keys must be on the curve the algorithm names. Keycloak and Authentik default to 2048-bit or larger RSA keys. The change is user-visible for odd providers, so `docs/running.md` says so.
+6. Client authentication stays HTTP Basic (`client_secret_basic`) at the token endpoint, matching openidconnect's default.
+7. No new setting in this change. The Settings page, `[auth.oidc]` keys and help topics stay as they are.
+8. Out of scope, unchanged: refresh tokens and userinfo are not implemented, and logout keeps using `end_session_endpoint` as today.
 
-**Scoping questions (the owner's answers are pending; the question tool was unavailable in the implementing session, so these are recorded here with the review's recommended answers):**
-1. Library: (b-ring), (b-p256), (c), or a spike to choose between them. (b-ring) is the review's recommended answer; it uses `ring`, which is already in the tree, and removes `rsa`.
-2. Parity: match current behaviour exactly. Refresh tokens, logout and userinfo are Open and not part of this change.
-3. A spike first, measuring dependency trees, so the image delta is a real number.
-4. Dependencies: (b-ring) adds no new runtime dependency, so the question is only needed for (b-p256) or (c). A new runtime dependency is acceptable inside ADR-916 plus `cargo deny`, with a one-line justification.
-5. Token-check defaults, plus these rules:
-   - `aud` must contain `client_id`; `azp` is required when there are multiple audiences.
-   - The token `iss` must equal the discovery `issuer` exactly, and the discovery `issuer` must equal the configured issuer.
-   - Allowed algorithms are the intersection of RS256/ES256 and the provider's `id_token_signing_alg_values_supported`. `none` and HS* are rejected.
-   - The key `kty` must match the algorithm.
-6. Hold the ADR for Opus review and explicit owner acceptance (security-sensitive).
-7. Observable behaviour identical; internal wiring may change.
+**Algorithm and key rules** (enforced before any signature is checked):
+- The header `alg` must be on the allow-list. `none`, HS256/384/512 and anything else are rejected.
+- The key's `kty` must match `alg` (RSA for RS*/PS*, EC for ES*, OKP for EdDSA). For EC, the `crv` must match the algorithm (P-256 for ES256, P-384 for ES384). For OKP, the `crv` must be Ed25519. The key's `use`, when present, must be `sig`.
+- With a `kid` in the header, only keys with that `kid` are tried. Without one, every key that passes the kind and curve rules is tried.
 
-**Checks the implementation must make:** `iss`, `aud`, `azp`, `exp`, `iat`, `nbf` (with a skew), `nonce`, `state`, PKCE `code_verifier`, the algorithm allow-list, `kid` lookup against JWKS, discovery over `https://` only, and token-endpoint client authentication.
+**ID-token checks** (in `finish`):
+- signature (per the rules above; jsonwebtoken verifies);
+- `iss` equals the discovery `issuer`, which equals the configured issuer (exact match, as openidconnect does today);
+- `aud` contains `client_id`; `azp`, when present, equals `client_id`; `azp` is required when `aud` has more than one value;
+- `exp` present and not passed (60 s leeway); `iat` present and not more than 60 s in the future; `nbf`, when present, not more than 60 s in the future;
+- `nonce` present and equal to the flow's nonce;
+- state single-use, within the TTL, and bound to the browser; PKCE verifier sent with the token request;
+- `at_hash` is not checked (the code flow does not use it, as today).
 
-**Negative tests (each must be rejected):** wrong `iss`; missing `aud`; `aud` present but not containing `client_id`; multiple audiences without `azp`; a token signed with a key whose `kid` is new until the JWKS is refetched, which must be accepted after the refetch (JWKS key rotation); a bad signature; expired token; future `nbf`; future `iat` beyond the skew; nonce mismatch or replay; state mismatch; `alg=none`; HS256 signed with the RSA public key; unknown `kid` (JWKS refetch rate-limited); tampered signature; `http://` discovery URL; discovery `issuer` not matching the configured issuer; missing `code_verifier`.
+**JWKS:** the key set comes from the discovery `jwks_uri` and is cached with the discovery document (1 h). On an unknown `kid` or a signature failure, the JWKS is refetched once if the last refetch for that provider was more than 60 s ago. Otherwise the token is rejected. This replaces today's full discovery refresh.
 
-**Verification:** the existing `3-oidc` e2e passes unchanged; `cargo deny check` passes with the `chrono` ignore removed; the image delta is recorded. `make bench-smoke` is not needed unless a hot-path crate changes, which this does not do.
+**Access tokens (MCP):** the same JWKS, algorithm and key rules, and the existing `iss`, `aud`, `exp` and `nbf` checks, unchanged. `iat` is not checked, as today.
 
-**Consequences:** Accepting this ADR removes `chrono` and the RUSTSEC-2026-0543 ignore. The RUSTSEC-2023-0071 ignore goes too if (b-ring) is chosen, and stays under (b-p256) or (c) (ADR-952).
+**Negative tests** (REQ API-004, named `api_004_*`, in `flow_tests.rs` or a new `verify_tests.rs`), each must reject unless noted:
+- bad signature (one flipped bit in the signature);
+- signed by a key whose `kid` is not in the JWKS;
+- `aud` without `client_id`; `aud` array without `client_id`; `aud` array of two without `azp`; `azp` not equal to `client_id`;
+- wrong `iss`; discovery `issuer` not equal to the configured issuer;
+- expired token; `nbf` in the future; `iat` in the future beyond 60 s;
+- nonce mismatch; nonce replay (second use of the same state); state mismatch; missing `code_verifier`;
+- `alg=none`; HS256 with the RSA public key bytes as the secret;
+- key-kind mismatch (ES256 header with an RSA key); EC key on the wrong curve for the algorithm; OKP key that is not Ed25519;
+- RSA key shorter than 2048 bits; a key with `use=enc` is ignored;
+- provider lists only RS256 in `id_token_signing_alg_values_supported`, and an ES256 token is rejected;
+- JWKS rotation: a token with a new `kid` is rejected before the refetch and accepted after it (accepted, not rejected);
+- JWKS refetch rate limit: a second unknown-`kid` refetch within 60 s does not fetch.
 
-## ADR-952 — The rsa advisory (RUSTSEC-2023-0071) under the OIDC change (Proposed 2026-11-17)
-**Context:** `deny.toml:14` ignores RUSTSEC-2023-0071 for `rsa`, reached through `openidconnect`. The reason given is that TelltaleDNS only verifies ID-token signatures and holds no RSA private key.
+**Verification:** `cargo deny check` with both ignores removed (ADR-952); `cargo tree -i chrono`, `-i rsa` and `-i openidconnect` print nothing; `3-oidc` passes unchanged. That spec runs against real Keycloak and Authentik from `ui/tests/oidc/compose.yml` (it is skipped unless `OIDC_E2E=keycloak,authentik` and the stack is up), so it is an integration check, not a fake. The in-process fake provider in `flow_tests.rs` is the unit fixture. The image delta is measured with `deploy/image/size.py --oci` and recorded in the Done note. No hot-path crate changes, so `make bench-smoke` is not required.
 
-**Decision (proposed):** ADR-951 decides the library. If (b-ring) is chosen, `rsa` leaves the tree and the RUSTSEC-2023-0071 ignore is removed in the same change, with `cargo deny check` passing. If (b-p256) or (c) is chosen, `rsa` stays for RS256 and the ignore stays, with its reason restated as verify-only (TelltaleDNS holds no RSA private key). Owner acceptance is required before the ignore changes.
+**Consequences:** RUSTSEC-2026-0543 and RUSTSEC-2023-0071 leave `deny.toml` together (ADR-952). One new runtime dependency (`jsonwebtoken` 9.3.x). The test fake signs with ring from the existing PEM fixture (`flow_tests.rs:49`, converted to DER), and `chrono` is replaced by `std::time`.
+
+## ADR-952 — The chrono and rsa advisories under the OIDC change (Proposed 2026-11-17)
+**Context:** `deny.toml` ignores RUSTSEC-2026-0543 (chrono, unmaintained) and RUSTSEC-2023-0071 (rsa, timing side channel). Both arrive only through `openidconnect` (ADR-951 Context). The current reason for the rsa ignore is that TelltaleDNS only verifies signatures with the provider's public keys.
+
+**Decision (proposed):** if ADR-951 chooses (c-9) or (b-ring), both ignores are removed in the same change. `cargo tree -i chrono` and `cargo tree -i rsa` then print nothing, and `cargo deny check` passes with no ignore for either advisory. If either crate still appears, the ignore stays and its reason is restated in `deny.toml` before the change lands. If (b-p256) is chosen, only the chrono ignore goes; the rsa ignore stays with its reason restated as verify-only. Owner acceptance is required before either ignore changes.
 
 ## ADR-943 — Svelte attribute quantifiers: `{n}` in a quoted attribute is written as a JS expression, and a guard keeps it that way (Accepted 2026-11-17, owner decision)
 **Context:** Upstream issue #64, "2FA can't be enabled". Svelte 5 reads `{6}` inside a quoted attribute value as an expression, so `pattern="[0-9]{6}"` reached the browser as `[0-9]6` and no six-digit code matched. The TOTP enrolment (Settings) and the sign-in code (Login) both had the bug.
