@@ -11,6 +11,8 @@
 #   TELLTALE_VOLUMES_FROM=wrendns-dev  runs the binary from that container's volumes instead; then
 #                                 the path is the binary's path inside that container.
 #   HA_TEST_PORT (18124), NODE_API_PORT (18053), NODE_DNS_PORT (18153): host ports on 127.0.0.1.
+#   HA_TEST_PROJECT, HA_TEST_NODE: Compose project and node container names (default per run, PID-based);
+#   HA_TEST_IMAGE: the Home Assistant image (default the stable channel, see compose.yaml).
 set -euo pipefail
 # Docker only: Git Bash must not rewrite paths for docker, but curl and the cookie jar need the
 # MSYS paths as they are (a Windows curl can't write /tmp/... once conversion is off).
@@ -19,12 +21,16 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 # Host paths for `docker run -v` (Docker Desktop on Windows needs C:\ paths from Git Bash).
 hostpath() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else echo "$1"; fi; }
 COMPOSE=(docker compose -f "$(hostpath "$ROOT/deploy/ha-test/compose.yaml")")
+# One Compose project and one node container per run, so two runs on one host don't collide
+# (REQ: T24.21). COMPOSE_PROJECT_NAME is read by `docker compose` before the file's name.
+RUN_ID=$$
+export COMPOSE_PROJECT_NAME=${HA_TEST_PROJECT:-telltale-hatest-$RUN_ID}
 HA_PORT=${HA_TEST_PORT:-18124}
 API_PORT=${NODE_API_PORT:-18053}
 DNS_PORT=${NODE_DNS_PORT:-18153}
 HA="http://127.0.0.1:$HA_PORT"
 API="http://127.0.0.1:$API_PORT"
-NODE=telltale-hatest-node
+NODE=${HA_TEST_NODE:-telltale-hatest-node-$RUN_ID}
 B=${1:-target/debug/telltale}
 E=$(mktemp -d)
 PY=
