@@ -27,6 +27,7 @@
 </script>
 
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { api, type S } from '../api';
   import { can } from '../session.svelte';
   import { currentMode } from '../mode.svelte';
@@ -50,6 +51,7 @@
     singleton = false,
     role,
     note,
+    draft = null,
   }: {
     kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit' | 'exclusions' | 'simulate' | 'rollout';
     path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings';
@@ -69,6 +71,9 @@
     role?: 'operator' | 'admin';
     /** A sentence about the draft, under the fields (CLU-013: who gets a change first). */
     note?: (values: Record<string, unknown>) => string;
+    /** REQ: FLT-005 (T24.15) — open a new entry with these values filled in ("Make a group from
+     *  this network"). A new object each time it should open; operators only. */
+    draft?: { name?: string; values: Record<string, unknown> } | null;
   } = $props();
   let formOut = $state<{ ok: boolean; text: string } | null>(null);
   async function runFormAction() {
@@ -131,7 +136,7 @@
     hidden: ['hidden', 'bad'],
   };
 
-  function open(e?: S['ConfigEntry']) {
+  function open(e?: S['ConfigEntry'], fill: Record<string, unknown> = {}, name = '') {
     preview = null;
     result = null;
     formError = null;
@@ -139,9 +144,15 @@
     const def = (e?.definition ?? {}) as Record<string, unknown>;
     original = { ...def };
     const initial = e ? {} : Object.fromEntries(fields.filter((f) => f.initial !== undefined).map((f) => [f.key, f.initial]));
-    editing = { name: e?.name ?? '', isNew: !e, values: { ...initial, ...def } };
+    editing = { name: e?.name ?? name, isNew: !e, values: { ...initial, ...def, ...fill } };
     texts = Object.fromEntries(fields.filter((f) => f.toText).map((f) => [f.key, f.toText!(editing!.values[f.key])]));
   }
+  // REQ: FLT-005 (T24.15) — a draft from another page opens a new entry, once per draft.
+  $effect(() => {
+    const d = draft;
+    if (!d || !writable) return;
+    untrack(() => open(undefined, d.values, d.name ?? ''));
+  });
 
   // The body: the fields shown, with empty ones left out (the defaults apply); other fields of
   // an existing entry are kept as they were.

@@ -2,7 +2,7 @@
   // REQ: API-005, FLT-005 (ADR-050) — groups as categories of devices: each group's networks,
   // what its devices did in the last 24 hours, its heaviest names this hour, and its settings.
   import { api, type S } from '../lib/api';
-  import { href } from '../lib/router.svelte';
+  import { href, route } from '../lib/router.svelte';
   import { dateTime, num, pct } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
@@ -121,6 +121,13 @@
   $effect(load);
   const advanced = $derived(currentMode() === 'advanced');
   const total = $derived(groups.reduce((a, g) => a + g.queries24h, 0));
+  // REQ: FLT-005 (T24.15) — "Make a group from this network" on the Networks page opens the editor
+  // with the network filled in (`/groups?draft=network&name=…&networks=…`).
+  const networkDraft = $derived(
+    route.path === '/groups' && route.params.get('draft') === 'network'
+      ? { name: route.params.get('name') ?? '', values: { networks: [route.params.get('networks') ?? ''].filter(Boolean) } }
+      : null,
+  );
 </script>
 
 <div class="page">
@@ -251,7 +258,7 @@
       </table>
     </div>
   </section>
-  <ConfigEditor kind="group" path="groups" title="Manage groups" noun="group" fields={groupFields}
+  <ConfigEditor kind="group" path="groups" title="Manage groups" noun="group" fields={groupFields} draft={networkDraft}
     summary={(d) => `${((d.networks as string[]) ?? []).join(', ') || 'named devices only'} · ${d.lists ? `${(d.lists as string[]).length} lists` : 'every enabled list'}`}
     onchanged={load} />
   <!-- REQ: FLT-010 (T9.7) — schedules made here; groups follow them through `schedules`. -->

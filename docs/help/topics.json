@@ -249,6 +249,24 @@
       "docs": "groups-and-devices"
     },
     {
+      "id": "networks",
+      "title": "The networks your routers know",
+      "term": "Network",
+      "summary": "A LAN or VLAN your router reports: its subnet, DHCP pool, domain and the group that covers it. Devices on it show how full it is.",
+      "when": "You want to see which networks are filling up, or which networks no group covers yet.",
+      "example": "IoT (192.168.20.0/24, VLAN 20): 42 of 254 addresses in use, 38 of them from the DHCP pool.",
+      "caution": "Networks come from your routers and from your groups' networks. A network no router reports shows as group only."
+    },
+    {
+      "id": "network-group",
+      "title": "Make a group from a network",
+      "term": "Group",
+      "summary": "Opens the Groups editor with this network already filled in as the group's networks, so the devices on it follow the group's lists and settings.",
+      "when": "A network has no group yet, so its devices use the default group.",
+      "example": "A new IoT network: make a group named iot from it, then pick its lists.",
+      "caution": "Groups are checked when you apply them. A network that another group already covers isn't offered this button."
+    },
+    {
       "id": "lists",
       "title": "Block or allow whole categories of sites",
       "term": "Filter lists (blocklists and allowlists)",
