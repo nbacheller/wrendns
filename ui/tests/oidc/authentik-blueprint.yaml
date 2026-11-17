@@ -48,7 +48,7 @@ entries:
       client_secret: telltale-secret
       redirect_uris:
         - matching_mode: regex
-          url: "http://(127\\.0\\.0\\.1|localhost):18054/.*"
+          url: "http://(127\\.0\\.0\\.1|localhost):[0-9]+/.*"
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
       include_claims_in_id_token: true
       property_mappings:

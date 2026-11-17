@@ -68,8 +68,8 @@ npm run types          # regenerate src/lib/api-types.ts after API changes
 A server for `npm run dev`: from the repo root, `cargo build -p telltale` then run
 `node ui/tests/e2e/server.mjs` (starts a throwaway server on `127.0.0.1:18054` with an inline
 blocklist and a local record; then run dev with `TELLTALE_API=http://127.0.0.1:18054`). The
-setup token is in `ui/.e2e/data/setup-token`. Generate traffic with
-`dig @127.0.0.1 -p 15354 ads.e2e.test` (blocked) or `nas.e2e.test` (local record).
+setup token is in `ui/.e2e-18054/data/setup-token` (the base port; see `tests/e2e/ports.ts`). Generate traffic with
+`dig @127.0.0.1 -p 18055 ads.e2e.test` (the DNS port is the base + 1) (blocked) or `nas.e2e.test` (local record).
 
 **Embedding:** release builds compile `ui/dist` into the binary (`cargo build -p telltale`
 after `npm run build`). Debug builds read `ui/dist` from disk at request time, so with a debug
