@@ -1825,8 +1825,9 @@ test('api_014 alerts page: operators see credential fields read-only', async () 
     await expect(p.getByRole('textbox', { name: 'Private CA (email)' })).toHaveAttribute('readonly', '');
     await expect(p.getByRole('textbox', { name: 'From (email)' })).not.toHaveAttribute('readonly', '');
     await expect(p.getByTestId('admin-only').first()).toContainText('Only an admin can change this.');
-    // A new destination: its files are still an admin's, its address the operator's.
-    await p.goto('/#/alerts');
+    // A new destination: its files are still an admin's, its address the operator's. The
+    // drawer of the entry above is still open (a hash change doesn't reload), so reload first.
+    await p.reload();
     await p.getByTestId('editor-alert_destination').getByRole('button', { name: 'Add destination' }).click();
     await expect(p.getByRole('textbox', { name: 'Token file (ntfy, Gotify)' })).toHaveAttribute('readonly', '');
     await expect(p.getByRole('textbox', { name: 'Address', exact: true })).not.toHaveAttribute('readonly', '');
@@ -1837,7 +1838,7 @@ test('api_014 alerts page: operators see credential fields read-only', async () 
       data: { type: 'ntfy', url: 'https://elsewhere.e2e.test/topic', token_file: '/run/secrets/ntfy-token' },
     });
     expect(moved.status()).toBe(403);
-    await p.getByRole('button', { name: 'Simple', exact: true }).click().catch(() => {});
+    await p.getByRole('button', { name: 'Simple', exact: true }).click({ timeout: 5_000 }).catch(() => {});
   } finally {
     await op.close();
     await r.delete('/api/v1/alerts/destinations/ui-ntfy', { headers: h });
