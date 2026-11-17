@@ -3619,3 +3619,15 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - Assistants connect with SSO and the user's consent, and no long-lived token is stored in the assistant.
 - Each request verifies a signature (keys cached with discovery, refreshed on rotation); no per-token cache is kept.
 - Providers that only issue opaque access tokens need a token per agent instead, until introspection is added.
+
+## ADR-915 — Image size: optimize cold code for size, and ship only the tz database the code reads (Proposed)
+**Context:** NFR-001 (`01`, `00 §5`) caps the compressed image at 15 MiB per architecture (`deploy/image/size.py`). At 7db1908 the amd64 image measured 15.13 MiB, up from 14.76 MiB at a708f7f. The new code (secrets, credential rules, lists refresh, federated paths, ctl, OpenAPI schemas) grew the stripped binary by 0.91 MiB. The dependency and UI changes added almost nothing. The binary is already at `opt-level = 3`, fat LTO, one codegen unit and `panic = "abort"`.
+
+**Decision:** Reduce the image in the order of saving against risk, without dropping a feature and without touching the DNS hot path (`02 §3`):
+1. **API and MCP code at `opt-level = "s"`.** `[profile.release.package.telltale-api]` takes opt-level `s`; the rest of the workspace keeps opt-level 3. `telltale-api` holds the handlers, OpenAPI and MCP code, which are cold next to the DNS path. Measured saving: 0.51 MiB compressed (amd64 15.13 to 14.58 MiB).
+2. **Tz database without `right/`.** The image ships the TZif zones that `jiff` reads (schedules, FLT-010), without the `right/` leap-second zones, `tzdata.zi`, `*.tab` and `leap*` files. Saving: about 0.33 MiB. Known effect: a schedule that names a `right/...` zone no longer resolves. Schedules use the ordinary zone names.
+
+**Consequences:**
+- The API and MCP handlers run at size-optimized code. Their latency is measured, not assumed; the DNS path is in crates built at opt-level 3, and its benchmarks are unchanged.
+- A `right/` zone name stops resolving in a schedule, with an error naming the zone. No feature is lost.
+- Options not yet taken (`telltale-config` at `s`, embedding only the gzip UI files, dropping the system CA bundle) are recorded here when they land.
