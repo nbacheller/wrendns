@@ -3862,3 +3862,251 @@ test('obs_037 internal names', async () => {
   await card.getByRole('button', { name: 'Internet', exact: true }).click();
   await expect(ptr).toHaveCount(0);
 });
+
+// REQ: DNS-023 (T24.14) — a discovered device shows the DNS name it answers as, and the name is copyable.
+test('dns_023 discovered devices show their DNS name', async () => {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  const items = [
+    { ip: '10.20.2.31', mac: 'aa:bb:cc:dd:ee:31', hostname: 'kitchen-tablet', dnsName: 'kitchen-tablet.home.arpa', source: 'router', router: 'udm', expiresUnixSeconds: 0 },
+    { ip: '10.20.2.32', mac: '', hostname: 'printer', source: 'mdns', expiresUnixSeconds: 0 },
+  ];
+  await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items } }));
+  try {
+    await page.goto('/#/clients?tab=discovered');
+    const row = page.getByRole('row').filter({ hasText: '10.20.2.31' });
+    await expect(row.getByTestId('dns-name')).toContainText('kitchen-tablet.home.arpa');
+    await expect(page.getByRole('row').filter({ hasText: '10.20.2.32' }).getByTestId('dns-name')).toContainText('none');
+    await row.getByRole('button', { name: /^Copy/ }).click();
+    await expect(row.getByTestId('copy-status')).toHaveText('Copied');
+  } finally {
+    await page.unroute('**/api/v1/dhcp/leases');
+    await page.context().clearPermissions();
+  }
+});
+
+// REQ: DNS-023 (T24.14) — without a clipboard (plain HTTP on the LAN) the Copy button says the name is selectable.
+test('dns_023 copy falls back to select-to-copy when the clipboard is refused', async () => {
+  const items = [{ ip: '10.20.2.33', mac: 'aa:bb:cc:dd:ee:33', hostname: 'hall', dnsName: 'hall.home.arpa', source: 'mdns', expiresUnixSeconds: 0 }];
+  await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items } }));
+  try {
+    // Leave the page first: a hash-only goto to the same URL doesn't re-fetch the leases.
+    await page.goto('/#/');
+    await page.goto('/#/clients?tab=discovered');
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText: () => Promise.reject(new Error('denied')) }, configurable: true });
+    });
+    const row = page.getByRole('row').filter({ hasText: '10.20.2.33' });
+    await row.getByRole('button', { name: /^Copy/ }).click();
+    await expect(row.getByTestId('copy-status')).toHaveText('Select to copy');
+  } finally {
+    await page.unroute('**/api/v1/dhcp/leases');
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+    });
+  }
+});
+
+// REQ: API-012 (T24.14) — the discovered table names the router that named each device, not the bare "router".
+test('api_012 discovered devices name the router that named them', async () => {
+  const items = [
+    { ip: '10.20.2.41', mac: 'aa:bb:cc:dd:ee:41', hostname: 'hall-light', source: 'router', router: 'home-assistant', expiresUnixSeconds: 0 },
+    { ip: '10.20.2.42', mac: 'aa:bb:cc:dd:ee:42', hostname: 'laptop', source: 'router', router: 'udm', expiresUnixSeconds: 0 },
+    { ip: '10.20.2.43', mac: '', hostname: 'speaker', source: 'mdns', expiresUnixSeconds: 0 },
+  ];
+  await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items } }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/clients?tab=discovered');
+    await expect(page.getByRole('row').filter({ hasText: '10.20.2.41' }).getByTestId('named-by')).toHaveText('router: home-assistant');
+    await expect(page.getByRole('row').filter({ hasText: '10.20.2.42' }).getByTestId('named-by')).toHaveText('router: udm');
+    await expect(page.getByRole('row').filter({ hasText: '10.20.2.43' }).getByTestId('named-by')).toHaveText('mDNS');
+    await expect(page.getByTestId('discovered')).toContainText('Home Assistant');
+  } finally {
+    await page.unroute('**/api/v1/dhcp/leases');
+  }
+});
+
+// REQ: API-013 (T24.15) — the Networks page: each network's subnet, VLAN, DHCP pool, router, group,
+// size, how full it is and its addresses outside the pool; a network only a group reports is badged.
+const NETWORKS = [
+  { name: 'Home', subnet: '10.20.2.0/24', gateway: '10.20.2.1', dhcpStart: '10.20.2.100', dhcpEnd: '10.20.2.200', domain: 'home.arpa', purpose: 'corporate', source: 'router', router: 'udm', group: 'lab', addresses: 254, devices: 60, usedPercent: 24, outsidePool: 4 },
+  { name: 'IoT', subnet: '192.168.20.0/24', vlan: 20, gateway: '192.168.20.1', dhcpStart: '192.168.20.100', dhcpEnd: '192.168.20.200', purpose: 'iot', source: 'router', router: 'udm', addresses: 254, devices: 42, usedPercent: 17, outsidePool: 4 },
+  { name: 'guests', subnet: '10.50.0.0/24', source: 'group', group: 'guests', addresses: 254, devices: 0, usedPercent: 0, outsidePool: 0 },
+];
+const DEVICES_ON_NETWORKS = [
+  { ip: '192.168.20.31', mac: 'aa:bb:cc:dd:ee:31', hostname: 'plug', dnsName: 'plug.home.arpa', source: 'router', router: 'udm', expiresUnixSeconds: 0 },
+  { ip: '10.20.2.31', mac: 'aa:bb:cc:dd:ee:32', hostname: 'laptop', dnsName: 'laptop.home.arpa', source: 'router', router: 'udm', expiresUnixSeconds: 0 },
+];
+
+test('api_013 networks page lists router networks', async () => {
+  await page.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: NETWORKS } }));
+  await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items: DEVICES_ON_NETWORKS } }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/networks');
+    await expect(page.getByRole('heading', { name: /^Networks/ })).toBeVisible();
+    const iot = page.getByRole('row').filter({ hasText: '192.168.20.0/24' });
+    await expect(iot).toContainText('20');
+    await expect(iot).toContainText('192.168.20.100 – 192.168.20.200');
+    await expect(iot).toContainText('17%');
+    await expect(iot.getByRole('img', { name: '17% used' })).toBeVisible();
+    await expect(page.getByRole('row').filter({ hasText: '10.50.0.0/24' }).getByTestId('group-only')).toHaveText('group only');
+    await expect(page.getByRole('row').filter({ hasText: '10.20.2.0/24' }).getByTestId('group-only')).toHaveCount(0);
+  } finally {
+    await page.unroute('**/api/v1/networks');
+    await page.unroute('**/api/v1/dhcp/leases');
+  }
+});
+
+// REQ: API-013 (T24.15) — a row opens the devices on that network with their DNS names.
+test('api_013 a network opens its devices with their DNS names', async () => {
+  await page.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: NETWORKS } }));
+  await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items: DEVICES_ON_NETWORKS } }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/networks');
+    await page.getByRole('row').filter({ hasText: '192.168.20.0/24' }).getByTestId('network-open').click();
+    const devices = page.getByTestId('network-devices');
+    await expect(devices).toContainText('192.168.20.31');
+    await expect(devices.getByTestId('network-dns-name')).toHaveText('plug.home.arpa');
+    await expect(devices).not.toContainText('laptop.home.arpa');
+  } finally {
+    await page.unroute('**/api/v1/networks');
+    await page.unroute('**/api/v1/dhcp/leases');
+  }
+});
+
+// REQ: FLT-005 (T24.15) — "Make a group from this network" opens the Groups editor with the network filled in.
+test('api_013 make a group from a network', async () => {
+  await page.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: NETWORKS } }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/networks');
+    const iot = page.getByRole('row').filter({ hasText: '192.168.20.0/24' });
+    await iot.getByTestId('make-group').click();
+    await expect(page.getByRole('dialog', { name: 'Add group' })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'Networks', exact: true })).toHaveValue('192.168.20.0/24');
+    await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('iot');
+    // A network a group already covers has no such action.
+    await page.keyboard.press('Escape');
+    await page.goto('/#/networks');
+    await expect(page.getByRole('row').filter({ hasText: '10.20.2.0/24' }).getByTestId('make-group')).toHaveCount(0);
+  } finally {
+    await page.unroute('**/api/v1/networks');
+  }
+});
+
+// REQ: API-013 (T24.15) — viewers read the networks; the make-a-group action is for operators.
+test('api_013 viewer cannot make a group', async () => {
+  const r = page.request;
+  const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const made = await r.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: VIEWER.user, password: VIEWER.pass, role: 'viewer' } });
+  expect([200, 201, 409]).toContain(made.status());
+  const view = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  try {
+    // No mock: the viewer's /networks comes from the real server (the node's group networks).
+    const p = await view.newPage();
+    await p.goto('/#/networks');
+    await p.getByLabel('Username', { exact: true }).fill(VIEWER.user);
+    await p.getByLabel('Password', { exact: true }).fill(VIEWER.pass);
+    await p.getByRole('button', { name: 'Sign in' }).click();
+    await expect(p.getByRole('row').filter({ hasText: '127.0.0.0/8' }).getByTestId('group-only')).toBeVisible({ timeout: 30_000 });
+    await expect(p.getByTestId('make-group')).toHaveCount(0);
+    // And the server refuses the write a viewer's form would send.
+    const vcsrf = (await (await view.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+    const put = await view.request.put('/api/v1/groups/viewer-try', { headers: { 'x-csrf-token': vcsrf }, data: { networks: ['10.77.0.0/24'] } });
+    expect(put.status()).toBe(403);
+  } finally {
+    await view.close();
+  }
+});
+
+// REQ: API-013 (T24.15) — a node with no routers: the empty state says where networks come from.
+test('api_013 networks page says where networks come from when there are none', async () => {
+  await page.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: [] } }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/networks');
+    await expect(page.getByTestId('networks-empty')).toContainText('[[router]]');
+  } finally {
+    await page.unroute('**/api/v1/networks');
+  }
+});
+
+// REQ: API-013 (T24.15) — the real node lists the networks its client groups name, as group only.
+test('api_013 the node lists its group networks as group only', async () => {
+  await page.goto('/#/');
+  await page.goto('/#/networks');
+  await expect(page.getByRole('row').filter({ hasText: '127.0.0.0/8' }).getByTestId('group-only')).toBeVisible({ timeout: 15_000 });
+});
+
+// REQ: API-013 (T24.15) — on a phone the secondary columns step aside and the page does not scroll sideways.
+test('api_013 networks fit a phone width', async () => {
+  const before = page.viewportSize();
+  await page.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: NETWORKS } }));
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#/');
+    await page.goto('/#/networks');
+    await expect(page.getByTestId('network-open').first()).toBeVisible();
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+    await expect(page.getByRole('columnheader', { name: 'Gateway', exact: true })).toBeHidden();
+    await expect(page.getByRole('columnheader', { name: 'Subnet', exact: true })).toBeVisible();
+  } finally {
+    await page.unroute('**/api/v1/networks');
+    if (before) await page.setViewportSize(before);
+  }
+});
+
+// REQ: API-013 (T24.15) — an IPv6 network's device list is IPv4 only, so the drawer says so rather than "no devices".
+test('api_013 an IPv6 network says its device list is IPv4 only', async () => {
+  const v6 = [{ name: 'v6-lan', subnet: 'fd00:1::/64', source: 'router', router: 'udm', addresses: 0, devices: 3, usedPercent: 0, outsidePool: 0 }];
+  await page.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: v6 } }));
+  await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items: DEVICES_ON_NETWORKS } }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/networks');
+    await page.getByTestId('network-open').click();
+    await expect(page.getByTestId('network-no-devices')).toContainText('IPv4 addresses only');
+  } finally {
+    await page.unroute('**/api/v1/networks');
+    await page.unroute('**/api/v1/dhcp/leases');
+  }
+});
+
+// REQ: FLT-005 (T24.15) — a group name already in use is not reused: the made group takes the next free name.
+test('api_013 a made group takes a name no group uses', async () => {
+  await page.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: NETWORKS } }));
+  await page.route(/\/api\/v1\/config\/entries/, (route) => {
+    if (new URL(route.request().url()).searchParams.get('kind') !== 'group') return route.fallback();
+    return route.fulfill({ json: { items: [{ kind: 'group', name: 'iot', source: 'file', definition: { networks: ['10.9.0.0/24'] } }] } });
+  });
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/networks');
+    await page.getByRole('row').filter({ hasText: '192.168.20.0/24' }).getByTestId('make-group').click();
+    await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('iot-2');
+    await expect(page.getByRole('textbox', { name: 'Networks', exact: true })).toHaveValue('192.168.20.0/24');
+  } finally {
+    await page.unroute('**/api/v1/networks');
+    await page.unroute(/\/api\/v1\/config\/entries/);
+  }
+});
+
+// REQ: FLT-005 (T24.15) — the draft opens once: the URL is cleaned, so a reload does not reopen the editor.
+test('api_013 a made group draft does not reopen on reload', async () => {
+  await page.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: NETWORKS } }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/networks');
+    await page.getByRole('row').filter({ hasText: '192.168.20.0/24' }).getByTestId('make-group').click();
+    await expect(page.getByRole('dialog', { name: 'Add group' })).toBeVisible();
+    await expect(page).toHaveURL(/#\/groups$/);
+    await page.reload();
+    await expect(page.getByRole('heading', { name: /^Groups/ })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: 'Add group' })).toHaveCount(0);
+  } finally {
+    await page.unroute('**/api/v1/networks');
+  }
+});

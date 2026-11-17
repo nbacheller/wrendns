@@ -8,6 +8,8 @@
     anomalies: 'M3 17l5-6 4 4 4-7 5 9M3 21h18',
     clients: 'M4 5h16v10H4zM9 19h6M12 15v4',
     groups: 'M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM16 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM2 20c0-3.3 2.7-5 6-5s6 1.7 6 5M14 15.5c.6-.3 1.3-.5 2-.5 3.3 0 6 1.7 6 5',
+    // REQ: API-013 (T24.15) — networks: a LAN with its devices.
+    networks: 'M3 6h18v5H3zM7 11v3M17 11v3M5 14h4v6H5zM15 14h4v6h-4z',
     lists: 'M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6zM9 12l2 2 4-4',
     upstreams: 'M12 3v10M8 9l4 4 4-4M5 21h14M5 17h14',
     names: 'M3 11l9-7 9 7M5 9.5V20h14V9.5M10 20v-5h4v5',
