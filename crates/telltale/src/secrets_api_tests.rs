@@ -1268,3 +1268,108 @@ async fn api_015_bad_body_never_quotes_value() {
     }
     assert!(!h.src.secrets.exists("pin"));
 }
+
+/// Every byte under `dir` (the database, its WAL and anything else a node writes).
+fn bytes_under(dir: &std::path::Path) -> Vec<u8> {
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                out.extend(bytes_under(&p));
+            } else if let Ok(b) = std::fs::read(&p) {
+                out.extend(b);
+            }
+        }
+    }
+    out
+}
+
+/// Runs one sync pass on each node until `done` holds (heartbeats carry the heads between them).
+async fn sync_until(
+    pairs: (&Harness, &Harness),
+    clusters: (&Arc<Cluster>, &Arc<Cluster>),
+    mut done: impl FnMut() -> bool,
+) {
+    for _ in 0..200 {
+        crate::secrets::sync::run_once(&pairs.0.src, clusters.0).await;
+        crate::secrets::sync::run_once(&pairs.1.src, clusters.1).await;
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// REQ: CLU-015 (AC17) — over the real mTLS channel of two nodes: a secret set on the replica is
+/// forwarded to the primary (as `secret.put`), the replica's own standalone row is offered to the
+/// primary when the replica joins, and the primary's rows come back to the replica re-encrypted
+/// under its key. A deletion on the primary reaches the replica as a tombstone. No plaintext is
+/// written under the replica's data directory.
+#[tokio::test]
+async fn clu_015_set_on_replica_replicates_back() {
+    use crate::secrets::value::{Kind, SecretValue};
+    let p = pair(crate::build_info::VERSION, crate::build_info::VERSION).await;
+    let ph = harness_in("", Some(Arc::clone(&p.primary)));
+    crate::http::serve_peers(&ph.src);
+    let rh = harness_in("", Some(Arc::clone(&p.replica)));
+    crate::http::serve_peers(&rh.src);
+    // A row the replica made before it joined: offered to the primary, then shadowed.
+    let own = SecretValue::new(Kind::Text, zeroize::Zeroizing::new("own-local-7713".into())).unwrap();
+    rh.src
+        .secrets
+        .put("local.one", Kind::Text, &own, 0, "root", "local", 50)
+        .unwrap();
+    // Set on the replica: forwarded to the primary.
+    let (s, _, v) = rh
+        .call("PUT", "/api/v1/secrets/unifi", Some(&put_body(VALUE)))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(ph.src.secrets.exists("unifi"), "stored on the primary");
+    // Replicated back.
+    sync_until((&ph, &rh), (&p.primary, &p.replica), || {
+        rh.src.secrets.get("unifi").is_ok() && ph.src.secrets.exists("local.one")
+    })
+    .await;
+    assert_eq!(rh.src.secrets.get("unifi").unwrap().expose(), VALUE);
+    assert_eq!(
+        rh.src.secrets.status().secrets.iter().find(|s| s.name == "unifi").map(|s| s.origin.clone()),
+        Some("cluster".to_owned())
+    );
+    assert!(ph.src.secrets.exists("local.one"), "the joiner's row was adopted");
+    // The replica's own row is shadowed by the cluster's, and still there.
+    assert!(
+        rh.src.secrets.status().shadows.iter().any(|n| n == "local.one"),
+        "the replica's own row is shadowed"
+    );
+    // No plaintext under the replica's data directory.
+    let rdir = rh.src.config.load().node.data_dir.as_str().to_owned();
+    let on_disk = bytes_under(std::path::Path::new(&rdir));
+    assert!(!on_disk.windows(VALUE.len()).any(|w| w == VALUE.as_bytes()), "no value on disk");
+    // A deletion on the primary reaches the replica by tombstone.
+    let (s, _, v) = ph.call("DELETE", "/api/v1/secrets/unifi", None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    sync_until((&ph, &rh), (&p.primary, &p.replica), || {
+        rh.src.secrets.get("unifi").is_err()
+    })
+    .await;
+    assert!(rh.src.secrets.get("unifi").is_err(), "deleted on the replica too");
+    let _ = p.stop.send(true);
+}
+
+/// REQ: CLU-015 (AC2) — the primary answers a secrets read only for a member its registry lists as
+/// full: a stranger (or a member that calls itself full) gets nothing.
+#[tokio::test]
+async fn clu_015_stranger_refused() {
+    let p = pair(crate::build_info::VERSION, crate::build_info::VERSION).await;
+    let ph = harness_in("", Some(Arc::clone(&p.primary)));
+    let r = crate::secrets::sync::answer_fetch(
+        Arc::clone(&ph.src),
+        Arc::clone(&p.primary),
+        "not-a-member".into(),
+        Vec::new(),
+    )
+    .await;
+    assert!(r.is_err(), "{r:?}");
+    let _ = p.stop.send(true);
+}

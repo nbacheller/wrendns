@@ -107,7 +107,7 @@ struct AdoptAns {
 
 /// Per-node state of the sync task.
 #[derive(Debug, Default)]
-struct Progress {
+pub(crate) struct Progress {
     /// The primary head this node last applied (or that it matched).
     applied: Option<SecretsHead>,
     /// Live rows of the last applied answer that the primary holds but couldn't decrypt.
@@ -677,9 +677,36 @@ async fn init_rows_once(src: &Arc<Sources>, st: &mut Progress) {
     }
 }
 
-/// REQ: CLU-015 — the sync task: publishes this node's secrets mark, adopts and pulls on a
-/// replica, refills a locked primary from a replica, and purges after a removal. It never waits
-/// on the DNS path, and nothing it does changes the manifest.
+/// REQ: CLU-015 — one pass of the sync task: loads the store, purges after a removal, publishes
+/// this node's secrets mark, then either refills (a primary) or adopts and pulls (a replica).
+pub(crate) async fn tick(src: &Arc<Sources>, cluster: &Arc<Cluster>, st: &mut Progress) {
+    if cluster.is_ephemeral() {
+        return;
+    }
+    let s = Arc::clone(src);
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = s.secrets.keys();
+    })
+    .await;
+    purge_if_removed(src, cluster, st);
+    let mark = mark_of(src, cluster, st);
+    cluster.set_secrets(mark);
+    if cluster.is_primary() {
+        init_rows_once(src, st).await;
+        reverse_heal(src, cluster, st).await;
+    } else {
+        fetch_if_due(src, cluster, st).await;
+    }
+}
+
+/// REQ: CLU-015 — a single pass with fresh state (tests drive the task this way).
+pub(crate) async fn run_once(src: &Arc<Sources>, cluster: &Arc<Cluster>) {
+    let mut st = Progress::default();
+    tick(src, cluster, &mut st).await;
+}
+
+/// REQ: CLU-015 — the sync task: a pass every [`TICK`], until the server stops. It never waits on
+/// the DNS path, and nothing it does changes the manifest.
 pub(crate) fn spawn(src: Arc<Sources>, mut stop: watch::Receiver<bool>) {
     tokio::spawn(async move {
         let mut st = Progress::default();
@@ -688,25 +715,8 @@ pub(crate) fn spawn(src: Arc<Sources>, mut stop: watch::Receiver<bool>) {
                 () = tokio::time::sleep(TICK) => {}
                 _ = stop.wait_for(|s| *s) => return,
             }
-            let Some(cluster) = src.cluster.clone() else {
-                continue;
-            };
-            if cluster.is_ephemeral() {
-                continue;
-            }
-            let s = Arc::clone(&src);
-            let _ = tokio::task::spawn_blocking(move || {
-                let _ = s.secrets.keys();
-            })
-            .await;
-            purge_if_removed(&src, &cluster, &mut st);
-            let mark = mark_of(&src, &cluster, &st);
-            cluster.set_secrets(mark);
-            if cluster.is_primary() {
-                init_rows_once(&src, &mut st).await;
-                reverse_heal(&src, &cluster, &mut st).await;
-            } else {
-                fetch_if_due(&src, &cluster, &mut st).await;
+            if let Some(cluster) = src.cluster.clone() {
+                tick(&src, &cluster, &mut st).await;
             }
         }
     });
