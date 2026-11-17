@@ -313,6 +313,8 @@ pub struct Frame {
 }
 
 #[derive(Clone, PartialEq, prost::Oneof)]
+// A frame is built, encoded and dropped at once; boxing the heartbeat would change every call site.
+#[allow(clippy::large_enum_variant)]
 pub enum Body {
     #[prost(message, tag = "1")]
     Hello(Hello),

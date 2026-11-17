@@ -188,7 +188,9 @@ pub(crate) struct Status {
     pub(crate) under_previous: usize,
     /// Every row, tombstones included, by name.
     pub(crate) secrets: Vec<SecretInfo>,
-    /// REQ: CLU-015 — names whose local row a cluster row displaced (kept, not used).
+    /// REQ: CLU-015 — names whose local row a cluster row displaced (kept, not used). The
+    /// Settings page's Conflicts list (T23.6) shows them.
+    #[allow(dead_code)] // read by the tests now; by the Settings page with T23.6
     pub(crate) shadows: Vec<String>,
 }
 
@@ -1040,7 +1042,7 @@ impl SecretStore {
             } else {
                 open(&keys.current, row).ok()
             };
-            let held = !row.deleted && value.is_none();
+            let is_held = !row.deleted && value.is_none();
             let size = 128
                 + row.name.len()
                 + row.kind.len()
@@ -1056,7 +1058,7 @@ impl SecretStore {
                 kind: row.kind.clone(),
                 stamp: row.stamp,
                 deleted: row.deleted,
-                held,
+                held: is_held,
                 updated: row.updated,
                 updated_by: row.updated_by.clone(),
                 value,
@@ -1213,6 +1215,7 @@ impl SecretStore {
 /// primary's copy supersedes it, and the old one is shadowed), or holds an older stamp of the same
 /// epoch. A cluster row this node holds, from an older epoch, that the primary doesn't list is an
 /// orphan: kept, flagged, never used.
+#[allow(clippy::too_many_lines)] // the rules in the order the ADR states them
 fn apply_inner(
     g: &mut Inner,
     items: &[Remote],

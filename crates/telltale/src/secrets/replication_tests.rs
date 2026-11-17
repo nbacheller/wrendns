@@ -38,8 +38,16 @@ fn value(v: &str) -> SecretValue {
 
 /// A write made by the primary of `epoch`, as the cluster stamps it.
 fn put(s: &SecretStore, name: &str, v: &str, epoch: u64) {
-    s.put(name, Kind::Text, &value(v), epoch, "root via pi", "cluster", 100)
-        .unwrap();
+    s.put(
+        name,
+        Kind::Text,
+        &value(v),
+        epoch,
+        "root via pi",
+        "cluster",
+        100,
+    )
+    .unwrap();
 }
 
 fn read(s: &SecretStore, name: &str) -> Option<String> {
@@ -157,8 +165,16 @@ fn clu_015_delete_propagates_by_tombstone() {
     let applied = sync(&p, &r, 1);
     assert_eq!(applied.tombstones, 1);
     assert!(r.get("a").is_err(), "the replica no longer has a value");
-    let row = r.status().secrets.into_iter().find(|s| s.name == "a").unwrap();
-    assert!(row.deleted, "a tombstone is kept, so offline members learn of it");
+    let row = r
+        .status()
+        .secrets
+        .into_iter()
+        .find(|s| s.name == "a")
+        .unwrap();
+    assert!(
+        row.deleted,
+        "a tombstone is kept, so offline members learn of it"
+    );
     assert_eq!(
         head_of_store(&p),
         head_of_store(&r),
@@ -183,7 +199,9 @@ fn clu_015_replica_wrong_key_heals() {
     let r = SecretStore::with_env(&cfg_in(rd.path(), false), no_env(), true, false);
     r.load_now();
     assert_eq!(r.status().state, StoreState::Locked);
-    let dropped = r.heal_as_replica().expect("a replica with the cluster's rows heals");
+    let dropped = r
+        .heal_as_replica()
+        .expect("a replica with the cluster's rows heals");
     assert_eq!(dropped, 1);
     assert_eq!(r.status().state, StoreState::Ready);
     sync(&p, &r, 1);
@@ -203,7 +221,10 @@ fn clu_015_no_plaintext_on_disk() {
         !contains(&all_bytes(rd.path()), secret.as_bytes()),
         "the replica's files hold no plaintext"
     );
-    assert_eq!(read(&r, "alerts.destination.token").as_deref(), Some(secret));
+    assert_eq!(
+        read(&r, "alerts.destination.token").as_deref(),
+        Some(secret)
+    );
 }
 
 /// REQ: CLU-015 (AC6) — a partition keeps the last set: a replica that hears nothing (or only
@@ -229,19 +250,30 @@ fn clu_015_partition_keeps_last_set() {
 fn clu_015_local_rows_shadowed_not_dropped() {
     let (pd, rd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let (p, r) = (node(pd.path()), node(rd.path()));
-    r.put("upstream.token", Kind::Text, &value("local-value-1"), 0, "root", "local", 50)
-        .unwrap();
+    r.put(
+        "upstream.token",
+        Kind::Text,
+        &value("local-value-1"),
+        0,
+        "root",
+        "local",
+        50,
+    )
+    .unwrap();
     assert_eq!(read(&r, "upstream.token").as_deref(), Some("local-value-1"));
     put(&p, "upstream.token", "cluster-value-2", 1);
     let applied = sync(&p, &r, 1);
     assert_eq!(applied.shadowed, 1);
-    assert_eq!(read(&r, "upstream.token").as_deref(), Some("cluster-value-2"));
+    assert_eq!(
+        read(&r, "upstream.token").as_deref(),
+        Some("cluster-value-2")
+    );
     assert_eq!(r.status().shadows, vec!["upstream.token".to_owned()]);
     // Removal purges the cluster's rows: the local value is back.
     let (deleted, restored) = r.purge_cluster().unwrap();
     assert_eq!((deleted, restored), (0, 1));
     assert_eq!(read(&r, "upstream.token").as_deref(), Some("local-value-1"));
-    assert!(r.status().shadows.is_empty());
+    assert_eq!(r.status().shadows, Vec::<String>::new());
 }
 
 /// REQ: CLU-015 (AC9) — a primary that loses its key doesn't wipe the replicas (it answers
@@ -276,7 +308,8 @@ fn clu_015_primary_key_loss_does_not_wipe_replicas() {
     let needs = p.heal_needs();
     assert_eq!(needs.len(), 2);
     let (all, _) = pull_all(&r);
-    p.heal_with(&all, 300).expect("the replica covers every row");
+    p.heal_with(&all, 300)
+        .expect("the replica covers every row");
     assert_eq!(p.status().state, StoreState::Ready);
     assert_eq!(read(&p, "a").as_deref(), Some("alpha-value-1"));
     assert_eq!(read(&p, "b").as_deref(), Some("bravo-value-2"));
@@ -323,8 +356,18 @@ fn clu_015_promoted_primary_keeps_secrets() {
     // p1 fails; p2 is elected in epoch 2 and keeps the secrets it held.
     assert_eq!(read(&p2, "a").as_deref(), Some("alpha-value-1"));
     p2.delete("a", 2, "root via pi", 400).unwrap();
-    let stamp = p2.status().secrets.into_iter().find(|s| s.name == "a").unwrap().stamp;
-    assert_eq!(stamp, Stamp { epoch: 2, seq: 1 }, "the new primary stamps in its epoch");
+    let stamp = p2
+        .status()
+        .secrets
+        .into_iter()
+        .find(|s| s.name == "a")
+        .unwrap()
+        .stamp;
+    assert_eq!(
+        stamp,
+        Stamp { epoch: 2, seq: 1 },
+        "the new primary stamps in its epoch"
+    );
     // r3, behind on p1, learns the deletion from p2.
     sync(&p2, &r3, 2);
     assert!(r3.get("a").is_err(), "the deletion propagated by tombstone");
@@ -357,8 +400,17 @@ fn clu_015_stale_epoch_secret_orphaned() {
         matches!(r.get("x"), Err(Unavailable::Orphaned)),
         "an orphan is never used"
     );
-    assert!(r.status().secrets.iter().any(|s| s.name == "x" && s.orphaned));
-    assert_eq!(read(&r, "a").as_deref(), Some("alpha-value-1"), "others untouched");
+    assert!(
+        r.status()
+            .secrets
+            .iter()
+            .any(|s| s.name == "x" && s.orphaned)
+    );
+    assert_eq!(
+        read(&r, "a").as_deref(),
+        Some("alpha-value-1"),
+        "others untouched"
+    );
     // It is not deleted by absence either: the row is still there.
     assert!(r.status().secrets.iter().any(|s| s.name == "x"));
 }
@@ -374,14 +426,30 @@ fn clu_015_stale_answer_rejected() {
     let (mut all, head) = pull_all(&p);
     verify(&all, head).expect("the genuine answer checks");
     // A row dropped from the answer (an attacker or a short page passed off as whole).
-    let dropped: Vec<Remote> = all.iter().filter(|r| r.name == "a").map(clone_remote).collect();
-    assert!(verify(&dropped, head).is_err(), "a dropped row breaks the digest");
+    let dropped: Vec<Remote> = all
+        .iter()
+        .filter(|r| r.name == "a")
+        .map(clone_remote)
+        .collect();
+    assert!(
+        verify(&dropped, head).is_err(),
+        "a dropped row breaks the digest"
+    );
     // A stamp changed.
     all[0].stamp = Stamp { epoch: 9, seq: 9 };
-    assert!(verify(&all, head).is_err(), "a changed stamp breaks the digest");
+    assert!(
+        verify(&all, head).is_err(),
+        "a changed stamp breaks the digest"
+    );
     // A head that doesn't match its rows.
     let (all, head) = pull_all(&p);
-    let wrong = (Stamp { epoch: head.0.epoch, seq: head.0.seq + 1 }, head.1);
+    let wrong = (
+        Stamp {
+            epoch: head.0.epoch,
+            seq: head.0.seq + 1,
+        },
+        head.1,
+    );
     assert!(verify(&all, wrong).is_err());
 }
 
@@ -394,7 +462,10 @@ fn clone_remote(r: &Remote) -> Remote {
         held: r.held,
         updated: r.updated,
         updated_by: r.updated_by.clone(),
-        value: r.value.as_ref().map(|v| SecretValue::from_text(Zeroizing::new(v.expose().to_owned()))),
+        value: r
+            .value
+            .as_ref()
+            .map(|v| SecretValue::from_text(Zeroizing::new(v.expose().to_owned()))),
     }
 }
 
@@ -409,7 +480,12 @@ fn clu_015_removed_member_purges() {
     sync(&p, &r, 1);
     let (deleted, restored) = r.purge_cluster().unwrap();
     assert_eq!((deleted, restored), (2, 0));
-    assert!(r.status().secrets.iter().all(|s| s.name != "a" && s.name != "b"));
+    assert!(
+        r.status()
+            .secrets
+            .iter()
+            .all(|s| s.name != "a" && s.name != "b")
+    );
 }
 
 /// REQ: CLU-015 (AC7 / AC2 / AC4 on the primary) — held rows: the primary holds a row it can't
@@ -431,7 +507,11 @@ fn clu_015_held_rows_keep_replica_row() {
     let replica_before = read(&r, "a");
     let applied = r.apply_remote(&held, 1, 200).unwrap();
     assert_eq!(applied.held, 1);
-    assert_eq!(read(&r, "a"), replica_before, "the replica keeps its own row");
+    assert_eq!(
+        read(&r, "a"),
+        replica_before,
+        "the replica keeps its own row"
+    );
 }
 
 /// REQ: CLU-015 (AC12) — replication doesn't consult the manifest's pins or canary bake: the store
@@ -443,6 +523,28 @@ fn clu_015_not_gated_by_canary_bake() {
     let (p, r) = (node(pd.path()), node(rd.path()));
     put(&p, "a", "alpha-value-1", 1);
     assert_eq!(sync(&p, &r, 1).changed, 1);
+}
+
+/// REQ: CLU-015 (AC12) — a pin doesn't hold a secret back: the sync path reads no manifest, so a
+/// primary's rows apply to a member whatever version its manifest pins. (Structural: the sync
+/// takes the store and the member heads only; the manifest's pins are not an input to it.)
+#[test]
+fn clu_015_replicates_while_pinned() {
+    let (pd, rd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (p, r) = (node(pd.path()), node(rd.path()));
+    put(&p, "pinned.secret", "pinned-value-5521", 1);
+    assert_eq!(sync(&p, &r, 1).changed, 1);
+    assert_eq!(read(&r, "pinned.secret").as_deref(), Some("pinned-value-5521"));
+}
+
+/// REQ: CLU-015 (AC14) — a replica is ready once its listeners are bound. Readiness reads no
+/// secrets state: the sync never calls `set_synced`, which only resolver pods wait for. (A
+/// structural check; the sync task itself is checked in `secrets_api_tests`.)
+#[test]
+fn clu_015_fetch_never_gates_readiness() {
+    let ready = crate::readiness::Readiness::new(false);
+    ready.set_bound();
+    assert!(ready.ready(), "a replica with bound listeners is ready");
 }
 
 // ---- the sim: partitions, failover and orphans, over many seeded schedules ----
@@ -461,7 +563,12 @@ impl Rng {
     }
 }
 
-const NAMES: [&str; 4] = ["router.a.key", "alerts.b.token", "upstream.c.pass", "otlp.d.hdr"];
+const NAMES: [&str; 4] = [
+    "router.a.key",
+    "alerts.b.token",
+    "upstream.c.pass",
+    "otlp.d.hdr",
+];
 
 /// REQ: CLU-015 (AC16, `telltale-sim`) — seeded schedules of writes, partitions, a failover that
 /// strands a stale primary's writes on one replica, and syncs. After everything heals and the
@@ -483,6 +590,7 @@ fn clu_015_sim_partition_and_failover() {
     }
 }
 
+#[allow(clippy::needless_range_loop, clippy::too_many_lines)] // a seeded schedule reads as its steps
 fn run_schedule(seed: u64) {
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let n = 3 + usize::try_from(rng.below(2)).unwrap_or(0); // 3 or 4 members
@@ -502,7 +610,15 @@ fn run_schedule(seed: u64) {
                     let _ = stores[primary].delete(name, epoch, "root via pi", 100);
                     ops.push(format!("delete {name}"));
                 } else {
-                    let _ = stores[primary].put(name, Kind::Text, &value(&v), epoch, "root", "cluster", 100);
+                    let _ = stores[primary].put(
+                        name,
+                        Kind::Text,
+                        &value(&v),
+                        epoch,
+                        "root",
+                        "cluster",
+                        100,
+                    );
                     ops.push(format!("put {name}={v}"));
                 }
             }
@@ -532,7 +648,15 @@ fn run_schedule(seed: u64) {
                     }
                 }
                 let stale_write = format!("stale-seed{seed}-{epoch}");
-                let _ = stores[old].put("stale.x", Kind::Text, &value(&stale_write), epoch, "root", "cluster", 100);
+                let _ = stores[old].put(
+                    "stale.x",
+                    Kind::Text,
+                    &value(&stale_write),
+                    epoch,
+                    "root",
+                    "cluster",
+                    100,
+                );
                 sync_pair(&stores[old], &stores[keep], epoch, &link, old, keep);
                 primary = new;
                 epoch += 1;
@@ -541,7 +665,9 @@ fn run_schedule(seed: u64) {
                     link[j][new] = link[new][j];
                 }
 
-                ops.push(format!("failover to {new} in epoch {epoch}, stranded stale write on {keep}"));
+                ops.push(format!(
+                    "failover to {new} in epoch {epoch}, stranded stale write on {keep}"
+                ));
             }
             _ => {
                 // Sync every linked replica from the primary.
@@ -573,7 +699,11 @@ fn run_schedule(seed: u64) {
         }
         let r = &stores[j];
         let state = r.status();
-        assert_eq!(state.state, StoreState::Ready, "seed {seed}: replica {j} is ready");
+        assert_eq!(
+            state.state,
+            StoreState::Ready,
+            "seed {seed}: replica {j} is ready"
+        );
         for row in &state.secrets {
             let on_primary = p
                 .status()
@@ -582,10 +712,12 @@ fn run_schedule(seed: u64) {
                 .find(|s| s.name == row.name && !s.orphaned);
             match on_primary {
                 Some(pr) => {
-                    if row.orphaned {
-                        // An orphan is a row the primary doesn't hold; this one it does hold.
-                        panic!("seed {seed}: {} orphaned on {j} but the primary holds it ({:?})", row.name, pr.stamp);
-                    }
+                    // An orphan is a row the primary doesn't hold; this one it does hold.
+                    assert!(
+                        !row.orphaned,
+                        "seed {seed}: {} orphaned on {j} but the primary holds it ({:?})",
+                        row.name, pr.stamp
+                    );
                     assert_eq!(
                         row.stamp, pr.stamp,
                         "seed {seed}: replica {j} has {} at the primary's stamp (ops: {ops:?})",
@@ -615,7 +747,10 @@ fn run_schedule(seed: u64) {
         // Every row the primary holds is on the replica (no row lost to a partition).
         for pr in p.status().secrets.into_iter().filter(|s| !s.orphaned) {
             assert!(
-                state.secrets.iter().any(|s| s.name == pr.name && s.stamp == pr.stamp),
+                state
+                    .secrets
+                    .iter()
+                    .any(|s| s.name == pr.name && s.stamp == pr.stamp),
                 "seed {seed}: replica {j} lacks {} (ops: {ops:?})",
                 pr.name
             );
@@ -624,7 +759,14 @@ fn run_schedule(seed: u64) {
 }
 
 /// One pull of `to` from `from`, if the link is up.
-fn sync_pair(from: &SecretStore, to: &SecretStore, epoch: u64, link: &[Vec<bool>], a: usize, b: usize) {
+fn sync_pair(
+    from: &SecretStore,
+    to: &SecretStore,
+    epoch: u64,
+    link: &[Vec<bool>],
+    a: usize,
+    b: usize,
+) {
     if !link[a][b] {
         return;
     }

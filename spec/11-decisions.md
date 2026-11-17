@@ -1293,6 +1293,27 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-915 — Replication details for stored secrets: orphans by epoch, a joining node's hand-over, the shadow table, and the reverse heal (Proposed)
+
+**Context:** ADR-903 §6 fixes what replicates (stamped rows over the cluster channel, tombstones, orphans, re-encryption under each member's key, the reverse heal). Building it left points it doesn't settle, which T23.5 had to decide.
+
+**Decision:**
+1. **Orphans without a base stamp.** A live cluster row that a member holds, that the current primary doesn't list, and whose stamp's epoch is older than the primary's, is an orphan: kept, flagged, never used, never deleted. ADR-903 §6 judges "stamped in an epoch after the new primary's base". The base isn't needed: the primary lists every cluster row it holds, so anything from an older epoch it doesn't list is one it never had, or its own orphan, and both are unusable. This judges more rows than the base rule would, and only ever toward "not used".
+2. **A primary's orphans are not shared.** The primary's export leaves out its own orphan rows, and its head is computed over the rows it shares, so a member's head and the primary's agree when both hold the same shared rows.
+3. **A stale row yields to the primary's listing.** A listed name whose row a member holds from an older epoch takes the primary's row, whatever the stamps say; the displaced row goes to the shadow table, not dropped.
+4. **The shadow table** (migration 12, `secrets_shadow`, same columns as `secrets`). It holds a standalone row a cluster row of the same name displaced, and a stale row displaced under point 3. Shadows are never used, appear in status as `shadows`, and come back when the cluster's rows are purged.
+5. **Joining.** ADR-903 §6 says a standalone node's rows "become cluster rows on the primary" at join. Implemented as `secrets.adopt`: a joining full member offers its own rows once per primary epoch; the primary takes the names it doesn't hold, stamped in its epoch, and reports the rest as conflicts. At `cluster init` the primary's own standalone rows become cluster rows in place, once.
+6. **Heartbeats.** The fields are tags 33 to 38 of `Heartbeat`. `secrets_head` is the node's own head; `secrets_applied` is the primary head the node last verified and applied (its own head on the primary). Nodes without the tags read as "not reported" and are never fetched from.
+7. **Reverse heal is all-or-nothing.** A locked primary whose rows are all the cluster's is refilled only from a replica that holds every one of its rows at the same stamp (tombstones included). A partial answer changes nothing.
+8. **Removal purges.** The sync task purges a member's cluster rows once the cluster lists it as removed (`removed.json`), and the purge is audited as `secrets.purge`. A full member has no leave path (only resolver pods leave), so none purges on leave.
+9. **Where the tests are.** The seeded partition and failover schedules are in `telltale`'s secrets module, over the store, not in `telltale-cluster/tests/sim.rs` (the election simulator), because the replicated state is the store's. The two-node test runs over the real mTLS channel in-process (`secrets_api_tests`), and the two-process test runs the built binary (`crates/telltale/tests/secrets_cluster.rs`).
+
+**Consequences:** No new crate. One migration (12). The primary's export and the replica's apply run on blocking threads; nothing touches the DNS path, and nothing reads the manifest, so pins and canary bakes don't gate replication. A heartbeat grows by a few dozen bytes when a node holds secrets.
+
+**Alternatives rejected:** a base-stamp orphan rule (it needs the primary to record a base at promotion, and it misses rows the base rule would call fresh); deleting orphans (a row must never vanish without a tombstone); the shadow row in `secrets` under a second name (it breaks the one-row-per-name invariant every reader relies on).
+
+**Status:** Proposed. The owner decides points 1 and 5 (both deviate from ADR-903 §6's wording) before T23.5 is accepted.
+
 ## ADR-914 — Which settings the UI may change, and how risky ones are guarded (Proposed)
 **Context:** On 2026-11-16 the owner made a standing rule: every setting, route and tool gets a UI control (spec/10, API-901). An audit of the fork against the UI found settings with no control at all:
 - `[special]` (M24, ADR-904) and most of `[local]` (M22, ADR-901). Both are shared sections, not node-local (`telltale-config/src/shared.rs` `NODE_LOCAL`).

@@ -4189,6 +4189,7 @@ export interface components {
              * @description Round-trip time over the cluster link.
              */
             rttMs?: number | null;
+            secrets?: components["schemas"]["ClusterSecrets"] | null;
             /**
              * Format: double
              * @description SERVFAIL share over the last minute, percent.
@@ -4270,6 +4271,28 @@ export interface components {
             stage: string;
             /** @description The version baking, `epoch.seq`. */
             version?: string | null;
+        };
+        /**
+         * @description REQ: CLU-015 (ADR-903 §6) — one member's stored secrets. Stamps are `epoch.seq`; a value is
+         *     never here.
+         */
+        ClusterSecrets: {
+            /** @description The head it has applied from the primary (the primary's own, on the primary). */
+            applied?: string | null;
+            /** @description The newest stamp in its secrets head. */
+            head?: string | null;
+            /**
+             * Format: int32
+             * @description Secrets the primary holds but couldn't decrypt to send: this node keeps its own copy.
+             */
+            held: number;
+            /** @description Its applied head is the primary's head: same stamps and digest. */
+            inSync: boolean;
+            /**
+             * Format: int32
+             * @description Live secrets it can't read here (encrypted under a key it doesn't have, or damaged).
+             */
+            unreadable: number;
         };
         /** @description The cluster's configuration from Git (ADR-049): the commit in use and the last check. */
         ClusterSource: {

@@ -122,7 +122,7 @@ pub(crate) struct Progress {
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())
@@ -379,7 +379,10 @@ async fn fetch_all(
                 primary_epoch = ans.primary_epoch;
             }
             Some(h) if h != this => {
-                return Err("the primary's head changed while its rows were read: trying again later".into());
+                return Err(
+                    "the primary's head changed while its rows were read: trying again later"
+                        .into(),
+                );
             }
             Some(_) => {}
         }
@@ -419,13 +422,15 @@ async fn pull(src: &Arc<Sources>, cluster: &Cluster, target: &str) -> Result<(us
     let (all, _head, primary_epoch) = fetch_all(cluster, target).await?;
     let store = Arc::clone(&src.secrets);
     let now = crate::pipeline::unix_now();
-    let applied: Applied = tokio::task::spawn_blocking(move || {
-        store.apply_remote(&all, primary_epoch, now)
-    })
-    .await
-    .map_err(|e| format!("secrets worker failed: {e}"))?
-    .map_err(|e| e.to_string())?;
-    Ok((applied.changed, u32::try_from(applied.held).unwrap_or(u32::MAX)))
+    let applied: Applied =
+        tokio::task::spawn_blocking(move || store.apply_remote(&all, primary_epoch, now))
+            .await
+            .map_err(|e| format!("secrets worker failed: {e}"))?
+            .map_err(|e| e.to_string())?;
+    Ok((
+        applied.changed,
+        u32::try_from(applied.held).unwrap_or(u32::MAX),
+    ))
 }
 
 /// REQ: CLU-015 — this node's secrets mark, as heartbeats carry it.
@@ -468,7 +473,9 @@ fn mark_of(src: &Sources, cluster: &Cluster, st: &Progress) -> SecretsMark {
 }
 
 fn backoff(failures: u32) -> Duration {
-    let secs = BACKOFF_MIN.as_secs().saturating_mul(1u64 << failures.min(6));
+    let secs = BACKOFF_MIN
+        .as_secs()
+        .saturating_mul(1u64 << failures.min(6));
     Duration::from_secs(secs).min(BACKOFF_MAX)
 }
 
@@ -612,7 +619,10 @@ async fn fetch_if_due(src: &Arc<Sources>, cluster: &Cluster, st: &mut Progress) 
             st.failures = st.failures.saturating_add(1);
             st.next_try = Some(Instant::now() + backoff(st.failures));
             if st.failures == 1 || st.failures.is_multiple_of(10) {
-                tracing::warn!(failures = st.failures, "stored secrets not replicated yet: {e}");
+                tracing::warn!(
+                    failures = st.failures,
+                    "stored secrets not replicated yet: {e}"
+                );
             }
         }
     }
@@ -627,7 +637,11 @@ fn purge_if_removed(src: &Arc<Sources>, cluster: &Cluster, st: &mut Progress) {
     st.removed_purged = true;
     match src.secrets.purge_cluster() {
         Ok((deleted, restored)) => {
-            tracing::warn!(deleted, restored, "this node was removed from the cluster: its cluster secrets were purged");
+            tracing::warn!(
+                deleted,
+                restored,
+                "this node was removed from the cluster: its cluster secrets were purged"
+            );
             if let Some(auth) = src.auth.get() {
                 let actor = telltale_api::auth::Actor {
                     name: "cluster".to_owned(),
@@ -669,7 +683,10 @@ async fn init_rows_once(src: &Arc<Sources>, st: &mut Progress) {
     let store = Arc::clone(&src.secrets);
     match tokio::task::spawn_blocking(move || store.adopt_as_cluster()).await {
         Ok(Ok(n)) => {
-            tracing::info!(count = n, "stored secrets made cluster secrets at cluster init");
+            tracing::info!(
+                count = n,
+                "stored secrets made cluster secrets at cluster init"
+            );
             st.init_done = true;
         }
         Ok(Err(e)) => tracing::warn!("stored secrets couldn't be made cluster secrets yet: {e}"),
@@ -700,6 +717,7 @@ pub(crate) async fn tick(src: &Arc<Sources>, cluster: &Arc<Cluster>, st: &mut Pr
 }
 
 /// REQ: CLU-015 — a single pass with fresh state (tests drive the task this way).
+#[cfg(test)]
 pub(crate) async fn run_once(src: &Arc<Sources>, cluster: &Arc<Cluster>) {
     let mut st = Progress::default();
     tick(src, cluster, &mut st).await;

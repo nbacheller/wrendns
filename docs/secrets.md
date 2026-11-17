@@ -33,6 +33,23 @@ Prefer 2 for anything beyond a single box: the key then lives apart from the dat
 
 **Resolver pods** (ephemeral cluster members) hold no stored secrets, need no key and never make one. **In a cluster**, every full member has its own key, and one member's key opens nothing on another's `state.db`.
 
+## Replication in a cluster
+
+Full members share stored secrets; resolver pods and witnesses never hold one. The design is ADR-903 section 6.
+
+- **Stamps.** Every change is stamped `(epoch, seq)`: the cluster's epoch and a counter within it, taken under the primary's lease. A stamp is never reused. A higher stamp is a later change.
+- **Head.** A member's secrets head is its newest stamp and a BLAKE3 digest over the sorted `(name, kind, stamp, deleted)` list. It holds no value and no value hash. It travels in heartbeats, not in configuration versions, so pins and canary rollouts neither hold it back nor bump a version.
+- **Fetch.** A replica whose head differs from the primary's (the primary of the highest epoch it has heard of) pulls the primary's rows: a page at a time, each page under 900 KiB, over the mTLS cluster channel. It checks that every page carries the same head and that the rows recompute it, and discards the whole answer otherwise. A fetch is tried at most once per head and backs off from 30 seconds to 10 minutes after a failure. Nothing about it gates manifest application, readiness or DNS.
+- **Re-encryption.** A replica encrypts each value under its own key with the same stamp. Its files hold no plaintext, which the tests check.
+- **Deletes** are tombstones, which replicate like values.
+- **Held rows.** A row the primary holds but can't decrypt is sent without a value. The replica keeps its own copy as it is, and the Cluster page counts it as held.
+- **Orphans.** A failover can strand a write: an old primary may have stamped a change that never reached the new one. When a replica holds such a row (from an earlier epoch) and the current primary doesn't list it, the row is kept, marked orphaned, and never used (the integration reports "not configured", and the message says to enter the secret again on the current primary). Nothing is deleted by absence.
+- **Shadows.** A standalone node's own row that a cluster row of the same name displaces is kept in a shadow table, not used, and restored if the cluster's rows are purged.
+- **Reverse heal.** A primary whose data-directory key went missing (its rows are all the cluster's) takes its rows back from a replica that holds every one of them at the same stamp, and refuses a partial answer.
+- **Removal.** A member the cluster removes purges the cluster's rows, and its own shadowed rows come back. The purge is audited as `secrets.purge`.
+
+Only `secrets.fetch` and `secrets.adopt` carry values, and only over the cluster channel: between full members, in memory. Nothing is written to a blob, a file or a log line.
+
 ## Rotation
 
 **The data-directory key** (`secrets.key`): stop TelltaleDNS, then

@@ -3222,7 +3222,7 @@ test('flt_017 workloads', async () => {
 // Start, the live counters on the Drills tab, the report (verdicts, time to failover, came back),
 // and the drill marker on the dashboard; the real single node refuses a drill (no other node);
 // the affinity column in the Advanced view with its help.
-test('clu_015 cluster page shows each member's secret state', async () => {
+test("clu_015 cluster page shows each member's secret state", async () => {
   // REQ: CLU-015 (ADR-903 §6) — the Nodes table's Secrets column: each member's head, what it has
   // applied, its unreadable and held counts, and whether it's in sync with the primary.
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -3244,7 +3244,7 @@ test('clu_015 cluster page shows each member's secret state', async () => {
     ],
   };
   await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: view }));
-  await page.goto('/#/cluster');
+  await page.goto('/#/cluster?tab=nodes');
   const rows = page.getByTestId('cluster-node');
   await expect(rows).toHaveCount(3);
   await expect(rows.nth(0).getByTestId('cluster-node-secrets-state')).toHaveText('primary');
@@ -3256,6 +3256,9 @@ test('clu_015 cluster page shows each member's secret state', async () => {
   await expect(rows.nth(2).getByTestId('cluster-node-held')).toContainText('2 held by the primary');
   // The help topic for the column is there.
   await expect(page.locator('th', { hasText: 'Secrets' }).getByRole('button')).toBeVisible();
+  // Drop the mock and reload: the next test's `goto` only changes the hash, so it would keep this view.
+  await page.unroute('**/api/v1/cluster');
+  await page.reload();
 });
 
 test('clu_014 drill', async () => {

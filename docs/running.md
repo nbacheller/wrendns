@@ -2167,6 +2167,36 @@ telltale cluster status
 - The tab says **1 odd** from any tab of the Cluster page. It's a lens, not an alarm: it doesn't change the health icon or alert. Nodes that don't answer are listed and the rest compared; one node alone has nothing to compare.
 - `GET /api/v1/cluster/compare?from=-24h` and the MCP tool `compare_nodes` return the numbers and the findings. Grafana's **Nodes** row has the SERVFAIL and slow shares by node and a table that highlights a node with little traffic.
 
+### Replicated secrets
+
+A secret entered in the UI (see [Stored secrets](#stored-secrets)) is kept by **every full
+member** of the cluster: the primary and each replica that isn't a resolver pod or a witness.
+Each member holds it encrypted under its own key ([`docs/secrets.md`](secrets.md#replication-in-a-cluster)).
+
+- **Set it anywhere.** A secret set on a replica goes to the primary first, so the primary is
+  the one place a change is made; the replica's copy follows within seconds.
+- **Deleting** a secret leaves a tombstone, so a member that was offline learns of it when it
+  comes back. A delete is refused while any member's field still names the secret (`secret_in_use`).
+- **Partitions keep the last set.** A member that can't reach the primary keeps the secrets it
+  has. Nothing is removed because it went missing from an answer.
+- **Failover moves nothing.** A replica promoted to primary keeps every secret; a member that
+  was behind on the old primary catches up from the new one.
+- **Resolver pods hold none.** A Kubernetes resolver pod never gets a stored secret: an
+  integration that needs one there uses a file, or runs on a full member.
+- **The Cluster page** has a Secrets column per node: its head (`epoch.seq`), the head it has
+  applied from the primary, whether it's in sync, and how many secrets it can't read here or
+  holds only as the primary's "held" copy.
+
+A node that **joins** a cluster offers its own stored secrets to the primary, which takes the
+ones the cluster doesn't hold. Where the cluster holds a secret of the same name, the node's own
+copy is kept (shadowed, not used) and comes back if the cluster's copy is removed or the node
+leaves.
+
+If a primary loses its key, the replicas keep their secrets; the primary refills its own from a
+replica that holds every one of them at the same stamp. Until then it reports the store locked
+and refuses secret writes, and DNS is unaffected.
+
+
 ## Taking a node down for maintenance
 Swapping a Pi's SD card, moving a box, or upgrading a node by hand: put the node in maintenance
 first. For a bounded time (an hour by default, a day at most) it:

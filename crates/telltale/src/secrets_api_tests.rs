@@ -1315,7 +1315,8 @@ async fn clu_015_set_on_replica_replicates_back() {
     let rh = harness_in("", Some(Arc::clone(&p.replica)));
     crate::http::serve_peers(&rh.src);
     // A row the replica made before it joined: offered to the primary, then shadowed.
-    let own = SecretValue::new(Kind::Text, zeroize::Zeroizing::new("own-local-7713".into())).unwrap();
+    let own =
+        SecretValue::new(Kind::Text, zeroize::Zeroizing::new("own-local-7713".into())).unwrap();
     rh.src
         .secrets
         .put("local.one", Kind::Text, &own, 0, "root", "local", 50)
@@ -1333,19 +1334,36 @@ async fn clu_015_set_on_replica_replicates_back() {
     .await;
     assert_eq!(rh.src.secrets.get("unifi").unwrap().expose(), VALUE);
     assert_eq!(
-        rh.src.secrets.status().secrets.iter().find(|s| s.name == "unifi").map(|s| s.origin.clone()),
+        rh.src
+            .secrets
+            .status()
+            .secrets
+            .iter()
+            .find(|s| s.name == "unifi")
+            .map(|s| s.origin.clone()),
         Some("cluster".to_owned())
     );
-    assert!(ph.src.secrets.exists("local.one"), "the joiner's row was adopted");
+    assert!(
+        ph.src.secrets.exists("local.one"),
+        "the joiner's row was adopted"
+    );
     // The replica's own row is shadowed by the cluster's, and still there.
     assert!(
-        rh.src.secrets.status().shadows.iter().any(|n| n == "local.one"),
+        rh.src
+            .secrets
+            .status()
+            .shadows
+            .iter()
+            .any(|n| n == "local.one"),
         "the replica's own row is shadowed"
     );
     // No plaintext under the replica's data directory.
     let rdir = rh.src.config.load().node.data_dir.as_str().to_owned();
     let on_disk = bytes_under(std::path::Path::new(&rdir));
-    assert!(!on_disk.windows(VALUE.len()).any(|w| w == VALUE.as_bytes()), "no value on disk");
+    assert!(
+        !on_disk.windows(VALUE.len()).any(|w| w == VALUE.as_bytes()),
+        "no value on disk"
+    );
     // A deletion on the primary reaches the replica by tombstone.
     let (s, _, v) = ph.call("DELETE", "/api/v1/secrets/unifi", None).await;
     assert_eq!(s, StatusCode::OK, "{v}");
@@ -1353,7 +1371,10 @@ async fn clu_015_set_on_replica_replicates_back() {
         rh.src.secrets.get("unifi").is_err()
     })
     .await;
-    assert!(rh.src.secrets.get("unifi").is_err(), "deleted on the replica too");
+    assert!(
+        rh.src.secrets.get("unifi").is_err(),
+        "deleted on the replica too"
+    );
     let _ = p.stop.send(true);
 }
 

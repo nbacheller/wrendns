@@ -298,10 +298,10 @@ impl State {
     /// init`, on the primary). Returns how many changed.
     pub fn adopt_secret_rows(&self) -> Result<usize> {
         self.with(|c| {
-            Ok(c.execute(
+            c.execute(
                 "UPDATE secrets SET origin = 'cluster' WHERE origin = 'local' AND deleted = 0",
                 [],
-            )?)
+            )
         })
     }
 
@@ -325,16 +325,13 @@ impl State {
                         row,
                     )
                     .optional()?;
-                match shadow {
-                    Some(local) => {
-                        upsert(&tx, &local)?;
-                        tx.execute(&format!("DELETE FROM {SHADOW} WHERE name = ?1"), [name])?;
-                        restored += 1;
-                    }
-                    None => {
-                        tx.execute("DELETE FROM secrets WHERE name = ?1", [name])?;
-                        deleted += 1;
-                    }
+                if let Some(local) = shadow {
+                    upsert(&tx, &local)?;
+                    tx.execute(&format!("DELETE FROM {SHADOW} WHERE name = ?1"), [name])?;
+                    restored += 1;
+                } else {
+                    tx.execute("DELETE FROM secrets WHERE name = ?1", [name])?;
+                    deleted += 1;
                 }
             }
             tx.commit()?;
