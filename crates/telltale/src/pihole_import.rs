@@ -1,9 +1,10 @@
 //! REQ: API-007 (T24.18, ADR-939, ADR-940, ADR-941) — importing a Pi-hole export from the admin
 //! page. An upload is converted by a short-lived worker process (`telltale pihole-import-worker`,
-//! an empty environment, no access to the state database). The conversion becomes a plan: what
-//! would be added, changed or skipped, and, with `compare`, a sample resolved through both
-//! servers. Applying the plan writes its entries in one configuration change. Plans live in this
-//! node's memory for ten minutes, like agent plans (AGT-007).
+//! hardened like a discovery worker, with an empty environment and no access to the state
+//! database). The conversion becomes a plan: what would be added, changed or skipped, and, with
+//! `compare`, a sample resolved through both servers. Applying the plan writes its entries in one
+//! configuration change. Plans live in this node's memory for ten minutes, like agent plans
+//! (AGT-007), and belong to the admin who made them.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,8 @@ use serde_json::{Value, json};
 use telltale_api::problem::{Code, Problem};
 use telltale_api::{ManagedKind, PiholeImportRequest};
 use telltale_config::{Config, Loader, RateLimitConfig, SpecialConfig};
+use tokio::io::AsyncReadExt as _;
+use tokio::sync::Semaphore;
 
 use crate::http::Sources;
 use crate::managed::{self, Entries, Forward, Ovr, RecordValue};
@@ -30,6 +33,11 @@ pub(crate) const UPLOAD_LIMIT: usize = 64 << 20;
 const WORKER_TIMEOUT: Duration = Duration::from_secs(60);
 /// Most bytes the worker may print.
 const WORKER_OUTPUT_LIMIT: usize = 64 << 20;
+/// The worker's `RLIMIT_DATA` (ADR-939): an archive's unpacked size is capped at 512 MiB by the
+/// reader, and the rest of the conversion is small.
+const WORKER_MEMORY: u64 = 1024 << 20;
+/// How many previews are read at once: each holds an upload and a worker (ADR-939).
+static PREVIEWS: Semaphore = Semaphore::const_new(2);
 /// How long a plan can be applied.
 const PLAN_TTL: u64 = 600;
 /// Most plans kept at once; the oldest goes first.
@@ -63,6 +71,8 @@ pub(crate) struct Item {
     /// `add`, `change` (replaces an entry of that name), or `skip` (it wouldn't be imported).
     pub(crate) action: &'static str,
     pub(crate) reason: String,
+    /// Where the entry points: a URL or file, the servers, the members, the record values.
+    pub(crate) detail: String,
 }
 
 /// One stored entry the apply writes: its kind, name, and body (as the store keeps it).
@@ -78,6 +88,8 @@ pub(crate) struct Write {
 pub(crate) struct Plan {
     pub(crate) id: String,
     pub(crate) expires: u64,
+    /// The admin who asked for the preview; only that admin may apply or discard it.
+    pub(crate) by: String,
     pub(crate) config_version: u64,
     pub(crate) source: String,
     pub(crate) counts: String,
@@ -111,21 +123,21 @@ fn keep(plan: Plan, now: u64) {
     m.push(plan);
 }
 
-fn take(id: &str, now: u64) -> Option<Plan> {
+/// The live plan `id` of the admin `by`. Another admin's plan is not found (REQ: API-007).
+fn take(id: &str, now: u64, by: &str) -> Option<Plan> {
     let m = plans();
-    m.iter().find(|p| p.id == id && p.expires > now).cloned()
+    m.iter()
+        .find(|p| p.id == id && p.expires > now && p.by == by)
+        .cloned()
 }
 
 fn forget(id: &str) {
     plans().retain(|p| p.id != id);
 }
 
-/// REQ: API-007 — a plan's ID: unguessable enough for a single admin's session.
-fn new_id(now: u64) -> String {
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = u64::from(std::process::id());
-    let h = blake3::hash(format!("{now}:{pid}:{n}").as_bytes());
-    h.to_hex().as_str()[..32].to_owned()
+/// REQ: API-007 (ADR-940) — a plan's ID: 32 random bytes, so it can't be guessed.
+fn new_id() -> String {
+    telltale_api::auth::crypto::random_secret()
 }
 
 /// The upload, as a private temporary file the worker reads; removed when dropped.
@@ -159,12 +171,26 @@ impl Drop for Upload {
 }
 
 /// `telltale pihole-import-worker PATH`: converts the file and prints one JSON object. Exits 0
-/// whenever it could print its answer (the answer says whether the conversion worked).
+/// whenever it could print its answer (the answer says whether the conversion worked). The
+/// worker applies the same limits as a discovery worker first (REQ: API-007, ADR-939): the memory
+/// limit, no capability, no `bind`/`listen`/`ptrace`, and not dumpable. If it can't, it says so
+/// and converts nothing.
 pub(crate) fn run_worker(path: &Path) -> std::process::ExitCode {
     use std::io::Write as _;
-    let out = match pihole::Source::load(path)
-        .and_then(|src| pihole::convert(&src, "the uploaded export"))
-    {
+    let out = match telltale_net::worker::harden(WORKER_MEMORY) {
+        Ok(()) => worker_answer(path),
+        Err(e) => json!({
+            "ok": false,
+            "error": format!("the import worker can't apply its limits: {e}"),
+        }),
+    };
+    let _ = writeln!(std::io::stdout().lock(), "{out}");
+    std::process::ExitCode::SUCCESS
+}
+
+/// The worker's answer for the file at `path`: the conversion, or the reason there isn't one.
+fn worker_answer(path: &Path) -> Value {
+    match pihole::Source::load(path).and_then(|src| pihole::convert(&src, "the uploaded export")) {
         Ok(im) => json!({
             "ok": true,
             "toml": im.toml,
@@ -174,43 +200,61 @@ pub(crate) fn run_worker(path: &Path) -> std::process::ExitCode {
             "samples": im.samples,
         }),
         Err(e) => json!({ "ok": false, "error": e }),
-    };
-    let _ = writeln!(std::io::stdout().lock(), "{out}");
-    std::process::ExitCode::SUCCESS
+    }
 }
 
-/// Runs the worker on `path` in a child process with an empty environment, under a timeout and
-/// an output limit (ADR-939).
-async fn run_worker_process(path: &Path) -> Result<Wire, Problem> {
-    let exe = std::env::current_exe().map_err(|e| {
-        Problem::internal(format!("can't find this program to run the import: {e}"))
-    })?;
-    let child = tokio::process::Command::new(exe)
-        .arg("pihole-import-worker")
-        .arg(path)
-        .env_clear()
-        .stdin(Stdio::null())
+/// Runs `cmd` to completion, reading its stdout up to `cap` bytes, and gives up after `limit`.
+/// The child is killed when this returns early (REQ: API-007, ADR-939): an over-large answer
+/// stops the read at the cap, and a worker that takes too long is dropped with its timeout.
+async fn run_capped(
+    mut cmd: tokio::process::Command,
+    limit: Duration,
+    cap: usize,
+) -> Result<Vec<u8>, Problem> {
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    let mut child = cmd
         .spawn()
         .map_err(|e| Problem::internal(format!("the import worker didn't start: {e}")))?;
-    let out = tokio::time::timeout(WORKER_TIMEOUT, child.wait_with_output())
-        .await
-        .map_err(|_| {
-            Problem::new(
+    let Some(stdout) = child.stdout.take() else {
+        return Err(Problem::internal("the import worker has no output to read"));
+    };
+    let read = async {
+        let mut buf = Vec::new();
+        // One byte past the cap tells an answer over the cap from one exactly at it.
+        stdout
+            .take(cap as u64 + 1)
+            .read_to_end(&mut buf)
+            .await
+            .map_err(|e| Problem::internal(format!("the import worker failed: {e}")))?;
+        if buf.len() > cap {
+            return Err(Problem::new(
                 Code::InvalidConfig,
-                "the import took longer than a minute; the file is too large or damaged",
-            )
-        })?
-        .map_err(|e| Problem::internal(format!("the import worker failed: {e}")))?;
-    if out.stdout.len() > WORKER_OUTPUT_LIMIT {
-        return Err(Problem::new(
+                "the import's conversion is too large to show",
+            ));
+        }
+        child
+            .wait()
+            .await
+            .map_err(|e| Problem::internal(format!("the import worker failed: {e}")))?;
+        Ok(buf)
+    };
+    tokio::time::timeout(limit, read).await.map_err(|_| {
+        Problem::new(
             Code::InvalidConfig,
-            "the import's conversion is too large to show",
-        ));
-    }
-    let wire: Wire = serde_json::from_slice(&out.stdout).map_err(|_| {
+            format!(
+                "the import took longer than {} seconds; the file is too large or damaged",
+                limit.as_secs()
+            ),
+        )
+    })?
+}
+
+/// The worker's answer, as the API reports it: a conversion, or a 422 with the reason.
+fn wire_from_bytes(out: &[u8]) -> Result<Wire, Problem> {
+    let wire: Wire = serde_json::from_slice(out).map_err(|_| {
         Problem::new(
             Code::InvalidConfig,
             "the import worker stopped without an answer (the file is damaged or too large)",
@@ -226,6 +270,21 @@ async fn run_worker_process(path: &Path) -> Result<Wire, Problem> {
         ));
     }
     Ok(wire)
+}
+
+/// Runs the worker on `path` in a child process with an empty environment, under a timeout and
+/// an output limit (ADR-939), with the spawn preparation a discovery worker gets (no ambient
+/// capability, the parent not dumpable).
+async fn run_worker_process(path: &Path) -> Result<Wire, Problem> {
+    let exe = std::env::current_exe().map_err(|e| {
+        Problem::internal(format!("can't find this program to run the import: {e}"))
+    })?;
+    let mut cmd = tokio::process::Command::new(exe);
+    cmd.arg("pihole-import-worker").arg(path).env_clear();
+    telltale_net::worker::prepare_spawn(cmd.as_std_mut())
+        .map_err(|e| Problem::internal(format!("can't prepare the import worker: {e}")))?;
+    let out = run_capped(cmd, WORKER_TIMEOUT, WORKER_OUTPUT_LIMIT).await?;
+    wire_from_bytes(&out)
 }
 
 fn lower(s: &str) -> String {
@@ -267,12 +326,18 @@ fn write_item(
         name: name.to_owned(),
         action: if exists { "change" } else { "add" },
         reason,
+        detail: String::new(),
     });
     writes.push(Write {
         kind: managed_kind,
         name: name.to_owned(),
         body,
     });
+}
+
+/// The names of `items` joined for a detail line.
+fn joined<'a>(items: impl IntoIterator<Item = &'a str>) -> String {
+    items.into_iter().collect::<Vec<_>>().join(", ")
 }
 
 /// Turns a worker's conversion into a plan: the items, the writes, and the checks that the
@@ -285,6 +350,7 @@ pub(crate) fn build(
     wire: Wire,
     compare: Option<Value>,
     at: u64,
+    by: &str,
 ) -> Result<Plan, Problem> {
     let cfg = Loader::new()
         .toml_str("import", wire.toml.clone())
@@ -304,6 +370,8 @@ pub(crate) fn build(
         .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
     let mut items = Vec::new();
     let mut writes = Vec::new();
+    // Notes about the entries themselves (not the conversion's): what to check before applying.
+    let mut flags = Vec::new();
 
     for u in cfg.upstream.iter().filter(|u| !route_only(u.name.as_str())) {
         let name = u.name.as_str();
@@ -319,6 +387,7 @@ pub(crate) fn build(
             in_files,
             json_of(u)?,
         );
+        set_detail(&mut items, u.url.as_str());
     }
     for g in cfg
         .upstream_group
@@ -354,6 +423,10 @@ pub(crate) fn build(
             in_files,
             json_of(&merged)?,
         );
+        set_detail(
+            &mut items,
+            &joined(g.members.iter().map(telltale_config::SafeString::as_str)),
+        );
         if name == "default" {
             set_reason(
                 &mut items,
@@ -375,6 +448,20 @@ pub(crate) fn build(
             in_files,
             json_of(l)?,
         );
+        // REQ: API-007 (ADR-940) — a file list reads a file on this machine, not a URL; an export
+        // from someone else can name any path, so the admin is told which.
+        let detail = match (&l.url, &l.path) {
+            (_, Some(p)) => {
+                flags.push(format!(
+                    "List `{name}` reads the file `{}` on this machine, not a URL. Apply it only if that file is yours to read.",
+                    p.as_str()
+                ));
+                format!("file {}", p.as_str())
+            }
+            (Some(u), None) => u.as_str().to_owned(),
+            (None, None) => String::new(),
+        };
+        set_detail(&mut items, &detail);
     }
     for g in &cfg.group {
         let name = g.name.as_str();
@@ -406,6 +493,13 @@ pub(crate) fn build(
             in_files,
             json_of(&merged)?,
         );
+        set_detail(
+            &mut items,
+            &g.lists.as_ref().map_or_else(
+                || "every list".to_owned(),
+                |ls| joined(ls.iter().map(telltale_config::SafeString::as_str)),
+            ),
+        );
         if name == "default" {
             set_reason(
                 &mut items,
@@ -415,8 +509,17 @@ pub(crate) fn build(
     }
     for c in &cfg.client {
         let name = c.name.as_str();
+        // REQ: API-007 (ADR-040) — a device the config files define is theirs: the API stores
+        // nothing under that name, so the import leaves it out, as it does local names.
+        if file.client.iter().any(|x| x.name.as_str() == name) {
+            items.push(skip(
+                "device",
+                name,
+                "the config files define this device (files win over the API, ADR-040)",
+            ));
+            continue;
+        }
         let exists = current.client.iter().any(|x| x.name.as_str() == name);
-        let in_files = file.client.iter().any(|x| x.name.as_str() == name);
         write_item(
             &mut items,
             &mut writes,
@@ -424,8 +527,12 @@ pub(crate) fn build(
             managed::CLIENT,
             name,
             exists,
-            in_files,
+            false,
             json_of(c)?,
+        );
+        set_detail(
+            &mut items,
+            &joined(c.match_keys.iter().map(telltale_config::SafeString::as_str)),
         );
     }
 
@@ -452,6 +559,7 @@ pub(crate) fn build(
             continue;
         }
         let exists = stored.records.iter().any(|(n, _)| *n == name);
+        let detail = joined_owned(recs.iter().map(|r| format!("{} {}", r.rtype, r.value)));
         write_item(
             &mut items,
             &mut writes,
@@ -462,6 +570,7 @@ pub(crate) fn build(
             false,
             json_of(&recs)?,
         );
+        set_detail(&mut items, &detail);
     }
 
     // Conditional forwards: each route's suffixes, sent to the servers of its group.
@@ -508,6 +617,7 @@ pub(crate) fn build(
                 false,
                 json_of(&f)?,
             );
+            set_detail(&mut items, &servers.join(", "));
         }
     }
 
@@ -522,6 +632,14 @@ pub(crate) fn build(
             false,
             json_of(&cfg.ratelimit)?,
         );
+        // REQ: API-007 — the stored rate limit replaces the config file's `[ratelimit]` section
+        // as a whole (ADR-069), so the file's values stop applying while it lasts.
+        if file.ratelimit != RateLimitConfig::default() {
+            set_reason(
+                &mut items,
+                "replaces the config file's [ratelimit] section while this stored setting lasts",
+            );
+        }
     }
     if cfg.special != SpecialConfig::default() {
         let kind = ManagedKind::Special;
@@ -555,12 +673,14 @@ pub(crate) fn build(
     let merged = managed::merge(file, &candidate)
         .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
     let mut notes = wire.notes;
+    notes.extend(flags);
     if let Ok(warnings) = telltale_config::validate_config(&merged) {
         notes.extend(warnings.into_iter().map(|w| format!("warning: {w}")));
     }
     Ok(Plan {
-        id: new_id(at),
+        id: new_id(),
         expires: at + PLAN_TTL,
+        by: by.to_owned(),
         config_version: state
             .config_version()
             .map_err(|e| Problem::internal(e.to_string()))?,
@@ -574,10 +694,22 @@ pub(crate) fn build(
     })
 }
 
+/// [`joined`] for owned strings.
+fn joined_owned(items: impl IntoIterator<Item = String>) -> String {
+    items.into_iter().collect::<Vec<_>>().join("; ")
+}
+
 /// Gives the item just added its reason (the default groups' merges say what they keep).
 fn set_reason(items: &mut [Item], reason: &str) {
     if let Some(i) = items.last_mut() {
         reason.clone_into(&mut i.reason);
+    }
+}
+
+/// Gives the item just added its detail: where the entry points.
+fn set_detail(items: &mut [Item], detail: &str) {
+    if let Some(i) = items.last_mut() {
+        detail.clone_into(&mut i.detail);
     }
 }
 
@@ -587,6 +719,7 @@ fn skip(kind: &'static str, name: &str, reason: &str) -> Item {
         name: name.to_owned(),
         action: "skip",
         reason: reason.to_owned(),
+        detail: String::new(),
     }
 }
 
@@ -659,7 +792,15 @@ pub(crate) fn preview_json(p: &Plan) -> Value {
         .items
         .iter()
         .take(MAX_ITEMS)
-        .map(|i| json!({ "kind": i.kind, "name": i.name, "action": i.action, "reason": i.reason }))
+        .map(|i| {
+            json!({
+                "kind": i.kind,
+                "name": i.name,
+                "action": i.action,
+                "reason": i.reason,
+                "detail": i.detail,
+            })
+        })
         .collect();
     json!({
         "planId": p.id,
@@ -676,8 +817,11 @@ pub(crate) fn preview_json(p: &Plan) -> Value {
 }
 
 /// The upload's preview (REQ: API-007, T24.18): changes nothing. With `compare`, resolves the
-/// sample through the Pi-hole and TelltaleDNS (ADR-941).
+/// sample through the Pi-hole and TelltaleDNS (ADR-941). At most two previews run at once.
 pub(crate) async fn preview(src: Arc<Sources>, req: PiholeImportRequest) -> Result<Value, Problem> {
+    let _slot = PREVIEWS
+        .try_acquire()
+        .map_err(|_| Problem::unavailable("another import is being read; try again in a moment"))?;
     if req.data.len() > UPLOAD_LIMIT {
         return Err(Problem::new(
             Code::InvalidConfig,
@@ -693,7 +837,12 @@ pub(crate) async fn preview(src: Arc<Sources>, req: PiholeImportRequest) -> Resu
         }
         None => None,
     };
-    let upload = Upload::write(&req.data)?;
+    let by = req.by.clone();
+    let data = req.data;
+    // The write is blocking I/O of up to 64 MiB: it runs off the request's thread.
+    let upload = tokio::task::spawn_blocking(move || Upload::write(&data))
+        .await
+        .map_err(|e| Problem::internal(format!("the upload failed: {e}")))??;
     let wire = run_worker_process(&upload.0).await?;
     drop(upload);
     let mut names = wire.samples.clone();
@@ -714,15 +863,15 @@ pub(crate) async fn preview(src: Arc<Sources>, req: PiholeImportRequest) -> Resu
         .ok_or_else(|| Problem::unavailable("the state database isn't open yet"))?;
     let file = src.file_config.load_full();
     let at = now();
-    let plan = build(&file, &state, wire, compare_json, at)?;
+    let plan = build(&file, &state, wire, compare_json, at, &by)?;
     let out = preview_json(&plan);
     keep(plan, at);
     Ok(out)
 }
 
-/// Discards a plan (REQ: API-007). Unknown IDs are a 404.
-pub(crate) fn discard(id: &str) -> Result<Value, Problem> {
-    if take(id, now()).is_none() {
+/// Discards a plan of `by` (REQ: API-007). Unknown IDs, and other admins' plans, are a 404.
+pub(crate) fn discard(id: &str, by: &str) -> Result<Value, Problem> {
+    if take(id, now(), by).is_none() {
         return Err(Problem::not_found(
             "no import plan by that ID (it expired, or was applied or discarded)",
         ));
@@ -773,9 +922,11 @@ pub(crate) fn commit(
 }
 
 /// Applies a plan as one configuration change (REQ: API-007, ADR-940), then reloads the node.
+/// When the change is stored but the reload fails, the answer says so with `applied: false` and
+/// the stored version, so the caller can audit the change (the API turns that answer into a 500).
 pub(crate) async fn apply(src: Arc<Sources>, id: String, by: String) -> Result<Value, Problem> {
     let at = now();
-    let plan = take(&id, at).ok_or_else(|| {
+    let plan = take(&id, at, &by).ok_or_else(|| {
         Problem::not_found(
             "no import plan by that ID (it expired, or was applied or discarded): preview the import again",
         )
@@ -797,14 +948,10 @@ pub(crate) async fn apply(src: Arc<Sources>, id: String, by: String) -> Result<V
             .map_err(|e| Problem::internal(format!("request worker failed: {e}")))??
     };
     crate::api_backend::provenance(&by, version);
+    // The plan is spent once its change is stored, whatever the reload says.
+    forget(&id);
     let (tx, rx) = tokio::sync::oneshot::channel();
     let applied = src.reload.send(tx).await.is_ok() && rx.await.unwrap_or(false);
-    if !applied {
-        return Err(Problem::internal(
-            "the change was saved but couldn't be applied; the server log says why",
-        ));
-    }
-    forget(&id);
     drop(one_at_a_time);
     let (mut added, mut changed, mut skipped) = (0usize, 0usize, 0usize);
     for i in &plan.items {
@@ -815,7 +962,7 @@ pub(crate) async fn apply(src: Arc<Sources>, id: String, by: String) -> Result<V
         }
     }
     Ok(json!({
-        "applied": true,
+        "applied": applied,
         "configVersion": version,
         "added": added,
         "changed": changed,
@@ -852,11 +999,24 @@ mod tests {
         Loader::new().toml_str("file", toml).load().unwrap().config
     }
 
+    /// A worker answer for a conversion's TOML (what the worker would print).
+    fn wire_of(toml: &str) -> Wire {
+        Wire {
+            ok: true,
+            error: None,
+            toml: toml.to_owned(),
+            version: "v5".into(),
+            notes: Vec::new(),
+            counts: String::new(),
+            samples: Vec::new(),
+        }
+    }
+
     // REQ: API-007 (T24.18) — a preview lists what would change, and writes nothing.
     #[test]
     fn api_007_pihole_import_preview_changes_nothing() {
         let state = telltale_store::state::State::in_memory().unwrap();
-        let plan = build(&file(""), &state, wire(), None, 1_000).unwrap();
+        let plan = build(&file(""), &state, wire(), None, 1_000, "admin").unwrap();
         assert_eq!(state.config_version().unwrap(), 0);
         assert_eq!(managed::entries(&state).upstreams.len(), 0);
         let has = |kind: &str, name: &str, action: &str| {
@@ -869,6 +1029,9 @@ mod tests {
         let v = preview_json(&plan);
         let adds = plan.items.iter().filter(|i| i.action == "add").count();
         assert_eq!(v["summary"]["add"], json!(adds));
+        // Where entries point is shown: the upstream's address, the record's value.
+        let up = plan.items.iter().find(|i| i.name == "pihole-1").unwrap();
+        assert!(up.detail.contains("9.9.9.9"), "{}", up.detail);
     }
 
     // REQ: API-007 (T24.18, ADR-940) — applying the plan writes its entries in one change, and
@@ -877,7 +1040,7 @@ mod tests {
     fn api_007_pihole_import_applies_as_plan() {
         let state = telltale_store::state::State::in_memory().unwrap();
         let f = file("");
-        let plan = build(&f, &state, wire(), None, 1_000).unwrap();
+        let plan = build(&f, &state, wire(), None, 1_000, "admin").unwrap();
         let version = commit(&state, &f, &plan, "admin", 1_000).unwrap();
         assert_eq!(version, 1, "one change, one version");
         let stored = managed::entries(&state);
@@ -900,7 +1063,7 @@ mod tests {
     fn api_007_pihole_import_skips_names_the_files_define() {
         let state = telltale_store::state::State::in_memory().unwrap();
         let f = file("[[record]]\nname = \"nas.lan\"\ntype = \"A\"\nvalue = \"10.0.0.2\"\n");
-        let plan = build(&f, &state, wire(), None, 1_000).unwrap();
+        let plan = build(&f, &state, wire(), None, 1_000, "admin").unwrap();
         assert!(
             plan.items
                 .iter()
@@ -916,21 +1079,132 @@ mod tests {
         );
     }
 
-    // REQ: API-007 (T24.18) — a malformed archive or gravity.db is refused with an error, not a
-    // panic (the worker's answer says so, and DNS isn't involved).
+    // REQ: API-007 (T24.18, ADR-040) — a device the config files define is skipped too: the
+    // merge ignores a stored device of that name, so writing it would store a dead row.
+    #[test]
+    fn api_007_pihole_import_skips_devices_the_files_define() {
+        let state = telltale_store::state::State::in_memory().unwrap();
+        let toml =
+            "[[client]]\nname = \"laptop\"\nmatch = [\"10.0.0.5\"]\ngroups = [\"default\"]\n";
+        let f = file(toml);
+        let plan = build(&f, &state, wire_of(toml), None, 1_000, "admin").unwrap();
+        let item = plan
+            .items
+            .iter()
+            .find(|i| i.kind == "device" && i.name == "laptop")
+            .expect("a device item");
+        assert_eq!(item.action, "skip", "{:?}", plan.items);
+        assert!(!plan.writes.iter().any(|w| w.kind == managed::CLIENT));
+    }
+
+    // REQ: API-007 (ADR-940) — a file list is flagged in the notes, and its item shows the path.
+    #[test]
+    fn api_007_pihole_import_flags_file_lists() {
+        let state = telltale_store::state::State::in_memory().unwrap();
+        let toml =
+            "[[list]]\nname = \"local\"\npath = \"/srv/secret/list.txt\"\nkind = \"block\"\n";
+        let plan = build(&file(""), &state, wire_of(toml), None, 1_000, "admin").unwrap();
+        assert!(
+            plan.notes
+                .iter()
+                .any(|n| n.contains("/srv/secret/list.txt")),
+            "{:?}",
+            plan.notes
+        );
+        let item = plan.items.iter().find(|i| i.name == "local").unwrap();
+        assert!(
+            item.detail.contains("/srv/secret/list.txt"),
+            "{}",
+            item.detail
+        );
+    }
+
+    // REQ: API-007 (T24.18) — a damaged archive, gravity.db or text file is refused with the reason
+    // (422), by the worker's answer; the worker's own process limits are the child's concern.
     #[test]
     fn api_007_pihole_import_worker_limits() {
         let dir = tempfile::tempdir().unwrap();
         let zip = dir.path().join("bad.zip");
         std::fs::write(&zip, b"PK\x03\x04 not really a zip at all").unwrap();
-        assert!(pihole::Source::load(&zip).is_err());
         let db = dir.path().join("bad.db");
         let mut junk = b"SQLite format 3\0".to_vec();
         junk.extend_from_slice(&[7u8; 64]);
         std::fs::write(&db, junk).unwrap();
-        assert!(pihole::Source::load(&db).is_err());
         let text = dir.path().join("notes.txt");
         std::fs::write(&text, b"hello").unwrap();
-        assert!(pihole::Source::load(&text).is_err());
+        for path in [&zip, &db, &text] {
+            let answer = worker_answer(path).to_string();
+            let Err(err) = wire_from_bytes(answer.as_bytes()) else {
+                panic!("{} should be refused", path.display())
+            };
+            assert_eq!(
+                err.code_status(),
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY
+            );
+        }
+        // A worker that printed nothing it could read is refused the same way.
+        let err = wire_from_bytes(b"").expect_err("refused");
+        assert_eq!(
+            err.code_status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    // REQ: API-007 (ADR-939) — the worker's output is capped: an answer over the cap is refused, and
+    // the child is stopped (the read stops at the cap).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn api_007_pihole_import_worker_output_cap() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "head -c 4096 /dev/zero"]);
+        let err = run_capped(cmd, Duration::from_secs(20), 1024)
+            .await
+            .expect_err("refused");
+        assert_eq!(
+            err.code_status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        // An answer under the cap comes back whole.
+        let mut ok = tokio::process::Command::new("sh");
+        ok.args(["-c", "printf '{\"ok\":false}'"]);
+        assert_eq!(
+            run_capped(ok, Duration::from_secs(20), 1024)
+                .await
+                .expect("under the cap"),
+            b"{\"ok\":false}"
+        );
+    }
+
+    // REQ: API-007 (ADR-939) — a worker that takes too long is stopped at the limit (422), and
+    // nothing waits for it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn api_007_pihole_import_worker_timeout() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "sleep 30"]);
+        let started = std::time::Instant::now();
+        let err = run_capped(cmd, Duration::from_millis(200), 1024)
+            .await
+            .expect_err("refused");
+        assert_eq!(
+            err.code_status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert!(started.elapsed() < Duration::from_secs(20));
+    }
+
+    // REQ: API-007 (ADR-940) — a plan is the admin's: another admin can't apply or discard it.
+    #[test]
+    fn api_007_pihole_import_plan_belongs_to_its_admin() {
+        let state = telltale_store::state::State::in_memory().unwrap();
+        let at = now();
+        let plan = build(&file(""), &state, wire(), None, at, "alice").unwrap();
+        let id = plan.id.clone();
+        keep(plan, at);
+        assert!(take(&id, at + 1, "bob").is_none());
+        assert!(take(&id, at + 1, "alice").is_some());
+        let err = discard(&id, "bob").expect_err("not bob's");
+        assert_eq!(err.code_status(), axum::http::StatusCode::NOT_FOUND);
+        assert!(discard(&id, "alice").is_ok());
     }
 }

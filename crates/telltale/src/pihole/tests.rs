@@ -541,3 +541,43 @@ fn api_007_pihole_dnsmasq_lines() {
     assert!(notes.contains("foreign-directive"), "{notes}");
     assert!(!notes.contains("domain-needed"), "{notes}");
 }
+
+// REQ: API-007 (T24.6) — a domain named by a v5 reverse server and by a dnsmasq `server=/domain/`
+// is routed once: the first route keeps it, and the conflict is noted.
+#[test]
+fn api_007_pihole_forward_named_twice_is_routed_once() {
+    let mut e = v5_entries();
+    e.insert(
+        "setupVars.conf".into(),
+        b"PIHOLE_DNS_1=192.168.1.1\nREV_SERVER=true\nREV_SERVER_CIDR=192.168.1.0/24\nREV_SERVER_TARGET=192.168.1.1\nREV_SERVER_DOMAIN=lan\n".to_vec(),
+    );
+    e.insert(
+        "etc/dnsmasq.d/01-pihole.conf".into(),
+        b"server=/lan/192.168.1.1\n".to_vec(),
+    );
+    let src = Source::from_entries(e).unwrap();
+    let im = convert(&src, "teleporter.tar.gz").unwrap();
+    let cfg = load(&im.toml);
+    let routed = cfg
+        .route
+        .iter()
+        .filter(|r| r.match_suffix.iter().any(|s| s.as_str() == "lan"))
+        .count();
+    assert_eq!(routed, 1, "{}", im.toml);
+    assert!(
+        im.notes.join("\n").contains("named twice"),
+        "{:?}",
+        im.notes
+    );
+}
+
+// REQ: API-007 (T24.6) — a broken `pihole.toml` is reported by line and message, never with the
+// line's text, which can be a password hash or a TOTP secret.
+#[test]
+fn api_007_pihole_toml_error_hides_the_line() {
+    let err = v6_settings("pwhash = \"secret-hash-xyz\"\n[dns\n")
+        .err()
+        .unwrap_or_default();
+    assert!(!err.contains("secret-hash-xyz"), "{err}");
+    assert!(err.contains("pihole.toml"), "{err}");
+}

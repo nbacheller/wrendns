@@ -12,6 +12,7 @@
   let compareOn = $state(false);
   let piholeAddr = $state('');
   let ourAddr = $state('');
+  let samplesText = $state('');
   let busy = $state<'' | 'preview' | 'apply' | 'discard'>('');
   let error = $state<unknown>(null);
   let preview = $state<PiholePreview | null>(null);
@@ -38,10 +39,12 @@
     confirmText = '';
     showAll = false;
     try {
-      const q: { compare?: string; telltale?: string } = {};
+      const q: { compare?: string; telltale?: string; samples?: string } = {};
       if (compareOn && piholeAddr.trim()) {
         q.compare = piholeAddr.trim();
         if (ourAddr.trim()) q.telltale = ourAddr.trim();
+        // REQ: API-007 (ADR-941) — extra names join the sample: the import's own names and these.
+        if (samplesText.trim()) q.samples = samplesText.trim();
       }
       preview = await api.piholePreview(file, q);
     } catch (err) {
@@ -112,6 +115,9 @@
       <label class="field">TelltaleDNS address (this node's resolver)
         <input type="text" placeholder="127.0.0.1:53" autocomplete="off" bind:value={ourAddr} data-testid="pihole-telltale-address" />
       </label>
+      <label class="field">Extra names to compare (comma-separated, optional)<HelpButton id="pihole-compare" />
+        <input type="text" placeholder="example.com, nas.home" autocomplete="off" bind:value={samplesText} data-testid="pihole-samples" />
+      </label>
     {/if}
     <div>
       <button type="submit" disabled={!file || busy !== ''} data-testid="pihole-preview">
@@ -148,13 +154,14 @@
 
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Action</th><th>Kind</th><th>Name</th><th>Reason</th></tr></thead>
+          <thead><tr><th>Action</th><th>Kind</th><th>Name</th><th>Points to</th><th>Reason</th></tr></thead>
           <tbody>
-            {#each shown as item (item.kind + item.name)}
+            {#each shown as item, i (i)}
               <tr data-testid="pihole-item">
                 <td>{item.action}</td>
                 <td>{item.kind}</td>
                 <td>{item.name}</td>
+                <td data-testid="pihole-detail">{item.detail}</td>
                 <td>{item.reason}</td>
               </tr>
             {/each}

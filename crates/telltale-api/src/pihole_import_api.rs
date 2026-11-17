@@ -1,21 +1,24 @@
 //! REQ: API-007 (T24.18, ADR-939, ADR-940, ADR-941) — importing a Pi-hole export. Admins only,
 //! and never an agent: an import replaces configuration in bulk (spec/13 §3). The upload is
 //! previewed first (nothing changes); the preview is a plan the same admin applies, as one
-//! configuration change, audited as `import.pihole`.
+//! configuration change, audited as `import.pihole`. The three routes take an `Idempotency-Key`
+//! like the configuration writes (AGT-003): a retried request gets the first answer.
 
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::{Extensions, HeaderMap};
+use axum::http::{Extensions, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{delete, post};
 use serde::Deserialize;
+use telltale_store::state::Replay;
 use utoipa::IntoParams;
 
 use crate::auth::Auth;
 use crate::auth::routes::{principal, reason, remote};
+use crate::config_api::{IDEMPOTENCY_KEY, replay};
 use crate::problem::{Code, Problem};
 use crate::{Backend, PiholeImportRequest};
 
@@ -54,6 +57,60 @@ fn agent_refused() -> Response {
     .into_response()
 }
 
+/// REQ: AGT-003 (API-007) — an `Idempotency-Key` on an import: the key is the admin's own and the
+/// scope names the route, so keys don't collide across routes. `Ok(None)` when no key was sent.
+fn keyed(
+    backend: &dyn Backend,
+    headers: &HeaderMap,
+    user: i64,
+    scope: &str,
+    request: &str,
+) -> Result<Option<(String, Vec<u8>)>, Problem> {
+    let Some(k) = headers
+        .get(IDEMPOTENCY_KEY)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|k| k.len() > 2)
+    else {
+        return Ok(None);
+    };
+    let fingerprint = backend.idempotency_request(None, request, None)?;
+    Ok(Some((format!("import:{scope}:{user}:{k}"), fingerprint)))
+}
+
+/// The first answer to this key, replayed; a different request under the same key is a 409.
+fn already_answered(
+    auth: &Auth,
+    (key, fingerprint): &(String, Vec<u8>),
+    now: u64,
+) -> Option<Response> {
+    match auth.state().idempotent(key, now) {
+        Ok(Some(r)) if &r.request == fingerprint => Some(replay(&r)),
+        Ok(Some(_)) => Some(
+            Problem::new(
+                Code::Conflict,
+                "this Idempotency-Key was used for a different request",
+            )
+            .hint("Use a new key for each distinct change.")
+            .into_response(),
+        ),
+        Ok(None) => None,
+        Err(e) => Some(Problem::internal(e.to_string()).into_response()),
+    }
+}
+
+/// Keeps a successful answer under its key (a failure is retried, not replayed).
+fn remember(auth: &Auth, (key, fingerprint): &(String, Vec<u8>), text: &str, now: u64) {
+    let r = Replay {
+        request: fingerprint.clone(),
+        status: StatusCode::OK.as_u16(),
+        response: text.to_owned(),
+    };
+    if let Err(e) = auth.state().remember_idempotent(key, &r, now) {
+        tracing::warn!("idempotency key not stored: {e}");
+    }
+}
+
 /// Preview a Pi-hole import.
 ///
 /// The body is the export: a Teleporter zip (v6) or tar.gz (v5), or a gravity.db. Nothing
@@ -83,23 +140,47 @@ pub(crate) async fn preview(
         return agent_refused();
     }
     let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
-    let samples = q
+    let samples: Vec<String> = q
         .samples
+        .clone()
         .unwrap_or_default()
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
         .collect();
+    let now = backend.now_unix_seconds();
+    let request = format!(
+        "pihole-preview {} {:?} {:?} {:?}",
+        blake3::hash(&body).to_hex(),
+        q.compare,
+        q.telltale,
+        samples
+    );
+    let keyed = match keyed(backend.as_ref(), &headers, p.user_id, "preview", &request) {
+        Ok(k) => k,
+        Err(e) => return e.into_response(),
+    };
+    if let Some(k) = &keyed
+        && let Some(r) = already_answered(&auth, k, now)
+    {
+        return r;
+    }
     let req = PiholeImportRequest {
-        data: body.to_vec(),
+        data: body,
         compare: q.compare,
         telltale: q.telltale,
         samples,
         by: actor.name.clone(),
     };
     match backend.pihole_import_preview(req).await {
-        Ok(v) => Json(v).into_response(),
+        Ok(v) => {
+            let text = v.to_string();
+            if let Some(k) = &keyed {
+                remember(&auth, k, &text, now);
+            }
+            Json(v).into_response()
+        }
         Err(e) => e.into_response(),
     }
 }
@@ -108,7 +189,7 @@ pub(crate) async fn preview(
 ///
 /// The plan's entries are written as one configuration change, audited as `import.pihole`. The
 /// configuration must be the one the preview saw; otherwise the answer is 409 and the preview
-/// runs again.
+/// runs again. The plan belongs to the admin who previewed it.
 #[utoipa::path(post, path = "/api/v1/import/pihole/plans/{id}/apply", tag = "config",
     params(("id" = String, Path, description = "The plan's ID, from the preview.")),
     responses(
@@ -117,6 +198,7 @@ pub(crate) async fn preview(
         (status = 404, body = Problem, description = "No such plan (it expired, or was applied or discarded)."),
         (status = 409, body = Problem, description = "The configuration changed since the preview."),
         (status = 422, body = Problem, description = "The plan no longer loads with the configuration."),
+        (status = 500, body = Problem, description = "The change was stored but the node couldn't reload it; the audit record says so."),
     ))]
 pub(crate) async fn apply(
     State((backend, auth)): State<Ctx>,
@@ -132,9 +214,36 @@ pub(crate) async fn apply(
         return agent_refused();
     }
     let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
+    let now = backend.now_unix_seconds();
+    let keyed = match keyed(
+        backend.as_ref(),
+        &headers,
+        p.user_id,
+        "apply",
+        &format!("pihole-apply {id}"),
+    ) {
+        Ok(k) => k,
+        Err(e) => return e.into_response(),
+    };
+    if let Some(k) = &keyed
+        && let Some(r) = already_answered(&auth, k, now)
+    {
+        return r;
+    }
     match backend.pihole_import_apply(id, actor.name.clone()).await {
         Ok(v) => {
+            // The change is audited once it's stored, even when the reload that follows fails.
             auth.record(&actor, "import.pihole", "pihole", &v);
+            if v["applied"] != serde_json::Value::Bool(true) {
+                return Problem::internal(
+                    "the change was saved but couldn't be applied; the server log says why",
+                )
+                .into_response();
+            }
+            let text = v.to_string();
+            if let Some(k) = &keyed {
+                remember(&auth, k, &text, now);
+            }
             Json(v).into_response()
         }
         Err(e) => e.into_response(),
@@ -152,8 +261,9 @@ pub(crate) async fn apply(
         (status = 404, body = Problem, description = "No such plan."),
     ))]
 pub(crate) async fn discard(
-    State((backend, _auth)): State<Ctx>,
+    State((backend, auth)): State<Ctx>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     ext: Extensions,
 ) -> Response {
     let p = match principal(&ext) {
@@ -163,8 +273,31 @@ pub(crate) async fn discard(
     if p.agent.is_some() {
         return agent_refused();
     }
-    match backend.pihole_import_discard(&id) {
-        Ok(v) => Json(v).into_response(),
+    let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
+    let now = backend.now_unix_seconds();
+    let keyed = match keyed(
+        backend.as_ref(),
+        &headers,
+        p.user_id,
+        "discard",
+        &format!("pihole-discard {id}"),
+    ) {
+        Ok(k) => k,
+        Err(e) => return e.into_response(),
+    };
+    if let Some(k) = &keyed
+        && let Some(r) = already_answered(&auth, k, now)
+    {
+        return r;
+    }
+    match backend.pihole_import_discard(&id, &actor.name) {
+        Ok(v) => {
+            let text = v.to_string();
+            if let Some(k) = &keyed {
+                remember(&auth, k, &text, now);
+            }
+            Json(v).into_response()
+        }
         Err(e) => e.into_response(),
     }
 }

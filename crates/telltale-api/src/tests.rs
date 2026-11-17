@@ -30,6 +30,32 @@ impl Backend for Fake {
     fn now_unix_seconds(&self) -> u64 {
         NOW
     }
+    // REQ: API-007 (T24.18) — the test backend discards any plan (a real one answers 404 for a plan
+    // it doesn't hold; the idempotency test needs a first answer that succeeds).
+    fn pihole_import_discard(&self, id: &str, by: &str) -> Result<serde_json::Value, Problem> {
+        let _ = (id, by);
+        Ok(serde_json::json!({ "discarded": true }))
+    }
+    // REQ: API-007 (ADR-940) — a plan whose change is stored but whose reload fails: the test
+    // backend says so (`applied: false`), and the API audits the change before it answers 500.
+    fn pihole_import_apply(
+        &self,
+        id: String,
+        by: String,
+    ) -> crate::BoxFuture<Result<serde_json::Value, Problem>> {
+        let _ = by;
+        Box::pin(async move {
+            if id == "reload-fails" {
+                return Ok(serde_json::json!({
+                    "applied": false, "configVersion": 3, "added": 1, "changed": 0,
+                    "skipped": 0, "entries": 1, "counts": "1 upstreams", "source": "v5"
+                }));
+            }
+            Err(Problem::unavailable(
+                "importing a Pi-hole configuration isn't available on this node",
+            ))
+        })
+    }
     // REQ: FLT-017 — the map rule writes reach the backend as managed writes.
     fn write_managed(
         &self,
@@ -3411,4 +3437,137 @@ async fn api_007_pihole_import_admin_only() {
     )
     .await;
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+// REQ: API-007 (T24.18, ADR-940) — an operator is refused on every import route as a viewer is:
+// the import is an admin's alone.
+#[tokio::test]
+async fn api_007_pihole_import_operator_refused() {
+    let (app, _) = app();
+    let op = app
+        .auth
+        .create_user(
+            "oscar",
+            "an operator password",
+            auth::Role::Operator,
+            false,
+            NOW,
+        )
+        .unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            op.id,
+            "ops",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let bearer = format!("tt_{tid}_{secret}");
+    for (method, uri) in [
+        ("POST", "/api/v1/import/pihole"),
+        ("POST", "/api/v1/import/pihole/plans/abc/apply"),
+        ("DELETE", "/api/v1/import/pihole/plans/abc"),
+    ] {
+        let req = match method {
+            "DELETE" => Request::delete(uri),
+            _ => Request::post(uri),
+        };
+        let req = req
+            .header("authorization", format!("Bearer {bearer}"))
+            .body(Body::from(b"PK a file".to_vec()))
+            .unwrap();
+        let (s, _, v) = send(&app, req).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "an operator, {method} {uri}: {v}");
+    }
+}
+
+// REQ: API-007 (T24.18, ADR-940) — a change stored before a failed reload is audited as
+// `import.pihole`, and the caller gets a 500 that says the change was saved.
+#[tokio::test]
+async fn api_007_pihole_import_apply_is_audited_when_the_reload_fails() {
+    let (app, _) = app();
+    let (s, _, v) = send(
+        &app,
+        app.signed_in(
+            "POST",
+            "/api/v1/import/pihole/plans/reload-fails/apply",
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR, "{v}");
+    assert!(
+        v["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("was saved"),
+        "{v}"
+    );
+    let entries = app
+        .auth
+        .state()
+        .audit_page(None, 50, Some("import.pihole"), None)
+        .unwrap();
+    assert_eq!(entries.len(), 1, "one audit record for the stored change");
+}
+
+// REQ: API-007 (T24.18) — an upload over 64 MiB is refused with 413 before anything reads it, so
+// a large body costs the node its limit and no more.
+#[tokio::test]
+async fn api_007_pihole_import_upload_limit() {
+    let (app, _) = app();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/import/pihole")
+        .header("cookie", &app.cookie)
+        .header("x-csrf-token", &app.csrf)
+        .header("content-type", "application/octet-stream")
+        .body(Body::from(vec![0u8; (64 << 20) + 1]))
+        .unwrap();
+    let (s, _, _) = send(&app, req).await;
+    assert_eq!(s, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+// REQ: API-007 (T24.18, AGT-003) — a discard sent again with its Idempotency-Key gets the first
+// answer, not a 404.
+#[tokio::test]
+async fn api_007_pihole_import_discard_is_idempotent() {
+    let (app, _) = app();
+    let key = "discard-key-1";
+    let del = || {
+        Request::builder()
+            .method("DELETE")
+            .uri("/api/v1/import/pihole/plans/no-such-plan")
+            .header("cookie", &app.cookie)
+            .header("x-csrf-token", &app.csrf)
+            .header("idempotency-key", key)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (s, _, _) = send(&app, del()).await;
+    assert_eq!(s, StatusCode::OK);
+    // The retry is answered from the record: the same status and body, marked as a replay.
+    let resp = app.router.clone().oneshot(del()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("idempotency-replayed")
+            .map(|v| v.to_str().unwrap()),
+        Some("true")
+    );
+    // Without the key the same request is a second, unanswered discard.
+    let plain = Request::builder()
+        .method("DELETE")
+        .uri("/api/v1/import/pihole/plans/no-such-plan")
+        .header("cookie", &app.cookie)
+        .header("x-csrf-token", &app.csrf)
+        .body(Body::empty())
+        .unwrap();
+    let (s, _, _) = send(&app, plain).await;
+    assert_eq!(s, StatusCode::OK);
 }

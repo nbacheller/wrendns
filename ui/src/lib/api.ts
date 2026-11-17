@@ -196,7 +196,7 @@ const get = <T>(path: string, query?: Query) => call<T>('GET', path, { query });
 const post = <T>(path: string, body?: unknown) => call<T>('POST', path, { body: body ?? {} });
 
 /** REQ: API-007 (T24.18, ADR-940) — one Pi-hole import item: what it would do, and why not. */
-export type PiholeItem = { kind: string; name: string; action: 'add' | 'change' | 'skip'; reason: string };
+export type PiholeItem = { kind: string; name: string; action: 'add' | 'change' | 'skip'; reason: string; detail: string };
 
 /** REQ: API-007, ADR-941 — the comparison of a sample through a Pi-hole and TelltaleDNS. */
 export type PiholeCompare = {

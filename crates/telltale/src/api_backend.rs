@@ -3672,8 +3672,8 @@ impl Backend for ApiBackend {
         Box::pin(async move { crate::pihole_import::apply(src, id, by).await })
     }
 
-    fn pihole_import_discard(&self, id: &str) -> Result<serde_json::Value, Problem> {
-        crate::pihole_import::discard(id)
+    fn pihole_import_discard(&self, id: &str, by: &str) -> Result<serde_json::Value, Problem> {
+        crate::pihole_import::discard(id, by)
     }
 
     // REQ: API-002, API-010 — devices named through the API (ADR-040).

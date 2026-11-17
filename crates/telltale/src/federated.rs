@@ -2726,9 +2726,9 @@ impl Backend for Federated {
             WriteRoute::NoLease => Box::pin(async { Err(no_lease()) }),
         }
     }
-    fn pihole_import_discard(&self, id: &str) -> Result<serde_json::Value, Problem> {
+    fn pihole_import_discard(&self, id: &str, by: &str) -> Result<serde_json::Value, Problem> {
         match self.write_route() {
-            WriteRoute::Here => self.local.pihole_import_discard(id),
+            WriteRoute::Here => self.local.pihole_import_discard(id, by),
             WriteRoute::Primary(_) => Err(import_elsewhere()),
             WriteRoute::NoLease => Err(no_lease()),
         }

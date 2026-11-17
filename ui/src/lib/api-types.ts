@@ -1900,7 +1900,7 @@ export interface paths {
          * Apply a previewed Pi-hole import.
          * @description The plan's entries are written as one configuration change, audited as `import.pihole`. The
          *     configuration must be the one the preview saw; otherwise the answer is 409 and the preview
-         *     runs again.
+         *     runs again. The plan belongs to the admin who previewed it.
          */
         post: operations["apply"];
         delete?: never;
@@ -12719,6 +12719,15 @@ export interface operations {
             };
             /** @description The plan no longer loads with the configuration. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The change was stored but the node couldn't reload it; the audit record says so. */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -377,6 +377,7 @@ const DNSMASQ_PLUMBING: &[&str] = &[
     "no-resolv",
     "pid-file",
     "port",
+    "rev-server",
     "user",
 ];
 
@@ -446,8 +447,21 @@ fn strings(v: Option<&toml::Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// REQ: API-007 — a parse error names the line and the problem, never the line's text: a broken
+/// `pihole.toml` can carry a password hash or a TOTP secret, and the error reaches the admin's page.
+fn toml_problem(text: &str, e: &toml::de::Error) -> String {
+    match e.span().and_then(|s| text.get(..s.start)) {
+        Some(before) => format!(
+            "pihole.toml line {}: {}",
+            before.matches('\n').count() + 1,
+            e.message()
+        ),
+        None => format!("pihole.toml: {}", e.message()),
+    }
+}
+
 fn v6_settings(text: &str) -> Result<Settings, String> {
-    let t: toml::Table = toml::from_str(text).map_err(|e| format!("pihole.toml: {e}"))?;
+    let t: toml::Table = toml::from_str(text).map_err(|e| toml_problem(text, &e))?;
     let get = |path: &str| {
         let mut v: Option<&toml::Value> = None;
         for (i, k) in path.split('.').enumerate() {
@@ -903,6 +917,7 @@ impl<'a> Builder<'a> {
     /// Conditional forwarding ("rev servers"): `enabled,network,target[#port],domain`.
     fn forwards(&mut self) -> usize {
         let mut n = 0;
+        let mut routed = std::collections::BTreeSet::new();
         for r in self.s.rev_servers.clone() {
             let f: Vec<&str> = r.split(',').map(str::trim).collect();
             let [on, net, target, rest @ ..] = f.as_slice() else {
@@ -946,8 +961,7 @@ impl<'a> Builder<'a> {
             if suffixes.is_empty() {
                 continue;
             }
-            n += 1;
-            self.route(n, &url, &suffixes);
+            self.route_fresh(&mut routed, &mut n, &url, suffixes);
         }
         // REQ: API-007 (T24.6) — dnsmasq's `server=/domain/ip` is the same forwarding.
         for v in self.s.dnsmasq_servers.clone() {
@@ -972,10 +986,36 @@ impl<'a> Builder<'a> {
             if names.is_empty() {
                 continue;
             }
-            n += 1;
-            self.route(n, &url, &names);
+            self.route_fresh(&mut routed, &mut n, &url, names);
         }
         n
+    }
+
+    /// REQ: API-007 (T24.6) — a suffix is routed once. A v5 `rev-server` and a dnsmasq
+    /// `server=/domain/` can name the same domain; the first one named is kept, and the other is
+    /// noted, so the two routes can't collide as two entries of one name.
+    fn route_fresh(
+        &mut self,
+        routed: &mut std::collections::BTreeSet<String>,
+        n: &mut usize,
+        url: &str,
+        suffixes: Vec<String>,
+    ) {
+        let mut fresh = Vec::new();
+        for s in suffixes {
+            if routed.insert(s.clone()) {
+                fresh.push(s);
+            } else {
+                self.notes.push(format!(
+                    "Conditional forwarding for `{s}` is named twice; the first one is kept."
+                ));
+            }
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        *n += 1;
+        self.route(*n, url, &fresh);
     }
 
     /// One conditional forward: an upstream, its group, and the route for `suffixes`.

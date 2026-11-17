@@ -560,7 +560,8 @@ pub trait Backend: Send + Sync + 'static {
         })
     }
     /// REQ: API-007 (T24.18) — discards a previewed plan.
-    fn pihole_import_discard(&self, id: &str) -> Result<serde_json::Value, Problem> {
+    fn pihole_import_discard(&self, id: &str, by: &str) -> Result<serde_json::Value, Problem> {
+        let _ = by;
         let _ = id;
         Err(Problem::unavailable(
             "importing a Pi-hole configuration isn't available on this node",
@@ -986,8 +987,8 @@ pub struct ManagedWrite {
 /// REQ: API-007 (T24.18, ADR-940) — an uploaded Pi-hole export to preview.
 #[derive(Debug, Clone)]
 pub struct PiholeImportRequest {
-    /// The export's bytes (a Teleporter zip or tar.gz, or a gravity.db).
-    pub data: Vec<u8>,
+    /// The export's bytes (a Teleporter zip or tar.gz, or a gravity.db). Shared, not copied.
+    pub data: axum::body::Bytes,
     /// A Pi-hole address (`ip` or `ip:port`) to compare a sample with (ADR-941).
     pub compare: Option<String>,
     /// The TelltaleDNS to compare with (`ip` or `ip:port`; default `127.0.0.1:53`).

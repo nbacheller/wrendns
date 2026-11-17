@@ -4863,7 +4863,7 @@
           "config"
         ],
         "summary": "Apply a previewed Pi-hole import.",
-        "description": "The plan's entries are written as one configuration change, audited as `import.pihole`. The\nconfiguration must be the one the preview saw; otherwise the answer is 409 and the preview\nruns again.",
+        "description": "The plan's entries are written as one configuration change, audited as `import.pihole`. The\nconfiguration must be the one the preview saw; otherwise the answer is 409 and the preview\nruns again. The plan belongs to the admin who previewed it.",
         "operationId": "apply",
         "parameters": [
           {
@@ -4919,6 +4919,16 @@
           },
           "422": {
             "description": "The plan no longer loads with the configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change was stored but the node couldn't reload it; the audit record says so.",
             "content": {
               "application/json": {
                 "schema": {

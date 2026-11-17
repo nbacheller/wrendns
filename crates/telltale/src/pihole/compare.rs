@@ -18,6 +18,9 @@ pub(crate) const TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const MAX_NAMES: usize = 200;
 /// A server that doesn't answer this many queries in a row is unreachable; stop asking it.
 const GIVE_UP_AFTER: u32 = 5;
+/// The whole comparison's time (REQ: API-007, ADR-941). A server that answers every other query
+/// keeps the silent count at zero, so without this a request could run for half an hour.
+pub(crate) const BUDGET: Duration = Duration::from_secs(60);
 
 /// One server's answer, reduced to what matters for a comparison.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -147,7 +150,16 @@ pub(crate) fn compare(pihole: SocketAddr, telltale: SocketAddr, names: &[String]
         .collect();
     let mut failures = [0u32; 2];
     let servers = [("Pi-hole", pihole), ("TelltaleDNS", telltale)];
+    let started = std::time::Instant::now();
     for (i, name) in names.iter().enumerate() {
+        if started.elapsed() > BUDGET {
+            rep.errors.push(format!(
+                "the comparison ran out of its {} seconds after {} names; the rest weren't compared",
+                BUDGET.as_secs(),
+                rep.names
+            ));
+            break;
+        }
         rep.names += 1;
         let mut agree = true;
         for (qtype, label) in [(rtype::A, "A"), (rtype::AAAA, "AAAA")] {

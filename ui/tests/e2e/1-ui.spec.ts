@@ -5544,6 +5544,82 @@ test('api_007 a damaged export is refused with a reason', async () => {
   await expect(panel.getByTestId('pihole-preview-result')).toHaveCount(0);
   // The refusal is the expected answer: the browser logs its 422, and the test removes that entry.
   for (let i = problems.length - 1; i >= 0; i--) if (/status of 422/.test(problems[i])) problems.splice(i, 1);
-  // The server still answers.
+  // The server still answers, and DNS still answers a local name (the worker is a child process).
   expect((await page.request.get('/livez')).status()).toBe(200);
+  expect(await query('nas.e2e.test')).toBe(0);
+});
+
+// REQ: API-007 (T24.18) — Discard forgets the preview: the plan is gone from the server, so applying
+// it is a 404, and nothing was written.
+test('api_007 discard forgets the preview', async () => {
+  const r = page.request;
+  await openImport();
+  const panel = page.getByTestId('pihole-import');
+  await panel.getByTestId('pihole-file').setInputFiles(PIHOLE_FIXTURE);
+  // The plan's ID is read from the answer: the route fetches it, reads it, and hands it to the page.
+  const planIds: string[] = [];
+  await page.route(PREVIEW_ROUTE, async (route) => {
+    const resp = await route.fetch();
+    planIds.push(JSON.parse(await resp.text()).planId as string);
+    await route.fulfill({ response: resp });
+  });
+  try {
+    await panel.getByTestId('pihole-preview').click();
+    await expect(panel.getByTestId('pihole-summary')).toContainText('to add', { timeout: 20_000 });
+    await expect.poll(() => planIds.length).toBe(1);
+  } finally {
+    await page.unroute(PREVIEW_ROUTE);
+  }
+  const planId = planIds[0];
+  await panel.getByTestId('pihole-discard').click();
+  await expect(panel.getByTestId('pihole-preview-result')).toHaveCount(0);
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const gone = await r.post(`/api/v1/import/pihole/plans/${encodeURIComponent(planId)}/apply`, { headers: h });
+  expect(gone.status()).toBe(404);
+  const after = await r.get('/api/v1/config/entries?kind=upstream');
+  expect(JSON.stringify(await after.json())).not.toContain('pihole-1');
+});
+
+// REQ: API-007 (ADR-941, T24.18) — the comparison's options reach the request: the Pi-hole, this
+// node's resolver, and the extra names. The answer is mocked (the e2e server has no Pi-hole to ask),
+// and it shows where an entry points.
+test('api_007 comparison options reach the request', async () => {
+  let asked = '';
+  await page.route(PREVIEW_ROUTE, async (route) => {
+    asked = route.request().url();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        planId: 'options-plan',
+        expiresUnixSeconds: Math.floor(Date.now() / 1000) + 600,
+        configVersion: 0,
+        source: 'v5',
+        counts: '1 upstreams',
+        summary: { add: 1, change: 0, skip: 0, samples: 2 },
+        items: [{ kind: 'upstream', name: 'pihole-1', action: 'add', reason: '', detail: 'udp://9.9.9.9:53' }],
+        itemsTotal: 1,
+        notes: [],
+        compare: { names: 2, agree: 2, differences: [], errors: [] },
+      }),
+    });
+  });
+  try {
+    await openImport();
+    const panel = page.getByTestId('pihole-import');
+    await panel.getByTestId('pihole-file').setInputFiles(PIHOLE_FIXTURE);
+    await panel.getByTestId('pihole-compare-toggle').check();
+    await panel.getByTestId('pihole-address').fill('192.168.1.251');
+    await panel.getByTestId('pihole-telltale-address').fill('127.0.0.1:15354');
+    await panel.getByTestId('pihole-samples').fill('example.com, nas.home');
+    await panel.getByTestId('pihole-preview').click();
+    await expect(panel.getByTestId('pihole-compare-summary')).toContainText('Compared 2 names');
+    const q = new URL(asked).searchParams;
+    expect(q.get('compare')).toBe('192.168.1.251');
+    expect(q.get('telltale')).toBe('127.0.0.1:15354');
+    expect(q.get('samples')).toBe('example.com, nas.home');
+    await expect(panel.getByTestId('pihole-detail').first()).toHaveText('udp://9.9.9.9:53');
+  } finally {
+    await page.unroute(PREVIEW_ROUTE);
+  }
 });

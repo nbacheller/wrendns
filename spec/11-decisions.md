@@ -1302,6 +1302,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - **Transport.** Plain UDP, two seconds a query, no retries. A server that doesn't answer five queries in a row is named in the report and isn't asked again; when neither answers, the comparison stops.
 - **What counts as a difference.** The rcode, or the sorted addresses and names of the answer. TTLs are ignored.
 - **Read-only.** It sends standard queries and nothing else. The import page's comparison (T24.18) is the same function.
+- **Budget.** The whole comparison stops after 60 seconds, and the report says how many names it covered. A server that answers every other query never reaches the five-in-a-row limit, so the budget is what bounds the time. The addresses are the admin's to give (the admin already holds the configuration), so the UDP goes wherever the admin names.
 
 **Alternatives rejected:**
 - *Comparing the configuration offline.* It wouldn't show what a client gets over DNS (rewrites, blocking, the cache and the special names all act in the resolver).
@@ -1309,7 +1310,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - *Retrying silent servers.* A wrong address would then cost minutes; five silent queries say it clearly.
 
 **Consequences:**
-- A comparison in the UI asks the node that serves the page. In a cluster, it's that node's resolver.
+- A comparison in the UI asks the TelltaleDNS address the admin gives, by default the node that serves the page. In a cluster, it's that node's resolver unless another address is given.
 - The sample is a sample: a difference in a name that isn't in it goes unreported.
 
 ## ADR-940 — Importing a Pi-hole export: a plan, applied as one configuration change, admins only (Proposed 2026-11-17)
@@ -1317,14 +1318,15 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 
 **Decision:**
 - **Who.** Admins only. An agent's token is refused by the auth layer (403 `forbidden`) and by the handler (`agent_not_allowed`); operators and viewers get 403. spec/13 §3 lists the import among the operations no agent may make.
-- **Preview.** Changes nothing. It returns a plan: a `planId`, what would be added, changed or skipped (each with its reason), the notes, and the comparison when asked (ADR-941). A plan is held in this node's memory for ten minutes (at most eight are kept), like an agent's plan (AGT-007). A restart discards them.
-- **Apply.** The plan's writes go in one transaction (`put_managed_batch`), and the version moves once. Before the write, the merged configuration (the files plus the stored entries plus the plan) must load; the configuration version must still be the preview's, or the answer is 409 and the preview is run again. The node then reloads.
-- **Names.** An entry of a name that exists is replaced (`change`), as an API override replaces the file's (ADR-069); the file's entry comes back when the override is deleted. A name the config files define is `skip`ped for local names and conditional forwards, because ADR-040 keeps those read-only through the API.
+- **Preview.** Changes nothing. It returns a plan: a `planId`, what would be added, changed or skipped (each with its reason and where it points: a URL or file, the servers, the members, the record values), the notes, and the comparison when asked (ADR-941). A plan is held in this node's memory for ten minutes (at most eight are kept), like an agent's plan (AGT-007). A restart discards them. A plan's ID is 32 random bytes, and only the admin who previewed it may apply or discard it; another admin gets 404.
+- **Retries.** The three routes take `Idempotency-Key` as the configuration writes do (AGT-003): a retried apply or discard gets the first answer, a preview is keyed on a hash of its body and options, and a successful answer is kept under the admin's key for a day.
+- **Apply.** The plan's writes go in one transaction (`put_managed_batch`), and the version moves once. Before the write, the merged configuration (the files plus the stored entries plus the plan) must load; the configuration version must still be the preview's, or the answer is 409 and the preview is run again. The node then reloads. If the change is stored but the reload fails, the audit record is written anyway, with `applied: false`, and the answer is 500 saying the change was saved, so the audit log never misses a change that happened.
+- **Names.** An entry of a name that exists is replaced (`change`), as an API override replaces the file's (ADR-069); the file's entry comes back when the override is deleted. A name the config files define is `skip`ped for local names, conditional forwards and devices, because ADR-040 keeps those read-only through the API (the merge ignores a stored device of a name the files use, so writing one would store a dead row). A file list (a `file://` adlist in the export) is flagged in the notes, since it reads a file on this machine. A stored rate limit replaces the file's `[ratelimit]` section as a whole, and the item says so.
 - **The default groups.** Pi-hole's lists join the default group's lists, and Pi-hole's upstreams join the default upstream group's members. Their other settings stay. An omitted list means every list (`lists` omitted), so the merge keeps it omitted.
-- **Conditional forwards.** Each Pi-hole route is a forward entry with the servers of its group's upstreams. The `pihole-forward-N` upstreams and groups aren't written.
+- **Conditional forwards.** Each Pi-hole route is a forward entry with the servers of its group's upstreams. The `pihole-forward-N` upstreams and groups aren't written. A suffix is routed once: when a v5 `rev-server` and a dnsmasq `server=/domain/` name the same domain, the first is kept and the conflict is noted.
 - **DNSSEC.** The mode is a file setting, not an API one, so it's reported as skipped with the line to add to the file.
 - **Audit.** Applying is audited as `import.pihole` with the counts and the configuration version. A preview isn't written to the audit log.
-- **The UI.** The apply needs the word `IMPORT` typed in. The page is a Settings tab that admins alone see.
+- **The UI.** The apply needs the word `IMPORT` typed in. The page is a Settings tab that admins alone see. Its comparison takes the Pi-hole address, this node's address (default `127.0.0.1:53`) and extra sample names.
 
 **Alternatives rejected:**
 - *Writing the file.* The API can't write the configuration files (ADR-040), and the CLI already writes them for a person who reads the output.
@@ -1341,17 +1343,19 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 
 **Decision:**
 - **The worker.** A hidden subcommand, `telltale pihole-import-worker PATH`, run by the server as a child process of the same binary. It reads the file, converts it with the importer (`pihole::convert`), and prints one JSON object. It has no configuration, no state database and no secrets.
-- **Isolation.** `env_clear()`, stdin null, stdout piped with a 64 MiB cap, a 60-second timeout, and kill on drop. The upload is written to a `0600` temporary file that's removed after the worker returns.
+- **Isolation.** `env_clear()`, stdin null, stdout piped, a 60-second timeout, and kill on drop. The worker starts with the discovery workers' spawn preparation (`telltale_net::worker::prepare_spawn`: no ambient capability, and this process not dumpable, so the worker can't read the server's memory). The worker applies the discovery workers' hardening first (`telltale_net::worker::harden`, ADR-933 and ADR-934: `RLIMIT_DATA` at 1 GiB, no capability, `no_new_privs`, the seccomp filter that refuses `bind`, `listen`, `ptrace`, `process_vm_*`, `io_uring` and x32 calls, not dumpable); if that fails, it prints the reason and converts nothing. The server reads the worker's stdout through `take(64 MiB + 1)`, so an answer over the cap stops the read there and kills the worker. The upload is written to a `0600` temporary file that's removed after the worker returns, on a blocking thread.
 - **Limits.** The HTTP body limit is 64 MiB. The archive reader's limits apply (`archive.rs`: 512 MiB per entry and in all, no zip64, no encrypted entries, CRC checked, no path is written). A gravity.db is opened read-only from a temporary copy.
 - **Failures.** A file the importer can't read is 422 with the reason; a worker that stops, or takes too long, is 422 too, and DNS keeps answering.
 
 **Alternatives rejected:**
 - *Parsing in the server process.* A panic there aborts DNS; the worker's crash is contained.
-- *Reusing ADR-913's `--import` worker now.* It isn't in this tree. When the M25 branch lands, the two can share one worker mode; the import would then use that mode.
+- *Reusing ADR-913's `--import` worker now.* It isn't in this tree. The import reuses the discovery workers' hardening (`telltale_net::worker`), not their mode; when the M25 branch's `--import` mode lands, the two can share one mode.
 
 **Consequences:**
 - The `tokio` crate's `process` feature is enabled, which adds no crate. The image delta is the feature's code; not measured here (the release image build measures it).
 - The worker runs the same binary, so it has the same version as the server.
+- Preparing a spawn makes the server process not dumpable, as it already is once discovery's workers start: its core dumps and a debugger's attach are refused.
+- Two previews run at once at most (the rest get 503 `unavailable` until one ends), so the memory of uploads and workers is bounded (review of T24.18, LOW 4).
 ## ADR-937 — Per-list "Update now" and a Confirmed current column on the Lists page (Accepted 2026-11-17)
 **Context:** T24.17 (FLT-004, ADR-905) asks for an "Update now" in each row of the Lists status table, and a per-list freshness display. The API already takes `names` (ADR-905), so no server change is needed. The task doesn't say what an off list's row does (the server reports an off list as `skipped` and queues nothing), or what freshness an inline list has (inline rules have no download to confirm).
 **Decision:**
