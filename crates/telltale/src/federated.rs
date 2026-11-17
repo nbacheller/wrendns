@@ -183,6 +183,20 @@ enum Read {
     SecretRefs,
 }
 
+/// REQ: CLU-004 (upstream #7) — runs a federated read's blocking wait (a plain thread that
+/// blocks on the runtime) without holding a runtime worker. On a multi-thread runtime the
+/// calling worker hands its queued tasks to another thread first, so the peer's stream can
+/// still be written and read; `block_in_place` does nothing off a runtime. A current-thread
+/// runtime has no other thread to take over, so the wait runs as it always did.
+fn off_the_worker<T>(wait: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(wait)
+        }
+        _ => wait(),
+    }
+}
+
 /// The reads that change the answering node: operational actions a user asked for on the
 /// entry node (T7.1 pauses, T6.13 flushes).
 fn changes_state(r: &Read) -> bool {
@@ -860,10 +874,12 @@ impl Federated {
         let body = serde_json::to_vec(read).ok()?;
         let rt = tokio::runtime::Handle::try_current().ok()?;
         let cluster = Arc::clone(&self.cluster);
-        std::thread::scope(|s| {
-            s.spawn(|| rt.block_on(cluster.call(peer, KIND, body, timeout)))
-                .join()
-                .ok()
+        off_the_worker(|| {
+            std::thread::scope(|s| {
+                s.spawn(|| rt.block_on(cluster.call(peer, KIND, body, timeout)))
+                    .join()
+                    .ok()
+            })
         })
     }
 
@@ -901,31 +917,33 @@ impl Federated {
             Ok(rt) if !calls.is_empty() => {
                 let cluster = Arc::clone(&self.cluster);
                 // A plain thread blocks on the runtime, so this works whether the caller is a
-                // blocking worker or not.
-                std::thread::scope(|s| {
-                    s.spawn(|| {
-                        rt.block_on(async {
-                            let tasks: Vec<_> = calls
-                                .into_iter()
-                                .map(|(peer, body)| {
-                                    let c = Arc::clone(&cluster);
-                                    tokio::spawn(async move {
-                                        let r = c.call(&peer, KIND, body, DEADLINE).await;
-                                        (peer, r)
+                // blocking worker or not; `off_the_worker` keeps the wait off a runtime worker.
+                off_the_worker(|| {
+                    std::thread::scope(|s| {
+                        s.spawn(|| {
+                            rt.block_on(async {
+                                let tasks: Vec<_> = calls
+                                    .into_iter()
+                                    .map(|(peer, body)| {
+                                        let c = Arc::clone(&cluster);
+                                        tokio::spawn(async move {
+                                            let r = c.call(&peer, KIND, body, DEADLINE).await;
+                                            (peer, r)
+                                        })
                                     })
-                                })
-                                .collect();
-                            let mut out = Vec::new();
-                            for t in tasks {
-                                if let Ok(r) = t.await {
-                                    out.push(r);
+                                    .collect();
+                                let mut out = Vec::new();
+                                for t in tasks {
+                                    if let Ok(r) = t.await {
+                                        out.push(r);
+                                    }
                                 }
-                            }
-                            out
+                                out
+                            })
                         })
+                        .join()
+                        .unwrap_or_default()
                     })
-                    .join()
-                    .unwrap_or_default()
                 })
             }
             _ => Vec::new(),

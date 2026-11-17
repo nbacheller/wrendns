@@ -30,6 +30,8 @@ mod dnstap;
 mod drill;
 mod explain;
 mod federated;
+#[cfg(test)]
+mod federated_wedge_tests;
 mod forward;
 mod gitsource;
 mod health;
