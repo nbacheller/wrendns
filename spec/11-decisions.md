@@ -1298,7 +1298,8 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 **Decision:**
 - A row's **Update now** sends `POST /api/v1/lists/refresh` with `{"names": ["<that list>"]}`, the same request as the page-wide button. It shows for operators only (`can('operator')`), and is disabled while that list is refreshing, while any row's request is in flight, and when the list is off. The off row's tooltip says to turn the list on; the server is not asked.
 - A refresh of one list reads "<name> updated" in the status line; the whole-set sentence ("every enabled list confirmed current …") stays for a refresh of every enabled list.
-- **Confirmed current** (for every role) shows `ago(lastSuccessUnixSeconds)`, which reads "never" for an enabled download list that never downloaded. An inline list reads "inline", since it has no download to confirm.
+- **Confirmed current** (for every role) shows `ago(lastSuccessUnixSeconds)`, which reads "never" for an enabled download list that never downloaded. An off download list that never downloaded reads a muted "off" instead (nothing to confirm, and "never" would suggest a fault). An inline list reads "inline", since it has no download to confirm.
+- The status line says "Downloading <name>…" from the click until the answer, so a row's request is never reported as done before it is answered. The whole-set wording is chosen by the refresh's scope (every enabled list, or one row), not by counting the lists.
 - No dry-run control: `dryRun` stays for agents and `telltale ctl`.
 **Consequences:** no API, OpenAPI, MCP or config change; the help topic `list-update-now` covers per-row updates. The per-row request is audited as `lists.refresh` with its names, like the page-wide one.
 

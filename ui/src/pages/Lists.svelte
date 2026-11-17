@@ -83,8 +83,9 @@
     starting || (refresh !== null && lists.some((l) => l.refreshing && refresh!.queued.includes(l.name))),
   );
   const busy = $derived(updating || startingRow !== null);
-  // A refresh of every enabled list, or of some of them (a row's "Update now" queues one).
-  const wholeSet = $derived(refresh !== null && refresh.queued.length >= lists.filter((l) => l.enabled).length);
+  // A refresh of every enabled list (the page-wide button), or of one list (a row's "Update now").
+  let refreshScope = $state<'all' | 'one'>('all');
+  const wholeSet = $derived(refresh !== null && refreshScope === 'all');
   // The oldest enabled list's last confirmation, so one fresh list can't hide a stale one. A
   // list never downloaded makes it null.
   const lastUpdated = $derived.by(() => {
@@ -100,6 +101,7 @@
   );
   async function updateNow() {
     starting = true;
+    refreshScope = 'all';
     refreshError = null;
     try {
       refresh = await api.refreshLists();
@@ -114,6 +116,7 @@
   // REQ: FLT-004 (T24.17) — one list's "Update now": the same request with that list's name.
   async function updateOne(name: string) {
     startingRow = name;
+    refreshScope = 'one';
     refreshError = null;
     try {
       refresh = await api.refreshLists([name]);
@@ -161,9 +164,9 @@
       {/if}
       {#if can('operator') && lists.some((l) => l.enabled)}
         <!-- REQ: FLT-004 — download every enabled list again now. -->
-        <button class="update" onclick={updateNow} disabled={updating} data-testid="lists-update-now"
+        <button class="update" onclick={updateNow} disabled={busy} data-testid="lists-update-now"
           title="Download every enabled list again now instead of waiting for its schedule">
-          {updating ? 'Updating…' : 'Update now'}
+          {busy ? 'Updating…' : 'Update now'}
         </button><HelpButton id="list-update-now" />
       {/if}
     </div>
@@ -179,7 +182,11 @@
   {/if}
   {#if refresh || lastUpdated || lists.some((l) => l.enabled)}
     <p class="small muted refresh-status" data-testid="lists-refresh-status" aria-live="polite">
-      {#if updating && refresh}
+      {#if startingRow}
+        Downloading {startingRow}…
+      {:else if starting}
+        Downloading every enabled list…
+      {:else if updating && refresh}
         Downloading {refresh.queued.length} {refresh.queued.length === 1 ? 'list' : 'lists'}{refresh.node ? ` on ${refresh.node}` : ''}…
       {:else if refresh && refresh.queued.length === 0}
         {refresh.note}
@@ -207,7 +214,7 @@
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>List</th><th>Kind<HelpButton id="list-kind" /></th><th>State<HelpButton id="list-refresh" /></th><th class="num">Names used</th><th class="num">Unique<HelpButton id="list-overlap" /></th><th class="num">Hits</th>{#if advanced}<th class="num">Lines</th><th class="num">Size</th>{/if}<th>Checked</th><th>Changed</th><th>Confirmed current</th>{#if can('operator')}<th></th>{/if}</tr>
+            <tr><th>List</th><th>Kind<HelpButton id="list-kind" /></th><th>State<HelpButton id="list-refresh" /></th><th class="num">Names used</th><th class="num">Unique<HelpButton id="list-overlap" /></th><th class="num">Hits</th>{#if advanced}<th class="num">Lines</th><th class="num">Size</th>{/if}<th>Checked</th><th>Changed</th><th>Confirmed current</th>{#if can('operator')}<th class="actions-head"><span class="sr-only">Actions</span></th>{/if}</tr>
           </thead>
           <tbody>
             {#each lists as l (l.name)}
@@ -243,12 +250,13 @@
                 <td class="small">{ago(l.lastChangedUnixSeconds)}</td>
                 <!-- REQ: FLT-004 (T24.17) — when the list was last confirmed current (its download succeeded). -->
                 <td class="small" data-testid="list-confirmed">
-                  {#if l.source === 'inline'}<span class="muted" title="Inline rules have no download to confirm">inline</span>{:else}{ago(l.lastSuccessUnixSeconds)}{/if}
+                  {#if l.source === 'inline'}<span class="muted" title="Inline rules have no download to confirm">inline</span>{:else if !l.enabled && !l.lastSuccessUnixSeconds}<span class="muted" title="An off list is not downloaded, so there is nothing to confirm">off</span>{:else}{ago(l.lastSuccessUnixSeconds)}{/if}
                 </td>
                 {#if can('operator')}
                   <!-- REQ: FLT-004 (T24.17) — download this one list now; off lists are left out by the server. -->
                   <td>
                     <button class="row-update" onclick={() => updateOne(l.name)} data-testid="list-update-now"
+                      aria-label={`Update ${l.name} now`}
                       disabled={starting || startingRow !== null || l.refreshing || !l.enabled}
                       title={l.enabled ? `Download ${l.name} again now` : 'Turn the list on to update it'}>
                       {l.refreshing || startingRow === l.name ? 'Updating…' : 'Update now'}
@@ -323,6 +331,10 @@
   }
   .refresh-status {
     margin: 0 0 8px;
+  }
+  /* The hidden label is positioned inside the table's scroll box, not the page (it would widen the page). */
+  .actions-head {
+    position: relative;
   }
   .row-update {
     white-space: nowrap;

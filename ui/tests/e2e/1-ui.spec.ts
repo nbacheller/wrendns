@@ -1696,6 +1696,47 @@ test('flt_004 viewer sees no update buttons', async ({ browser }) => {
   await viewer.close();
 });
 
+// REQ: FLT-004 (T24.17) — while a row's request is in flight, the status says it is downloading and
+// the page-wide "Update now" is disabled, so two refreshes can't start at once.
+test('flt_004 a row update says it is downloading before the answer', async () => {
+  await page.goto('/#/lists');
+  const row = page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: /^e2e-block$/ }) });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  await page.route('**/api/v1/lists/refresh', async (route) => {
+    await gate;
+    await route.continue();
+  });
+  try {
+    await row.getByTestId('list-update-now').click();
+    await expect(page.getByTestId('lists-refresh-status')).toContainText('Downloading e2e-block', { timeout: 10_000 });
+    await expect(row.getByTestId('list-update-now')).toHaveText('Updating…');
+    await expect(row.getByTestId('list-update-now')).toBeDisabled();
+    await expect(page.getByTestId('lists-update-now')).toBeDisabled();
+    release();
+    await expect(page.getByTestId('lists-refresh-status')).toContainText('e2e-block updated', { timeout: 15_000 });
+    await expect(row.getByTestId('list-update-now')).toBeEnabled();
+  } finally {
+    release();
+    await page.unroute('**/api/v1/lists/refresh');
+  }
+});
+
+// REQ: FLT-004 (T24.17) — the lists table fits a phone (375 px): the page itself doesn't scroll sideways.
+test('flt_004 lists fit a phone width (375 px)', async () => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  try {
+    await page.goto('/#/lists');
+    await expect(page.getByRole('heading', { name: /^Lists/ })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Confirmed current' })).toBeAttached();
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+    await expect(page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: /^e2e-block$/ }) }).getByRole('button', { name: 'Update e2e-block now' })).toBeVisible();
+  } finally {
+    await page.setViewportSize({ width: 1280, height: 800 });
+  }
+});
+
 test('api_002 upstreams and lists can be added, overridden, and reverted', async () => {
   const r = page.request;
   const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
