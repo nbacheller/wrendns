@@ -2,7 +2,8 @@
 name: ci
 on:
   push:
-    branches: [main]
+    # The fork's feature branches get CI too (nbacheller/telltaledns, owner decision 2026-11-16).
+    branches: [main, 'feat/**']
   pull_request:
   # The release workflow starts CI for the commit it pushes to main (T9.26).
   workflow_dispatch:
