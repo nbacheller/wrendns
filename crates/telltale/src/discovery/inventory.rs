@@ -7,7 +7,7 @@
 //! fuzzed. Nothing here reaches DNS, policy, client matching or `identify` (ADR-910; the test
 //! `dsc_008_never_in_neighbors_or_leases` guards that).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
@@ -22,8 +22,12 @@ pub(crate) const MAX_IMPORT_ROWS: usize = 8_192;
 pub(crate) const MAX_ROWS_PER_IMPORT: usize = 4_096;
 /// Imports kept at once: one bit each in the 16-bit import mask.
 pub(crate) const MAX_IMPORTS: usize = 16;
-/// Address bindings per entry (DSC-008).
+/// Distinct addresses per entry (DSC-008). Records are kept per source, so the cap counts
+/// addresses, not records.
 pub(crate) const MAX_ADDRS: usize = 4;
+/// How long a conflict holds after the last competing current claim (ADR-923). Above two poll
+/// intervals, so one missed poll does not clear it.
+pub(crate) const CONFLICT_HOLD_SECS: u64 = 900;
 /// Display names per entry.
 pub(crate) const MAX_NAMES: usize = 4;
 /// Open TCP ports per entry, from imports (ADR-910).
@@ -258,6 +262,10 @@ pub(crate) struct Entry {
     /// Two entries claim one address (`ip_conflict`).
     #[serde(default)]
     pub(crate) conflict: bool,
+    /// Until when the conflict holds (Unix seconds). It is refreshed by every competing current
+    /// claim and cleared only after this time, so a flag survives the polls in between (ADR-923).
+    #[serde(default)]
+    pub(crate) conflict_until: u64,
     /// The `new_device` finding has been raised for this entry.
     #[serde(default)]
     pub(crate) new_device: bool,
@@ -284,6 +292,7 @@ impl Entry {
             first_seen: seen,
             last_seen: seen,
             conflict: false,
+            conflict_until: 0,
             new_device: false,
         }
     }
@@ -320,17 +329,6 @@ impl Entry {
         (self.sources & !weak) == 0
     }
 
-    /// The distinct addresses with a current binding.
-    fn current_ips(&self) -> Vec<IpAddr> {
-        let mut out: Vec<IpAddr> = Vec::new();
-        for b in self.addrs.iter().filter(|b| b.is_current()) {
-            if !out.contains(&b.ip) {
-                out.push(b.ip);
-            }
-        }
-        out
-    }
-
     fn normalize(&mut self) {
         self.addrs.sort_by(|a, b| {
             a.source
@@ -349,7 +347,16 @@ impl Entry {
                 true
             }
         });
-        self.addrs.truncate(MAX_ADDRS);
+        // The cap counts distinct addresses: the first [`MAX_ADDRS`] in binding order keep their
+        // records, and the rest go.
+        let mut ips: Vec<IpAddr> = Vec::new();
+        for b in &self.addrs {
+            if !ips.contains(&b.ip) {
+                ips.push(b.ip);
+            }
+        }
+        ips.truncate(MAX_ADDRS);
+        self.addrs.retain(|b| ips.contains(&b.ip));
         self.names.sort_by_key(|n| n.kind.rank());
         self.names.dedup();
         self.names.truncate(MAX_NAMES);
@@ -389,6 +396,7 @@ impl Entry {
         self.first_seen = self.first_seen.min(other.first_seen);
         self.last_seen = self.last_seen.max(other.last_seen);
         self.conflict |= other.conflict;
+        self.conflict_until = self.conflict_until.max(other.conflict_until);
         self.new_device |= other.new_device;
         self.randomized |= other.randomized;
         self.normalize();
@@ -485,6 +493,9 @@ pub(crate) struct Inventory {
     mutes: Vec<Mute>,
     learning_until: u64,
     dirty: bool,
+    /// The stored file could not be read or moved aside, so saving would overwrite the owner's
+    /// data. Set by the store; a save is skipped while it holds (DSC-008).
+    writes_blocked: bool,
 }
 
 /// Whether a MAC is locally administered (the randomised-address bit, ADR-910).
@@ -623,6 +634,16 @@ impl Inventory {
         self.dirty = false;
     }
 
+    /// Refuses saves: the stored file is still in place and could not be moved aside.
+    pub(crate) fn block_writes(&mut self) {
+        self.writes_blocked = true;
+    }
+
+    /// Whether saves are refused (see [`Inventory::block_writes`]).
+    pub(crate) fn writes_blocked(&self) -> bool {
+        self.writes_blocked
+    }
+
     /// Rows held by all kept imports.
     pub(crate) fn import_rows(&self) -> usize {
         self.imports.iter().map(|r| r.rows).sum()
@@ -742,24 +763,15 @@ impl Inventory {
         for bit in expired {
             self.remove_import(bit);
         }
-        let mut owners: HashMap<IpAddr, usize> = HashMap::new();
-        for e in self.entries.values() {
-            for ip in e.current_ips() {
-                let n = owners.entry(ip).or_insert(0);
-                *n = n.saturating_add(1);
-            }
-        }
+        // REQ: DSC-008 — a conflict clears only after its hold has passed with no competing
+        // current claim (ADR-923). The displaced claim is gone from the address at once, so a
+        // count of owners would clear the flag in the same tick that set it.
         let mut changed = false;
         for e in self.entries.values_mut() {
-            if e.conflict {
-                let still = e
-                    .current_ips()
-                    .iter()
-                    .any(|ip| owners.get(ip).copied().unwrap_or(0) > 1);
-                if !still {
-                    e.conflict = false;
-                    changed = true;
-                }
+            if e.conflict && e.conflict_until < now {
+                e.conflict = false;
+                e.conflict_until = 0;
+                changed = true;
             }
         }
         let before = self.entries.len();
@@ -858,15 +870,24 @@ impl Inventory {
         }
     }
 
-    /// The MAC entry that holds `a` as a current binding, if any (ADR-910: a claim with no MAC
-    /// names the device that already owns the address).
-    fn current_owner(&self, a: IpAddr) -> Option<Key> {
-        self.entries
-            .iter()
-            .find(|(k, e)| {
-                matches!(k, Key::Mac(_)) && e.addrs.iter().any(|b| b.ip == a && b.is_current())
-            })
-            .map(|(k, _)| *k)
+    /// The MAC entry that owns `a` for a claim with no MAC (ADR-910, ADR-923). A MAC entry that
+    /// holds `a` as a current binding wins. Otherwise a MAC entry that holds `a` from the same
+    /// source takes it, so a device's own record of the address (for example its mDNS record)
+    /// does not split into an IP-only duplicate after the router binding expires.
+    fn current_owner(&self, a: IpAddr, source: Source) -> Option<Key> {
+        let mut same_source = None;
+        for (k, e) in &self.entries {
+            if !matches!(k, Key::Mac(_)) {
+                continue;
+            }
+            if e.addrs.iter().any(|b| b.ip == a && b.is_current()) {
+                return Some(*k);
+            }
+            if same_source.is_none() && e.addrs.iter().any(|b| b.ip == a && b.source == source) {
+                same_source = Some(*k);
+            }
+        }
+        same_source
     }
 
     fn merge_one(
@@ -881,7 +902,7 @@ impl Inventory {
         let key = match (mac, ip) {
             (Some(m), _) => Key::Mac(m),
             // REQ: DSC-008 — a MAC-less claim for an address a MAC entry holds attaches to it.
-            (None, Some(a)) => self.current_owner(a).unwrap_or(Key::Ip(a)),
+            (None, Some(a)) => self.current_owner(a, o.source).unwrap_or(Key::Ip(a)),
             (None, None) => {
                 report.dropped = report.dropped.saturating_add(1);
                 return;
@@ -993,10 +1014,14 @@ impl Inventory {
     }
 
     /// Same address, different MAC: the newest current (class 1–3) claim wins, and both entries
-    /// are flagged. A claim of class 4 or 5, or from an unclassed source, never displaces a
-    /// current binding (ADR-910, ADR-923).
+    /// are flagged for [`CONFLICT_HOLD_SECS`] after this claim (ADR-923). A claim of class 4 or 5,
+    /// or from an unclassed source, neither displaces a current binding nor raises a conflict:
+    /// it is history or a claim, not a current owner (ADR-910, ADR-923).
     fn resolve_conflicts(&mut self, entry: &mut Entry, a: IpAddr, o: &Observation) {
-        let current = o.source.is_current();
+        if !o.source.is_current() {
+            return;
+        }
+        let hold = o.seen.saturating_add(CONFLICT_HOLD_SECS);
         for other in self.entries.values_mut() {
             // REQ: DSC-008 — only MAC entries are devices; IP-only entries take no part.
             if !matches!(other.key, Key::Mac(_)) {
@@ -1012,8 +1037,10 @@ impl Inventory {
                 continue;
             };
             entry.conflict = true;
+            entry.conflict_until = entry.conflict_until.max(hold);
             other.conflict = true;
-            if current && o.seen >= other_seen {
+            other.conflict_until = other.conflict_until.max(hold);
+            if o.seen >= other_seen {
                 other.addrs.retain(|b| !(b.ip == a && b.is_current()));
                 other.normalize();
             }

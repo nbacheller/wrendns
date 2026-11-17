@@ -76,27 +76,62 @@ pub(crate) fn from_json(bytes: &[u8]) -> Option<Inventory> {
     ))
 }
 
-/// Moves a file this version cannot read aside, so its data survives the next save (DSC-008).
-fn quarantine(data_dir: &Path) {
+/// How many quarantine names are tried before giving up (`inventory.json.bad`, `.bad.1`, …).
+const QUARANTINE_SLOTS: u32 = 100;
+
+/// Moves a file this version cannot read aside, under the first free quarantine name, so an
+/// earlier quarantined file is never overwritten (DSC-008). `false` when the file could not be
+/// moved, in which case the caller must not save over it.
+fn quarantine(data_dir: &Path) -> bool {
     let from = path(data_dir);
-    if let Err(e) = fs::rename(&from, data_dir.join(QUARANTINE_NAME)) {
-        tracing::warn!(error = %e, "inventory.json could not be moved aside");
+    for i in 0..QUARANTINE_SLOTS {
+        let name = if i == 0 {
+            QUARANTINE_NAME.to_owned()
+        } else {
+            format!("{QUARANTINE_NAME}.{i}")
+        };
+        let to = data_dir.join(name);
+        if to.exists() {
+            continue;
+        }
+        return match fs::rename(&from, &to) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(error = %e, "inventory.json could not be moved aside");
+                false
+            }
+        };
     }
+    tracing::warn!("inventory.json could not be moved aside: no free quarantine name");
+    false
+}
+
+/// An empty start for a file that is there but cannot be used. If the file cannot be moved
+/// aside either, saves are refused, so the owner's file is never overwritten (DSC-008).
+fn unusable_start(data_dir: &Path, now: u64) -> Inventory {
+    let mut inv = Inventory::new(now);
+    if !quarantine(data_dir) {
+        inv.block_writes();
+    }
+    inv
 }
 
 /// Loads the inventory. A missing file is an empty start, which begins a new learning period
 /// (ADR-910). A file that cannot be read, or is another version, is moved aside first.
 pub(crate) fn load(data_dir: &Path, now: u64) -> Inventory {
     match fs::read(path(data_dir)) {
-        Ok(bytes) => from_json(&bytes).unwrap_or_else(|| {
-            tracing::warn!("inventory.json is not readable by this version; starting empty");
-            quarantine(data_dir);
-            Inventory::new(now)
-        }),
+        Ok(bytes) => {
+            if let Some(inv) = from_json(&bytes) {
+                inv
+            } else {
+                tracing::warn!("inventory.json is not readable by this version; starting empty");
+                unusable_start(data_dir, now)
+            }
+        }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Inventory::new(now),
         Err(e) => {
             tracing::warn!(error = %e, "inventory.json could not be read; starting empty");
-            Inventory::new(now)
+            unusable_start(data_dir, now)
         }
     }
 }
@@ -104,6 +139,12 @@ pub(crate) fn load(data_dir: &Path, now: u64) -> Inventory {
 /// Writes the inventory atomically: a 0600 temporary file, synced, then renamed over the old one.
 /// The entries are streamed through a buffer, not copied into a second structure first.
 pub(crate) fn save(data_dir: &Path, inv: &Inventory) -> io::Result<()> {
+    // REQ: DSC-008 — a stored file that could not be moved aside is never overwritten.
+    if inv.writes_blocked() {
+        return Err(io::Error::other(
+            "the stored inventory file is in place and was not moved aside",
+        ));
+    }
     let target = path(data_dir);
     let tmp = data_dir.join(format!("{FILE_NAME}.tmp"));
     // A stale temporary file from a crash is replaced, never reused.

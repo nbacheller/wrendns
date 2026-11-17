@@ -101,9 +101,66 @@ fn dsc_008_same_ip_two_macs_flags_conflict() {
         inv.visible_findings(&key_mac(B), 200),
         vec![FindingKind::IpConflict]
     );
-    // Once the displaced claim is gone, the sweep clears the flag.
+    // The displaced claim is gone, but the hold keeps the flag through the sweep (ADR-923).
     inv.sweep(300, u64::MAX / 2, u64::MAX / 2);
+    assert!(inv.get(&key_mac(B)).unwrap().conflict, "held after a sweep");
+    // Once the hold has passed with no competing claim, the sweep clears it.
+    inv.sweep(200 + CONFLICT_HOLD_SECS + 1, u64::MAX / 2, u64::MAX / 2);
     assert!(!inv.get(&key_mac(B)).unwrap().conflict);
+    assert!(!inv.get(&key_mac(A)).unwrap().conflict);
+}
+
+/// REQ: DSC-008 (review fix, MEDIUM) — an address conflict survives the polls in which the two
+/// devices take turns: a sweep runs after every poll, and the flag still shows.
+#[test]
+fn dsc_008_conflict_survives_polls() {
+    let mut inv = Inventory::new(0);
+    let a_key = key_mac(A);
+    let b_key = key_mac(B);
+    for t in (100u64..=460).step_by(60) {
+        // The router says A has .60; the neighbour table says B has .60. Each claim is newer.
+        let (router_seen, neigh_seen) = (t, t + 30);
+        inv.apply(
+            &[obs(
+                Source::Router,
+                Some(A),
+                Some("192.168.1.60"),
+                router_seen,
+            )],
+            router_seen,
+        );
+        inv.sweep(router_seen, u64::MAX / 2, u64::MAX / 2);
+        // B has not claimed the address yet in the first round.
+        if t > 100 {
+            assert!(
+                inv.visible_findings(&a_key, router_seen)
+                    .contains(&FindingKind::IpConflict),
+                "A shows the conflict after the router poll at {t}"
+            );
+        }
+        inv.apply(
+            &[obs(
+                Source::Neighbor,
+                Some(B),
+                Some("192.168.1.60"),
+                neigh_seen,
+            )],
+            neigh_seen,
+        );
+        inv.sweep(neigh_seen, u64::MAX / 2, u64::MAX / 2);
+        assert!(
+            inv.visible_findings(&b_key, neigh_seen)
+                .contains(&FindingKind::IpConflict),
+            "B shows the conflict after the neighbour poll at {t}"
+        );
+    }
+    // Both claims stop. The flag clears only once the hold has passed.
+    let last = 460 + 30;
+    inv.sweep(last + CONFLICT_HOLD_SECS - 1, u64::MAX / 2, u64::MAX / 2);
+    assert!(inv.get(&b_key).unwrap().conflict, "still inside the hold");
+    inv.sweep(last + CONFLICT_HOLD_SECS + 1, u64::MAX / 2, u64::MAX / 2);
+    assert!(!inv.get(&a_key).unwrap().conflict);
+    assert!(!inv.get(&b_key).unwrap().conflict);
 }
 
 #[test]
@@ -126,7 +183,11 @@ fn dsc_008_import_never_overrides_l2() {
         inv.snmp_eligible_address(ip("192.168.1.20")),
         "A keeps its class 2 binding"
     );
-    assert!(inv.get(&key_mac(B)).unwrap().conflict);
+    // REQ: DSC-008 — an import is a claim, not a current owner: it raises no conflict (ADR-923).
+    assert!(!inv.get(&key_mac(B)).unwrap().conflict);
+    assert_eq!(inv.visible_findings(&key_mac(B), 110), Vec::new());
+    inv.sweep(110, u64::MAX / 2, u64::MAX / 2);
+    assert!(!inv.get(&key_mac(A)).unwrap().conflict);
 }
 
 #[test]
@@ -779,6 +840,105 @@ fn dsc_008_unreadable_file_is_quarantined() {
     assert!(!store::path(&dir).exists());
     let kept = std::fs::read(dir.join(store::QUARANTINE_NAME)).unwrap();
     assert_eq!(kept, b"{\"version\":99}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REQ: DSC-008 (review fix, LOW) — a MAC-less claim joins the device that holds the address from
+/// the same source, so no IP-only duplicate appears after the router binding has expired.
+#[test]
+fn dsc_008_mac_less_claim_joins_same_source_record() {
+    let mut inv = Inventory::new(0);
+    inv.apply(
+        &[obs(Source::Router, Some(A), Some("192.168.1.33"), 100)],
+        100,
+    );
+    inv.apply(
+        &[obs(Source::Mdns, Some(A), Some("192.168.1.33"), 100)],
+        100,
+    );
+    inv.expire_source(Source::Router, 1_000, 900);
+    inv.apply(
+        &[obs(Source::Mdns, None, Some("192.168.1.33"), 1_000)],
+        1_000,
+    );
+    assert_eq!(inv.len(), 1, "no IP-only duplicate");
+    assert!(inv.get(&Key::Ip(ip("192.168.1.33"))).is_none());
+}
+
+/// REQ: DSC-008 (review fix, LOW) — the four-binding cap counts addresses, not records: an
+/// address keeps its router and neighbour records, and five addresses keep four.
+#[test]
+fn dsc_008_cap_counts_addresses_not_records() {
+    let mut inv = Inventory::new(0);
+    for k in 0..3u8 {
+        let a = format!("192.168.1.{}", 70 + k);
+        let t = 100 + u64::from(k);
+        inv.apply(&[obs(Source::Router, Some(A), Some(a.as_str()), t)], t);
+        inv.apply(&[obs(Source::Neighbor, Some(A), Some(a.as_str()), t)], t);
+    }
+    let e = inv.get(&key_mac(A)).unwrap();
+    assert_eq!(e.addrs.len(), 6, "each address keeps its two records");
+    let mut ips: Vec<IpAddr> = e.addrs.iter().map(|b| b.ip).collect();
+    ips.sort();
+    ips.dedup();
+    assert_eq!(ips.len(), 3);
+
+    let mut more = Inventory::new(0);
+    for k in 0..5u8 {
+        let a = format!("192.168.1.{}", 80 + k);
+        let t = 100 + u64::from(k);
+        more.apply(&[obs(Source::Router, Some(A), Some(a.as_str()), t)], t);
+    }
+    let e = more.get(&key_mac(A)).unwrap();
+    assert_eq!(e.addrs.len(), MAX_ADDRS, "five addresses keep four");
+    assert_eq!(
+        e.current().unwrap().ip,
+        ip("192.168.1.84"),
+        "the newest is current"
+    );
+}
+
+/// REQ: DSC-008 (review fix, LOW) — an earlier quarantined file is kept; the next takes a new name.
+#[test]
+fn dsc_008_quarantine_never_overwrites_an_earlier_file() {
+    let dir = temp_dir("quarantine-twice");
+    std::fs::write(dir.join(store::QUARANTINE_NAME), b"first").unwrap();
+    std::fs::write(store::path(&dir), b"{\"version\":99}").unwrap();
+    let inv = store::load(&dir, 7);
+    assert!(inv.is_empty());
+    assert!(!inv.writes_blocked());
+    assert_eq!(
+        std::fs::read(dir.join(store::QUARANTINE_NAME)).unwrap(),
+        b"first"
+    );
+    let second = dir.join(format!("{}.1", store::QUARANTINE_NAME));
+    assert_eq!(std::fs::read(second).unwrap(), b"{\"version\":99}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REQ: DSC-008 (review fix, LOW) — a read error other than not-found moves the file aside, so
+/// the next save cannot overwrite it.
+#[test]
+fn dsc_008_read_error_moves_the_file_aside() {
+    let dir = temp_dir("read-error");
+    // A directory where the file should be: reading it fails, and it can be moved.
+    std::fs::create_dir_all(store::path(&dir)).unwrap();
+    let inv = store::load(&dir, 7);
+    assert!(inv.is_empty());
+    assert!(!inv.writes_blocked());
+    assert!(dir.join(store::QUARANTINE_NAME).is_dir());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REQ: DSC-008 (review fix, LOW) — a store that could not move the owner's file aside refuses
+/// to save over it.
+#[test]
+fn dsc_008_blocked_inventory_is_not_saved() {
+    let dir = temp_dir("blocked");
+    let mut inv = Inventory::new(0);
+    inv.block_writes();
+    assert!(store::save(&dir, &inv).is_err());
+    assert!(!store::path(&dir).exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
