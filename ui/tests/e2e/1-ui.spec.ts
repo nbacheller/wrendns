@@ -4805,3 +4805,79 @@ test('api_013 a made group draft does not reopen on reload', async () => {
     await page.unroute('**/api/v1/networks');
   }
 });
+
+// REQ: DSC-001 (T25.2, ADR-907, ADR-928) — the network inventory's settings are admin-only: an admin
+// sees the controls; an operator sees them read-only, and the server refuses an operator's write.
+test('dsc_001 network inventory settings are admin-only', async () => {
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  await expect(settings.getByRole('switch', { name: 'Turn the network inventory on' })).toBeEnabled();
+  await expect(settings.getByRole('button', { name: 'Check', exact: true })).toBeVisible();
+  const OPERATOR = { user: 'operator2', pass: 'operator long password' };
+  const csrf = await csrfOf(page.request);
+  await page.request.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: OPERATOR.user, password: OPERATOR.pass, role: 'operator' } });
+  const op = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  try {
+    const p = await op.newPage();
+    await p.goto('/#/network-inventory');
+    await p.getByLabel('Username', { exact: true }).fill(OPERATOR.user);
+    await p.getByLabel('Password', { exact: true }).fill(OPERATOR.pass);
+    await p.getByRole('button', { name: 'Sign in' }).click();
+    const mine = p.getByTestId('inventory-settings');
+    await expect(mine.getByText('Only an administrator can change the network inventory')).toBeVisible({ timeout: 30_000 });
+    await expect(mine.getByRole('button', { name: 'Check', exact: true })).toHaveCount(0);
+    await expect(mine.getByRole('switch', { name: 'Turn the network inventory on' })).toBeDisabled();
+    const ocsrf = await csrfOf(op.request);
+    const moved = await op.request.put('/api/v1/discovery-settings/default', { headers: { 'x-csrf-token': ocsrf }, data: { enabled: true, worker_memory_mib: 64 } });
+    expect(moved.status()).toBe(403);
+    expect(await moved.text()).toContain('enabled');
+  } finally {
+    await op.close();
+  }
+});
+
+// REQ: DSC-001 (T25.2, ADR-914) — a field the configuration files set is locked, and labelled as set
+// by file; the fields the files leave alone stay editable.
+test('dsc_001 file-set discovery shows set by file', async () => {
+  const entry = {
+    items: [{
+      kind: 'discovery', name: 'default', source: 'file',
+      definition: { enabled: true, node: null, worker_memory_mib: 64, subnet: [{ cidr: '192.168.1.0/24' }] },
+      redacted: [], credentialIssues: [], setByFile: ['enabled', 'subnet'], answering: null,
+    }],
+  };
+  await page.route(/\/api\/v1\/config\/entries\?kind=discovery/, (route) => route.fulfill({ json: entry }));
+  try {
+    await page.goto('/#/network-inventory');
+    const settings = page.getByTestId('inventory-settings');
+    await expect(settings.getByTestId('set-by-file')).toHaveCount(2);
+    await expect(settings.getByRole('switch', { name: 'Turn the network inventory on' })).toBeDisabled();
+    await expect(settings.getByLabel('Subnets it may read')).toBeDisabled();
+    await expect(settings.getByLabel('Designated node')).toBeEnabled();
+  } finally {
+    await page.unroute(/\/api\/v1\/config\/entries\?kind=discovery/).catch(() => {});
+  }
+});
+
+// REQ: DSC-002 (T25.3, DSC-014, ADR-908) — a discovery worker that keeps stopping shows on the
+// network inventory page, with its restarts, and DNS is not mentioned as affected.
+test('dsc_002 failing worker shows on the inventory page', async () => {
+  const status = {
+    enabled: true, designated: true, node: null,
+    workers: [{
+      worker: 'snmp', up: false, restarts: 4, versionMismatch: false, failing: true,
+      lastError: 'the worker exited (signal: 6)', dataLimitMib: null, dumpable: false, oomScoreAdj: 1000,
+    }],
+  };
+  await page.route(/\/api\/v1\/discovery\/status/, (route) => route.fulfill({ json: status }));
+  try {
+    await page.goto('/#/network-inventory');
+    await expect(page.getByTestId('inventory-state')).toHaveText('Runs on this node');
+    const row = page.getByTestId('worker-snmp');
+    await expect(row.getByTestId('worker-failing')).toHaveText('failing');
+    await expect(row).toContainText('4');
+    await expect(page.getByTestId('inventory-status')).toContainText('the worker exited');
+  } finally {
+    await page.unroute(/\/api\/v1\/discovery\/status/).catch(() => {});
+  }
+});

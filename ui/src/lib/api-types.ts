@@ -1525,6 +1525,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/discovery-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the network inventory's settings (DSC-001, T25.2, ADR-907): whether it runs, the node that
+         *     runs it, the subnets it may read, and the worker memory limit.
+         * @description Admin only: an operator's change is 403, and no agent can change it. The first write is refused
+         *     with 409 `members_too_old` while any member runs a version older than this one (ADR-907, CLU-010).
+         *     The configuration files win field by field (`set_by_file`).
+         */
+        put: operations["put_discovery_settings"];
+        post?: never;
+        /**
+         * Go back to the config file's `[discovery]` section (DSC-001).
+         * @description Removes what the API stored, so the file's settings apply again. Admin only; no agent.
+         */
+        delete: operations["delete_discovery_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/discovery/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The network inventory's status (DSC-014): whether it runs on this node, and each discovery
+         *     worker process. The inventory itself (`GET /api/v1/discovery`) comes with T25.12.
+         */
+        get: operations["discovery_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/displays": {
         parameters: {
             query?: never;
@@ -4578,7 +4625,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "path_not_allowed" | "set_by_file" | "secret_missing" | "secret_in_use" | "insecure_transport" | "agent_not_allowed";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "members_too_old" | "path_not_allowed" | "set_by_file" | "secret_missing" | "secret_in_use" | "insecure_transport" | "agent_not_allowed";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -4834,6 +4881,53 @@ export interface components {
              *     `[clients] mdns`; no MAC).
              */
             source: string;
+        };
+        /**
+         * @description REQ: DSC-014 (T25.3, ADR-908) — the network inventory's status: whether it runs on this node,
+         *     and each discovery worker process. Health reasons for the workers never mark DNS unhealthy.
+         */
+        DiscoveryStatus: {
+            /** @description Whether this node is the designated one (it runs the inventory and its workers). */
+            designated: boolean;
+            /** @description `[discovery] enabled`. */
+            enabled: boolean;
+            /** @description The designated node's name, when `[discovery] node` is set. */
+            node?: string | null;
+            /** @description The worker processes this node runs (none unless enabled and designated). */
+            workers: components["schemas"]["DiscoveryWorker"][];
+        };
+        /** @description REQ: DSC-002 (T25.3, ADR-908) — one discovery worker process, as the supervisor sees it. */
+        DiscoveryWorker: {
+            /**
+             * Format: int64
+             * @description The worker's `RLIMIT_DATA` in MiB, as it reported it at the handshake.
+             */
+            dataLimitMib?: number | null;
+            /** @description Whether the worker reported it isn't dumpable (no core dumps, no /proc reads by others). */
+            dumpable?: boolean | null;
+            /** @description Three or more crashes in ten minutes: restarts are slowed (`discovery_worker_failing`). */
+            failing: boolean;
+            /** @description The last failure, in words (the stderr line is logged, rate-limited). */
+            lastError?: string | null;
+            /**
+             * Format: int32
+             * @description The worker's `oom_score_adj`, as it reported it.
+             */
+            oomScoreAdj?: number | null;
+            /**
+             * Format: int64
+             * @description Times the worker has been restarted since start.
+             */
+            restarts: number;
+            /** @description Running, with a handshake that matched. */
+            up: boolean;
+            /** @description The worker's build differs from this node's: it is refused (`discovery_worker_version_mismatch`). */
+            versionMismatch: boolean;
+            /**
+             * @description `snmp` (the SNMP poller) or `import` (the scan-import parser, short-lived).
+             * @example snmp
+             */
+            worker: string;
         };
         /** @description REQ: OBS-035 (T14.13) — a wall display token, as an admin sees it (never its secret). */
         DisplayInfo: {
@@ -5399,7 +5493,7 @@ export interface components {
              * @description Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,
              *     `sync_lag`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
              *     `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
-             *     `rollout_stuck`.
+             *     `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`.
              * @example upstream_down
              */
             code: string;
@@ -11616,6 +11710,145 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_DhcpLease"];
+                };
+            };
+        };
+    };
+    put_discovery_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin may change the network inventory; agents never. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`, or `members_too_old`: a member runs an older version. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is unknown, or a subnet isn't a private IPv4 network. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_discovery_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin may change the network inventory; agents never. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    discovery_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscoveryStatus"];
                 };
             };
         };

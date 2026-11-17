@@ -15,7 +15,12 @@
 // REQ: DSC-001 — nothing spawns the thread until T25.2's `[discovery]` section exists.
 #![allow(dead_code)]
 
+pub(crate) mod frames;
+pub(crate) mod gate;
 pub(crate) mod inventory;
+pub(crate) mod runtime;
 pub(crate) mod sources;
 pub(crate) mod store;
+pub(crate) mod supervisor;
 pub(crate) mod thread;
+pub(crate) mod worker;

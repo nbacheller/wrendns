@@ -176,6 +176,11 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/clients-settings/default",
             put(put_clients_settings).delete(delete_clients_settings),
         )
+        // REQ: DSC-001 (T25.2, ADR-907) — `[discovery]`: admin-only, no agent scope.
+        .route(
+            "/api/v1/discovery-settings/default",
+            put(put_discovery_settings).delete(delete_discovery_settings),
+        )
         .with_state((backend, auth))
 }
 
@@ -1725,6 +1730,69 @@ pub(crate) async fn put_clients_settings(
     .await
 }
 
+/// Set the network inventory's settings (DSC-001, T25.2, ADR-907): whether it runs, the node that
+/// runs it, the subnets it may read, and the worker memory limit.
+///
+/// Admin only: an operator's change is 403, and no agent can change it. The first write is refused
+/// with 409 `members_too_old` while any member runs a version older than this one (ADR-907, CLU-010).
+/// The configuration files win field by field (`set_by_file`).
+#[utoipa::path(put, path = "/api/v1/discovery-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Only an admin may change the network inventory; agents never."),
+        (status = 409, body = Problem, description = "`set_by_file`, or `members_too_old`: a member runs an older version."),
+        (status = 422, body = Problem, description = "A field is unknown, or a subnet isn't a private IPv4 network."),
+    ))]
+pub(crate) async fn put_discovery_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::Discovery,
+        "/discovery-settings/default",
+    )
+    .await
+}
+
+/// Go back to the config file's `[discovery]` section (DSC-001).
+///
+/// Removes what the API stored, so the file's settings apply again. Admin only; no agent.
+#[utoipa::path(delete, path = "/api/v1/discovery-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Only an admin may change the network inventory; agents never."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+    ))]
+pub(crate) async fn delete_discovery_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::Discovery,
+        "DELETE /discovery-settings/default",
+    )
+    .await
+}
+
 /// Go back to the config file's `[clients]` mdns setting (DNS-023).
 ///
 /// Removes what the API stored, so the file's `mdns` applies again on every node. Only an admin may
@@ -1838,6 +1906,7 @@ impl Op {
             Self::Managed(ManagedKind::Local, _) => "local",
             // LOW 5: not one letter from the device writes' `client.put`.
             Self::Managed(ManagedKind::Clients, _) => "clients_settings",
+            Self::Managed(ManagedKind::Discovery, _) => "discovery",
         }
     }
     fn deleting(&self) -> bool {

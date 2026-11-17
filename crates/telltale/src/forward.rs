@@ -251,6 +251,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                 ManagedKind::Special => "special",
                 ManagedKind::Local => "local",
                 ManagedKind::Clients => "clients",
+                ManagedKind::Discovery => "discovery",
             };
             let deleting = body.is_none();
             let r = local
@@ -476,6 +477,11 @@ pub(crate) const MARKERS_SINCE: (u64, u64, u64) = (0, 8, 0);
 /// and `clients` settings kinds. An older primary can't read them (`unknown variant`).
 pub(crate) const SETTINGS_KINDS_SINCE: (u64, u64, u64) = (0, 8, 0);
 
+/// REQ: DSC-001 (T25.2, ADR-907, ADR-928) — the first version that knows the `discovery` kind and
+/// the `[discovery]` section: an older member can't read them (CLU-010), so the first write is
+/// refused while any member runs an older version (`members_too_old`).
+pub(crate) const DISCOVERY_SINCE: (u64, u64, u64) = (0, 9, 0);
+
 /// Whether a version string (`0.8.0`, `v0.8.1-rc.1`) is at least `min`; unreadable is not.
 pub(crate) fn version_at_least(v: &str, min: (u64, u64, u64)) -> bool {
     let core = v.trim().trim_start_matches('v');
@@ -538,10 +544,15 @@ fn settings_kinds_understood(
 ) -> Result<(), Problem> {
     if !matches!(
         kind,
-        ManagedKind::Special | ManagedKind::Local | ManagedKind::Clients
+        ManagedKind::Special | ManagedKind::Local | ManagedKind::Clients | ManagedKind::Discovery
     ) {
         return Ok(());
     }
+    let since = if kind == ManagedKind::Discovery {
+        DISCOVERY_SINCE
+    } else {
+        SETTINGS_KINDS_SINCE
+    };
     let version = cluster
         .members()
         .into_iter()
@@ -549,7 +560,7 @@ fn settings_kinds_understood(
         .map(|m| m.version);
     if version
         .as_deref()
-        .is_some_and(|v| version_at_least(v, SETTINGS_KINDS_SINCE))
+        .is_some_and(|v| version_at_least(v, since))
     {
         return Ok(());
     }

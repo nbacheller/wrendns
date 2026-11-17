@@ -85,7 +85,7 @@ function newKey(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings';
+export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'discovery-settings';
 
 /** REQ: OPS-011 — a support package's manifest (`MANIFEST.json`). */
 export type SupportManifest = {
@@ -384,6 +384,8 @@ export const api = {
     }),
   // REQ: API-002 (T7.5, ADR-069) — upstreams, upstream groups, lists, and groups.
   configEntries: (kind?: string) => get<S['Items_ConfigEntry']>('/config/entries', { kind }),
+  // REQ: DSC-014 (T25.3) — the network inventory's status and its discovery workers.
+  discoveryStatus: () => get<S['DiscoveryStatus']>('/discovery/status'),
   putEntry: (path: EntryPath, name: string, body: Record<string, unknown>, dryRun = false, simulate?: string) =>
     call<S['ConfigChange']>('PUT', `/${path}/${encodeURIComponent(name)}`, {
       body,

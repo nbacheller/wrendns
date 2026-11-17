@@ -813,6 +813,8 @@ async fn start_http(
         auth.agents()
             .set_require_approval(cfg.agents.require_approval);
         let _ = sources.auth.set(Arc::clone(&auth));
+        // REQ: DSC-001 (T25.2) — the `[discovery]` section as the files set it, at start.
+        audit_discovery(sources, None, cfg);
         // REQ: FLT-005 (ADR-067) — expired quick rules are removed and audit-logged.
         crate::api_backend::spawn_rule_sweep(Arc::clone(sources), Arc::clone(&auth), stop.clone());
         let app = http::api_router(Arc::clone(sources), auth);
@@ -1036,7 +1038,11 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         shadow,
         traces,
         secrets,
+        discovery: Arc::default(),
     });
+    // REQ: DSC-001 (T25.2, ADR-907) — the network inventory starts here only if `[discovery]` is
+    // on and this node is the designated one (ephemeral pods and witnesses never are).
+    reconcile_discovery(&sources, &pipeline, &cfg);
     // REQ: OPS-014, API-014 (ADR-903 §3) — the store and the node key, at start on full members
     // (the key made on the first one, while the table is empty), so a missing or unreadable key
     // shows in the log at once; then every 30 s it retries a locked store, and a locked replica
@@ -1244,6 +1250,9 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     readiness.set_stopping();
     // REQ: OBS-025 — keep the device identities across the restart.
     sources.identify.save();
+    // REQ: DSC-002 (T25.3) — the network inventory and its workers stop, and the inventory is saved.
+    let discovery = Arc::clone(&sources.discovery);
+    let _ = tokio::task::spawn_blocking(move || discovery.stop()).await;
     // REQ: CLU-009 — a resolver pod leaves the cluster now rather than showing as down until
     // it expires (2 s at most; if the primary can't be reached, expiry still cleans up).
     // Before the stop signal: it closes the stream to the primary that the leave goes over.
@@ -1462,7 +1471,9 @@ async fn reload(
     // API changes are audited by the API with their author.
     if !from_api {
         audit_reload(sources, files, current, &new);
+        audit_discovery(sources, Some(&current.discovery), &new);
     }
+    reconcile_discovery(sources, pipeline, &new);
     if let Some(a) = &sources.anomalies {
         a.reconfigure(&new);
     }
@@ -1518,6 +1529,66 @@ fn config_marker(sources: &http::Sources, old: &Config, new: &Config) {
 
 /// REQ: API-006 — a reload that changed anything is audited with the changed settings'
 /// paths (never their values: configs can hold secrets).
+/// REQ: DSC-001 (T25.2, ADR-907) — the `[discovery]` section is audited when the files set it: at
+/// start (`old` is `None`), and on a reload that changes it, as `discovery.config_changed` with
+/// `source = file`. Changes made through the API are audited by the API with their author.
+fn audit_discovery(
+    sources: &http::Sources,
+    old: Option<&telltale_config::DiscoveryConfig>,
+    new: &Config,
+) {
+    let Some(auth) = sources.auth.get() else {
+        return;
+    };
+    let Some(detail) = discovery_audit_detail(old, new) else {
+        return;
+    };
+    let auth = Arc::clone(auth);
+    tokio::task::spawn_blocking(move || {
+        auth.record(
+            &telltale_api::auth::Actor::system("config"),
+            "discovery.config_changed",
+            "discovery",
+            &detail,
+        );
+    });
+}
+
+/// REQ: DSC-001, DSC-002 (T25.2, T25.3, ADR-907, ADR-928) — the network inventory starts, stops or
+/// restarts to match `cfg`, on this node only when it is the designated one (ephemeral pods and
+/// witnesses never are). Called at start-up and on every reload.
+fn reconcile_discovery(sources: &http::Sources, pipeline: &Pipeline, cfg: &Config) {
+    let own = crate::discovery::runtime::own_of(sources.cluster.as_deref(), cfg);
+    let data_dir = std::path::PathBuf::from(cfg.node.data_dir.as_str());
+    let (rt, cfg) = (Arc::clone(&sources.discovery), cfg.clone());
+    let (routers, mdns) = (
+        Arc::clone(&pipeline.router_leases),
+        Arc::clone(&pipeline.mdns_names),
+    );
+    // A stopping inventory saves and joins its thread: that happens off the runtime's workers.
+    drop(tokio::task::spawn_blocking(move || {
+        rt.reconcile(&cfg, &data_dir, &own, Some(routers), Some(mdns));
+    }));
+}
+
+/// The detail of the `discovery.config_changed` record, or `None` when the section didn't change
+/// (`old` is `None` at start: then any section the files set is recorded).
+pub(crate) fn discovery_audit_detail(
+    old: Option<&telltale_config::DiscoveryConfig>,
+    new: &Config,
+) -> Option<serde_json::Value> {
+    let changed = match old {
+        Some(o) => *o != new.discovery,
+        None => !new.discovery.is_default(),
+    };
+    changed.then(|| {
+        serde_json::json!({
+            "source": "file",
+            "discovery": serde_json::to_value(&new.discovery).unwrap_or(serde_json::Value::Null),
+        })
+    })
+}
+
 fn audit_reload(sources: &http::Sources, files: &[PathBuf], old: &Config, new: &Config) {
     let Some(auth) = sources.auth.get() else {
         return;

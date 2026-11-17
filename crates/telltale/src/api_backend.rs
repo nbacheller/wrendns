@@ -2355,6 +2355,10 @@ impl Backend for ApiBackend {
                 k.stale(now).then(|| k.age_s(now).unwrap_or(0))
             },
         });
+        // REQ: DSC-002 (T25.3) — a discovery worker that is refused or keeps crashing: degraded.
+        reasons.extend(crate::health::discovery_reasons(
+            &self.src.discovery.status().workers,
+        ));
         // REQ: OPS-014 (ADR-903 §3) — a locked store, or secrets on a data directory that isn't
         // kept: degraded, DNS unaffected.
         reasons.extend(crate::secrets::store::health_reasons(
@@ -2641,6 +2645,11 @@ impl Backend for ApiBackend {
     }
 
     // REQ: OBS-010 (T9.6) — what the alert task last saw and sent.
+    /// REQ: DSC-014 (T25.3) — the network inventory's status on this node.
+    fn discovery_status(&self) -> telltale_api::model::DiscoveryStatus {
+        self.src.discovery.status()
+    }
+
     fn alerts_status(&self) -> telltale_api::model::AlertsStatus {
         self.src
             .alerts
@@ -3163,6 +3172,8 @@ impl Backend for ApiBackend {
                 "clients",
                 e.clients_settings.is_some(),
             ),
+            // REQ: DSC-001 (T25.2) — `[discovery]`.
+            (ManagedKind::Discovery, "discovery", e.discovery.is_some()),
         ] {
             if want(k) {
                 let sec = crate::settings_kinds::section(mk);
@@ -4071,6 +4082,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Special => crate::managed::SPECIAL,
         ManagedKind::Local => crate::managed::LOCAL,
         ManagedKind::Clients => crate::managed::CLIENTS,
+        ManagedKind::Discovery => crate::managed::DISCOVERY,
         ManagedKind::Router => crate::managed::ROUTER,
     }
 }
@@ -4557,7 +4569,7 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         (ManagedKind::Rollout, false) => {
             "The config file's rollout settings (or none: every change reaches every node at once) apply again.".into()
         }
-        (ManagedKind::Special | ManagedKind::Local | ManagedKind::Clients, put) => {
+        (ManagedKind::Special | ManagedKind::Local | ManagedKind::Clients | ManagedKind::Discovery, put) => {
             crate::settings_kinds::impact(kind, put)
         }
         (ManagedKind::KubernetesMap, true) => {
@@ -4878,6 +4890,24 @@ fn plan_settings(
     }
     let file = src.file_config.load_full();
     let mut entries = crate::managed::entries(state);
+    // REQ: DSC-001 (T25.2, ADR-907, CLU-010) — the first write of `[discovery]` waits until no member
+    // runs an older version: an older member can't read the section.
+    if w.kind == ManagedKind::Discovery
+        && w.body.is_some()
+        && crate::settings_kinds::none_stored(&entries, w.kind)
+        && let Some(c) = &src.cluster
+    {
+        let members: Vec<(String, String)> = c
+            .members()
+            .into_iter()
+            .map(|m| (m.node_id, m.version))
+            .collect();
+        if let Some(problem) =
+            crate::settings_kinds::members_too_old(&members, crate::forward::DISCOVERY_SINCE)
+        {
+            return Err(problem);
+        }
+    }
     let before_cfg = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
     let before = crate::settings_kinds::section_json(w.kind, &before_cfg);
     let file_section = crate::settings_kinds::section_json(w.kind, &file);
@@ -6090,6 +6120,7 @@ fn keep_in_git(
         ManagedKind::Special => "special",
         ManagedKind::Local => "local",
         ManagedKind::Clients => "clients",
+        ManagedKind::Discovery => "discovery",
     };
     let head = "# Add to the configuration in Git (with the Helm chart: under `config:`).\n";
     // REQ: FLT-017 — a map rule: `[[kubernetes.map]]`, or a label on the namespace or pod.
@@ -6124,6 +6155,7 @@ fn keep_in_git(
             | ManagedKind::Special
             | ManagedKind::Local
             | ManagedKind::Clients
+            | ManagedKind::Discovery
     ) {
         return singleton_in_git(head, section, body.is_some(), after);
     }

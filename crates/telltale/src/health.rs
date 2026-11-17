@@ -28,6 +28,40 @@ pub(crate) const DISK_FULL: f64 = 90.0;
 /// A replica behind the primary's configuration for this long degrades.
 const SYNC_LAG_SECONDS: u64 = 60;
 
+/// REQ: DSC-002 (T25.3, DSC-014) — a discovery worker that is refused for its build, or that keeps
+/// crashing, is degraded. It never makes DNS unhealthy: the inventory is not on the query path.
+pub(crate) fn discovery_reasons(
+    workers: &[telltale_api::model::DiscoveryWorker],
+) -> Vec<HealthReason> {
+    let mut out = Vec::new();
+    for w in workers {
+        if w.version_mismatch {
+            out.push(reason(
+                DEGRADED,
+                "discovery_worker_version_mismatch",
+                format!(
+                    "the {} discovery worker is refused: its build differs from this node's ({})",
+                    w.worker,
+                    w.last_error.as_deref().unwrap_or("unknown")
+                ),
+                "#/network-inventory",
+            ));
+        }
+        if w.failing {
+            out.push(reason(
+                DEGRADED,
+                "discovery_worker_failing",
+                format!(
+                    "the {} discovery worker keeps stopping ({} restarts); its restarts are slowed. DNS is unaffected",
+                    w.worker, w.restarts
+                ),
+                "#/network-inventory",
+            ));
+        }
+    }
+    out
+}
+
 fn reason(level: &str, code: &str, summary: String, link: &str) -> HealthReason {
     HealthReason {
         level: level.to_owned(),
@@ -889,5 +923,42 @@ mod tests {
         };
         assert_eq!(code_list(&view(Some(offline(120)))), Vec::<String>::new());
         assert_eq!(code_list(&view(Some(offline(700)))), vec!["rollout_stuck"]);
+    }
+
+    /// REQ: DSC-002 (T25.3, DSC-014) — a discovery worker that is refused or keeps crashing is
+    /// degraded, under the two codes, and never severe: the inventory is off the query path.
+    #[test]
+    fn dsc_002_discovery_reasons_are_degraded_only() {
+        use telltale_api::model::DiscoveryWorker;
+        let workers = vec![
+            DiscoveryWorker {
+                worker: "snmp".into(),
+                version_mismatch: true,
+                last_error: Some("build `x` (this node is `y`)".into()),
+                ..DiscoveryWorker::default()
+            },
+            DiscoveryWorker {
+                worker: "import".into(),
+                failing: true,
+                restarts: 3,
+                ..DiscoveryWorker::default()
+            },
+            DiscoveryWorker {
+                worker: "snmp".into(),
+                up: true,
+                ..DiscoveryWorker::default()
+            },
+        ];
+        let r = discovery_reasons(&workers);
+        let codes: Vec<&str> = r.iter().map(|x| x.code.as_str()).collect();
+        assert_eq!(
+            codes,
+            [
+                "discovery_worker_version_mismatch",
+                "discovery_worker_failing"
+            ]
+        );
+        assert!(r.iter().all(|x| x.level == DEGRADED), "{r:?}");
+        assert!(discovery_reasons(&[DiscoveryWorker::default()]).is_empty());
     }
 }

@@ -14,7 +14,7 @@ use serde_json::{Map, Value};
 use telltale_api::ManagedKind;
 use telltale_api::auth::Role;
 use telltale_api::problem::{Code, Problem};
-use telltale_config::{Config, LocalConfig, SpecialConfig};
+use telltale_config::{Config, DiscoveryConfig, LocalConfig, SpecialConfig};
 
 use crate::managed::Entries;
 
@@ -23,6 +23,7 @@ pub(crate) fn section(kind: ManagedKind) -> &'static str {
     match kind {
         ManagedKind::Special => "special",
         ManagedKind::Local => "local",
+        ManagedKind::Discovery => "discovery",
         _ => "clients",
     }
 }
@@ -31,9 +32,12 @@ pub(crate) fn section(kind: ManagedKind) -> &'static str {
 pub(crate) fn is_settings(kind: ManagedKind) -> bool {
     matches!(
         kind,
-        ManagedKind::Special | ManagedKind::Local | ManagedKind::Clients
+        ManagedKind::Special | ManagedKind::Local | ManagedKind::Clients | ManagedKind::Discovery
     )
 }
+
+/// REQ: DSC-001 (T25.2, ADR-907) — the fields of `[discovery]` a kind's entry carries.
+const DISCOVERY_KEYS: &[&str] = &["enabled", "node", "worker_memory_mib", "subnet"];
 
 /// The fields a kind's API entry carries (what the UI edits).
 pub(crate) fn keys(kind: ManagedKind) -> &'static [&'static str] {
@@ -54,6 +58,7 @@ pub(crate) fn keys(kind: ManagedKind) -> &'static [&'static str] {
             "auto_ptr",
             "default_ttl",
         ],
+        ManagedKind::Discovery => DISCOVERY_KEYS,
         _ => &["mdns"],
     }
 }
@@ -64,6 +69,8 @@ pub(crate) fn admin_keys(kind: ManagedKind) -> &'static [&'static str] {
     match kind {
         ManagedKind::Special => &["ddr_name"],
         ManagedKind::Clients => &["mdns"],
+        // REQ: DSC-001 (T25.2, ADR-907) — every field of the network inventory is admin-only.
+        ManagedKind::Discovery => DISCOVERY_KEYS,
         _ => &[],
     }
 }
@@ -74,6 +81,7 @@ pub(crate) fn section_json(kind: ManagedKind, cfg: &Config) -> Value {
     let full = match kind {
         ManagedKind::Special => serde_json::to_value(&cfg.special),
         ManagedKind::Local => serde_json::to_value(&cfg.local),
+        ManagedKind::Discovery => serde_json::to_value(&cfg.discovery),
         _ => serde_json::to_value(&cfg.clients),
     }
     .unwrap_or(Value::Null);
@@ -102,6 +110,9 @@ fn normalize(kind: ManagedKind, body: &Value) -> Result<Value, Problem> {
     match kind {
         ManagedKind::Special => {
             cfg.special = serde_json::from_value::<SpecialConfig>(body.clone()).map_err(bad)?;
+        }
+        ManagedKind::Discovery => {
+            cfg.discovery = serde_json::from_value::<DiscoveryConfig>(body.clone()).map_err(bad)?;
         }
         ManagedKind::Local => {
             if body.get("hosts_files").is_some() {
@@ -196,6 +207,7 @@ pub(crate) fn apply_stored(cfg: &mut Config, own: &Config, e: &Entries) -> Vec<S
         (ManagedKind::Special, &e.special),
         (ManagedKind::Local, &e.local),
         (ManagedKind::Clients, &e.clients_settings),
+        (ManagedKind::Discovery, &e.discovery),
     ] {
         let Some(stored) = stored else { continue };
         if let Err(why) = overlay(cfg, own, kind, stored) {
@@ -225,6 +237,9 @@ fn overlay(
     match kind {
         ManagedKind::Special => {
             cfg.special = serde_json::from_value(cur).map_err(|e| e.to_string())?;
+        }
+        ManagedKind::Discovery => {
+            cfg.discovery = serde_json::from_value(cur).map_err(|e| e.to_string())?;
         }
         ManagedKind::Local => {
             let mut lj = serde_json::to_value(&cfg.local).map_err(|e| e.to_string())?;
@@ -259,6 +274,14 @@ pub(crate) fn check_admin_fields(
         )
         .hint("Ask an admin to make this change in the UI."));
     }
+    // REQ: DSC-001 (T25.2, ADR-907) — no agent writes the network inventory's settings.
+    if kind == ManagedKind::Discovery && agent.is_some() {
+        return Err(Problem::new(
+            Code::AgentNotAllowed,
+            "no agent can change `[discovery]`: the network inventory reads the LAN's devices",
+        )
+        .hint("Ask an admin to make this change in the UI."));
+    }
     let Some(field) = admin_keys(kind)
         .iter()
         .find(|k| before.get(**k) != after.get(**k))
@@ -267,6 +290,9 @@ pub(crate) fn check_admin_fields(
     };
     let why = match kind {
         ManagedKind::Clients => "it turns on mDNS listening on every node of the cluster",
+        ManagedKind::Discovery => {
+            "the network inventory reads the devices on the LAN, from one node"
+        }
         _ => "it is one name for the whole cluster, tied to every node's certificates",
     };
     if agent.is_some() {
@@ -296,11 +322,40 @@ pub(crate) fn check_admin_fields(
     }
 }
 
+/// REQ: DSC-001 (T25.2, ADR-907, CLU-010) — the first write of `[discovery]` is refused (409
+/// `members_too_old`) while any member runs a version older than `since` (or one whose version can't
+/// be read). `members` is (node ID, version) for each member.
+pub(crate) fn members_too_old(
+    members: &[(String, String)],
+    since: (u64, u64, u64),
+) -> Option<telltale_api::problem::Problem> {
+    use telltale_api::problem::{Code, Problem};
+    let old: Vec<&str> = members
+        .iter()
+        .filter(|(_, v)| !crate::forward::version_at_least(v, since))
+        .map(|(n, _)| n.as_str())
+        .collect();
+    if old.is_empty() {
+        return None;
+    }
+    Some(
+        Problem::new(
+            Code::MembersTooOld,
+            format!(
+                "the network inventory can't be turned on while {} runs an older version than this one: it can't read `[discovery]`",
+                old.join(", ")
+            ),
+        )
+        .hint("Upgrade every node first (replicas first, then the primary), then make this change again."),
+    )
+}
+
 /// What a DELETE leaves stored: nothing (the files' fields apply again).
 pub(crate) fn none_stored(entries: &Entries, kind: ManagedKind) -> bool {
     match kind {
         ManagedKind::Special => entries.special.is_none(),
         ManagedKind::Local => entries.local.is_none(),
+        ManagedKind::Discovery => entries.discovery.is_none(),
         _ => entries.clients_settings.is_none(),
     }
 }
@@ -310,6 +365,7 @@ pub(crate) fn set_stored(entries: &mut Entries, kind: ManagedKind, v: Option<Val
     match kind {
         ManagedKind::Special => entries.special = v,
         ManagedKind::Local => entries.local = v,
+        ManagedKind::Discovery => entries.discovery = v,
         _ => entries.clients_settings = v,
     }
 }
@@ -319,6 +375,7 @@ pub(crate) fn noun(kind: ManagedKind) -> &'static str {
     match kind {
         ManagedKind::Special => "special names",
         ManagedKind::Local => "device-name settings",
+        ManagedKind::Discovery => "network inventory settings",
         _ => "clients settings",
     }
 }
@@ -328,6 +385,9 @@ pub(crate) fn impact(kind: ManagedKind, put: bool) -> String {
     match (kind, put) {
         (ManagedKind::Special, true) => "Applies on the next query, on every node, with no restart. Names the switches turn on or off answer differently from then on; answers already cached stay until they expire.".into(),
         (ManagedKind::Special, false) => "The config file's special-name settings (or the defaults) apply again from the next query.".into(),
+        // REQ: DSC-001 (T25.2) — the inventory starts or stops on the designated node at the reload.
+        (ManagedKind::Discovery, true) => "Applies on the designated node within a few seconds, with no restart: the network inventory starts or stops there. Other nodes change nothing, and no device is read until it is on.".into(),
+        (ManagedKind::Discovery, false) => "The config file's network inventory settings (or the defaults: off) apply again on the designated node within a few seconds.".into(),
         (ManagedKind::Local, true) => "Device names in DNS change within about 10 seconds on every node, with no restart.".into(),
         (ManagedKind::Local, false) => "The config file's device-name settings (or the defaults) apply again within about 10 seconds.".into(),
         // REQ: DNS-023 (H1) — the mDNS listener starts once, at start-up (`restart_only_changes`):
