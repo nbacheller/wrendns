@@ -1317,6 +1317,7 @@ The audit recommended showing the last group read-only. The owner chose admin co
   - Role checks are on the server. The UI only hides or disables what the server would refuse.
   - A section that is node-local (`NODE_LOCAL`) becomes editable only through `node_managed` (T23.10), as an entry for the node it applies to (`node/<node-id>/<kind>`). Only that node applies it. An N−1 node ignores `node_managed`, so its own file stays in force.
   - A change that fails to apply keeps the previous configuration, and DNS keeps answering (CLU-004).
+  - A change to `auth-policy` or the sign-in settings is refused (409 `would_lock_out_admins`) if no admin could still sign in afterwards (for example, TOTP made required for admins while no admin has enrolled).
 - **Ordinary and admin-only kinds this ADR adds.**
   - `special`: a shared singleton kind (`/api/v1/special-names/default`) for all `[special]` fields. Operators change it. `ddr_name` is admin-only, because it is one name for the whole cluster tied to every member's certificates (T24.12).
   - `local`: a shared singleton kind (`/api/v1/local-settings/default`) for `device_domain`, `device_ttl`, `device_mdns`, `auto_ptr` and `default_ttl`. Operators change it. `hosts_files` is a path and is guarded (below). `device_inventory_addresses` (DSC-012) is admin-only (T24.13, T25.16).
@@ -1325,6 +1326,7 @@ The audit recommended showing the last group read-only. The owner chose admin co
   - `agents`: a shared singleton kind for `[agents]`. Turning agents **off** (`enabled = false`) needs the operator role; turning them **on** needs an admin. The server compares the old and new values, so an operator's write that turns agents on is 403. No agent scope writes this kind, so an agent can neither switch itself on nor off. `rate_per_minute` and `require_approval` are admin-only (T27.6).
 - **The guarded tier.** Every guarded change:
   - is admin role only, checked on the server; agent tokens are refused whatever their scopes (403 `agent_not_allowed`, on the spec/13 §3 list), and there is no MCP tool, plan or `config:write:*` scope for it;
+  - needs an interactive admin session; API tokens of any kind get 403 `reauth_required` with a hint naming the file or CLI step (as ADR-903 §8 does for passphrase backups);
   - has a dry run that says what the change does, which nodes it reaches and what it can break;
   - needs a typed confirmation: the request carries `confirm`, which must equal a phrase the dry run returns (the node ID and the setting, for example `pi-a listen`). The server checks it, so a script or a forged request can't skip it;
   - is audited as `settings.guarded` (who, node, setting, before and after with credentials redacted, the reason) and raises the one-off alert condition `guarded_setting_changed`;
@@ -1333,16 +1335,17 @@ The audit recommended showing the last group read-only. The owner chose admin co
   - adding a directory to `secret_file_dirs`;
   - turning on `allow_secrets_over_http` or `allow_insecure_basic`;
   - adding a `trusted_proxies` entry;
-  - turning off the watchdog.
+  - turning off the watchdog;
+  - removing or downgrading TLS on the API or on a DoT/DoH/DoQ listener, or moving `api.listen` from loopback-only to a wider address;
+  - in `auth-policy` (T27.6), removing a role from `totp_required_roles`.
 
   Narrowing `secret_file_dirs` is not weakening, but the dry run lists every `*_file` reference the change would refuse.
 - **Address and transport changes: confirm or roll back.** Changes to `[[listen]]` (addresses, ports, TLS), `api.listen`, `api.tls` and `api.trusted_proxies` are applied as pending:
   - The node applies the change and starts a confirmation window, 120 s by default (`[api] confirm_window_secs`, 30 to 600, file-only).
   - The change is kept only if the same admin confirms it within the window, with a request that arrives through the new address and transport. For a DNS listener change, the confirmation also needs the node's own probe of the new listener to answer.
   - Otherwise the node restores the previous values, audits `settings.guarded_rolled_back`, and the UI says why.
-  - The pending change is never the stored one: a restart inside the window starts with the previous values.
-  - New sockets are bound before old ones are closed. If a bind fails, nothing changes.
-  - The server refuses (409 `would_disconnect_you`) a change that removes or alters the API listener the request came in on unless the change also adds an API listener the admin can reach, and a change that leaves a node with no DNS listener or no API listener.
+  - A restart inside the window starts with the previous values. A pending change is held in memory on the target node only. The `node_managed` entry is written and replicated only when the change is confirmed. For a change to another node, the primary forwards the pending change, and the confirmation must reach that node's new address directly. The response to the change carries a single-use `confirmToken`, bound to the admin, node and change and valid for the window, so the admin need not sign in again on the new origin.
+  - While a change is pending, the node keeps the previous API and DNS sockets bound alongside the new ones; the old ones close only when the change is confirmed, and stay if it rolls back. If a bind fails, nothing changes. The server refuses (409 `would_disconnect_you`) a change that would leave a node with no API listener or no DNS listener once confirmed, or that removes the API listener the request came in on in the same request that is meant to confirm it.
 - **The secrets key.** A key is never entered through the store it protects, or through any API body.
   - The UI shows the key's status: its source (environment, `secrets_key_file`, or `secrets.key` in the data directory), `key_id`, whether a previous key is configured, how many rows are still under it, and whether the store is locked or ephemeral.
   - **Rotation** is by pointing at a new key file the admin has already put on the node. The UI shows the steps (create the file with the format and permissions in `docs/secrets.md`, owned by the service user, mode 0600) and the offline alternative, `telltale secrets rotate-key` with the node stopped. The admin then enters the new file's path. The server checks that the file exists, is a regular file with mode 0600 owned by the service user, and holds a valid key, without ever returning its content. It then writes a guarded entry for that node: `secrets_previous_key_file` = the current key's path, `secrets_key_file` = the new path. Re-encryption runs as at start-up (`ops_014_previous_key_reencrypts_at_start`, crash-safe). When no rows remain under the previous key, the UI offers to clear `secrets_previous_key_file`.
@@ -1371,9 +1374,10 @@ The audit recommended showing the last group read-only. The owner chose admin co
 - An admin can change listeners, TLS and proxies from the UI, and a mistake undoes itself within the window.
 - Guarded changes need two requests (the change and the confirmation), and weakening ones need a recent sign-in, so they can't be done from a long-idle session.
 - The files keep the last word, so a node can always be recovered by editing its file and restarting.
-- Adds the problem codes `would_disconnect_you`, the audit actions `settings.guarded` and `settings.guarded_rolled_back`, and the alert condition `guarded_setting_changed`. `reauth_required` comes from T23.9.
+- On installs whose file (or environment) sets a guarded value, its control shows "set by file" and the command to hand it to the UI (remove the key from the file and restart); the docs say which install bundles set which guarded values. Key rotation from the UI works only when the key path is not set by file or environment.
+- Adds the problem codes `would_disconnect_you`, `would_lock_out_admins`, the audit actions `settings.guarded` and `settings.guarded_rolled_back`, and the alert condition `guarded_setting_changed`. `reauth_required` comes from T23.9.
 - Amends ADR-040 (UI values for the sections above) and AGT-009 (the kill switch's role rule). T23.12's "`[cluster.git]` itself stays file-only" becomes a guarded wizard step (T27.16).
-- Tasks: T24.12 (`special`), T24.13 (`local`, `clients` mdns), T23.11 (`otlp`), T27.6 (`agents`), T27.13 to T27.17 (the guarded tier).
+- Tasks: T24.12 (`special`), T24.13 (`local`, `clients` mdns), T24.18 (Pi-hole import, admin-only), T25.16 (`device_inventory_addresses`), T23.11 (`otlp`), T27.6 (`agents`), T27.13 to T27.17 (the guarded tier).
 
 ## ADR-913 — Importing scan results the owner produced: nmap XML and a simple CSV (Proposed)
 **Context:** Only a scanner can find devices that no source sees. The owner runs one themselves, for example `nmap -sn -oX` or `nmap -sS -p … -oX` on a host on that VLAN.

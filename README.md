@@ -13,7 +13,7 @@
 >   - Pi-hole's special names: iCloud Private Relay blocked by default, `resolver.arpa` with encrypted DNS discovery (DDR), and domain-needed;
 >   - **Update lists now** (Pi-hole's "Update Gravity");
 >   - still to come: keepalived failover, importer gaps, IPv6 device names.
-> - **M23, secrets and integrations in the UI (wave 1 done):** secrets store, write-only API, no credential on any read surface; UI next. Anything set up through a secret file can also be entered in the UI, and the files still win.
+> - **M23, secrets and integrations in the UI (wave 1 done):** secrets store, write-only API, no credential on any read surface; UI next. Once the UI lands (T23.6), anything set up through a secret file can also be entered there, and the files still win.
 > - **M25, network inventory beyond the gateway (planned):**
 >   - SNMP from your gateway and switches (which device is on which port);
 >   - more UniFi reads;
