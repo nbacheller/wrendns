@@ -2987,6 +2987,24 @@ impl Backend for ApiBackend {
             for e in effective {
                 let n = e.name();
                 let api = stored.iter().any(|(s, _)| s == n);
+                // REQ: API-015 (T23.6, ADR-903 §2) — the credential fields the files set for this
+                // entry (`token_file`, an inline secret): the UI shows them read-only.
+                let set_by_file = file
+                    .iter()
+                    .find(|f| f.name() == n)
+                    .and_then(|f| serde_json::to_value(f).ok())
+                    .map(|v| {
+                        telltale_config::secret_refs::set_by_file(kind, &v)
+                            .into_iter()
+                            .flat_map(|s| s.inline.into_iter().chain([s.file]))
+                            .filter(|k| {
+                                v.get(*k)
+                                    .is_some_and(|x| !x.is_null() && x.as_str() != Some(""))
+                            })
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 out.push(telltale_api::model::ConfigEntry {
                     kind: kind.to_owned(),
                     name: n.to_owned(),
@@ -2999,7 +3017,7 @@ impl Backend for ApiBackend {
                     definition: serde_json::to_value(e).ok(),
                     redacted: Vec::new(),
                     credential_issues: Vec::new(),
-                    set_by_file: Vec::new(),
+                    set_by_file,
                     answering: None,
                 });
             }
