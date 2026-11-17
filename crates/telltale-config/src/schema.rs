@@ -114,6 +114,12 @@ pub struct Config {
     pub api: ApiConfig,
     /// Sign-in: sessions, HTTP Basic, two-factor policy (API-003).
     pub auth: AuthConfig,
+    /// REQ: API-010 (ADR-914) — the dotted keys (`special.ddr_name`, `local.device_domain`,
+    /// `clients.mdns`) that the config files or environment set explicitly, filled in by
+    /// [`crate::Loader::load`]. A value set here wins over one made through the API, which is
+    /// shown as "set by file" (ADR-040, ADR-914). Not part of the TOML.
+    #[serde(skip)]
+    pub file_set: Vec<String>,
 }
 
 impl Default for Config {
@@ -158,6 +164,7 @@ impl Default for Config {
             drill: DrillConfig::default(),
             dns: DnsConfig::default(),
             special: SpecialConfig::default(),
+            file_set: Vec::new(),
             cache: CacheConfig::default(),
             dnssec: DnssecConfig::default(),
             agents: AgentsConfig::default(),

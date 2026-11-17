@@ -934,16 +934,16 @@ async fn api_014_pin_diff_never_shows_a_credential() {
 }
 
 /// What an older primary's stub received, and what keeps the two-node cluster up.
-struct OlderPrimary {
-    got: Arc<std::sync::Mutex<Vec<Value>>>,
-    stop: tokio::sync::watch::Sender<bool>,
+pub(crate) struct OlderPrimary {
+    pub(crate) got: Arc<std::sync::Mutex<Vec<Value>>>,
+    pub(crate) stop: tokio::sync::watch::Sender<bool>,
     _primary: Arc<telltale_cluster::net::Cluster>,
     _dirs: (tempfile::TempDir, tempfile::TempDir),
 }
 
 /// A two-node cluster: the primary at `version`, answering forwarded writes as an older primary
 /// does (the entry as stored, credentials in), and the replica, joined and connected.
-async fn older_primary_and_replica(
+pub(crate) async fn older_primary_and_replica(
     version: &str,
 ) -> (Arc<telltale_cluster::net::Cluster>, OlderPrimary) {
     use telltale_cluster::net::{Cluster, dial, join, serve};

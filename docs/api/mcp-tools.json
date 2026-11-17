@@ -1700,6 +1700,110 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
+    "description": "Plans a change (nothing changes until apply_plan). Changes the special-name handling: iCloud Private Relay names answered NXDOMAIN (blockIcloudPrivateRelay), single-label names kept off upstreams (singleLabelNxdomain, domain-needed), the Firefox canary, private reverse lookups, CHAOS queries, localhost, and ddrName (the name the encrypted listeners' certificates carry, for DDR). Fields left out keep their current values. A field the config files set can't be changed here. ddrName is admin-only: an agent can't plan it (refused). Applies on the next query, with no restart. Needs config:write:special (and config:read to read the current settings).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "blockFirefoxCanary": {
+          "description": "use-application-dns.net answers NXDOMAIN, so Firefox keeps the network's DNS.",
+          "type": "boolean"
+        },
+        "blockIcloudPrivateRelay": {
+          "description": "mask.icloud.com and mask-h2.icloud.com answer NXDOMAIN, so Apple devices turn Private Relay off here.",
+          "type": "boolean"
+        },
+        "ddrName": {
+          "description": "The host name on the encrypted listeners' certificates (DDR). Admin-only: an agent can't set it.",
+          "type": "string"
+        },
+        "localhost": {
+          "description": "localhost names answer loopback addresses.",
+          "type": "boolean"
+        },
+        "privatePtrNxdomain": {
+          "description": "Reverse lookups for private addresses answer NXDOMAIN unless local data or a route covers them.",
+          "type": "boolean"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "refuseChaos": {
+          "description": "CHAOS-class queries (version.bind, id.server) are REFUSED.",
+          "type": "boolean"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
+        },
+        "singleLabelNxdomain": {
+          "description": "One-label names asked for A, AAAA or HTTPS that nothing local answers get NXDOMAIN without upstreams.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_set_special_names"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Changes the device-name settings: the domain devices get names under (deviceDomain, e.g. home.arpa; local is refused), the TTL of those answers (deviceTtl), whether names devices announce over mDNS count (deviceMdns; needs the mDNS switch on, which an admin sets), automatic reverse names (autoPtr), and the TTL of other local names (defaultTtl). Fields left out keep their current values; a field the config files set can't be changed here. Names change within about 10 seconds, with no restart. Needs config:write:local (and config:read to read the current settings).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "autoPtr": {
+          "description": "Make reverse names for every local address record.",
+          "type": "boolean"
+        },
+        "defaultTtl": {
+          "description": "Seconds for local names without their own TTL.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deviceDomain": {
+          "description": "The domain, such as home.arpa (not local). Empty turns device names off.",
+          "type": "string"
+        },
+        "deviceMdns": {
+          "description": "Also name devices by the names they announce over mDNS.",
+          "type": "boolean"
+        },
+        "deviceTtl": {
+          "description": "Seconds for device names (they follow DHCP, so keep it short; 60 by default).",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_set_device_names"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Plans a change (nothing changes until apply_plan). Changes which names and devices are kept out of the query log, the live view, the dashboard and top lists, anomalies, and exports (noise like connectivity checks or a monitoring probe). Their queries are still answered and still counted in /metrics. `names` covers each name and its subdomains; `clients` takes addresses or networks; both replace the current lists. `enabled` turns the exclusions off without losing the lists. Fields left out keep their current values. Applies to every node from the next query. Needs config:write:exclusions (and config:read to read the current ones).",
     "inputSchema": {
       "additionalProperties": false,

@@ -5,6 +5,7 @@
   import StatusBadge from './StatusBadge.svelte';
   import FlowDiagram from './FlowDiagram.svelte';
   import type { FlowPath } from '../help';
+  import { href } from '../router.svelte';
 
   let { x }: { x: S['Explanation'] } = $props();
 
@@ -27,6 +28,16 @@
             ? 'route'
             : 'upstream',
   );
+  // REQ: DNS-019 (T24.12, ADR-904) — the special-name rule that answered, and its switch.
+  const specialSwitch: Record<string, string> = {
+    private_relay: 'Block iCloud Private Relay names',
+    single_label: 'Keep one-label names off the internet',
+    firefox_canary: "Answer Firefox's DoH canary NXDOMAIN",
+    private_ptr: 'Private reverse lookups get NXDOMAIN',
+    chaos: 'Refuse CHAOS queries',
+    localhost: 'Answer localhost',
+    ddr: 'Encrypted DNS name (DDR)',
+  };
   const detail = $derived(
     x.outcome === 'blocked' && x.block
       ? `list ${x.block.list}`
@@ -48,6 +59,24 @@
       <div class="muted small">Blocking is paused for this client until {dateTime(x.pausedUntilUnixSeconds)}.</div>
     {/if}
   </div>
+
+  {#if x.outcome === 'special'}
+    <section class="card" data-testid="explain-special">
+      <h3>Special name</h3>
+      {#if x.special && specialSwitch[x.special]}
+        <p>
+          This is answered by the special-name rule <strong>{specialSwitch[x.special]}</strong>.
+          <a href={href('/settings', { tab: 'queries' })} data-testid="explain-special-switch">Its switch is in Settings</a>.
+        </p>
+      {:else if x.special === 'resolver_arpa'}
+        <p>resolver.arpa is answered here and never forwarded (RFC 9462). Its switch is the encrypted DNS name in Settings.</p>
+        <p><a href={href('/settings', { tab: 'queries' })}>Special names in Settings</a></p>
+      {:else}
+        <p>A special-use name, answered without forwarding.</p>
+      {/if}
+      <p><a href={href('/queries', { status: 'special' })} data-testid="explain-special-log">Special answers in the query log</a></p>
+    </section>
+  {/if}
 
   <section class="card" data-testid="explain-flow">
     <FlowDiagram highlight={path} device={x.client.device ?? x.client.ip} name={x.name} {detail} />

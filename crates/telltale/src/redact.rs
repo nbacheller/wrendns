@@ -27,6 +27,9 @@ pub(crate) const fn api_kind(kind: ManagedKind) -> &'static str {
         ManagedKind::Simulate => "simulate",
         ManagedKind::Rollout => "rollout_settings",
         ManagedKind::KubernetesMap => "kubernetes_map",
+        ManagedKind::Special => "special",
+        ManagedKind::Local => "local",
+        ManagedKind::Clients => "clients",
     }
 }
 

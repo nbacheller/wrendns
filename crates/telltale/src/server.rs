@@ -1134,6 +1134,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // off the query path; follows reloads.
     tokio::spawn(crate::device_dns::run(
         Arc::clone(&pipeline),
+        cfg.clients.mdns,
         http_stopped.clone(),
     ));
     // REQ: T8.3 — device names from mDNS announcements (read at startup).

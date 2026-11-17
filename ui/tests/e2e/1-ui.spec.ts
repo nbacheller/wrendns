@@ -1915,6 +1915,296 @@ test('dns_014 the rate limit is adjusted from the UI and reverted', async () => 
   await expect(row).toContainText('1000 queries per 60 s');
 });
 
+// REQ: DNS-019 (T24.12, ADR-904, ADR-914) — Settings → Query handling → Special names: the
+// switch is changed and applied with no restart (mask.icloud.com is no longer a special answer
+// in Explain), and reverted to the file.
+test('dns_019 special names card switches private relay off', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/settings?tab=queries');
+  const editor = page.getByTestId('editor-special');
+  const row = editor.getByTestId('entry-row');
+  await expect(row).toContainText('Private Relay blocked');
+  await expect(row).toContainText('config file');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await page.getByRole('switch', { name: 'Block iCloud Private Relay names' }).uncheck();
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('entry-preview')).toContainText('next query');
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(row).toContainText('Private Relay allowed');
+  await expect(row).toContainText('overrides the file');
+  await page.goto('/#/explain?name=mask.icloud.com&client=127.0.0.1');
+  await expect(page.getByTestId('explain-flow')).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('explain-special')).toHaveCount(0);
+  await page.goto('/#/settings?tab=queries');
+  await row.getByRole('button', { name: 'Revert to the file' }).click();
+  await expect(row).toContainText('Private Relay blocked');
+  await expect(row).toContainText('config file');
+  await page.goto('/#/explain?name=mask.icloud.com&client=127.0.0.1');
+  await expect(page.getByTestId('explain-special')).toContainText('Block iCloud Private Relay names', { timeout: 30_000 });
+});
+
+// REQ: DNS-019 (T24.12, ADR-914) — a listener's certificate that doesn't cover the DDR name
+// is said so in the card's hint (the listener checks' results are mocked here).
+test('dns_019 ddr name warns when not on the certificate', async () => {
+  const probe = (proto: string, certNames: string[]) => ({
+    listener: true, proto, node: 'home-dns', ok: true, target: `127.0.0.1:${proto === 'dot' ? 853 : 443}`,
+    certNames, checkedUnixSeconds: 1_800_000_000, consecutiveFailures: 0, latencyMs: 2, lastOkUnixSeconds: 1_800_000_000,
+  });
+  await page.route('**/api/v1/system/probes', (route) =>
+    route.fulfill({ json: { items: [probe('dot', ['dns.home.arpa', '127.0.0.1']), probe('doh', ['dns.home.arpa'])] } }),
+  );
+  try {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto('/#/settings?tab=queries');
+    const row = page.getByTestId('editor-special').getByTestId('entry-row');
+    await row.getByRole('button', { name: 'Edit' }).click();
+    const note = page.getByTestId('editor-note');
+    await page.getByRole('textbox', { name: 'Encrypted DNS name (DDR)' }).fill('dns.home.arpa');
+    await expect(note).toContainText('covers dns.home.arpa');
+    await page.getByRole('textbox', { name: 'Encrypted DNS name (DDR)' }).fill('dns.example.com');
+    await expect(note).toContainText('Not on the certificate of home-dns dot, home-dns doh');
+    await expect(note).toContainText('would refuse it');
+    await page.getByRole('button', { name: 'Close' }).click();
+  } finally {
+    await page.unroute('**/api/v1/system/probes');
+  }
+});
+
+// REQ: DNS-019 (T24.12, ADR-914) — an operator sees the DDR name read-only, and the server
+// refuses an operator's change to it by name (403), while the other switches stay theirs.
+test('dns_019 operator sees ddr_name read-only', async () => {
+  const r = page.request;
+  const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const OPERATOR = { user: 'operator1', pass: 'operator long password' };
+  const made = await r.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: OPERATOR.user, password: OPERATOR.pass, role: 'operator' } });
+  expect([200, 201, 409]).toContain(made.status());
+  const op = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  try {
+    const p = await op.newPage();
+    await p.goto('/#/settings?tab=queries');
+    await p.getByLabel('Username', { exact: true }).fill(OPERATOR.user);
+    await p.getByLabel('Password', { exact: true }).fill(OPERATOR.pass);
+    await p.getByRole('button', { name: 'Sign in' }).click();
+    await expect(p.getByTestId('editor-special')).toBeVisible({ timeout: 30_000 });
+    const row = p.getByTestId('editor-special').getByTestId('entry-row');
+    await row.getByRole('button', { name: 'Edit' }).click();
+    await expect(p.getByRole('textbox', { name: 'Encrypted DNS name (DDR)' })).toHaveAttribute('readonly', '');
+    await expect(p.getByTestId('admin-only').first()).toContainText('Only an admin can change this.');
+    await p.getByRole('button', { name: 'Close' }).click();
+    // The server says no whatever the form does.
+    const ocsrf = (await (await op.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+    const moved = await op.request.put('/api/v1/special-names/default', {
+      headers: { 'x-csrf-token': ocsrf },
+      data: { ddr_name: 'dns.example.com' },
+    });
+    expect(moved.status()).toBe(403);
+    expect(await moved.text()).toContain('ddr_name');
+  } finally {
+    await op.close();
+  }
+});
+
+// REQ: DNS-019 (T24.12, ADR-914) — a viewer sees the special names, read-only.
+test('dns_019 viewer sees special names read-only', async () => {
+  const r = page.request;
+  const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const made = await r.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: VIEWER.user, password: VIEWER.pass, role: 'viewer' } });
+  expect([200, 201, 409]).toContain(made.status());
+  const v = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  try {
+    const p = await v.newPage();
+    await p.goto('/#/settings?tab=queries');
+    await p.getByLabel('Username', { exact: true }).fill(VIEWER.user);
+    await p.getByLabel('Password', { exact: true }).fill(VIEWER.pass);
+    await p.getByRole('button', { name: 'Sign in' }).click();
+    const row = p.getByTestId('editor-special').getByTestId('entry-row');
+    await expect(row).toContainText('Private Relay blocked', { timeout: 30_000 });
+    await expect(row.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+    await expect(row.getByRole('button', { name: 'Revert to the file' })).toHaveCount(0);
+  } finally {
+    await v.close();
+  }
+});
+
+// REQ: DNS-023 (T24.13, ADR-901, ADR-914) — Local DNS → Device names in DNS: a domain turns
+// device names on (`local` is refused, the server says why), and it's reverted to the file.
+test('dns_023 turn on device names from the local DNS page', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/local-dns');
+  const card = page.getByTestId('device-names-card');
+  await expect(card.getByTestId('device-domain')).toContainText('off');
+  await card.getByTestId('device-names-edit').click();
+  const domain = card.getByRole('textbox', { name: 'Domain' });
+  await domain.fill('local');
+  await card.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('local');
+  // The refusal above is expected: not a page problem.
+  for (let i = problems.length - 1; i >= 0; i--) if (problems[i].includes('status of 422')) problems.splice(i, 1);
+  await domain.fill('home.arpa');
+  await card.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(card.getByTestId('device-names-preview')).toContainText('within about 10 seconds');
+  await card.getByRole('button', { name: 'Apply' }).click();
+  await expect(card.getByTestId('device-domain')).toContainText('home.arpa');
+  await expect(card.getByTestId('device-names-count')).toBeVisible();
+  await card.getByRole('button', { name: 'Revert to the file' }).click();
+  await expect(card.getByTestId('device-domain')).toContainText('off');
+});
+
+// The e2e server sets `[clients] mdns = true` in its file (T8.6 needs it), so the real server
+// shows that field as "set by file". The tests of the switch's own states answer the
+// `clients` entry from page.route (ADR: the e2e server has no such source), and the rest check
+// what the real server does.
+const clientsEntry = (mdns: boolean, setByFile: string[] = []) => ({
+  items: [{ kind: 'clients', name: 'default', source: 'file', definition: { mdns, mdns_port: 15353 }, redacted: [], credentialIssues: [], setByFile }],
+});
+
+// REQ: DNS-023 (T24.13, ADR-914) — the mDNS switch for names is disabled, and says why, while
+// `[clients] mdns` is off.
+test('dns_023 mdns switch needs clients mdns', async () => {
+  await page.route(/\/api\/v1\/config\/entries\?kind=clients/, (route) => route.fulfill({ json: clientsEntry(false) }));
+  try {
+    // The card is already mounted from the test before: leave the page and come back, so it reads the mocked entry.
+    await page.goto('/#/settings?tab=queries');
+    await page.goto('/#/local-dns');
+    const card = page.getByTestId('device-names-card');
+    await card.getByTestId('device-names-edit').click();
+    await expect(card.getByRole('switch', { name: 'Name devices by their mDNS names' })).toBeDisabled();
+    await expect(card.getByTestId('mdns-needed')).toContainText('Off until mDNS listening is on');
+    await card.getByRole('button', { name: 'Cancel' }).click();
+  } finally {
+    await page.unroute(/\/api\/v1\/config\/entries\?kind=clients/);
+  }
+});
+
+// REQ: DNS-019, DNS-023 (M4, ADR-914) — every device-name field the files set is locked and
+// labelled, and the request leaves those fields out (the files' values apply). The entries are
+// mocked: the e2e file sets none of them. `mdns_port` is marked set by file too.
+test('dns_023 device-name fields set by file are locked', async () => {
+  const setByFile = ['device_domain', 'device_ttl', 'auto_ptr', 'default_ttl', 'device_mdns'];
+  const local = {
+    items: [{
+      kind: 'local', name: 'default', source: 'file',
+      definition: { device_domain: 'home.arpa', device_ttl: 60, auto_ptr: true, default_ttl: 300, device_mdns: true, hosts_files: [] },
+      redacted: [], credentialIssues: [], setByFile, answering: 3,
+    }],
+  };
+  await page.route(/\/api\/v1\/config\/entries\?kind=local/, (route) => route.fulfill({ json: local }));
+  await page.route(/\/api\/v1\/config\/entries\?kind=clients/, (route) => route.fulfill({ json: clientsEntry(true, ['mdns_port']) }));
+  let sent = null as Record<string, unknown> | null;
+  await page.route(/\/api\/v1\/local-settings\/default/, async (route) => {
+    if (route.request().method() !== 'PUT') return route.fallback();
+    sent = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      json: { applied: false, configVersion: 1, before: {}, after: {}, recentQueries: 0, impact: 'Device names in DNS change within about 10 seconds on every node, with no restart.', warnings: [] },
+    });
+  });
+  try {
+    await page.goto('/#/settings?tab=queries');
+    await page.goto('/#/local-dns');
+    const card = page.getByTestId('device-names-card');
+    await expect(card.getByTestId('device-domain')).toContainText('home.arpa');
+    await card.getByTestId('device-names-edit').click();
+    for (const label of ['Domain', 'TTL of device names (seconds)', 'TTL of other local names (seconds)']) {
+      await expect(card.getByLabel(label, { exact: true })).toHaveAttribute('readonly', '');
+    }
+    await expect(card.getByLabel('Reverse names for local addresses')).toBeDisabled();
+    await expect(card.getByRole('switch', { name: 'Name devices by their mDNS names' })).toBeDisabled();
+    await expect(card.getByTestId('set-by-file')).toHaveCount(5);
+    await expect(page.getByTestId('clients-mdns')).toContainText('(set by file)');
+    await card.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(card.getByTestId('device-names-preview')).toBeVisible();
+    expect(sent).not.toBeNull();
+    for (const k of setByFile) expect(sent).not.toHaveProperty(k);
+  } finally {
+    await page.unroute(/\/api\/v1\/config\/entries\?kind=local/).catch(() => {});
+    await page.unroute(/\/api\/v1\/config\/entries\?kind=clients/).catch(() => {});
+    await page.unroute(/\/api\/v1\/local-settings\/default/).catch(() => {});
+  }
+});
+
+// REQ: DNS-023 (T24.13, ADR-914) — an admin turns on `[clients] mdns`: the switch names the
+// setting, is checked (a dry run) before it's applied, and sends `mdns: true`. The entry is
+// answered from a mock (the e2e file sets it), so only the UI's part is checked here.
+test('dns_023 admin turns on clients mdns', async () => {
+  let mdns = false;
+  await page.route(/\/api\/v1\/config\/entries\?kind=clients/, (route) => route.fulfill({ json: clientsEntry(mdns) }));
+  const change = (applied: boolean) => ({
+    applied, configVersion: 1, before: { mdns: false }, after: { mdns: true }, recentQueries: 0,
+    impact: 'Applies on every node after the reload. mDNS names are only heard on the LAN, so this needs a listener there.', warnings: [],
+  });
+  await page.route(/\/api\/v1\/clients-settings\/default/, async (route) => {
+    if (route.request().method() !== 'PUT') return route.fallback();
+    const dry = route.request().url().includes('dryRun=true');
+    if (!dry) mdns = true;
+    await route.fulfill({ json: change(!dry) });
+  });
+  try {
+    await page.goto('/#/settings?tab=queries');
+    await page.goto('/#/local-dns');
+    const mdnsSection = page.getByTestId('clients-mdns');
+    await mdnsSection.getByRole('switch', { name: 'Listen for mDNS announcements' }).check();
+    const applied = page.waitForRequest((r) => r.method() === 'PUT' && r.url().includes('/clients-settings/default') && !r.url().includes('dryRun') && r.postData()?.includes('"mdns":true') === true);
+    await mdnsSection.getByRole('button', { name: 'Check' }).click({ force: true });
+    await expect(page.getByTestId('mdns-preview')).toContainText('mDNS');
+    await mdnsSection.getByRole('button', { name: 'Apply' }).click({ force: true });
+    await applied;
+    await page.unroute(/\/api\/v1\/config\/entries\?kind=clients/);
+    await page.reload();
+    await expect(page.getByTestId('clients-mdns')).toBeVisible();
+  } finally {
+    await page.unroute(/\/api\/v1\/clients-settings\/default/).catch(() => {});
+    await page.unroute(/\/api\/v1\/config\/entries\?kind=clients/).catch(() => {});
+  }
+});
+
+// REQ: DNS-023 (T24.13, ADR-914) — an operator can't change `[clients] mdns`: the real server
+// says the file sets it (409 set_by_file, naming the field), and the card shows it as set by file.
+test('dns_023 operator sees clients mdns read-only', async () => {
+  const r = page.request;
+  const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const OPERATOR = { user: 'operator1', pass: 'operator long password' };
+  await r.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: OPERATOR.user, password: OPERATOR.pass, role: 'operator' } });
+  const op = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  try {
+    const p = await op.newPage();
+    await p.goto('/#/local-dns');
+    await p.getByLabel('Username', { exact: true }).fill(OPERATOR.user);
+    await p.getByLabel('Password', { exact: true }).fill(OPERATOR.pass);
+    await p.getByRole('button', { name: 'Sign in' }).click();
+    const mdns = p.getByTestId('clients-mdns');
+    await expect(mdns.getByTestId('mdns-set-by-file')).toBeVisible({ timeout: 30_000 });
+    await expect(mdns.getByRole('switch', { name: 'Listen for mDNS announcements' })).toHaveCount(0);
+    const ocsrf = (await (await op.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+    const moved = await op.request.put('/api/v1/clients-settings/default', { headers: { 'x-csrf-token': ocsrf }, data: { mdns: false } });
+    expect(moved.status()).toBe(409);
+    expect(await moved.text()).toContain('mdns');
+  } finally {
+    await op.close();
+  }
+});
+
+// REQ: DNS-023 (T24.13, ADR-901) — a viewer sees the device-name settings, read-only. The viewer
+// is made here (not by an earlier test), so this test runs on its own.
+test('dns_023 viewer sees device-name settings read-only', async () => {
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const made = await page.request.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: VIEWER.user, password: VIEWER.pass, role: 'viewer' } });
+  expect([200, 201, 409]).toContain(made.status());
+  const v = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  try {
+    const p = await v.newPage();
+    await p.goto('/#/local-dns');
+    await p.getByLabel('Username', { exact: true }).fill(VIEWER.user);
+    await p.getByLabel('Password', { exact: true }).fill(VIEWER.pass);
+    await p.getByRole('button', { name: 'Sign in' }).click();
+    const card = p.getByTestId('device-names-card');
+    await expect(card.getByTestId('device-domain')).toContainText('off', { timeout: 30_000 });
+    await expect(card.getByTestId('device-names-edit')).toHaveCount(0);
+    await expect(p.getByTestId('clients-mdns').getByTestId('mdns-set-by-file')).toBeVisible();
+  } finally {
+    await v.close();
+  }
+});
+
 // REQ: UPS-007 (T9.25) — a group's upstream servers are chosen in the Groups editor.
 test('ups_007 a group picks its upstream group from the UI', async () => {
   await page.goto('/#/groups');

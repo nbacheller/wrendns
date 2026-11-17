@@ -1577,6 +1577,7 @@ impl Backend for ApiBackend {
                     }),
             },
             outcome: label(&e.outcome),
+            special: e.special.map(str::to_owned),
             summary: e.summary,
             block: e.block.map(|b| ExplainBlock {
                 list: b.list,
@@ -2998,6 +2999,8 @@ impl Backend for ApiBackend {
                     definition: serde_json::to_value(e).ok(),
                     redacted: Vec::new(),
                     credential_issues: Vec::new(),
+                    set_by_file: Vec::new(),
+                    answering: None,
                 });
             }
             for (n, o) in stored {
@@ -3009,6 +3012,8 @@ impl Backend for ApiBackend {
                         definition: None,
                         redacted: Vec::new(),
                         credential_issues: Vec::new(),
+                        set_by_file: Vec::new(),
+                        answering: None,
                     });
                 }
             }
@@ -3079,6 +3084,8 @@ impl Backend for ApiBackend {
                 definition: serde_json::to_value(&cfg.ratelimit).ok(),
                 redacted: Vec::new(),
                 credential_issues: Vec::new(),
+                set_by_file: Vec::new(),
+                answering: None,
             });
         }
         // REQ: OBS-022 (T12.1) — likewise, the exclusions.
@@ -3095,7 +3102,77 @@ impl Backend for ApiBackend {
                 definition: serde_json::to_value(&cfg.exclusions).ok(),
                 redacted: Vec::new(),
                 credential_issues: Vec::new(),
+                set_by_file: Vec::new(),
+                answering: None,
             });
+        }
+        // REQ: DNS-019 (T24.12), DNS-023 (T24.13, ADR-914) — the shared settings sections: the
+        // fields in effect, which of them the files set, and whether the API set the section.
+        for (mk, k, stored) in [
+            (ManagedKind::Special, "special", e.special.is_some()),
+            (ManagedKind::Local, "local", e.local.is_some()),
+            (
+                ManagedKind::Clients,
+                "clients",
+                e.clients_settings.is_some(),
+            ),
+        ] {
+            if want(k) {
+                let sec = crate::settings_kinds::section(mk);
+                // REQ: DNS-019 (M2) — the files' marks: the merged configuration loses `file_set`
+                // (it is not serialized), and `plan_settings` checks against the files too.
+                let mut set_by_file: Vec<String> = crate::settings_kinds::keys(mk)
+                    .iter()
+                    .filter(|x| file.file_set.iter().any(|f| *f == format!("{sec}.{x}")))
+                    .map(|x| (*x).to_owned())
+                    .collect();
+                // REQ: DNS-023 (M4) — `mdns_port` is read-only here, and the files' mark says so.
+                if mk == ManagedKind::Clients
+                    && file.file_set.iter().any(|f| f == "clients.mdns_port")
+                {
+                    set_by_file.push("mdns_port".to_owned());
+                }
+                // `hosts_files` is the files' (read-only here until T27.17), shown beside the
+                // fields; `answering` counts the device names in DNS now.
+                let mut definition = crate::settings_kinds::section_json(mk, &cfg);
+                let answering = (mk == ManagedKind::Local)
+                    // LOW 4: the card says "names answered", so count distinct names, not addresses.
+                    .then(|| {
+                        let names = self.src.pipeline.device_names.load();
+                        names
+                            .by_ip
+                            .values()
+                            .collect::<std::collections::HashSet<_>>()
+                            .len() as u64
+                    });
+                if mk == ManagedKind::Local
+                    && let Some(d) = definition.as_object_mut()
+                {
+                    d.insert(
+                        "hosts_files".into(),
+                        serde_json::to_value(&cfg.local.hosts_files).unwrap_or_default(),
+                    );
+                }
+                // `mdns_port` likewise: the file's, shown read-only.
+                if mk == ManagedKind::Clients
+                    && let Some(d) = definition.as_object_mut()
+                {
+                    d.insert(
+                        "mdns_port".into(),
+                        serde_json::to_value(cfg.clients.mdns_port).unwrap_or_default(),
+                    );
+                }
+                out.push(telltale_api::model::ConfigEntry {
+                    kind: k.to_owned(),
+                    name: "default".to_owned(),
+                    source: if stored { "override" } else { "file" }.to_owned(),
+                    definition: Some(definition),
+                    redacted: Vec::new(),
+                    credential_issues: Vec::new(),
+                    set_by_file,
+                    answering,
+                });
+            }
         }
         // REQ: CLU-013 (T13.2) — likewise, the rollout settings.
         if want("rollout") {
@@ -3111,6 +3188,8 @@ impl Backend for ApiBackend {
                 definition: serde_json::to_value(&cfg.cluster.rollout).ok(),
                 redacted: Vec::new(),
                 credential_issues: Vec::new(),
+                set_by_file: Vec::new(),
+                answering: None,
             });
         }
         // REQ: OBS-024 (T13.1) — likewise, the simulation settings.
@@ -3127,6 +3206,8 @@ impl Backend for ApiBackend {
                 definition: serde_json::to_value(&cfg.simulate).ok(),
                 redacted: Vec::new(),
                 credential_issues: Vec::new(),
+                set_by_file: Vec::new(),
+                answering: None,
             });
         }
         // REQ: FLT-010 (T9.7)
@@ -3940,6 +4021,9 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Simulate => crate::managed::SIMULATE,
         ManagedKind::Rollout => crate::managed::ROLLOUT,
         ManagedKind::KubernetesMap => crate::managed::KUBERNETES_MAP,
+        ManagedKind::Special => crate::managed::SPECIAL,
+        ManagedKind::Local => crate::managed::LOCAL,
+        ManagedKind::Clients => crate::managed::CLIENTS,
     }
 }
 
@@ -4311,6 +4395,9 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         (ManagedKind::Rollout, false) => {
             "The config file's rollout settings (or none: every change reaches every node at once) apply again.".into()
         }
+        (ManagedKind::Special | ManagedKind::Local | ManagedKind::Clients, put) => {
+            crate::settings_kinds::impact(kind, put)
+        }
         (ManagedKind::KubernetesMap, true) => {
             "The workloads it matches use the group from their next query, and on the other nodes within a few seconds (a pod or namespace label still wins).".into()
         }
@@ -4337,6 +4424,9 @@ fn plan_managed(
             | ManagedKind::Rollout
     ) {
         return plan_singleton(src, state, w);
+    }
+    if crate::settings_kinds::is_settings(w.kind) {
+        return plan_settings(src, state, w);
     }
     if matches!(
         w.kind,
@@ -4601,6 +4691,67 @@ fn singleton_change(
         after,
         body: stored,
         merged,
+    })
+}
+
+/// REQ: DNS-019 (T24.12), DNS-023 (T24.13, ADR-914) — a change to `[special]`, `[local]`, or
+/// `[clients]`: one entry, `default`. `PUT` stores the editable fields (the files win field by
+/// field: 409 `set_by_file` for one the files set to another value); `DELETE` removes what the
+/// API stored. The admin-only fields are checked here (403 naming the field); the merged
+/// configuration must validate.
+fn plan_settings(
+    src: &Sources,
+    state: &telltale_store::state::State,
+    w: &ManagedWrite,
+) -> Result<ManagedPlan, Problem> {
+    let noun = crate::settings_kinds::noun(w.kind);
+    if w.name.trim() != "default" {
+        return Err(Problem::not_found(format!(
+            "there is one {noun}, named `default`"
+        )));
+    }
+    let file = src.file_config.load_full();
+    let mut entries = crate::managed::entries(state);
+    let before_cfg = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
+    let before = crate::settings_kinds::section_json(w.kind, &before_cfg);
+    let file_section = crate::settings_kinds::section_json(w.kind, &file);
+    let stored = if let Some(v) = &w.body {
+        let s = crate::settings_kinds::prepare(w.kind, v, &file_section, &file)?;
+        crate::settings_kinds::set_stored(&mut entries, w.kind, Some(s.clone()));
+        Some(s)
+    } else {
+        if crate::settings_kinds::none_stored(&entries, w.kind) {
+            return Err(Problem::not_found(format!(
+                "the {noun} weren't changed through the API or UI: the config file's are in effect"
+            )));
+        }
+        crate::settings_kinds::set_stored(&mut entries, w.kind, None);
+        None
+    };
+    let merged = crate::managed::merge(&file, &entries)
+        .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
+    let after = crate::settings_kinds::section_json(w.kind, &merged);
+    crate::settings_kinds::check_admin_fields(w.kind, &before, &after, w.role, w.agent.as_deref())?;
+    let mut warnings = telltale_config::validate_config(&merged).unwrap_or_default();
+    // REQ: DNS-023 (H1) — the mDNS listener starts once, at start-up: a change to `[clients]`
+    // says so here, as the dry run's answer does.
+    if w.kind == ManagedKind::Clients && before != after {
+        warnings.push(
+            "`[clients] mdns` takes effect after a restart on every node: the mDNS listener starts once, at start-up.".to_owned(),
+        );
+    }
+    let (recent_queries, impact) = managed_impact(src, w.kind, "default", stored.is_some());
+    Ok(ManagedPlan {
+        name: "default".to_owned(),
+        before: Some(before),
+        after: Some(after),
+        body: stored.map(|s| s.to_string()),
+        recent_queries,
+        impact,
+        warnings,
+        also: Vec::new(),
+        candidate: merged,
+        redirect: None,
     })
 }
 
@@ -5715,7 +5866,9 @@ fn singleton_in_git(
     match after {
         Some(a) if set => {
             let mut root = toml::Table::new();
-            if let Ok(toml::Value::Table(t)) = toml::Value::try_from(a) {
+            // REQ: DNS-019, DNS-023 (M1) — TOML has no null: an unset field (`ddr_name`,
+            // `device_domain`) is left out, as the file would leave it out.
+            if let Ok(toml::Value::Table(t)) = toml::Value::try_from(without_nulls(a)) {
                 root.insert(section.to_owned(), toml::Value::Table(t));
             }
             format!("{head}{}", toml::to_string(&root).unwrap_or_default())
@@ -5723,6 +5876,19 @@ fn singleton_in_git(
         _ => format!(
             "# Nothing to change in Git: the configuration's own [{section}] applies again.\n"
         ),
+    }
+}
+
+/// `v` with every `null` object member removed (recursively): TOML has no null.
+fn without_nulls(v: &serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(m) => serde_json::Value::Object(
+            m.iter()
+                .filter(|(_, x)| !x.is_null())
+                .map(|(k, x)| (k.clone(), without_nulls(x)))
+                .collect(),
+        ),
+        other => other.clone(),
     }
 }
 
@@ -5750,6 +5916,9 @@ fn keep_in_git(
         ManagedKind::Simulate => "simulate",
         ManagedKind::Rollout => "cluster.rollout",
         ManagedKind::KubernetesMap => "kubernetes.map",
+        ManagedKind::Special => "special",
+        ManagedKind::Local => "local",
+        ManagedKind::Clients => "clients",
     };
     let head = "# Add to the configuration in Git (with the Helm chart: under `config:`).\n";
     // REQ: FLT-017 — a map rule: `[[kubernetes.map]]`, or a label on the namespace or pod.
@@ -5781,6 +5950,9 @@ fn keep_in_git(
             | ManagedKind::Exclusions
             | ManagedKind::Simulate
             | ManagedKind::Rollout
+            | ManagedKind::Special
+            | ManagedKind::Local
+            | ManagedKind::Clients
     ) {
         return singleton_in_git(head, section, body.is_some(), after);
     }
@@ -6790,5 +6962,52 @@ mod lists_refresh_tests {
         src.lists.store(None);
         let e = api.lists_refresh(write(None, false)).await.unwrap_err();
         assert_eq!(e.code, telltale_api::problem::Code::ListsNotHere);
+    }
+}
+
+#[cfg(test)]
+mod settings_keep_in_git_tests {
+    use super::*;
+
+    fn cfg(toml: &str) -> telltale_config::Config {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .map_err(|e| format!("{e:?}"))
+            .unwrap()
+            .config
+    }
+
+    /// REQ: DNS-019 (M1, API-002) — the Git snippet for `[special]` is the section, with the
+    /// unset `ddr_name` left out (TOML has no null), and it parses.
+    #[test]
+    fn dns_019_special_keep_in_git() {
+        let c = cfg("[special]\nsingle_label_nxdomain = true\n");
+        let after = crate::settings_kinds::section_json(ManagedKind::Special, &c);
+        let s = keep_in_git(ManagedKind::Special, "default", Some(&after), Some(&after));
+        assert!(s.contains("[special]"), "{s}");
+        assert!(s.contains("single_label_nxdomain = true"), "{s}");
+        assert!(!s.contains("ddr_name"), "an unset name is left out: {s}");
+        toml::from_str::<toml::Table>(&s).unwrap_or_else(|e| panic!("{e}: {s}"));
+    }
+
+    /// REQ: DNS-023 (M1, API-002) — the Git snippet for `[local]` keeps the names on, and leaves
+    /// out `device_domain` while names are off.
+    #[test]
+    fn dns_023_local_keep_in_git() {
+        let off = crate::settings_kinds::section_json(ManagedKind::Local, &cfg(""));
+        let s = keep_in_git(ManagedKind::Local, "default", Some(&off), Some(&off));
+        assert!(s.contains("[local]"), "{s}");
+        assert!(s.contains("device_ttl"), "{s}");
+        assert!(!s.contains("device_domain"), "names off: left out: {s}");
+        toml::from_str::<toml::Table>(&s).unwrap_or_else(|e| panic!("{e}: {s}"));
+        let on = crate::settings_kinds::section_json(
+            ManagedKind::Local,
+            &cfg("[local]\ndevice_domain = \"home.arpa\"\n"),
+        );
+        let s = keep_in_git(ManagedKind::Local, "default", Some(&on), Some(&on));
+        assert!(s.contains("device_domain = \"home.arpa\""), "{s}");
+        toml::from_str::<toml::Table>(&s).unwrap_or_else(|e| panic!("{e}: {s}"));
     }
 }

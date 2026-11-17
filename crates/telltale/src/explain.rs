@@ -36,6 +36,12 @@ pub(crate) struct Explanation {
     pub(crate) qtype: u16,
     pub(crate) client: ClientInfo,
     pub(crate) outcome: Outcome,
+    /// REQ: DNS-019 (T24.12, ADR-914) — for a `special` outcome, the name of the special-name
+    /// rule that answered: `private_relay`, `single_label`, `resolver_arpa`, `ddr`,
+    /// `firefox_canary`, `private_ptr`, `chaos`, or `localhost`. It is a rule's name, not a field
+    /// of `[special]`: the UI maps it to the switch that controls it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) special: Option<&'static str>,
     /// One sentence for people.
     pub(crate) summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -204,6 +210,7 @@ pub(crate) fn explain(
             workload: workload.as_ref().map(|(w, _)| w.clone()),
         },
         outcome: Outcome::Resolved,
+        special: None,
         summary: String::new(),
         block: None,
         paused_until: None,
@@ -233,6 +240,11 @@ pub(crate) fn explain(
     ) {
         Ok(special) => special,
         Err((outcome, summary)) => {
+            // REQ: DNS-019 (T24.12) — the rule behind a special-name answer, named for the UI.
+            if outcome == Outcome::Special && !q.is_any() && !q.is_zone_transfer() {
+                e.special = telltale_policy::classify(&q, &policy.special)
+                    .and_then(|s| special_key(&q, s, policy.ddr.is_empty()));
+            }
             e.outcome = outcome;
             e.summary = summary;
             return Ok(e);
@@ -322,11 +334,13 @@ pub(crate) fn explain(
     // Same rules as the pipeline's `resolve_or_defer`.
     if special == Some(Special::PrivatePtr) && !selection.as_ref().is_some_and(|s| s.routed) {
         e.outcome = Outcome::Special;
+        e.special = Some("private_ptr");
         e.summary = "private reverse lookup with no [[route]] for it: NXDOMAIN without forwarding (RFC 6303)".into();
     } else if special == Some(Special::SingleLabel) && !selection.as_ref().is_some_and(|s| s.routed)
     {
         // REQ: DNS-019 (ADR-904)
         e.outcome = Outcome::Special;
+        e.special = Some("single_label");
         e.summary = "single-label name with no local answer and no [[route]] for it: NXDOMAIN without forwarding ([special] single_label_nxdomain)".into();
     } else if let Some(sel) = selection {
         e.route = Some(RouteInfo {
@@ -512,6 +526,40 @@ fn rcode_text(rc: u16) -> String {
         rcode::REFUSED => "REFUSED".to_owned(),
         other => format!("rcode {other}"),
     }
+}
+
+/// REQ: DNS-019 (T24.12, ADR-914) — the name of a special-name rule, as the UI and the
+/// explanation name it. `None` for a rule with no name of its own (`.invalid`, and any other
+/// name the special rules don't list). `resolver.arpa` is `ddr` for a DDR query while this node
+/// advertises designated resolvers (`[special] ddr_name` and encrypted listeners), and
+/// `resolver_arpa` otherwise.
+fn special_key(q: &telltale_proto::Query<'_>, s: Special, no_ddr: bool) -> Option<&'static str> {
+    Some(match s {
+        Special::Refused => "chaos",
+        Special::Localhost => "localhost",
+        Special::PrivateRelay => "private_relay",
+        Special::SingleLabel => "single_label",
+        Special::PrivatePtr => "private_ptr",
+        Special::Nxdomain => {
+            if q.qname
+                .display()
+                .to_string()
+                .trim_end_matches('.')
+                .eq_ignore_ascii_case("use-application-dns.net")
+            {
+                "firefox_canary"
+            } else {
+                return None;
+            }
+        }
+        Special::ResolverArpa => {
+            if telltale_policy::is_ddr_query(q) && !no_ddr {
+                "ddr"
+            } else {
+                "resolver_arpa"
+            }
+        }
+    })
 }
 
 /// `spec/03` §3 steps 2–5 (access, ANY, special names, local records and zones): the outcome

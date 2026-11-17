@@ -246,6 +246,9 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                 ManagedKind::Simulate => "simulate",
                 ManagedKind::Rollout => "rollout_settings",
                 ManagedKind::KubernetesMap => "kubernetes_map",
+                ManagedKind::Special => "special",
+                ManagedKind::Local => "local",
+                ManagedKind::Clients => "clients",
             };
             let deleting = body.is_none();
             let r = local
@@ -467,6 +470,10 @@ async fn send<T: serde::de::DeserializeOwned>(
 /// The first version whose primary applies the marker rule (ADR-903 §4).
 pub(crate) const MARKERS_SINCE: (u64, u64, u64) = (0, 8, 0);
 
+/// REQ: DNS-019, DNS-023 (M3, CLU-010) — the first version that knows the `special`, `local`
+/// and `clients` settings kinds. An older primary can't read them (`unknown variant`).
+pub(crate) const SETTINGS_KINDS_SINCE: (u64, u64, u64) = (0, 8, 0);
+
 /// Whether a version string (`0.8.0`, `v0.8.1-rc.1`) is at least `min`; unreadable is not.
 pub(crate) fn version_at_least(v: &str, min: (u64, u64, u64)) -> bool {
     let core = v.trim().trim_start_matches('v');
@@ -518,6 +525,42 @@ fn markers_understood(
     .hint("Upgrade the primary first, or send the credential itself instead of `<redacted>`."))
 }
 
+/// REQ: DNS-019, DNS-023 (M3, CLU-010) — the settings kinds go only to a primary that reads
+/// them: an older one would refuse them as an unknown variant, which this node can't tell from
+/// a failed write. 409 `upgrade_required` otherwise (a primary whose version isn't known counts
+/// as older).
+fn settings_kinds_understood(
+    cluster: &Cluster,
+    primary: &str,
+    kind: ManagedKind,
+) -> Result<(), Problem> {
+    if !matches!(
+        kind,
+        ManagedKind::Special | ManagedKind::Local | ManagedKind::Clients
+    ) {
+        return Ok(());
+    }
+    let version = cluster
+        .members()
+        .into_iter()
+        .find(|m| m.node_id == primary)
+        .map(|m| m.version);
+    if version
+        .as_deref()
+        .is_some_and(|v| version_at_least(v, SETTINGS_KINDS_SINCE))
+    {
+        return Ok(());
+    }
+    Err(Problem::new(
+        Code::UpgradeRequired,
+        format!(
+            "this setting is not known to the primary ({}): it is too old to read it",
+            version.as_deref().unwrap_or("version unknown")
+        ),
+    )
+    .hint("Upgrade the primary first, then make this change again."))
+}
+
 /// Forwards a configuration write. REQ: API-014 — the primary's answer is redacted again here
 /// (an older primary's isn't): it becomes this node's response, audit record, and stored
 /// idempotency response.
@@ -529,6 +572,7 @@ pub(crate) async fn managed(
     let kind = w.kind;
     if let Some(p) = &primary {
         markers_understood(&cluster, p, kind, w.body.as_ref())?;
+        settings_kinds_understood(&cluster, p, kind)?;
     }
     let mut c: ConfigChange = send(&cluster, primary, w.into()).await?;
     crate::redact::change(kind, &mut c);

@@ -883,6 +883,15 @@ pub enum ManagedKind {
     /// REQ: FLT-017 (T15.1) — a `[[kubernetes.map]]` rule (`/kubernetes/map/{namespace}/{kind}/{name}`,
     /// `*` for any): the group of the workloads it matches. API rules come before the files'.
     KubernetesMap,
+    /// REQ: DNS-019 (T24.12, ADR-904, ADR-914) — `[special]` (`/special-names/default`): one
+    /// entry, like the rate limit; the files' fields win; `ddr_name` is admin-only.
+    Special,
+    /// REQ: DNS-023 (T24.13, ADR-901, ADR-914) — `[local]` (`/local-settings/default`): the
+    /// device-name settings, without `hosts_files`; one entry, the files' fields win.
+    Local,
+    /// REQ: DNS-023 (T24.13, ADR-914) — `[clients]` (`/clients-settings/default`): `mdns` only,
+    /// admin-only; one entry, the files' fields win.
+    Clients,
 }
 
 /// A write to a local name or a forwarded domain.
@@ -1223,7 +1232,7 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
+        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
