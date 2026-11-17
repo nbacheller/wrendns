@@ -5433,3 +5433,23 @@ test('api_005 the UI is served gzipped, and plain to a client that does not acce
   expect(js.headers()['content-type']).toContain('javascript');
   expect((await js.body()).length).toBeGreaterThan(100_000);
 });
+
+// REQ: T8.2 (ADR-166) — a UniFi router's offline window is on its form: 30 days by default, a value
+// past a year is refused, and 0 (connected clients only) is accepted.
+test('t8_2 offline clients days in the UniFi form', async () => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto('/#/routers');
+  await expect(page.locator('h1', { hasText: 'Routers' })).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId('routers-add').click();
+  await page.getByRole('combobox', { name: 'Kind' }).selectOption('unifi');
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('lab-offline');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('https://127.0.0.1:9');
+  const days = page.getByRole('spinbutton', { name: 'Offline clients (days)', exact: true });
+  await expect(days).toHaveValue('30');
+  await days.fill('400');
+  await page.getByTestId('routers-save').click();
+  await expect(page.getByRole('alert')).toContainText('Keep offline clients for 0 to 365 days');
+  await days.fill('0');
+  await expect(days).toHaveValue('0');
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+});

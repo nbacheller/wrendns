@@ -64,6 +64,7 @@
     tls_ca_pem: string;
     tls_server_name: string;
     interval_secs: number;
+    offline_days: number;
   };
   let form = $state<Form | null>(null);
   let formError = $state('');
@@ -78,7 +79,7 @@
   const anySecretDirty = $derived(Object.values(secretDirty).some(Boolean));
 
   function blank(): Form {
-    return { original: null, name: '', kind: 'unifi', url: 'https://', site: 'default', username: '', api_key_ref: undefined, api_secret_ref: undefined, password_ref: undefined, tls_ca_pem: '', tls_server_name: '', interval_secs: 300 };
+    return { original: null, name: '', kind: 'unifi', url: 'https://', site: 'default', username: '', api_key_ref: undefined, api_secret_ref: undefined, password_ref: undefined, tls_ca_pem: '', tls_server_name: '', interval_secs: 300, offline_days: 30 };
   }
 
   function openAdd() {
@@ -106,6 +107,7 @@
       tls_ca_pem: s('tls_ca_pem') ?? '',
       tls_server_name: s('tls_server_name') ?? '',
       interval_secs: typeof d.interval_secs === 'number' ? d.interval_secs : 300,
+      offline_days: typeof d.offline_days === 'number' ? d.offline_days : 30,
     };
     formError = '';
     checkOut = null;
@@ -126,6 +128,8 @@
     if (f.kind === 'unifi') {
       if (f.site.trim()) b.site = f.site.trim();
       if (f.username.trim()) b.username = f.username.trim();
+      // REQ: T8.2 (ADR-166) — the offline clients kept: the window, 0 for connected clients only.
+      b.offline_days = f.offline_days;
       if (f.password_ref) b.password_ref = f.password_ref;
     }
     if (f.kind === 'opnsense' && f.api_secret_ref) b.api_secret_ref = f.api_secret_ref;
@@ -207,6 +211,11 @@
     }
     if (form.interval_secs < 30) {
       formError = 'Read at least every 30 seconds.';
+      return;
+    }
+    // REQ: T8.2 (ADR-166) — the offline window is whole days, at most a year (0: connected clients only).
+    if (form.kind === 'unifi' && (!Number.isInteger(form.offline_days) || form.offline_days < 0 || form.offline_days > 365)) {
+      formError = 'Keep offline clients for 0 to 365 days (0: only the connected clients).';
       return;
     }
     busy = true;
@@ -297,6 +306,11 @@
           <label>
             <span>Username (without an API key)</span>
             <input bind:value={form.username} autocomplete="off" aria-label="Username" />
+          </label>
+          <!-- REQ: T8.2 (ADR-166) — offline clients' names come from the console's history, this many days back. -->
+          <label>
+            <span>Keep offline clients' names (days) <HelpButton id="router-offline-clients" /></span>
+            <input type="number" min="0" max="365" step="1" bind:value={form.offline_days} aria-label="Offline clients (days)" />
           </label>
         {/if}
         <label>
