@@ -185,6 +185,18 @@ const MIGRATIONS: &[&str] = &[
     INSERT INTO secrets_shadow_v13 SELECT * FROM secrets_shadow;
     DROP TABLE secrets_shadow;
     ALTER TABLE secrets_shadow_v13 RENAME TO secrets_shadow;",
+    // 14: REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API: one row, off by default,
+    // a hashed token (never the token), and the longest pause it may ask for. Node-local.
+    "CREATE TABLE pihole_api (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        enabled INTEGER NOT NULL DEFAULT 0,
+        token_hash BLOB,
+        token_created INTEGER,
+        last_used INTEGER,
+        max_pause_minutes INTEGER NOT NULL DEFAULT 60,
+        changed INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO pihole_api (id) VALUES (1);",
 ];
 
 /// REQ: API-014 — the migration that purges the old idempotency records.
@@ -309,6 +321,18 @@ impl Token {
     }
 }
 
+/// REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API's settings row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PiholeApiRow {
+    pub enabled: bool,
+    /// BLAKE3 of the token; the token itself is shown once and never stored.
+    pub token_hash: Option<Vec<u8>>,
+    pub token_created: Option<u64>,
+    pub last_used: Option<u64>,
+    /// The longest pause a request may ask for, in minutes (1 to 1,440).
+    pub max_pause_minutes: u32,
+}
+
 /// Errors from the state database.
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
@@ -411,6 +435,70 @@ impl State {
     fn with<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T> {
         let conn = self.conn.lock().unwrap_or_else(PoisonError::into_inner);
         Ok(f(&conn)?)
+    }
+
+    // ---- the Pi-hole compatible API (REQ: API-005, T24.10, ADR-961)
+
+    pub fn pihole_api(&self) -> Result<PiholeApiRow> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT enabled, token_hash, token_created, last_used, max_pause_minutes
+                 FROM pihole_api WHERE id = 1",
+                [],
+                |r| {
+                    Ok(PiholeApiRow {
+                        enabled: r.get::<_, i64>(0)? != 0,
+                        token_hash: r.get(1)?,
+                        token_created: r.get::<_, Option<i64>>(2)?.map(u),
+                        last_used: r.get::<_, Option<i64>>(3)?.map(u),
+                        max_pause_minutes: u32::try_from(r.get::<_, i64>(4)?).unwrap_or(60),
+                    })
+                },
+            )
+        })
+    }
+
+    pub fn set_pihole_enabled(&self, enabled: bool, now: u64) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE pihole_api SET enabled = ?1, changed = ?2 WHERE id = 1",
+                rusqlite::params![i64::from(enabled), i64::try_from(now).unwrap_or(0)],
+            )
+        })
+        .map(|_| ())
+    }
+
+    pub fn set_pihole_max_pause(&self, minutes: u32, now: u64) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE pihole_api SET max_pause_minutes = ?1, changed = ?2 WHERE id = 1",
+                rusqlite::params![i64::from(minutes), i64::try_from(now).unwrap_or(0)],
+            )
+        })
+        .map(|_| ())
+    }
+
+    /// Stores a new token's hash (`None` revokes the token).
+    pub fn set_pihole_token(&self, hash: Option<&[u8]>, now: u64) -> Result<()> {
+        let now = i64::try_from(now).unwrap_or(0);
+        self.with(|c| {
+            c.execute(
+                "UPDATE pihole_api SET token_hash = ?1, token_created = ?2, last_used = NULL,
+                 changed = ?3 WHERE id = 1",
+                rusqlite::params![hash, hash.map(|_| now), now],
+            )
+        })
+        .map(|_| ())
+    }
+
+    pub fn touch_pihole(&self, now: u64) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE pihole_api SET last_used = ?1 WHERE id = 1",
+                [i64::try_from(now).unwrap_or(0)],
+            )
+        })
+        .map(|_| ())
     }
 
     // ---- users
