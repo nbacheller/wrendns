@@ -17,6 +17,7 @@
   import AgentChanges from './pages/AgentChanges.svelte';
   import { navigate } from './lib/router.svelte';
   import { currentMode, loadMode, setMode } from './lib/mode.svelte';
+  import { loadIconPrefs } from './lib/icons/prefs.svelte';
   import Login from './pages/Login.svelte';
   import Setup from './pages/Setup.svelte';
   import Dashboard from './pages/Dashboard.svelte';
@@ -108,10 +109,11 @@
 
   void refreshSession();
 
-  // Each user has their own Simple/Advanced choice.
+  // Each user has their own Simple/Advanced choice, and their own domain icon choice (OBS-039).
   $effect(() => {
     void session.user?.username;
     loadMode();
+    loadIconPrefs();
   });
 
   $effect(() => {

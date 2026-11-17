@@ -3401,3 +3401,51 @@ test('obs_037 internal names', async () => {
   await card.getByRole('button', { name: 'Internet', exact: true }).click();
   await expect(ptr).toHaveCount(0);
 });
+
+// REQ: OBS-039 (ADR-167) — domain icons: a brand tile for a name the map knows (Netflix), a monogram
+// or a house for the rest. The Domain icons card (Settings → Account) picks Brand and monogram,
+// Monogram only (no brand tile) or Off, and Default (20 px) or Small (16 px); the choice is kept for
+// this user in this browser. The glyphs are a lazy chunk: loading it must not trip the CSP.
+test('obs_039 domain icons', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await query('www.netflix.com').catch(() => -1);
+  const row = () => page.locator('tbody tr').filter({ hasText: 'www.netflix.com' }).first();
+  const mark = () => row().getByTestId('domain-icon');
+  await page.goto('/#/queries?name=www.netflix.com');
+  await expect(async () => {
+    await page.reload();
+    await expect(mark()).toBeVisible({ timeout: 2000 });
+  }).toPass({ timeout: 20_000 });
+  await expect(mark()).toHaveAttribute('data-kind', 'brand');
+  await expect(mark()).toHaveAttribute('data-size', '20');
+  await expect(mark()).toHaveAttribute('title', 'Netflix');
+
+  await page.goto('/#/settings?tab=account');
+  const card = page.getByTestId('icons-card');
+  const icons = card.getByTestId('domain-icon');
+  await expect(icons).toHaveCount(3);
+  await expect(icons.nth(0)).toHaveAttribute('data-kind', 'brand');
+  await expect(icons.nth(1)).toHaveAttribute('data-kind', 'mono');
+  await expect(icons.nth(2)).toHaveAttribute('data-kind', 'house');
+  await card.getByRole('button', { name: 'Monogram only' }).click();
+  await expect(icons.nth(0)).toHaveAttribute('data-kind', 'mono');
+  await card.getByRole('button', { name: 'Small', exact: true }).click();
+  for (let i = 0; i < 3; i++) await expect(icons.nth(i)).toHaveAttribute('data-size', '16');
+  await card.getByRole('button', { name: 'Off', exact: true }).click();
+  await expect(icons).toHaveCount(0);
+  await expect(card.getByRole('button', { name: 'Small', exact: true })).toBeDisabled();
+
+  // Kept for this user in this browser, and drawn nowhere while it is Off.
+  await page.reload();
+  await expect(card.getByRole('button', { name: 'Off', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.goto('/#/queries?name=www.netflix.com');
+  await expect(row()).toBeVisible();
+  await expect(mark()).toHaveCount(0);
+
+  // Back to the defaults, for whatever runs next.
+  await page.goto('/#/settings?tab=account');
+  await card.getByRole('button', { name: 'Brand and monogram', exact: true }).click();
+  await card.getByRole('button', { name: 'Default', exact: true }).click();
+  await expect(icons.nth(0)).toHaveAttribute('data-kind', 'brand');
+  await expect(icons.nth(0)).toHaveAttribute('data-size', '20');
+});

@@ -367,6 +367,15 @@
       "docs": "users-and-sign-in"
     },
     {
+      "id": "domain-icons",
+      "title": "Icons beside domain names",
+      "term": "Domain icons",
+      "summary": "A small mark left of a name in the dashboard's lists and the query log: a brand's colour and glyph when TelltaleDNS knows the brand, otherwise a letter in a colour that is always the same for that owner. It is drawn here; nothing is fetched.",
+      "when": "Pick Monogram only if you'd rather not see brand marks, Small for denser lists, or Off for plain names.",
+      "example": "netflix.com shows Netflix's red tile, cdn.example.org a letter C, and nas.home.arpa, a name of your own network, a house.",
+      "caution": "The choice is kept per user in this browser, not on the server. When a privacy level hides names, there are no icons."
+    },
+    {
       "id": "two-factor",
       "title": "A second step when signing in",
       "term": "Two-factor authentication (TOTP)",
