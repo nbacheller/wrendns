@@ -50,7 +50,7 @@ pub struct SystemInfo {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildInfo {
-    /// `0.1.0` (release), `0.1.0-edge.47` (main build), or `dev` (local build).
+    /// `0.1.0` (release), `0.1.0-edge.47` (main build), or `0.1.0-dev` (local build, read by peers as 0.1.0).
     pub version: String,
     /// Short commit SHA.
     pub commit: String,

@@ -95,7 +95,8 @@ RUN set -eu; \
 
 WORKDIR /src
 # REQ: OPS-004 (ADR-046) — the build identity CI stamps into every architecture alike.
-ARG TELLTALE_BUILD_VERSION=dev
+# Empty: build.rs stamps the crate version with `-dev` (ADR-948, T21.6).
+ARG TELLTALE_BUILD_VERSION=
 ARG TELLTALE_BUILD_COMMIT=
 ARG TELLTALE_BUILD_DATE=
 ARG TELLTALE_BUILD_CHANNEL=dev

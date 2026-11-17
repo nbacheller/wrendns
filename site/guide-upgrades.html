@@ -36,7 +36,7 @@
 <pre><code>$ telltale --version
 telltale 0.1.0-edge.64 (commit 3f46fd4, built 2026-10-05T12:00:00Z, channel edge, aarch64-unknown-linux-musl)</code></pre>
   <ul>
-    <li><b>Releases</b> are <code>0.1.0</code>. Builds of <code>main</code> (the <b>edge</b> channel) are <code>0.1.0-edge.&lt;run&gt;</code>. A local build is <code>dev</code> with its commit.</li>
+    <li><b>Releases</b> are <code>0.1.0</code>. Builds of <code>main</code> (the <b>edge</b> channel) are <code>0.1.0-edge.&lt;run&gt;</code>. A local build is the crate version with a <code>-dev</code> suffix (for example <code>0.8.0-dev</code>) and its commit; its peers read it as that version.</li>
     <li><b>Where else it shows:</b> the web UI's sidebar, <b>Settings → System → Version and updates</b> (with how the node was installed: <code>native</code>, <code>container</code>, or <code>helm</code>), <code>GET /api/v1/system/info</code> (<code>build</code> and <code>update</code>), the metric <code>telltale_build_info{version,commit,channel,target}</code>, and the <b>Cluster</b> page for every node.</li>
   </ul>
   <p>Each install type picks its channel its own way:</p>

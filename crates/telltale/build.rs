@@ -1,6 +1,6 @@
 //! Build identity (REQ: OPS-004, CLU-010; ADR-046): CI stamps the version, commit, date, and
-//! channel through `TELLTALE_BUILD_*` environment variables; a local build is `dev` with the
-//! checkout's commit, so it's never mistaken for a release.
+//! channel through `TELLTALE_BUILD_*` environment variables; a local build is `<version>-dev` with
+//! the checkout's commit, so it's never mistaken for a release (and its peers can still read it).
 
 use std::process::Command;
 
@@ -14,7 +14,14 @@ fn main() {
         println!("cargo:rerun-if-env-changed={v}");
     }
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-    let version = env("TELLTALE_BUILD_VERSION").unwrap_or_else(|| "dev".into());
+    // REQ: CLU-005, OPS-007 (ADR-948, T21.6) — an unstamped build reports `<crate version>-dev`, so
+    // its peers and the version gates read it as that version (`forward::version_at_least`).
+    let version = env("TELLTALE_BUILD_VERSION").unwrap_or_else(|| {
+        format!(
+            "{}-dev",
+            std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into())
+        )
+    });
     let commit = env("TELLTALE_BUILD_COMMIT")
         .or_else(|| {
             Command::new("git")

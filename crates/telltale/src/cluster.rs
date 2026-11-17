@@ -641,21 +641,31 @@ fn events_view(c: &Cluster) -> Vec<telltale_api::model::ClusterEvent> {
 /// brief: an upgrade in progress.
 fn versions_check(nodes: &[telltale_api::model::ClusterNode]) -> telltale_api::model::ClusterCheck {
     // REQ: OPS-010 — a node in maintenance may be the one being upgraded.
-    let mut versions: Vec<String> = nodes
+    // REQ: CLU-005 (T21.6, ADR-948) — a local build's `<version>-dev` is the version it names, so it
+    // counts as one version with that release: the key drops the `-dev` suffix, and the text shows
+    // the first node's own string for each key.
+    let mut versions: Vec<(String, String)> = nodes
         .iter()
         .filter(|n| n.maintenance.is_none())
-        .map(|n| format!("{} (protocol {})", n.version, n.protocol))
+        .map(|n| {
+            let release = n.version.strip_suffix("-dev").unwrap_or(&n.version);
+            (
+                format!("{release} (protocol {})", n.protocol),
+                format!("{} (protocol {})", n.version, n.protocol),
+            )
+        })
         .collect();
     versions.sort();
-    versions.dedup();
-    let ok = versions.len() <= 1;
+    versions.dedup_by(|a, b| a.0 == b.0);
+    let names: Vec<&str> = versions.iter().map(|(_, shown)| shown.as_str()).collect();
+    let ok = names.len() <= 1;
     telltale_api::model::ClusterCheck {
         id: "versions".into(),
         ok,
         summary: if ok {
-            format!("Every node runs {}", versions.first().map_or("the same version", String::as_str))
+            format!("Every node runs {}", names.first().copied().unwrap_or("the same version"))
         } else {
-            format!("Mixed versions: {}", versions.join(", "))
+            format!("Mixed versions: {}", names.join(", "))
         },
         fix: (!ok).then(|| {
             "Finish the upgrade: replicas first, then the primary. Nodes one protocol version apart keep working together meanwhile.".to_owned()
@@ -1598,6 +1608,20 @@ mod tests {
             qps: f64::from(qps),
             ..Default::default()
         }
+    }
+
+    /// REQ: CLU-005 (T21.6, ADR-948) — a `-dev` build and a release of the same version are one
+    /// version to the Cluster page's checks; a different release still shows as mixed.
+    #[test]
+    fn clu_005_dev_build_is_its_release_in_the_versions_check() {
+        let mut release = pod("home", "pi", 50);
+        release.version = "0.8.0".into();
+        let mut dev = pod("home", "pi2", 40);
+        dev.version = "0.8.0-dev".into();
+        assert!(versions_check(&[release.clone(), dev.clone()]).ok);
+        let mut other = pod("home", "pi3", 30);
+        other.version = "0.7.9".into();
+        assert!(!versions_check(&[release, dev, other]).ok);
     }
 
     /// REQ: OPS-010 — the Cluster page's checks leave nodes in maintenance out: down, behind,

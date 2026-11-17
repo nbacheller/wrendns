@@ -401,6 +401,11 @@ fn dsc_001_n1_member_refuses_first_write() {
     );
     let unknown = vec![("pi-c".to_owned(), "dev".to_owned())];
     assert!(crate::settings_kinds::members_too_old(&unknown, since).is_some());
+    // REQ: CLU-005 (T21.6, ADR-948) — a local build's `-dev` version passes; an older one doesn't.
+    let local = vec![("pi-a".to_owned(), "0.8.0-dev".to_owned())];
+    assert!(crate::settings_kinds::members_too_old(&local, since).is_none());
+    let older_local = vec![("pi-b".to_owned(), "0.7.9-dev".to_owned())];
+    assert!(crate::settings_kinds::members_too_old(&older_local, since).is_some());
     let current = vec![("pi-a".to_owned(), "0.8.0".to_owned())];
     assert!(crate::settings_kinds::members_too_old(&current, since).is_none());
     let later = vec![("pi-a".to_owned(), "0.8.1-rc.1".to_owned())];
@@ -409,13 +414,14 @@ fn dsc_001_n1_member_refuses_first_write() {
 
 /// REQ: DSC-001 (`dsc_001_current_build_passes_the_gate`, ADR-928) — through the real route and the
 /// real build version: a write from a replica to a primary at the release that carries `[discovery]`
-/// goes through (this node's own `VERSION` counts as the crate's when it is a `dev` build), and to a
-/// primary at an older release it is refused with 409 and never forwarded.
+/// goes through (a local build reports `<crate version>-dev`, which the gate reads as the crate's
+/// version, ADR-948, T21.6), and to a primary at an older release it is refused with 409 and never
+/// forwarded.
 #[tokio::test(flavor = "multi_thread")]
 async fn dsc_001_current_build_passes_the_gate() {
     let body = json!({"enabled": false, "node": null, "worker_memory_mib": 64,
         "subnet": [{ "cidr": "192.168.1.0/24" }] });
-    let (replica, current) = older_primary_and_replica(env!("CARGO_PKG_VERSION")).await;
+    let (replica, current) = older_primary_and_replica(crate::build_info::VERSION).await;
     let h = harness_in("", Some(replica));
     let mut req = h.request("PUT", DISCOVERY, Some(&body));
     req.headers_mut()
