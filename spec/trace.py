@@ -61,7 +61,7 @@ def scripted() -> dict[str, list[str]]:
         text = p.read_text(encoding="utf-8", errors="replace")
         for m in re.finditer(r"REQ:\s*((?:[A-Z]+-\d{3}(?:\s*,\s*)?)+)", text):
             for rid in re.findall(r"[A-Z]+-\d{3}", m.group(1)):
-                rel = str(p.relative_to(ROOT))
+                rel = p.relative_to(ROOT).as_posix()
                 lst = by.setdefault(rid, [])
                 if rel not in lst:
                     lst.append(rel)
@@ -131,7 +131,7 @@ def main() -> None:
             sys.exit(f"P0 requirements without evidence: {', '.join(bare)}")
         print(f"{OUT.name} OK")
         return
-    OUT.write_text(text, encoding="utf-8")
+    OUT.write_text(text, encoding="utf-8", newline="\n")
     print(text.splitlines()[-2] if text.endswith("\n") else text.splitlines()[-1])
 
 
