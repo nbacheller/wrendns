@@ -5,7 +5,7 @@
   export type Field = {
     key: string;
     label: string;
-    type: 'text' | 'number' | 'select' | 'multi' | 'lines' | 'bool';
+    type: 'text' | 'number' | 'select' | 'multi' | 'lines' | 'bool' | 'secret';
     options?: string[];
     /** How `select`/`multi` options read (CLU-013: node IDs by their site or pod). */
     optionLabels?: Record<string, string>;
@@ -23,6 +23,11 @@
      *  one is sent): shown read-only to others. A function decides from the entry as it was
      *  read (`{}` for a new one). */
     admin?: boolean | ((original: Record<string, unknown>) => boolean);
+    /** REQ: API-015 (T23.6) — a `secret` field: `key` is the `*_ref` it writes, `fileKey` the
+     *  `*_file` it replaces (read-only when the configuration files set it), `secretName` the
+     *  name a new secret is saved under for this entry. */
+    fileKey?: string;
+    secretName?: (entry: string) => string;
   };
 </script>
 
@@ -36,6 +41,7 @@
   import KeepInGit from './KeepInGit.svelte';
   import HelpButton from './HelpButton.svelte';
   import SimulationCard from './SimulationCard.svelte';
+  import SecretField from './SecretField.svelte';
 
   let {
     kind,
@@ -105,6 +111,12 @@
   let original = $state<Record<string, unknown>>({});
   // REQ: DNS-019, DNS-023 (ADR-914) — the fields the config files set: the API keeps their value.
   let fileSet = $state<string[]>([]);
+  // REQ: API-015 (T23.6, ADR-903 §9) — this node's credential fields: a secret field reads whether
+  // its file is readable here and whether the configuration sets it inline.
+  let credentials = $state<S['CredentialField'][]>([]);
+  // Secret fields with a typed value not yet saved or discarded: Check and Apply wait for them.
+  let dirtyFields = $state<Record<string, boolean>>({});
+  const anyDirty = $derived(Object.values(dirtyFields).some(Boolean));
   const isAdmin = $derived(can('admin'));
   function locked(f: Field): boolean {
     if (fileSet.includes(f.key)) return true;
@@ -151,6 +163,11 @@
     const def = (e?.definition ?? {}) as Record<string, unknown>;
     original = { ...def };
     fileSet = e?.setByFile ?? [];
+    dirtyFields = {};
+    credentials = [];
+    if (fields.some((f) => f.type === 'secret')) {
+      void api.secrets().then((s) => (credentials = s.credentials)).catch(() => {});
+    }
     const initial = e ? {} : Object.fromEntries(fields.filter((f) => f.initial !== undefined).map((f) => [f.key, f.initial]));
     editing = { name: e?.name ?? name, isNew: !e, values: { ...initial, ...def, ...fill } };
     texts = Object.fromEntries(fields.filter((f) => f.toText).map((f) => [f.key, f.toText!(editing!.values[f.key])]));
@@ -323,6 +340,32 @@
           <input class="mono" bind:value={editing.name} required readonly={!editing.isNew} aria-label="Name" />
         </label>
         {#each shown as f (f.key)}
+          {#if f.type === 'secret'}
+            <!-- REQ: API-015 (T23.6) — a credential is entered only through SecretField. -->
+            {@const fileKey = f.fileKey ?? ''}
+            {@const fileCred = credentials.find((c) => c.kind === kind && c.entry === editing!.name && c.source === 'file' && c.field === f.key.replace(/_ref$/, ''))}
+            {@const inlineCred = credentials.find((c) => c.kind === kind && c.entry === editing!.name && c.source === 'inline' && c.field === f.key.replace(/_ref$/, ''))}
+            <SecretField
+              label={f.label}
+              help={f.help}
+              testid={`secret-${f.key}`}
+              reference={(editing.values[f.key] as string | undefined) || undefined}
+              defaultName={f.secretName?.(editing.name.trim()) ?? ''}
+              filePath={(editing.values[fileKey] as string | undefined) || undefined}
+              fileFromConfig={fileSet.includes(fileKey)}
+              fileReadable={fileCred?.readable}
+              fileReason={fileCred?.reason}
+              inline={Boolean(inlineCred)}
+              canSet={!locked(f)}
+              ondirty={(d) => (dirtyFields[f.key] = d)}
+              onreference={(n) => {
+                // A stored secret replaces an API-set file path (never one the configuration sets).
+                if (!fileSet.includes(fileKey)) delete editing!.values[fileKey];
+                if (n) editing!.values[f.key] = n;
+                else delete editing!.values[f.key];
+              }}
+            />
+          {:else}
           <label>
             {f.label}
             {#if f.type === 'select'}
@@ -376,6 +419,7 @@
             {#if fileSet.includes(f.key)}<span class="muted small" data-testid="set-by-file">Set by the configuration file: change it there.</span>{:else if locked(f)}<span class="muted small" data-testid="admin-only">Only an admin can change this.</span>{/if}
             {#if f.help}<span class="muted small">{f.help}</span>{/if}
           </label>
+          {/if}
         {/each}
         {#if note}<p class="small" data-testid="editor-note">{note(editing.values)}</p>{/if}
         <ErrorNote error={formError} />
@@ -385,13 +429,15 @@
             {#each preview.warnings as w (w)}<p class="small warn-text">{w}</p>{/each}
             {#if replayable}<SimulationCard run={simulateDraft} />{/if}
           </div>
+          {#if anyDirty}<p class="notice warn small" data-testid="secret-unsaved">Save or discard the secret you typed first; Apply waits for it.</p>{/if}
           <div class="row">
-            <button type="button" class="primary" disabled={busy} onclick={apply}>Apply</button>
+            <button type="button" class="primary" disabled={busy || anyDirty} onclick={apply}>Apply</button>
             <button type="button" onclick={() => (preview = null)}>Change it</button>
           </div>
         {:else}
+          {#if anyDirty}<p class="notice warn small" data-testid="secret-unsaved">Save or discard the secret you typed first; Check waits for it.</p>{/if}
           <div class="row">
-            <button class="primary" disabled={busy || !editing.name.trim()}>Check</button>
+            <button class="primary" disabled={busy || !editing.name.trim() || anyDirty}>Check</button>
             {#if formAction}<button type="button" onclick={runFormAction}>{formAction.label}</button>{/if}
           </div>
         {/if}

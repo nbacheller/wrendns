@@ -359,6 +359,22 @@ export const api = {
       query: { dryRun: dryRun || undefined, simulate: dryRun ? simulate : undefined },
       headers: dryRun ? {} : { 'idempotency-key': newKey() },
     }),
+  // REQ: API-015 (T23.6, ADR-903 §4) — stored secrets: metadata and the node's store only. A value
+  // goes in once (PUT) and is never read back; the answers carry none.
+  secrets: () => get<S['SecretsStatus']>('/secrets'),
+  // REQ: API-015 (ADR-903 §2) — `ifMatch` is the secrets head's etag as the page last read it:
+  // a write after another admin's change is refused (412) rather than overwriting it.
+  putSecret: (name: string, value: string, kind = 'text', dryRun = false, ifMatch?: string) =>
+    call<S['SecretChange']>('PUT', `/secrets/${encodeURIComponent(name)}`, {
+      body: { value, kind },
+      query: { dryRun: dryRun || undefined },
+      headers: { ...(dryRun ? {} : { 'idempotency-key': newKey() }), ...(ifMatch ? { 'if-match': `"${ifMatch}"` } : {}) },
+    }),
+  deleteSecret: (name: string, force = false, ifMatch?: string) =>
+    call<S['SecretChange']>('DELETE', `/secrets/${encodeURIComponent(name)}`, {
+      query: { force: force || undefined },
+      headers: { 'idempotency-key': newKey(), ...(ifMatch ? { 'if-match': `"${ifMatch}"` } : {}) },
+    }),
   // REQ: API-002 (T7.5, ADR-069) — upstreams, upstream groups, lists, and groups.
   configEntries: (kind?: string) => get<S['Items_ConfigEntry']>('/config/entries', { kind }),
   putEntry: (path: EntryPath, name: string, body: Record<string, unknown>, dryRun = false, simulate?: string) =>

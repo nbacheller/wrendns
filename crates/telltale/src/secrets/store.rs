@@ -1628,7 +1628,7 @@ pub(crate) fn health_reasons(s: &Status) -> Vec<telltale_api::model::HealthReaso
         code: code.to_owned(),
         summary,
         node: None,
-        link: Some("#/settings".to_owned()),
+        link: Some("#/settings?tab=secrets".to_owned()),
     };
     let mut out = Vec::new();
     if s.state == StoreState::Locked {
