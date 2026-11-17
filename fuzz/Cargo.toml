@@ -82,3 +82,9 @@ path = "fuzz_targets/inventory_merge.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "worker_frames"
+path = "fuzz_targets/worker_frames.rs"
+test = false
+doc = false

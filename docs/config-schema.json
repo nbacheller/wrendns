@@ -159,6 +159,10 @@
       "default": 1,
       "minimum": 0
     },
+    "discovery": {
+      "description": "REQ: DSC-001 (T25.2, ADR-907) — the network inventory (`[discovery]`): off by default,\none designated node, admin-only writes. Serialized only when set (CLU-010).",
+      "$ref": "#/$defs/DiscoveryConfig"
+    },
     "dns": {
       "description": "REQ: DNS-005 — settings of the DNS answers themselves.",
       "$ref": "#/$defs/DnsConfig",
@@ -1550,6 +1554,55 @@
           "type": "string",
           "const": "unknown"
         }
+      ]
+    },
+    "DiscoveryConfig": {
+      "description": "REQ: DSC-001 — the network inventory section (`[discovery]`).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Turn the network inventory on. Off by default: nothing starts, and nothing is read.",
+          "type": "boolean",
+          "default": false
+        },
+        "node": {
+          "description": "The node that runs discovery. Unset: the cluster's primary, or the standalone node.\nEphemeral pods and witnesses never run it, whatever is set here.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "subnet": {
+          "description": "Private IPv4 subnets whose inventory addresses may be read. A filter on addresses the\ninventory already has, never a list of targets (ADR-907).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/DiscoverySubnet"
+          }
+        },
+        "worker_memory_mib": {
+          "description": "Memory limit of each discovery worker process, in MiB (32 to 128). A worker that\nallocates past it aborts alone (ADR-908).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 64,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "DiscoverySubnet": {
+      "description": "One `[[discovery.subnet]]`: a private IPv4 network, given as `cidr = \"192.168.1.0/24\"`.",
+      "type": "object",
+      "properties": {
+        "cidr": {
+          "description": "The network, in CIDR form. IPv4 only, inside RFC 1918.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "cidr"
       ]
     },
     "DnsConfig": {

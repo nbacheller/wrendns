@@ -708,6 +708,75 @@ pub(crate) fn trim_executable_pages() -> io::Result<u64> {
     Ok(trimmed)
 }
 
+/// REQ: DSC-002 (ADR-908) — the discovery worker's own limits: `RLIMIT_DATA` at `data_bytes` (an
+/// allocation past it aborts the worker alone), no core dumps, and not dumpable, so an abort never
+/// writes memory that holds a credential. `RLIMIT_AS` is not used (ADR-908).
+pub(crate) fn harden_worker(data_bytes: u64) -> io::Result<()> {
+    let data = libc::rlimit {
+        rlim_cur: data_bytes as libc::rlim_t,
+        rlim_max: data_bytes as libc::rlim_t,
+    };
+    // SAFETY: setrlimit reads the struct it is given for the duration of the call; RLIMIT_DATA is
+    // a valid resource, and lowering both limits needs no privilege.
+    if unsafe { libc::setrlimit(libc::RLIMIT_DATA as _, &raw const data) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let core = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: as above, for RLIMIT_CORE: zero means no core file is ever written.
+    if unsafe { libc::setrlimit(libc::RLIMIT_CORE as _, &raw const core) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: PR_SET_DUMPABLE takes an integer flag and no pointers; 0 makes /proc/<pid> files
+    // and core dumps owned by root only.
+    if unsafe {
+        libc::prctl(
+            libc::PR_SET_DUMPABLE,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// The process's current `RLIMIT_DATA` soft limit, in bytes (`RLIM_INFINITY` as `u64::MAX`).
+pub(crate) fn data_limit() -> io::Result<u64> {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit writes into the struct we pass, which lives for the call.
+    if unsafe { libc::getrlimit(libc::RLIMIT_DATA as _, &raw mut lim) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(if lim.rlim_cur == libc::RLIM_INFINITY {
+        u64::MAX
+    } else {
+        lim.rlim_cur as u64
+    })
+}
+
+/// Whether the process is dumpable (`PR_GET_DUMPABLE`).
+pub(crate) fn dumpable() -> bool {
+    // SAFETY: PR_GET_DUMPABLE takes no pointers and only reads the process's flag.
+    unsafe {
+        libc::prctl(
+            libc::PR_GET_DUMPABLE,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+        ) == 1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

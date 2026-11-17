@@ -20,6 +20,7 @@ mod sys;
 pub mod tcp;
 pub mod tls;
 pub mod udp;
+pub mod worker;
 
 pub use doh::{DohConfig, DohServer, DohStats};
 pub use doh3::{Doh3Config, Doh3Server};
