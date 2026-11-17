@@ -1320,6 +1320,50 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 
 **Consequences:** Break-glass from the LAN now needs one config line. Docker and proxy setups need a documented path (the bridge gateway in `allowed_admin_networks`, or the proxy listed). A proxy on the host that isn't listed locks its clients out of break-glass rather than letting them in. This is the conservative reading of the owner's request, and the owner can change the default by one line in `schema.rs` if they prefer private networks.
 
+## ADR-951 — OIDC without chrono: a verifier on crates the tree already has, or a new verifier dependency chosen by spike (Proposed 2026-11-17)
+**Context:** `openidconnect` and `oauth2` pull `chrono` (RUSTSEC-2026-0543, unmaintained), which `deny.toml:15-18` ignores (fork #17, T24.23). `cargo tree -i chrono` shows `chrono` arriving only through `oauth2 v5.0.0` and `openidconnect v4.1.0`. `telltale-api` has its own `chrono` (`crates/telltale-api/Cargo.toml:47`), used only in `crates/telltale-api/src/auth/oidc/flow_tests.rs:100,104,691`. `Cargo.toml:73,76,127` holds dead `[profile.release.package.openidconnect|oauth2|chrono]` entries to remove. `rsa` (via `openidconnect`) carries RUSTSEC-2023-0071 (`deny.toml:14`). The lockfile has `rsa`, `p256`, `p384`, `ecdsa`, `signature`, `sha2`, `base64`, `hmac`, `ring`, `rustls`, `hyper` and `hyper-util`. It has no `jsonwebtoken` and no `reqwest` entry.
+
+**Options:**
+- (a) Keep `openidconnect` and accept `chrono`. Rejected: the ignore stays and the unmaintained crate stays in the tree.
+- (b) An in-tree ID-token verifier on `rsa`, `p256` and `ecdsa`, with the existing `hyper` and `rustls` client for discovery, JWKS and the token exchange. No new runtime dependency. `rsa` stays for RS256, so RUSTSEC-2023-0071 stays ignored (ADR-952).
+- (c) Add `jsonwebtoken` as a new runtime dependency for ID-token verification, with a one-line justification and a measured image delta (gate 25 MiB/arch, ADR-916). It needs `rsa` or `ring` for signatures, so the RUSTSEC-2023-0071 question stays.
+- (d) Another OIDC client library. Rejected until its tree is checked for `chrono`.
+
+**Recommendation (for owner decision):** (b) or (c), chosen by a spike that measures both dependency trees and the image delta, gated by `cargo deny`. Either way the `chrono` ignore and the `telltale-api` `chrono` uses go.
+
+**Current behaviour to carry over exactly** (`crates/telltale-api/src/auth/oidc.rs`):
+- `groups_claim` dotted-path lookup (`:595-613`) and `username_claim`.
+- `[[auth.oidc.provider.role]]` mapping, highest role wins, and `default_role` (`:640`).
+- The no-role error and its hint (`:548-561`).
+- The agent scope role cap (`:746-747`).
+- `mcp_provider`, `disable_local_login`, and multiple providers.
+
+**Scoping questions (the owner's answers are pending; the question tool was unavailable in the implementing session, so these are recorded here with the review's recommended answers):**
+1. Library: (b), (c), or a spike to choose between them.
+2. Parity: match current behaviour exactly. Refresh tokens, logout and userinfo are Open and not part of this change.
+3. A spike first, measuring dependency trees, so the image delta is a real number.
+4. A new runtime dependency is acceptable inside ADR-916 plus `cargo deny`, with a one-line justification.
+5. Token-check defaults, plus these rules:
+   - `aud` must contain `client_id`; `azp` is required when there are multiple audiences.
+   - The token `iss` must equal the discovery `issuer` exactly, and the discovery `issuer` must equal the configured issuer.
+   - Allowed algorithms are the intersection of RS256/ES256 and the provider's `id_token_signing_alg_values_supported`. `none` and HS* are rejected.
+   - The key `kty` must match the algorithm.
+6. Hold the ADR for Opus review and explicit owner acceptance (security-sensitive).
+7. Observable behaviour identical; internal wiring may change.
+
+**Checks the implementation must make:** `iss`, `aud`, `azp`, `exp`, `iat`, `nbf` (with a skew), `nonce`, `state`, PKCE `code_verifier`, the algorithm allow-list, `kid` lookup against JWKS, discovery over `https://` only, and token-endpoint client authentication.
+
+**Negative tests (each must be rejected):** wrong `iss`; missing `aud`; multiple audiences without `azp`; expired token; future `nbf`; future `iat` beyond the skew; nonce mismatch or replay; state mismatch; `alg=none`; HS256 signed with the RSA public key; unknown `kid` (JWKS refetch rate-limited); tampered signature; `http://` discovery URL; discovery `issuer` not matching the configured issuer; missing `code_verifier`.
+
+**Verification:** the existing `3-oidc` e2e passes unchanged; `cargo deny check` passes with the `chrono` ignore removed; the image delta is recorded. `make bench-smoke` is not needed unless a hot-path crate changes, which this does not do.
+
+**Consequences:** Accepting this ADR removes `chrono` and the RUSTSEC-2026-0543 ignore. The RUSTSEC-2023-0071 ignore stays while `rsa` is in the tree (ADR-952).
+
+## ADR-952 — The rsa advisory (RUSTSEC-2023-0071) under the OIDC change (Proposed 2026-11-17)
+**Context:** `deny.toml:14` ignores RUSTSEC-2023-0071 for `rsa`, reached through `openidconnect`. The reason given is that TelltaleDNS only verifies ID-token signatures and holds no RSA private key.
+
+**Decision (proposed):** ADR-951 decides the library. While `rsa` is in the tree, the ignore stays and its reason is restated as verify-only. If a chosen option removes `rsa`, the ignore is removed in the same change. An RS256 provider keeps `rsa`, so the ignore stays by default. Owner acceptance is required before the ignore changes.
+
 ## ADR-943 — Svelte attribute quantifiers: `{n}` in a quoted attribute is written as a JS expression, and a guard keeps it that way (Accepted 2026-11-17, owner decision)
 **Context:** Upstream issue #64, "2FA can't be enabled". Svelte 5 reads `{6}` inside a quoted attribute value as an expression, so `pattern="[0-9]{6}"` reached the browser as `[0-9]6` and no six-digit code matched. The TOTP enrolment (Settings) and the sign-in code (Login) both had the bug.
 
