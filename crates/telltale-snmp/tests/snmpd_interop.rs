@@ -27,7 +27,9 @@ fn secret_from(name: &str) -> SecretValue {
 }
 
 fn run(priv_on: bool) {
-    let addr: SocketAddr = env("TT_SNMPD_ADDR").parse().unwrap_or_else(|_| panic!("TT_SNMPD_ADDR"));
+    let addr: SocketAddr = env("TT_SNMPD_ADDR")
+        .parse()
+        .unwrap_or_else(|_| panic!("TT_SNMPD_ADDR"));
     let auth = AuthProto::parse(&env("TT_SNMPD_AUTH")).unwrap_or_else(|r| panic!("{}", r.reason()));
     let privacy = priv_on.then(|| (PrivProto::Aes128, secret_from("TT_SNMPD_PRIV_FILE")));
     let user = UsmUser {
@@ -39,9 +41,12 @@ fn run(priv_on: bool) {
         timeout: Duration::from_millis(1500),
         retries: 2,
     };
-    let mut agent = Agent::new(addr, Security::V3 { user }, timing).unwrap_or_else(|e| panic!("{e:?}"));
+    let mut agent =
+        Agent::new(addr, Security::V3 { user }, timing).unwrap_or_else(|e| panic!("{e:?}"));
     let sys_name = Oid::parse("1.3.6.1.2.1.1.5.0").unwrap_or_else(|| panic!("oid"));
-    let resp = agent.request(RequestKind::Get, &[sys_name], 0).unwrap_or_else(|e| panic!("{e:?}"));
+    let resp = agent
+        .request(RequestKind::Get, &[sys_name], 0)
+        .unwrap_or_else(|e| panic!("{e:?}"));
     let got = match resp.varbinds.first().map(|v| &v.value) {
         Some(Value::OctetString(b)) => b.clone(),
         other => panic!("unexpected value kind: {other:?}"),
@@ -68,21 +73,31 @@ fn dsc_003_net_snmp_auth_priv() {
 fn dsc_003_net_snmp_v2c_get_and_walk() {
     use telltale_snmp::walk::{self, Limits, SystemPacer};
 
-    let addr: SocketAddr = env("TT_SNMPD_ADDR").parse().unwrap_or_else(|_| panic!("TT_SNMPD_ADDR"));
+    let addr: SocketAddr = env("TT_SNMPD_ADDR")
+        .parse()
+        .unwrap_or_else(|_| panic!("TT_SNMPD_ADDR"));
     let community = secret_from("TT_SNMPD_COMMUNITY_FILE");
     let timing = Timing {
         timeout: Duration::from_millis(1500),
         retries: 2,
     };
-    let mut agent = Agent::new(addr, Security::V2c { community }, timing).unwrap_or_else(|e| panic!("{e:?}"));
+    let mut agent =
+        Agent::new(addr, Security::V2c { community }, timing).unwrap_or_else(|e| panic!("{e:?}"));
     let sys_name = Oid::parse("1.3.6.1.2.1.1.5.0").unwrap_or_else(|| panic!("oid"));
-    let resp = agent.request(RequestKind::Get, std::slice::from_ref(&sys_name), 0).unwrap_or_else(|e| panic!("{e:?}"));
+    let resp = agent
+        .request(RequestKind::Get, std::slice::from_ref(&sys_name), 0)
+        .unwrap_or_else(|e| panic!("{e:?}"));
     match resp.varbinds.first().map(|v| &v.value) {
         Some(Value::OctetString(b)) => assert_eq!(b, &env("TT_SNMPD_SYSNAME").into_bytes()),
         other => panic!("unexpected value kind: {other:?}"),
     }
     let system = Oid::parse("1.3.6.1.2.1.1").unwrap_or_else(|| panic!("oid"));
-    let walked = walk::walk(&mut agent, &mut SystemPacer, &system, &Limits::default()).unwrap_or_else(|e| panic!("{e:?}"));
+    let walked = walk::walk(&mut agent, &mut SystemPacer, &system, &Limits::default())
+        .unwrap_or_else(|e| panic!("{e:?}"));
     assert_eq!(walked.stop, walk::Stop::EndOfView);
-    assert!(walked.rows.len() >= 6, "system group rows: {}", walked.rows.len());
+    assert!(
+        walked.rows.len() >= 6,
+        "system group rows: {}",
+        walked.rows.len()
+    );
 }

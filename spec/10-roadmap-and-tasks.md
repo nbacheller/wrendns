@@ -899,6 +899,13 @@ Order:
     - fuzz targets `snmp_ber` and `snmp_walk`;
     - e2e against net-snmp `snmpd` in a container on an RFC 1918 Docker network in CI;
     - image delta recorded.
+  - *Done in part (fix: review fixes for m25-snmp, 2026-11-17):* the crate `telltale-snmp` (`crates/telltale-snmp`): the BER codec with its caps (`dsc_003_ber_roundtrip`), GET, GETNEXT and GETBULK over v2c and v3, the bounded walker (`dsc_003_walk_caps`, `dsc_003_walk_ends_at_the_subtree_edge`, `dsc_003_walk_refuses_a_loop`), the connected agent with random IDs (`dsc_003_reply_from_other_address_dropped`, `dsc_003_v2c_wrong_community_is_dropped`), `dsc_003_no_write_pdu` (`tests/read_only.rs`), the fuzz targets `snmp_ber` and `snmp_walk` (`fuzz/`), and a net-snmp v2c interop test (`dsc_003_net_snmp_v2c_get_and_walk`, run against the test snmpd on `tt-snmp-net`). Lints: clippy clean, `unsafe` forbidden, no `unwrap()`/`expect()` in the crate's runtime code.
+  - *Open (T25.4, not ticked):*
+    - `telltale snmp walk --agent <name>` (and `dsc_003_walk_cli_takes_agent_name_only`): the agent names come from `[discovery]`, which is T25.2 and is not built; the subcommand also links the crate into `telltale`, which no task has done yet. Open until T25.2.
+    - The worker process boundary: the crate runs in-process here; it moves into `telltale discovery-worker` with T25.3, and credentials reach it over stdin only then.
+    - `*_file` paths read-only on the credential form: there is no SNMP credential form until T25.8 (it needs T25.4 and T23.3–T23.6). The form's Playwright test is T25.8's.
+    - e2e in CI against net-snmp: the v2c interop test exists, but no CI job starts the container; the job is not wired in this change.
+    - Image delta: 0 bytes by construction, because nothing links `telltale-snmp` into `telltale` (`cargo tree -p telltale -i telltale-snmp` is empty). `size.py --oci` on amd64, arm64 and arm/v7 is recorded when T25.6 links the crate.
 - [ ] **T25.5 SNMPv3 USM and AES.** *(DSC-003; ADR-908, ADR-911)* Depends on T25.4.
   - Engine discovery and the time window.
   - The `msgID`/`requestID` checks and the resync limit.
@@ -917,6 +924,14 @@ Order:
     - fuzz target `snmp_usm`;
     - `cargo deny` and `cargo tree -d` clean;
     - image delta on all three architectures (stop and ask the owner if the M25 sum goes over 0.08 MiB).
+  - *Done in part (fix: review fixes for m25-snmp, 2026-11-17):* authNoPriv and authPriv over the connected agent. Engine discovery accepts only a noAuthNoPriv Report whose varbind is `usmStatsUnknownEngineIDs`, and a failed exchange drops the cached engine. The time window follows RFC 3414 §3.2.7b (higher boots or a later time resyncs; lower boots, or equal boots more than 150 s behind, is stale; boots at 2^31-1 is stale). An authenticated notInTimeWindow Report takes the agent's clock and the request is sent once more, at most once per agent per minute. The reply must match the request's security level, engine ID and user. Ku and the privacy key are zeroized; the MAC and the community are compared in constant time. Tests: `dsc_003_rfc3414_a3_key_vectors`, `dsc_003_rfc7860_vectors`, `dsc_003_rfc3826_aes_cfb_vectors` (NIST SP 800-38A F.3.13, which RFC 3826 uses), `dsc_003_refused_protocols_explained`, `dsc_003_spoofed_report_resync_limited`, `dsc_003_usm_encode_offset_round_trips`, `dsc_003_usm_privacy_round_trip`, `dsc_003_time_window_follows_rfc3414`, and the loopback v3 tests (`dsc_003_v3_*`, `dsc_003_authenticated_time_report_resends_once`). The fuzz target `snmp_usm` is written and type-checks.
+  - *Open (T25.5, not ticked):*
+    - `dsc_003_rfc3826_aes_cfb_vectors` on arm64 and arm/v7: run on amd64 only in this change.
+    - Interop with net-snmp at authNoPriv and authPriv, for SHA and SHA-256: `tests/snmpd_interop.rs` (`dsc_003_net_snmp_auth_no_priv`, `dsc_003_net_snmp_auth_priv`) is written and ignored. The test snmpd on `tt-snmp-net` has four USM users, but their passwords are not in the repo or in any readable config, so the owner must supply the `TT_SNMPD_*` values to run them.
+    - `fuzz snmp_usm` run: the target type-checks, but cargo-fuzz is not installed in the dev container.
+    - Dependency gates: `cargo deny --all-features check` (advisories, bans, licenses, sources) is clean and `cargo tree -d -p telltale-snmp` prints no duplicates. `aes` is pinned `=0.8.4` with `zeroize`. The crate adds nothing to the binary's dependency graph.
+    - UI: the v3 fields on the credential form, the refused protocols with their reasons, Playwright `dsc_003 refused protocols are explained in the form`, and help topic `snmp-v3`. There is no SNMP credential form until T25.8, so these ship with it.
+    - Image delta on all three architectures: 0 bytes by construction, as for T25.4.
 - [ ] **T25.6 Infrastructure poller.** *(DSC-004, DSC-014; ADR-908)* Depends on T25.1, T25.4.
   - The ARP, IF-MIB, Q-BRIDGE/BRIDGE and LLDP tables into the inventory:
     - Q-BRIDGE FDB ID mapped to VLAN ID through `dot1qVlanCurrentTable`;

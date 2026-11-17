@@ -166,7 +166,14 @@ mod tests {
 
     #[test]
     fn dsc_003_oid_content_roundtrip() {
-        for text in ["1.3.6.1.2.1.1.5.0", "1.3.6.1.2.1.4.35.1.4", "2.999.1", "0.39", "1.3.6.1.4.1.8072.3.2.10", "1.3.6.1.2.1.1.9.1.2.2147483647"] {
+        for text in [
+            "1.3.6.1.2.1.1.5.0",
+            "1.3.6.1.2.1.4.35.1.4",
+            "2.999.1",
+            "0.39",
+            "1.3.6.1.4.1.8072.3.2.10",
+            "1.3.6.1.2.1.1.9.1.2.2147483647",
+        ] {
             let oid = Oid::parse(text).unwrap_or_else(|| panic!("parse {text}"));
             let content = oid.to_content().unwrap_or_else(|e| panic!("{e:?}"));
             let back = Oid::from_content(&content).unwrap_or_else(|e| panic!("{text}: {e:?}"));
@@ -179,7 +186,10 @@ mod tests {
     fn dsc_003_oid_known_encoding() {
         // sysName.0 = 1.3.6.1.2.1.1.5.0 encodes as 2b 06 01 02 01 01 05 00 (X.690 packing).
         let oid = Oid::parse("1.3.6.1.2.1.1.5.0");
-        assert_eq!(oid.and_then(|o| o.to_content().ok()), Some(vec![0x2b, 0x06, 0x01, 0x02, 0x01, 0x01, 0x05, 0x00]));
+        assert_eq!(
+            oid.and_then(|o| o.to_content().ok()),
+            Some(vec![0x2b, 0x06, 0x01, 0x02, 0x01, 0x01, 0x05, 0x00])
+        );
     }
 
     #[test]
@@ -188,16 +198,28 @@ mod tests {
         // Unterminated final arc.
         assert_eq!(Oid::from_content(&[0x2b, 0x81]), Err(DecodeError::BadOid));
         // One subidentifier packs the first two arcs, so 0x2b is 1.3 and is a valid OID.
-        assert_eq!(Oid::from_content(&[0x2b]).map(|o| o.to_string()), Ok("1.3".to_owned()));
+        assert_eq!(
+            Oid::from_content(&[0x2b]).map(|o| o.to_string()),
+            Ok("1.3".to_owned())
+        );
         assert_eq!(Oid::from_content(&[0x80]), Err(DecodeError::BadOid));
         // A non-minimal first subidentifier (a leading 0x80) is refused.
         assert_eq!(Oid::from_content(&[0x80, 0x2b]), Err(DecodeError::BadOid));
         // A first subidentifier above 2^32 + 79 is refused, not clamped to u32::MAX.
-        assert_eq!(Oid::from_content(&[0x90, 0x80, 0x80, 0x80, 0x50]), Err(DecodeError::BadOid));
+        assert_eq!(
+            Oid::from_content(&[0x90, 0x80, 0x80, 0x80, 0x50]),
+            Err(DecodeError::BadOid)
+        );
         // A non-minimal arc after the first is refused.
-        assert_eq!(Oid::from_content(&[0x2b, 0x80, 0x01]), Err(DecodeError::BadOid));
+        assert_eq!(
+            Oid::from_content(&[0x2b, 0x80, 0x01]),
+            Err(DecodeError::BadOid)
+        );
         // An arc above 32 bits after the first subidentifier.
-        assert_eq!(Oid::from_content(&[0x2b, 0x90, 0x80, 0x80, 0x80, 0x00]), Err(DecodeError::BadOid));
+        assert_eq!(
+            Oid::from_content(&[0x2b, 0x90, 0x80, 0x80, 0x80, 0x00]),
+            Err(DecodeError::BadOid)
+        );
         // More than 128 arcs.
         let many = vec![0x01u8; 200];
         assert_eq!(Oid::from_content(&many), Err(DecodeError::BadOid));

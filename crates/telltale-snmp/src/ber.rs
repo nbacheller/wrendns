@@ -257,7 +257,22 @@ mod tests {
 
     #[test]
     fn dsc_003_ber_integers_are_minimal_and_roundtrip() {
-        for v in [0i64, 1, -1, 127, 128, -128, -129, 255, 256, 65_535, i64::MAX, i64::MIN, 2_147_483_647, -2_147_483_648] {
+        for v in [
+            0i64,
+            1,
+            -1,
+            127,
+            128,
+            -128,
+            -129,
+            255,
+            256,
+            65_535,
+            i64::MAX,
+            i64::MIN,
+            2_147_483_647,
+            -2_147_483_648,
+        ] {
             let content = integer_content(v);
             assert!(content.len() <= 8);
             assert_eq!(integer_value(&content), Ok(v), "value {v}");
@@ -270,10 +285,22 @@ mod tests {
 
     #[test]
     fn dsc_003_ber_rejects_indefinite_and_long_lengths() {
-        assert_eq!(read_tlv(&[0x30, 0x80]).err(), Some(DecodeError::IndefiniteLength));
-        assert_eq!(read_tlv(&[0x30, 0x85, 0, 0, 0, 0, 1]).err(), Some(DecodeError::LengthTooLong));
-        assert_eq!(read_tlv(&[0x30, 0x82, 0x01]).err(), Some(DecodeError::Truncated));
-        assert_eq!(read_tlv(&[0x1f, 0x01, 0x00]).err(), Some(DecodeError::BadTag));
+        assert_eq!(
+            read_tlv(&[0x30, 0x80]).err(),
+            Some(DecodeError::IndefiniteLength)
+        );
+        assert_eq!(
+            read_tlv(&[0x30, 0x85, 0, 0, 0, 0, 1]).err(),
+            Some(DecodeError::LengthTooLong)
+        );
+        assert_eq!(
+            read_tlv(&[0x30, 0x82, 0x01]).err(),
+            Some(DecodeError::Truncated)
+        );
+        assert_eq!(
+            read_tlv(&[0x1f, 0x01, 0x00]).err(),
+            Some(DecodeError::BadTag)
+        );
     }
 
     fn descend(content: &[u8], depth: u8) -> Result<(), DecodeError> {
@@ -302,6 +329,9 @@ mod tests {
         let nine = wrap(9);
         let top = read_tlv(&nine);
         assert!(top.is_ok());
-        assert_eq!(top.map(|t| descend(t.content, 0)), Ok(Err(DecodeError::TooDeep)));
+        assert_eq!(
+            top.map(|t| descend(t.content, 0)),
+            Ok(Err(DecodeError::TooDeep))
+        );
     }
 }

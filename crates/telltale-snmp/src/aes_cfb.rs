@@ -57,15 +57,24 @@ mod tests {
     use super::*;
 
     // NIST SP 800-38A, F.3.13 CFB128-AES128.Encrypt (the vectors RFC 3826 relies on).
-    const KEY: [u8; 16] = [0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c];
-    const IV: [u8; 16] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f];
+    const KEY: [u8; 16] = [
+        0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f,
+        0x3c,
+    ];
+    const IV: [u8; 16] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f,
+    ];
     const PLAIN: &str = "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710";
     const CIPHER: &str = "3b3fd92eb72dad20333449f8e83cfb4ac8a64537a0b3a93fcde3cdad9f1ce58b26751f67a3cbb140b1808cf187a4f4dfc04b05357c5d1c0eeac4c66f9ff7f2e6";
 
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len())
             .step_by(2)
-            .filter_map(|i| s.get(i..i.saturating_add(2)).and_then(|p| u8::from_str_radix(p, 16).ok()))
+            .filter_map(|i| {
+                s.get(i..i.saturating_add(2))
+                    .and_then(|p| u8::from_str_radix(p, 16).ok())
+            })
             .collect()
     }
 

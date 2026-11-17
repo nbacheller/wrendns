@@ -112,7 +112,9 @@ pub struct Agent {
 
 impl std::fmt::Debug for Agent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Agent").field("target", &self.target).finish_non_exhaustive()
+        f.debug_struct("Agent")
+            .field("target", &self.target)
+            .finish_non_exhaustive()
     }
 }
 
@@ -145,7 +147,9 @@ impl Agent {
             IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 0),
         };
         let socket = UdpSocket::bind(bind).map_err(|e| AgentError::Io(e.kind()))?;
-        socket.connect(target).map_err(|e| AgentError::Io(e.kind()))?;
+        socket
+            .connect(target)
+            .map_err(|e| AgentError::Io(e.kind()))?;
         Ok(Self {
             target,
             socket,
@@ -183,21 +187,32 @@ impl Agent {
     }
 
     /// One request and its reply, with retries. A non-zero error-status is returned as data.
-    pub fn request(&mut self, kind: RequestKind, oids: &[Oid], max_repetitions: u32) -> Result<Response, AgentError> {
+    pub fn request(
+        &mut self,
+        kind: RequestKind,
+        oids: &[Oid],
+        max_repetitions: u32,
+    ) -> Result<Response, AgentError> {
         match &self.security {
             Security::V2c { .. } => self.request_v2c(kind, oids, max_repetitions),
             Security::V3 { .. } => self.request_v3(kind, oids, max_repetitions),
         }
     }
 
-    fn request_v2c(&mut self, kind: RequestKind, oids: &[Oid], max_repetitions: u32) -> Result<Response, AgentError> {
+    fn request_v2c(
+        &mut self,
+        kind: RequestKind,
+        oids: &[Oid],
+        max_repetitions: u32,
+    ) -> Result<Response, AgentError> {
         let community = match &self.security {
             Security::V2c { community } => Zeroizing::new(community.expose().to_vec()),
             Security::V3 { .. } => return Err(AgentError::BadRequest),
         };
         for _ in 0..=self.timing.retries {
             let req_id = take(&mut self.next_req_id);
-            let pdu = pdu::encode_request(kind, req_id, 0, max_repetitions, oids).map_err(|_| AgentError::BadRequest)?;
+            let pdu = pdu::encode_request(kind, req_id, 0, max_repetitions, oids)
+                .map_err(|_| AgentError::BadRequest)?;
             let msg = Zeroizing::new(v2c::encode(&community, &pdu));
             self.send(&msg)?;
             let got = self.wait_for(|_this, bytes| {
@@ -219,19 +234,42 @@ impl Agent {
         Err(AgentError::Timeout)
     }
 
-    fn request_v3(&mut self, kind: RequestKind, oids: &[Oid], max_repetitions: u32) -> Result<Response, AgentError> {
+    fn request_v3(
+        &mut self,
+        kind: RequestKind,
+        oids: &[Oid],
+        max_repetitions: u32,
+    ) -> Result<Response, AgentError> {
         let result = self.request_v3_inner(kind, oids, max_repetitions);
         // A failed exchange may mean the cached engine ID was forged or the device rebooted:
         // the next request discovers the engine again (ADR-908).
-        if matches!(result, Err(AgentError::Timeout | AgentError::Usm(_) | AgentError::ReportRefused | AgentError::NoEngine)) {
+        if matches!(
+            result,
+            Err(AgentError::Timeout
+                | AgentError::Usm(_)
+                | AgentError::ReportRefused
+                | AgentError::NoEngine)
+        ) {
             self.engine = None;
         }
         result
     }
 
-    fn request_v3_inner(&mut self, kind: RequestKind, oids: &[Oid], max_repetitions: u32) -> Result<Response, AgentError> {
+    fn request_v3_inner(
+        &mut self,
+        kind: RequestKind,
+        oids: &[Oid],
+        max_repetitions: u32,
+    ) -> Result<Response, AgentError> {
         let (user_name, want_flags) = match &self.security {
-            Security::V3 { user } => (user.name.clone(), if user.privacy.is_some() { usm::LEVEL_MASK } else { usm::AUTH_FLAG }),
+            Security::V3 { user } => (
+                user.name.clone(),
+                if user.privacy.is_some() {
+                    usm::LEVEL_MASK
+                } else {
+                    usm::AUTH_FLAG
+                },
+            ),
             Security::V2c { .. } => return Err(AgentError::BadRequest),
         };
         self.begin_round()?;
@@ -242,7 +280,8 @@ impl Agent {
             let msg_id = take(&mut self.next_msg_id);
             let req_id = take(&mut self.next_req_id);
             let engine = self.engine.clone().ok_or(AgentError::NoEngine)?;
-            let pdu = pdu::encode_request(kind, req_id, 0, max_repetitions, oids).map_err(|_| AgentError::BadRequest)?;
+            let pdu = pdu::encode_request(kind, req_id, 0, max_repetitions, oids)
+                .map_err(|_| AgentError::BadRequest)?;
             let scoped = usm::scoped_request(&engine.id, &pdu);
             let out = usm::Outgoing {
                 msg_id,
@@ -277,7 +316,8 @@ impl Agent {
         for _ in 0..=self.timing.retries {
             let msg_id = take(&mut self.next_msg_id);
             let req_id = take(&mut self.next_req_id);
-            let pdu = pdu::encode_request(RequestKind::Get, req_id, 0, 0, &[]).map_err(|_| AgentError::BadRequest)?;
+            let pdu = pdu::encode_request(RequestKind::Get, req_id, 0, 0, &[])
+                .map_err(|_| AgentError::BadRequest)?;
             let scoped = usm::scoped_request(&[], &pdu);
             let out = usm::Outgoing {
                 msg_id,
@@ -289,7 +329,8 @@ impl Agent {
             };
             let msg = usm::encode(&out, None, &scoped)?;
             self.send(&msg)?;
-            let got = self.wait_for(|_this, bytes| accept_discovery(bytes, msg_id, req_id, Instant::now()));
+            let got = self
+                .wait_for(|_this, bytes| accept_discovery(bytes, msg_id, req_id, Instant::now()));
             match got {
                 Ok(engine) => {
                     self.engine = Some(engine);
@@ -304,7 +345,12 @@ impl Agent {
 
     /// Checks one v3 reply. `Some(Ok)` is the answer or a resend; `Some(Err)` is a failure to
     /// report; `None` drops the datagram and keeps waiting.
-    fn accept_v3(&mut self, bytes: &[u8], expect: &Expect<'_>, now: Instant) -> Option<Result<Outcome, AgentError>> {
+    fn accept_v3(
+        &mut self,
+        bytes: &[u8],
+        expect: &Expect<'_>,
+        now: Instant,
+    ) -> Option<Result<Outcome, AgentError>> {
         let reply = usm::parse(bytes).ok()?;
         if reply.msg_id != expect.msg_id {
             return None;
@@ -335,7 +381,10 @@ impl Agent {
             if resp.request_id != expect.request_id {
                 return None;
             }
-            let not_in_window = resp.varbinds.iter().any(|vb| vb.oid.to_string() == usm::USM_STATS_NOT_IN_TIME_WINDOW);
+            let not_in_window = resp
+                .varbinds
+                .iter()
+                .any(|vb| vb.oid.to_string() == usm::USM_STATS_NOT_IN_TIME_WINDOW);
             if not_in_window && self.gate.allow(now) {
                 if let Some(e) = self.engine.as_mut() {
                     e.resync(reply.boots, reply.time, now);
@@ -360,13 +409,19 @@ impl Agent {
     }
 
     fn send(&self, msg: &[u8]) -> Result<(), AgentError> {
-        self.socket.send(msg).map(|_| ()).map_err(|e| AgentError::Io(e.kind()))
+        self.socket
+            .send(msg)
+            .map(|_| ())
+            .map_err(|e| AgentError::Io(e.kind()))
     }
 
     /// Waits for one datagram from the target that `accept` takes, within the timing's timeout.
     /// Datagrams from any other address are dropped before `accept` sees them. The datagram is
     /// held in the agent's buffer while `accept` runs, so `accept` may use the agent.
-    fn wait_for<T>(&mut self, mut accept: impl FnMut(&mut Self, &[u8]) -> Option<Result<T, AgentError>>) -> Result<T, AgentError> {
+    fn wait_for<T>(
+        &mut self,
+        mut accept: impl FnMut(&mut Self, &[u8]) -> Option<Result<T, AgentError>>,
+    ) -> Result<T, AgentError> {
         let deadline = Instant::now()
             .checked_add(self.timing.timeout)
             .ok_or(AgentError::Timeout)?;
@@ -403,7 +458,10 @@ impl Agent {
                     }
                 }
                 Err(e) => match e.kind() {
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionRefused => {
+                    io::ErrorKind::WouldBlock
+                    | io::ErrorKind::TimedOut
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionRefused => {
                         return Err(AgentError::Timeout);
                     }
                     kind => return Err(AgentError::Io(kind)),
@@ -415,7 +473,12 @@ impl Agent {
 
 /// Checks a discovery reply: a noAuthNoPriv `Report` for our message and request, with a
 /// non-empty engine ID of at most 32 octets, whose varbind is usmStatsUnknownEngineIDs.
-fn accept_discovery(bytes: &[u8], msg_id: i32, req_id: i32, now: Instant) -> Option<Result<Engine, AgentError>> {
+fn accept_discovery(
+    bytes: &[u8],
+    msg_id: i32,
+    req_id: i32,
+    now: Instant,
+) -> Option<Result<Engine, AgentError>> {
     let reply = usm::parse(bytes).ok()?;
     if reply.msg_id != msg_id || reply.engine_id.is_empty() || reply.engine_id.len() > 32 {
         return None;
@@ -427,7 +490,11 @@ fn accept_discovery(bytes: &[u8], msg_id: i32, req_id: i32, now: Instant) -> Opt
     if resp.tag != TAG_REPORT || resp.request_id != req_id {
         return None;
     }
-    if !resp.varbinds.iter().any(|vb| vb.oid.to_string() == usm::USM_STATS_UNKNOWN_ENGINE_ID) {
+    if !resp
+        .varbinds
+        .iter()
+        .any(|vb| vb.oid.to_string() == usm::USM_STATS_UNKNOWN_ENGINE_ID)
+    {
         return None;
     }
     Some(Ok(Engine {

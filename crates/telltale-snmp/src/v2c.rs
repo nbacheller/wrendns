@@ -56,12 +56,13 @@ pub fn decode(input: &[u8]) -> Result<Decoded, DecodeError> {
 mod tests {
     use super::*;
     use crate::oid::Oid;
-    use crate::pdu::{encode_request, RequestKind};
+    use crate::pdu::{RequestKind, encode_request};
 
     #[test]
     fn dsc_003_v2c_message_roundtrip_shape() {
         let oid = Oid::parse("1.3.6.1.2.1.1.5.0").unwrap_or_else(|| panic!("oid"));
-        let pdu = encode_request(RequestKind::Get, 9, 0, 0, std::slice::from_ref(&oid)).unwrap_or_default();
+        let pdu = encode_request(RequestKind::Get, 9, 0, 0, std::slice::from_ref(&oid))
+            .unwrap_or_default();
         let msg = encode(b"ttcomm", &pdu);
         let tlv = ber::read_message(&msg).unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(tlv.tag, 0x30);
@@ -75,7 +76,12 @@ mod tests {
 
     #[test]
     fn dsc_003_v2c_rejects_wrong_version() {
-        let pdu = crate::pdu::tests_support::response(1, 0, &Oid::parse("1.3").unwrap_or_else(|| panic!("oid")), &ber::tlv(0x05, &[]));
+        let pdu = crate::pdu::tests_support::response(
+            1,
+            0,
+            &Oid::parse("1.3").unwrap_or_else(|| panic!("oid")),
+            &ber::tlv(0x05, &[]),
+        );
         let mut body = Vec::new();
         body.extend(ber::integer(0));
         body.extend(ber::octets(b"c"));

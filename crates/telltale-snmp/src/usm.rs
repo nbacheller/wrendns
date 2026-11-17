@@ -72,12 +72,20 @@ impl Refused {
     /// The reason the form and the config check show (DSC-003: refused protocols are explained).
     pub fn reason(self) -> &'static str {
         match self {
-            Self::Md5 => "MD5 is refused: its collisions are practical, and ring provides no MD5 digest.",
-            Self::Sha224 => "SHA-224 is refused: the client supports SHA-1 and the SHA-2 variants of 256 bits and up, and the owner's devices use those.",
+            Self::Md5 => {
+                "MD5 is refused: its collisions are practical, and ring provides no MD5 digest."
+            }
+            Self::Sha224 => {
+                "SHA-224 is refused: the client supports SHA-1 and the SHA-2 variants of 256 bits and up, and the owner's devices use those."
+            }
             Self::Des => "DES is refused: it is broken and has no key that can be kept secret.",
-            Self::Aes192 => "AES-192 is refused: RFC 3826 defines only AES-128, and the devices that matter use it.",
+            Self::Aes192 => {
+                "AES-192 is refused: RFC 3826 defines only AES-128, and the devices that matter use it."
+            }
             Self::Aes256 => "AES-256 is refused: RFC 3826 defines only AES-128 for SNMPv3.",
-            Self::NoAuthNoPriv => "noAuthNoPriv is refused: a v3 user must authenticate. Use v2c only where the device has no v3.",
+            Self::NoAuthNoPriv => {
+                "noAuthNoPriv is refused: a v3 user must authenticate. Use v2c only where the device has no v3."
+            }
             Self::Unknown => "This protocol is not known to TelltaleDNS, so it is refused.",
         }
     }
@@ -220,11 +228,16 @@ impl UsmUser {
     /// Derives Ku for each password (privacy uses the authentication protocol, RFC 3414 §2.6).
     pub fn derive(&self) -> Result<RoundKeys, UsmError> {
         let (auth_alg, auth_ku) = match &self.auth {
-            Some((alg, pw)) => (Some(*alg), Some(password_to_key(*alg, pw.expose()).ok_or(UsmError::EmptyPassword)?)),
+            Some((alg, pw)) => (
+                Some(*alg),
+                Some(password_to_key(*alg, pw.expose()).ok_or(UsmError::EmptyPassword)?),
+            ),
             None => (None, None),
         };
         let priv_ku = match (&self.privacy, auth_alg) {
-            (Some((_, pw)), Some(alg)) => Some(password_to_key(alg, pw.expose()).ok_or(UsmError::EmptyPassword)?),
+            (Some((_, pw)), Some(alg)) => {
+                Some(password_to_key(alg, pw.expose()).ok_or(UsmError::EmptyPassword)?)
+            }
             (Some(_), None) => return Err(UsmError::BadSecurityParameters),
             _ => None,
         };
@@ -327,7 +340,10 @@ pub struct ResyncGate {
 
 impl ResyncGate {
     pub fn allow(&mut self, now: Instant) -> bool {
-        if self.last.is_some_and(|last| now.saturating_duration_since(last) < RESYNC_INTERVAL) {
+        if self
+            .last
+            .is_some_and(|last| now.saturating_duration_since(last) < RESYNC_INTERVAL)
+        {
             return false;
         }
         self.last = Some(now);
@@ -355,10 +371,18 @@ pub struct Outgoing<'a> {
 /// The privacy salt is eight random octets per message (64 random bits, from `SystemRandom`).
 /// RFC 3826 suggests a counter seeded at random; a per-message random salt needs no counter
 /// state across restarts, and 64 bits make a repeat under one key negligible (ADR-908).
-pub fn encode(out: &Outgoing<'_>, keys: Option<&RoundKeys>, scoped: &[u8]) -> Result<Vec<u8>, UsmError> {
+pub fn encode(
+    out: &Outgoing<'_>,
+    keys: Option<&RoundKeys>,
+    scoped: &[u8],
+) -> Result<Vec<u8>, UsmError> {
     let mut salt = [0u8; 8];
     let (auth_len, priv_on, flags) = match keys {
-        None => (0usize, false, if out.reportable { FLAG_REPORTABLE } else { 0 }),
+        None => (
+            0usize,
+            false,
+            if out.reportable { FLAG_REPORTABLE } else { 0 },
+        ),
         Some(k) => {
             let alg = k.auth_alg.ok_or(UsmError::BadSecurityParameters)?;
             let mut f = FLAG_AUTH;
@@ -372,7 +396,9 @@ pub fn encode(out: &Outgoing<'_>, keys: Option<&RoundKeys>, scoped: &[u8]) -> Re
         }
     };
     if priv_on {
-        SystemRandom::new().fill(&mut salt).map_err(|_| UsmError::Random)?;
+        SystemRandom::new()
+            .fill(&mut salt)
+            .map_err(|_| UsmError::Random)?;
     }
     let msg_data = if priv_on {
         let keys = keys.ok_or(UsmError::BadSecurityParameters)?;
@@ -399,7 +425,11 @@ pub fn encode(out: &Outgoing<'_>, keys: Option<&RoundKeys>, scoped: &[u8]) -> Re
     prefix.extend(ber::octets(out.user));
     let prefix_len = prefix.len();
     let auth_tlv = ber::octets(&vec![0u8; auth_len]);
-    let priv_tlv = if priv_on { ber::octets(&salt) } else { ber::octets(&[]) };
+    let priv_tlv = if priv_on {
+        ber::octets(&salt)
+    } else {
+        ber::octets(&[])
+    };
     let mut usm_content = prefix;
     usm_content.extend_from_slice(&auth_tlv);
     usm_content.extend_from_slice(&priv_tlv);
@@ -433,15 +463,29 @@ pub fn encode(out: &Outgoing<'_>, keys: Option<&RoundKeys>, scoped: &[u8]) -> Re
     Ok(whole)
 }
 
-fn localize_auth(alg: AuthProto, keys: &RoundKeys, engine_id: &[u8]) -> Result<Zeroizing<Vec<u8>>, UsmError> {
-    let ku = keys.auth_ku.as_ref().ok_or(UsmError::BadSecurityParameters)?;
+fn localize_auth(
+    alg: AuthProto,
+    keys: &RoundKeys,
+    engine_id: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, UsmError> {
+    let ku = keys
+        .auth_ku
+        .as_ref()
+        .ok_or(UsmError::BadSecurityParameters)?;
     Ok(localize(alg, ku, engine_id))
 }
 
 /// The privacy key: the first 16 octets of the privacy password localized to the engine.
 /// Zeroized when the caller drops it.
-fn priv_key(alg: AuthProto, keys: &RoundKeys, engine_id: &[u8]) -> Result<Zeroizing<[u8; 16]>, UsmError> {
-    let ku = keys.priv_ku.as_ref().ok_or(UsmError::BadSecurityParameters)?;
+fn priv_key(
+    alg: AuthProto,
+    keys: &RoundKeys,
+    engine_id: &[u8],
+) -> Result<Zeroizing<[u8; 16]>, UsmError> {
+    let ku = keys
+        .priv_ku
+        .as_ref()
+        .ok_or(UsmError::BadSecurityParameters)?;
     let kul = localize(alg, ku, engine_id);
     let mut key = Zeroizing::new([0u8; 16]);
     let src = kul.get(..16).ok_or(UsmError::BadSecurityParameters)?;
@@ -484,7 +528,10 @@ pub struct Reply {
 pub fn parse(input: &[u8]) -> Result<Reply, UsmError> {
     let msg = ber::read_message(input)?;
     if msg.tag != 0x30 {
-        return Err(UsmError::Decode(DecodeError::UnexpectedTag { expected: 0x30, found: msg.tag }));
+        return Err(UsmError::Decode(DecodeError::UnexpectedTag {
+            expected: 0x30,
+            found: msg.tag,
+        }));
     }
     let kids = ber::children(msg.content, 0, 4)?;
     let [version, global, sec, data] = kids.as_slice() else {
@@ -500,7 +547,8 @@ pub fn parse(input: &[u8]) -> Result<Reply, UsmError> {
     if ber::integer_value(model.content)? != SECURITY_MODEL_USM {
         return Err(UsmError::BadSecurityParameters);
     }
-    let msg_id = i32::try_from(ber::integer_value(id.content)?).map_err(|_| UsmError::BadSecurityParameters)?;
+    let msg_id = i32::try_from(ber::integer_value(id.content)?)
+        .map_err(|_| UsmError::BadSecurityParameters)?;
     let flag_byte = match flags.content {
         [b] => *b,
         _ => return Err(UsmError::BadSecurityParameters),
@@ -520,16 +568,26 @@ pub fn parse(input: &[u8]) -> Result<Reply, UsmError> {
         let start = offset_in(input, eauth.content);
         Some(start..start.saturating_add(eauth.content.len()))
     };
-    let boots = u32::try_from(ber::integer_value(eboots.content)?).map_err(|_| UsmError::BadSecurityParameters)?;
-    let time = u32::try_from(ber::integer_value(etime.content)?).map_err(|_| UsmError::BadSecurityParameters)?;
+    let boots = u32::try_from(ber::integer_value(eboots.content)?)
+        .map_err(|_| UsmError::BadSecurityParameters)?;
+    let time = u32::try_from(ber::integer_value(etime.content)?)
+        .map_err(|_| UsmError::BadSecurityParameters)?;
     // msgData: an encrypted OCTET STRING, or the plaintext ScopedPDU SEQUENCE.
-    let expected_tag = if flag_byte & FLAG_PRIV != 0 { 0x04 } else { 0x30 };
+    let expected_tag = if flag_byte & FLAG_PRIV != 0 {
+        0x04
+    } else {
+        0x30
+    };
     if data.tag != expected_tag {
         return Err(UsmError::BadSecurityParameters);
     }
     // A plaintext ScopedPDU is kept whole, with its SEQUENCE header, for `scoped_response`. An
     // encrypted one is kept as the OCTET STRING's content, which is the ciphertext.
-    let scoped = if flag_byte & FLAG_PRIV != 0 { data.content.to_vec() } else { data.raw.to_vec() };
+    let scoped = if flag_byte & FLAG_PRIV != 0 {
+        data.content.to_vec()
+    } else {
+        data.raw.to_vec()
+    };
     Ok(Reply {
         msg_id,
         flags: flag_byte,
@@ -557,7 +615,9 @@ pub fn verify(input: &[u8], reply: &Reply, keys: &RoundKeys) -> Result<(), UsmEr
         return Err(UsmError::BadDigest);
     }
     let mut copy = input.to_vec();
-    copy.get_mut(range.clone()).ok_or(UsmError::BadDigest)?.fill(0);
+    copy.get_mut(range.clone())
+        .ok_or(UsmError::BadDigest)?
+        .fill(0);
     let kul = localize_auth(alg, keys, &reply.engine_id)?;
     let expected = mac(alg, &kul, &copy);
     let got = input.get(range).ok_or(UsmError::BadDigest)?;
@@ -572,7 +632,11 @@ pub fn verify(input: &[u8], reply: &Reply, keys: &RoundKeys) -> Result<(), UsmEr
 pub fn decrypt(reply: &Reply, keys: &RoundKeys) -> Result<Vec<u8>, UsmError> {
     let alg = keys.auth_alg.ok_or(UsmError::BadSecurityParameters)?;
     let key = priv_key(alg, keys, &reply.engine_id).map_err(|_| UsmError::DecryptFailed)?;
-    let salt: [u8; 8] = reply.priv_salt.as_slice().try_into().map_err(|_| UsmError::DecryptFailed)?;
+    let salt: [u8; 8] = reply
+        .priv_salt
+        .as_slice()
+        .try_into()
+        .map_err(|_| UsmError::DecryptFailed)?;
     let iv = priv_iv(reply.boots, reply.time, &salt);
     let mut data = reply.scoped.clone();
     aes_cfb::decrypt(&key, &iv, &mut data);
@@ -610,7 +674,10 @@ mod tests {
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len())
             .step_by(2)
-            .filter_map(|i| s.get(i..i.saturating_add(2)).and_then(|p| u8::from_str_radix(p, 16).ok()))
+            .filter_map(|i| {
+                s.get(i..i.saturating_add(2))
+                    .and_then(|p| u8::from_str_radix(p, 16).ok())
+            })
             .collect()
     }
 
@@ -619,9 +686,15 @@ mod tests {
         // RFC 3414 A.3.2, SHA-1: password "maplesyrup", engineID 00..02.
         let engine = hex("000000000000000000000002");
         let ku = password_to_key(AuthProto::HmacSha96, b"maplesyrup").unwrap_or_default();
-        assert_eq!(ku.as_slice(), hex("9fb5cc0381497b3793528939ff788d5d79145211").as_slice());
+        assert_eq!(
+            ku.as_slice(),
+            hex("9fb5cc0381497b3793528939ff788d5d79145211").as_slice()
+        );
         let kul = localize(AuthProto::HmacSha96, &ku, &engine);
-        assert_eq!(kul.as_slice(), hex("6695febc9288e36282235fc7151f128497b38f3f").as_slice());
+        assert_eq!(
+            kul.as_slice(),
+            hex("6695febc9288e36282235fc7151f128497b38f3f").as_slice()
+        );
     }
 
     #[test]
@@ -631,8 +704,17 @@ mod tests {
         let key = hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b");
         let data = b"Hi There";
         let full256 = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, &key), data);
-        assert_eq!(full256.as_ref(), hex("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7").as_slice());
-        assert_eq!(mac(AuthProto::Sha256, &key, data), hex("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7").get(..24).unwrap_or(&[]).to_vec());
+        assert_eq!(
+            full256.as_ref(),
+            hex("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7").as_slice()
+        );
+        assert_eq!(
+            mac(AuthProto::Sha256, &key, data),
+            hex("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")
+                .get(..24)
+                .unwrap_or(&[])
+                .to_vec()
+        );
         assert_eq!(mac(AuthProto::Sha384, &key, data), hex("afd03944d84895626b0825f4ab46907f15f9dadbe4101ec682aa034c7cebc59cfaea9ea9076ede7f4af152e8b2fa9cb6").get(..32).unwrap_or(&[]).to_vec());
         assert_eq!(mac(AuthProto::Sha512, &key, data), hex("87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cdedaa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854").get(..48).unwrap_or(&[]).to_vec());
         assert_eq!(AuthProto::HmacSha96.mac_len(), 12);
@@ -682,7 +764,12 @@ mod tests {
     #[test]
     fn dsc_003_time_window_follows_rfc3414() {
         let t0 = Instant::now();
-        let mut e = Engine { id: vec![1, 2, 3], boots: 5, time: 1000, learned: t0 };
+        let mut e = Engine {
+            id: vec![1, 2, 3],
+            boots: 5,
+            time: 1000,
+            learned: t0,
+        };
         // Same boots, time within 150 s either way: accepted.
         assert_eq!(e.window(5, 1000, t0), Window::Accept);
         assert_eq!(e.window(5, 850, t0), Window::Accept);
@@ -694,7 +781,10 @@ mod tests {
         assert_eq!(e.window(4, 1000, t0), Window::Stale);
         assert_eq!(e.window(6, 50, t0), Window::Resync);
         // The local clock advances with elapsed time.
-        assert_eq!(e.window(5, 1100, t0 + Duration::from_secs(100)), Window::Accept);
+        assert_eq!(
+            e.window(5, 1100, t0 + Duration::from_secs(100)),
+            Window::Accept
+        );
         // Boots at the maximum cannot be synchronized.
         assert_eq!(e.window(MAX_BOOTS, 1000, t0), Window::Stale);
         e.resync(6, 50, t0);
@@ -721,13 +811,22 @@ mod tests {
     fn test_user(priv_on: bool) -> UsmUser {
         UsmUser {
             name: b"ttuser".to_vec(),
-            auth: Some((AuthProto::Sha256, SecretValue::new(b"authpass-1234".to_vec()))),
-            privacy: priv_on.then(|| (PrivProto::Aes128, SecretValue::new(b"privpass-1234".to_vec()))),
+            auth: Some((
+                AuthProto::Sha256,
+                SecretValue::new(b"authpass-1234".to_vec()),
+            )),
+            privacy: priv_on.then(|| {
+                (
+                    PrivProto::Aes128,
+                    SecretValue::new(b"privpass-1234".to_vec()),
+                )
+            }),
         }
     }
 
     fn scoped_request_for_test(engine: &[u8]) -> Vec<u8> {
-        let pdu = crate::pdu::encode_request(crate::pdu::RequestKind::Get, 1, 0, 0, &[]).unwrap_or_default();
+        let pdu = crate::pdu::encode_request(crate::pdu::RequestKind::Get, 1, 0, 0, &[])
+            .unwrap_or_default();
         scoped_request(engine, &pdu)
     }
 
@@ -737,16 +836,29 @@ mod tests {
     fn dsc_003_usm_encode_offset_round_trips() {
         let engine = hex("800000090102030405");
         for priv_on in [false, true] {
-            let keys = test_user(priv_on).derive().unwrap_or_else(|e| panic!("{e:?}"));
+            let keys = test_user(priv_on)
+                .derive()
+                .unwrap_or_else(|e| panic!("{e:?}"));
             let scoped = scoped_request_for_test(&engine);
-            let out = Outgoing { msg_id: 77, engine_id: &engine, boots: 3, time: 500, user: b"ttuser", reportable: true };
+            let out = Outgoing {
+                msg_id: 77,
+                engine_id: &engine,
+                boots: 3,
+                time: 500,
+                user: b"ttuser",
+                reportable: true,
+            };
             let msg = encode(&out, Some(&keys), &scoped).unwrap_or_else(|e| panic!("{e:?}"));
             let reply = parse(&msg).unwrap_or_else(|e| panic!("{e:?}"));
             let range = reply.auth_range.clone().unwrap_or_default();
             assert_eq!(range.len(), 24, "SHA-256 MAC is 24 octets");
             let mut zeroed = msg.clone();
             zeroed.get_mut(range.clone()).unwrap_or(&mut []).fill(0);
-            let ku: Vec<u8> = keys.auth_ku.as_ref().map(|k| k.to_vec()).unwrap_or_default();
+            let ku: Vec<u8> = keys
+                .auth_ku
+                .as_ref()
+                .map(|k| k.to_vec())
+                .unwrap_or_default();
             let kul = localize(AuthProto::Sha256, &ku, &engine);
             let expect = mac(AuthProto::Sha256, &kul, &zeroed);
             assert_eq!(msg.get(range.clone()), Some(expect.as_slice()));
@@ -768,7 +880,14 @@ mod tests {
         let engine = hex("800000090102030405");
         let keys = test_user(true).derive().unwrap_or_else(|e| panic!("{e:?}"));
         let scoped = scoped_request_for_test(&engine);
-        let out = Outgoing { msg_id: 5, engine_id: &engine, boots: 1, time: 2, user: b"ttuser", reportable: true };
+        let out = Outgoing {
+            msg_id: 5,
+            engine_id: &engine,
+            boots: 1,
+            time: 2,
+            user: b"ttuser",
+            reportable: true,
+        };
         let msg = encode(&out, Some(&keys), &scoped).unwrap_or_else(|e| panic!("{e:?}"));
         let reply = parse(&msg).unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(reply.flags & LEVEL_MASK, FLAG_AUTH | FLAG_PRIV);

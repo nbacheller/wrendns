@@ -24,7 +24,9 @@ impl Bulk for Replay {
             return Err(AgentError::Timeout);
         };
         self.next = self.next.saturating_add(1);
-        v2c::decode(bytes).map(|d| d.response).map_err(AgentError::Decode)
+        v2c::decode(bytes)
+            .map(|d| d.response)
+            .map_err(AgentError::Decode)
     }
 }
 
@@ -44,7 +46,9 @@ impl Pacer for Clock {
 
 fuzz_target!(|data: &[u8]| {
     let replies: Vec<Vec<u8>> = data.chunks(97).map(<[u8]>::to_vec).collect();
-    let Some(root) = Oid::parse("1.3.6.1.2.1") else { return };
+    let Some(root) = Oid::parse("1.3.6.1.2.1") else {
+        return;
+    };
     let mut agent = Replay { replies, next: 0 };
     let mut clock = Clock { t: Instant::now() };
     let _ = walk::walk(&mut agent, &mut clock, &root, &Limits::default());

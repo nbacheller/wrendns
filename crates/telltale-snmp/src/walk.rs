@@ -30,7 +30,11 @@ pub trait Bulk {
 
 impl Bulk for Agent {
     fn bulk(&mut self, oid: &Oid, max_repetitions: u32) -> Result<Response, AgentError> {
-        self.request(RequestKind::GetBulk, std::slice::from_ref(oid), max_repetitions)
+        self.request(
+            RequestKind::GetBulk,
+            std::slice::from_ref(oid),
+            max_repetitions,
+        )
     }
 }
 
@@ -109,7 +113,12 @@ impl From<AgentError> for WalkError {
 }
 
 /// Walks the subtree under `root`, within `limits`.
-pub fn walk<B: Bulk, P: Pacer>(agent: &mut B, pacer: &mut P, root: &Oid, limits: &Limits) -> Result<Walked, WalkError> {
+pub fn walk<B: Bulk, P: Pacer>(
+    agent: &mut B,
+    pacer: &mut P,
+    root: &Oid,
+    limits: &Limits,
+) -> Result<Walked, WalkError> {
     let gap = limits.gap.max(MIN_GAP);
     let start = pacer.now();
     let mut rows: Vec<VarBind> = Vec::new();
@@ -120,22 +129,38 @@ pub fn walk<B: Bulk, P: Pacer>(agent: &mut B, pacer: &mut P, root: &Oid, limits:
             pacer.pause(gap);
         }
         if pacer.now().saturating_duration_since(start) >= limits.max_time {
-            return Ok(Walked { rows, stop: Stop::TimeCap, requests });
+            return Ok(Walked {
+                rows,
+                stop: Stop::TimeCap,
+                requests,
+            });
         }
         let resp = agent.bulk(&last, limits.max_repetitions)?;
         requests = requests.saturating_add(1);
         if resp.varbinds.is_empty() {
-            return Ok(Walked { rows, stop: Stop::EndOfView, requests });
+            return Ok(Walked {
+                rows,
+                stop: Stop::EndOfView,
+                requests,
+            });
         }
         for vb in resp.varbinds {
             if !vb.oid.starts_with(root) || matches!(vb.value, Value::EndOfMibView) {
-                return Ok(Walked { rows, stop: Stop::EndOfView, requests });
+                return Ok(Walked {
+                    rows,
+                    stop: Stop::EndOfView,
+                    requests,
+                });
             }
             if vb.oid <= last {
                 return Err(WalkError::NotIncreasing);
             }
             if rows.len() >= limits.max_rows {
-                return Ok(Walked { rows, stop: Stop::RowCap, requests });
+                return Ok(Walked {
+                    rows,
+                    stop: Stop::RowCap,
+                    requests,
+                });
             }
             last = vb.oid.clone();
             rows.push(vb);
@@ -158,11 +183,21 @@ mod tests {
 
     impl FakeBulk {
         fn table(rows: Vec<Oid>) -> Self {
-            Self { table: rows, endless: None, next_endless: 0, calls: 0 }
+            Self {
+                table: rows,
+                endless: None,
+                next_endless: 0,
+                calls: 0,
+            }
         }
 
         fn endless(root: Oid) -> Self {
-            Self { table: Vec::new(), endless: Some(root), next_endless: 0, calls: 0 }
+            Self {
+                table: Vec::new(),
+                endless: Some(root),
+                next_endless: 0,
+                calls: 0,
+            }
         }
     }
 
@@ -173,18 +208,40 @@ mod tests {
             if let Some(root) = &self.endless {
                 for _ in 0..max_repetitions {
                     self.next_endless = self.next_endless.saturating_add(1);
-                    let Some(o) = root.child(self.next_endless) else { break };
-                    varbinds.push(VarBind { oid: o, value: Value::Integer(i64::from(self.next_endless)) });
+                    let Some(o) = root.child(self.next_endless) else {
+                        break;
+                    };
+                    varbinds.push(VarBind {
+                        oid: o,
+                        value: Value::Integer(i64::from(self.next_endless)),
+                    });
                 }
             } else {
-                for o in self.table.iter().filter(|o| *o > oid).take(max_repetitions as usize) {
-                    varbinds.push(VarBind { oid: o.clone(), value: Value::Integer(1) });
+                for o in self
+                    .table
+                    .iter()
+                    .filter(|o| *o > oid)
+                    .take(max_repetitions as usize)
+                {
+                    varbinds.push(VarBind {
+                        oid: o.clone(),
+                        value: Value::Integer(1),
+                    });
                 }
                 if let (true, Some(end)) = (varbinds.is_empty(), Oid::parse("1.3.6.1.6")) {
-                    varbinds.push(VarBind { oid: end, value: Value::EndOfMibView });
+                    varbinds.push(VarBind {
+                        oid: end,
+                        value: Value::EndOfMibView,
+                    });
                 }
             }
-            Ok(Response { tag: TAG_RESPONSE, request_id: 1, error_status: 0, error_index: 0, varbinds })
+            Ok(Response {
+                tag: TAG_RESPONSE,
+                request_id: 1,
+                error_status: 0,
+                error_index: 0,
+                varbinds,
+            })
         }
     }
 
@@ -197,7 +254,11 @@ mod tests {
 
     impl FakePacer {
         fn new() -> Self {
-            Self { t: Instant::now(), pauses: 0, total: Duration::ZERO }
+            Self {
+                t: Instant::now(),
+                pauses: 0,
+                total: Duration::ZERO,
+            }
         }
     }
 
@@ -232,22 +293,43 @@ mod tests {
         // Time cap: an endless table; the walk stops once 30 s have passed, and the gap holds.
         let mut agent = FakeBulk::endless(root.clone());
         let mut pacer = FakePacer::new();
-        let unlimited_rows = Limits { max_rows: usize::MAX, ..Limits::default() };
-        let got = walk(&mut agent, &mut pacer, &root, &unlimited_rows).unwrap_or_else(|e| panic!("{e:?}"));
+        let unlimited_rows = Limits {
+            max_rows: usize::MAX,
+            ..Limits::default()
+        };
+        let got = walk(&mut agent, &mut pacer, &root, &unlimited_rows)
+            .unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(got.stop, Stop::TimeCap);
         assert!(pacer.total >= WALK_TIME_CAP, "walk stopped before the cap");
         // At 50 ms a gap, 30 s allows 600 pauses; the request count never exceeds that plus one.
-        assert!(got.requests <= 601, "requests {} over the pacing budget", got.requests);
+        assert!(
+            got.requests <= 601,
+            "requests {} over the pacing budget",
+            got.requests
+        );
         // One pause runs before every request but the first, and before the cap check.
-        assert!(pacer.pauses >= got.requests.saturating_sub(1), "pauses {} for {} requests", pacer.pauses, got.requests);
+        assert!(
+            pacer.pauses >= got.requests.saturating_sub(1),
+            "pauses {} for {} requests",
+            pacer.pauses,
+            got.requests
+        );
 
         // Pacing: a gap below 50 ms is raised to 50 ms.
         let mut agent = FakeBulk::endless(root.clone());
         let mut pacer = FakePacer::new();
-        let limits = Limits { gap: Duration::from_millis(1), max_time: Duration::from_secs(1), ..Limits::default() };
+        let limits = Limits {
+            gap: Duration::from_millis(1),
+            max_time: Duration::from_secs(1),
+            ..Limits::default()
+        };
         let _ = walk(&mut agent, &mut pacer, &root, &limits);
         assert!(pacer.pauses > 0);
-        assert_eq!(pacer.total, MIN_GAP.saturating_mul(pacer.pauses), "every gap is raised to the floor");
+        assert_eq!(
+            pacer.total,
+            MIN_GAP.saturating_mul(pacer.pauses),
+            "every gap is raised to the floor"
+        );
     }
 
     #[test]
@@ -257,7 +339,8 @@ mod tests {
         rows.push(oid("1.3.6.1.2.1.2.1"));
         let mut agent = FakeBulk::table(rows);
         let mut pacer = FakePacer::new();
-        let got = walk(&mut agent, &mut pacer, &root, &Limits::default()).unwrap_or_else(|e| panic!("{e:?}"));
+        let got = walk(&mut agent, &mut pacer, &root, &Limits::default())
+            .unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(got.stop, Stop::EndOfView);
         assert_eq!(got.rows.len(), 3);
     }
@@ -268,7 +351,16 @@ mod tests {
         struct Stuck(Oid);
         impl Bulk for Stuck {
             fn bulk(&mut self, _oid: &Oid, _n: u32) -> Result<Response, AgentError> {
-                Ok(Response { tag: TAG_RESPONSE, request_id: 1, error_status: 0, error_index: 0, varbinds: vec![VarBind { oid: self.0.clone(), value: Value::Null }] })
+                Ok(Response {
+                    tag: TAG_RESPONSE,
+                    request_id: 1,
+                    error_status: 0,
+                    error_index: 0,
+                    varbinds: vec![VarBind {
+                        oid: self.0.clone(),
+                        value: Value::Null,
+                    }],
+                })
             }
         }
         let root = oid("1.3.6.1.2.1.1");

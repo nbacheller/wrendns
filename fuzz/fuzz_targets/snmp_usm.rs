@@ -10,8 +10,14 @@ use telltale_snmp::usm::{self, AuthProto, PrivProto, UsmUser};
 fuzz_target!(|data: &[u8]| {
     let user = UsmUser {
         name: b"ttuser".to_vec(),
-        auth: Some((AuthProto::Sha256, SecretValue::new(b"authpass-1234".to_vec()))),
-        privacy: Some((PrivProto::Aes128, SecretValue::new(b"privpass-1234".to_vec()))),
+        auth: Some((
+            AuthProto::Sha256,
+            SecretValue::new(b"authpass-1234".to_vec()),
+        )),
+        privacy: Some((
+            PrivProto::Aes128,
+            SecretValue::new(b"privpass-1234".to_vec()),
+        )),
     };
     let Ok(keys) = user.derive() else { return };
     let Ok(reply) = usm::parse(data) else { return };

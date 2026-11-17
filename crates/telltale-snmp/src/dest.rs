@@ -61,7 +61,10 @@ mod tests {
         assert!(check("172.31.255.254", &[]).is_ok());
         assert_eq!(check("172.32.0.1", &[]), Err(DestError::NotPrivate));
         assert_eq!(check("8.8.8.8", &[]), Err(DestError::NotPrivate));
-        assert_eq!(check("gateway.example", &[]), Err(DestError::NotIpv4Literal));
+        assert_eq!(
+            check("gateway.example", &[]),
+            Err(DestError::NotIpv4Literal)
+        );
         assert_eq!(check("fd00::1", &[]), Err(DestError::NotIpv4Literal));
         assert_eq!(check("::1", &[]), Err(DestError::NotIpv4Literal));
         assert_eq!(check("100.64.0.1", &[]), Err(DestError::NotPrivate));

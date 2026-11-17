@@ -35,7 +35,11 @@ pub enum CredError {
 }
 
 /// Chooses the source from the three fields a configuration entry may set.
-pub fn source_from_fields(file: Option<&str>, inline: Option<&str>, reference: Option<&str>) -> Result<CredentialSource, CredError> {
+pub fn source_from_fields(
+    file: Option<&str>,
+    inline: Option<&str>,
+    reference: Option<&str>,
+) -> Result<CredentialSource, CredError> {
     if inline.is_some() {
         return Err(CredError::InlineRefused);
     }
@@ -84,10 +88,22 @@ mod tests {
 
     #[test]
     fn dsc_003_inline_credentials_are_refused() {
-        assert_eq!(source_from_fields(Some("/x"), Some("public"), None), Err(CredError::InlineRefused));
-        assert_eq!(source_from_fields(None, Some("pw"), None), Err(CredError::InlineRefused));
-        assert_eq!(source_from_fields(None, None, None), Err(CredError::NotExactlyOne));
-        assert_eq!(source_from_fields(Some("/a"), None, Some("discovery.x.y")), Err(CredError::NotExactlyOne));
+        assert_eq!(
+            source_from_fields(Some("/x"), Some("public"), None),
+            Err(CredError::InlineRefused)
+        );
+        assert_eq!(
+            source_from_fields(None, Some("pw"), None),
+            Err(CredError::InlineRefused)
+        );
+        assert_eq!(
+            source_from_fields(None, None, None),
+            Err(CredError::NotExactlyOne)
+        );
+        assert_eq!(
+            source_from_fields(Some("/a"), None, Some("discovery.x.y")),
+            Err(CredError::NotExactlyOne)
+        );
         assert_eq!(
             source_from_fields(Some("/a/community"), None, None),
             Ok(CredentialSource::File(PathBuf::from("/a/community")))
@@ -107,10 +123,19 @@ mod tests {
         assert!(fs::write(&bad_file, "ttcomm\n").is_ok());
         let dirs = vec![inside.clone()];
         let got = read_file(&ok_file, &dirs);
-        assert_eq!(got.map(|s| s.expose().to_vec()).ok(), Some(b"ttcomm".to_vec()));
-        assert_eq!(read_file(&bad_file, &dirs).err(), Some(CredError::OutsideSecretDirs));
+        assert_eq!(
+            got.map(|s| s.expose().to_vec()).ok(),
+            Some(b"ttcomm".to_vec())
+        );
+        assert_eq!(
+            read_file(&bad_file, &dirs).err(),
+            Some(CredError::OutsideSecretDirs)
+        );
         // A file that does not exist is refused the same way, so the error names no path.
-        assert_eq!(read_file(&inside.join("missing"), &dirs).err(), Some(CredError::OutsideSecretDirs));
+        assert_eq!(
+            read_file(&inside.join("missing"), &dirs).err(),
+            Some(CredError::OutsideSecretDirs)
+        );
         let _ = fs::remove_dir_all(&base);
     }
 }

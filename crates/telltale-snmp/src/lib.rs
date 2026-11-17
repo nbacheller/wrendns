@@ -12,8 +12,8 @@
     clippy::unreachable
 )]
 
-pub mod agent;
 pub mod aes_cfb;
+pub mod agent;
 pub mod ber;
 pub mod creds;
 pub mod dest;
