@@ -158,9 +158,6 @@ export const api = {
   deleteRouter: (name: string) => call<unknown>('DELETE', `/routers/${encodeURIComponent(name)}`),
   checkRouter: (b: Record<string, unknown>) => post<S['RouterCheck']>('/checks/router', b),
   routerCertificate: (url: string) => post<S['RouterCertificate']>('/checks/router-certificate', { url }),
-  // REQ: API-015 (ADR-903 §9) — a credential's value, written once through the store; the answer
-  // carries no value, and the form never shows it again.
-  putSecret: (name: string, value: string) => call<unknown>('PUT', `/secrets/${encodeURIComponent(name)}`, { body: { value, kind: 'text' } }),
   // REQ: OBS-035 (T14.13) — wall displays.
   displays: () => get<S['Listed_DisplayInfo']>('/displays'),
   createDisplay: (b: S['CreateDisplay']) => post<S['NewDisplay']>('/displays', b),

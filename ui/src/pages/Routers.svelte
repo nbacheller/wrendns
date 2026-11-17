@@ -138,7 +138,11 @@
   const nameOk = (n: string) => /^[a-z0-9][a-z0-9._-]{0,62}$/.test(n);
   // REQ: API-016 (review of T23.8) — Add never replaces a router: a name another router holds is
   // refused before anything is stored under it (the form's secrets are named after the router).
-  const nameTaken = $derived(form !== null && form.original === null && items.some((i) => i.name === form.name.trim().toLowerCase()));
+  const nameTaken = $derived.by(() => {
+    if (form === null || form.original !== null) return false;
+    const name = form.name.trim().toLowerCase();
+    return items.some((i) => i.name === name);
+  });
 
   async function check() {
     if (!form) return;
