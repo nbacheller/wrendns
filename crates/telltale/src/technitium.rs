@@ -1007,6 +1007,7 @@ pub(crate) fn convert(ex: &Export, source: &str) -> Imported {
         version: "",
         notes: bld.notes,
         counts,
+        samples: Vec::new(),
     }
 }
 

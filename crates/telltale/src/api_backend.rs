@@ -3652,6 +3652,39 @@ impl Backend for ApiBackend {
         self.do_write_managed(w)
     }
 
+    // REQ: API-007 (T24.18, ADR-940) — importing a Pi-hole export. Admins only: the API refuses
+    // agents before a backend is asked.
+    fn pihole_import_preview(
+        &self,
+        req: telltale_api::PiholeImportRequest,
+    ) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        if let Some(p) = self.replica_read_only() {
+            return Box::pin(async move { Err(p) });
+        }
+        let src = Arc::clone(&self.src);
+        Box::pin(async move { crate::pihole_import::preview(src, req).await })
+    }
+
+    fn pihole_import_apply(
+        &self,
+        id: String,
+        by: String,
+    ) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        if let Some(p) = self.replica_read_only() {
+            return Box::pin(async move { Err(p) });
+        }
+        // REQ: CLU-013 — a pinned cluster publishes nothing new.
+        if let Some(p) = crate::rollout::surface::pinned_problem(&self.src) {
+            return Box::pin(async move { Err(p) });
+        }
+        let src = Arc::clone(&self.src);
+        Box::pin(async move { crate::pihole_import::apply(src, id, by).await })
+    }
+
+    fn pihole_import_discard(&self, id: &str, by: &str) -> Result<serde_json::Value, Problem> {
+        crate::pihole_import::discard(id, by)
+    }
+
     // REQ: API-002, API-010 — devices named through the API (ADR-040).
     fn write_client(&self, w: ClientWrite) -> BoxFuture<Result<ClientChange, Problem>> {
         if let Some(p) = self.replica_read_only() {
@@ -6030,7 +6063,7 @@ impl ApiBackend {
 
 /// REQ: OBS-033 — the change about to be applied came from `by` and is configuration
 /// version `version`: for its `config.applied` marker.
-fn provenance(by: &str, version: u64) {
+pub(crate) fn provenance(by: &str, version: u64) {
     if let Some(a) = crate::annotations::get() {
         a.set_provenance(crate::annotations::Provenance {
             source: telltale_api::annotations_api::source_of(by).to_owned(),

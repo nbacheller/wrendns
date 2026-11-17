@@ -524,6 +524,14 @@ fn merge_findings(parts: Vec<(String, Vec<AnomalyFinding>)>) -> Vec<AnomalyFindi
     out
 }
 
+/// REQ: API-007 (T24.18) — a Pi-hole import asked of a replica.
+fn import_elsewhere() -> Problem {
+    Problem::new(
+        telltale_api::problem::Code::Conflict,
+        "the Pi-hole import runs on the primary node: open this page there",
+    )
+}
+
 fn no_lease() -> Problem {
     Problem::unavailable("this primary can't reach a majority of voters, so it isn't taking changes")
         .hint("DNS keeps answering. Changes resume when a majority of voters is reachable again; see the Cluster page.")
@@ -2693,6 +2701,37 @@ impl Backend for Federated {
         body: Option<&serde_json::Value>,
     ) -> Result<Vec<u8>, Problem> {
         self.local.idempotency_request(kind, request, body)
+    }
+    // REQ: API-007 (T24.18, ADR-940) — an import is a configuration change made where the plan
+    // was previewed: on the primary (or a node that takes changes alone). A replica refuses it
+    // (its plans would live on another node), and says where to go.
+    fn pihole_import_preview(
+        &self,
+        req: telltale_api::PiholeImportRequest,
+    ) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        match self.write_route() {
+            WriteRoute::Here => self.local.pihole_import_preview(req),
+            WriteRoute::Primary(_) => Box::pin(async { Err(import_elsewhere()) }),
+            WriteRoute::NoLease => Box::pin(async { Err(no_lease()) }),
+        }
+    }
+    fn pihole_import_apply(
+        &self,
+        id: String,
+        by: String,
+    ) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        match self.write_route() {
+            WriteRoute::Here => self.local.pihole_import_apply(id, by),
+            WriteRoute::Primary(_) => Box::pin(async { Err(import_elsewhere()) }),
+            WriteRoute::NoLease => Box::pin(async { Err(no_lease()) }),
+        }
+    }
+    fn pihole_import_discard(&self, id: &str, by: &str) -> Result<serde_json::Value, Problem> {
+        match self.write_route() {
+            WriteRoute::Here => self.local.pihole_import_discard(id, by),
+            WriteRoute::Primary(_) => Err(import_elsewhere()),
+            WriteRoute::NoLease => Err(no_lease()),
+        }
     }
     fn write_client(&self, w: ClientWrite) -> BoxFuture<Result<ClientChange, Problem>> {
         match self.write_route() {

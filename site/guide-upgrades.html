@@ -178,6 +178,8 @@ telltale backup show pi.ttbk                      # check it and list what's in 
         <li><b>Into an existing setup</b>, merge it by hand: both files define the <code>default</code> upstream group and group.</li>
         <li><b>An upstream on the Pi-hole machine itself</b> (<code>127.0.0.1#5335</code>, usually unbound) is flagged: keep that resolver running next to TelltaleDNS.</li>
       </ol>
+      <p><b>Or from the admin page:</b> <b>Settings → Import from Pi-hole</b> (admins only) takes the same export. It shows what would be added, changed or skipped, and nothing changes until you type <code>IMPORT</code> and apply the preview. The apply is one configuration change, recorded in the audit log as <code>import.pihole</code>. Names your config files define are skipped, and the DNSSEC mode stays in the file.</p>
+      <p><b>Check the answers match:</b> <code>telltale import pihole PATH --compare 192.168.1.251</code> (or the same address in the page's "Compare" box) resolves a sample of your names through the Pi-hole and through the node's resolver, and lists each name whose answers differ. Run the imported configuration first, or the comparison shows what the node answers now.</p>
       <p class="muted">Every row of the mapping: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#moving-from-pi-hole">Moving from Pi-hole</a>.</p>
     </div>
 

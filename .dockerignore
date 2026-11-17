@@ -18,3 +18,6 @@ ui/playwright-report/
 
 # Git worktrees used for parallel work (each has its own node_modules and build output).
 .wt/
+
+# Local credentials for the Docker Desktop bundle: never in a build context.
+deploy/docker-desktop/secrets/
