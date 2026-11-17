@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 /// Schema migrations, applied in order; `meta.schema` records how many ran.
 const MIGRATIONS: &[&str] = &[
@@ -280,7 +280,7 @@ impl State {
         Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
+    fn init(mut conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
@@ -293,24 +293,31 @@ impl State {
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
             [],
         )?;
-        let done: usize = conn
-            .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
-                r.get::<_, String>(0)
-            })
-            .optional()?
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
-        for (n, sql) in MIGRATIONS.iter().enumerate().skip(done) {
-            let tx = conn.unchecked_transaction()?;
+        // REQ: OPS-014, API-003 — each migration reads the schema version and applies itself in
+        // one immediate transaction: the secrets store and the user database open this file from
+        // different threads at start, and a read taken outside the write lock let both apply
+        // migration 1 (`table users already exists`, and the API stayed off).
+        loop {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let done: usize = tx
+                .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .optional()?
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            let Some(sql) = MIGRATIONS.get(done) else {
+                break;
+            };
             tx.execute_batch(sql)?;
             tx.execute(
                 "INSERT INTO meta (key, value) VALUES ('schema', ?1)
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [(n + 1).to_string()],
+                [(done + 1).to_string()],
             )?;
             tx.commit()?;
             // REQ: API-014 — and their old page images leave the WAL too.
-            if n + 1 == PURGE_IDEMPOTENCY {
+            if done + 1 == PURGE_IDEMPOTENCY {
                 checkpoint_truncate(&conn)?;
             }
         }
@@ -955,5 +962,29 @@ mod tests {
         // Reopening keeps data and doesn't re-run migrations.
         let s = State::open(&path).unwrap();
         assert_eq!(s.user_count().unwrap(), 1);
+    }
+
+    /// REQ: OPS-014, API-003 — connections opened on a fresh file at the same time (the secrets
+    /// store and the user database at start) all come up, and the schema is the latest once.
+    #[test]
+    fn ops_014_concurrent_first_open_migrates_once() {
+        for _ in 0..5 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.db");
+            let opened: Vec<_> = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..4)
+                    .map(|_| scope.spawn(|| State::open(&path).map(drop)))
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            assert!(opened.iter().all(Result::is_ok), "{opened:?}");
+            let conn = Connection::open(&path).unwrap();
+            let v: String = conn
+                .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(v, MIGRATIONS.len().to_string());
+        }
     }
 }
