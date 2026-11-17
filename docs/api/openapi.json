@@ -3817,7 +3817,8 @@
         "tags": [
           "stats"
         ],
-        "summary": "The network inventory's status (DSC-014): whether it runs on this node, and each discovery\nworker process. The inventory itself (`GET /api/v1/discovery`) comes with T25.12.",
+        "summary": "The network inventory's status (DSC-014).",
+        "description": "Whether the inventory runs on this node, and each discovery worker process. The inventory itself\n(`GET /api/v1/discovery`) comes with T25.12.",
         "operationId": "discovery_status",
         "responses": {
           "200": {

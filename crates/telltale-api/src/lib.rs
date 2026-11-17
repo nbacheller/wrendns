@@ -2158,8 +2158,10 @@ async fn alerts_status(State(b): State<Shared>) -> Json<model::AlertsStatus> {
     Json(b.alerts_status())
 }
 
-/// The network inventory's status (DSC-014): whether it runs on this node, and each discovery
-/// worker process. The inventory itself (`GET /api/v1/discovery`) comes with T25.12.
+/// The network inventory's status (DSC-014).
+///
+/// Whether the inventory runs on this node, and each discovery worker process. The inventory itself
+/// (`GET /api/v1/discovery`) comes with T25.12.
 #[utoipa::path(get, path = "/api/v1/discovery/status", tag = "stats",
     responses((status = 200, body = model::DiscoveryStatus, description = "The result.")))]
 async fn discovery_status(State(b): State<Shared>) -> Json<model::DiscoveryStatus> {

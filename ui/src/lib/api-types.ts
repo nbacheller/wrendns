@@ -1560,8 +1560,9 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * The network inventory's status (DSC-014): whether it runs on this node, and each discovery
-         *     worker process. The inventory itself (`GET /api/v1/discovery`) comes with T25.12.
+         * The network inventory's status (DSC-014).
+         * @description Whether the inventory runs on this node, and each discovery worker process. The inventory itself
+         *     (`GET /api/v1/discovery`) comes with T25.12.
          */
         get: operations["discovery_status"];
         put?: never;
