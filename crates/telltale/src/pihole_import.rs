@@ -33,7 +33,7 @@ pub(crate) const UPLOAD_LIMIT: usize = 64 << 20;
 const WORKER_TIMEOUT: Duration = Duration::from_secs(60);
 /// Most bytes the worker may print.
 const WORKER_OUTPUT_LIMIT: usize = 64 << 20;
-/// The worker's `RLIMIT_DATA` (ADR-939): an archive's unpacked size is capped at 512 MiB by the
+/// The worker's `RLIMIT_DATA` (ADR-939): an archive's unpacked size is capped at 256 MiB by the
 /// reader, and the rest of the conversion is small.
 const WORKER_MEMORY: u64 = 1024 << 20;
 /// How many previews are read at once: each holds an upload and a worker (ADR-939).
@@ -154,6 +154,8 @@ struct Upload {
 
 /// The directory under the data directory that holds the scratch directories.
 const SCRATCH_PARENT: &str = "import-tmp";
+/// The prefix of every scratch directory name (the sweep touches only these).
+const SCRATCH_PREFIX: &str = "up-";
 /// A scratch directory older than this is left over from a crash and is removed.
 const SCRATCH_STALE: Duration = Duration::from_secs(3600);
 
@@ -161,14 +163,27 @@ impl Upload {
     fn write(data_dir: &Path, data: &[u8]) -> Result<Self, Problem> {
         use std::io::Write as _;
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let name = format!("{}-{}-{n}", std::process::id(), now());
+        let rand: String = new_id()
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .take(16)
+            .collect();
+        let name = format!(
+            "{SCRATCH_PREFIX}{}-{}-{n}-{rand}",
+            std::process::id(),
+            now()
+        );
         let fail = |what: &str, e: std::io::Error| {
             Problem::internal(format!("can't store the upload ({what}): {e}"))
         };
         let dir = match Self::make_dir(&data_dir.join(SCRATCH_PARENT), &name) {
             Ok(d) => d,
-            Err(_) => Self::make_dir(&std::env::temp_dir(), &format!("telltale-import-{name}"))
-                .map_err(|e| fail("no writable scratch directory", e))?,
+            // The system temporary directory is shared: only a fresh directory of ours is made in
+            // it; the temporary directory itself is never changed or swept.
+            Err(_) => {
+                Self::private_dir(&std::env::temp_dir().join(format!("telltale-import-{rand}-{n}")))
+                    .map_err(|e| fail("no writable scratch directory", e))?
+            }
         };
         let up = Self {
             file: dir.join("upload"),
@@ -184,46 +199,52 @@ impl Upload {
         Ok(up)
     }
 
-    /// Makes `<parent>/<name>` (and `parent`), private to this user, and clears stale siblings.
-    fn make_dir(parent: &Path, name: &str) -> std::io::Result<PathBuf> {
-        let private = |p: &Path| -> std::io::Result<()> {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
-                match std::fs::DirBuilder::new().mode(0o700).create(p) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700))?;
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-            #[cfg(not(unix))]
-            std::fs::create_dir_all(p)?;
-            Ok(())
-        };
-        if let Some(grand) = parent.parent() {
-            std::fs::create_dir_all(grand)?;
+    /// Creates `p` (which must not exist), mode 0700, and checks it is a real directory.
+    fn private_dir(p: &Path) -> std::io::Result<PathBuf> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            std::fs::DirBuilder::new().mode(0o700).create(p)?;
         }
-        private(parent)?;
-        Self::sweep(parent);
-        let dir = parent.join(name);
-        private(&dir)?;
-        Ok(dir)
+        #[cfg(not(unix))]
+        std::fs::create_dir(p)?;
+        if !std::fs::symlink_metadata(p)?.is_dir() {
+            return Err(std::io::Error::other("not a directory"));
+        }
+        Ok(p.to_path_buf())
     }
 
-    /// Removes scratch directories a crashed worker or server left behind (best effort).
+    /// Makes `<parent>/<name>` under the data directory (and `parent`, private to this user),
+    /// and clears stale siblings.
+    fn make_dir(parent: &Path, name: &str) -> std::io::Result<PathBuf> {
+        std::fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Self::sweep(parent);
+        Self::private_dir(&parent.join(name))
+    }
+
+    /// Removes scratch directories a crashed worker or server left behind (best effort); only
+    /// directories this code names, and only under the data directory.
     fn sweep(parent: &Path) {
         let Ok(list) = std::fs::read_dir(parent) else {
             return;
         };
         for e in list.flatten() {
-            let old = e
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.elapsed().ok())
-                .is_some_and(|age| age > SCRATCH_STALE);
+            let ours = e.file_name().to_str().is_some_and(|n| {
+                n.strip_prefix(SCRATCH_PREFIX).is_some_and(|r| {
+                    !r.is_empty() && r.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                })
+            });
+            let old = ours
+                && e.metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age > SCRATCH_STALE);
             if old {
                 let _ = std::fs::remove_dir_all(e.path());
             }
@@ -1216,16 +1237,47 @@ mod tests {
         assert!(!dir.exists(), "the scratch directory is removed");
     }
 
-    // REQ: API-007 (ADR-989) — a data directory that can't be written falls back to the system's
-    // temporary directory instead of failing the import.
+    // REQ: API-007 (ADR-989) — a data directory that can't be written falls back to a fresh
+    // directory in the system's temporary directory, which is itself left alone.
     #[test]
     fn api_007_upload_scratch_falls_back_to_temp_dir() {
         let data = tempfile::tempdir().unwrap();
         let blocked = data.path().join("not-a-dir");
         std::fs::write(&blocked, b"a file where the data directory should be").unwrap();
+        let tmp = std::env::temp_dir();
+        let other = tmp.join(format!("telltale-fallback-test-{}", std::process::id()));
+        std::fs::create_dir_all(&other).unwrap();
+        #[cfg(unix)]
+        let before = {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::metadata(&tmp).unwrap().permissions().mode()
+        };
         let up = Upload::write(&blocked, b"x").unwrap();
-        assert!(up.dir.starts_with(std::env::temp_dir()));
+        assert!(up.dir.starts_with(&tmp));
         assert_eq!(std::fs::read(&up.file).unwrap(), b"x");
+        assert!(other.exists(), "other directories in the temp dir survive");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&tmp).unwrap().permissions().mode(),
+                before
+            );
+        }
+        drop(up);
+        let _ = std::fs::remove_dir_all(&other);
+    }
+
+    // REQ: API-007 (ADR-989) — the sweep removes only old directories it named itself.
+    #[test]
+    fn api_007_sweep_leaves_fresh_and_foreign_directories() {
+        let data = tempfile::tempdir().unwrap();
+        let parent = data.path().join(SCRATCH_PARENT);
+        std::fs::create_dir_all(parent.join("up-1-2-3-abc")).unwrap();
+        std::fs::create_dir_all(parent.join("keep-me")).unwrap();
+        Upload::sweep(&parent);
+        assert!(parent.join("up-1-2-3-abc").exists());
+        assert!(parent.join("keep-me").exists());
     }
 
     // REQ: API-007 (T24.18) — a damaged archive, gravity.db or text file is refused with the reason

@@ -6,7 +6,7 @@
 #   2. a gravity.db upload and a Teleporter zip are previewed through POST /api/v1/import/pihole
 #      (the import worker runs hardened under its 1 GiB limit and unpacks into the data directory).
 # Before ADR-988 every musl release build answered the import with "<path>: <path>", and the
-# discovery worker never came up.
+# discovery worker's memory limit bounded nothing (it started fine; its limit was not enforced).
 # Usage: deploy/worker-image-e2e.sh [image]   (default: telltale:dev; build it with
 #   docker buildx build --platform linux/amd64 --load -t telltale:dev .)
 set -euo pipefail
