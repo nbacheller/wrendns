@@ -1019,10 +1019,10 @@ Order:
   - *Image delta:* not measured for this task. It adds no dependency; the M25 image gate is measured by the image job (T25.0).
   - *`make bench-smoke`:* it ran on this host and failed the loss gate. The base branch's binary fails the same way (about 30% loss on cache-hot, over 70% on miss-heavy), so the failure is the host's UDP bind cost, as `bench/README.md` warns. The hot-path crates' code is unchanged from the base (`telltale-net` differs only in a test expectation).
   - *Open* (each with its reason):
-    - The Home Assistant feed: `sources::ha_observations` is a tested pure function, but nothing feeds it. `routers.rs` keeps no raw answer. Open until T25.10 (ADR-925).
+    - ~~The Home Assistant feed: `sources::ha_observations` is a tested pure function, but nothing feeds it. `routers.rs` keeps no raw answer. Open until T25.10 (ADR-925).~~ Closed by T25.10: the poll shares its devices and trackers with the inventory thread, which merges them once per poll.
     - The `new_device` alert (`source = "inventory"`) and its privacy-level handling (ADR-102): the merge returns the report, and nothing consumes it yet. Open until T25.15 (DSC-011, OBS-010).
     - DSC-008's "Level 1 hashes names": the names are kept as they are; hashing belongs to the API output. Open until T25.12.
-    - The `vendor`, `network`, `ap`, `lldp` and `identity` fields exist (`serde(default)`, so `inventory.json` stays version 1), but nothing fills them: T25.7 fills vendor and identity, T25.10 fills network, AP and LLDP. `default_community` is set by T25.9.
+    - The `vendor`, `network`, `ap`, `lldp` and `identity` fields exist (`serde(default)`, so `inventory.json` stays version 1), but nothing fills them: T25.7 fills vendor and identity (T25.10 now fills network, AP and LLDP). `default_community` is set by T25.9.
     - Changes made outside the thread's tick must also publish. The thread publishes only what it changed in a tick. Open until T25.11 adds the first write path from the API.
 - [x] **T25.2 `[discovery]` section and its write path.** *(DSC-001, DSC-013; ADR-907)* Depends on T25.0.
   - Schema with `deny_unknown_fields`, serialized only when set.
@@ -1254,7 +1254,7 @@ Order:
     - `dsc_006_breaker_stops_and_audits`;
     - `dsc_006_breaker_sends_no_icmp_or_tcp`;
     - `dsc_006_answer_raises_finding`.
-- [ ] **T25.10 Extra UniFi and Home Assistant reads.** *(DSC-009; ADR-912)* Depends on T25.1, T25.2.
+- [x] **T25.10 Extra UniFi and Home Assistant reads.** *(DSC-009; ADR-912)* Depends on T25.1, T25.2.
   - `unifi_reads` (`client_fields`, `all_users`, `devices`) on the designated node, run on the inventory thread with the router's shared session.
   - Answer and row caps.
   - The Home Assistant template for devices without entities (1 MiB cap).
@@ -1268,6 +1268,14 @@ Order:
     - `dsc_009_ha_entityless_inventory_only`;
     - `dsc_009_reads_off_main_runtime`;
     - `deploy/routers-e2e.sh`: the fake console covers each new path, including the refused cases.
+  - *Done 2026-11-18 (ADR-1003, Proposed; ADR-912 Accepted):* the reads are in `crates/telltale/src/discovery/reads.rs` (pure parsers, the `Reader` that runs on the `telltale-inventory` thread's runtime, the once-per-change reporting). `routers.rs` only stores the session it used and the raw answers it already holds (`Board::share()`, `Shared`, `Keep`). `[discovery]` gains `unifi_reads` (`client_fields`, `all_users`, `devices`; off by default), `unifi_all_users_within_hours` (1 to 8,760; 720) and `home_assistant_all_devices` (true), validated, in the schema, in the `discovery` settings kind. `DiscoveryStatus.reads` reports each read's last result (`ok`, `refused`, `failed`; OpenAPI and `ui` types regenerated). The inventory gains the `history` name kind, the observation fields `network`, `ap`, `lldp` and `first_seen`, the aging of history, and no `new_device` for a history row. The Home Assistant poll now feeds `sources::ha_observations` (closing the T25.1 Open item). Each AC passes: `dsc_009_alluser_history_never_current`, `dsc_009_device_mac_table_locations`, `dsc_009_refused_read_reported_once`, `dsc_009_never_in_router_leases_or_device_dns`, `dsc_009_ha_entityless_inventory_only`, `dsc_009_reads_off_main_runtime`, with `dsc_009_client_fields_wired_wireless`, `dsc_009_row_cap`, `dsc_009_answer_cap_fails_the_read`, `dsc_009_reads_against_a_fake_console`, `dsc_009_refused_read_is_reported_and_the_rest_work`, `dsc_009_ha_feed_and_entityless_read`, `dsc_009_share_is_empty_unless_asked`, `dsc_009_status_is_empty_without_reads`, and `dsc_009_defaults_and_keys` and `dsc_009_window_bounds` in `telltale-config`. `deploy/routers-e2e.sh` runs the extra reads against the fake UniFi (a switch with a trunk, an uplink and a static row; an access point; history), a second fake console that answers 403 to `stat/device` and `stat/alluser`, and the fake Home Assistant's second template, then reads `inventory.json` after a graceful stop. `deploy/ha-test/e2e.sh` step 8 reads the inventory from a real, throwaway Home Assistant: the three devices with entities, the entity-less device in an area, and no entry for the entity-less device in no area. UI: the three UniFi switches, the window and Home Assistant's switch on the Network inventory page, and the reads table (Playwright `dsc_009 unifi read toggles`, `dsc_009 refused read shows on the inventory page`, and the operator check in `dsc_001 network inventory settings are admin-only`); help topic `inventory-unifi-reads`. Docs: `docs/configuration.md`, `docs/design/network-inventory.md`, `deploy/ha-test/README.md`.
+  - *Image delta:* none; no dependency was added.
+  - *`make bench-smoke`:* not run; no hot-path crate (`telltale-proto`, `-net`, `-cache`, `-filter`, `-policy`, `-telemetry`) changed.
+  - *Open* (each with its reason):
+    - A Home Assistant device with no entity, in no area and with no label cannot be listed by a template. Reading the registry through the websocket API would reach it; that is a second protocol and a second use of the token (ADR-1003).
+    - The extra reads need the router to be read on the designated node: a router whose credential is a stored secret is read on the primary only (ADR-903). Run the inventory on the primary, or give the router a credential file.
+    - No API lists the inventory yet, so the places, history and infrastructure show only in `inventory.json` until T25.12 (the e2e scripts read the file).
+    - `new_device` for a history-only device is not raised (ADR-1003); T25.15 decides whether the alert should cover devices UniFi remembers.
 - [ ] **T25.11 Scan-result import.** *(DSC-010, DSC-015; ADR-913)* Depends on T25.1–T25.3.
   - The restricted XML tokenizer and the nmap subset reader. The CSV reader.
   - Parsing in the `--import` worker.

@@ -6437,6 +6437,10 @@ test('dsc_001 network inventory settings are admin-only', async () => {
     await expect(mine.getByText('Only an administrator can change the network inventory')).toBeVisible({ timeout: 30_000 });
     await expect(mine.getByRole('button', { name: 'Check', exact: true })).toHaveCount(0);
     await expect(mine.getByRole('switch', { name: 'Turn the network inventory on' })).toBeDisabled();
+    // REQ: DSC-009 — the extra read switches are read-only for an operator too.
+    for (const name of ['UniFi client fields', 'UniFi client history', 'UniFi devices and ports', 'Home Assistant devices without entities']) {
+      await expect(mine.getByRole('switch', { name })).toBeDisabled();
+    }
     const ocsrf = await csrfOf(op.request);
     const moved = await op.request.put('/api/v1/discovery-settings/default', { headers: { 'x-csrf-token': ocsrf }, data: { enabled: true, worker_memory_mib: 64 } });
     expect(moved.status()).toBe(403);
@@ -6559,6 +6563,70 @@ test('dsc_001 a poll keeps unsaved edits', async () => {
   await page.waitForTimeout(16_000);
   await expect(node).toHaveValue('pi-unsaved');
   await node.fill('');
+});
+
+// REQ: DSC-009 (T25.10, ADR-912) — an admin turns on the extra UniFi reads, sets the history window and
+// the Home Assistant switch, checks and applies; the server keeps them across a reload; a window out of
+// range is refused with the server's message. UniFi's reads start off, Home Assistant's on.
+test('dsc_009 unifi read toggles', async () => {
+  await page.goto('/#/network-inventory');
+  const settings = page.getByTestId('inventory-settings');
+  const unifi = ['UniFi client fields', 'UniFi client history', 'UniFi devices and ports'];
+  const ha = settings.getByRole('switch', { name: 'Home Assistant devices without entities' });
+  const window_ = settings.getByLabel('History window in hours');
+  for (const name of unifi) await expect(settings.getByRole('switch', { name })).not.toBeChecked();
+  await expect(ha).toBeChecked();
+  await expect(window_).toHaveValue('720');
+  for (const name of unifi) await settings.getByRole('switch', { name }).check();
+  await ha.uncheck();
+  await window_.fill('48');
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('inventory-preview')).toBeVisible();
+  await settings.getByRole('button', { name: 'Apply', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await page.reload();
+  for (const name of unifi) await expect(settings.getByRole('switch', { name })).toBeChecked();
+  await expect(settings.getByRole('switch', { name: 'Home Assistant devices without entities' })).not.toBeChecked();
+  await expect(settings.getByLabel('History window in hours')).toHaveValue('48');
+  // A window out of range is refused, and nothing is offered to apply.
+  await settings.getByLabel('History window in hours').fill('0');
+  await settings.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'from 1 to 8,760' })).toBeVisible();
+  await expect(settings.getByRole('button', { name: 'Apply', exact: true })).toHaveCount(0);
+  // The refusal is expected: the browser logs the 422 as a console error, which the test removes.
+  for (let i = problems.length - 1; i >= 0; i--) if (problems[i].includes('status of 422')) problems.splice(i, 1);
+  // Back to the file's settings (the defaults here).
+  await page.reload();
+  await settings.getByTestId('inventory-use-file').click();
+  await expect(page.getByRole('status').filter({ hasText: "Back to the configuration file's settings." })).toBeVisible();
+  for (const name of unifi) await expect(settings.getByRole('switch', { name })).not.toBeChecked();
+  await expect(settings.getByRole('switch', { name: 'Home Assistant devices without entities' })).toBeChecked();
+});
+
+// REQ: DSC-009 (ADR-912) — a read the console refuses shows in the status with its reason; the reads
+// that work show their rows (and say when they were cut at the cap).
+test('dsc_009 refused read shows on the inventory page', async () => {
+  const status = {
+    enabled: true, designated: true, node: null, workers: [],
+    reads: [
+      { router: 'udm', read: 'devices', state: 'refused', rows: 0, truncated: false, error: 'http://192.168.1.1/proxy/network/api/s/default/stat/device: HTTP 403 Forbidden (the key or user cannot read it)', at: 1 },
+      { router: 'udm', read: 'all_users', state: 'ok', rows: 8192, truncated: true, error: null, at: 1 },
+    ],
+  };
+  await page.route(/\/api\/v1\/discovery\/status/, (route) => route.fulfill({ json: status }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/network-inventory');
+    const dev = page.getByTestId('read-udm-devices');
+    await expect(dev.getByTestId('read-state')).toHaveText('refused');
+    await expect(dev).toContainText('HTTP 403');
+    const hist = page.getByTestId('read-udm-all_users');
+    await expect(hist.getByTestId('read-state')).toHaveText('ok');
+    await expect(hist).toContainText('8192');
+    await expect(hist).toContainText('cut at 8,192');
+  } finally {
+    await page.unroute(/\/api\/v1\/discovery\/status/).catch(() => {});
+  }
 });
 
 // REQ: OBS-039 (ADR-167) — domain icons: a brand tile for a name the map knows (Netflix), a monogram

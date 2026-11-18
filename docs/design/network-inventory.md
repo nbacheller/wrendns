@@ -23,7 +23,21 @@ One list of the devices on the owner's networks, keyed by MAC, built from what t
 | SNMP ARP (T25.6) | 3 | MAC, IPv4 |
 | SNMP identity (T25.7) | — | sysName and printer names (no address) |
 | Imported scans (T25.11) | 4 | MAC or IPv4, host name, open TCP ports |
-| UniFi `stat/alluser` `last_ip` (T25.10) | 5 | IPv4, history only |
+| UniFi `stat/alluser` `last_ip` (T25.10) | 5 | IPv4, history only (never current); a name ranks last |
+| UniFi `stat/device` (T25.10) | 1 | its own devices at their address, LLDP neighbours, and the place (switch and port, VLAN) of each client MAC a port's table holds |
+| UniFi `stat/sta` and `rest/user` fields (T25.10) | (fields) | wired or wireless, the switch port or access point, VLAN, network, first seen; no address |
+| Home Assistant registry devices with no entity (T25.10) | claim (no class) | MAC and name; no address |
+
+## The extra reads (DSC-009, ADR-912)
+
+With `[discovery] unifi_reads` and `home_assistant_all_devices` the designated node makes more read-only requests to the routers it already reads. The router poll only stores the session it used and a copy of the answers it already holds; every extra request and every parse runs on the `telltale-inventory` thread, never on the query runtime.
+
+- `unifi_reads.client_fields`: more of `stat/sta` and `rest/user`, with no extra request.
+- `unifi_reads.all_users`: `POST stat/alluser` within `unifi_all_users_within_hours` (default 720, 1 to 8,760). The `POST` is UniFi's query form; it changes nothing. History is class 5: never a current address, never SNMP-eligible, no `new_device`, aged out when its window passes (at once when the read is turned off).
+- `unifi_reads.devices`: `GET stat/device`. A port that is an uplink or whose MAC table holds more than 8 MACs gives no place, and a MAC on two ports takes the smaller table.
+- `home_assistant_all_devices` (on by default; it applies only when discovery is on): a second fixed template lists devices that have a MAC and no entity, found through the areas and labels they sit in (Home Assistant's templates cannot list the registry itself). Answer capped at 1 MiB.
+
+Each UniFi read is off until an admin turns it on. A read is capped at 4 MiB and 8,192 rows. A read the console refuses is reported once per change (Settings → Network inventory shows each read's last result) and the other reads carry on. None of this reaches the router lease view, DNS names, policy or client matching. The extra reads need the router to be read on the designated node (a router whose credential is a stored secret is read on the primary only).
 
 A MAC's current address is the best class, then the newest. Classes 1–3 are current bindings; SNMP may only poll a class 1–3 address (ADR-907). Home Assistant and mDNS addresses are claims, never current, so they never make an address an SNMP destination.
 

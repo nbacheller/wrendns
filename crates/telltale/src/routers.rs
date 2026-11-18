@@ -116,6 +116,10 @@ struct Polled {
     /// REQ: DNS-023 (T24.8, ADR-983) — the connected clients' usable IPv6 addresses, by MAC
     /// (UniFi's `ipv6_addresses`). They ride on the lease of the same MAC (see [`rebuild`]).
     v6: Vec<(String, Ipv6Addr)>,
+    /// REQ: DSC-009 (ADR-912) — the session this poll used, for the inventory's extra reads.
+    session: Option<UnifiSession>,
+    /// REQ: DSC-009 — the raw client answers, kept only when asked for.
+    raw: Option<RawClients>,
 }
 
 impl Polled {
@@ -133,7 +137,7 @@ impl Polled {
 pub(crate) const OFFLINE_MAX: usize = 1024;
 
 /// REQ: OPS-014 (ADR-903 §2) — a router credential: its file, or the stored secret it names.
-fn secret(
+pub(crate) fn secret(
     file: Option<&telltale_config::SafeString>,
     reference: Option<&telltale_config::SafeString>,
     store: &crate::secrets::SecretStore,
@@ -164,7 +168,7 @@ fn base64(input: &[u8]) -> String {
 }
 
 /// `AA-BB-CC-00-00-01` → `aa:bb:cc:00:00:01`.
-fn mac_key(mac: &str) -> String {
+pub(crate) fn mac_key(mac: &str) -> String {
     mac.trim().to_ascii_lowercase().replace('-', ":")
 }
 
@@ -173,9 +177,19 @@ async fn call(
     client: &telltale_filter::fetch::Client,
     req: http::Request<Vec<u8>>,
 ) -> Result<(http::StatusCode, http::HeaderMap, Value), String> {
+    call_capped(client, req, MAX_ANSWER).await
+}
+
+/// One HTTP exchange whose answer may have at most `cap` bytes (REQ: DSC-009, ADR-912: the extra
+/// UniFi reads take 4 MiB, Home Assistant's registry template 1 MiB).
+pub(crate) async fn call_capped(
+    client: &telltale_filter::fetch::Client,
+    req: http::Request<Vec<u8>>,
+    cap: u64,
+) -> Result<(http::StatusCode, http::HeaderMap, Value), String> {
     // REQ: API-014 — an error never quotes a password in the URL.
     let url = telltale_config::credentials::url_shown(&req.uri().to_string());
-    let resp = tokio::time::timeout(Duration::from_secs(15), client.request(req, MAX_ANSWER))
+    let resp = tokio::time::timeout(Duration::from_secs(15), client.request(req, cap))
         .await
         .map_err(|_| format!("{url}: timed out"))?
         .map_err(|e| format!("{url}: {}", e.message))?;
@@ -203,7 +217,7 @@ fn cookies(h: &http::HeaderMap) -> String {
 }
 
 /// The first non-empty string among `keys`.
-fn first_str(v: &Value, keys: &[&str]) -> Option<String> {
+pub(crate) fn first_str(v: &Value, keys: &[&str]) -> Option<String> {
     keys.iter()
         .filter_map(|k| v.get(*k).and_then(Value::as_str))
         .map(str::trim)
@@ -452,21 +466,133 @@ pub(crate) fn opnsense_leases(v: &Value) -> Seen {
 }
 
 /// How a UniFi request authenticates.
-enum UnifiAuth {
+#[derive(Clone)]
+pub(crate) enum UnifiAuth {
     /// REQ: OPS-014 — wiped when the poll ends (ADR-903 note 37).
     Key(zeroize::Zeroizing<String>),
     Cookie(zeroize::Zeroizing<String>),
 }
 
 impl UnifiAuth {
-    fn get(&self, url: &str) -> Result<http::Request<Vec<u8>>, String> {
+    pub(crate) fn get(&self, url: &str) -> Result<http::Request<Vec<u8>>, String> {
         let b = http::Request::get(url).header("accept", "application/json");
-        let b = match self {
+        self.apply(b).body(Vec::new()).map_err(|e| e.to_string())
+    }
+
+    /// REQ: DSC-009 (ADR-912) — a read that UniFi takes as a `POST` with a query body
+    /// (the history query of the inventory). It changes nothing on the console.
+    pub(crate) fn query(&self, url: &str, body: &Value) -> Result<http::Request<Vec<u8>>, String> {
+        let b = http::Request::post(url)
+            .header("accept", "application/json")
+            .header("content-type", "application/json");
+        self.apply(b)
+            .body(body.to_string().into_bytes())
+            .map_err(|e| e.to_string())
+    }
+
+    fn apply(&self, b: http::request::Builder) -> http::request::Builder {
+        match self {
             Self::Key(k) => b.header("x-api-key", k.as_str()),
             Self::Cookie(c) => b.header("cookie", c.as_str()),
-        };
-        b.body(Vec::new()).map_err(|e| e.to_string())
+        }
     }
+}
+
+impl std::fmt::Debug for UnifiAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // REQ: API-014 — a credential never reaches a log or a Debug print.
+        f.write_str("UnifiAuth(<redacted>)")
+    }
+}
+
+/// REQ: DSC-009 (ADR-912) — the session a UniFi poll used, shared with the inventory thread so its
+/// extra reads use the router's own credentials and need no second login.
+#[derive(Debug, Clone)]
+pub(crate) struct UnifiSession {
+    /// `https://console/proxy/network` (UniFi OS) or the controller's base.
+    pub(crate) root: String,
+    pub(crate) site: String,
+    pub(crate) auth: Arc<UnifiAuth>,
+}
+
+/// REQ: DSC-009 (ADR-912) — the raw `stat/sta` and `rest/user` answers the poll already holds,
+/// kept only while `[discovery] unifi_reads.client_fields` is on.
+#[derive(Debug, Clone)]
+pub(crate) struct RawClients {
+    pub(crate) sta: Arc<Value>,
+    pub(crate) users: Option<Arc<Value>>,
+}
+
+/// REQ: DSC-009 (ADR-912) — one UniFi router as the inventory thread sees it.
+#[derive(Debug, Clone)]
+pub(crate) struct SharedUnifi {
+    pub(crate) name: String,
+    pub(crate) config: RouterConfig,
+    pub(crate) session: UnifiSession,
+    pub(crate) raw: Option<RawClients>,
+    /// When the poll that made this session finished (Unix seconds).
+    pub(crate) at: u64,
+}
+
+/// What Home Assistant's poll read: the named devices and the trackers' addresses.
+pub(crate) type HaRead = (Vec<HaDevice>, HashMap<String, Ipv4Addr>);
+
+/// REQ: DSC-009 (ADR-912) — Home Assistant as the inventory thread sees it: its settings, its
+/// token and the last devices and trackers the poll read.
+#[derive(Clone)]
+pub(crate) struct SharedHa {
+    pub(crate) name: String,
+    pub(crate) config: RouterConfig,
+    pub(crate) token: Arc<zeroize::Zeroizing<String>>,
+    pub(crate) raw: Arc<HaRead>,
+    pub(crate) at: u64,
+}
+
+impl std::fmt::Debug for SharedHa {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedHa")
+            .field("name", &self.name)
+            .field("token", &"<redacted>")
+            .field("at", &self.at)
+            .finish_non_exhaustive()
+    }
+}
+
+/// REQ: DSC-009 (ADR-912) — what the router poll shares with the `telltale-inventory` thread. The
+/// poll only stores it; every extra read and every parse of it runs on that thread, never on the
+/// main runtime. Empty unless `[discovery]` runs on this node.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Shared {
+    pub(crate) unifi: Vec<SharedUnifi>,
+    pub(crate) ha: Vec<SharedHa>,
+}
+
+impl Shared {
+    /// Whether two shares hold the same reads (by router and poll time), so the poll loop
+    /// publishes only a change.
+    fn same_as(&self, other: &Self) -> bool {
+        self.unifi.len() == other.unifi.len()
+            && self.ha.len() == other.ha.len()
+            && self
+                .unifi
+                .iter()
+                .zip(&other.unifi)
+                .all(|(a, b)| a.name == b.name && a.at == b.at && a.config == b.config)
+            && self
+                .ha
+                .iter()
+                .zip(&other.ha)
+                .all(|(a, b)| a.name == b.name && a.at == b.at && a.config == b.config)
+    }
+}
+
+/// REQ: DSC-009 (ADR-912) — what the poll is to keep for the inventory.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Keep {
+    /// Share sessions (discovery runs on this node).
+    pub(crate) share: bool,
+    /// Also keep the raw `stat/sta` and `rest/user` answers (`unifi_reads.client_fields`).
+    pub(crate) raw_clients: bool,
 }
 
 /// The active clients (required), then the reservations and the networks (each optional: a
@@ -478,6 +604,7 @@ async fn read_unifi(
     site: &str,
     router: &str,
     offline_days: u32,
+    keep: Keep,
 ) -> Result<Polled, String> {
     let api = format!("{root}/api/s/{site}");
     let url = format!("{api}/stat/sta");
@@ -496,6 +623,9 @@ async fn read_unifi(
     }
     let active = unifi_clients(&v);
     let v6 = unifi_ipv6(&v);
+    // REQ: DSC-009 (ADR-912) — the answer is moved, not copied, into what the inventory thread
+    // parses; nothing is kept unless `client_fields` is on.
+    let sta_raw = keep.raw_clients.then(|| Arc::new(v));
     let mut notes = Vec::new();
     let mut optional =
         |what: &str, r: Result<(http::StatusCode, http::HeaderMap, Value), String>| match r {
@@ -514,6 +644,10 @@ async fn read_unifi(
         call(client, auth.get(&format!("{api}/rest/user"))?).await,
     );
     let reserved = user_rows.as_ref().map(unifi_reserved).unwrap_or_default();
+    let raw = sta_raw.map(|sta| RawClients {
+        sta,
+        users: user_rows.clone().map(Arc::new),
+    });
     let networks = optional(
         "networks (rest/networkconf)",
         call(client, auth.get(&format!("{api}/rest/networkconf"))?).await,
@@ -551,6 +685,12 @@ async fn read_unifi(
         notes,
         offline,
         v6,
+        session: keep.share.then(|| UnifiSession {
+            root: root.to_owned(),
+            site: site.to_owned(),
+            auth: Arc::new(auth.clone()),
+        }),
+        raw,
         ..Polled::routed(seen)
     })
 }
@@ -560,6 +700,7 @@ async fn poll_unifi(
     client: &telltale_filter::fetch::Client,
     c: &RouterConfig,
     store: &crate::secrets::SecretStore,
+    keep: Keep,
 ) -> Result<Polled, String> {
     let base = c.url.trim_end_matches('/');
     let site = c.site.as_deref().unwrap_or("default");
@@ -571,6 +712,7 @@ async fn poll_unifi(
             site,
             &c.name,
             c.offline_days,
+            keep,
         )
         .await;
     }
@@ -607,6 +749,7 @@ async fn poll_unifi(
             site,
             &c.name,
             c.offline_days,
+            keep,
         )
         .await;
     }
@@ -764,14 +907,17 @@ async fn poll_home_assistant(
     client: &telltale_filter::fetch::Client,
     c: &RouterConfig,
     store: &crate::secrets::SecretStore,
-) -> Result<(Vec<HaDevice>, HashMap<String, Ipv4Addr>), String> {
+) -> Result<(HaRead, Arc<zeroize::Zeroizing<String>>), String> {
     let base = c.url.trim_end_matches('/');
     let token = secret(c.api_key_file.as_ref(), c.api_key_ref.as_ref(), store)?
         .ok_or("set api_key_file")?;
     let url = format!("{base}/api/template");
     let body = serde_json::json!({ "template": HA_TEMPLATE }).to_string();
     let req = http::Request::post(url.as_str())
-        .header("authorization", format!("Bearer {}", token.expose()))
+        .header(
+            "authorization",
+            bearer_header(token.expose()).map_err(|e| e.to_string())?,
+        )
         .header("content-type", "application/json")
         .header("accept", "text/plain, application/json")
         .body(body.into_bytes())
@@ -790,7 +936,8 @@ async fn poll_home_assistant(
             "{url}: the answer isn't the expected JSON (is this Home Assistant?)"
         ));
     }
-    Ok(ha_devices(&v))
+    let token = Arc::new(zeroize::Zeroizing::new(token.expose().to_owned()));
+    Ok((ha_devices(&v), token))
 }
 
 /// The leases view from every router's last answer, best name first for each address
@@ -903,7 +1050,7 @@ fn addresses(parts: &HashMap<String, Polled>, skip: &[String]) -> HashMap<String
 
 /// The HTTP client for one router: its TLS settings (REQ: T8.2 — a console whose certificate
 /// names something other than `url`'s host).
-fn http_client(
+pub(crate) fn http_client(
     r: &RouterConfig,
     resolver: &Arc<dyn telltale_filter::fetch::Resolve>,
 ) -> Result<telltale_filter::fetch::Client, String> {
@@ -955,26 +1102,36 @@ fn match_home_assistant(
 /// REQ: API-016 (T23.7, ADR-922) — what each router's last read did, for the API and the Routers
 /// page. Written by the poll loop, read by the API; never on the DNS path.
 #[derive(Debug, Default)]
-pub(crate) struct Board(std::sync::Mutex<HashMap<String, RouterStatus>>);
+pub(crate) struct Board {
+    statuses: std::sync::Mutex<HashMap<String, RouterStatus>>,
+    /// REQ: DSC-009 (ADR-912) — what the inventory thread reads on top of the polls.
+    share: Arc<ArcSwap<Shared>>,
+}
 
 impl Board {
+    /// REQ: DSC-009 — the shared sessions and answers, for the inventory thread. Written by the
+    /// poll loop only while `[discovery]` runs on this node.
+    pub(crate) fn share(&self) -> Arc<ArcSwap<Shared>> {
+        Arc::clone(&self.share)
+    }
+
     /// Every router's status, by name.
     pub(crate) fn snapshot(&self) -> HashMap<String, RouterStatus> {
-        self.0
+        self.statuses
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
     fn put(&self, name: &str, status: RouterStatus) {
-        self.0
+        self.statuses
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(name.to_owned(), status);
     }
 
     fn keep_only(&self, names: &[String]) {
-        self.0
+        self.statuses
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|n, _| names.iter().any(|k| k == n));
@@ -1004,7 +1161,9 @@ struct Slot {
     skipped: Option<&'static str>,
     part: Polled,
     /// Home Assistant's raw devices and trackers (matched to addresses each round).
-    ha: Option<(Vec<HaDevice>, HashMap<String, Ipv4Addr>)>,
+    ha: Option<HaRead>,
+    /// REQ: DSC-009 — Home Assistant's token, shared with the inventory thread (`Keep::share`).
+    ha_token: Option<Arc<zeroize::Zeroizing<String>>>,
     last_unix: Option<u64>,
     error: Option<String>,
 }
@@ -1020,7 +1179,11 @@ struct Done {
 /// What a read produced.
 enum Read {
     Routed(Polled),
-    Ha(Vec<HaDevice>, HashMap<String, Ipv4Addr>),
+    Ha(
+        Vec<HaDevice>,
+        HashMap<String, Ipv4Addr>,
+        Arc<zeroize::Zeroizing<String>>,
+    ),
 }
 
 /// Home Assistant's devices and trackers by router name.
@@ -1031,14 +1194,15 @@ async fn read_one(
     r: &RouterConfig,
     resolver: &Arc<dyn telltale_filter::fetch::Resolve>,
     store: &crate::secrets::SecretStore,
+    keep: Keep,
 ) -> Result<Read, String> {
     let client = http_client(r, resolver)?;
     match r.kind {
-        RouterKind::Unifi => poll_unifi(&client, r, store).await.map(Read::Routed),
+        RouterKind::Unifi => poll_unifi(&client, r, store, keep).await.map(Read::Routed),
         RouterKind::Opnsense => poll_opnsense(&client, r, store).await.map(Read::Routed),
         RouterKind::HomeAssistant => poll_home_assistant(&client, r, store)
             .await
-            .map(|(d, t)| Read::Ha(d, t)),
+            .map(|((d, t), token)| Read::Ha(d, t, token)),
     }
 }
 
@@ -1077,6 +1241,7 @@ fn reconcile(
                 if s.config.url != r.url || s.config.kind != r.kind {
                     s.part = Polled::default();
                     s.ha = None;
+                    s.ha_token = None;
                 }
                 s.config = r.clone();
                 s.generation = *generation;
@@ -1105,6 +1270,7 @@ fn reconcile(
                         skipped: None,
                         part: Polled::default(),
                         ha: None,
+                        ha_token: None,
                         last_unix: None,
                         error: None,
                     },
@@ -1121,6 +1287,7 @@ fn debounced(last: Option<Instant>, now: Instant) -> Instant {
 
 /// Starts the reads that are due, each on its own task, so a slow or failing router delays no
 /// other (failure isolation, ADR-922).
+#[allow(clippy::too_many_arguments)] // REQ: DSC-009 - `keep` is the one new input of the loop's state.
 fn start_due(
     slots: &mut HashMap<String, Slot>,
     now: Instant,
@@ -1129,6 +1296,7 @@ fn start_due(
     resolver: &Arc<dyn telltale_filter::fetch::Resolve>,
     store: &Arc<crate::secrets::SecretStore>,
     done: &mpsc::UnboundedSender<Done>,
+    keep: Keep,
 ) {
     for (name, s) in slots.iter_mut() {
         // REQ: API-016 (ADR-921) — a resolver pod reads no router: it holds no secrets, and the
@@ -1144,6 +1312,7 @@ fn start_due(
             s.skipped = Some(why);
             s.part = Polled::default();
             s.ha = None;
+            s.ha_token = None;
             s.due = now;
             continue;
         }
@@ -1156,7 +1325,7 @@ fn start_due(
         let (r, generation, name) = (s.config.clone(), s.generation, name.clone());
         let (resolver, store, done) = (Arc::clone(resolver), Arc::clone(store), done.clone());
         tokio::spawn(async move {
-            let result = read_one(&r, &resolver, &store).await;
+            let result = read_one(&r, &resolver, &store, keep).await;
             let _ = done.send(Done {
                 name,
                 generation,
@@ -1193,11 +1362,12 @@ fn finish(slots: &mut HashMap<String, Slot>, d: Done, now: Instant) {
             s.failing = false;
             s.due = now + interval;
         }
-        Ok(Read::Ha(devices, trackers)) => {
+        Ok(Read::Ha(devices, trackers, token)) => {
             if s.failing || !s.read_once {
                 info!(router = %name, devices = devices.len(), "Home Assistant: devices read");
             }
             s.ha = Some((devices, trackers));
+            s.ha_token = Some(token);
             s.read_once = true;
             s.error = None;
             s.failing = false;
@@ -1242,6 +1412,51 @@ fn parts_of(
         }
     }
     (parts, ha_names, ha_raw)
+}
+
+/// REQ: DSC-009 (ADR-912) — the sessions and raw answers the inventory thread reads: each UniFi
+/// router that was read here with a shared session, and each Home Assistant that was read. Empty
+/// when `want` is false.
+fn shared_of(slots: &HashMap<String, Slot>, order: &[String], want: bool) -> Shared {
+    let mut out = Shared::default();
+    if !want {
+        return out;
+    }
+    for n in order {
+        let Some(s) = slots.get(n) else {
+            continue;
+        };
+        if s.skipped.is_some() {
+            continue;
+        }
+        let at = s.last_unix.unwrap_or(0);
+        match s.config.kind {
+            RouterKind::Unifi => {
+                if let Some(session) = &s.part.session {
+                    out.unifi.push(SharedUnifi {
+                        name: n.clone(),
+                        config: s.config.clone(),
+                        session: session.clone(),
+                        raw: s.part.raw.clone(),
+                        at,
+                    });
+                }
+            }
+            RouterKind::HomeAssistant => {
+                if let (Some(raw), Some(token)) = (&s.ha, &s.ha_token) {
+                    out.ha.push(SharedHa {
+                        name: n.clone(),
+                        config: s.config.clone(),
+                        token: Arc::clone(token),
+                        raw: Arc::new(raw.clone()),
+                        at,
+                    });
+                }
+            }
+            RouterKind::Opnsense => {}
+        }
+    }
+    out
 }
 
 /// Writes each router's status to the board, for the API and the Routers page.
@@ -1298,6 +1513,7 @@ pub(crate) async fn run(
     let mut generation: u64 = 0;
     // Set when the loop was woken by a secret or configuration change (see below).
     let mut poked = false;
+    let mut last_keep = (false, false);
     let store = Arc::clone(&src.secrets);
     loop {
         let cfg = src.config.load_full();
@@ -1317,14 +1533,34 @@ pub(crate) async fn run(
             &mut generation,
             &src.routers,
         );
+        // REQ: DSC-009 (ADR-912) — the polls keep their session (and, for `client_fields`, their
+        // raw client answers) only while the inventory runs on this node.
+        let own = crate::discovery::runtime::own_of(src.cluster.as_deref(), &cfg);
+        let share = crate::discovery::gate::should_run(&cfg.discovery, own.me());
+        let keep = Keep {
+            share,
+            raw_clients: share && cfg.discovery.unifi_reads.client_fields,
+        };
+        // A change of what to keep reads every router again (debounced), so the inventory has its
+        // session and answers without waiting out a long `interval_secs`.
+        if (keep.share, keep.raw_clients) != last_keep {
+            last_keep = (keep.share, keep.raw_clients);
+            for s in slots.values_mut() {
+                s.due = s.due.min(debounced(s.last, now));
+            }
+        }
         start_due(
-            &mut slots, now, ephemeral, primary, &resolver, &store, &done_tx,
+            &mut slots, now, ephemeral, primary, &resolver, &store, &done_tx, keep,
         );
         let (mut parts, ha_names, ha_raw) = parts_of(&slots, &order);
         match_home_assistant(&ha_names, &ha_raw, &mut parts);
         rebuild(&order, &parts, &src.pipeline.router_leases);
         rebuild_networks(&order, &parts, &src.pipeline.router_networks);
         publish(&slots, &src.routers);
+        let shared = shared_of(&slots, &order, share);
+        if !shared.same_as(&src.routers.share().load()) {
+            src.routers.share().store(Arc::new(shared));
+        }
         // Wake for the next read due (at most every RETRY, so a change of role is seen), a
         // finished read, a changed configuration or secret, or a stop.
         let next = slots
@@ -1456,7 +1692,7 @@ pub(crate) async fn check_draft(
     }
     let resolver: Arc<dyn telltale_filter::fetch::Resolve> =
         Arc::new(telltale_filter::fetch::SystemResolver);
-    let out = match read_one(&r, &resolver, &src.secrets).await {
+    let out = match read_one(&r, &resolver, &src.secrets, Keep::default()).await {
         Ok(Read::Routed(p)) => RouterCheck {
             ok: true,
             devices: u32::try_from(p.seen.len()).unwrap_or(u32::MAX),
@@ -1464,7 +1700,7 @@ pub(crate) async fn check_draft(
             error: None,
             credential_sent,
         },
-        Ok(Read::Ha(devices, _)) => RouterCheck {
+        Ok(Read::Ha(devices, _, _)) => RouterCheck {
             ok: true,
             devices: u32::try_from(devices.len()).unwrap_or(u32::MAX),
             networks: 0,
@@ -2024,3 +2260,14 @@ mod tests {
 #[cfg(test)]
 #[path = "routers_tests.rs"]
 mod routers_tests;
+
+/// Builds a `Bearer` header value marked sensitive (never shown by `Debug`), with the intermediate
+/// text held in a zeroizing buffer. REQ: DSC-009
+pub(crate) fn bearer_header(
+    token: &str,
+) -> Result<http::HeaderValue, http::header::InvalidHeaderValue> {
+    let text = zeroize::Zeroizing::new(format!("Bearer {token}"));
+    let mut v = http::HeaderValue::from_str(text.as_str())?;
+    v.set_sensitive(true);
+    Ok(v)
+}
