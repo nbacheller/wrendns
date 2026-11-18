@@ -17,6 +17,7 @@ test.describe.configure({ mode: 'serial' });
 
 const ADMIN = { user: 'admin', pass: 'correct horse battery' };
 const OPERATOR = { user: 'geo-operator', pass: 'geo operator long password' };
+const VIEWER = { user: 'worldviewer', pass: 'a viewer pass phrase 7' };
 
 // ---- The fake source: a gzip CSV with both families and four countries (the harness accepts a small one).
 const CSV = [
@@ -66,6 +67,8 @@ test.beforeAll(async ({ browser }) => {
   const csrf = (await (await ctx.request.get('/api/v1/auth/status')).json()).csrfToken as string;
   const made = await ctx.request.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: OPERATOR.user, password: OPERATOR.pass, role: 'operator' } });
   expect([200, 201, 409]).toContain(made.status());
+  const madeViewer = await ctx.request.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: VIEWER.user, password: VIEWER.pass, role: 'viewer' } });
+  expect([200, 201, 409]).toContain(madeViewer.status());
   await ctx.close();
 });
 
@@ -371,6 +374,22 @@ test('obs_902 admin updates now', async ({ browser }) => {
   expect(await (await o.page.request.get('/api/v1/map/geoip')).json()).toMatchObject({ state: 'ready' });
   expect(o.problems).toEqual([]);
   await o.ctx.close();
+});
+
+test('obs_902 viewer sees geoip read-only', async ({ browser }) => {
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  await page.goto('/#/settings?tab=queries');
+  await page.getByLabel('Username', { exact: true }).fill(VIEWER.user);
+  await page.getByLabel('Password', { exact: true }).fill(VIEWER.pass);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByTestId('geoip-card')).toBeVisible({ timeout: 30_000 });
+  // The status and the attribution are shown; no control is.
+  await expect(page.getByTestId('geoip-state')).toContainText('Ready');
+  await expect(page.getByTestId('geoip-attribution')).toContainText('DB-IP.com');
+  await expect(page.getByTestId('geoip-readonly')).toContainText('Only an admin changes this');
+  for (const id of ['geoip-toggle', 'geoip-url', 'geoip-sha', 'geoip-home', 'geoip-save', 'geoip-update', 'geoip-delete']) await expect(page.getByTestId(id)).toHaveCount(0);
+  await ctx.close();
 });
 
 test('obs_902 operator sees geoip read-only', async ({ browser }) => {

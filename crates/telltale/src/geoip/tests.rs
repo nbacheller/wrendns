@@ -299,7 +299,8 @@ async fn obs_902_geoip_verification_failures() {
         // The settings changed, so the source is fetched at once, whatever the backoff.
         g.tick(&cfg, now).await;
         let st = g.status(&cfg.map.geoip, now);
-        assert_eq!(st.state, State::Failed, "{name}: {st:?}");
+        // The old database still works, so the state stays ready and the error is shown beside it.
+        assert_eq!(st.state, State::Ready, "{name}: {st:?}");
         assert_eq!(st.last_error.as_deref(), Some(code), "{name}");
         // The old database is intact and still answers.
         assert_eq!(
@@ -372,4 +373,33 @@ async fn obs_902_geoip_crash_during_write_keeps_the_old_database() {
         before
     );
     assert!(g.locate(&cfg.map.geoip, &[ip("8.8.8.8")]).is_ok());
+}
+
+/// REQ: OBS-902 (T26.4 review) - a node with a working database whose later refresh failed is
+/// still `ready`: the status carries the error, it does not call the database failed.
+#[tokio::test]
+async fn obs_902_geoip_failed_refresh_keeps_ready() {
+    let s = source().await;
+    s.set("/db.csv.gz", Reply::Body(gzip(csv().as_bytes())));
+    let dir = tempfile::tempdir().unwrap();
+    let g = service(&s);
+    let cfg = config(dir.path(), Some(format!("{}/db.csv.gz", s.url)), true);
+    g.tick(&cfg, NOW).await;
+    assert_eq!(g.status(&cfg.map.geoip, NOW).state, State::Ready);
+    s.set("/db.csv.gz", Reply::Status(500));
+    g.tick(&cfg, NOW + 40 * 86_400).await;
+    let st = g.status(&cfg.map.geoip, NOW + 40 * 86_400);
+    assert_eq!(st.state, State::Ready, "{st:?}");
+    assert!(st.last_error.is_some());
+    assert!(g.locate(&cfg.map.geoip, &[ip("8.8.8.8")]).is_ok());
+}
+
+/// REQ: OBS-902 (T26.4 review) - a delete bumps the generation an attempt started under, so an
+/// attempt that was running keeps nothing.
+#[tokio::test]
+async fn obs_902_geoip_delete_bumps_generation() {
+    let g = GeoIp::default();
+    let before = g.inner().generation;
+    let _ = g.delete();
+    assert_ne!(g.inner().generation, before);
 }

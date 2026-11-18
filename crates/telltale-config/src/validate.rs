@@ -2415,10 +2415,11 @@ fn map_geoip(g: &crate::MapGeoipConfig, r: &mut Report<'_>) {
             .strip_prefix("https://")
             .and_then(|rest| rest.split(['/', '?', '#']).next())
             .is_some_and(|h| !h.is_empty() && !h.contains('@'));
-        if !host_ok {
+        // The URL is shown to every role: a query string or fragment could carry a token.
+        if !host_ok || u.contains('?') || u.contains('#') {
             r.err(
                 "map.geoip.source_url",
-                "an https:// URL with a host and no credentials",
+                "an https:// URL with a host, no credentials and no query string",
             );
         }
     }

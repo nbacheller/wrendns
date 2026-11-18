@@ -455,3 +455,23 @@ fn obs_902_geoip_probe_database() {
         after.saturating_sub(before)
     );
 }
+
+/// REQ: OBS-902 (T26.4 review) - the parse keeps at most `max_rows` rows: the first row over the
+/// cap rejects the file as `too_large`, before the tables are built.
+#[test]
+fn obs_902_geoip_row_cap() {
+    let mut c = Collector::with_max_rows(3);
+    let lines = [
+        "1.0.0.0,1.0.0.255,AU",
+        "1.0.1.0,1.0.1.255,AU",
+        "1.0.2.0,1.0.2.255,AU",
+    ];
+    for l in lines {
+        c.push_line(l).unwrap();
+    }
+    assert_eq!(
+        c.push_line("1.0.3.0,1.0.3.255,AU").unwrap_err(),
+        Reject::TooLarge
+    );
+    const { assert!(Limits::PRODUCTION.max_rows >= 3 * 600_000) };
+}

@@ -41,6 +41,11 @@ does, what to check, and what to do when a step fails. Decision record: ADR-097.
 4. **After:** the README's release badge updates itself. Deployments that follow edge pin
    the next edge chart as usual.
 
+5. **Re-check DB-IP's terms** (ADR-959 section 1): open the DB-IP.com IP to Country Lite page,
+   confirm the licence is still CC BY 4.0 with free redistribution of the derived file and the
+   attribution wording in `docs/third-party-notices.md` is still what they ask for. If it
+   changed, stop the release and open an issue: the GeoIP feature's source needs a new ADR.
+
 ### What preflight checks
 
 `deploy/release/preflight.sh X.Y.Z` stops before anything is published unless:

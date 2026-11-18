@@ -152,6 +152,8 @@ struct Inner {
     manual: bool,
     /// The database was deleted: nothing is fetched until an admin asks or turns it off and on.
     suppressed: bool,
+    /// Bumped by `delete()`: an attempt that started before it throws its result away.
+    generation: u64,
     /// Whether the toggle was on at the last tick (so an off-to-on change is noticed).
     was_enabled: bool,
     /// The configured `source_url` the database in use came from (`None`: the publisher's).
@@ -191,6 +193,7 @@ impl GeoIp {
                 failures: 0,
                 manual: false,
                 suppressed: false,
+                generation: 0,
                 was_enabled: false,
                 fetched_from: None,
                 probed: false,
@@ -248,10 +251,11 @@ impl GeoIp {
             State::Off
         } else if inner.downloading || inner.manual {
             State::Downloading
+        } else if db.is_some() {
+            // A working database stays ready when only a later refresh failed: `last_error` says so.
+            State::Ready
         } else if inner.last_error.is_some() {
             State::Failed
-        } else if db.is_some() {
-            State::Ready
         } else {
             State::Missing
         };
@@ -305,6 +309,7 @@ impl GeoIp {
     pub(crate) fn delete(&self) -> std::io::Result<()> {
         let mut i = self.inner();
         i.suppressed = true;
+        i.generation = i.generation.wrapping_add(1);
         i.manual = false;
         i.last_error = None;
         i.next_check = None;
@@ -447,16 +452,27 @@ impl GeoIp {
     }
 
     async fn attempt(self: &Arc<Self>, g: &MapGeoipConfig, dir: &Path, now: u64) {
-        {
+        let generation = {
             let mut i = self.inner();
             i.downloading = true;
             i.manual = false;
             // A changed source is fetched once, not at every look; the backoff takes it from here.
             i.fetched_from = Some(Source::of(g));
-        }
+            i.generation
+        };
         let result = self.fetch_and_build(g, dir, now).await;
         let mut i = self.inner();
         i.downloading = false;
+        if i.generation != generation {
+            // Deleted while this attempt ran: the admin's delete wins. Remove what it wrote.
+            drop(i);
+            drop(result);
+            self.store(None);
+            if let Err(e) = ttgeo::remove_all(dir) {
+                warn!("geoip: a database written during a delete could not be removed: {e}");
+            }
+            return;
+        }
         match result {
             Ok(db) => {
                 info!(
@@ -545,7 +561,7 @@ impl GeoIp {
         let previous = self.current().map(|d| u64::from(d.source_rows));
         tokio::task::spawn_blocking(move || {
             build_and_publish(
-                &body,
+                body,
                 pin.as_deref(),
                 &limits,
                 previous,
@@ -563,7 +579,7 @@ impl GeoIp {
 /// The blocking part: digest, parse, verify, build, write, swap, open.
 #[allow(clippy::too_many_arguments)] // one step of the download, each argument a distinct input
 fn build_and_publish(
-    body: &[u8],
+    body: Vec<u8>,
     pin: Option<&str>,
     limits: &Limits,
     previous_rows: Option<u64>,
@@ -573,18 +589,22 @@ fn build_and_publish(
     crash_after: Option<u64>,
 ) -> Result<Db, String> {
     if let Some(want) = pin {
-        let got = ring::digest::digest(&ring::digest::SHA256, body);
+        let got = ring::digest::digest(&ring::digest::SHA256, &body);
         if hex(got.as_ref()) != want {
             return Err(Reject::DigestMismatch.code().to_owned());
         }
     }
-    let mut c = Collector::default();
-    ttgeo::read_gzip_csv(body, &mut c, limits.max_inflated).map_err(|r| r.code().to_owned())?;
+    let mut c = Collector::with_max_rows(limits.max_rows);
+    ttgeo::read_gzip_csv(&body, &mut c, limits.max_inflated).map_err(|r| r.code().to_owned())?;
+    // The compressed body is not needed again: free it before the tables are built.
+    drop(body);
     let table = c
         .finish(limits, previous_rows)
         .map_err(|r| r.code().to_owned())?;
     let tmp = ttgeo::write_tmp(dir, &table, month, now, crash_after)
         .map_err(|_| "write_failed".to_owned())?;
+    // The built tables are on disk: free them before the file is opened for positional reads.
+    drop(table);
     ttgeo::publish(dir, &tmp).map_err(|_| "write_failed".to_owned())?;
     Db::open(dir).map_err(|_| "write_failed".to_owned())
 }

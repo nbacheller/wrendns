@@ -202,7 +202,7 @@
         <button type="submit" class="primary" disabled={busy || !dirty} data-testid="geoip-save">Save</button>
         <button type="button" disabled={busy || !status.enabled || status.state === 'downloading'} onclick={updateNow} data-testid="geoip-update">Update now</button>
         {#if !confirmDelete}
-          <button type="button" disabled={busy || status.sizeBytes === 0} onclick={() => (confirmDelete = true)} data-testid="geoip-delete">Delete database</button>
+          <button type="button" disabled={busy || status.sizeBytes === 0 || status.state === 'downloading'} onclick={() => (confirmDelete = true)} data-testid="geoip-delete">Delete database</button>
         {:else}
           <span class="row" role="group" aria-label="Confirm deleting the database">
             <span class="small">Delete the database on this node? The world view stops placing answers until you fetch it again.</span>

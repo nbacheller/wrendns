@@ -40,6 +40,9 @@ pub(crate) struct Limits {
     pub(crate) max_download: u64,
     /// Uncompressed bytes parsed.
     pub(crate) max_inflated: u64,
+    /// Source rows kept while parsing (about 3 times the real file): the heap is bounded by this,
+    /// not by the byte limit, because a short IPv6 line is about 11 bytes and 48 bytes of heap.
+    pub(crate) max_rows: u64,
 }
 
 impl Limits {
@@ -49,6 +52,7 @@ impl Limits {
         max_change_pct: 30,
         max_download: 32 * 1024 * 1024,
         max_inflated: 96 * 1024 * 1024,
+        max_rows: 1_800_000,
     };
     /// A fake source in a test serves a handful of rows.
     pub(crate) const TEST: Self = Self {
@@ -57,6 +61,7 @@ impl Limits {
         max_change_pct: 30,
         max_download: 32 * 1024 * 1024,
         max_inflated: 96 * 1024 * 1024,
+        max_rows: 1_800_000,
     };
 }
 
@@ -158,9 +163,19 @@ pub(crate) struct Collector {
     v6: Vec<(u128, u128, u16)>,
     countries: HashSet<u16>,
     lines: u64,
+    /// 0 means no cap (tests of the parser alone).
+    max_rows: u64,
 }
 
 impl Collector {
+    /// A collector that rejects the file at the first row over `max_rows` (`too_large`).
+    pub(crate) fn with_max_rows(max_rows: u64) -> Self {
+        Self {
+            max_rows,
+            ..Self::default()
+        }
+    }
+
     /// One line of the CSV: `start,end,CC`. Blank lines are skipped; anything else that does
     /// not parse rejects the file.
     pub(crate) fn push_line(&mut self, line: &str) -> Result<(), Reject> {
@@ -212,6 +227,9 @@ impl Collector {
             _ => return Err(bad),
         }
         self.countries.insert(cc);
+        if self.max_rows > 0 && self.rows() > self.max_rows {
+            return Err(Reject::TooLarge);
+        }
         Ok(())
     }
 
