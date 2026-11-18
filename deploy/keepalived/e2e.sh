@@ -38,6 +38,9 @@ SUBNET=10.231.250
 VIP=$SUBNET.10
 NET=${PROJECT}_vip
 KA_IMAGE=telltale-keepalived:alpine-3.20
+# The keepalived image is removed at exit unless it was there before this run (REQ: OPS-010).
+KA_PRESENT=0
+docker image inspect "$KA_IMAGE" >/dev/null 2>&1 && KA_PRESENT=1
 BUILT_IMAGE=
 if [ -n "${TELLTALE_IMAGE:-}" ]; then
   IMAGE=$TELLTALE_IMAGE
@@ -70,6 +73,9 @@ cleanup() {
   "${COMPOSE[@]}" --profile witness down -v --remove-orphans >/dev/null 2>&1
   if [ -n "$BUILT_IMAGE" ] && [ "${KEEP:-}" != 1 ]; then
     docker image rm "$BUILT_IMAGE" >/dev/null 2>&1
+  fi
+  if [ "$KA_PRESENT" != 1 ]; then
+    docker image rm "$KA_IMAGE" >/dev/null 2>&1
   fi
   exit "$rc"
 }

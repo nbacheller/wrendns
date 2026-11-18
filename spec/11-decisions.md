@@ -4491,7 +4491,7 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 
 **Consequences:** one more credential to rotate, off until an admin asks for it; statistics shown to a Pi-hole client are the same ones a viewer sees (domains and client addresses at the node's privacy level); `unique_domains` and `clients_ever_seen` are bounded counts and say so in the docs.
 
-## ADR-975 — Failover with a VIP: keepalived beside each node in its network namespace, a readiness and DNS health check, the wildcard listener, and a witness for two-node promotion (Proposed 2026-11-18)
+## ADR-975 — Failover with a VIP: keepalived beside each node in its network namespace, a readiness and DNS health check, the wildcard listener, and a witness for two-node promotion (Proposed 2026-11-17)
 **Context:** T24.4 (fork #1; CLU-004, OPS-001). A Pi-hole pair moves one VIP between its two hosts with keepalived, so devices keep one DNS address. TelltaleDNS needs the same behaviour, and its DNS must never depend on a discovery, cluster or API failure (CLU-004). The task asks for a Docker example with keepalived for a two-node pair, the listener on the wildcard address so the VIP answers, a runbook for moving a Pi-hole pair's VIP, and a witness package for two-node clusters. It has no UI. Where the text leaves room, the conservative choice is recorded below.
 
 **Decision:**
@@ -4504,7 +4504,7 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 7. **Proof, not a claim:** `deploy/keepalived/e2e.sh` (CI job `keepalived`) builds the image, forms the cluster, checks each node and the VIP, kills the master, checks the takeover (within 15 s, every later query answered by the peer) and the promotion, restarts the master (the VIP back, a replica), and runs a maintenance hand-over through the API.
 
 **Gaps and conservative choices (for the owner):**
-- VRRP in the example is **unauthenticated** (keepalived's `auth_type PASS` is deprecated). The runbook says to keep VRRP on the LAN interface and not to route it. Authenticated VRRP is an owner decision if the LAN is not trusted.
+- VRRP in the example is **unauthenticated** (keepalived's `auth_type PASS` is deprecated). The runbook says to keep VRRP on the LAN interface and not to route it. Authenticated VRRP is an owner decision if the LAN is not trusted. The runbook offers a dedicated VLAN or an `iptables` rule that drops VRRP from anyone but the peer, as the interim limit.
 - The example's subnet is `10.231.250.0/24`: not the owner's LAN, and not another compose project's network. The script stops if a Docker network already uses it. Changing it means changing `compose.yaml`, both node files and `e2e.sh`.
 - The e2e makes an admin with the setup token and signs in with a session. The API refuses HTTP Basic unless `allowBasicApi` is set, and the example does not set it.
 - The LAN variant of the example (keepalived and TelltaleDNS on a host or a macvlan, with the LAN VIP) is documented as a runbook and has not been run on a LAN.
