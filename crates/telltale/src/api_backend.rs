@@ -506,6 +506,29 @@ fn stale_days(
     (days >= limit).then_some(days)
 }
 
+/// REQ: OBS-003 (T24.34, ADR-1013) — the live tail's `client`: several, comma-separated; a router
+/// name (`hostname:<label>`) becomes the addresses the router gave it now (at most
+/// `MAX_WORKLOAD_ADDRESSES`, in address order). A router name no address carries leaves nothing, so
+/// the filter is a sentinel no event matches (as in the log search).
+fn resolve_tail_client(client: &str, clients: &telltale_policy::clients::ClientTable) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for t in client.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+        if telltale_policy::clients::is_router_key(t) {
+            let mut v = clients.router_name_addresses(&t[9..].to_ascii_lowercase());
+            v.sort();
+            v.truncate(MAX_WORKLOAD_ADDRESSES);
+            out.extend(v.iter().map(ToString::to_string));
+        } else {
+            out.push(t.to_owned());
+        }
+    }
+    if out.is_empty() {
+        "::ffff:0.0.0.0".into()
+    } else {
+        out.join(",")
+    }
+}
+
 /// REQ: FLT-017 — most pod addresses one workload's query-log search covers.
 const MAX_WORKLOAD_ADDRESSES: usize = 64;
 
@@ -1511,25 +1534,7 @@ impl Backend for ApiBackend {
         // (`hostname:<label>`): those become the addresses the router gave them now.
         let mut p = p.clone();
         if let Some(c) = &p.client {
-            let mut out: Vec<String> = Vec::new();
-            for t in c.split(',').map(str::trim).filter(|t| !t.is_empty()) {
-                if telltale_policy::clients::is_router_key(t) {
-                    let mut v = policy
-                        .clients
-                        .router_name_addresses(&t[9..].to_ascii_lowercase());
-                    v.sort();
-                    v.truncate(MAX_WORKLOAD_ADDRESSES);
-                    out.extend(v.iter().map(ToString::to_string));
-                } else {
-                    out.push(t.to_owned());
-                }
-            }
-            // A router name no address carries now matches no event (a bare filter), as in the log search.
-            p.client = Some(if out.is_empty() {
-                "::ffff:0.0.0.0".into()
-            } else {
-                out.join(",")
-            });
+            p.client = Some(resolve_tail_client(c, &policy.clients));
         }
         let filter = crate::tail::Filter::parse(&p, &groups, &self.src.pipeline.workloads)?;
         let (events, slot) = tail.subscribe().ok_or_else(|| {
@@ -1617,7 +1622,12 @@ impl Backend for ApiBackend {
             plain.client = None;
             qlog_filter(&plain, from_us, to_us)?
         } else {
-            qlog_filter(q, from_us, to_us)?
+            // One plain address: the trimmed token (`1.2.3.4,` is that address too).
+            let mut one = q.clone();
+            if let Some(t) = tokens.first() {
+                one.client = Some((*t).to_owned());
+            }
+            qlog_filter(&one, from_us, to_us)?
         };
         let mut client_truncated = false;
         let mut workloads: Vec<Box<str>> = Vec::new();
@@ -7899,4 +7909,182 @@ fn busy_problem() -> Problem {
 /// REQ: API-902 — the engine isn't there (the API's `state.db` didn't open, or it is starting).
 fn guarded_unavailable() -> Problem {
     Problem::unavailable("guarded settings aren't available on this node yet")
+}
+
+#[cfg(test)]
+mod picker_clients_tests {
+    use super::*;
+    use telltale_api::Backend;
+
+    fn event(ip: &str, ts_s: u64, i: u64) -> telltale_telemetry::QueryEvent {
+        let ip: std::net::Ipv4Addr = ip.parse().unwrap();
+        telltale_telemetry::QueryEvent {
+            ts_us: ts_s * 1_000_000 + i,
+            client_ip: ip.to_ipv6_mapped().octets(),
+            client_ref: 0,
+            group: 0,
+            qtype: telltale_proto::rtype::A,
+            qclass: 1,
+            rcode: Some(0),
+            status: telltale_telemetry::Status::Forwarded,
+            proto: telltale_telemetry::Proto::Udp,
+            flags: 0x8180,
+            rule: None,
+            upstream: 1,
+            attempts: 1,
+            t_total_us: 900,
+            t_upstream_us: 800,
+            resp_size: 64,
+            answers: 1,
+        }
+    }
+
+    fn names(pairs: &[(&str, &str)]) -> std::collections::HashMap<IpAddr, Arc<str>> {
+        pairs
+            .iter()
+            .map(|(ip, n)| (ip.parse().unwrap(), Arc::from(*n)))
+            .collect()
+    }
+
+    fn big() -> Vec<(String, &'static str)> {
+        (0..=MAX_WORKLOAD_ADDRESSES + 5)
+            .map(|i| (format!("10.1.0.{i}"), "big"))
+            .collect()
+    }
+
+    /// REQ: OBS-003 (T24.34, ADR-1013) — the live tail's router names: addresses in order, plain
+    /// tokens kept, a name nobody holds is the sentinel no event matches, and the cap holds.
+    #[test]
+    fn obs_003_tail_client_resolves_router_names() {
+        let src = Arc::new(crate::http::tests::sources());
+        let snap = src.pipeline.current();
+        let clients = &snap.policy.clients;
+        clients.set_router_names(names(&[
+            ("192.168.1.11", "phone"),
+            ("192.168.1.10", "phone"),
+            ("192.168.1.12", "tv"),
+        ]));
+        assert_eq!(
+            resolve_tail_client("hostname:phone", clients),
+            "192.168.1.10,192.168.1.11"
+        );
+        assert_eq!(
+            resolve_tail_client(" 10.0.0.1 , hostname:PHONE,,hostname:tv ", clients),
+            "10.0.0.1,192.168.1.10,192.168.1.11,192.168.1.12"
+        );
+        assert_eq!(
+            resolve_tail_client("hostname:nobody", clients),
+            "::ffff:0.0.0.0"
+        );
+        assert_eq!(resolve_tail_client("10.0.0.1,", clients), "10.0.0.1");
+        let many = big();
+        let many: Vec<(&str, &str)> = many.iter().map(|(a, n)| (a.as_str(), *n)).collect();
+        clients.set_router_names(names(&many));
+        let r = resolve_tail_client("hostname:big", clients);
+        assert_eq!(r.split(',').count(), MAX_WORKLOAD_ADDRESSES, "{r}");
+    }
+
+    /// REQ: OBS-003 (T24.34, ADR-1013) — the log search returns exactly the picked devices'
+    /// queries: addresses, router names, a mix, a trailing comma, `clientNot` as the complement,
+    /// a name nobody holds, and the cap on clients.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn obs_003_queries_filter_by_picked_devices() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = telltale_config::Config::default();
+        cfg.node.data_dir = telltale_config::SafeString::new(dir.path().to_str().unwrap()).unwrap();
+        cfg.telemetry.qlog.enabled = true;
+        let mut src = crate::http::tests::sources();
+        src.config.store(Arc::new(cfg.clone()));
+        let (qlog, stats) = crate::server::query_log(&cfg);
+        src.qlog = stats;
+        let src = Arc::new(src);
+        let sink = crate::tail::combine(qlog, None, None);
+        let aggregator = src
+            .pipeline
+            .telemetry
+            .spawn_aggregator(std::time::Duration::from_millis(25), sink)
+            .unwrap();
+        let snap = src.pipeline.current();
+        snap.policy.clients.set_router_names(names(&[
+            ("192.168.1.10", "phone"),
+            ("192.168.1.11", "phone"),
+            ("192.168.1.12", "tv"),
+        ]));
+        let t0 = crate::pipeline::unix_now() - 600;
+        let name = b"\x07example\x03com\x00";
+        let hosts = [
+            ("192.168.1.10", 7u64),
+            ("192.168.1.11", 5),
+            ("192.168.1.12", 3),
+            ("192.168.1.13", 2),
+        ];
+        let mut i = 0;
+        for (ip, n) in hosts {
+            for _ in 0..n {
+                i += 1;
+                src.pipeline
+                    .telemetry
+                    .emit_query(&event(ip, t0 + i, i), name);
+            }
+        }
+        let total: usize = hosts.iter().map(|h| usize::try_from(h.1).unwrap()).sum();
+        drop(aggregator); // the final drain finishes the segment
+        let api = ApiBackend {
+            src: Arc::clone(&src),
+        };
+        let run = |client: &str, not: bool| {
+            api.queries(
+                &telltale_api::model::QueryParams {
+                    client: Some(client.into()),
+                    client_not: not.then_some(true),
+                    ..telltale_api::model::QueryParams::default()
+                },
+                t0 * 1_000_000,
+                0,
+                1_000,
+            )
+        };
+        let ips_of = |p: QueryPage| -> std::collections::BTreeSet<String> {
+            p.items.into_iter().map(|r| r.client).collect()
+        };
+        let set = |v: &[&str]| -> std::collections::BTreeSet<String> {
+            v.iter().map(ToString::to_string).collect()
+        };
+        let all = run("192.168.1.10,192.168.1.11,192.168.1.12,192.168.1.13", false)
+            .unwrap()
+            .items
+            .len();
+        assert_eq!(all, total, "every row is in the log");
+        // Two addresses: exactly their rows.
+        let two = run("192.168.1.10, 192.168.1.12", false).unwrap();
+        assert_eq!(two.items.len(), 7 + 3);
+        assert_eq!(ips_of(two), set(&["192.168.1.10", "192.168.1.12"]));
+        // A router name is every address the router gave it.
+        let phone = run("hostname:phone", false).unwrap();
+        assert_eq!(phone.items.len(), 7 + 5);
+        assert_eq!(ips_of(phone), set(&["192.168.1.10", "192.168.1.11"]));
+        // A name and an address, together; the complement is every other client.
+        let mix = run("hostname:phone,192.168.1.13", false).unwrap();
+        assert_eq!(mix.items.len(), 7 + 5 + 2);
+        let rest = run("hostname:phone,192.168.1.13", true).unwrap();
+        assert_eq!(ips_of(rest), set(&["192.168.1.12"]));
+        // A trailing comma is still one plain address.
+        assert_eq!(run("192.168.1.10,", false).unwrap().items.len(), 7);
+        assert_eq!(run("192.168.1.10,", true).unwrap().items.len(), 5 + 3 + 2);
+        // A name nobody holds: nothing, and with `clientNot` everything.
+        assert_eq!(run("hostname:nobody", false).unwrap().items.len(), 0);
+        assert_eq!(run("hostname:nobody", true).unwrap().items.len(), all);
+        // A name that holds more addresses than the cap is cut, and says so.
+        let many = big();
+        let many: Vec<(&str, &str)> = many.iter().map(|(a, n)| (a.as_str(), *n)).collect();
+        snap.policy.clients.set_router_names(names(&many));
+        assert!(run("hostname:big", false).unwrap().client_truncated);
+        assert!(!run("hostname:nobody", false).unwrap().client_truncated);
+        // Too many clients is refused, and so is a token that is nothing.
+        let lots: Vec<String> = (0..=MAX_CLIENT_TOKENS)
+            .map(|i| format!("10.2.0.{i}"))
+            .collect();
+        assert!(run(&lots.join(","), false).is_err());
+        assert!(run("192.168.1.10,nope", false).is_err());
+    }
 }

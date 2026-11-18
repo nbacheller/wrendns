@@ -6694,14 +6694,46 @@ test('ui_901 the query log picks devices by name: search, several, keyboard, 5,0
     await box.press('Enter');
     await box.press('Escape');
     await expect(box).toHaveAttribute('aria-expanded', 'false');
+    // Focus moving out of the picker (Tab past its buttons) closes the open list (it doesn't stay over the next controls).
+    await box.click();
+    await expect(box).toHaveAttribute('aria-expanded', 'true');
+    await page.getByRole('button', { name: 'Search', exact: true }).focus();
+    await expect(box).toHaveAttribute('aria-expanded', 'false');
     const sent = page.waitForRequest((r) => r.url().includes('/api/v1/queries') && decodeURIComponent(r.url()).includes('client=10.0.3.7,10.0.5.7'));
     await page.getByRole('button', { name: 'Search', exact: true }).click();
     await sent;
-    // "not" goes with the set.
-    await page.getByRole('checkbox', { name: 'not', exact: true }).first().check().catch(() => {});
   } finally {
     await page.unroute('**/api/v1/clients');
   }
+});
+
+test('ui_901 the rows are exactly the picked devices, and "not" shows every other client', async () => {
+  const all = await (await page.context().request.get('/api/v1/queries?limit=1000')).json();
+  const ips = [...new Set<string>(all.items.map((x: { client: string }) => x.client))];
+  expect(ips.length).toBeGreaterThan(0);
+  const picked = ips.slice(0, 2);
+  await page.goto('/#/queries');
+  const group = page.getByRole('group', { name: 'Client', exact: true });
+  const box = group.getByRole('combobox');
+  for (const ip of picked) {
+    await box.fill(ip);
+    await box.press('Enter');
+  }
+  await expect(group.getByTestId('picker-chip')).toHaveCount(picked.length);
+  await box.press('Escape');
+  const search = async () => {
+    const res = page.waitForResponse((r) => r.url().includes('/api/v1/queries?') && r.request().method() === 'GET');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    return (await (await res).json()) as { items: { client: string }[] };
+  };
+  const inSet = await search();
+  expect(inSet.items.length).toBeGreaterThan(0);
+  expect(inSet.items.every((x) => picked.includes(x.client))).toBe(true);
+  await expect(page.locator('table.log tbody tr').first()).toBeVisible();
+  // "not" goes with the set: no row is from it.
+  await page.getByRole('checkbox', { name: 'not', exact: true }).first().check();
+  const rest = await search();
+  expect(rest.items.every((x) => !picked.includes(x.client))).toBe(true);
 });
 
 test('ui_901 the API takes several clients and the not option works with them', async () => {
@@ -6718,4 +6750,14 @@ test('ui_901 the API takes several clients and the not option works with them', 
   expect(some.items.length + rest.items.length).toBe(all.items.length);
   const bad = await r.get('/api/v1/queries?client=' + encodeURIComponent(`${one},nope`));
   expect(bad.status()).toBe(400);
+  // A router name nobody holds matches nothing (and "not" everything); a name and an address mix;
+  // a trailing comma is still one address.
+  const none = await (await r.get('/api/v1/queries?limit=1000&client=hostname:nobody-here')).json();
+  expect(none.items.length).toBe(0);
+  const notNone = await (await r.get('/api/v1/queries?limit=1000&clientNot=true&client=hostname:nobody-here')).json();
+  expect(notNone.items.length).toBe(all.items.length);
+  const mix = await (await r.get(`/api/v1/queries?limit=1000&client=${encodeURIComponent(`hostname:nobody-here,${one}`)}`)).json();
+  expect(mix.items.length).toBe(some.items.length);
+  const comma = await (await r.get(`/api/v1/queries?limit=1000&client=${encodeURIComponent(`${one},`)}`)).json();
+  expect(comma.items.length).toBe(some.items.length);
 });

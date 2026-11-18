@@ -182,6 +182,12 @@
     }
   }
 
+  // Tab (or any focus move) out of the picker closes the list.
+  function leave(e: FocusEvent) {
+    const to = e.relatedTarget as Node | null;
+    if (open && root && !(to && root.contains(to))) close();
+  }
+
   function outside(e: MouseEvent) {
     if (open && root && !root.contains(e.target as Node)) close();
   }
@@ -197,7 +203,7 @@
 
 <svelte:window onclick={outside} />
 
-<div class="picker" bind:this={root} role="group" aria-label={label} data-testid={testid}>
+<div class="picker" bind:this={root} role="group" aria-label={label} data-testid={testid} onfocusout={leave}>
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="box" class:disabled onclick={() => !disabled && (input?.focus(), (open = true))}>
     {#if multiple}
@@ -217,7 +223,7 @@
       role="combobox"
       aria-label={label}
       aria-expanded={open}
-      aria-controls={`${uid}-list`}
+      aria-controls={open ? `${uid}-list` : undefined}
       aria-autocomplete="list"
       aria-haspopup="listbox"
       aria-activedescendant={open && filtered.length ? optId(active) : undefined}
@@ -259,6 +265,8 @@
           <div class="space" style={`height:${filtered.length * ROW}px`}>
             {#each windowed as it, n (it.value)}
               {@const i = first + n}
+              <!-- Keys act on the combobox input (aria-activedescendant), not on the options. -->
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
               <div
                 class="opt"
                 class:on={i === active}
@@ -273,7 +281,6 @@
                 aria-label={it.secondary ? `${it.label} (${it.secondary})` : it.label}
                 style={`top:${i * ROW}px;height:${ROW}px`}
                 onclick={() => toggle(it)}
-                onkeydown={() => {}}
                 onmousemove={() => (active = i)}
               >
                 {#if multiple}<span class="tick" aria-hidden="true">{chosen.has(it.value) ? '✓' : ''}</span>{/if}

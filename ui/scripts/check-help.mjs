@@ -13,7 +13,8 @@ function walk(dir) {
     const p = join(dir, f);
     if (statSync(p).isDirectory()) walk(p);
     else if (/\.(svelte|ts)$/.test(f)) {
-      for (const m of readFileSync(p, 'utf8').matchAll(/<HelpButton id="([^"]+)"/g)) {
+      // A field's `helpTopic: '...'` is shown by ConfigEditor's HelpButton, so it counts as used.
+      for (const m of readFileSync(p, 'utf8').matchAll(/(?:<HelpButton id="|helpTopic:\s*')([^"']+)["']/g)) {
         used.set(m[1], [...(used.get(m[1]) ?? []), p.slice(resolve(here, '..').length + 1)]);
       }
     }

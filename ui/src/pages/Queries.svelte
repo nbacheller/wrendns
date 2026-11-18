@@ -48,7 +48,17 @@
   ]);
   $effect(() => {
     void loadWorkloads();
-    void buildDeviceItems().then((d) => (devices = d));
+    void buildDeviceItems().then((d) => {
+      devices = d;
+      // A link holds the addresses of a multi-address device one by one; they come back as that one device.
+      let sel = clientSel;
+      for (const it of d) {
+        if (!it.value.includes(',')) continue;
+        const parts = it.value.split(',');
+        if (parts.every((x) => sel.includes(x))) sel = [...sel.filter((x) => !parts.includes(x)), it.value];
+      }
+      if (sel.length !== clientSel.length) clientSel = sel;
+    });
   });
   let statuses = $state(new Set<string>());
   let qtype = $state('');

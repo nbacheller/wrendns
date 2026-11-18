@@ -27,7 +27,9 @@ interface Acc {
 
 /**
  * One item per device address: named devices first (the name you gave, ranked highest), then what routers
- * and mDNS call them, then the last hour's busiest clients. A device's value is its first address.
+ * and mDNS call them, then the last hour's busiest clients. A named device with several addresses (IPv4 and
+ * IPv6, or a MAC that holds more than one lease) is one item whose value lists them all, comma-separated, so
+ * picking the device finds every address it queries from.
  */
 export async function deviceItems(): Promise<PickItem[]> {
   const [clients, leases, seen] = await Promise.all([
@@ -46,29 +48,42 @@ export async function deviceItems(): Promise<PickItem[]> {
     byIp.set(ip, a);
   };
   const ipOfMac = new Map<string, string>();
+  const ipsOfMac = new Map<string, Set<string>>();
   for (const l of leases?.items ?? []) {
+    if (l.mac) ipsOfMac.set(l.mac.toLowerCase(), (ipsOfMac.get(l.mac.toLowerCase()) ?? new Set<string>()).add(l.ip));
     if (l.mac && !l.offline) ipOfMac.set(l.mac.toLowerCase(), l.ip);
     put(l.ip, l.clientName ?? l.hostname ?? l.ip, l.clientName ? 3 : l.hostname ? 2 : 0, l.mac || undefined);
   }
+  const multi: { label: string; ips: string[]; macs: string[] }[] = [];
   const offline = new Set((leases?.items ?? []).filter((l) => l.offline).map((l) => l.ip));
   for (const c of clients?.items ?? []) {
     const ips = c.match.filter(isIp);
     const macs = c.match.filter((m) => MAC.test(m));
     const viaMac = macs.map((m) => ipOfMac.get(m.toLowerCase())).filter((x): x is string => !!x);
     const router = c.match.find(isRouterKey);
-    const all = [...new Set([...ips, ...viaMac])];
+    const viaLease = macs.flatMap((m) => [...(ipsOfMac.get(m.toLowerCase()) ?? [])]);
+    const all = [...new Set([...ips, ...viaMac, ...viaLease])];
     if (!all.length && router) put(router, c.name, 4);
     for (const ip of all) put(ip, c.name, 4, macs[0]);
+    if (all.length > 1) multi.push({ label: c.name, ips: all, macs });
   }
   for (const t of seen?.items ?? []) put(t.key, t.name ?? t.key, t.name ? 3 : 0);
-  return [...byIp.entries()]
+  const grouped = new Set(multi.flatMap((m) => m.ips));
+  const groups = multi.map((m) => ({
+    value: m.ips.join(','),
+    label: m.label,
+    secondary: [m.ips.join(', '), ...m.macs, m.ips.every((ip) => offline.has(ip)) ? 'offline' : ''].filter(Boolean).join(' · '),
+    kind: 'clients',
+    rank: 4,
+  }));
+  return [...[...byIp.entries()].filter(([ip]) => !grouped.has(ip))
     .map(([ip, a]) => ({
       value: ip,
       label: a.label,
       secondary: [ip === a.label ? '' : isRouterKey(ip) ? 'router name' : ip, ...a.macs, offline.has(ip) ? 'offline' : ''].filter(Boolean).join(' · '),
       kind: 'clients',
       rank: a.rank,
-    }))
+    })), ...groups]
     .sort((x, y) => y.rank - x.rank || x.label.localeCompare(y.label))
     .map(({ rank: _r, ...i }) => i);
 }
