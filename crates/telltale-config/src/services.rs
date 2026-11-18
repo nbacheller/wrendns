@@ -21,6 +21,7 @@ const FILES: &[&str] = &[
     include_str!("../../../presets/services/video.toml"),
     include_str!("../../../presets/services/gaming.toml"),
     include_str!("../../../presets/services/messaging.toml"),
+    include_str!("../../../presets/services/ai.toml"),
 ];
 
 /// One service.

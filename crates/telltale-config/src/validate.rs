@@ -50,6 +50,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     router_names(cfg, &mut r);
     rules(cfg, &mut r);
     services(cfg, &mut r);
+    categories(cfg, &mut r);
     schedules(cfg, &mut r);
     anomaly_mutes(cfg, &mut r);
     watchdog(cfg, &mut r);
@@ -1182,6 +1183,89 @@ fn services(cfg: &Config, r: &mut Report<'_>) {
     }
 }
 
+// REQ: FLT-901, FLT-902 (T24.29, ADR-994, ADR-995) — the `cat-` prefix is the catalog's, a group's
+// content and safe-search engines name things that exist. A category ID this version does not
+// know is not an error (a newer node may have written it: it is ignored and reported).
+fn categories(cfg: &Config, r: &mut Report<'_>) {
+    let cat = crate::categories::catalog();
+    for (i, l) in cfg.list.iter().enumerate() {
+        let name = l.name.as_str();
+        if !crate::categories::is_category_list(name) {
+            continue;
+        }
+        let p = format!("list[{i}]");
+        if l.url.is_some() || l.path.is_some() || !l.rules.is_empty() {
+            r.err(
+                format!("{p}.name"),
+                format!(
+                    "names starting with `{}` are kept for category lists, which take their source from the catalog (only `mode` can be set on one)",
+                    crate::categories::PREFIX
+                ),
+            );
+        } else if l.kind != crate::schema::ListKind::Block
+            || !l.enabled
+            || l.refresh_secs.is_some()
+            || l.max_bytes.is_some()
+            || l.stale_after_days.is_some()
+        {
+            r.err(
+                &p,
+                "a category list can only be set to `mode` (enforce or shadow)",
+            );
+        } else if cat.source_of_list(name).is_none() {
+            r.warn(format!(
+                "{p}: no catalog source for `{name}` in this version; ignored"
+            ));
+        }
+    }
+    let engines: Vec<&str> = crate::safesearch::engines()
+        .iter()
+        .map(|e| e.id.as_str())
+        .collect();
+    for (i, g) in cfg.group.iter().enumerate() {
+        let p = format!("group[{i}]");
+        for (j, e) in g.safe_search_engines.iter().enumerate() {
+            if !engines.contains(&e.as_str()) {
+                r.err(
+                    format!("{p}.safe_search_engines[{j}]"),
+                    format!("no engine `{e}` (use {})", engines.join(", ")),
+                );
+            }
+        }
+        let Some(c) = &g.content else { continue };
+        for (j, id) in c.categories.iter().enumerate() {
+            if let Some(known) = cat.category(id) {
+                if known.kind == crate::categories::CategoryKind::Service {
+                    r.err(
+                        format!("{p}.content.categories[{j}]"),
+                        format!("`{id}` is a bundle of services: use `blocked_services` instead"),
+                    );
+                }
+            } else {
+                r.warn(format!(
+                    "{p}.content.categories[{j}]: no category `{id}` in this version; ignored"
+                ));
+            }
+        }
+        for (id, tier) in &c.tiers {
+            match cat.category(id) {
+                Some(k) if k.tier_from.is_some() => r.err(
+                    format!("{p}.content.tiers.{id}"),
+                    "the size of Ad Block is `[filter] ads_tier`",
+                ),
+                Some(k) if !k.tier.iter().any(|t| t.id == *tier) => r.err(
+                    format!("{p}.content.tiers.{id}"),
+                    format!("`{id}` has no tier `{tier}`"),
+                ),
+                _ => {}
+            }
+        }
+    }
+    if cfg.filter.entry_budget == 0 {
+        r.err("filter.entry_budget", "must be at least 1");
+    }
+}
+
 // REQ: FLT-005 (T6.12, ADR-067) — quick rules: a real domain, known groups, devices that are
 // named devices or addresses, a readable expiry, unique IDs, and at most MAX_RULES.
 fn rules(cfg: &Config, r: &mut Report<'_>) {
@@ -1910,7 +1994,9 @@ fn lists(cfg: &Config, r: &mut Report<'_>) {
         let sources = usize::from(l.url.is_some())
             + usize::from(l.path.is_some())
             + usize::from(!l.rules.is_empty());
-        if sources != 1 {
+        // REQ: FLT-901 (ADR-994 item 9) — `cat-` lists take their source from the catalog; an
+        // entry of that name can only set `mode`. Checked in `categories`.
+        if sources != 1 && !crate::categories::is_category_list(name) {
             r.err(&p, "set exactly one of `url`, `path`, or `rules`");
         }
         // REQ: OBS-018 (T11.5) — only a block list has blocks to count.
@@ -2146,6 +2232,7 @@ fn check_router_names<'a>(
 }
 
 // REQ: FLT-005, FLT-006 — groups, clients, identification.
+#[allow(clippy::too_many_lines)] // one pass over the groups, one check after another
 fn clients(cfg: &Config, r: &mut Report<'_>) {
     let lists: HashSet<&str> = cfg.list.iter().map(|l| l.name.as_str()).collect();
     let mut groups = HashSet::from(["default"]);
@@ -2160,7 +2247,14 @@ fn clients(cfg: &Config, r: &mut Report<'_>) {
         }
         groups.insert(g.name.as_str());
         for (j, l) in g.lists.iter().flatten().enumerate() {
-            if !lists.contains(l.as_str()) {
+            if crate::categories::is_category_list(l.as_str()) {
+                r.err(
+                    format!("{p}.lists[{j}]"),
+                    format!(
+                        "`{l}` is a category list: use `content.categories` (or `content.ads`)"
+                    ),
+                );
+            } else if !lists.contains(l.as_str()) {
                 r.err(format!("{p}.lists[{j}]"), format!("unknown list `{l}`"));
             }
         }

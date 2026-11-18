@@ -30,3 +30,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
+
+## Content-category lists (downloaded, never bundled)
+
+The content categories (FLT-901, `presets/categories/*.toml`) name lists that a node downloads from their maintainers while a group uses them. TelltaleDNS does not ship, copy or redistribute any of them: the binary and the image carry only the catalog (names, URLs, licences, sizes), and a list is fetched by your node, from the maintainer's own host, when you turn a category on. Their licences therefore do not apply to TelltaleDNS's own, and no HaGeZi, StevenBlack, Perflyst or Bon-Appetit code is used (AGENTS.md rule 6). The Categories view shows each source's maintainer, licence and a link, and this page lists them.
+
+| Source | Maintainer | Licence | Used for |
+|---|---|---|---|
+| [`hagezi/dns-blocklists`](https://github.com/hagezi/dns-blocklists) | HaGeZi | GPL-3.0 | adult content, gambling, piracy, social networks, fake stores, DoH, VPN and proxy bypass, dynamic DNS, URL shorteners, hosting, risky TLDs, pop-up ads, the threat-intelligence feeds (malware, phishing, scam), the ad block tiers, and the per-vendor native trackers |
+| [`hagezi/nrd`](https://github.com/hagezi/nrd) | HaGeZi | GPL-3.0 | newly registered domains and DGA-like new domains, 7 days. HaGeZi publishes them as-is, with no guarantees |
+| [`StevenBlack/hosts`](https://github.com/StevenBlack/hosts) | Steven Black | MIT | the fake-news list |
+| [`Perflyst/PiHoleBlocklist`](https://github.com/Perflyst/PiHoleBlocklist) | Perflyst | MIT | smart-TV, Android and session-replay trackers |
+| [`Bon-Appetit/porn-domains`](https://github.com/Bon-Appetit/porn-domains) | Bon-Appetit contributors | CC BY-SA 4.0 | the optional Extended tier of Adult content |
+
+The CC BY-SA 4.0 licence of the Bon-Appetit list asks for attribution, which the Categories view shows next to the checkbox: "Licensed CC BY-SA 4.0, (c) Bon-Appetit contributors." Nothing is redistributed, so its share-alike condition has nothing to apply to. The GPL-3.0 of HaGeZi's lists covers the lists as data that your node fetches; the question whether a GPL-3.0 dataset fetched at runtime needs anything more is recorded in ADR-995 as a risk for the owner, not resolved by legal review.
+
+`scripts/check-catalog.py`, run weekly by the `catalog-check` workflow, compares each source's repository (licence, last push, archived flag) with what the catalog records, and opens an issue when one goes stale.

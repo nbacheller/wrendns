@@ -1,0 +1,121 @@
+# Categories the catalog does not offer, and why (REQ: FLT-901, ADR-994 item 4: no empty
+# checkboxes). The Categories view ends with a collapsed "Not available" section made from this
+# file. Two reasons are used: no open maintained list is known, or the only source is a
+# third-party mirror of the UT1 blacklists whose upstream licence is not yet verified (ADR-995
+# section 3, design question 4, decided "later").
+
+[[not_offered]]
+name = "Alcohol and tobacco"
+group = "Adult and Sensitive Content"
+reason = "No open maintained list is known."
+
+[[not_offered]]
+name = "Drugs and vaping"
+group = "Adult and Sensitive Content"
+reason = "Only available through a third-party mirror of the UT1 blacklists, whose upstream licence is not yet verified."
+alternative = "A group's own list, with the domains you want."
+
+[[not_offered]]
+name = "Weapons"
+group = "Adult and Sensitive Content"
+reason = "No open maintained list is known."
+
+[[not_offered]]
+name = "Violence and gore"
+group = "Adult and Sensitive Content"
+reason = "Only available through a third-party mirror of the UT1 blacklists, whose upstream licence is not yet verified."
+
+[[not_offered]]
+name = "Sex education"
+group = "Adult and Sensitive Content"
+reason = "Only available through a third-party mirror of the UT1 blacklists, whose upstream licence is not yet verified."
+
+[[not_offered]]
+name = "Health"
+group = "Adult and Sensitive Content"
+reason = "No open maintained list is known."
+
+[[not_offered]]
+name = "Cryptocurrency exchanges and wallets"
+group = "AI & Crypto"
+reason = "Only available through a third-party mirror of the UT1 blacklists, whose upstream licence is not yet verified. A hand-written crypto bundle was declined."
+
+[[not_offered]]
+name = "Business services"
+group = "Business & Professional"
+reason = "No open maintained list is known."
+
+[[not_offered]]
+name = "Job search"
+group = "Business & Professional"
+reason = "Only available through a third-party mirror of the UT1 blacklists, whose upstream licence is not yet verified."
+
+[[not_offered]]
+name = "Finance"
+group = "Business & Professional"
+reason = "Only available through a third-party mirror of the UT1 blacklists, whose upstream licence is not yet verified."
+
+[[not_offered]]
+name = "Education and government"
+group = "Business & Professional"
+reason = "No open maintained list is known."
+
+[[not_offered]]
+name = "Real estate and travel"
+group = "Business & Professional"
+reason = "No open maintained list is known."
+
+[[not_offered]]
+name = "Shopping"
+group = "Business & Professional"
+reason = "Only available through a third-party mirror of the UT1 blacklists, whose upstream licence is not yet verified."
+
+[[not_offered]]
+name = "News"
+group = "Culture & Entertainment"
+reason = "No open maintained list is known."
+
+[[not_offered]]
+name = "Sports"
+group = "Culture & Entertainment"
+reason = "Only available through a third-party mirror of the UT1 blacklists, whose upstream licence is not yet verified."
+
+[[not_offered]]
+name = "Forums and blogs"
+group = "Culture & Entertainment"
+reason = "Only available through a third-party mirror of the UT1 blacklists, whose upstream licence is not yet verified."
+
+[[not_offered]]
+name = "Lifestyle and religion"
+group = "Culture & Entertainment"
+reason = "No open maintained list is known."
+
+[[not_offered]]
+name = "Remote-access tools"
+group = "Networking Infrastructure"
+reason = "Only available through a third-party mirror of the UT1 blacklists, whose upstream licence is not yet verified."
+
+[[not_offered]]
+name = "Cloud storage and CDN"
+group = "Networking Infrastructure"
+reason = "No open maintained list is known, and a category that blocks a CDN breaks much of the web."
+
+[[not_offered]]
+name = "Parked domains"
+group = "New or Risky Domains"
+reason = "No open maintained list is known."
+
+[[not_offered]]
+name = "Newly seen domains"
+group = "New or Risky Domains"
+reason = "No blocking source exists; the first-seen view in analytics shows them."
+
+[[not_offered]]
+name = "Newly registered domains (14 days and longer)"
+group = "New or Risky Domains"
+reason = "A window past 7 days holds 5 million names or more, beyond what a Pi 4 is measured to hold. Offered only at 7 days."
+
+[[not_offered]]
+name = "Spyware and ransomware"
+group = "Security & Threat Protection"
+reason = "Covered by the Malware category's feeds, not listed separately."

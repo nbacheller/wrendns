@@ -1,0 +1,89 @@
+# TelltaleDNS content-category catalog: Culture and Entertainment (REQ: FLT-901, ADR-995).
+# Data, not code: compiled into the binary. Lists are never bundled: a node downloads
+# each source from its maintainer only while a group uses it.
+
+[[group]]
+id = "culture"
+name = "Culture & Entertainment"
+order = 4
+
+[[category]]
+id = "social"
+name = "Social networks"
+group = "culture"
+description = "Facebook, Instagram, X and other social networks."
+sources = ["hagezi-social"]
+
+[[category]]
+id = "fakenews"
+name = "Fake news"
+group = "culture"
+description = "Sites known for publishing fabricated news."
+sources = ["stevenblack-fakenews"]
+
+[[category]]
+id = "video"
+name = "Video streaming"
+group = "culture"
+description = "Video services (a hand-written bundle of each service's domains)."
+kind = "service"
+service_category = "video"
+
+[[category]]
+id = "music"
+name = "Music streaming"
+group = "culture"
+description = "Music services (a hand-written bundle of each service's domains)."
+kind = "service"
+service_category = "music"
+
+[[category]]
+id = "gaming"
+name = "Games"
+group = "culture"
+description = "Game stores and online games (a hand-written bundle of each service's domains)."
+kind = "service"
+service_category = "gaming"
+
+[[category]]
+id = "messaging"
+name = "Messaging"
+group = "culture"
+description = "Chat and messaging apps (a hand-written bundle of each service's domains)."
+kind = "service"
+service_category = "messaging"
+
+[[source]]
+id = "hagezi-social"
+name = "HaGeZi Social Networks"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/social-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 8197
+bytes = 136001
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "stevenblack-fakenews"
+name = "StevenBlack fake news"
+maintainer = "Steven Black"
+url = "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-only/hosts"
+format = "hosts"
+licence = "MIT"
+licence_url = "https://github.com/StevenBlack/hosts/blob/master/license.txt"
+homepage = "https://github.com/StevenBlack/hosts"
+cadence = "daily"
+entries = 2187
+bytes = 59664
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-15"
+archived = false
+

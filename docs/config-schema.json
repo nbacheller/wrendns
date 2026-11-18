@@ -194,9 +194,11 @@
       "description": "List download and compile settings.",
       "$ref": "#/$defs/FilterConfig",
       "default": {
+        "ads_tier": "pro",
         "allow_link_local_urls": false,
         "compile_memory": "128MiB",
         "compile_threads": 0,
+        "entry_budget": 1000000,
         "fetch_concurrency": 4,
         "fetch_retries": 3,
         "fetch_timeout_secs": 120,
@@ -550,6 +552,16 @@
         }
       },
       "additionalProperties": false
+    },
+    "AdsTier": {
+      "description": "REQ: FLT-901 (T24.29) — which of HaGeZi's ad and tracker lists the `ads` category uses.",
+      "type": "string",
+      "enum": [
+        "light",
+        "pro",
+        "pro_plus",
+        "ultimate"
+      ]
     },
     "AgentsConfig": {
       "description": "`[agents]` (REQ: AGT-009, ADR-064).",
@@ -1533,6 +1545,26 @@
         "advertise"
       ]
     },
+    "ContentLevel": {
+      "description": "REQ: FLT-902 (ADR-994) — a group's filtering level.",
+      "oneOf": [
+        {
+          "description": "No category applies (the selection is kept, so switching back loses nothing).",
+          "type": "string",
+          "const": "off"
+        },
+        {
+          "description": "The catalog's `basic` preset (adult content, malware, phishing and scam).",
+          "type": "string",
+          "const": "basic"
+        },
+        {
+          "description": "The categories in `categories`.",
+          "type": "string",
+          "const": "enhanced"
+        }
+      ]
+    },
     "DeviceClass": {
       "description": "REQ: OBS-025 (T13.3, ADR-117) — the kinds of device identification tells apart (a fixed\nlist, so metrics stay small).",
       "oneOf": [
@@ -1883,6 +1915,11 @@
       "description": "List download settings (`spec/05` §3.4, FLT-004).",
       "type": "object",
       "properties": {
+        "ads_tier": {
+          "description": "REQ: FLT-901 (T24.29) — the size of the Ad Block category: `light`, `pro` (default, the\nlist the bundles used to name by hand), `pro_plus` or `ultimate`.",
+          "$ref": "#/$defs/AdsTier",
+          "default": "pro"
+        },
         "allow_link_local_urls": {
           "description": "Allow list URLs on link-local addresses (169.254.0.0/16, `fe80::/10`). Off: they're\nrefused, like cloud-metadata addresses, so a list URL (from the UI, the API, or an\nagent's pre-save check) can't read what a cloud instance serves there.",
           "type": "boolean",
@@ -1908,6 +1945,13 @@
           "format": "uint8",
           "default": 0,
           "maximum": 255,
+          "minimum": 0
+        },
+        "entry_budget": {
+          "description": "REQ: FLT-901 (T24.29, ADR-994 item 5) — the most distinct blocklist entries the selected\ncategories may add before the Categories view warns (a soft limit; default 1,000,000, the\nNFR number). A node too small for a selection refuses it whatever this says.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 1000000,
           "minimum": 0
         },
         "fetch_concurrency": {
@@ -2236,6 +2280,17 @@
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "content": {
+          "description": "REQ: FLT-901, FLT-902 (T24.29, ADR-994) — content categories and ad block for this group\n(see [`GroupContent`]). Absent = never set: nothing is selected.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GroupContent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "device_classes": {
           "description": "REQ: OBS-025 (T13.3) — kinds of device that belong in this group (`camera`, `plug`,\n...): a device identified as one of them, and not in this group yet, gets this group\nsuggested. Nothing moves on its own. A kind can be claimed by one group only.",
           "type": "array",
@@ -2337,6 +2392,14 @@
           "description": "REQ: FLT-011 (T7.11) — safe search: Google, Bing, DuckDuckGo, Yandex, and Pixabay\nanswer with their safe-search service, and YouTube with Restricted Mode.",
           "type": "boolean"
         },
+        "safe_search_engines": {
+          "description": "REQ: FLT-902 (T24.29, ADR-994) — which engines safe search covers (`google`, `bing`,\n`youtube`, `duckduckgo`, `yandex`, `pixabay`: `presets/safesearch.toml`). Empty with\n`safe_search = true` means every engine, as before; a non-empty list is the set of\nengines (and turns safe search on). `youtube_restrict` applies to YouTube whenever it is\nset, whatever this list says.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
         "schedules": {
           "description": "REQ: FLT-010 (T7.10) — `[[schedule]]` names that apply to this group.",
           "type": "array",
@@ -2362,6 +2425,37 @@
       "required": [
         "name"
       ]
+    },
+    "GroupContent": {
+      "description": "REQ: FLT-901, FLT-902 (T24.29, ADR-994, ADR-995) — what a group filters by category. A group's\ncategory lists are fetched once for every group that uses them and are never part of another\ngroup's \"every enabled list\" default.",
+      "type": "object",
+      "properties": {
+        "ads": {
+          "description": "Ad block: the `ads` category, whose size is `[filter] ads_tier`. Independent of `level`.",
+          "type": "boolean"
+        },
+        "categories": {
+          "description": "With `enhanced`: category IDs from the catalog (`GET /api/v1/categories`). An ID this\nversion does not know (a newer node wrote it) is ignored and reported.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "level": {
+          "description": "`off` (default), `basic` or `enhanced`.",
+          "$ref": "#/$defs/ContentLevel",
+          "default": "off"
+        },
+        "tiers": {
+          "description": "A tier per category (`gambling = \"extended\"`); a category without one uses its default.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
     },
     "HttpVersion": {
       "description": "DoH HTTP version preference.",

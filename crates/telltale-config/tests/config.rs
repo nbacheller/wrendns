@@ -702,6 +702,121 @@ fn flt_012_blocked_services_are_validated() {
     assert!(err.contains("kept for blocked services"), "{err}");
 }
 
+/// REQ: FLT-901 (ADR-994 item 9) — the `cat-` list prefix is the catalog's: a list that defines a
+/// source under that name is refused, a bare `cat-` entry may only set `mode`, and a group cannot
+/// name a category list.
+#[test]
+fn flt_901_cat_prefix_reserved() {
+    let load = |toml: &str| load_str(toml).map(|l| l.config);
+    let err = format!(
+        "{:?}",
+        load(
+            "[[list]]
+name = \"cat-mine\"
+url = \"https://example.com/x.txt\"
+"
+        )
+        .unwrap_err()
+    );
+    assert!(err.contains("kept for category lists"), "{err}");
+    let err = format!(
+        "{:?}",
+        load(
+            "[[list]]
+name = \"cat-hagezi-nsfw\"
+rules = [\"||x.example^\"]
+"
+        )
+        .unwrap_err()
+    );
+    assert!(err.contains("kept for category lists"), "{err}");
+    // A bare entry sets the mode of a real category list (shadow) and nothing else.
+    assert!(
+        load(
+            "[[list]]
+name = \"cat-hagezi-nsfw\"
+mode = \"shadow\"
+"
+        )
+        .is_ok()
+    );
+    let err = format!(
+        "{:?}",
+        load(
+            "[[list]]
+name = \"cat-hagezi-nsfw\"
+enabled = false
+"
+        )
+        .unwrap_err()
+    );
+    assert!(err.contains("can only be set to `mode`"), "{err}");
+    let err = format!(
+        "{:?}",
+        load(
+            "[[group]]
+name = \"kids\"
+lists = [\"cat-hagezi-nsfw\"]
+"
+        )
+        .unwrap_err()
+    );
+    assert!(err.contains("content.categories"), "{err}");
+}
+
+/// REQ: FLT-901, FLT-902 — a group's content: levels parse, a category id this version does
+/// not know is a warning (version skew), a service bundle or an unknown tier is an error, and so
+/// is an unknown safe-search engine.
+#[test]
+fn flt_902_content_and_engines_are_validated() {
+    let ok = load_str(
+        "[[group]]
+name = \"kids\"
+safe_search_engines = [\"google\", \"bing\"]
+         content = { level = \"enhanced\", categories = [\"adult\", \"gambling\", \"from-the-future\"], tiers = { gambling = \"extended\" }, ads = true }
+",
+    )
+    .unwrap();
+    assert!(
+        ok.warnings.iter().any(|w| w.contains("from-the-future")),
+        "{:?}",
+        ok.warnings
+    );
+    let c = ok.config.group[0].content.as_ref().unwrap();
+    assert_eq!(c.level, telltale_config::ContentLevel::Enhanced);
+    assert!(c.ads);
+    let bad = |toml: &str| format!("{:?}", load_str(toml).unwrap_err());
+    let e = bad("[[group]]
+name = \"g\"
+content = { level = \"enhanced\", categories = [\"ai\"] }
+");
+    assert!(e.contains("bundle of services"), "{e}");
+    let e = bad("[[group]]
+name = \"g\"
+content = { tiers = { gambling = \"huge\" } }
+");
+    assert!(e.contains("no tier `huge`"), "{e}");
+    let e = bad("[[group]]
+name = \"g\"
+content = { tiers = { ads = \"light\" } }
+");
+    assert!(e.contains("ads_tier"), "{e}");
+    let e = bad("[[group]]
+name = \"g\"
+safe_search_engines = [\"altavista\"]
+");
+    assert!(e.contains("no engine `altavista`"), "{e}");
+    let e = bad("[[group]]
+name = \"g\"
+content = { level = \"loud\" }
+");
+    assert!(e.contains("level"), "{e}");
+    let e = bad("[filter]
+entry_budget = 0
+");
+    assert!(e.contains("entry_budget"), "{e}");
+}
+
 /// REQ: FLT-010 (T7.10) — schedules: known schedules, lists, and services; readable windows
 /// and time zones.
 #[test]

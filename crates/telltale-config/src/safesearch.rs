@@ -42,6 +42,12 @@ pub fn engines() -> &'static [Engine] {
     })
 }
 
+fn engines_for(name: &str) -> Option<&'static Engine> {
+    engines()
+        .iter()
+        .find(|e| e.domains.iter().any(|p| matches(p, name)))
+}
+
 /// A country domain: one or two labels of up to three letters (`de`, `co.uk`, `com.au`).
 fn country_domain(s: &str) -> bool {
     let labels: Vec<&str> = s.split('.').collect();
@@ -61,9 +67,22 @@ fn matches(pattern: &str, name: &str) -> bool {
 /// The safe-search target for `name` (lowercase, no trailing dot), or `None`. YouTube follows
 /// `youtube` (`off` leaves it alone).
 pub fn target(name: &str, youtube: YoutubeRestrict) -> Option<&'static str> {
-    let e = engines()
-        .iter()
-        .find(|e| e.domains.iter().any(|p| matches(p, name)))?;
+    target_in::<&str>(name, youtube, &[])
+}
+
+/// REQ: FLT-902 (T24.29) — like [`target`], for a group that covers only some engines: an
+/// empty `engines` means every engine (`safe_search = true` alone), otherwise only the engines
+/// named. The caller adds `youtube` when the group's `youtube_restrict` is set to something other
+/// than its default, so YouTube's level applies whatever the list says.
+pub fn target_in<S: AsRef<str>>(
+    name: &str,
+    youtube: YoutubeRestrict,
+    engines: &[S],
+) -> Option<&'static str> {
+    let e = engines_for(name)?;
+    if !engines.is_empty() && !engines.iter().any(|x| x.as_ref() == e.id) {
+        return None;
+    }
     if e.id == "youtube" {
         return match youtube {
             YoutubeRestrict::Off => None,
@@ -108,5 +127,22 @@ mod tests {
         assert_eq!(target("www.bing.com", s), Some("strict.bing.com"));
         assert_eq!(target("duckduckgo.com", s), Some("safe.duckduckgo.com"));
         assert_eq!(target("example.com", s), None);
+    }
+
+    /// REQ: FLT-902 — a group's engine list is the set of engines; empty means all.
+    #[test]
+    fn flt_902_safe_search_engines_subset() {
+        let s = YoutubeRestrict::Strict;
+        let google = ["google".to_owned()];
+        assert_eq!(
+            target_in("www.google.com", s, &google),
+            Some("forcesafesearch.google.com")
+        );
+        assert_eq!(target_in("www.bing.com", s, &google), None);
+        assert_eq!(target_in("www.youtube.com", s, &google), None);
+        assert_eq!(
+            target_in("www.bing.com", s, &[] as &[String]),
+            Some("strict.bing.com")
+        );
     }
 }

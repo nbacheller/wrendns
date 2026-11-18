@@ -1,0 +1,123 @@
+# TelltaleDNS content-category catalog: Security and Threat Protection (REQ: FLT-901, ADR-995).
+# Data, not code: compiled into the binary. Lists are never bundled: a node downloads
+# each source from its maintainer only while a group uses it.
+
+[[group]]
+id = "security"
+name = "Security & Threat Protection"
+order = 7
+
+# One threat-intelligence feed backs the three categories; a node downloads it once however many
+# are chosen. The tiers are exclusive: exactly one size is used.
+[[category]]
+id = "malware"
+name = "Malware"
+group = "security"
+description = "Malware, command-and-control and cryptojacking hosts from threat-intelligence feeds."
+tier_kind = "exclusive"
+default_tier = "mini"
+[[category.tier]]
+id = "mini"
+name = "Mini"
+sources = ["hagezi-tif-mini"]
+[[category.tier]]
+id = "medium"
+name = "Medium"
+sources = ["hagezi-tif-medium"]
+[[category.tier]]
+id = "full"
+name = "Full (heavy)"
+sources = ["hagezi-tif-full"]
+
+[[category]]
+id = "phishing"
+name = "Phishing"
+group = "security"
+description = "Phishing sites from threat-intelligence feeds."
+tier_kind = "exclusive"
+default_tier = "mini"
+[[category.tier]]
+id = "mini"
+name = "Mini"
+sources = ["hagezi-tif-mini"]
+[[category.tier]]
+id = "medium"
+name = "Medium"
+sources = ["hagezi-tif-medium"]
+[[category.tier]]
+id = "full"
+name = "Full (heavy)"
+sources = ["hagezi-tif-full"]
+
+[[category]]
+id = "scam"
+name = "Scam"
+group = "security"
+description = "Scam and fraud sites from threat-intelligence feeds."
+tier_kind = "exclusive"
+default_tier = "mini"
+[[category.tier]]
+id = "mini"
+name = "Mini"
+sources = ["hagezi-tif-mini"]
+[[category.tier]]
+id = "medium"
+name = "Medium"
+sources = ["hagezi-tif-medium"]
+[[category.tier]]
+id = "full"
+name = "Full (heavy)"
+sources = ["hagezi-tif-full"]
+
+[[source]]
+id = "hagezi-tif-mini"
+name = "HaGeZi Threat Intelligence Feeds (mini)"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.mini-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 189474
+bytes = 3412491
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-tif-medium"
+name = "HaGeZi Threat Intelligence Feeds (medium)"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.medium-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 413269
+bytes = 7595722
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-tif-full"
+name = "HaGeZi Threat Intelligence Feeds (full)"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 2245686
+bytes = 40248653
+max_bytes = 60372979
+weight = "heavy"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+

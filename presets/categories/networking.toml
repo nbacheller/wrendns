@@ -1,0 +1,105 @@
+# TelltaleDNS content-category catalog: Networking Infrastructure (REQ: FLT-901, ADR-995).
+# Data, not code: compiled into the binary. Lists are never bundled: a node downloads
+# each source from its maintainer only while a group uses it.
+
+[[group]]
+id = "network"
+name = "Networking Infrastructure"
+order = 5
+
+[[category]]
+id = "bypass"
+name = "DoH, VPN, Tor and proxy bypass"
+group = "network"
+description = "Encrypted-DNS, VPN, Tor and proxy services that let a device go around this resolver. It only works together with blocking outbound ports 53 and 853 (see the help topic)."
+sources = ["hagezi-doh-vpn-proxy"]
+
+[[category]]
+id = "dyndns"
+name = "Dynamic DNS"
+group = "network"
+description = "Dynamic-DNS providers, often used to host things at home or to hide a command server."
+sources = ["hagezi-dyndns"]
+
+[[category]]
+id = "shorteners"
+name = "URL shorteners"
+group = "network"
+description = "Link shorteners, which hide where a link goes."
+sources = ["hagezi-urlshortener"]
+
+[[category]]
+id = "hosting"
+name = "Hosting providers"
+group = "network"
+description = "Web hosting and cloud providers. Blocks many legitimate sites that run on them."
+sources = ["hagezi-hoster"]
+
+[[source]]
+id = "hagezi-doh-vpn-proxy"
+name = "HaGeZi DoH, VPN, Tor and proxy bypass"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/doh-vpn-proxy-bypass-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 16631
+bytes = 296891
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-dyndns"
+name = "HaGeZi Dynamic DNS"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/dyndns-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 1516
+bytes = 20015
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-urlshortener"
+name = "HaGeZi URL shorteners"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/urlshortener-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 9765
+bytes = 108325
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-hoster"
+name = "HaGeZi Hosting providers"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/hoster-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 1168
+bytes = 14083
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+

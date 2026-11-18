@@ -114,6 +114,10 @@ impl ByteSize {
     pub const fn bytes(self) -> u64 {
         self.0
     }
+    /// A size of exactly `n` bytes.
+    pub const fn from_bytes(n: u64) -> Self {
+        Self(n)
+    }
 
     /// Parses `"123"`, `"64KiB"`, `"32 MiB"`, `"2GiB"`, `"500MB"` (decimal units are powers of 1000).
     pub fn parse(s: &str) -> Result<Self, String> {

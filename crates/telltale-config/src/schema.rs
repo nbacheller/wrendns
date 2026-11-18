@@ -898,6 +898,51 @@ pub struct GroupConfig {
     /// suggested. Nothing moves on its own. A kind can be claimed by one group only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub device_classes: Vec<DeviceClass>,
+    /// REQ: FLT-902 (T24.29, ADR-994) — which engines safe search covers (`google`, `bing`,
+    /// `youtube`, `duckduckgo`, `yandex`, `pixabay`: `presets/safesearch.toml`). Empty with
+    /// `safe_search = true` means every engine, as before; a non-empty list is the set of
+    /// engines (and turns safe search on). `youtube_restrict` applies to YouTube whenever it is
+    /// set, whatever this list says.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub safe_search_engines: Vec<SafeString>,
+    /// REQ: FLT-901, FLT-902 (T24.29, ADR-994) — content categories and ad block for this group
+    /// (see [`GroupContent`]). Absent = never set: nothing is selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<GroupContent>,
+}
+
+/// REQ: FLT-902 (ADR-994) — a group's filtering level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentLevel {
+    /// No category applies (the selection is kept, so switching back loses nothing).
+    #[default]
+    Off,
+    /// The catalog's `basic` preset (adult content, malware, phishing and scam).
+    Basic,
+    /// The categories in `categories`.
+    Enhanced,
+}
+
+/// REQ: FLT-901, FLT-902 (T24.29, ADR-994, ADR-995) — what a group filters by category. A group's
+/// category lists are fetched once for every group that uses them and are never part of another
+/// group's "every enabled list" default.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupContent {
+    /// `off` (default), `basic` or `enhanced`.
+    #[serde(default)]
+    pub level: ContentLevel,
+    /// With `enhanced`: category IDs from the catalog (`GET /api/v1/categories`). An ID this
+    /// version does not know (a newer node wrote it) is ignored and reported.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<SafeString>,
+    /// A tier per category (`gambling = "extended"`); a category without one uses its default.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub tiers: std::collections::BTreeMap<String, String>,
+    /// Ad block: the `ads` category, whose size is `[filter] ads_tier`. Independent of `level`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ads: bool,
 }
 
 /// REQ: OBS-025 (T13.3, ADR-117) — the kinds of device identification tells apart (a fixed
@@ -1858,6 +1903,36 @@ pub struct FilterConfig {
     /// "stale": its source may be abandoned while still answering (health reason `list_stale`,
     /// alert rule `list_stale`). 0 = never. Per list: `stale_after_days`.
     pub stale_after_days: u32,
+    /// REQ: FLT-901 (T24.29, ADR-994 item 5) — the most distinct blocklist entries the selected
+    /// categories may add before the Categories view warns (a soft limit; default 1,000,000, the
+    /// NFR number). A node too small for a selection refuses it whatever this says.
+    pub entry_budget: u64,
+    /// REQ: FLT-901 (T24.29) — the size of the Ad Block category: `light`, `pro` (default, the
+    /// list the bundles used to name by hand), `pro_plus` or `ultimate`.
+    pub ads_tier: AdsTier,
+}
+
+/// REQ: FLT-901 (T24.29) — which of `HaGeZi`'s ad and tracker lists the `ads` category uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AdsTier {
+    Light,
+    #[default]
+    Pro,
+    ProPlus,
+    Ultimate,
+}
+
+impl AdsTier {
+    /// The tier ID in the catalog's `ads` category.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Pro => "pro",
+            Self::ProPlus => "pro-plus",
+            Self::Ultimate => "ultimate",
+        }
+    }
 }
 
 impl Default for FilterConfig {
@@ -1876,6 +1951,8 @@ impl Default for FilterConfig {
             compile_memory: ByteSize::mib(128),
             fsync: true,
             stale_after_days: 30,
+            entry_budget: 1_000_000,
+            ads_tier: AdsTier::Pro,
         }
     }
 }
