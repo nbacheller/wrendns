@@ -86,6 +86,15 @@ enum Read {
     ClientRhythm {
         client: String,
     },
+    /// REQ: FLT-006, API-010 (T24.30, ADR-971, ADR-996) — a device's effective policy, read from
+    /// the primary's configuration (an older peer doesn't know it: it is a missing node).
+    ClientPolicy {
+        client: String,
+        /// The asking replica's observations of the device (its neighbor table's MAC and so on);
+        /// absent from an older caller, which asks about the name alone.
+        #[serde(default)]
+        observed: Option<telltale_api::policy_api::PolicyObservation>,
+    },
     /// REQ: CLU-002 (T9.2) — the histograms behind `Latency` (older peers don't know it).
     LatencyHist {
         by: LatencyBy,
@@ -251,6 +260,63 @@ fn merge_lists(mine: &[ListInfo], mut theirs: Vec<ListInfo>) -> Vec<ListInfo> {
     theirs
 }
 
+/// REQ: FLT-006 (ADR-996) — the primary's answer to `Read::ClientPolicy`: the policy, or the
+/// reason there is none (a name no device has is a 404, not a down primary).
+#[derive(Debug, Serialize, Deserialize)]
+enum PolicyReply {
+    Found(Box<telltale_api::policy_api::ClientPolicy>),
+    NotFound(String),
+    Failed,
+}
+
+fn policy_reply(
+    b: &dyn Backend,
+    client: &str,
+    observed: Option<&telltale_api::policy_api::PolicyObservation>,
+) -> PolicyReply {
+    match observed.map_or_else(
+        || b.client_policy(client),
+        |o| b.client_policy_observed(client, o),
+    ) {
+        Ok(p) => PolicyReply::Found(Box::new(p)),
+        Err(p) if p.status == 404 => PolicyReply::NotFound(p.detail),
+        Err(_) => PolicyReply::Failed,
+    }
+}
+
+/// REQ: FLT-006, API-010 (ADR-971, ADR-996) — what a replica returns given the primary's reply
+/// (`None`: it didn't answer, or doesn't know the read) and whether the primary is a missing node.
+fn settle_policy(
+    reply: Option<PolicyReply>,
+    primary_label: &str,
+    own_label: &str,
+    mine: impl FnOnce() -> Result<telltale_api::policy_api::ClientPolicy, Problem>,
+) -> (
+    Result<telltale_api::policy_api::ClientPolicy, Problem>,
+    bool,
+) {
+    match reply {
+        Some(PolicyReply::Found(p)) => {
+            let mut p = *p;
+            p.node = Some(primary_label.to_owned());
+            (Ok(p), false)
+        }
+        // The primary answered: it just has no such device. Not a down node.
+        Some(PolicyReply::NotFound(detail)) => (Err(Problem::not_found(detail)), false),
+        Some(PolicyReply::Failed) | None => {
+            let out = mine().map(|mut p| {
+                p.node = Some(own_label.to_owned());
+                p.notes.push(
+                    "The primary didn't answer, so this is this node's own copy of the configuration."
+                        .to_owned(),
+                );
+                p
+            });
+            (out, true)
+        }
+    }
+}
+
 /// Answers a peer's read from this node's own data.
 fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
     let text = |p: Problem| p.detail;
@@ -286,6 +352,9 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::Identities => serde_json::to_vec(&b.identities()),
         Read::Identity { client } => serde_json::to_vec(&b.identity(&client).ok()),
         Read::ClientRhythm { client } => serde_json::to_vec(&b.client_rhythm(&client).ok()),
+        Read::ClientPolicy { client, observed } => {
+            serde_json::to_vec(&policy_reply(b, &client, observed.as_ref()))
+        }
         Read::TailOpen { params } | Read::TailOpenNegated { params } => {
             serde_json::to_vec(&tail_open(b, &params).map_err(text)?)
         }
@@ -2118,6 +2187,64 @@ impl Backend for Federated {
             .next()
             .unwrap_or_else(|| crate::identify::unavailable(&key, "not_seen")))
     }
+    // REQ: FLT-006, API-010 (T24.30, ADR-971, ADR-996) — the policy is the primary's configuration
+    // read, applied to this node's observations of the device, so every node gives Explain's answer:
+    // a replica asks the reachable primary and, when it can't (down, or an older version that
+    // doesn't know the read), answers from its own copy and names the primary in `missingNodes`.
+    fn client_policy(
+        &self,
+        client: &str,
+    ) -> Result<telltale_api::policy_api::ClientPolicy, Problem> {
+        let primary = self
+            .cluster
+            .members()
+            .into_iter()
+            .find(|m| m.primary)
+            .map(|m| m.node_id)
+            .filter(|_| !self.cluster.is_primary());
+        let Some(primary) = primary else {
+            let mut mine = self.local.client_policy(client)?;
+            mine.node = Some(self.own_label());
+            self.record_missing(Vec::new());
+            return Ok(mine);
+        };
+        let observed = self.local.policy_observation(client)?;
+        let reply = self
+            .cluster
+            .reachable_primary()
+            .and_then(|p| {
+                self.call_one(
+                    &p,
+                    &Read::ClientPolicy {
+                        client: client.to_owned(),
+                        observed: observed.clone(),
+                    },
+                    DEADLINE,
+                )
+            })
+            .and_then(Result::ok)
+            .and_then(|body| serde_json::from_slice::<PolicyReply>(&body).ok());
+        let label = self.label_of(&primary);
+        let (out, missing) = settle_policy(reply, &label, &self.own_label(), || {
+            self.local.client_policy(client)
+        });
+        self.record_missing(if missing { vec![label] } else { Vec::new() });
+        out
+    }
+    // REQ: FLT-006 — a node's own observations and the primary's read of them are this node's.
+    fn policy_observation(
+        &self,
+        client: &str,
+    ) -> Result<Option<telltale_api::policy_api::PolicyObservation>, Problem> {
+        self.local.policy_observation(client)
+    }
+    fn client_policy_observed(
+        &self,
+        client: &str,
+        observed: &telltale_api::policy_api::PolicyObservation,
+    ) -> Result<telltale_api::policy_api::ClientPolicy, Problem> {
+        self.local.client_policy_observed(client, observed)
+    }
     // REQ: OBS-031 — every node's view of the device (it may roam), summed by domain.
     fn client_rhythm(
         &self,
@@ -3209,6 +3336,97 @@ pub(crate) fn entries_from_primary(body: &[u8]) -> Option<Vec<telltale_api::mode
     let mut v = serde_json::from_slice::<Vec<telltale_api::model::ConfigEntry>>(body).ok()?;
     crate::redact::entries(&mut v);
     Some(v)
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use telltale_api::policy_api::{ClientPolicy, PolicyObservation};
+
+    fn policy(group: &str) -> ClientPolicy {
+        ClientPolicy {
+            client: "10.0.0.5".into(),
+            group: group.into(),
+            ..ClientPolicy::default()
+        }
+    }
+
+    // REQ: FLT-006, CLU-002 (ADR-996) — a replica returns the primary's answer, labelled with the
+    // primary, and the primary is not a missing node.
+    #[test]
+    fn flt_006_replica_asks_the_primary() {
+        let reply = Some(PolicyReply::Found(Box::new(policy("kids"))));
+        let (out, missing) =
+            settle_policy(reply, "primary-a", "replica-b", || Ok(policy("default")));
+        let p = out.unwrap();
+        assert_eq!(p.group, "kids");
+        assert_eq!(p.node.as_deref(), Some("primary-a"));
+        assert!(!missing);
+    }
+
+    // REQ: FLT-006, CLU-002 (ADR-971, ADR-996) — a down primary, or an older one that does not know
+    // the read, is a missing node: the replica answers from its own copy and says so.
+    #[test]
+    fn flt_006_older_primary_is_a_missing_node() {
+        for reply in [None, Some(PolicyReply::Failed)] {
+            let (out, missing) =
+                settle_policy(reply, "primary-a", "replica-b", || Ok(policy("default")));
+            let p = out.unwrap();
+            assert_eq!(p.group, "default");
+            assert_eq!(p.node.as_deref(), Some("replica-b"));
+            assert!(p.notes.iter().any(|n| n.contains("primary didn't answer")));
+            assert!(missing);
+        }
+        // An older primary's bytes are not a `PolicyReply`: they decode to nothing.
+        assert!(serde_json::from_slice::<PolicyReply>(b"null").is_err());
+    }
+
+    // REQ: FLT-006 — the primary saying "no such device" is its answer (404), not a down primary.
+    #[test]
+    fn flt_006_a_primarys_404_is_not_a_missing_node() {
+        let reply = Some(PolicyReply::NotFound("no such device".into()));
+        let (out, missing) =
+            settle_policy(reply, "primary-a", "replica-b", || Ok(policy("default")));
+        assert_eq!(out.unwrap_err().status, 404);
+        assert!(!missing);
+    }
+
+    // REQ: FLT-006 — on the primary (and for a single node) the read is answered locally, and the
+    // observed-device read crosses the channel by name.
+    #[test]
+    fn flt_006_primary_answers_the_policy_read_locally() {
+        let read = Read::ClientPolicy {
+            client: "10.0.0.5".into(),
+            observed: Some(PolicyObservation {
+                ip: "10.0.0.5".into(),
+                mac: Some([2, 0, 0, 0, 0, 1]),
+                client_id: None,
+                wanted: None,
+            }),
+        };
+        let back: Read = serde_json::from_slice(&serde_json::to_vec(&read).unwrap()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let src = crate::http::tests::sources_in(tmp.path());
+        let b = crate::api_backend::ApiBackend { src: Arc::new(src) };
+        let body = answer(&b, back).unwrap();
+        match serde_json::from_slice::<PolicyReply>(&body).unwrap() {
+            PolicyReply::Found(p) => assert_eq!(p.group, "default"),
+            other => panic!("expected the policy, got {other:?}"),
+        }
+        // An unknown name is a 404 reply.
+        let body = answer(
+            &b,
+            Read::ClientPolicy {
+                client: "nobody".into(),
+                observed: None,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            serde_json::from_slice::<PolicyReply>(&body).unwrap(),
+            PolicyReply::NotFound(_)
+        ));
+    }
 }
 
 #[cfg(test)]

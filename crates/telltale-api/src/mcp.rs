@@ -178,13 +178,13 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "name": {"type": "string", "description": "Part of the queried name."},
-                "client": {"type": "string", "description": "Client IP or device name."},
+                "client": {"type": "string", "description": "A client IP, or several comma-separated (addresses, `hostname:<router name>`, Kubernetes workloads as namespace/kind/name; at most 100). With clientNot, every client except these."},
                 "group": {"type": "string", "description": "Client group."},
                 "status": {"type": "string", "description": "blocked, cached, forwarded, local, refused, error, ..."},
                 "qtype": {"type": "string", "description": "A, AAAA, HTTPS, ..."},
                 "rcode": {"type": "string", "description": "NOERROR, NXDOMAIN, SERVFAIL, ..."},
                 "nameNot": {"type": "boolean", "description": "Keep the queries whose name does NOT contain `name`. Needs `name`."},
-                "clientNot": {"type": "boolean", "description": "Keep the queries from every client except `client`. Needs `client`."},
+                "clientNot": {"type": "boolean", "description": "Keep the queries from every client except those in `client`. Needs `client`."},
                 "statusNot": {"type": "boolean", "description": "Keep the queries whose status is none of `status`. Needs `status`."},
                 "qtypeNot": {"type": "boolean", "description": "Keep the queries whose type is none of `qtype`. Needs `qtype`."},
                 "rcodeNot": {"type": "boolean", "description": "Keep the queries whose response code is none of `rcode` (queries with no response code are kept). Needs `rcode`."},
@@ -228,7 +228,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "explain_decision",
-            description: "Read-only. Why a name is (or isn't) blocked or routed for a client: the client's identity and groups, the rules that match, which one wins, and the upstream route. Answers 'why was X blocked for Y?'.",
+            description: "Read-only. Why a name is (or isn't) blocked or routed for a client: the client's identity, the key it matched on and where its group came from, the groups, the rules that match, which one wins, and the upstream route. Answers 'why was X blocked for Y?'. For everything that applies to a device, use get_client_policy.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "name": {"type": "string", "description": "The domain name."},
@@ -252,7 +252,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "get_client_profile",
-            description: "Read-only. A device's profile: its identity, groups, top domains this hour, its rhythm (per tracked domain, how regularly it's queried: the dominant period such as 'every 2.5 s' and its share), and its most recent queries (with latency and status). Give a device name or IP. Recent queries need the querylog:read scope; without it that part is reported as not allowed.",
+            description: "Read-only. A device's profile: its identity, groups, the policy that applies to it (policy: the group and the key that matched, lists, services, schedules, rules; needs config:read), top domains this hour, its rhythm (per tracked domain, how regularly it's queried: the dominant period such as 'every 2.5 s' and its share), and its most recent queries (with latency and status). Give a device name or IP. Recent queries need the querylog:read scope; without it that part is reported as not allowed.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "client": {"type": "string", "description": "Device name (as in the device list) or IP."},
@@ -409,6 +409,23 @@ pub fn tools() -> Vec<Tool> {
                 Ok(vec![(
                     "identity".into(),
                     format!("/api/v1/clients/{}/identity", enc(&c)),
+                )])
+            },
+        },
+        // REQ: FLT-006, API-010, AGT-001 (T24.30, ADR-996)
+        Tool {
+            name: "get_client_policy",
+            description: "Read-only. Every filter and rule that applies to one device, and why: the group it lands in and the key that matched (client ID, MAC, workload, address, network or router name, with the precedence ladder), then sections for the block response, the group's lists and blocked services, SafeSearch and YouTube, answer filtering, rewrites, schedules (and whether each is in effect now), the quick rules that apply (with expiry) and the upstream group. It is resolved the way a query and explain_decision resolve the device, so the two agree. Give a device name, an IP, or a Kubernetes workload. Needs config:read; a group-restricted token sees its group's devices only.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "client": {"type": "string", "description": "A device's name, its IP, or a workload (namespace/kind/name)."}
+            }, "required": ["client"], "additionalProperties": false})
+            },
+            calls: |a| {
+                let c = s(a, "client").ok_or("`client` is required")?;
+                Ok(vec![(
+                    "policy".into(),
+                    format!("/api/v1/clients/{}/policy", enc(&c)),
                 )])
             },
         },
@@ -1547,10 +1564,11 @@ pub fn write_tools() -> Vec<WriteTool> {
         // REQ: OBS-022, AGT-007 (T12.1) — names and devices kept out of the log, as a plan.
         WriteTool {
             name: "plan_set_exclusions",
-            description: "Plans a change (nothing changes until apply_plan). Changes which names and devices are kept out of the query log, the live view, the dashboard and top lists, anomalies, and exports (noise like connectivity checks or a monitoring probe). Their queries are still answered and still counted in /metrics. `names` covers each name and its subdomains; `clients` takes addresses or networks; both replace the current lists. `enabled` turns the exclusions off without losing the lists. Fields left out keep their current values. Applies to every node from the next query. Needs config:write:exclusions (and config:read to read the current ones).",
+            description: "Plans a change (nothing changes until apply_plan). Changes which names and devices are kept out of the query log, the live view, the dashboard and top lists, anomalies, and exports (noise like connectivity checks or a monitoring probe). Their queries are still answered and still counted in /metrics. `names` covers each name and its subdomains; `clients` takes addresses or networks; both replace the current lists. `enabled` turns the exclusions off without losing the lists. Fields left out keep their current values. `log` keeps queries out of the query log (and the live view and event sinks) only: they are still counted in the dashboard, top lists and anomalies. It has `clients` (addresses, networks or device names), `domains` (`localhost` is exactly that name, `*.lan` is every name under lan), and `own_lookups` (this node's own loopback and addresses); it replaces the current `log` settings as a whole. Applies to every node from the next query. Needs config:write:exclusions (and config:read to read the current ones).",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "enabled": {"type": "boolean", "description": "Turn the exclusions on or off (the lists are kept)."},
+                "log": {"type": "object", "description": "Kept out of the query log only (still counted in the statistics); replaces the current log settings.", "properties": {"clients": {"type": "array", "items": {"type": "string"}}, "domains": {"type": "array", "items": {"type": "string"}}, "own_lookups": {"type": "boolean"}}, "additionalProperties": false},
                 "names": {"type": "array", "items": {"type": "string"}, "description": "Names kept out, each with its subdomains (replaces the current list)."},
                 "clients": {"type": "array", "items": {"type": "string"}, "description": "Addresses or networks kept out (replaces the current list)."},
                 "reason": reason_schema()
@@ -1565,6 +1583,7 @@ pub fn write_tools() -> Vec<WriteTool> {
                         ("enabled", "enabled"),
                         ("names", "names"),
                         ("clients", "clients"),
+                        ("log", "log"),
                     ],
                 );
                 if body.is_empty() {
@@ -1580,6 +1599,9 @@ pub fn write_tools() -> Vec<WriteTool> {
                 }
                 if let Some(n) = count("clients") {
                     what.push(format!("{n} clients"));
+                }
+                if body.contains_key("log") {
+                    what.push("log-only exclusions".into());
                 }
                 Ok(Write {
                     method: "PUT",
@@ -3071,6 +3093,14 @@ impl Mcp {
                 .await;
             out.insert(
                 "rhythm".into(),
+                if ok { body } else { json!({"error": body}) },
+            );
+            // REQ: FLT-006, API-010 (T24.30) — the group and key it matched, and what applies.
+            let (ok, body) = self
+                .get(&format!("/api/v1/clients/{}/policy", enc(&c)), auth, client)
+                .await;
+            out.insert(
+                "policy".into(),
                 if ok { body } else { json!({"error": body}) },
             );
             if let Some(ip) = ip {

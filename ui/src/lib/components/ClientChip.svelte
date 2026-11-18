@@ -9,6 +9,7 @@
   import HelpButton from './HelpButton.svelte';
   import ChangePreview from './ChangePreview.svelte';
   import Icon from './Icon.svelte';
+  import Picker from './Picker.svelte';
   import { groupFromText, loadWorkloads, podAt, workloadOf } from '../workloads.svelte';
   import { routerKey, routerLabel } from '../router-name';
 
@@ -169,10 +170,6 @@
     }
   }
 
-  function toggle(g: string) {
-    chosen = chosen.includes(g) ? chosen.filter((x) => x !== g) : [...chosen, g];
-  }
-
   /** REQ: OBS-024 — the device change as a dry run, replayed over the query log. */
   /** The device's match keys: its address (or its existing keys), with its router-name key set or not. */
   function matchKeys(): string[] {
@@ -331,9 +328,7 @@
         {/if}
         <fieldset>
           <legend>Groups <span class="muted small">(first one's settings apply)</span><HelpButton id="device-groups" /></legend>
-          {#each groups as g (g.name)}
-            <label class="check"><input type="checkbox" checked={chosen.includes(g.name)} onchange={() => toggle(g.name)} /> {g.name}</label>
-          {/each}
+          <Picker label="Groups" items={groups.map((g) => ({ value: g.name, label: g.name, kind: 'groups' }))} bind:selected={chosen} maxChips={5} />
         </fieldset>
         {#if newName.trim()}
           <ChangePreview

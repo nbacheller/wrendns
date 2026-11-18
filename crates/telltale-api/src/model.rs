@@ -560,9 +560,12 @@ pub struct QueryParams {
     /// does not contain, is not, is not under, doesn't match the wildcard or the regex. Needs
     /// `name`. Default: false.
     pub name_not: Option<bool>,
-    /// Client IP address.
+    /// Client IP address, or several, comma-separated (REQ: OBS-003, ADR-1013): addresses,
+    /// `hostname:<label>` (the addresses a router gave that name now) and Kubernetes workloads
+    /// (`namespace/kind/name`). At most 100 entries and 256 addresses; `clientTruncated` says
+    /// when a cap cut the set.
     pub client: Option<String>,
-    /// Keep the rows from every client except `client`. Needs `client`. Default: false.
+    /// Keep the rows from every client except `client` (all of them, when several). Needs `client`. Default: false.
     pub client_not: Option<bool>,
     /// Statuses, comma-separated (`blocked,forwarded`).
     pub status: Option<String>,
@@ -738,6 +741,18 @@ pub struct ExplainClient {
     pub device: Option<String>,
     /// `client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `router_name`, `ip`, `cidr`, or `default`.
     pub identified_by: String,
+    /// REQ: FLT-006, API-010 (T24.30, ADR-996) — the key it matched on, written as a
+    /// `[[client]] match` is (`id:kids`, a MAC, an address, a network, `hostname:tv`), or the
+    /// workload's name. Absent for the `default` group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_key: Option<String>,
+    /// The group whose settings apply (the first of `groups`).
+    pub group: String,
+    /// Where that group came from: `device`, `network`, `router_name`, `kubernetes`, `default`.
+    pub group_from: String,
+    /// The network or router name that gave the group, when it isn't the device's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_key: Option<String>,
     /// Highest priority first.
     pub groups: Vec<String>,
     /// REQ: FLT-017 — the Kubernetes workload a pod address belongs to.
@@ -1217,6 +1232,10 @@ pub struct UpstreamInfo {
     pub failures_by_kind: FailureKinds,
     /// Smoothed answer time.
     pub latency_ewma_ms: f64,
+    /// REQ: UPS-006 — why this node can't reach it, when it can say: `this node has no IPv6
+    /// route` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_problem: Option<String>,
     /// REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the
     /// upstream sets a `source`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1270,9 +1289,10 @@ pub struct TailParams {
     /// REQ: OBS-003 (ADR-171) — only queries whose name does NOT match `name` and `match`.
     /// Needs `name`. Default: false.
     pub name_not: Option<bool>,
-    /// Client IP address.
+    /// Client IP address, or several, comma-separated (addresses, `hostname:<label>` and
+    /// Kubernetes workloads; REQ: OBS-003, ADR-1013).
     pub client: Option<String>,
-    /// Only queries from every client except `client`. Needs `client`. Default: false.
+    /// Only queries from every client except `client` (all of them, when several). Needs `client`. Default: false.
     pub client_not: Option<bool>,
     /// The client's group (its highest-priority group).
     pub group: Option<String>,

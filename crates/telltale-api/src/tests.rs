@@ -374,6 +374,21 @@ impl Backend for Fake {
         .unwrap();
         Ok(rx) // the sender drops here, so the stream ends after these two
     }
+    fn client_policy(&self, client: &str) -> Result<crate::policy_api::ClientPolicy, Problem> {
+        if client != "tv" {
+            return Err(Problem::not_found("no such device"));
+        }
+        Ok(crate::policy_api::ClientPolicy {
+            client: "tv".into(),
+            device: Some("tv".into()),
+            identified_by: "ip".into(),
+            matched_key: Some("192.168.1.40".into()),
+            group: "kids".into(),
+            group_from: "device".into(),
+            groups: vec!["kids".into()],
+            ..crate::policy_api::ClientPolicy::default()
+        })
+    }
     fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem> {
         if p.name.is_empty() {
             return Err(Problem::invalid("`name` is empty"));
@@ -386,6 +401,10 @@ impl Backend for Fake {
                 mac: None,
                 device: None,
                 identified_by: "default".into(),
+                matched_key: None,
+                group: "default".into(),
+                group_from: "default".into(),
+                group_key: None,
                 groups: vec!["default".into()],
                 workload: None,
             },
@@ -1757,6 +1776,64 @@ async fn clu_008_cluster_view_on_a_standalone_node() {
     assert_eq!(send(&app, anonymous).await.0, StatusCode::UNAUTHORIZED);
 }
 
+/// REQ: FLT-006, API-010, AGT-001, AGT-004 (T24.30) — a device's policy over HTTP: the admin reads
+/// it, an agent needs `config:read`, a group-restricted agent reads its own group's devices and
+/// gets a 404 for another group's, and an unknown device is a 404.
+#[tokio::test]
+async fn flt_006_client_policy_over_http() {
+    let (app, _) = app();
+    let (s, _, v) = get(&app, "/api/v1/clients/tv/policy").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["group"], "kids");
+    assert_eq!(v["matchedKey"], "192.168.1.40");
+    assert_eq!(v["identifiedBy"], "ip");
+    assert_eq!(
+        get(&app, "/api/v1/clients/nobody/policy").await.0,
+        StatusCode::NOT_FOUND
+    );
+    let make = |scopes: &'static [&'static str], group: Option<&'static str>| {
+        let body = serde_json::json!({"name": format!("p-{scopes:?}-{group:?}"), "kind": "agent",
+            "scopes": scopes, "group": group});
+        app.signed_in("POST", "/api/v1/tokens", body)
+    };
+    let token = |scopes: &'static [&'static str], group: Option<&'static str>| {
+        let req = make(scopes, group);
+        let app = &app;
+        async move {
+            let (s, _, v) = send(app, req).await;
+            assert_eq!(s, StatusCode::CREATED, "{v}");
+            v["token"].as_str().unwrap().to_owned()
+        }
+    };
+    let read = |bearer: String| {
+        let req = Request::get("/api/v1/clients/tv/policy")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("x-telltale-client", "test-agent/1.0")
+            .body(Body::empty())
+            .unwrap();
+        let app = &app;
+        async move { send(app, req).await.0 }
+    };
+    assert_eq!(
+        read(token(&["config:read"], None).await).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        read(token(&["analytics:read"], None).await).await,
+        StatusCode::FORBIDDEN,
+        "no config:read"
+    );
+    assert_eq!(
+        read(token(&["config:read"], Some("kids")).await).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        read(token(&["config:read"], Some("adults")).await).await,
+        StatusCode::NOT_FOUND,
+        "another group's device"
+    );
+}
+
 #[tokio::test]
 async fn api_001_openapi_is_served_and_documents_every_route() {
     let (app, _) = app();
@@ -1792,9 +1869,10 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // /oidc-providers/{id} (T23.10); 153 with API-016's /sinks, /sinks/{name}, /otlp and
     // /otlp/default (T23.11); 158 with API-902's /guarded, /guarded/{id},
     // /guarded/{id}/preview, /guarded/pending/{id}/confirm and /guarded/pending/{id}/cancel (T27.13);
-    // 161 with FLT-004's /lists/overlap, /lists/prune-plan and /lists/prune (T24.28).
-    // 162 with UPS-004's /upstream-presets (T24.36).
-    assert_eq!(paths.len(), 162);
+    // 161 with FLT-004's /lists/overlap, /lists/prune-plan and /lists/prune (T24.28);
+    // 162 with FLT-006's /clients/{id}/policy (T24.30).
+    // 163 with UPS-004's /upstream-presets (T24.36).
+    assert_eq!(paths.len(), 163);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

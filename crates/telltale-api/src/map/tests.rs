@@ -244,6 +244,50 @@ fn obs_901_classify_rollup() {
     assert!(rollup(&[Green, Green]).1.is_none());
 }
 
+fn up_in(name: &str, groups: &[&str]) -> PartUpstream {
+    PartUpstream {
+        id: 1,
+        name: name.into(),
+        groups: groups.iter().map(|g| (*g).to_owned()).collect(),
+        ..PartUpstream::default()
+    }
+}
+
+/// REQ: OBS-901 (fork #25, ADR-1012) — a red member of a group with a healthy member is yellow
+/// for the resolver and named; a group with no healthy member, and an upstream in no group, stay
+/// red.
+#[test]
+fn obs_901_classify_group_aware() {
+    use MapHealth::{Green, Idle, Red, Yellow};
+    let a = up_in("a", &["default"]);
+    let b = up_in("b", &["default"]);
+    let c = up_in("c", &["other"]);
+    let lone = up_in("lone", &[]);
+    // One dead member, one healthy: the group answers.
+    let (h, notes) = group_aware(&[(&a, Red), (&b, Green)]);
+    assert_eq!(h, [Yellow, Green]);
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0].summary.contains("upstream a") && notes[0].summary.contains(" b"));
+    // An idle (unasked) sibling is not failing.
+    assert_eq!(group_aware(&[(&a, Red), (&b, Idle)]).0, [Yellow, Idle]);
+    // A yellow sibling still answers.
+    assert_eq!(group_aware(&[(&a, Red), (&b, Yellow)]).0, [Yellow, Yellow]);
+    // Every member dead: the group fails.
+    let (h, notes) = group_aware(&[(&a, Red), (&b, Red)]);
+    assert_eq!(h, [Red, Red]);
+    assert_eq!(notes.len(), 0);
+    // In no group, or in a group of one: red.
+    assert_eq!(group_aware(&[(&lone, Red), (&b, Green)]).0, [Red, Green]);
+    assert_eq!(group_aware(&[(&c, Red), (&b, Green)]).0, [Red, Green]);
+    // In two groups: both need a healthy member.
+    let two = up_in("two", &["default", "other"]);
+    assert_eq!(group_aware(&[(&two, Red), (&b, Green)]).0, [Red, Green]);
+    assert_eq!(
+        group_aware(&[(&two, Red), (&b, Green), (&c, Green)]).0,
+        [Yellow, Green, Green]
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // The builder
 
@@ -293,11 +337,13 @@ fn part(node: &str, entries: Vec<Entry>) -> MapPart {
                 id: 1,
                 name: "quad9".into(),
                 breaker: "closed".into(),
+                ..PartUpstream::default()
             },
             PartUpstream {
                 id: 2,
                 name: "cloudflare".into(),
                 breaker: "closed".into(),
+                ..PartUpstream::default()
             },
         ],
         level: "healthy".into(),
@@ -1003,4 +1049,83 @@ fn obs_901_unseen_member_is_idle_not_red() {
     let n = find(&s, "res:pi2");
     assert_eq!(n.health, MapHealth::Idle);
     assert_eq!(n.reasons[0].code, "not_reachable_from_here");
+}
+
+/// REQ: OBS-901, UPS-006 (fork #25) — the issue's case: two IPv6 members of a `fastest` group have
+/// no route and fail, two IPv4 siblings answer. The dead upstreams stay red on the map and say why;
+/// the resolver is yellow, naming them, not red.
+#[test]
+fn obs_901_dead_spare_member_is_a_warning() {
+    let mut p = part(
+        "pi1",
+        vec![
+            entry(client(7), AnswerKind::Upstream, 1, counts(40, 200, 0, 0, 0)),
+            entry(
+                client(7),
+                AnswerKind::Upstream,
+                2,
+                counts(40, 200, 0, 200, 0),
+            ),
+        ],
+    );
+    p.upstreams = vec![
+        up_in("quad9", &["default"]),
+        PartUpstream {
+            id: 2,
+            route_problem: Some("this node has no IPv6 route".into()),
+            ..up_in("cf6", &["default"])
+        },
+    ];
+    let parts = MapParts {
+        parts: vec![p],
+        missing: vec![],
+        unseen: Vec::new(),
+        pending: Vec::new(),
+    };
+    let s = build(&parts, &ctx(&no_names), &Filter::default());
+    let dead = find(&s, "up:cf6");
+    assert_eq!(dead.health, MapHealth::Red, "the dead member stays red");
+    assert!(
+        dead.reasons
+            .iter()
+            .any(|r| r.code == "no_route" && r.summary.contains("this node has no IPv6 route")),
+        "{:?}",
+        dead.reasons
+    );
+    let res = find(&s, "res:pi1");
+    assert_eq!(res.health, MapHealth::Yellow, "{:?}", res.reasons);
+    assert!(res.reasons.iter().any(|r| r.code == "member_down"
+        && r.summary.contains("cf6")
+        && r.summary.contains("quad9")));
+}
+
+/// REQ: UPS-006 — a spare nobody has asked is idle, but with no route it is a warning that says why.
+#[test]
+fn obs_901_unrouted_spare_is_yellow() {
+    let mut p = part(
+        "pi1",
+        vec![entry(
+            client(7),
+            AnswerKind::Upstream,
+            1,
+            counts(40, 200, 0, 0, 0),
+        )],
+    );
+    p.upstreams = vec![
+        up_in("quad9", &["default"]),
+        PartUpstream {
+            id: 2,
+            route_problem: Some("this node has no IPv6 route".into()),
+            ..up_in("cf6", &["default"])
+        },
+    ];
+    let parts = MapParts {
+        parts: vec![p],
+        missing: vec![],
+        unseen: Vec::new(),
+        pending: Vec::new(),
+    };
+    let s = build(&parts, &ctx(&no_names), &Filter::default());
+    assert_eq!(find(&s, "up:cf6").health, MapHealth::Yellow);
+    assert_eq!(find(&s, "res:pi1").health, MapHealth::Yellow);
 }

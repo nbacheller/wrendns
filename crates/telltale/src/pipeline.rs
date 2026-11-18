@@ -770,6 +770,29 @@ impl Pipeline {
         })));
     }
 
+    /// REQ: FLT-013, FLT-006 (T24.30, ADR-996) — runs `f` on the state Explain reads (the policy,
+    /// the filter, the neighbors, the schedules), so a device's Policy panel and Explain read one
+    /// state. Off the query path.
+    pub(crate) fn with_explain_state<R>(
+        &self,
+        f: impl FnOnce(&crate::explain::State<'_>) -> R,
+    ) -> R {
+        let dynamic = self.state.load();
+        let filter = self.filter.load();
+        let schedules = self.schedules.load();
+        let devices = self.device_names.load();
+        let st = crate::explain::State {
+            dynamic: &dynamic,
+            filter: filter.as_deref(),
+            neighbors: &self.neighbors,
+            workloads: &self.workloads,
+            pause: &self.pause,
+            schedules: &schedules,
+            devices: Some(&devices.data),
+        };
+        f(&st)
+    }
+
     /// Explains what this pipeline would do with a query, and why (FLT-013).
     pub(crate) fn explain(
         &self,
