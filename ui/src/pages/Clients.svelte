@@ -13,6 +13,7 @@
   import TabPanel from '../lib/components/TabPanel.svelte';
   import Drawer from '../lib/components/Drawer.svelte';
   import RhythmStrip from '../lib/components/RhythmStrip.svelte';
+  import PolicyPanel from '../lib/components/PolicyPanel.svelte';
   import DeviceTimeline from '../lib/components/DeviceTimeline.svelte';
   import { groupFromText, loadWorkloads, workloadOf, workloads } from '../lib/workloads.svelte';
   import { mode } from '../lib/mode.svelte';
@@ -130,10 +131,11 @@
   // REQ: OBS-031, OBS-034 — a device's drawer: its rhythm and its day. The address says which
   // (`#/clients?device=…&view=timeline`), so findings and the heatmap can link to it.
   const rhythmFor = $derived(route.params.get('device'));
-  const view = $derived(route.params.get('view') === 'timeline' ? 'timeline' : 'rhythm');
+  // REQ: FLT-006, API-010 (T24.30) — `view=policy` is the device's Policy panel.
+  const view = $derived(route.params.get('view') === 'timeline' ? 'timeline' : route.params.get('view') === 'policy' ? 'policy' : 'rhythm');
   let rhythm = $state<S['ClientRhythm'] | null>(null);
   let rhythmError = $state<unknown>(null);
-  function openDevice(ip: string, v: 'rhythm' | 'timeline') {
+  function openDevice(ip: string, v: 'rhythm' | 'timeline' | 'policy') {
     const params: Record<string, string> = { device: ip, view: v };
     const t = route.params.get('tab');
     if (t) params.tab = t;
@@ -194,7 +196,7 @@
                     <td class="small" data-testid="affinity" title={a ? a.nodes.map((n) => `${n.node}: ${num(n.queries)}`).join('\n') : ''}>{a?.label ?? ''}</td>
                   {/if}
                   <td class="num">{num(c.count)}</td>
-                  <td class="num"><a href={href('/queries', { client: c.key })}>Queries</a> · <a href={href('/heatmap', { kind: 'client', key: c.key })}>When</a> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'rhythm')} data-testid="open-rhythm">Rhythm</button> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'timeline')} data-testid="open-timeline">Day</button></td>
+                  <td class="num"><a href={href('/queries', { client: c.key })}>Queries</a> · <a href={href('/heatmap', { kind: 'client', key: c.key })}>When</a> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'rhythm')} data-testid="open-rhythm">Rhythm</button> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'timeline')} data-testid="open-timeline">Day</button> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'policy')} data-testid="open-policy-seen">Policy</button></td>
                 </tr>
               {/each}
             </tbody>
@@ -226,7 +228,8 @@
                     {/if}
                   </td>
                   <td class="small">{c.source === 'api' ? 'the UI / API' : 'config file'}</td>
-                  <td class="num">
+                  <td class="num nowrap">
+                    <button type="button" class="link small" onclick={() => openDevice(c.name, 'policy')} data-testid="open-policy" aria-label={`Policy of ${c.name}`}>Policy</button>
                     {#if c.source === 'api' && canEdit}
                       <button class="link small" onclick={() => remove(c.name)} aria-label={`Forget ${c.name}`}>Forget</button>
                     {/if}
@@ -332,8 +335,12 @@
       <div class="seg" role="group" aria-label="Device view">
         <button type="button" aria-pressed={view === 'rhythm'} onclick={() => openDevice(rhythmFor, 'rhythm')} data-testid="device-rhythm">Rhythm</button>
         <button type="button" aria-pressed={view === 'timeline'} onclick={() => openDevice(rhythmFor, 'timeline')} data-testid="device-timeline">Timeline</button>
+        <button type="button" aria-pressed={view === 'policy'} onclick={() => openDevice(rhythmFor, 'policy')} data-testid="device-policy">Policy</button>
       </div>
-      {#if view === 'timeline'}
+      {#if view === 'policy'}
+        <p class="muted small">Every filter and rule that applies to this device, and why.</p>
+        <PolicyPanel client={rhythmFor} />
+      {:else if view === 'timeline'}
         <p class="muted small">This device's day from the query log: a lane per domain it talks to, the answer time below, and what happened above.<HelpButton id="device-timeline" /></p>
         <DeviceTimeline client={rhythmFor} />
       {:else}

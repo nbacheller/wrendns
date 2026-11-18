@@ -660,3 +660,61 @@ fn obs_903_pihole_excluded_domains_and_clients() {
     let notes = im.notes.join("\n");
     assert!(!notes.contains("API_EXCLUDE"), "{notes}");
 }
+
+// REQ: T24.27 — a GitHub page URL becomes the raw file URL.
+#[test]
+fn t24_27_github_page_url_becomes_raw() {
+    assert_eq!(
+        github_raw("https://github.com/mmotti/pihole-regex/blob/master/regex.list").as_deref(),
+        Some("https://raw.githubusercontent.com/mmotti/pihole-regex/master/regex.list")
+    );
+    assert_eq!(
+        github_raw("https://github.com/o/r/raw/main/dir/hosts.txt?raw=true#L3").as_deref(),
+        Some("https://raw.githubusercontent.com/o/r/main/dir/hosts.txt")
+    );
+    for not in [
+        "https://raw.githubusercontent.com/o/r/main/hosts",
+        "https://github.com/o/r",
+        "https://github.com/o/r/tree/main/dir",
+        "https://github.com/o/r/blob/main",
+        "https://example.com/github.com/o/r/blob/main/x",
+    ] {
+        assert_eq!(github_raw(not), None, "{not}");
+    }
+}
+
+// REQ: T24.27 — the import rewrites a GitHub page adlist and says so; a regex list is not
+// imported and the preview says why.
+#[test]
+fn t24_27_import_rewrites_github_and_skips_regex_lists() {
+    let mut e = v5_entries();
+    e.insert(
+        "adlist.json".to_owned(),
+        br#"[{"id":1,"address":"https://github.com/o/r/blob/master/hosts.txt","enabled":1,"comment":""},
+ {"id":2,"address":"https://github.com/mmotti/pihole-regex/blob/master/regex.list","enabled":1,"comment":""}]"#
+            .to_vec(),
+    );
+    e.insert(
+        "adlist_by_group.json".to_owned(),
+        br#"[{"adlist_id":1,"group_id":0},{"adlist_id":2,"group_id":0}]"#.to_vec(),
+    );
+    let src = Source::from_entries(e).unwrap();
+    let im = convert(&src, "teleporter.tar.gz").unwrap();
+    let cfg = load(&im.toml);
+    let urls: Vec<_> = cfg.list.iter().filter_map(|l| l.url.as_deref()).collect();
+    assert!(urls.contains(&"https://raw.githubusercontent.com/o/r/master/hosts.txt"));
+    assert!(
+        !urls.iter().any(|u| u.contains("regex.list")),
+        "a regex list isn't imported: {urls:?}"
+    );
+    assert!(
+        im.notes
+            .iter()
+            .any(|n| n.contains("GitHub page") && n.contains("raw.githubusercontent.com/o/r"))
+    );
+    assert!(
+        im.notes
+            .iter()
+            .any(|n| n.contains("regular expressions") && n.contains("regex.list"))
+    );
+}

@@ -1308,7 +1308,23 @@ impl<'a> Builder<'a> {
                 unused += 1;
                 continue;
             };
-            let address = text(a, "address");
+            let mut address = text(a, "address");
+            // REQ: T24.27 — a GitHub page URL (`/blob/`) is an HTML page; fetch the raw file.
+            if let Some(raw) = github_raw(&address) {
+                self.notes.push(format!(
+                    "Adlist `{}` is a GitHub page, not the file; imported as `{raw}`.",
+                    one_line(&address)
+                ));
+                address = raw;
+            }
+            // REQ: T24.27 — a regex list (e.g. mmotti/pihole-regex) isn't an adlist format.
+            if is_regex_list(&address) {
+                self.notes.push(format!(
+                    "Adlist `{}` looks like a list of regular expressions. Pi-hole adlists hold domains or hosts lines, not regexes, so it can't work as a list; not imported. Add the patterns as regex deny rules (`/pattern/`) instead.",
+                    one_line(&address)
+                ));
+                continue;
+            }
             let (url, path) = if let Some(p) = address.strip_prefix("file://") {
                 (None, Some(p.to_owned()))
             } else if address.starts_with("https://") || address.starts_with("http://") {
@@ -1733,6 +1749,44 @@ impl<'a> Builder<'a> {
 }
 
 /// A Pi-hole domain entry as a list rule our parser accepts, or why it can't be one.
+/// REQ: T24.27 — `https://github.com/<o>/<r>/blob/<ref>/<path>` (or `/raw/`) to
+/// `https://raw.githubusercontent.com/<o>/<r>/<ref>/<path>`. A query or fragment is dropped.
+/// `None` for anything else (including a branch name with a slash, which can't be told apart).
+pub(crate) fn github_raw(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+        .or_else(|| url.strip_prefix("https://www.github.com/"))?;
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    let mut it = rest.splitn(5, '/');
+    let (owner, repo, kind, git_ref, path) =
+        (it.next()?, it.next()?, it.next()?, it.next()?, it.next()?);
+    if owner.is_empty() || repo.is_empty() || git_ref.is_empty() || path.is_empty() {
+        return None;
+    }
+    if kind != "blob" && kind != "raw" {
+        return None;
+    }
+    Some(format!(
+        "https://raw.githubusercontent.com/{owner}/{repo}/{git_ref}/{path}"
+    ))
+}
+
+/// REQ: T24.27 — a file named like a regex list (`regex.list`, `regex.txt`, `my-regex.list`).
+pub(crate) fn is_regex_list(address: &str) -> bool {
+    let path = address.split(['?', '#']).next().unwrap_or(address);
+    let name = path.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+    let lower = name.to_ascii_lowercase();
+    let stem = lower.rsplit_once('.').map_or(lower.as_str(), |(s, _)| s);
+    // Whole-word match: `regex`, `regex-list`, `my_regex`, not `no-regex-needed`.
+    let words: Vec<&str> = stem
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let is_rx = |w: &&str| *w == "regex" || *w == "regexes";
+    words.first().is_some_and(is_rx) || words.last().is_some_and(is_rx)
+}
+
 fn domain_rule(domain: &str, t: i64) -> Result<String, String> {
     let opts = ListOptions {
         kind: kind_of(t),

@@ -59,6 +59,7 @@ mod own_networks;
 mod pihole;
 mod pihole_import;
 mod pipeline;
+mod policy_view;
 mod privacy;
 mod probes;
 mod qlog_cli;
@@ -1692,21 +1693,27 @@ fn init_logging() {
     use tracing_subscriber::Layer as _;
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
-    let level = std::env::var("TELLTALE_LOG")
-        .ok()
-        .and_then(|v| v.parse::<tracing::level_filters::LevelFilter>().ok())
-        .unwrap_or(tracing::level_filters::LevelFilter::INFO);
+    // `TELLTALE_LOG` is a level (`debug`) or per-module directives such as
+    // `info,telltale_cluster::failover=debug`, so a cluster lapse can be traced without debug
+    // logging for the whole DNS server.
+    let env = std::env::var("TELLTALE_LOG").ok();
+    let mut targets = env
+        .as_deref()
+        .and_then(|v| v.parse::<tracing_subscriber::filter::Targets>().ok())
+        .unwrap_or_else(|| {
+            tracing_subscriber::filter::Targets::new()
+                .with_default(tracing::level_filters::LevelFilter::INFO)
+        });
     // REQ: DNS-011 (ADR-098) — hickory's validator logs every unsigned NODATA (a warning) and
     // its depth limit (an error); TelltaleDNS counts and logs each verdict itself.
     // `TELLTALE_LOG_DNSSEC_LIBRARY=1` turns its log back on, for debugging validation.
     let library = if std::env::var_os("TELLTALE_LOG_DNSSEC_LIBRARY").is_some() {
-        level
+        // INFO and above, as the console's default: the library's own noise is its warnings.
+        tracing::level_filters::LevelFilter::INFO
     } else {
         tracing::level_filters::LevelFilter::OFF
     };
-    let targets = tracing_subscriber::filter::Targets::new()
-        .with_default(level)
-        .with_target("hickory_net::dnssec", library);
+    targets = targets.with_target("hickory_net::dnssec", library);
     // The console follows `TELLTALE_LOG`. REQ: OPS-011 (ADR-156) — the support package's own log
     // keeps INFO and above whatever it says, from the first line on.
     let console = tracing_subscriber::fmt::layer()
@@ -1714,7 +1721,13 @@ fn init_logging() {
         .with_ansi(io::IsTerminal::is_terminal(&io::stderr()))
         .with_writer(io::stderr)
         .with_filter(targets);
-    let support = support_log::layer().with_filter(support_log::filter(library));
+    let support = support_log::layer().with_filter(support_log::filter(
+        if library == tracing::level_filters::LevelFilter::OFF {
+            library
+        } else {
+            tracing::level_filters::LevelFilter::INFO
+        },
+    ));
     tracing_subscriber::registry()
         .with(console)
         .with(support)

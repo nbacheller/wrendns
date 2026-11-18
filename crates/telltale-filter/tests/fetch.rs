@@ -305,6 +305,8 @@ async fn flt_004_size_cap_keeps_last_good() {
             panic!("{path}: oversized list accepted");
         };
         assert!(e.contains("1024-byte limit"), "{e}");
+        // REQ: T24.27 — a server that announced the size says so (the Lists page uses it).
+        assert_eq!(e.contains("the server says it is"), path == "/big", "{e}");
         assert_eq!(
             f.store().read_source("l").unwrap(),
             b"a.com\n",

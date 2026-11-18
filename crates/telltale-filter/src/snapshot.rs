@@ -156,6 +156,10 @@ pub struct ListCompileStats {
     /// large for the engine, or not valid regexes.
     #[serde(default)]
     pub regex_skipped: u64,
+    /// REQ: FLT-004 (T24.28, ADR-992) - modifier rules and regexes this list contributes. The
+    /// overlap counts names only, so these can't be shown covered by another list.
+    #[serde(default)]
+    pub rules: u64,
 }
 
 /// A rule kept outside the domain FSTs because of its modifiers (§3.3).
