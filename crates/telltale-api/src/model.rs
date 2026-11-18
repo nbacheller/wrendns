@@ -785,6 +785,10 @@ pub struct ListInfo {
     pub hits: u64,
     /// Lists it shares names with, most shared first.
     pub overlap: Vec<ListShare>,
+    /// REQ: FLT-004 (T24.28, ADR-992) - modifier rules and regexes it ships. The overlap counts
+    /// names only, so these are never shown covered by another list.
+    #[serde(default)]
+    pub rules: u64,
     /// Last download attempt (Unix seconds), whatever its outcome.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_checked_unix_seconds: Option<u64>,
@@ -2056,6 +2060,121 @@ pub struct NetworkInfo {
 pub struct ListShare {
     pub list: String,
     pub names: u64,
+}
+
+/// REQ: FLT-004 (T24.28, ADR-992) - names a list shares with another list that does the same
+/// thing, as a share of this list's own entries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCover {
+    /// The other list.
+    pub list: String,
+    /// Names both have.
+    pub names: u64,
+    /// `names` as a share of this list's entries, 0-100.
+    pub percent: f64,
+}
+
+/// REQ: FLT-004 (T24.28, ADR-992) - one enabled list's overlap with the others.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListOverlapRow {
+    pub name: String,
+    /// `block` or `allow`.
+    pub kind: String,
+    /// `enforce` or `shadow`.
+    pub mode: String,
+    /// Entries in the active snapshot (names, regexes and modifier rules).
+    pub entries: u64,
+    /// Names no other list of its kind has: what turning it off would lose.
+    pub unique: u64,
+    /// Modifier rules and regexes: counted as unique, since overlap is by name.
+    pub rules: u64,
+    /// `(unique + rules)` as a share of `entries`, 0-100: what this list adds. 0 when it has
+    /// no entries compiled yet.
+    pub adds_percent: f64,
+    /// The lists it shares names with, most shared first (at most 5).
+    pub covered_by: Vec<ListCover>,
+    /// Groups that name this list in their own `lists` (a list they use by name is never
+    /// proposed for turning off).
+    pub groups: Vec<String>,
+}
+
+/// A list a prune would turn off.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPruneCandidate {
+    pub name: String,
+    pub entries: u64,
+    pub unique: u64,
+    /// What it adds as a share of its entries (the same number as in the overlap).
+    pub adds_percent: f64,
+    /// The most names turning it off, together with the others in this plan, could stop
+    /// blocking: its own unique names and rules, and names it shares with other lists in the
+    /// plan (an upper bound: a name another enabled list still has isn't lost).
+    pub loses_at_most: u64,
+    /// Lists that still have most of its names.
+    pub covered_by: Vec<ListCover>,
+}
+
+/// An enabled list a prune keeps, and why.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPruneKept {
+    pub name: String,
+    pub reason: String,
+}
+
+/// REQ: FLT-004 (T24.28, ADR-992) - what a prune would turn off at a threshold.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPrunePlan {
+    /// The threshold used: lists adding at most this share of their own entries.
+    pub threshold_percent: f64,
+    /// Lists that would be turned off, least-adding first.
+    pub candidates: Vec<ListPruneCandidate>,
+    /// Every other enabled list, with the reason it stays.
+    pub kept: Vec<ListPruneKept>,
+    /// An upper bound on the names the whole plan stops blocking (a share of the snapshot is
+    /// `of_names`).
+    pub loses_at_most: u64,
+    /// Names in the active snapshot.
+    pub of_names: u64,
+    /// In a sentence.
+    pub note: String,
+}
+
+/// `GET /api/v1/lists/overlap` and `GET /api/v1/lists/prune-plan` parameters.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct PruneParams {
+    /// Turn off lists adding at most this share of their entries, 0 to 50 (default 1).
+    #[serde(rename = "thresholdPercent")]
+    pub threshold_percent: Option<f64>,
+}
+
+/// REQ: FLT-004 (T24.28, ADR-992) - `POST /api/v1/lists/prune`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListsPruneRequest {
+    /// Lists adding at most this share of their entries, 0 to 50 (default 1).
+    #[serde(default)]
+    pub threshold_percent: Option<f64>,
+    /// The lists the person saw in the preview. Each must still be in the plan, or nothing is
+    /// changed (409). Absent: every list in the plan.
+    #[serde(default)]
+    pub names: Option<Vec<String>>,
+}
+
+/// REQ: FLT-004 (T24.28, ADR-992) - what a prune turned off.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListsPruneResult {
+    /// The lists now off. They stay in the configuration: turn one on again in Manage lists.
+    pub disabled: Vec<String>,
+    /// The configuration version after the last change.
+    pub config_version: u64,
+    pub note: String,
 }
 
 /// `GET /analytics/vqlog` parameters (REQ: AGT-012).

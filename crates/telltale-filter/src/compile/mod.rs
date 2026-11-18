@@ -735,6 +735,77 @@ fn manifest_lists(inputs: &[ListMeta]) -> Vec<ManifestList> {
         .collect()
 }
 
+/// REQ: FLT-004 (T24.28, ADR-992) - how many names each pair of lists shares. Up to
+/// [`PairCounts::DENSE_LISTS`] lists a triangle of counters (no hashing per name pair, the
+/// cost that matters with 40 lists and millions of shared names); more lists fall back to a map.
+/// At most 128 KiB in the dense form, a few KiB with 40 lists.
+struct PairCounts {
+    lists: usize,
+    dense: Vec<u64>,
+    sparse: HashMap<(u16, u16), u64>,
+}
+
+impl PairCounts {
+    const DENSE_LISTS: usize = 128;
+
+    fn new(lists: usize) -> Self {
+        let dense = if lists <= Self::DENSE_LISTS {
+            vec![0; lists * lists]
+        } else {
+            Vec::new()
+        };
+        Self {
+            lists,
+            dense,
+            sparse: HashMap::new(),
+        }
+    }
+
+    /// Counts the name once for each pair of `members` (list IDs, ascending).
+    fn record(&mut self, members: &[u16]) {
+        for (i, &a) in members.iter().enumerate() {
+            for &b in &members[i + 1..] {
+                let (lo, hi) = (a.min(b), a.max(b));
+                if self.dense.is_empty() {
+                    *self.sparse.entry((lo, hi)).or_insert(0) += 1;
+                } else if let Some(c) = self
+                    .dense
+                    .get_mut(usize::from(lo) * self.lists + usize::from(hi))
+                {
+                    *c += 1;
+                }
+            }
+        }
+    }
+
+    /// The pairs that share any name, ordered by list IDs.
+    fn finish(self) -> Vec<snapshot::ListOverlap> {
+        let mut out: Vec<snapshot::ListOverlap> = if self.dense.is_empty() {
+            self.sparse
+                .into_iter()
+                .map(|((a, b), names)| snapshot::ListOverlap { a, b, names })
+                .collect()
+        } else {
+            let mut v = Vec::new();
+            for a in 0..self.lists {
+                for b in a + 1..self.lists {
+                    let names = self.dense.get(a * self.lists + b).copied().unwrap_or(0);
+                    if names > 0 {
+                        v.push(snapshot::ListOverlap {
+                            a: u16::try_from(a).unwrap_or(u16::MAX),
+                            b: u16::try_from(b).unwrap_or(u16::MAX),
+                            names,
+                        });
+                    }
+                }
+            }
+            v
+        };
+        out.sort_unstable_by_key(|o| (o.a, o.b));
+        out
+    }
+}
+
 /// Merges sorted records into the sharded scope FSTs and `listsets.bin`, applying
 /// `$badfilter`. Returns the distinct names per scope.
 fn merge_domains(
@@ -749,32 +820,35 @@ fn merge_domains(
     let mut sets = ListSetBuilder::new(lists);
     let mut names = [0u64; 3];
     let mut builders = shard::FstSink::new(dir.path, shards, dir.sync)?;
-    // REQ: OBS-009 (T7.14) — pairwise overlap, from names on more than one list.
-    let mut pairs: HashMap<(u16, u16), u64> = HashMap::new();
-    let mut members: Vec<u16> = Vec::with_capacity(lists);
+    // REQ: OBS-009 (T7.14), FLT-004 (T24.28, ADR-992) — pairwise overlap, from names on more than
+    // one list of the same side (block or allow).
+    let mut pairs = PairCounts::new(lists);
+    let mut blockers: Vec<u16> = Vec::with_capacity(lists);
+    let mut allowers: Vec<u16> = Vec::with_capacity(lists);
     let mut flush = |key: &[u8],
                      sets: &mut ListSetBuilder,
                      builders: &mut shard::FstSink|
      -> Result<(), CompileError> {
-        let (count, first) = sets.union_count();
+        let (count, _) = sets.union_count();
         if count == 0 {
             return Ok(()); // every rule on this name was badfiltered
         }
         let id = sets.intern();
         sets.for_each_list(|l| per_list[usize::from(l)].entries += 1);
-        if count == 1
-            && let Some(l) = first
+        sets.side_members(false, &mut blockers);
+        sets.side_members(true, &mut allowers);
+        let sole_blocker = (blockers.len() == 1).then(|| blockers[0]);
+        let sole_allower = (allowers.len() == 1).then(|| allowers[0]);
+        if let Some(l) = sole_blocker {
+            per_list[usize::from(l)].unique += 1;
+        }
+        if let Some(l) = sole_allower
+            && sole_blocker != Some(l)
         {
             per_list[usize::from(l)].unique += 1;
-        } else if count > 1 {
-            members.clear();
-            sets.for_each_list(|l| members.push(l));
-            for (i, &a) in members.iter().enumerate() {
-                for &b in &members[i + 1..] {
-                    *pairs.entry((a.min(b), a.max(b))).or_insert(0) += 1;
-                }
-            }
         }
+        pairs.record(&blockers);
+        pairs.record(&allowers);
         let scope = usize::from(key[0]);
         names[scope] += 1;
         builders.insert(scope, &key[1..], id)
@@ -813,11 +887,7 @@ fn merge_domains(
         flush(&current, &mut sets, &mut builders)?;
     }
     builders.finish()?;
-    let mut overlap: Vec<snapshot::ListOverlap> = pairs
-        .into_iter()
-        .map(|((a, b), names)| snapshot::ListOverlap { a, b, names })
-        .collect();
-    overlap.sort_unstable_by_key(|o| (o.a, o.b));
+    let overlap = pairs.finish();
     stats.overlap = overlap;
     stats.badfiltered += badfiltered;
     [
@@ -870,6 +940,7 @@ fn write_tables(
     dir.sync(idx.get_ref())?;
     for (_, m, _) in &mods {
         per_list[usize::from(m.list)].entries += 1;
+        per_list[usize::from(m.list)].rules += 1;
     }
     let modrules = ModRules {
         rules: mods.into_iter().map(|(_, m, _)| m).collect(),
@@ -884,6 +955,7 @@ fn write_tables(
     );
     for r in &kept {
         per_list[usize::from(r.list)].entries += 1;
+        per_list[usize::from(r.list)].rules += 1;
     }
     for (list, _, _) in &regex_errors {
         if let Some(i) = inputs.iter().position(|m| m.name == *list) {

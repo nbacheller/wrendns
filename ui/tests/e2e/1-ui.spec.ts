@@ -1945,6 +1945,109 @@ test('flt_004 update one list now', async () => {
   await page.reload();
 });
 
+// REQ: FLT-004, API-005 (T24.28, ADR-992) — a list whose names another list already has shows what it
+// adds and who covers it; Prune previews the lists that add little at a threshold, turns them off after
+// a confirmation (the list stays in the configuration), and Undo turns it on again.
+test('flt_004 prune lists that add little, then undo', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const names = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => `||n${from + i}.prune.e2e.test^`);
+  // prune-big has 60 names, prune-small the first 10 of them: nothing of its own.
+  for (const [name, rules] of [['prune-big', names(0, 60)], ['prune-small', names(0, 10)]] as const) {
+    const r = await page.request.put(`/api/v1/lists/${name}`, { headers: { 'x-csrf-token': csrf }, data: { rules, kind: 'block' } });
+    expect(r.ok(), `${name}: ${await r.text()}`).toBeTruthy();
+  }
+  const listed = async () =>
+    ((await (await page.request.get('/api/v1/lists')).json()).items as { name: string; enabled: boolean; entries: number; unique: number }[]);
+  await expect.poll(async () => (await listed()).find((l) => l.name === 'prune-small')?.entries, { timeout: 45_000 }).toBe(10);
+  await expect.poll(async () => (await listed()).find((l) => l.name === 'prune-big')?.unique, { timeout: 45_000 }).toBe(50);
+
+  await page.goto('/#/lists');
+  await page.reload(); // the page may already be on /#/lists, with the lists read before these two existed
+  const row = (name: string) => page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: new RegExp(`^${name}$`) }) });
+  await expect(row('prune-small').getByTestId('list-adds')).toHaveText('adds 0%');
+  await expect(row('prune-small').getByTestId('list-covered-by')).toContainText('100% also in prune-big');
+  await expect(row('prune-big').getByTestId('list-adds')).toHaveText('adds 83.3%');
+
+  // The read API: the overlap rows and the plan agree with the page.
+  const ov = (await (await page.request.get('/api/v1/lists/overlap')).json()).items as { name: string; addsPercent: number; coveredBy: { list: string }[] }[];
+  expect(ov.find((o) => o.name === 'prune-small')?.coveredBy[0].list).toBe('prune-big');
+  const planned = await (await page.request.get('/api/v1/lists/prune-plan?thresholdPercent=1')).json();
+  expect(planned.candidates.map((c: { name: string }) => c.name)).toContain('prune-small');
+  expect(planned.candidates.map((c: { name: string }) => c.name)).not.toContain('prune-big');
+  expect((await page.request.get('/api/v1/lists/prune-plan?thresholdPercent=90')).status()).toBe(400);
+
+  await page.getByTestId('lists-prune').click();
+  const panel = page.getByTestId('prune-panel');
+  await expect(panel).toBeVisible();
+  const cand = panel.getByTestId('prune-candidate');
+  await expect(cand.filter({ hasText: 'prune-small' })).toHaveCount(1);
+  await expect(cand.filter({ has: page.locator('strong', { hasText: /^prune-big$/ }) })).toHaveCount(0); // it adds 83%
+  await expect(cand.filter({ hasText: 'prune-small' })).toContainText('prune-big (100%)');
+  await panel.locator('summary').click();
+  await expect(panel.getByTestId('prune-kept')).toContainText('prune-big: adds 83.3% of its entries, above 1%');
+  await expect(panel.getByTestId('prune-kept')).toContainText('e2e-shadow: shadow mode');
+
+  // A threshold outside 0-50 is refused in the form; 0 still proposes a list that adds nothing.
+  await panel.getByTestId('prune-threshold').fill('90');
+  await expect(panel.getByText('Enter a number from 0 to 50.')).toBeVisible();
+  await expect(panel.getByTestId('prune-preview')).toBeDisabled();
+  await panel.getByTestId('prune-threshold').fill('0');
+  await panel.getByTestId('prune-preview').click();
+  await expect(cand.filter({ hasText: 'prune-small' })).toHaveCount(1);
+
+  // Nothing changes until it is confirmed; Back leaves the list on.
+  await panel.getByTestId('prune-apply').click();
+  await expect(panel.getByTestId('prune-confirm-text')).toBeVisible();
+  expect((await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(true);
+  await panel.getByRole('button', { name: 'Back' }).click();
+  await expect(panel.getByTestId('prune-apply')).toBeVisible();
+  await panel.getByTestId('prune-apply').click();
+  const applied = page.waitForResponse((r) => r.url().endsWith('/api/v1/lists/prune') && r.request().method() === 'POST');
+  await panel.getByTestId('prune-confirm').click();
+  const res = await applied;
+  expect(res.status()).toBe(200);
+  expect(res.request().postDataJSON().names).toContain('prune-small');
+  const done = page.getByTestId('prune-done');
+  await expect(done).toContainText('prune-small');
+  await expect(panel).toHaveCount(0);
+  await expect(row('prune-small')).toContainText('off');
+  expect((await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(false);
+  expect((await listed()).find((l) => l.name === 'prune-big')?.enabled).toBe(true);
+  const audit = (await (await page.request.get('/api/v1/audit?action=lists.prune')).json()).items;
+  expect(audit.length).toBeGreaterThan(0);
+
+  // Undo: the list is on again, with its rules.
+  await done.getByTestId('prune-undo').click();
+  await expect(done).toHaveCount(0);
+  await expect.poll(async () => (await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(true);
+  await expect(row('prune-small')).not.toContainText('off');
+  const def = (await (await page.request.get('/api/v1/config/entries?kind=list')).json()).items.find((e: { name: string }) => e.name === 'prune-small');
+  expect(def.definition.rules).toHaveLength(10);
+
+  // Agents don't get to apply it.
+  const tok = await page.request.post('/api/v1/tokens', { headers: { 'x-csrf-token': csrf }, data: { name: 'prune-agent', kind: 'agent', scopes: ['config:read', 'config:write:lists'] } });
+  expect(tok.status()).toBe(201);
+  const agent = (await tok.json()).token as string;
+  const asAgent = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  const plan = await asAgent.request.get('/api/v1/lists/prune-plan', { headers: { authorization: `Bearer ${agent}` } });
+  expect(plan.status()).toBe(200);
+  const refused = await asAgent.request.post('/api/v1/lists/prune', {
+    headers: { authorization: `Bearer ${agent}`, 'x-telltale-reason': 'tidy up the lists' },
+    data: {},
+  });
+  expect(refused.status()).toBe(403);
+  expect((await refused.json()).code).toBe('agent_not_allowed');
+  await asAgent.close();
+
+  // Clean up: the lists, and the agent token.
+  for (const name of ['prune-small', 'prune-big']) {
+    expect((await page.request.delete(`/api/v1/lists/${name}`, { headers: { 'x-csrf-token': csrf } })).ok()).toBeTruthy();
+  }
+  const tokens = (await (await page.request.get('/api/v1/tokens')).json()).items as { id: string; name: string }[];
+  for (const t of tokens.filter((x) => x.name === 'prune-agent')) await page.request.delete(`/api/v1/tokens/${t.id}`, { headers: { 'x-csrf-token': csrf } });
+});
+
 // REQ: FLT-004 (T24.17) — a viewer sees the lists and when each was confirmed, with no update button.
 test('flt_004 viewer sees no update buttons', async ({ browser }) => {
   const viewer = await browser.newContext({ baseURL: page.url().split('/#')[0] || BASE_URL });

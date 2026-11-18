@@ -2357,6 +2357,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/lists/overlap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * How much each filter list adds.
+         * @description Every enabled list with its entries, the names no other list of its kind has (`unique`:
+         *     what turning it off would lose), its modifier rules and regexes (counted as unique: overlap
+         *     is by name), what it adds as a share of its entries, the lists that cover the rest, and the
+         *     groups that name it. Counted while the lists are compiled, once per compile; a list not
+         *     compiled yet shows zeros. Names a block list and an allow list both have don't count as
+         *     shared.
+         */
+        get: operations["overlap"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/lists/prune": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Turn off the lists that add little.
+         * @description Recomputes the plan for `thresholdPercent` and turns the lists in it off (`enabled = false`;
+         *     each stays in the configuration with its source, so turning it on again is one edit). With
+         *     `names` (the ones the person previewed), each must still be in the plan or nothing changes
+         *     (409: preview again). Needs the operator role and a person: agent tokens are refused
+         *     (`agent_not_allowed`); they read the plan. Audit-logged as `lists.prune`.
+         */
+        post: operations["prune"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/lists/prune-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Which lists a prune would turn off.
+         * @description The block lists in enforce mode that add at most `thresholdPercent` (default 1) of their own
+         *     entries, least-adding first, chosen so that turning all of them off together still loses at
+         *     most that share of each; `kept` says why every other enabled list stays (an allow list, a
+         *     shadow list, a group names it, it adds more). `losesAtMost` is an upper bound on the names
+         *     that would stop being blocked. Changes nothing; the apply is `POST /api/v1/lists/prune`, for
+         *     a person.
+         */
+        get: operations["prune_plan"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/lists/refresh": {
         parameters: {
             query?: never;
@@ -7239,6 +7313,12 @@ export interface components {
                  *     leaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.
                  */
                 regexSkipped: number;
+                /**
+                 * Format: int64
+                 * @description REQ: FLT-004 (T24.28, ADR-992) - modifier rules and regexes it ships. The overlap counts
+                 *     names only, so these are never shown covered by another list.
+                 */
+                rules?: number;
                 /** @description URL, file path, or `inline`. */
                 source: string;
                 /**
@@ -7252,6 +7332,46 @@ export interface components {
                 /**
                  * Format: int64
                  * @description REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).
+                 */
+                unique: number;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
+        Items_ListOverlapRow: {
+            items: {
+                /**
+                 * Format: double
+                 * @description `(unique + rules)` as a share of `entries`, 0-100: what this list adds. 0 when it has
+                 *     no entries compiled yet.
+                 */
+                addsPercent: number;
+                /** @description The lists it shares names with, most shared first (at most 5). */
+                coveredBy: components["schemas"]["ListCover"][];
+                /**
+                 * Format: int64
+                 * @description Entries in the active snapshot (names, regexes and modifier rules).
+                 */
+                entries: number;
+                /**
+                 * @description Groups that name this list in their own `lists` (a list they use by name is never
+                 *     proposed for turning off).
+                 */
+                groups: string[];
+                /** @description `block` or `allow`. */
+                kind: string;
+                /** @description `enforce` or `shadow`. */
+                mode: string;
+                name: string;
+                /**
+                 * Format: int64
+                 * @description Modifier rules and regexes: counted as unique, since overlap is by name.
+                 */
+                rules: number;
+                /**
+                 * Format: int64
+                 * @description Names no other list of its kind has: what turning it off would lose.
                  */
                 unique: number;
             }[];
@@ -7840,6 +7960,24 @@ export interface components {
             /** Format: double */
             p99Ms: number;
         };
+        /**
+         * @description REQ: FLT-004 (T24.28, ADR-992) - names a list shares with another list that does the same
+         *     thing, as a share of this list's own entries.
+         */
+        ListCover: {
+            /** @description The other list. */
+            list: string;
+            /**
+             * Format: int64
+             * @description Names both have.
+             */
+            names: number;
+            /**
+             * Format: double
+             * @description `names` as a share of this list's entries, 0-100.
+             */
+            percent: number;
+        };
         /** @description A filter list and its download state. */
         ListInfo: {
             /** Format: int64 */
@@ -7897,6 +8035,12 @@ export interface components {
              *     leaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.
              */
             regexSkipped: number;
+            /**
+             * Format: int64
+             * @description REQ: FLT-004 (T24.28, ADR-992) - modifier rules and regexes it ships. The overlap counts
+             *     names only, so these are never shown covered by another list.
+             */
+            rules?: number;
             /** @description URL, file path, or `inline`. */
             source: string;
             /**
@@ -7912,6 +8056,94 @@ export interface components {
              * @description REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).
              */
             unique: number;
+        };
+        /** @description REQ: FLT-004 (T24.28, ADR-992) - one enabled list's overlap with the others. */
+        ListOverlapRow: {
+            /**
+             * Format: double
+             * @description `(unique + rules)` as a share of `entries`, 0-100: what this list adds. 0 when it has
+             *     no entries compiled yet.
+             */
+            addsPercent: number;
+            /** @description The lists it shares names with, most shared first (at most 5). */
+            coveredBy: components["schemas"]["ListCover"][];
+            /**
+             * Format: int64
+             * @description Entries in the active snapshot (names, regexes and modifier rules).
+             */
+            entries: number;
+            /**
+             * @description Groups that name this list in their own `lists` (a list they use by name is never
+             *     proposed for turning off).
+             */
+            groups: string[];
+            /** @description `block` or `allow`. */
+            kind: string;
+            /** @description `enforce` or `shadow`. */
+            mode: string;
+            name: string;
+            /**
+             * Format: int64
+             * @description Modifier rules and regexes: counted as unique, since overlap is by name.
+             */
+            rules: number;
+            /**
+             * Format: int64
+             * @description Names no other list of its kind has: what turning it off would lose.
+             */
+            unique: number;
+        };
+        /** @description A list a prune would turn off. */
+        ListPruneCandidate: {
+            /**
+             * Format: double
+             * @description What it adds as a share of its entries (the same number as in the overlap).
+             */
+            addsPercent: number;
+            /** @description Lists that still have most of its names. */
+            coveredBy: components["schemas"]["ListCover"][];
+            /** Format: int64 */
+            entries: number;
+            /**
+             * Format: int64
+             * @description The most names turning it off, together with the others in this plan, could stop
+             *     blocking: its own unique names and rules, and names it shares with other lists in the
+             *     plan (an upper bound: a name another enabled list still has isn't lost).
+             */
+            losesAtMost: number;
+            name: string;
+            /** Format: int64 */
+            unique: number;
+        };
+        /** @description An enabled list a prune keeps, and why. */
+        ListPruneKept: {
+            name: string;
+            reason: string;
+        };
+        /** @description REQ: FLT-004 (T24.28, ADR-992) - what a prune would turn off at a threshold. */
+        ListPrunePlan: {
+            /** @description Lists that would be turned off, least-adding first. */
+            candidates: components["schemas"]["ListPruneCandidate"][];
+            /** @description Every other enabled list, with the reason it stays. */
+            kept: components["schemas"]["ListPruneKept"][];
+            /**
+             * Format: int64
+             * @description An upper bound on the names the whole plan stops blocking (a share of the snapshot is
+             *     `of_names`).
+             */
+            losesAtMost: number;
+            /** @description In a sentence. */
+            note: string;
+            /**
+             * Format: int64
+             * @description Names in the active snapshot.
+             */
+            ofNames: number;
+            /**
+             * Format: double
+             * @description The threshold used: lists adding at most this share of their own entries.
+             */
+            thresholdPercent: number;
         };
         /** @description A named list a refresh leaves out. */
         ListRefreshSkip: {
@@ -7983,6 +8215,30 @@ export interface components {
                 totpEnabled: boolean;
                 username: string;
             }[];
+        };
+        /** @description REQ: FLT-004 (T24.28, ADR-992) - `POST /api/v1/lists/prune`. */
+        ListsPruneRequest: {
+            /**
+             * @description The lists the person saw in the preview. Each must still be in the plan, or nothing is
+             *     changed (409). Absent: every list in the plan.
+             */
+            names?: string[] | null;
+            /**
+             * Format: double
+             * @description Lists adding at most this share of their entries, 0 to 50 (default 1).
+             */
+            thresholdPercent?: number | null;
+        };
+        /** @description REQ: FLT-004 (T24.28, ADR-992) - what a prune turned off. */
+        ListsPruneResult: {
+            /**
+             * Format: int64
+             * @description The configuration version after the last change.
+             */
+            configVersion: number;
+            /** @description The lists now off. They stay in the configuration: turn one on again in Manage lists. */
+            disabled: string[];
+            note: string;
         };
         /** @description REQ: FLT-004 — which lists to download again now (`POST /api/v1/lists/refresh`). */
         ListsRefreshRequest: {
@@ -14988,6 +15244,109 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_ListInfo"];
+                };
+            };
+        };
+    };
+    overlap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Each enabled list's overlap. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_ListOverlapRow"];
+                };
+            };
+        };
+    };
+    prune: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ListsPruneRequest"];
+            };
+        };
+        responses: {
+            /** @description The lists now off. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListsPruneResult"];
+                };
+            };
+            /** @description A malformed body, a threshold outside 0 to 50, or too many names. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Needs the operator role; agent tokens are refused. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A named list isn't in the plan any more: preview again. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    prune_plan: {
+        parameters: {
+            query?: {
+                /** @description Turn off lists adding at most this share of their entries, 0 to 50 (default 1). */
+                thresholdPercent?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What would be turned off. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListPrunePlan"];
+                };
+            };
+            /** @description A threshold outside 0 to 50. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

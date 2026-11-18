@@ -967,6 +967,16 @@
       "docs": "filter-lists"
     },
     {
+      "id": "list-prune",
+      "title": "Prune lists",
+      "term": "Prune",
+      "summary": "Previews the block lists that add less than a threshold of their own entries (names no other list has, plus their regexes), and turns them off after you confirm. They stay in the configuration; Undo turns them on again.",
+      "when": "Several big lists overlap and you want fewer lists to download and compile.",
+      "example": "At 1%, a list where 99.5% of the names are also in hagezi-pro is proposed; turning it off could stop blocking at most the 0.5%.",
+      "caution": "Allow lists, shadow lists and lists a group names are never proposed. Overlap is by name, so a regex or a wildcard another list covers isn't seen: the plan only errs toward keeping a list.",
+      "docs": "filter-lists"
+    },
+    {
       "id": "rewrites",
       "title": "Rewrites",
       "term": "DNS rewrite",
