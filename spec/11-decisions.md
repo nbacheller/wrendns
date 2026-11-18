@@ -4698,3 +4698,20 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 **Test plan:** `deploy/keepalived/e2e.sh` on the isolated bridge, run locally (five complete local runs with the final checks, and the hosted runs, with the same checks: the takeover took 3.2 to 6.8 s, with 0 to 2 probes lost before the first answer; the promotion to epoch 2, the VIP back on the primary, and the maintenance hand-over all passed), and the `keepalived` CI workflow on every change to the example, the sources or the Dockerfile.
 
 **Consequences:** an operator who wants a VIP runs keepalived beside TelltaleDNS (or in the example's sidecar), and restarts them together. No code, dependency or hot-path change, so no image delta. The example's keepalived image is a separate 33 MB image, used only by the example and its checks.
+
+## ADR-982 — Group rewrites as lines, and the block-response fields shown in Simple (Proposed 2026-11-18)
+**Context:** T27.4 (FLT-014, API-901) adds the `rewrite[]` editor and the group fields `block_ips`, `block_ttl`, `ede`, `ede_text` and `rebinding_allow` to the Groups form. Two choices were not fixed by the spec: how a list of `{domain, answer}` pairs is edited, and whether the block-response fields sit under Advanced. The owner's rule that Simple "never hides something that changes behavior" (ADR-036, API-011) decides the second.
+
+**Decision:**
+1. `rewrite[]` is edited as lines, one per line: `name answer` (two whitespace-separated words). The form checks each line with the server's rules (`validate.rs` `rewrites`): the name, `*.` for a wildcard, the answer as an address or a name, and no name rewritten twice in the group. A bad line stops Check and is named; the server's check stays authoritative.
+2. `rebinding_allow` and `block_ips` are plain line lists with the same kind of check. `block_ttl` is a number with the server's 0 to 86400 bounds (the form enforces them with `min`/`max`).
+3. `block_ips`, `block_ttl`, `ede` and `ede_text` are shown in Simple, not Advanced, because they change what a blocked name gets back. `block_mode` moves to Simple with them, so the block answer is in one place. `rebinding_protection` keeps its Advanced placement: moving it is the owner's call under the same rule (Open).
+4. No server change: the config schema, the OpenAPI document and the MCP catalog already carry these fields, so nothing is regenerated.
+
+**Consequences:** a rewrite is a short text line, easy to paste and to read in Git. The form and the server can disagree only on a rare edge the server reports on Check. The Groups page gets a longer form; the block fields are grouped with the block answer.
+
+**Alternatives rejected:** a row editor with two inputs per rewrite (more code for the same data, with no gain for a list that is usually short); keeping the block fields under Advanced (it hides behavior from Simple users, against the rule above).
+
+**Test plan:** Playwright `flt_014 add a rewrite to a group` (a malformed line, a duplicate, a valid rewrite answered by DNS and shown by Explain, then removed) and `flt_014 group block ttl and ede` (the TTL bound in the form, the TTL and EDE code in a blocked answer, the saved values read back).
+
+**Open:** whether `rebinding_protection`, `dns64` and `filter_aaaa` (Advanced today, and each changes behavior) should also move to Simple under the owner's rule.
