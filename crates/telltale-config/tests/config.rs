@@ -1857,3 +1857,25 @@ fn obs_010_alert_conditions_match_ui() {
         "the Alerts form offers what the server doesn't accept: {unknown:?}"
     );
 }
+
+/// REQ: T24.27 — every `TELLTALE_*` variable the binary itself reads (the shipped unit,
+/// bundles and chart set `TELLTALE_SUPERVISOR`) is known: none is warned about at start.
+#[test]
+fn t24_27_binary_env_vars_are_not_reported_unknown() {
+    let loaded = Loader::new()
+        .env([
+            ("TELLTALE_SUPERVISOR", "systemd"),
+            ("TELLTALE_IGNORE_GUARDED", "1"),
+            ("TELLTALE_TOKEN", "t"),
+            ("TELLTALE_LOG_DNSSEC_LIBRARY", "1"),
+            ("TELLTALE_DRAIN_DELAY_SECS", "5"),
+        ])
+        .load()
+        .unwrap();
+    let unknown: Vec<_> = loaded
+        .warnings
+        .iter()
+        .filter(|w| w.contains("unknown environment variable"))
+        .collect();
+    assert!(unknown.is_empty(), "{unknown:?}");
+}
