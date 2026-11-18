@@ -319,3 +319,102 @@ fn obs_902_geoip_crc32_known_value() {
     c.update(b"123456789");
     assert_eq!(c.finish(), 0xCBF4_3926);
 }
+
+/// REQ: OBS-902, NFR-001 (ADR-959 section 5) - a production-sized database, for `bench/geoipprobe.py`
+/// and for the heap check: `GEOIP_PROBE_OUT=<dir> cargo test -p telltale obs_902_geoip_probe_database
+/// -- --ignored --nocapture` writes `<dir>/country.ttgeo` (about 600,000 rows, 200 countries, built
+/// for the current month so the node does not try to fetch a newer one), then opens it and does
+/// 2,000,000 lookups, printing the resident set before and after: it must not grow with the file
+/// (the database is read by position, never held).
+#[test]
+#[ignore = "writes a production-sized database and reads /proc: run by hand"]
+fn obs_902_geoip_probe_database() {
+    fn rss_kib() -> u64 {
+        std::fs::read_to_string("/proc/self/statm")
+            .ok()
+            .and_then(|s| s.split_whitespace().nth(1).and_then(|p| p.parse::<u64>().ok()))
+            .map_or(0, |pages| pages * 4)
+    }
+    let out = std::env::var_os("GEOIP_PROBE_OUT").map_or_else(|| std::env::temp_dir().join("tt-geoip-probe"), std::path::PathBuf::from);
+    let letters = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let code = |i: u32| {
+        let i = (i % 200) as usize;
+        [letters[i / 26 % 26], letters[(i * 7 + 3) % 26]]
+    };
+    let mut c = Collector::default();
+    // About 450,000 IPv4 ranges of 256 to 4,096 addresses with gaps, and 150,000 IPv6 /32s.
+    let mut at: u32 = 0x0100_0000;
+    for i in 0u32..450_000 {
+        let len = 256 << (i % 5);
+        let end = at.saturating_add(len - 1);
+        let code = code(i / 3 + i % 7);
+        c.push_line(&format!("{},{},{}{}", std::net::Ipv4Addr::from(at), std::net::Ipv4Addr::from(end), code[0] as char, code[1] as char)).unwrap();
+        at = end.saturating_add(1 + (i % 3) * 256);
+        if at > 0xdf00_0000 {
+            break;
+        }
+    }
+    for i in 0u128..150_000 {
+        let start = (0x2001_0000u128 + i * 2) << 96;
+        let end = start | ((1u128 << 96) - 1);
+        let code = code(i as u32);
+        c.push_line(&format!("{},{},{}{}", std::net::Ipv6Addr::from(start), std::net::Ipv6Addr::from(end), code[0] as char, code[1] as char)).unwrap();
+    }
+    let rows = c.rows();
+    let table = c.finish(&Limits::PRODUCTION, None).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    let month = {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        crate::geoip::month_of(secs)
+    };
+    let tmp = write_tmp(&out, &table, month, 1_000, None).unwrap();
+    publish(&out, &tmp).unwrap();
+    let db = Db::open(&out).unwrap();
+    println!("rows {rows}, file {} bytes ({:.2} MiB), source rows {}", db.size, db.size as f64 / 1048576.0, db.source_rows);
+    // A first batch pages in the code the lookups run (file-backed pages count in the resident set
+    // too, and a debug binary is big): the growth that matters is what the next 2,000,000 add.
+    for i in 0..5_000u32 {
+        let _ = db.lookup(IpAddr::V4(std::net::Ipv4Addr::from(i.wrapping_mul(2_654_435_761))));
+        let _ = db.lookup(IpAddr::V6(std::net::Ipv6Addr::from(u128::from(i) << 100)));
+    }
+    let run = |lookup: bool| {
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut found = 0u64;
+        for _ in 0..2_000_000u32 {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let ip: IpAddr = if seed & 1 == 0 {
+                IpAddr::V4(std::net::Ipv4Addr::from((seed >> 33) as u32))
+            } else {
+                IpAddr::V6(std::net::Ipv6Addr::from(
+                    u128::from(seed) << 64 | u128::from(seed >> 7),
+                ))
+            };
+            if lookup && db.lookup(ip).unwrap().is_some() {
+                found += 1;
+            }
+        }
+        found
+    };
+    // A control loop with no lookups, then the lookups: the heap must not move (counted), and the
+    // resident set grows by what the control grows by (the test process itself), not by the file.
+    let control_before = rss_kib();
+    let _ = run(false);
+    let control = rss_kib().saturating_sub(control_before);
+    let before = rss_kib();
+    let mut found = 0;
+    let heap = allocation_counter::measure(|| found = run(true));
+    let after = rss_kib();
+    println!(
+        "2,000,000 lookups, {found} placed, {} allocations; resident set {before} KiB before, {after} KiB after ({} KiB more; a loop without lookups grew it {control} KiB)",
+        heap.count_total,
+        after.saturating_sub(before)
+    );
+    assert_eq!(heap.count_total, 0, "a lookup allocated: {heap:?}");
+    assert!(
+        after.saturating_sub(before) < control + 256,
+        "the lookups grew the resident set by {} KiB",
+        after.saturating_sub(before)
+    );
+}
