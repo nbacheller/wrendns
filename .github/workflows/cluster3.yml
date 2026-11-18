@@ -1,11 +1,11 @@
 # REQ: CLU-001..005, OPS-007 — the three-node test cluster (deploy/cluster3, T21.5): a primary and two
 # replicas from the Dockerfile's image, the checks in deploy/cluster3/e2e.sh. It runs for changes to
 # the cluster code; scheduled workflows run only from main, so the push and pull request paths
-# filter decides when it runs, and workflow_dispatch runs it by hand.
+# filter decides when it runs, and workflow_dispatch runs it by hand (on a track branch too).
 name: cluster3
 on:
   push:
-    branches: [main, 'feat/**', 'test/**']
+    branches: [main, 'feat/ipam-integrations']
     paths:
       - 'crates/telltale-cluster/**'
       - 'crates/telltale/src/federated*'

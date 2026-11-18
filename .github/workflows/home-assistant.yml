@@ -3,6 +3,7 @@
 name: home-assistant
 on:
   push:
+    branches: [main, feat/ipam-integrations]
     paths: ["integrations/home-assistant/**", "crates/telltale/src/routers.rs", "crates/telltale/src/device_dns.rs", "deploy/ha-test/**", "crates/telltale-api/src/pihole_api.rs", ".github/workflows/home-assistant.yml"]
   pull_request:
     paths: ["integrations/home-assistant/**", "crates/telltale/src/routers.rs", "crates/telltale/src/device_dns.rs", "deploy/ha-test/**", "crates/telltale-api/src/pihole_api.rs", ".github/workflows/home-assistant.yml"]
