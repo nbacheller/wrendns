@@ -1615,6 +1615,25 @@ fn relay(u: &crate::schema::Upstream, scheme: &str, p: &str, r: &mut Report<'_>)
 }
 
 /// Validates upstreams and returns the set of their names.
+/// REQ: UPS-013 (T24.31, ADR-997) — `source` only where it binds, not through a proxy, and
+/// readable as an address or a network.
+fn source_errors(u: &crate::schema::Upstream, scheme: &str, p: &str, r: &mut Report<'_>) {
+    let Some(src) = &u.source else { return };
+    if !matches!(scheme, "udp" | "tcp" | "tls" | "https") {
+        r.err(
+            format!("{p}.source"),
+            "only for udp://, tcp://, tls://, and https:// upstreams",
+        );
+    } else if u.proxy.is_some() {
+        r.err(
+            format!("{p}.source"),
+            "not with a proxy (the proxy opens the connection, from its own address)",
+        );
+    } else if let Err(e) = crate::parse_source(src) {
+        r.err(format!("{p}.source"), e);
+    }
+}
+
 fn upstreams<'c>(cfg: &'c Config, r: &mut Report<'_>) -> HashSet<&'c str> {
     let mut names = HashSet::new();
     for (i, u) in cfg.upstream.iter().enumerate() {
@@ -1672,6 +1691,7 @@ fn upstreams<'c>(cfg: &'c Config, r: &mut Report<'_>) -> HashSet<&'c str> {
                     r.err(format!("{p}.proxy"), "only for tcp://, tls://, and https:// upstreams, or udp:// through a socks5:// proxy (use tcp:// with an HTTP proxy or Tor)");
                 }
                 relay(u, s, &p, r);
+                source_errors(u, s, &p, r);
                 // REQ: DNS-012 (T7.15)
                 if s != "recursive" && u.recursive != crate::schema::RecursiveConfig::default() {
                     r.err(

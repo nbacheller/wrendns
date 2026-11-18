@@ -47,6 +47,22 @@ const RESERVED: &[&str] = &[
     // REQ: OPS-014 (ADR-903) — set by the Helm chart when the data directory isn't kept across
     // restarts (persistence off): stored secrets would be lost (`secrets_ephemeral`).
     "DATA_EPHEMERAL",
+    // REQ: T24.27 — read by the binary outside the config. The supervisor the restart goes
+    // through (T27.13, set by the unit, bundles and chart), the guarded-entries escape hatch,
+    // the `telltale ctl`/`support` API token, the DNSSEC library-log switch, and the `exec://`
+    // plugin's socket and upstream name (set for a child, but a plugin that starts a `telltale`
+    // sees them too). Test hooks: the simulation seeds and the matcher's walk switch. Keys the
+    // schema has (`TELLTALE_DRAIN_DELAY_SECS` = `node.drain_delay_secs`) are not listed: they
+    // already resolve.
+    "SUPERVISOR",
+    "IGNORE_GUARDED",
+    "TOKEN",
+    "LOG_DNSSEC_LIBRARY",
+    "PLUGIN_SOCKET",
+    "UPSTREAM",
+    "SIM_SCHEDULES",
+    "SIM_SEED",
+    "TEST_WALK",
 ];
 
 /// REQ: OPS-014, API-014 (ADR-903 §3) — variables a process this one starts (an `exec://`

@@ -101,3 +101,14 @@ refuses connections; the test reads only the router's listing.
 About 3 minutes of checks, and about 3 more for the first build. Nothing is left behind: the
 containers, their volumes and the test image are removed at exit (`docker builder prune -f` keeps
 the build cache small on a laptop).
+
+## The lease-lapse soak (`lapse-soak.sh`, T24.26)
+
+Two eligible nodes and a witness (the owner's Pi layout) under automatic failover, in their own
+compose project (`telltale-lapse`, `compose-lapse.yaml`), nothing published on the host. It soaks for
+`SOAK_S` seconds (default 600) and counts "lease lapsed" in the primary's log; any lapse prints the
+renewal-round debug lines. `DISK_DEV=/dev/sdd WRITE_BPS=8192` caps every node's disk writes (a slow
+SD card); `FSYNC_STALL_S=4` pauses a random node for that long every 40 s; `LAPSE_IMAGE` soaks an
+image that is already built (for example the one from before a fix). Run it under the same lock as
+`e2e.sh`. In Docker the write cap slows the ballot store (the slow-store warning shows) but did not
+reproduce a lapse; the test Pis are the real test.

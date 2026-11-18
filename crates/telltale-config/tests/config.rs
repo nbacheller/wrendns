@@ -1926,3 +1926,65 @@ fn obs_013_anomaly_metrics_and_qlog_bounds_are_validated() {
     let ok = "[telemetry.anomaly]\nlearning_days = 90\nmax_clients = 100000\nnxdomain_per_minute = 1\nnxdomain_percent = 100\n[telemetry.metrics]\nper_client_cap = 10000\n[telemetry.qlog]\nretention_days = 3650\nflush_interval_secs = 3600\n";
     assert!(load(ok).is_ok(), "the bounds themselves are accepted");
 }
+
+/// REQ: UPS-013 (T24.31, ADR-997) — an upstream's `source` reads as an address, `address:0`, or
+/// a network; a port, a wildcard and nonsense are refused.
+#[test]
+fn ups_013_parse_source() {
+    use telltale_config::{SourceSpec, parse_source};
+    assert!(matches!(
+        parse_source("198.51.100.252"),
+        Ok(SourceSpec::Addr(_))
+    ));
+    assert!(matches!(
+        parse_source("198.51.100.252:0"),
+        Ok(SourceSpec::Addr(_))
+    ));
+    assert!(matches!(
+        parse_source("[fd00::2]:0"),
+        Ok(SourceSpec::Addr(_))
+    ));
+    assert!(matches!(
+        parse_source("198.51.100.0/24"),
+        Ok(SourceSpec::Subnet(_))
+    ));
+    for bad in [
+        "198.51.100.252:53",
+        "0.0.0.0",
+        "::",
+        "0.0.0.0/0",
+        "224.0.0.1",
+        "fe80::1",
+        "fe80::/64",
+        "eth0",
+        "",
+    ] {
+        assert!(parse_source(bad).is_err(), "{bad}");
+    }
+    let c = telltale_config::Cidr::parse("198.51.100.252/24").unwrap();
+    assert_eq!(c.network().to_string(), "198.51.100.0/24");
+}
+
+/// REQ: T24.27 — every `TELLTALE_*` variable the binary itself reads (the shipped unit,
+/// bundles and chart set `TELLTALE_SUPERVISOR`) is known: none is warned about at start.
+#[test]
+fn t24_27_binary_env_vars_are_not_reported_unknown() {
+    let loaded = Loader::new()
+        .env([
+            ("TELLTALE_SUPERVISOR", "systemd"),
+            ("TELLTALE_IGNORE_GUARDED", "1"),
+            ("TELLTALE_TOKEN", "t"),
+            ("TELLTALE_LOG_DNSSEC_LIBRARY", "1"),
+            // A schema key (`node.drain_delay_secs`): applied, not reported.
+            ("TELLTALE_DRAIN_DELAY_SECS", "7"),
+        ])
+        .load()
+        .unwrap();
+    let unknown: Vec<_> = loaded
+        .warnings
+        .iter()
+        .filter(|w| w.contains("unknown environment variable"))
+        .collect();
+    assert!(unknown.is_empty(), "{unknown:?}");
+    assert_eq!(loaded.config.node.drain_delay_secs, 7);
+}

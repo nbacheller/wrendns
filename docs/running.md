@@ -957,6 +957,71 @@ args = ["--datacenter", "home"]
 - The plugin gets TelltaleDNS's environment except every `TELLTALE_*` variable but the two above: settings given through the environment can hold credentials (an upstream's headers, an OIDC `client_secret`), besides `TELLTALE_SECRETS_KEY`, `TELLTALE_SECRETS_PREVIOUS_KEY`, `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD`, `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH` and `TELLTALE_TOKEN` (the self-update's checks and restart don't get those five either). Its `args` are treated as credentials: the API and `telltale config check --print` show them as `<redacted>`.
 - A plugin can't hurt the resolver: it's another process, every exchange has the upstream's timeout, and a dead plugin is a failing upstream like any other (health, breaker, the group's other members).
 
+## Commercial filters behind TelltaleDNS
+*(REQ: UPS-013; ADR-997)* Devices ask TelltaleDNS (DHCP hands out its address), and TelltaleDNS asks a commercial filter for the names it doesn't answer itself. You keep TelltaleDNS's per-device policy and visibility, and the commercial categories apply on top.
+
+### With a gateway that filters traffic (UniFi content filtering, CyberSecure)
+A gateway's content filtering may work on DNS, not on traffic. That was measured on a UniFi Cloud Gateway Fiber (2026-11-18): its content filter answers filtered names with a sinkhole address and intercepts DNS a device sends straight to the internet on port 53. But it does **not** touch queries sent to a resolver on the LAN (TelltaleDNS or Pi-hole), and it doesn't block a connection to a filtered site's real address. Check your own gateway the same way: ask its DNS, an outside resolver on port 53, and TelltaleDNS for a name the filter should block, then try the site's address directly. On such a gateway:
+- **A device that uses TelltaleDNS is filtered only by TelltaleDNS** (its lists and categories), unless TelltaleDNS forwards that device's group to the gateway's DNS from the device's own network (the `source` setting below, with the node on that VLAN, see "Serving several networks"), so the gateway applies that network's profile.
+- **TelltaleDNS** decides what a name resolves to, per device and group, and records who asked what.
+- **The gateway** catches a device that bypasses the LAN resolver with plain DNS to the internet; DoH or DoT in an app bypasses both unless the gateway blocks encrypted DNS.
+- Group devices in both places. TelltaleDNS groups are in **Groups**; UniFi's profiles are in its own console. They are not synchronised by this feature.
+
+- **What the gateway sees of TelltaleDNS's lookups:** only the encrypted DoT or DoH connections from the TelltaleDNS node to the commercial resolver, never which device asked for which name (that is visible only to TelltaleDNS, and to the resolver). If the gateway's encrypted-DNS or DoH blocking applies to the network the TelltaleDNS node is on, it can block those upstream connections and every query to that upstream then fails. Exempt the TelltaleDNS node (by its address or its device) from that blocking in the UniFi console.
+
+### Commercial DoH and DoT filters, one per group
+Send a group's questions to a commercial resolver with [per-group upstreams](#upstream-servers-per-group): an `[[upstream]]` for the service, an `[[upstream_group]]` holding it, and `upstreams = "..."` on the group. Their privacy terms are theirs, and every one sees the names that group looks up. Forms below were checked on 2026-11-18 against each provider's own documentation, except where a cell says it comes from a community forum.
+
+| Service | DoH form | Device name in the URL | Privacy, in one line |
+|---|---|---|---|
+| NextDNS | `https://dns.nextdns.io/<profile>` | Yes: `https://dns.nextdns.io/<profile>/<device-name>` (URL-encoded). The DoT form (`<device-name>-<profile>.dns.nextdns.io`, spaces as `--`), the `device_name` query parameter and the `X-Device-Name` header come from NextDNS's help forum, not its documentation: try them before relying on them | Logs nothing unless you turn on a feature that needs it; you choose what, how long and where (nextdns.io/privacy). |
+| Control D | `https://dns.controld.com/<resolver-id>` | Yes: a client name after the resolver ID, `https://dns.controld.com/<resolver-id>/<name>` (DoT: `<resolver-id>-<name>.dns.controld.com`; docs.controld.com/docs/device-clients). The resolver ID itself stands for one device in your account, so one Control D device per TelltaleDNS group still works | Its policy names website data it collects; it states no DNS log retention, so ask Control D (controld.com/privacy). |
+| CleanBrowsing | `https://doh.cleanbrowsing.org/doh/family-filter/` (also `adult-filter`, `security-filter`) | No (the free filters are fixed; paid plans have their own endpoints) | Its filters page states no query logging terms: read its privacy policy before relying on it. |
+| Cloudflare for Families | `https://family.cloudflare-dns.com/dns-query` (malware only: `https://security.cloudflare-dns.com/dns-query`) | No profiles at all | The public resolver's logs and truncated IPs are deleted within 25 hours (developers.cloudflare.com/1.1.1.1/privacy). |
+
+The catalog has all of them as templates (`telltale presets list`; nothing is active until you add it): `nextdns`, `controld`, `controld-free`, `cleanbrowsing-family`, `cleanbrowsing-adult`, `cleanbrowsing-security`, `cloudflare-family`, `cloudflare-security`.
+```sh
+telltale presets show nextdns --param profile=abc123 --proto https --group kids >> telltale.toml
+```
+A device name in the NextDNS path: after `show`, append `/Kids-iPad` to that upstream's `url` (one upstream per name).
+
+### Sending a group's queries from a chosen address
+Some filters know a network by the address its queries come from, and a node on several networks (a VLAN, a second NIC) may need to pick one. Set `source` on the upstream (`udp://`, `tcp://`, `tls://`, `https://`; not with a `proxy`):
+```toml
+[[upstream]]
+name = "family-filter"
+url = "tls://family-filter-dns.cleanbrowsing.org"
+source = "198.51.100.0/24"      # or one address: "198.51.100.252" or "198.51.100.252:0"
+```
+- A network means *the address this node holds in it*, so one shared upstream works on every node even though their addresses differ (.11 on one, .12 on another). An address is for one node.
+- The address must be on an interface of the node (for another network to see it, a real interface such as a VLAN interface, not an alias). **Saving** an upstream (UI, API, MCP) whose `source` names no address the node holds is refused (422) before anything is stored. A configuration that already holds one (a VLAN interface that isn't up yet at boot, an address lost later, a replica or a pod without that network) never stops the node: that upstream's queries fail fast and it shows the problem on **Upstreams** and in the health icon (`upstream_source_lost`), every other upstream keeps answering, and it recovers on its own (the address is looked up again every few seconds). `telltale config check` and **Test it** report it too. An existing pooled DoT or DoH connection stays open until it closes, so a removed address shows up when the next connection is made.
+- **In a cluster, name a network, not an address.** An address is one node's; every other node would run that upstream degraded. A network (`198.51.100.0/24`) resolves to the address each node holds in it, and a node with none shows the problem on its own row.
+- **Containers and Kubernetes:** under the Docker bridge or in a pod, the node's own addresses are the container's, so there is no VLAN address to bind. Use host networking (`network_mode: host`, `hostNetwork: true`) on a node that needs a `source`, or leave `source` off.
+- **Binding an address does not choose the interface.** Linux routes by the *destination*: with the default route on `eth0`, a query bound to `198.51.100.252` still leaves through `eth0`, untagged, carrying a VLAN-100 source address. The gateway may drop it as spoofed, or the reply comes back by the other path. Add a routing rule so traffic from that address uses the VLAN's own route table (the runbook below).
+- A query to a hostname upstream is sent to the first address of the source's IP version (an IPv6 source needs an AAAA record, an IPv4 source an A record); with none, the upstream shows that as its problem. An IPv6 link-local source (`fe80::`) is refused: it needs an interface scope a `source` doesn't carry.
+- The lookup of an upstream's *hostname* (bootstrap) is sent from the node's default address, not from `source`: a filter keyed on the source address sees only the queries themselves from it.
+- The port, if written, must be 0: each query still uses a random source port.
+- **In the UI:** Upstreams → Add or Edit → Advanced → **Source address**; the node's own addresses and networks are offered.
+- This is not what makes a gateway's traffic filtering apply (see above).
+
+#### Runbook: a VLAN address on Debian 12 or 13 with NetworkManager
+This gives the node `198.51.100.252` on VLAN 100 (gateway `198.51.100.1`) and makes traffic from that address leave by the VLAN. Change the interface, VLAN ID and addresses to yours.
+```sh
+sudo nmcli con add type vlan con-name vlan100 dev eth0 id 100 \
+  ipv4.method manual ipv4.addresses 198.51.100.252/24 ipv4.never-default yes \
+  ipv4.route-table 100 ipv4.routes "0.0.0.0/0 198.51.100.1 table=100" \
+  ipv4.routing-rules "priority 100 from 198.51.100.252 table 100" ipv6.method ignore
+sudo nmcli con up vlan100
+```
+Check it:
+```sh
+ip -br addr show eth0.100 || ip -br addr show vlan100   # the address is up
+ip rule                                                  # 100: from 198.51.100.252 lookup 100
+ip route show table 100                                  # default via 198.51.100.1 dev ...
+ip route get 1.1.1.1 from 198.51.100.252                # leaves by the VLAN interface
+```
+Then set `source = "198.51.100.0/24"` on the upstream. The VLAN must also be allowed on the switch port the node is plugged into. The systemd unit starts `After=network-online.target`; with NetworkManager that target waits only if `NetworkManager-wait-online.service` is enabled (`systemctl is-enabled NetworkManager-wait-online`). Even so, a node that starts before the VLAN is up now starts and picks the address up when it appears.
+
 ## How a query is answered
 ```mermaid
 flowchart LR
@@ -1086,6 +1151,8 @@ fsync = true                            # sync a compiled snapshot to disk befor
 max_regexes = 1000                      # regex rules kept per snapshot (0 = no limit); the rest are reported
 allow_link_local_urls = false           # true: allow list URLs on 169.254.0.0/16 or fe80::/10
 ```
+
+**A list that failed to download** says why on its Lists row. Over its size limit: the row names the limit (and the size the server announced) and **Raise the limit to N MiB** sets that list's own `max_bytes` (the announced size plus a quarter, or double the old limit, up to 128 MiB for one list) and downloads it again; past 128 MiB, remove the list or use a smaller one. Not found (HTTP 404 or 410): the maintainer moved or deleted it, so **Remove it** or edit its address in Manage lists. A list whose every name is also in another list says so, with **Turn it off** and **Remove it**. In a Pi-hole import, a GitHub page address (`github.com/.../blob/...`) is imported as its raw file and the preview says so, and a regex list (such as `regex.list`) is not imported as a list: add its patterns as regex deny rules.
 - **Link-local and cloud-metadata addresses are refused** (169.254.0.0/16, fe80::/10, AWS's fd00:ec2::254), whatever name or redirect leads there, so a list URL can't read what a cloud instance serves there. Private LAN addresses are fine. When an agent's pre-save check can't reach a list or an upstream, it's told only that it was unreachable; the UI and the audit log show why.
 - **Downloads are polite:** after the first download, a refresh sends `If-None-Match`/`If-Modified-Since`, so an unchanged list costs one small request. Redirects are followed, except from `https` to `http`.
 - **A failed refresh never loses a list.** The last good copy stays in use. A failing list is retried after 5 minutes, then 10, 20, and so on up to hourly, instead of waiting a whole day. Responses that can't be a list are rejected: an empty body, an HTML page from a captive portal, a compressed body (`Content-Encoding` other than `identity`), or text that is mostly not rules (a JSON error from a CDN, a mirror that changed format). "Mostly" is `[filter] max_invalid_percent` (default 50: more invalid lines than rules); cosmetic and unsupported rules don't count as invalid, and `100` turns the check off.
@@ -1165,6 +1232,19 @@ telltale lists compile -c telltale.toml     # compile now and show per-list numb
 `unique` counts the names no other list has. A list with few unique names adds little beyond your other lists.
 
 The **Lists** page and `GET /api/v1/lists` show the same per list: `unique`, `hits` (queries it decided since each node started; in a cluster, every node's added up), and `overlap` (the lists it shares names with, and how many). A list that's 95% or more inside another is marked, and one with no hits is marked "none yet".
+
+#### Finding lists that add little (prune)
+Overlap is counted by name, while the lists are compiled (once per compile, never on a query). A name a block list and an allow list both have is not "shared": they do opposite things, so a block list is only compared with other block lists. Regexes and modifier rules can't be compared, so they count as the list's own (`rules`), and wildcard coverage (`||example.com^` already blocks `ads.example.com`) isn't seen, which only makes a list look more useful than it is. `GET /api/v1/lists/overlap` has, per enabled list, `unique`, `rules`, `addsPercent` (unique names plus rules, as a share of its entries), `coveredBy` (the lists with the rest of it) and `groups` (the groups that name it).
+
+**Prune…** on the Lists page (operators) previews the lists to turn off: you set the threshold (default 1, 0 to 50), and a block list in enforce mode is proposed when it adds at most that percent of its own entries. The list is a plan: lists are added least-adding first, and each has to keep the whole set within the threshold, so two lists that mirror each other are never both proposed. Never proposed: allow lists, shadow lists, lists not compiled yet, and lists a group names in its own `lists` (that group may not use the lists that cover them); the preview says why each stays. "Could lose" is an upper bound on the names that would stop being blocked. A list whose covering list was just turned off, or whose cover isn't blocking now, is not judged covered; while a compile is pending after a change the plan proposes nothing and says so. After you confirm, the lists are written back with `enabled = false`; they stay in the configuration, and **Undo** on the notice (or turning one on in **Manage lists**) brings them back. If the configuration or the compiled lists changed between the preview and the confirmation, nothing is turned off (409): preview again. A cluster replica reads the primary's numbers and its writes go to the primary, like any list edit.
+
+```sh
+curl -s 'http://127.0.0.1:8053/api/v1/lists/prune-plan?thresholdPercent=1' -H "Authorization: Bearer $TOKEN"   # the plan; changes nothing
+curl -s -X POST http://127.0.0.1:8053/api/v1/lists/prune -H "Authorization: Bearer $TOKEN"   -d '{"thresholdPercent": 1, "names": ["oisd-small"], "snapshotVersion": 7, "configVersion": 12}'   # the plan's versions; a person's: agent tokens get agent_not_allowed
+```
+Agents read the plan (`config:read`; the MCP tool `list_overlap`) and propose it; they can't apply it. A prune is audit-logged as `lists.prune`, and each list's own change as `list.put`.
+
+Cost: the overlap is a table of counters per pair of lists (a few KiB for 40 lists, at most 64 KiB; more than 128 lists use a map of the pairs that share a name) updated while the compile merges the lists. With 40 lists and 2 million names it adds no measurable time to the compile and no memory (peak 146 MiB with or without it, on one thread); see ADR-992.
 
 ### Blocking
 A query is checked against the filter after local records and before the cache, so a blocked name never reaches an upstream:
@@ -2268,6 +2348,13 @@ telltale cluster set-failover auto
   *lease* with a majority every 5 s, and publishes only while the lease holds. If it disappears,
   the eligible nodes wait for the lease to run out, and one is elected by a majority vote in a
   new epoch, typically within 15–25 s.
+- **A witness on the Cluster page:** a witness only votes (REQ: CLU-009), so its row says
+  "witness, votes only" and shows *not applicable* for configuration, secrets and DNS. It shows
+  whether it is up and linked, its version and uptime, and its vote: when it last answered the
+  primary's vote request or lease renewal, and the epoch it voted in. It is never "behind" or
+  "not serving", and the Health checks, rollouts and Compare leave it out for those. One that
+  is unreachable still fails the "nodes up" check and raises the `node_down` health reason and
+  alert, because automatic failover needs its vote.
 - **Never two primaries writing:** a voter votes once per epoch and won't vote for anyone else
   while the lease it granted runs. A primary that loses its majority (for example, cut off by a
   network split) stops taking changes before anyone else can be elected. Proven by a simulator
@@ -3557,6 +3644,7 @@ For agents that start their tools as a subprocess, use the stdio transport. It r
 | `health` | healthy, degraded, or severe, and why (start here when something seems wrong) |
 | `upstream_health` | upstream health (healthy, benched, probing), latency |
 | `list_effectiveness` | list sizes, updates, errors, hits, unique names, and overlap |
+| `list_overlap` | which lists add little: each list's unique names and who covers the rest, and the plan that would turn the least-adding lists off (read-only; a person applies it in **Lists**) |
 | `find_anomalies` | device anomalies from every node with evidence (including NXDOMAIN storms and DGA-like names), optionally only the unacknowledged ones, or with `muted` also the ones a mute matched |
 | `list_anomaly_mutes` | the [anomaly mutes](#muting-a-kind-of-finding-for-a-device): devices or groups, kinds, end time, note (needs `config:read`) |
 | `acknowledge_anomalies` | marks findings as seen on every node, or takes it back with `undo` (needs `ops:anomalies`; changes at once, audited) |
@@ -3808,7 +3896,7 @@ For planned downtime longer than a restart, [put the node in maintenance](#takin
 In Kubernetes, pair this with a short `preStop` sleep so endpoints are removed before the drain begins (the Helm chart will set this).
 
 ## Logging
-Logs go to stderr. Set the level with `TELLTALE_LOG` (`error`, `warn`, `info` (default), `debug`, `trace`).
+Logs go to stderr. Set the level with `TELLTALE_LOG` (`error`, `warn`, `info` (default), `debug`, `trace`), or per module, for example `TELLTALE_LOG=info,telltale_cluster::failover=debug`. To trace a primary's lease lapse without debug logging for the whole server, use that example: each renewal round and each vote answer (with `took_ms`) is logged at debug. The Cluster page's event list shows `Lease lapsed` and `Lease renewed` (with how long publishing paused); a node that is no longer the primary logs that the lapse ended instead. A slow ballot store (500 ms or more) logs a warning at most once a minute.
 
 ## Error responses
 | Query | Response |

@@ -1387,6 +1387,8 @@ impl Primary {
             .members()
             .into_iter()
             .filter(|m| m.connected && m.rollouts)
+            // REQ: CLU-009 (T24.33) — a witness holds no configuration: never a canary.
+            .filter(|m| !registry.iter().any(|r| r.node_id == m.node_id && r.witness))
             .filter(|m| {
                 let ephemeral = registry
                     .iter()
@@ -1714,16 +1716,25 @@ impl Primary {
             sync_error: None,
             probe_failing: me.probe_failing,
         }];
-        v.extend(self.cluster.members().into_iter().map(|m| rollout::Sample {
-            node: m.node_id,
-            qps: m.qps,
-            servfail_permille: m.servfail_permille,
-            ready: m.ready,
-            connected: m.connected,
-            applied_seq: m.applied_seq,
-            sync_error: (!m.sync_error.is_empty()).then_some(m.sync_error),
-            probe_failing: m.probe_failing,
-        }));
+        // REQ: CLU-009 (T24.33) — a witness has no configuration version and serves no DNS: the
+        // rollout's nodes leave it out.
+        let registry = self.cluster.identity.registry();
+        v.extend(
+            self.cluster
+                .members()
+                .into_iter()
+                .filter(|m| !registry.iter().any(|r| r.node_id == m.node_id && r.witness))
+                .map(|m| rollout::Sample {
+                    node: m.node_id,
+                    qps: m.qps,
+                    servfail_permille: m.servfail_permille,
+                    ready: m.ready,
+                    connected: m.connected,
+                    applied_seq: m.applied_seq,
+                    sync_error: (!m.sync_error.is_empty()).then_some(m.sync_error),
+                    probe_failing: m.probe_failing,
+                }),
+        );
         v
     }
 

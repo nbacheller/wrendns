@@ -612,6 +612,71 @@ test('api_005 upstream health reads in plain words', async () => {
   }
 });
 
+// REQ: UPS-013 (T24.31, ADR-997) — an upstream's source address: the Upstreams form offers this
+// node's own addresses and networks, and a source the node lost shows as a problem on its row.
+test('ups_013 upstream source address: suggestions and a lost-address problem', async () => {
+  const isUpstreams = (url: URL) => url.pathname === '/api/v1/upstreams';
+  const isInfo = (url: URL) => url.pathname === '/api/v1/system/info';
+  const upstreams = (route: Route) =>
+    route.fulfill({
+      json: {
+        items: [
+          { breaker: 'closed', endpoint: 'tls://192.0.2.1', failures: 0, failuresByKind: {}, groups: ['default'], id: 1, latencyEwmaMs: 5, name: 'from-vlan', requests: 3, source: '198.51.100.252' },
+          { breaker: 'closed', endpoint: 'tls://192.0.2.2', failures: 0, failuresByKind: {}, groups: ['default'], id: 2, latencyEwmaMs: 5, name: 'lost-src', requests: 3, source: '198.51.100.9', sourceProblem: 'its source address 198.51.100.9 is no longer held by this node: queries to it fail' },
+        ],
+      },
+    });
+  const info = async (route: Route) => {
+    const res = await route.fetch();
+    const body = await res.json();
+    body.addresses = [{ interface: 'eth0.100', address: '198.51.100.252', network: '198.51.100.0/24' }];
+    await route.fulfill({ response: res, json: body });
+  };
+  await page.route(isUpstreams, upstreams);
+  await page.route(isInfo, info);
+  try {
+    await page.goto('/#/upstreams');
+    await page.reload();
+    await expect(page.getByTestId('upstream-source').first()).toHaveText('from 198.51.100.252');
+    await expect(page.getByTestId('upstream-source-problem')).toContainText('no longer held by this node');
+    await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+    await page.getByRole('button', { name: 'Add upstream', exact: true }).click();
+    const field = page.getByRole('combobox', { name: 'Source address', exact: true });
+    await expect(field).toBeVisible();
+    const listId = await field.getAttribute('list');
+    expect(listId).toBeTruthy();
+    const opts = await page.locator(`datalist#${listId} option`).evaluateAll((o) => o.map((x) => (x as HTMLOptionElement).value));
+    expect(opts).toEqual(['198.51.100.0/24', '198.51.100.252']);
+  } finally {
+    await page.unroute(isUpstreams, upstreams);
+    await page.unroute(isInfo, info);
+  }
+});
+
+// REQ: UPS-013 (ADR-997 §4) — a real save of a `source` this node doesn't hold is refused with a
+// message that names the problem, on a dry run too, and nothing is stored.
+test('ups_013 a source this node does not hold is refused on save', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const body = { url: 'udp://192.0.2.1', source: '203.0.113.9' };
+  for (const q of ['?dryRun=true', '']) {
+    const put = await r.put(`/api/v1/upstreams/ups013-foreign${q}`, { headers: h, data: body });
+    expect(put.status(), await put.text()).toBe(422);
+    expect(await put.text()).toContain('holds no such address');
+  }
+  const list = await (await r.get('/api/v1/upstreams')).json();
+  expect(list.items.some((u: { name: string }) => u.name === 'ups013-foreign')).toBe(false);
+  // The loopback network is held by every node: saved, and shown on the row.
+  const ok = await r.put('/api/v1/upstreams/ups013-held', { headers: h, data: { url: 'udp://192.0.2.1', source: '127.0.0.0/8' } });
+  expect(ok.status(), await ok.text()).toBe(200);
+  try {
+    const row = (await (await r.get('/api/v1/upstreams')).json()).items.find((u: { name: string }) => u.name === 'ups013-held');
+    expect(row.source).toBe('127.0.0.1');
+  } finally {
+    await r.delete('/api/v1/upstreams/ups013-held', { headers: h });
+  }
+});
+
 // REQ: OBS-019 — the Upstreams page's Answer quality: second opinions off on the e2e server
 // (it says how to turn them on), then a stubbed filtering upstream with its EDE and a
 // disagreement.
@@ -1550,6 +1615,81 @@ test('clu_008 cluster topology', async () => {
   await page.unroute('**/api/v1/cluster/versions');
 });
 
+// REQ: CLU-009 (T24.33, ADR-1011) — a witness only votes. Its row says "witness, votes only" and
+// shows "not applicable" for configuration, secrets and DNS (whatever an older witness reports),
+// its vote state and real uptime; the topology draws it green; the Health tab counts only real
+// failures, and a witness that is down is red there and in the checks.
+test('clu_009 a witness is a voter, not a full node', async () => {
+  const node = (o: Record<string, unknown>) => ({
+    ephemeral: false, witness: false, protocol: 4, role: 'replica', thisNode: false, eligible: true, version: '0.9.0',
+    up: true, connected: true, link: 'inbound', lastSeenSecondsAgo: 1, rttMs: 3, configSeq: 14, configLag: 0, ready: true,
+    qps: 10, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, restarts: 0, ...o,
+  });
+  const view = (witnessUp: boolean) => ({
+    enabled: true, clusterId: 'c1', name: 'home', thisNode: 'id-pi1', newestConfigSeq: 14, events: [], conflicts: [],
+    authority: 'primary',
+    healthy: witnessUp,
+    checks: [
+      { id: 'peers_up', ok: witnessUp, summary: witnessUp ? 'All 3 nodes are up' : 'Not heard from in 15 s: id-pi3', fix: witnessUp ? null : 'Check the node.' },
+      { id: 'in_sync', ok: true, summary: 'Every reachable node runs configuration version 14' },
+    ],
+    failover: { mode: 'auto', active: true, voters: 3, reachableVoters: witnessUp ? 3 : 2, leaseHeld: true, leaseSecondsLeft: 12, votedEpoch: 7, votedFor: 'id-pi1' },
+    nodes: [
+      node({ nodeId: 'id-pi1', site: 'node-a', role: 'primary', thisNode: true, link: 'self', rttMs: null }),
+      node({ nodeId: 'id-pi2', site: 'node-b' }),
+      // The witness as an older build would report it: no configuration, "not ready", behind, no secrets.
+      node({
+        nodeId: 'id-pi3', site: 'node-c', witness: true, eligible: false, up: witnessUp, connected: witnessUp, ready: false,
+        configSeq: 0, configLag: 13, behindSeconds: 1920, qps: 0, uptimeSeconds: 7200, secrets: null,
+        vote: { lastReplySecondsAgo: 4, lastGrantSecondsAgo: 4, votedEpoch: 7 },
+      }),
+    ],
+  });
+  let current = view(true);
+  await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: current }));
+  await page.route('**/api/v1/cluster/rollout', (route) => route.fulfill({ json: { fromPrimary: true, canaries: [], bakeSecs: 300, stable: '1.9', stage: 'none', nodes: [] } }));
+  await page.route('**/api/v1/cluster/versions', (route) => route.fulfill({ json: { items: [], history: 20 } }));
+  // A fresh document, so the route's data is fetched even if the page is already on #/cluster.
+  await page.goto('about:blank');
+  await page.goto('/#/cluster');
+  const row = page.locator('#node-id-pi3');
+  await expect(row).toContainText('witness, votes only');
+  await expect(row.getByTestId('cluster-node-config-na')).toHaveText('not applicable');
+  await expect(row.getByTestId('cluster-node-secrets-na')).toHaveText('not applicable');
+  await expect(row.getByTestId('cluster-node-dns-na')).toHaveText('not applicable');
+  await expect(row.getByTestId('cluster-node-vote')).toContainText(/last vote .* ago.*epoch 7/);
+  await expect(row).not.toContainText('not ready');
+  await expect(row).not.toContainText('behind');
+  await expect(row).not.toContainText('not reported');
+  await expect(row).toContainText('2h'); // its real uptime, not 0s
+  await expect(row).toContainText('0.9.0');
+  // A full node still shows all three.
+  await expect(page.locator('#node-id-pi2')).toContainText('in sync');
+  await expect(page.locator('#node-id-pi2').getByTestId('cluster-node-dns-na')).toHaveCount(0);
+  // The topology: green while it is up, not amber.
+  const topo = page.getByTestId('cluster-topology');
+  await expect(topo.getByTestId('topology-node')).toHaveCount(3);
+  await expect(topo.locator('.chip.warn')).toHaveCount(0);
+  await expect(topo).toContainText('votes only');
+  await expect(topo.locator('.chip.bad')).toHaveCount(0);
+  // The help topic explains it.
+  await row.getByTestId('cluster-node-vote').getByRole('button').click();
+  await expect(page.getByTestId('help-panel')).toContainText('vote-only member');
+  await page.keyboard.press('Escape');
+  // The tabs count nothing for it: Health is clean.
+  await page.getByRole('tab', { name: /^Health/ }).click();
+  await expect(page.getByTestId('cluster-check').filter({ hasText: '✗' })).toHaveCount(0);
+  // Down: still a failing check (automatic failover needs its vote), and red in the topology.
+  current = view(false);
+  await expect(page.getByTestId('cluster-health')).toContainText('Needs attention', { timeout: 10_000 });
+  await expect(page.getByTestId('cluster-check').filter({ hasText: 'Not heard from' })).toHaveCount(1);
+  await page.getByRole('tab', { name: /^Nodes/ }).click();
+  await expect(page.getByTestId('cluster-topology').locator('.chip.bad')).toHaveCount(1);
+  await page.unroute('**/api/v1/cluster');
+  await page.unroute('**/api/v1/cluster/rollout');
+  await page.unroute('**/api/v1/cluster/versions');
+});
+
 // REQ: DNS-006, API-005 (T6.13) — the cache: a cached answer shows up in a lookup (the UI
 // card and the API), a flush removes it and says how many, and viewers can look but not flush.
 test('dns_006 cache lookup and flush', async () => {
@@ -1948,6 +2088,138 @@ test('flt_004 update one list now', async () => {
   await page.reload();
 });
 
+// REQ: FLT-004, API-005 (T24.28, ADR-992) — a list whose names another list already has shows what it
+// adds and who covers it; Prune previews the lists that add little at a threshold, turns them off after
+// a confirmation (the list stays in the configuration), and Undo turns it on again.
+test('flt_004 prune lists that add little, then undo', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const names = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => `||n${from + i}.prune.e2e.test^`);
+  // prune-big has 60 names, prune-small the first 10 of them: nothing of its own.
+  for (const [name, rules] of [['prune-big', names(0, 60)], ['prune-small', names(0, 10)]] as const) {
+    const r = await page.request.put(`/api/v1/lists/${name}`, { headers: { 'x-csrf-token': csrf }, data: { rules, kind: 'block' } });
+    expect(r.ok(), `${name}: ${await r.text()}`).toBeTruthy();
+  }
+  const listed = async () =>
+    ((await (await page.request.get('/api/v1/lists')).json()).items as { name: string; enabled: boolean; entries: number; unique: number }[]);
+  await expect.poll(async () => (await listed()).find((l) => l.name === 'prune-small')?.entries, { timeout: 45_000 }).toBe(10);
+  await expect.poll(async () => (await listed()).find((l) => l.name === 'prune-big')?.unique, { timeout: 45_000 }).toBe(50);
+
+  await page.goto('/#/lists');
+  await page.reload(); // the page may already be on /#/lists, with the lists read before these two existed
+  // The name is the cell's own strong: another row's note ("it adds nothing: ... is also in prune-big") has one too.
+  const row = (name: string) => page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('td > strong', { hasText: new RegExp(`^${name}$`) }) });
+  await expect(row('prune-small').getByTestId('list-adds')).toHaveText('adds 0%');
+  await expect(row('prune-small').getByTestId('list-covered-by')).toContainText('100% also in prune-big');
+  await expect(row('prune-big').getByTestId('list-adds')).toHaveText('adds 83.3%');
+
+  // The read API: the overlap rows and the plan agree with the page.
+  const ov = (await (await page.request.get('/api/v1/lists/overlap')).json()).items as { name: string; addsPercent: number; coveredBy: { list: string }[] }[];
+  expect(ov.find((o) => o.name === 'prune-small')?.coveredBy[0].list).toBe('prune-big');
+  const planned = await (await page.request.get('/api/v1/lists/prune-plan?thresholdPercent=1')).json();
+  expect(planned.candidates.map((c: { name: string }) => c.name)).toContain('prune-small');
+  expect(planned.candidates.map((c: { name: string }) => c.name)).not.toContain('prune-big');
+  expect((await page.request.get('/api/v1/lists/prune-plan?thresholdPercent=90')).status()).toBe(400);
+
+  await page.getByTestId('lists-prune').click();
+  const panel = page.getByTestId('prune-panel');
+  await expect(panel).toBeVisible();
+  const cand = panel.getByTestId('prune-candidate');
+  await expect(cand.filter({ hasText: 'prune-small' })).toHaveCount(1);
+  await expect(cand.filter({ has: page.locator('strong', { hasText: /^prune-big$/ }) })).toHaveCount(0); // it adds 83%
+  await expect(cand.filter({ hasText: 'prune-small' })).toContainText('prune-big (100%)');
+  await panel.locator('summary').click();
+  await expect(panel.getByTestId('prune-kept')).toContainText('prune-big: adds 83.3% of its entries, above 1%');
+  await expect(panel.getByTestId('prune-kept')).toContainText('e2e-shadow: shadow mode');
+
+  // A threshold outside 0-50 is refused in the form; 0 still proposes a list that adds nothing.
+  await panel.getByTestId('prune-threshold').fill('90');
+  await expect(panel.getByText('Enter a number from 0 to 50.')).toBeVisible();
+  await expect(panel.getByTestId('prune-preview')).toBeDisabled();
+  await panel.getByTestId('prune-threshold').fill('0');
+  await panel.getByTestId('prune-preview').click();
+  await expect(cand.filter({ hasText: 'prune-small' })).toHaveCount(1);
+
+  // Nothing changes until it is confirmed; Back leaves the list on.
+  await panel.getByTestId('prune-apply').click();
+  await expect(panel.getByTestId('prune-confirm-text')).toBeVisible();
+  expect((await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(true);
+  await panel.getByRole('button', { name: 'Back' }).click();
+  await expect(panel.getByTestId('prune-apply')).toBeVisible();
+
+  // A stale preview: the configuration changed after it (any edit), so the confirmation is refused with
+  // a 409, nothing is turned off, and previewing again brings the versions up to date.
+  await panel.getByTestId('prune-apply').click();
+  const touch = await page.request.put('/api/v1/lists/prune-touch', { headers: { 'x-csrf-token': csrf }, data: { rules: ['||touch.prune.e2e.test^'], kind: 'block' } });
+  expect(touch.ok(), await touch.text()).toBeTruthy();
+  await expect.poll(async () => (await listed()).find((l) => l.name === 'prune-touch')?.entries, { timeout: 45_000 }).toBe(1);
+  const refusedApply = page.waitForResponse((r) => r.url().endsWith('/api/v1/lists/prune') && r.request().method() === 'POST');
+  await panel.getByTestId('prune-confirm').click();
+  expect((await refusedApply).status()).toBe(409);
+  await expect(page.getByText(/preview again/i).first()).toBeVisible();
+  await expect.poll(() => problems.some((m) => /status of 409/.test(m))).toBe(true);
+  for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1); // the expected refusal
+  expect((await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(true);
+  await panel.getByTestId('prune-preview').click();
+  await expect(cand.filter({ hasText: 'prune-small' })).toHaveCount(1);
+  await panel.getByTestId('prune-apply').click();
+  const applied = page.waitForResponse((r) => r.url().endsWith('/api/v1/lists/prune') && r.request().method() === 'POST');
+  await panel.getByTestId('prune-confirm').click();
+  const res = await applied;
+  expect(res.status()).toBe(200);
+  expect(res.request().postDataJSON().names).toContain('prune-small');
+  const done = page.getByTestId('prune-done');
+  await expect(done).toContainText('prune-small');
+  await expect(panel).toHaveCount(0);
+  await expect(row('prune-small')).toContainText('off');
+  expect((await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(false);
+  expect((await listed()).find((l) => l.name === 'prune-big')?.enabled).toBe(true);
+  const audit = (await (await page.request.get('/api/v1/audit?action=lists.prune')).json()).items;
+  expect(audit.length).toBeGreaterThan(0);
+
+  // Undo: the list is on again, with its rules.
+  await done.getByTestId('prune-undo').click();
+  await expect(done).toHaveCount(0);
+  await expect.poll(async () => (await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(true);
+  // The "off" badge, not the note's "Turn it off" button (the list still adds nothing, so the note stays).
+  await expect(row('prune-small').locator('.badge', { hasText: 'off' })).toHaveCount(0);
+  const def = (await (await page.request.get('/api/v1/config/entries?kind=list')).json()).items.find((e: { name: string }) => e.name === 'prune-small');
+  expect(def.definition.rules).toHaveLength(10);
+
+  // A group that names a list keeps it: the preview says so.
+  const grp = await page.request.put('/api/v1/groups/prune-grp', { headers: { 'x-csrf-token': csrf }, data: { networks: ['10.78.0.0/24'], lists: ['prune-small'] } });
+  expect(grp.ok(), await grp.text()).toBeTruthy();
+  await page.getByTestId('lists-prune').click();
+  await expect(panel).toBeVisible();
+  await expect(panel.getByTestId('prune-candidate').filter({ hasText: 'prune-small' })).toHaveCount(0);
+  await panel.locator('summary').click();
+  await expect(panel.getByTestId('prune-kept')).toContainText('prune-small: group `prune-grp` names it');
+  await panel.getByTestId('prune-close').click();
+  expect((await page.request.delete('/api/v1/groups/prune-grp', { headers: { 'x-csrf-token': csrf } })).ok()).toBeTruthy();
+
+  // Agents don't get to apply it.
+  const tok = await page.request.post('/api/v1/tokens', { headers: { 'x-csrf-token': csrf }, data: { name: 'prune-agent', kind: 'agent', scopes: ['config:read', 'config:write:lists'] } });
+  expect(tok.status()).toBe(201);
+  const agent = (await tok.json()).token as string;
+  const asAgent = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  const plan = await asAgent.request.get('/api/v1/lists/prune-plan', { headers: { authorization: `Bearer ${agent}` } });
+  expect(plan.status()).toBe(200);
+  const refused = await asAgent.request.post('/api/v1/lists/prune', {
+    headers: { authorization: `Bearer ${agent}`, 'x-telltale-reason': 'tidy up the lists' },
+    data: { names: ['prune-small'], snapshotVersion: 1, configVersion: 1 },
+  });
+  expect(refused.status()).toBe(403);
+  expect((await refused.json()).code).toBe('agent_not_allowed');
+  await asAgent.close();
+
+  // Clean up: the lists, and the agent token.
+  for (const name of ['prune-small', 'prune-big', 'prune-touch']) {
+    expect((await page.request.delete(`/api/v1/lists/${name}`, { headers: { 'x-csrf-token': csrf } })).ok()).toBeTruthy();
+  }
+  const tokens = (await (await page.request.get('/api/v1/tokens')).json()).items as { id: string; name: string }[];
+  for (const t of tokens.filter((x) => x.name === 'prune-agent')) await page.request.delete(`/api/v1/tokens/${t.id}`, { headers: { 'x-csrf-token': csrf } });
+});
+
 // REQ: FLT-004 (T24.17) — a viewer sees the lists and when each was confirmed, with no update button.
 test('flt_004 viewer sees no update buttons', async ({ browser }) => {
   const viewer = await browser.newContext({ baseURL: page.url().split('/#')[0] || BASE_URL });
@@ -2004,6 +2276,116 @@ test('flt_004 lists fit a phone width (375 px)', async () => {
     await expect(page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: /^e2e-block$/ }) }).getByRole('button', { name: 'Update e2e-block now' })).toBeVisible();
   } finally {
     await page.setViewportSize({ width: 1280, height: 800 });
+  }
+});
+
+// REQ: T24.27 — a list that failed shows why and offers the fix on its row: a raised limit for one
+// that is over its size limit, remove-or-replace for a 404, and turn-off/remove for a list whose names
+// are all in another. The changes are answered by a stand-in here (the lists stay as the suite expects).
+test('t24_27 list failures offer a fix', async () => {
+  const rowOf = (name: string) =>
+    page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: new RegExp(`^${name}$`) }) });
+  const failing = {
+    'e2e-block': {
+      state: 'failed',
+      source: 'https://lists.e2e.test/big.txt',
+      error: 'larger than the 67108864-byte limit (the server says it is 70000000 bytes; raise max_bytes for this list)',
+    },
+    'e2e-shadow': { state: 'failed', source: 'https://lists.e2e.test/gone.txt', error: 'HTTP 404 Not Found' },
+  } as Record<string, object>;
+  await page.route('**/api/v1/lists', async (route) => {
+    const r = await route.fetch();
+    const json = await r.json();
+    json.items = json.items.map((l: { name: string }) => ({ ...l, ...(failing[l.name] ?? {}) }));
+    await route.fulfill({ response: r, json });
+  });
+  const changes: { method: string; url: string; body: Record<string, unknown> | null }[] = [];
+  await page.route(/\/api\/v1\/lists\/e2e-(block|shadow)$/, async (route) => {
+    const req = route.request();
+    changes.push({ method: req.method(), url: req.url(), body: req.postDataJSON() });
+    await route.fulfill({ status: 200, json: { applied: true, configVersion: 1 } });
+  });
+  try {
+    await page.goto('/#/lists');
+    await page.reload(); // the page is read through the stand-in
+    // Over the size limit: the size seen, plus a quarter, in whole MiB; one click sets this list's limit.
+    const big = rowOf('e2e-block');
+    await expect(big.getByTestId('list-too-large')).toContainText('bigger than its 64.0 MiB limit');
+    const raise = big.getByTestId('list-raise-limit');
+    await expect(raise).toHaveText('Raise the limit to 84 MiB');
+    await raise.click();
+    await expect(page.getByTestId('list-fix-note')).toContainText('the limit is now 84 MiB');
+    expect(changes).toHaveLength(1);
+    expect(changes[0].method).toBe('PUT');
+    expect(changes[0].body).toMatchObject({ max_bytes: '84MiB', rules: ['||ads.e2e.test^'] });
+    // Not found: said plainly, with remove (asking first).
+    const gone = rowOf('e2e-shadow');
+    await expect(gone.getByTestId('list-not-found')).toContainText('returns "not found" (HTTP 404)');
+    await expect(gone.getByTestId('list-not-found')).toContainText('Remove it, or replace it');
+    await gone.getByTestId('list-remove').click();
+    expect(changes).toHaveLength(1);
+    await gone.getByTestId('list-remove-confirm').click();
+    await expect(page.getByTestId('list-fix-note')).toContainText('e2e-shadow was removed');
+    expect(changes[1].method).toBe('DELETE');
+    expect(changes[1].url).toMatch(/\/api\/v1\/lists\/e2e-shadow$/);
+  } finally {
+    await page.unroute('**/api/v1/lists');
+    await page.unroute(/\/api\/v1\/lists\/e2e-(block|shadow)$/);
+  }
+  // Above the cap the page doesn't offer a limit it won't allow.
+  failing['e2e-block'] = {
+    state: 'failed',
+    source: 'https://lists.e2e.test/huge.txt',
+    error: `larger than the ${128 * 1024 * 1024}-byte limit (raise max_bytes for this list)`,
+  };
+  await page.route('**/api/v1/lists', async (route) => {
+    const r = await route.fetch();
+    const json = await r.json();
+    json.items = json.items.map((l: { name: string }) => ({ ...l, ...(failing[l.name] ?? {}) }));
+    await route.fulfill({ response: r, json });
+  });
+  try {
+    await page.reload();
+    await expect(rowOf('e2e-block').getByTestId('list-too-large')).toContainText('remove it or use a smaller list');
+    await expect(rowOf('e2e-block').getByTestId('list-raise-limit')).toHaveCount(0);
+  } finally {
+    await page.unroute('**/api/v1/lists');
+  }
+  // Pruning: every name is in another list.
+  const redundantChanges: Record<string, unknown>[] = [];
+  // A shadow list never blocks, so it is not a cover: no offer until the cover enforces.
+  let coverOverride: Record<string, unknown> = { state: 'ok', enabled: true, mode: 'shadow', kind: 'block', unique: 5 };
+  await page.route('**/api/v1/lists', async (route) => {
+    const r = await route.fetch();
+    const json = await r.json();
+    json.items = json.items.map((l: { name: string }) =>
+      l.name === 'e2e-block'
+        ? { ...l, state: 'ok', enabled: true, entries: 5, unique: 0, overlap: [{ list: 'e2e-shadow', names: 5 }] }
+        : l.name === 'e2e-shadow'
+          ? { ...l, ...coverOverride }
+          : l,
+    );
+    await route.fulfill({ response: r, json });
+  });
+  await page.route(/\/api\/v1\/lists\/e2e-block$/, async (route) => {
+    redundantChanges.push(route.request().postDataJSON());
+    await route.fulfill({ status: 200, json: { applied: true, configVersion: 1 } });
+  });
+  try {
+    await page.reload();
+    const row = rowOf('e2e-block');
+    await expect(row).toBeVisible();
+    await expect(row.getByTestId('list-redundant')).toHaveCount(0);
+    coverOverride = { state: 'ok', enabled: true, mode: 'enforce', kind: 'block', unique: 5, entries: 5 };
+    await page.reload();
+    await expect(row.getByTestId('list-redundant')).toContainText('Every name in it is also in e2e-shadow');
+    await row.getByTestId('list-turn-off').click();
+    await expect(page.getByTestId('list-fix-note')).toContainText('e2e-block is off');
+    expect(redundantChanges[0]).toMatchObject({ enabled: false });
+  } finally {
+    await page.unroute('**/api/v1/lists');
+    await page.unroute(/\/api\/v1\/lists\/e2e-block$/);
+    await page.goto('/#/lists');
   }
 });
 
@@ -6736,5 +7118,44 @@ test('api_007 passphrase backup from settings', async () => {
     await page.reload();
   } finally {
     await r.delete('/api/v1/secrets/backup-ui-test', { headers: h });
+  }
+});
+
+// REQ: CLU-005 (T24.26) — the Events tab names a lapsed lease and its renewal in words: "Lease
+// lapsed" in the bad colour, "Lease renewed" in the ok one (the e2e server cannot lapse a lease,
+// so the cluster view is a stub).
+test('clu_005 lease lapse and renewal events have labels', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const at = (s: number) => new Date(Date.now() - s * 1000).toISOString();
+  const view = {
+    enabled: true, clusterId: 'c1', name: 'home', thisNode: 'id-p', newestConfigSeq: 9, healthy: true,
+    checks: [{ id: 'peers_up', ok: true, summary: 'All 1 node is up' }],
+    events: [
+      { at: at(60), kind: 'lease_lost', nodeId: 'id-p', detail: 'publishing paused until a majority renews the lease' },
+      { at: at(30), kind: 'lease_renewed', nodeId: 'id-p', detail: 'publishing resumed after 4200 ms' },
+    ],
+    conflicts: [], authority: 'primary',
+    failover: { mode: 'auto', active: true, voters: 3, reachableVoters: 3, leaseHeld: true, leaseSecondsLeft: 11, votedEpoch: 1, votedFor: 'id-p' },
+    nodes: [{
+      nodeId: 'id-p', site: 'primary', ephemeral: false, witness: false, protocol: 1, role: 'primary', thisNode: true, eligible: true,
+      version: '0.8.0', up: true, connected: true, link: 'self', lastSeenSecondsAgo: 1, rttMs: null, configSeq: 9, configLag: 0, ready: true,
+      qps: 1, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, restarts: 0, cacheEntries: 5, cacheHitPercent: 80, querySharePercent: 10,
+    }],
+  };
+  await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: view }));
+  await page.route('**/api/v1/cluster/rollout', (route) => route.fulfill({ json: { fromPrimary: true, canaries: [], bakeSecs: 300, stable: '1.9', stage: 'none', nodes: [] } }));
+  await page.route('**/api/v1/cluster/versions', (route) => route.fulfill({ json: { items: [], history: 20 } }));
+  try {
+    await page.goto('/#/cluster?tab=events');
+    const items = page.locator('ol.events li');
+    await expect(items).toHaveCount(2);
+    await expect(items.nth(0).locator('.badge')).toHaveText('Lease lapsed');
+    await expect(items.nth(0).locator('.badge')).toHaveClass(/bad/);
+    await expect(items.nth(1).locator('.badge')).toHaveText('Lease renewed');
+    await expect(items.nth(1).locator('.badge')).toHaveClass(/ok/);
+  } finally {
+    await page.unroute('**/api/v1/cluster');
+    await page.unroute('**/api/v1/cluster/rollout');
+    await page.unroute('**/api/v1/cluster/versions');
   }
 });

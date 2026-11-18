@@ -23,6 +23,8 @@ struct Fake {
     paused: Mutex<Option<u32>>,
     /// REQ: OBS-901 — the map's settings (`None`: no map) and what every node reports.
     map: Mutex<(Option<crate::map::MapSettings>, crate::map::MapParts)>,
+    /// REQ: FLT-004 (T24.28) - lists where `quiet` nearly duplicates `ads`, for the prune tests.
+    prunable: std::sync::atomic::AtomicBool,
 }
 
 /// The one finding the fake reports.
@@ -44,6 +46,23 @@ impl Backend for Fake {
         self.map.lock().unwrap().1.parts.first().cloned()
     }
     fn config_entries(&self, kind: Option<&str>) -> Vec<crate::model::ConfigEntry> {
+        if kind == Some("list") && self.prunable.load(std::sync::atomic::Ordering::SeqCst) {
+            return ["ads", "quiet", "mine"]
+                .iter()
+                .map(|n| crate::model::ConfigEntry {
+                    kind: "list".into(),
+                    name: (*n).into(),
+                    source: "file".into(),
+                    definition: Some(serde_json::json!({
+                        "name": n, "url": "https://lists.example/x", "enabled": true
+                    })),
+                    redacted: Vec::new(),
+                    credential_issues: Vec::new(),
+                    set_by_file: Vec::new(),
+                    answering: None,
+                })
+                .collect();
+        }
         if kind != Some("map") {
             return Vec::new();
         }
@@ -93,11 +112,30 @@ impl Backend for Fake {
         w: crate::ManagedWrite,
     ) -> crate::BoxFuture<Result<crate::model::ConfigChange, Problem>> {
         self.seen.lock().unwrap().push(format!(
-            "managed {:?} {} {}",
+            "managed {:?} {} {}{}",
             w.kind,
             w.name,
-            w.body.map(|b| b.to_string()).unwrap_or_default()
+            w.body.map(|b| b.to_string()).unwrap_or_default(),
+            w.expect
+                .map_or_else(String::new, |v| format!(" expect={v}"))
         ));
+        if w.kind == crate::ManagedKind::List
+            && self.prunable.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Box::pin(async {
+                Ok(crate::model::ConfigChange {
+                    applied: true,
+                    config_version: 7,
+                    before: None,
+                    after: None,
+                    recent_queries: 0,
+                    impact: String::new(),
+                    warnings: Vec::new(),
+                    keep_in_git: None,
+                    simulation: None,
+                })
+            });
+        }
         Box::pin(async { Err(Problem::unavailable("recorded")) })
     }
     fn annotations(&self, f: &crate::model::AnnotationFilter) -> Vec<crate::model::Annotation> {
@@ -156,6 +194,7 @@ impl Backend for Fake {
             filter_names: 42,
             client_ips_masked: None,
             cluster: None,
+            addresses: Vec::new(),
             build: crate::model::BuildInfo {
                 version: "0.1.0-edge.60".into(),
                 commit: "abc1234".into(),
@@ -377,12 +416,26 @@ impl Backend for Fake {
             regex_skipped: 0,
             hits: 1,
             overlap: Vec::new(),
+            rules: 0,
             last_checked_unix_seconds: None,
             last_changed_unix_seconds: None,
             stale_days: None,
             last_success_unix_seconds: None,
             refreshing: false,
         };
+        if self.prunable.load(std::sync::atomic::Ordering::SeqCst) {
+            let share = |n: &str, names| crate::model::ListShare {
+                list: n.into(),
+                names,
+            };
+            let mut ads = list("ads");
+            (ads.entries, ads.unique, ads.overlap) = (1000, 901, vec![share("quiet", 99)]);
+            let mut quiet = list("quiet");
+            (quiet.entries, quiet.unique, quiet.overlap) = (100, 1, vec![share("ads", 99)]);
+            let mut mine = list("mine");
+            (mine.entries, mine.unique) = (100, 100);
+            return vec![ads, quiet, mine];
+        }
         vec![list("ads"), list("quiet")]
     }
     fn list_hits(&self) -> BTreeMap<String, u64> {
@@ -1742,7 +1795,8 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 159 with DNS-010's /zones/{name} (T27.7); 165 with the tuning sections' /slo-settings,
     // /probe-settings, /upstream-check-settings, /anomaly-settings, /qlog-settings and
     // /metrics-settings /default (T27.5).
-    assert_eq!(paths.len(), 165);
+    // 168 with FLT-004's /lists/overlap, /lists/prune-plan and /lists/prune (T24.28).
+    assert_eq!(paths.len(), 168);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -4594,4 +4648,212 @@ async fn api_005_pihole_paths_take_only_their_own_token() {
     )
     .await;
     assert_eq!((s, v), (StatusCode::OK, serde_json::json!([])));
+}
+
+// REQ: FLT-004, AGT-004 (T24.28, ADR-992) - the overlap and the plan are reads (viewers, agents
+// with `config:read`); the apply turns the plan's lists off, is an operator's, audited, refuses a
+// list the plan no longer holds, and is never for agent tokens.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one story: read, plan, refuse, apply, audit
+async fn flt_004_prune_lists_over_http() {
+    let (app, fake) = app();
+    fake.prunable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let get = |uri: &str, bearer: &str| {
+        Request::get(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let post = |uri: &str, bearer: &str, body: &str, extra: &[(&str, &str)]| {
+        let mut b = Request::post(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json");
+        for (k, v) in extra {
+            b = b.header(*k, *v);
+        }
+        b.body(Body::from(body.to_owned())).unwrap()
+    };
+    let (s, _, v) = send(&app, get("/api/v1/lists/overlap", &app.bearer)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["items"][0]["name"], "ads");
+    assert_eq!(v["items"][1]["addsPercent"], 1.0);
+    assert_eq!(v["items"][1]["coveredBy"][0]["list"], "ads");
+
+    // The plan: at the default threshold `quiet` (1 of 100 unique) is proposed; nothing changes.
+    let (s, _, v) = send(&app, get("/api/v1/lists/prune-plan", &app.bearer)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["candidates"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["candidates"][0]["name"], "quiet");
+    assert_eq!(v["candidates"][0]["losesAtMost"], 1);
+    assert_eq!(v["kept"].as_array().unwrap().len(), 2);
+    let (s, _, v) = send(
+        &app,
+        get("/api/v1/lists/prune-plan?thresholdPercent=0", &app.bearer),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(v["candidates"].as_array().unwrap().is_empty(), "{v}");
+    let (s, _, _) = send(
+        &app,
+        get("/api/v1/lists/prune-plan?thresholdPercent=80", &app.bearer),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let writes = |fake: &Fake| {
+        fake.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.starts_with("managed List"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(writes(&fake), Vec::<String>::new());
+
+    // A list the plan doesn't hold: nothing changes.
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/lists/prune",
+            &app.bearer,
+            r#"{"names":["quiet","mine"],"snapshotVersion":3,"configVersion":0}"#,
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["detail"].as_str().unwrap().contains("`mine`"), "{v}");
+    assert_eq!(writes(&fake), Vec::<String>::new());
+    // The preview's versions are required, and a different one is a 409 (ADR-993).
+    let plan_v = send(&app, get("/api/v1/lists/prune-plan", &app.bearer))
+        .await
+        .2;
+    assert_eq!(
+        (
+            plan_v["snapshotVersion"].as_u64(),
+            plan_v["configVersion"].as_u64()
+        ),
+        (Some(3), Some(0)),
+        "{plan_v}"
+    );
+    for stale in [
+        r#"{"names":["quiet"],"snapshotVersion":2,"configVersion":0}"#,
+        r#"{"names":["quiet"],"snapshotVersion":3,"configVersion":9}"#,
+    ] {
+        let (s, _, v) = send(&app, post("/api/v1/lists/prune", &app.bearer, stale, &[])).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{stale}: {v}");
+    }
+    assert_eq!(writes(&fake), Vec::<String>::new());
+    for bad in [
+        "{",
+        "",
+        r#"{"names":["quiet"]}"#,
+        r#"{"all":true}"#,
+        r#"{"names":[],"snapshotVersion":3,"configVersion":0,"thresholdPercent":99}"#,
+    ] {
+        let (s, _, v) = send(&app, post("/api/v1/lists/prune", &app.bearer, bad, &[])).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}: {v}");
+    }
+
+    // The apply: `quiet` is written back with `enabled: false`, audited.
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/lists/prune",
+            &app.bearer,
+            r#"{"names":["quiet"],"snapshotVersion":3,"configVersion":0}"#,
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["disabled"], serde_json::json!(["quiet"]));
+    assert_eq!(v["configVersion"], 7);
+    let w = writes(&fake);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].starts_with("managed List quiet "), "{w:?}");
+    assert!(
+        w[0].contains(r#""enabled":false"#) && w[0].contains("lists.example"),
+        "{w:?}"
+    );
+    let audit = app
+        .auth
+        .state()
+        .audit_page(None, 10, Some("lists.prune"), None)
+        .unwrap();
+    assert_eq!(
+        (audit.len(), audit[0].target.as_str()),
+        (1, "quiet"),
+        "{audit:?}"
+    );
+
+    // The write is checked against the version the preview read (no lost update), and the list's
+    // own audit entry is written next to the prune's.
+    assert!(w[0].ends_with(" expect=0"), "{w:?}");
+    let own = app
+        .auth
+        .state()
+        .audit_page(None, 10, Some("list.put"), None)
+        .unwrap();
+    assert_eq!((own.len(), own[0].target.as_str()), (1, "quiet"), "{own:?}");
+
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/lists/prune",
+            &app.bearer,
+            r#"{"names":["quiet","quiet"],"snapshotVersion":3,"configVersion":0}"#,
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["disabled"], serde_json::json!(["quiet"]), "names once");
+
+    // Agents read the plan, and never apply it, whatever their scopes.
+    let token = |scopes: &str| {
+        Request::post("/api/v1/tokens")
+            .header("cookie", &app.cookie)
+            .header("x-csrf-token", &app.csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"name":"pruner","kind":"agent","scopes":[{scopes}]}}"#
+            )))
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, token(r#""config:read","config:write:lists""#)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let agent = v["token"].as_str().unwrap().to_owned();
+    let (s, _, v) = send(&app, get("/api/v1/lists/prune-plan", &agent)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let why = [("x-telltale-reason", "tidy the lists")];
+    let (s, _, v) = send(&app, post("/api/v1/lists/prune", &agent, "{}", &why)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert_eq!(v["code"], "agent_not_allowed", "{v}");
+    assert_eq!(writes(&fake).len(), 2, "the agent changed nothing");
+
+    // A viewer can't apply, but reads the plan.
+    let vic = app
+        .auth
+        .create_user("vic", "a viewer password", auth::Role::Viewer, false, NOW)
+        .unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            vic.id,
+            "ro",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let viewer = format!("tt_{tid}_{secret}");
+    let (s, _, _) = send(&app, post("/api/v1/lists/prune", &viewer, "{}", &[])).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = send(&app, get("/api/v1/lists/prune-plan", &viewer)).await;
+    assert_eq!(s, StatusCode::OK);
 }

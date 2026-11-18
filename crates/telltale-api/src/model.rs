@@ -44,6 +44,21 @@ pub struct SystemInfo {
     pub update: UpdateStatus,
     /// REQ: OPS-010 — this node's maintenance window, while it's in maintenance.
     pub maintenance: Option<NodeMaintenance>,
+    /// REQ: UPS-013 (T24.31, ADR-997) — this node's own interface addresses (loopback and
+    /// link-local left out), which an upstream's `source` can name. They differ per node.
+    pub addresses: Vec<NodeAddress>,
+}
+
+/// One address this node holds, for the Upstreams form's `source` suggestions.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeAddress {
+    /// The interface (`eth0`, `eth0.100`).
+    pub interface: String,
+    /// `198.51.100.252`
+    pub address: String,
+    /// The network it is in, which a shared upstream can name instead: `198.51.100.0/24`.
+    pub network: String,
 }
 
 /// The build identity (REQ: OPS-004, ADR-046): the same on every architecture of one commit.
@@ -785,6 +800,10 @@ pub struct ListInfo {
     pub hits: u64,
     /// Lists it shares names with, most shared first.
     pub overlap: Vec<ListShare>,
+    /// REQ: FLT-004 (T24.28, ADR-992) - modifier rules and regexes it ships. The overlap counts
+    /// names only, so these are never shown covered by another list.
+    #[serde(default)]
+    pub rules: u64,
     /// Last download attempt (Unix seconds), whatever its outcome.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_checked_unix_seconds: Option<u64>,
@@ -1190,6 +1209,13 @@ pub struct UpstreamInfo {
     pub failures_by_kind: FailureKinds,
     /// Smoothed answer time.
     pub latency_ewma_ms: f64,
+    /// REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the
+    /// upstream sets a `source`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// REQ: UPS-013 — set while this node no longer holds that address: its queries fail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_problem: Option<String>,
 }
 
 /// Failed attempts by kind (their sum is `failures`).
@@ -2126,6 +2152,131 @@ pub struct NetworkInfo {
 pub struct ListShare {
     pub list: String,
     pub names: u64,
+}
+
+/// REQ: FLT-004 (T24.28, ADR-992) - names a list shares with another list that does the same
+/// thing, as a share of this list's own entries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCover {
+    /// The other list.
+    pub list: String,
+    /// Names both have.
+    pub names: u64,
+    /// `names` as a share of this list's entries, 0-100.
+    pub percent: f64,
+}
+
+/// REQ: FLT-004 (T24.28, ADR-992) - one enabled list's overlap with the others.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListOverlapRow {
+    pub name: String,
+    /// `block` or `allow`.
+    pub kind: String,
+    /// `enforce` or `shadow`.
+    pub mode: String,
+    /// Entries in the active snapshot (names, regexes and modifier rules).
+    pub entries: u64,
+    /// Names no other list of its kind has: what turning it off would lose.
+    pub unique: u64,
+    /// Modifier rules and regexes: counted as unique, since overlap is by name.
+    pub rules: u64,
+    /// `(unique + rules)` as a share of `entries`, 0-100: what this list adds. 0 when it has
+    /// no entries compiled yet.
+    pub adds_percent: f64,
+    /// The lists it shares names with, most shared first (at most 5).
+    pub covered_by: Vec<ListCover>,
+    /// Groups that name this list in their own `lists` (a list they use by name is never
+    /// proposed for turning off).
+    pub groups: Vec<String>,
+}
+
+/// A list a prune would turn off.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPruneCandidate {
+    pub name: String,
+    pub entries: u64,
+    pub unique: u64,
+    /// What it adds as a share of its entries (the same number as in the overlap).
+    pub adds_percent: f64,
+    /// The most names turning it off, together with the others in this plan, could stop
+    /// blocking: its own unique names and rules, and names it shares with other lists in the
+    /// plan (an upper bound: a name another enabled list still has isn't lost).
+    pub loses_at_most: u64,
+    /// Lists that still have most of its names.
+    pub covered_by: Vec<ListCover>,
+}
+
+/// An enabled list a prune keeps, and why.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPruneKept {
+    pub name: String,
+    pub reason: String,
+}
+
+/// REQ: FLT-004 (T24.28, ADR-992) - what a prune would turn off at a threshold.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPrunePlan {
+    /// The threshold used: lists adding at most this share of their own entries.
+    pub threshold_percent: f64,
+    /// Lists that would be turned off, least-adding first.
+    pub candidates: Vec<ListPruneCandidate>,
+    /// Every other enabled list, with the reason it stays.
+    pub kept: Vec<ListPruneKept>,
+    /// An upper bound on the names the whole plan stops blocking (a share of the snapshot is
+    /// `of_names`).
+    pub loses_at_most: u64,
+    /// Names in the active snapshot.
+    pub of_names: u64,
+    /// In a sentence.
+    pub note: String,
+    /// True when the lists changed after the last compile finished (a list turned off or
+    /// edited): what each adds isn't known yet, so nothing is proposed. Preview again.
+    pub compile_pending: bool,
+    /// Version of the compiled snapshot the numbers come from (send it back to apply).
+    pub snapshot_version: u64,
+    /// Configuration version the plan was read at (send it back to apply).
+    pub config_version: u64,
+}
+
+/// `GET /api/v1/lists/overlap` and `GET /api/v1/lists/prune-plan` parameters.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct PruneParams {
+    /// Turn off lists adding at most this share of their entries, 0 to 50 (default 1).
+    #[serde(rename = "thresholdPercent")]
+    pub threshold_percent: Option<f64>,
+}
+
+/// REQ: FLT-004 (T24.28, ADR-992) - `POST /api/v1/lists/prune`.
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListsPruneRequest {
+    /// Lists adding at most this share of their entries, 0 to 50 (default 1).
+    #[serde(default)]
+    pub threshold_percent: Option<f64>,
+    /// The lists the person saw in the preview. Each must still be in the plan, or nothing is
+    /// changed (409).
+    pub names: Vec<String>,
+    /// The preview's `snapshotVersion`: another compile since is a 409.
+    pub snapshot_version: u64,
+    /// The preview's `configVersion`: any configuration change since is a 409.
+    pub config_version: u64,
+}
+
+/// REQ: FLT-004 (T24.28, ADR-992) - what a prune turned off.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListsPruneResult {
+    /// The lists now off. They stay in the configuration: turn one on again in Manage lists.
+    pub disabled: Vec<String>,
+    /// The configuration version after the last change.
+    pub config_version: u64,
+    pub note: String,
 }
 
 /// `GET /analytics/vqlog` parameters (REQ: AGT-012).
@@ -3321,6 +3472,20 @@ pub struct ClusterSecrets {
     pub held: u32,
 }
 
+/// REQ: CLU-009 (T24.33, ADR-1011) — a witness's part in the election, as this node sees it. A
+/// witness only votes: it has no configuration, no secrets and no DNS.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterVote {
+    /// Seconds since it last answered a vote request or lease renewal from this node (absent: this
+    /// node hasn't asked it, as in manual failover or on a node that isn't the primary).
+    pub last_reply_seconds_ago: Option<u64>,
+    /// Seconds since it last granted one.
+    pub last_grant_seconds_ago: Option<u64>,
+    /// The epoch it reported in its last reply (the epoch it voted in).
+    pub voted_epoch: Option<u64>,
+}
+
 /// One node in [`ClusterView`].
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 #[allow(clippy::struct_excessive_bools)] // independent flags of one record
@@ -3330,8 +3495,12 @@ pub struct ClusterNode {
     pub site: String,
     /// A Kubernetes resolver pod (CLU-009): dropped when no longer heard from.
     pub ephemeral: bool,
-    /// Votes in automatic failover only (ADR-056).
+    /// Votes in automatic failover only (ADR-056). A witness has no configuration version, no
+    /// secrets and no DNS: `configSeq`, `configLag`, `secrets` and `ready` mean nothing for it
+    /// (REQ: CLU-009, T24.33, ADR-1011), and the checks and alerts about them skip it.
     pub witness: bool,
+    /// REQ: CLU-009 (T24.33) — for a witness: its vote state (absent for other nodes).
+    pub vote: Option<ClusterVote>,
     /// The cluster protocol it speaks (CLU-010); nodes within one version work together.
     pub protocol: u32,
     /// The Git commit of the configuration it serves (ADR-049).
