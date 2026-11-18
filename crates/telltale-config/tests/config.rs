@@ -1894,4 +1894,27 @@ fn ups_013_parse_source() {
     }
     let c = telltale_config::Cidr::parse("198.51.100.252/24").unwrap();
     assert_eq!(c.network().to_string(), "198.51.100.0/24");
+
+/// REQ: T24.27 — every `TELLTALE_*` variable the binary itself reads (the shipped unit,
+/// bundles and chart set `TELLTALE_SUPERVISOR`) is known: none is warned about at start.
+#[test]
+fn t24_27_binary_env_vars_are_not_reported_unknown() {
+    let loaded = Loader::new()
+        .env([
+            ("TELLTALE_SUPERVISOR", "systemd"),
+            ("TELLTALE_IGNORE_GUARDED", "1"),
+            ("TELLTALE_TOKEN", "t"),
+            ("TELLTALE_LOG_DNSSEC_LIBRARY", "1"),
+            // A schema key (`node.drain_delay_secs`): applied, not reported.
+            ("TELLTALE_DRAIN_DELAY_SECS", "7"),
+        ])
+        .load()
+        .unwrap();
+    let unknown: Vec<_> = loaded
+        .warnings
+        .iter()
+        .filter(|w| w.contains("unknown environment variable"))
+        .collect();
+    assert!(unknown.is_empty(), "{unknown:?}");
+    assert_eq!(loaded.config.node.drain_delay_secs, 7);
 }

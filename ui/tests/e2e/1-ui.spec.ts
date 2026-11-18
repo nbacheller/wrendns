@@ -2144,6 +2144,116 @@ test('flt_004 lists fit a phone width (375 px)', async () => {
   }
 });
 
+// REQ: T24.27 — a list that failed shows why and offers the fix on its row: a raised limit for one
+// that is over its size limit, remove-or-replace for a 404, and turn-off/remove for a list whose names
+// are all in another. The changes are answered by a stand-in here (the lists stay as the suite expects).
+test('t24_27 list failures offer a fix', async () => {
+  const rowOf = (name: string) =>
+    page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: new RegExp(`^${name}$`) }) });
+  const failing = {
+    'e2e-block': {
+      state: 'failed',
+      source: 'https://lists.e2e.test/big.txt',
+      error: 'larger than the 67108864-byte limit (the server says it is 70000000 bytes; raise max_bytes for this list)',
+    },
+    'e2e-shadow': { state: 'failed', source: 'https://lists.e2e.test/gone.txt', error: 'HTTP 404 Not Found' },
+  } as Record<string, object>;
+  await page.route('**/api/v1/lists', async (route) => {
+    const r = await route.fetch();
+    const json = await r.json();
+    json.items = json.items.map((l: { name: string }) => ({ ...l, ...(failing[l.name] ?? {}) }));
+    await route.fulfill({ response: r, json });
+  });
+  const changes: { method: string; url: string; body: Record<string, unknown> | null }[] = [];
+  await page.route(/\/api\/v1\/lists\/e2e-(block|shadow)$/, async (route) => {
+    const req = route.request();
+    changes.push({ method: req.method(), url: req.url(), body: req.postDataJSON() });
+    await route.fulfill({ status: 200, json: { applied: true, configVersion: 1 } });
+  });
+  try {
+    await page.goto('/#/lists');
+    await page.reload(); // the page is read through the stand-in
+    // Over the size limit: the size seen, plus a quarter, in whole MiB; one click sets this list's limit.
+    const big = rowOf('e2e-block');
+    await expect(big.getByTestId('list-too-large')).toContainText('bigger than its 64.0 MiB limit');
+    const raise = big.getByTestId('list-raise-limit');
+    await expect(raise).toHaveText('Raise the limit to 84 MiB');
+    await raise.click();
+    await expect(page.getByTestId('list-fix-note')).toContainText('the limit is now 84 MiB');
+    expect(changes).toHaveLength(1);
+    expect(changes[0].method).toBe('PUT');
+    expect(changes[0].body).toMatchObject({ max_bytes: '84MiB', rules: ['||ads.e2e.test^'] });
+    // Not found: said plainly, with remove (asking first).
+    const gone = rowOf('e2e-shadow');
+    await expect(gone.getByTestId('list-not-found')).toContainText('returns "not found" (HTTP 404)');
+    await expect(gone.getByTestId('list-not-found')).toContainText('Remove it, or replace it');
+    await gone.getByTestId('list-remove').click();
+    expect(changes).toHaveLength(1);
+    await gone.getByTestId('list-remove-confirm').click();
+    await expect(page.getByTestId('list-fix-note')).toContainText('e2e-shadow was removed');
+    expect(changes[1].method).toBe('DELETE');
+    expect(changes[1].url).toMatch(/\/api\/v1\/lists\/e2e-shadow$/);
+  } finally {
+    await page.unroute('**/api/v1/lists');
+    await page.unroute(/\/api\/v1\/lists\/e2e-(block|shadow)$/);
+  }
+  // Above the cap the page doesn't offer a limit it won't allow.
+  failing['e2e-block'] = {
+    state: 'failed',
+    source: 'https://lists.e2e.test/huge.txt',
+    error: `larger than the ${128 * 1024 * 1024}-byte limit (raise max_bytes for this list)`,
+  };
+  await page.route('**/api/v1/lists', async (route) => {
+    const r = await route.fetch();
+    const json = await r.json();
+    json.items = json.items.map((l: { name: string }) => ({ ...l, ...(failing[l.name] ?? {}) }));
+    await route.fulfill({ response: r, json });
+  });
+  try {
+    await page.reload();
+    await expect(rowOf('e2e-block').getByTestId('list-too-large')).toContainText('remove it or use a smaller list');
+    await expect(rowOf('e2e-block').getByTestId('list-raise-limit')).toHaveCount(0);
+  } finally {
+    await page.unroute('**/api/v1/lists');
+  }
+  // Pruning: every name is in another list.
+  const redundantChanges: Record<string, unknown>[] = [];
+  // A shadow list never blocks, so it is not a cover: no offer until the cover enforces.
+  let coverOverride: Record<string, unknown> = { state: 'ok', enabled: true, mode: 'shadow', kind: 'block', unique: 5 };
+  await page.route('**/api/v1/lists', async (route) => {
+    const r = await route.fetch();
+    const json = await r.json();
+    json.items = json.items.map((l: { name: string }) =>
+      l.name === 'e2e-block'
+        ? { ...l, state: 'ok', enabled: true, entries: 5, unique: 0, overlap: [{ list: 'e2e-shadow', names: 5 }] }
+        : l.name === 'e2e-shadow'
+          ? { ...l, ...coverOverride }
+          : l,
+    );
+    await route.fulfill({ response: r, json });
+  });
+  await page.route(/\/api\/v1\/lists\/e2e-block$/, async (route) => {
+    redundantChanges.push(route.request().postDataJSON());
+    await route.fulfill({ status: 200, json: { applied: true, configVersion: 1 } });
+  });
+  try {
+    await page.reload();
+    const row = rowOf('e2e-block');
+    await expect(row).toBeVisible();
+    await expect(row.getByTestId('list-redundant')).toHaveCount(0);
+    coverOverride = { state: 'ok', enabled: true, mode: 'enforce', kind: 'block', unique: 5, entries: 5 };
+    await page.reload();
+    await expect(row.getByTestId('list-redundant')).toContainText('Every name in it is also in e2e-shadow');
+    await row.getByTestId('list-turn-off').click();
+    await expect(page.getByTestId('list-fix-note')).toContainText('e2e-block is off');
+    expect(redundantChanges[0]).toMatchObject({ enabled: false });
+  } finally {
+    await page.unroute('**/api/v1/lists');
+    await page.unroute(/\/api\/v1\/lists\/e2e-block$/);
+    await page.goto('/#/lists');
+  }
+});
+
 test('api_002 upstreams and lists can be added, overridden, and reverted', async () => {
   const r = page.request;
   const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
