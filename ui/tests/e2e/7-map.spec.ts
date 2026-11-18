@@ -236,6 +236,25 @@ test('obs_901 layout shows gateway networks devices nodes upstreams', async ({ b
   await o.ctx.close();
 });
 
+// REQ: OBS-901, UPS-006 (fork #25) — the route and group reasons reach the tooltips.
+test('obs_901 no_route and member_down reasons are drawn in the tooltips', async ({ browser }) => {
+  const base = fixture();
+  const snap: Snapshot = {
+    ...base,
+    nodes: base.nodes.map((n) => {
+      if (n.id === 'up:cloudflare') return { ...n, health: 'yellow' as const, reasons: [{ code: 'no_route', summary: 'node-a: no route to 2606:4700::1111' }] };
+      if (n.id === 'res:node-a') return { ...n, health: 'yellow' as const, reasons: [{ code: 'member_down', summary: 'google is down, the rest of its group answers' }] };
+      return n;
+    }),
+  };
+  const o = await open(browser, snap);
+  await go(o);
+  await expect(o.page.locator('[data-node="up:cloudflare"] title')).toContainText('no route to 2606:4700::1111');
+  await expect(o.page.locator('[data-node="res:node-a"] title')).toContainText('the rest of its group answers');
+  expect(o.problems).toEqual([]);
+  await o.ctx.close();
+});
+
 test('obs_901 colour states have shape and words', async ({ browser }) => {
   const o = await open(browser);
   await go(o);

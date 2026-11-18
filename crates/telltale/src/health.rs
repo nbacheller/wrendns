@@ -302,6 +302,18 @@ fn upstream_reasons(upstreams: &[UpstreamInfo], out: &mut Vec<HealthReason>) {
             ));
         }
     }
+    // REQ: UPS-006 — no route to the address while the breaker is still closed (a spare nobody
+    // has asked yet): the map shows it yellow, so say why here too.
+    for u in upstreams.iter().filter(|u| !down(u)) {
+        if let Some(p) = &u.route_problem {
+            out.push(reason(
+                DEGRADED,
+                "upstream_no_route",
+                format!("upstream {}: {p}", u.name),
+                "#/upstreams",
+            ));
+        }
+    }
     for u in upstreams
         .iter()
         .filter(|u| down(u) && !covered.contains(u.name.as_str()))
@@ -571,6 +583,20 @@ mod tests {
             cert_warn_days: 14,
             kubernetes_stale_s: None,
         }
+    }
+
+    // REQ: UPS-006 — an upstream with no route and a closed breaker is a warning, as on the map.
+    #[test]
+    fn ups_006_no_route_with_closed_breaker_degrades() {
+        let mut u = up("spare", &["g"], "closed");
+        u.route_problem = Some("no route to 10.9.9.9".into());
+        let mut out = Vec::new();
+        upstream_reasons(&[u], &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            (out[0].level.as_str(), out[0].code.as_str()),
+            (DEGRADED, "upstream_no_route")
+        );
     }
 
     // REQ: FLT-017 (ADR-150) — a watcher's table older than 15 minutes degrades, with the
