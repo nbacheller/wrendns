@@ -402,7 +402,7 @@ pub(crate) fn is_answer(reply: &[u8], id: u16) -> bool {
     reply.len() >= 12 && reply[..2] == id.to_be_bytes() && reply[2] & 0x80 != 0
 }
 
-fn ask_udp(addr: SocketAddr, wait: Duration) -> bool {
+pub(crate) fn ask_udp(addr: SocketAddr, wait: Duration) -> bool {
     static NEXT: AtomicU16 = AtomicU16::new(0x7e57);
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let bind: SocketAddr = match addr.ip() {

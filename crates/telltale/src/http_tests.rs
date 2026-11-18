@@ -447,3 +447,62 @@ fn clu_002_device_names_fall_back_to_the_peers() {
         .store(Arc::new([(ip, lease("k8s-local"))].into()));
     assert_eq!(name().as_deref(), Some("k8s-local"), "own sources first");
 }
+
+/// REQ: OPS-901 (T24.35, ADR-1014) — `/readyz` answers 200 only while the node's own UDP
+/// listener answers a query; when it doesn't, 503 `dns_unanswered`, and the body says nothing
+/// about the configuration. The check names the probe, which the query log never keeps (OBS-020).
+#[tokio::test]
+async fn ops_901_readyz_asks_the_listener() {
+    let fake = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let addr = fake.local_addr().unwrap();
+    let asked = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let seen = Arc::clone(&asked);
+    let t = std::thread::spawn(move || {
+        let mut buf = [0u8; 512];
+        // One question, answered as a resolver would (QR set, NXDOMAIN).
+        if let Ok((n, from)) = fake.recv_from(&mut buf) {
+            *seen.lock().unwrap() = buf[..n].to_vec();
+            let mut reply = buf[..n].to_vec();
+            reply[2] |= 0x80;
+            reply[3] = (reply[3] & 0xf0) | 3;
+            let _ = fake.send_to(&reply, from);
+        }
+    });
+    let mut src = sources();
+    let mut cfg = telltale_config::Config::default();
+    cfg.listen = vec![telltale_config::Listener {
+        proto: telltale_config::ListenProto::Udp,
+        addr,
+        ..serde_json::from_value(serde_json::json!({"proto": "udp", "addr": "127.0.0.1:53"})).unwrap()
+    }];
+    src.config = ArcSwap::from_pointee(cfg);
+    let src = Arc::new(src);
+    let ask = |src: &Arc<Sources>| {
+        let src = Arc::clone(src);
+        async move {
+            let r = readyz(State(src), axum::extract::Query(ReadyQuery { startup: None })).await;
+            let status = r.status().as_u16();
+            let body = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
+            (status, String::from_utf8(body.to_vec()).unwrap())
+        }
+    };
+    // Off until the real listeners are up: no question is asked.
+    assert_eq!(ask(&src).await, (200, "{\"ready\":true}\n".into()));
+    assert!(asked.lock().unwrap().is_empty(), "nothing was asked yet");
+    src.readiness.enable_dns_check();
+    assert_eq!(ask(&src).await, (200, "{\"ready\":true}\n".into()));
+    t.join().unwrap();
+    let q = asked.lock().unwrap().clone();
+    assert!(
+        q.windows(telltale_telemetry::event::PROBE_NAME.len())
+            .any(|w| w == telltale_telemetry::event::PROBE_NAME),
+        "the question names the probe, which the log never keeps"
+    );
+    // The answer is reused for a second: no second question, still 200.
+    assert_eq!(ask(&src).await.0, 200);
+    // Then the listener is gone: nothing answers, so not ready, and the body says only why.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let (status, body) = ask(&src).await;
+    assert_eq!(status, 503);
+    assert_eq!(body, "{\"ready\":false,\"reason\":\"dns_unanswered\"}\n");
+}

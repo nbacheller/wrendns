@@ -1863,6 +1863,10 @@
           "type": "boolean",
           "default": true
         },
+        "log": {
+          "description": "REQ: OBS-903 (T24.35, ADR-1014) — queries kept out of the query log (and the live view and\nevent sinks) only. Unlike the lists above they are still counted in the statistics\n(dashboard, top lists, anomalies) and `/metrics`.",
+          "$ref": "#/$defs/LogExclusions"
+        },
         "names": {
           "description": "Names left out, each with its subdomains (`ntp.org` covers `pool.ntp.org`; a leading\n`*.` means the same).",
           "type": "array",
@@ -2679,6 +2683,36 @@
         "type",
         "value"
       ]
+    },
+    "LogExclusions": {
+      "description": "REQ: OBS-903 (T24.35, ADR-1014) — what stays out of the query log but still counts in the\nstatistics. Applied when the event is written, on the aggregator thread.",
+      "type": "object",
+      "properties": {
+        "clients": {
+          "description": "Clients left out of the log: addresses (`192.168.1.10`), networks (`10.20.0.0/24`), or\ndevice names (`[[client]] name`, resolved on every reload).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "domains": {
+          "description": "Domains left out of the log: `localhost` is that name only; `*.lan` is every name under it\n(not `lan` itself).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "own_lookups": {
+          "description": "This node's own lookups (loopback and the node's own addresses: a health check, a\nwatchdog, programs on the host) stay out of the log.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
     },
     "MapConfig": {
       "description": "REQ: OBS-901 (T26.2, ADR-958 section 4) — the live network map: a sampler on the aggregator\nthread (never on the DNS path) and the thresholds that colour the map green, yellow or red.\nShared by the whole cluster; also in Settings -> Monitoring.",
