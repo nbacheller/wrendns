@@ -2,6 +2,7 @@
 // dashboard, the query log and "Why?", explain, tokens, users and roles, sign-out/in, and a
 // phone-width layout, and the masked-client-IP banner. Any CSP violation or page error fails the suite.
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { query } from './dns';
@@ -842,6 +843,48 @@ test('admins add users; viewers see less', async () => {
   await page.goto('/');
   await signIn(ADMIN.user, ADMIN.pass);
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+});
+
+// REQ: API-003 (issue #64) — a real 6-digit code goes through the browser's own checks: the box on
+// Settings -> Account that turns two-factor on, and the one on the sign-in form. Both carried a
+// `pattern` that Svelte turned into `[0-9]6`, so no code could be entered and two-factor could not
+// be used from the UI at all. The codes are made here from the secret the page shows (RFC 6238).
+const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+function totpAt(secretBase32: string, ms: number): string {
+  const bits = [...secretBase32.toUpperCase()].map((c) => BASE32.indexOf(c).toString(2).padStart(5, '0')).join('');
+  const key = Buffer.from((bits.match(/.{8}/g) ?? []).map((b) => parseInt(b, 2)));
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(Math.floor(ms / 30_000)));
+  const h = createHmac('sha1', key).update(counter).digest();
+  const o = h[19] & 0x0f;
+  const n = ((h[o] & 0x7f) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3];
+  return String(n % 1_000_000).padStart(6, '0');
+}
+
+test('api_003 two-factor works from the browser: turn it on, sign in with a code, turn it off', async () => {
+  // The helper first: RFC 6238's own secret ("12345678901234567890") at 59 s gives 94287082.
+  expect(totpAt('GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', 59_000)).toBe('287082');
+  await page.goto('/#/settings?tab=account');
+  await page.getByRole('button', { name: 'Set up two-factor sign-in' }).click();
+  const secret = ((await page.locator('div.mono.key').textContent()) ?? '').replace(/\s/g, '');
+  expect(secret).toMatch(/^[A-Z2-7]{32}$/);
+  await page.getByPlaceholder('123456').fill(totpAt(secret, Date.now()));
+  await page.getByRole('button', { name: 'Turn on' }).click();
+  await expect(page.getByText('Save these recovery codes now.')).toBeVisible();
+  // Sign in again: the password, then the code. The server takes each time step's code once, so
+  // this one is the next step's (it accepts one step of clock skew).
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+  await signIn(ADMIN.user, ADMIN.pass);
+  await expect(page.getByText('Enter the 6-digit code from your authenticator app.')).toBeVisible();
+  await page.locator('input[name="totp"]').fill(totpAt(secret, Date.now() + 30_000));
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+  await expect(page.getByText('recovery codes left')).toBeVisible();
+  // Leave the admin as the other tests expect it: no second factor.
+  await page.getByLabel('Password, to turn it off').fill(ADMIN.pass);
+  await page.getByRole('button', { name: 'Turn off two-factor' }).click();
+  await expect(page.getByRole('button', { name: 'Set up two-factor sign-in' })).toBeVisible();
 });
 
 test('works at phone width (360 px)', async () => {
