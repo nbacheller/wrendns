@@ -163,6 +163,11 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/simulate-settings/default",
             put(put_simulate_settings).delete(delete_simulate_settings),
         )
+        // REQ: OBS-901 (T26.2, ADR-958) — `[map]`.
+        .route(
+            "/api/v1/map-settings/default",
+            put(put_map_settings).delete(delete_map_settings),
+        )
         // REQ: DNS-019 (T24.12, ADR-904, ADR-914) — `[special]`.
         .route(
             "/api/v1/special-names/default",
@@ -1564,6 +1569,76 @@ pub(crate) async fn delete_simulate_settings(
     .await
 }
 
+/// The live network map's settings (OBS-901).
+///
+/// The body has the same fields as `[map]` in `telltale.toml`: `enabled`, `event_rate` (lookups
+/// per second each node samples, 10 to 2,000), `min_sample` (answers before a device or edge is
+/// coloured, 1 to 1,000), `warn_latency_ms` (unset: the latency objective's), and the percent
+/// thresholds `warn_slow_pct`, `warn_error_pct`, `error_pct` and `warn_blocked_pct` (1 to 100;
+/// `error_pct` at least `warn_error_pct`). It replaces the whole section until it's deleted
+/// again, on every node of a cluster, and applies within a few seconds with no restart.
+#[utoipa::path(put, path = "/api/v1/map-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A value is out of range (the detail names the field), or the configuration wouldn't be valid."),
+    ))]
+pub(crate) async fn put_map_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /map-settings/default {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        "default".to_owned(),
+        Op::Managed(ManagedKind::Map, Some(input)),
+    )
+    .await
+}
+
+/// Go back to the config file's map settings (OBS-901).
+///
+/// Removes what the API or UI stored, so `[map]` in the config files (or the defaults)
+/// applies again. 404 when nothing was stored.
+#[utoipa::path(delete, path = "/api/v1/map-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+    ))]
+pub(crate) async fn delete_map_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        "DELETE /map-settings/default".to_owned(),
+        "default".to_owned(),
+        Op::Managed(ManagedKind::Map, None),
+    )
+    .await
+}
+
 /// Set the special-name handling (DNS-019, ADR-904).
 ///
 /// The body has the fields of `[special]` in `telltale.toml`: `block_firefox_canary`, `localhost`,
@@ -1901,6 +1976,7 @@ impl Op {
             Self::Managed(ManagedKind::RateLimit, _) => "ratelimit",
             Self::Managed(ManagedKind::Exclusions, _) => "exclusions",
             Self::Managed(ManagedKind::Simulate, _) => "simulate",
+            Self::Managed(ManagedKind::Map, _) => "map",
             Self::Managed(ManagedKind::Rollout, _) => "rollout_settings",
             Self::Managed(ManagedKind::KubernetesMap, _) => "kubernetes_map",
             Self::Managed(ManagedKind::Special, _) => "special",

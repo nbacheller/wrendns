@@ -33,7 +33,7 @@ telltale-config = { version = "0.8.0", path = "../telltale-config" }
 telltale-store = { version = "0.8.0", path = "../telltale-store" }
 # REQ: OBS-017 — trace IDs (already a dependency of telltale-store).
 telltale-telemetry = { version = "0.8.0", path = "../telltale-telemetry" }
-tokio = { version = "1.53.2", features = ["rt", "sync"] }
+tokio = { version = "1.53.2", features = ["rt", "sync", "time"] }
 tracing = "0.1"
 totp-rs = { version = "6.0.0", default-features = false, features = ["std"] }
 # REQ: AGT-006 (ADR-065) — MCP tools call the REST routes in-process (already in the tree via

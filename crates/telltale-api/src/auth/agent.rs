@@ -73,6 +73,11 @@ pub const SCOPES: &[(&str, &str)] = &[
         "config:write:simulate",
         "change the change-simulation settings (on/off, bounds, plans simulating by default)",
     ),
+    // REQ: OBS-901 (T26.2, ADR-958) — the live map's sampling rate and health thresholds.
+    (
+        "config:write:map",
+        "change the live network map's settings (on/off, sampling rate, and the thresholds that colour it)",
+    ),
     // REQ: DNS-019 (T24.12, ADR-914) — the special-name switches; `ddr_name` is an admin's.
     (
         "config:write:special",
@@ -190,6 +195,11 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/cache/lookup"
             | "/api/v1/cache/entries"
             | "/api/v1/blocking"
+            // REQ: OBS-901 (ADR-958) — the live network map (no domain name is in it).
+            | "/api/v1/map"
+            | "/api/v1/map/stream"
+            | "/api/v1/map/world"
+            | "/api/v1/map/health"
             // REQ: OBS-033 — change markers.
             | "/api/v1/annotations" => {
                 return Need::Scope("analytics:read");
@@ -278,6 +288,10 @@ pub fn required(method: &Method, path: &str) -> Need {
         // REQ: OBS-024 (T13.1)
         if under("/api/v1/simulate-settings") {
             return Need::Scope("config:write:simulate");
+        }
+        // REQ: OBS-901 (T26.2, ADR-958) — `[map]`; the GeoIP settings (T26.4) are admin-only.
+        if under("/api/v1/map-settings") {
+            return Need::Scope("config:write:map");
         }
         // REQ: API-016 (T23.7, ADR-903 §5) — routers are admin-only and have no agent scope.
         if under("/api/v1/routers") {
@@ -1030,8 +1044,8 @@ mod tests {
         let s = parse_scopes(&["config:write:*".into(), "analytics:read".into()]).unwrap();
         assert_eq!(
             s.len(),
-            15,
-            "fourteen write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts, ratelimit, anomalies, exclusions, simulate, special, local) + analytics"
+            16,
+            "fifteen write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts, ratelimit, anomalies, exclusions, simulate, map, special, local) + analytics"
         );
         assert!(s.contains("config:write:upstreams") && s.contains("config:write:lists"));
         assert!(s.contains("config:write:rules"));

@@ -475,6 +475,34 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("health".into(), "/api/v1/system/health".into())]),
         },
+        // REQ: OBS-901 (T26.2, ADR-958)
+        Tool {
+            name: "network_health",
+            description: "Read-only. How is the network doing, as the live map sees it? Counts of nodes by health (green, yellow, red, idle), the red and yellow nodes with their reasons (at most 50: a device failing lookups, a slow or benched upstream, a resolver node that is down, a router integration that is failing), and the five busiest flows. The map is built from a sample of recent lookups (sampleRate says how thin; 'idle' means too few answers to say). Device names and addresses appear at query-log privacy levels 0 and 1; at level 2 and above devices are hidden and only networks, nodes and upstreams are listed. No domain name is ever in it. Optional filters narrow it to one network, group, device or node. Needs analytics:read. Answers map_disabled when [map] is off.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "network": {"type": "string", "description": "Only this network (a name from list_networks / GET /api/v1/networks)."},
+                "group": {"type": "string", "description": "Only devices of this client group."},
+                "device": {"type": "string", "description": "Only devices whose name or address contains this text."},
+                "node": {"type": "string", "description": "Only this TelltaleDNS node (pod, site or ID)."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                Ok(vec![(
+                    "networkHealth".into(),
+                    query(
+                        "/api/v1/map/health",
+                        a,
+                        &[
+                            ("network", "network"),
+                            ("group", "group"),
+                            ("device", "device"),
+                            ("node", "node"),
+                        ],
+                    ),
+                )])
+            },
+        },
         // REQ: OBS-018 (ADR-109)
         Tool {
             name: "shadow_lists",
@@ -1503,6 +1531,56 @@ pub fn write_tools() -> Vec<WriteTool> {
                     summary: format!("Set the query-log exclusions ({})", what.join(", ")),
                     body: Some(Value::Object(body)),
                     merge: Some(("exclusions", "default".to_owned())),
+                })
+            },
+        },
+        // REQ: OBS-901, AGT-007 (T26.2, ADR-958) — the live map's sampling and thresholds, as a plan.
+        WriteTool {
+            name: "plan_set_map",
+            description: "Plans a change (nothing changes until apply_plan). Changes the live network map's settings: whether it runs, how many lookups per second each node samples (`eventRate`, 10 to 2,000), how many sampled answers a device or edge needs before it is coloured (`minSample`), what counts as slow (`warnLatencyMs`; null follows the latency objective), and the percent thresholds that turn it yellow or red (`warnSlowPct`, `warnErrorPct`, `errorPct`, `warnBlockedPct`, 1 to 100; `errorPct` at least `warnErrorPct`). Fields left out keep their current values. It changes only what the map shows, never an answer. Applies to every node within a few seconds. Needs config:write:map (and config:read to read the current settings).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "enabled": {"type": "boolean", "description": "Turn the map on or off (off: no sampling, and the map routes answer map_disabled)."},
+                "eventRate": {"type": "integer", "minimum": 10, "maximum": 2000, "description": "Lookups per second each node samples."},
+                "minSample": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "Sampled answers needed before something is coloured (fewer is idle)."},
+                "warnLatencyMs": {"type": ["integer", "null"], "minimum": 1, "maximum": 60000, "description": "An answer slower than this is slow; null follows [slo] latency_ms."},
+                "warnSlowPct": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Yellow at this percent of slow answers."},
+                "warnErrorPct": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Yellow at this percent of SERVFAIL or timeouts."},
+                "errorPct": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Red at this percent of SERVFAIL or timeouts (at least warnErrorPct)."},
+                "warnBlockedPct": {"type": "integer", "minimum": 1, "maximum": 100, "description": "A device turns yellow at this percent of blocked answers."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let mut body = pick(
+                    a,
+                    &[
+                        ("enabled", "enabled"),
+                        ("eventRate", "event_rate"),
+                        ("minSample", "min_sample"),
+                        ("warnLatencyMs", "warn_latency_ms"),
+                        ("warnSlowPct", "warn_slow_pct"),
+                        ("warnErrorPct", "warn_error_pct"),
+                        ("errorPct", "error_pct"),
+                        ("warnBlockedPct", "warn_blocked_pct"),
+                    ],
+                );
+                // An explicit null goes back to following the latency objective.
+                if a.get("warnLatencyMs").is_some_and(Value::is_null) {
+                    body.insert("warn_latency_ms".to_owned(), Value::Null);
+                }
+                if body.is_empty() {
+                    return Err("give at least one setting to change".into());
+                }
+                let what: Vec<&str> = body.keys().map(String::as_str).collect();
+                Ok(Write {
+                    method: "PUT",
+                    path: "/api/v1/map-settings/default".to_owned(),
+                    summary: format!("Set the live map's settings ({})", what.join(", ")),
+                    body: Some(Value::Object(body)),
+                    merge: Some(("map", "default".to_owned())),
                 })
             },
         },

@@ -538,6 +538,38 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. How is the network doing, as the live map sees it? Counts of nodes by health (green, yellow, red, idle), the red and yellow nodes with their reasons (at most 50: a device failing lookups, a slow or benched upstream, a resolver node that is down, a router integration that is failing), and the five busiest flows. The map is built from a sample of recent lookups (sampleRate says how thin; 'idle' means too few answers to say). Device names and addresses appear at query-log privacy levels 0 and 1; at level 2 and above devices are hidden and only networks, nodes and upstreams are listed. No domain name is ever in it. Optional filters narrow it to one network, group, device or node. Needs analytics:read. Answers map_disabled when [map] is off.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "device": {
+          "description": "Only devices whose name or address contains this text.",
+          "type": "string"
+        },
+        "group": {
+          "description": "Only devices of this client group.",
+          "type": "string"
+        },
+        "network": {
+          "description": "Only this network (a name from list_networks / GET /api/v1/networks).",
+          "type": "string"
+        },
+        "node": {
+          "description": "Only this TelltaleDNS node (pod, site or ID).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "network_health"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. What would a list block if it were turned on? For each list in shadow mode (compiled and checked, never blocking): the queries it would have blocked since start, the devices, the names most often, and the last one. Use it to judge a new list before enforcing it (then plan_add_list or a config change to set mode = enforce).",
     "inputSchema": {
       "additionalProperties": false,
@@ -1871,6 +1903,82 @@
       "type": "object"
     },
     "name": "plan_set_exclusions"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Changes the live network map's settings: whether it runs, how many lookups per second each node samples (`eventRate`, 10 to 2,000), how many sampled answers a device or edge needs before it is coloured (`minSample`), what counts as slow (`warnLatencyMs`; null follows the latency objective), and the percent thresholds that turn it yellow or red (`warnSlowPct`, `warnErrorPct`, `errorPct`, `warnBlockedPct`, 1 to 100; `errorPct` at least `warnErrorPct`). Fields left out keep their current values. It changes only what the map shows, never an answer. Applies to every node within a few seconds. Needs config:write:map (and config:read to read the current settings).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "description": "Turn the map on or off (off: no sampling, and the map routes answer map_disabled).",
+          "type": "boolean"
+        },
+        "errorPct": {
+          "description": "Red at this percent of SERVFAIL or timeouts (at least warnErrorPct).",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "eventRate": {
+          "description": "Lookups per second each node samples.",
+          "maximum": 2000,
+          "minimum": 10,
+          "type": "integer"
+        },
+        "minSample": {
+          "description": "Sampled answers needed before something is coloured (fewer is idle).",
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
+        },
+        "warnBlockedPct": {
+          "description": "A device turns yellow at this percent of blocked answers.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "warnErrorPct": {
+          "description": "Yellow at this percent of SERVFAIL or timeouts.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "warnLatencyMs": {
+          "description": "An answer slower than this is slow; null follows [slo] latency_ms.",
+          "maximum": 60000,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "warnSlowPct": {
+          "description": "Yellow at this percent of slow answers.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_set_map"
   },
   {
     "annotations": {
