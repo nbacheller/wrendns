@@ -1299,7 +1299,7 @@ Order:
     - `dsc_012_conflict_or_randomized_gives_no_address`;
     - `dsc_012_n1_peer_ignores_field`;
     - `make bench-smoke` and `bench.py --devices 1000` before and after (the query path stays one lock-free load).
-- [ ] **T25.17 Deploy and closing.** *(DSC-001, DOC-006, OPS-004)* Depends on every M25 task.
+- [ ] **T25.17 Deploy and closing.** *(DSC-001, DOC-006, OPS-004)* Depends on every M25 task, T25.18 included (its read direction; its write steps wait on ADR-999 and are listed Open if not built).
   - Compose, Helm and systemd notes:
     - no new capabilities; the workers run under the same unit and sandbox;
     - `OOMPolicy=continue`;
@@ -1316,6 +1316,77 @@ Order:
     - homelab bench-smoke within 5% with discovery on;
     - docs and site reviewed;
     - every M25 box ticked, with *Open* items listed: per-VLAN SNMP contexts, the UniFi fingerprint map, identity feeding identify, and import replication.
+
+- [ ] **T25.18 UniFi device and group sync.** [owner request 2026-11-18] *(DSC-016, DSC-017, API-016, AGT-001..005; ADR-998, ADR-999 (both Proposed), amends ADR-912's "reads only")* Depends on T25.10 and the router integration (M22, M23). **Design is this entry and the two ADRs; nothing is built until the owner accepts ADR-998 and ADR-999.** The sync keeps the membership of a TelltaleDNS group and one UniFi group object the same, in either direction chosen per link. It syncs **membership only**; categories and policy are not mapped (ADR-998 §11). The owner's premise that UniFi's content filtering is traffic-level, not DNS-level, is unconfirmed and public sources say the opposite (ADR-998); the product text claims neither until the owner confirms.
+  - **Decide the order of work.** Steps 1 and 2 are small and safe and come first; the read-only direction (steps 3 to 7) is useful without ADR-999; the write steps (8, 9) need both ADRs accepted.
+  - **1. Capability check (no code on the DNS path, no request to the owner's gateway by anyone but the owner).** Find out which UniFi object holds device-group members and how to read and write it, from the gateway's own OpenAPI document (`/proxy/network/api-docs/integration.json`), which **the owner downloads and places in the repository as a fixture**, or from the owner's browser's network log of creating a device group; record the path, the member form (MAC or client ID), whether offline clients are members, the write method, the CSRF need, the role a key or user needs, and whether UniFi's admin log shows the write. Output: a short `docs/unifi-sync-capabilities.md` and an update to ADR-998 §2 (the first backend kind), or a note that no API exists, which stops the task at this step and is reported to the owner. Decision Q1 covers how it is done.
+  - **2. The pure merge.** `crates/telltale/src/unifi_sync/merge.rs` (no I/O): inputs B, U, T (sets of MACs with flags `private`, `syncable`), the mode, the guard limits; output a `Plan` of changes by side and device, the held and conflict items, and the reasons for each skip. Property tests: convergence, idempotence (applying the plan then merging again gives an empty plan), no removal without a baseline, no oscillation, a change on both sides in the same way is a no-op, and unsyncable devices are never touched.
+  - **3. The read client.** `GroupBackend::list_objects` and `::members` for the first kind over the router's existing session or key (the inventory thread's shared session, ADR-912; the read credential only). Row and byte caps as T25.10 (4 MiB, 8,192 rows). Device strings are untrusted (DSC-015).
+  - **4. Links and settings.** `[[group_link]]` as a shared managed kind `group_links` (`/api/v1/group-links[/{id}]`; create, change of mode and unlink are admin-only; an operator may pause) and `[unifi_sync]` (`enabled`, `writes_enabled`, `interval_secs`, `max_changes_per_round`, `mass_change_percent`, `baseline_max_age`, `stale_alert_rounds`) as an admin-only singleton `unifi-sync` (an operator or agent may only turn `enabled` off). Validation: the group and router exist, one link per group per router, one link per UniFi object, `kind` known. Regenerate OpenAPI, config schema, UI types and the MCP snapshot.
+  - **5. The preview and the apply (read direction).** `POST /api/v1/group-links/{id}/preview` (read, off the query path, bounded; returns the plan with a `preview_id`, each device's before and after effective policy from the T24.30 resolver, the skipped and private and unmatched lists, the held items) and `POST /api/v1/group-links/{id}/apply` with the `preview_id` (409 `preview_stale` if either side changed). The TelltaleDNS-side changes are config writes through the normal path with `origin = sync:<id>`, one audit record per change, and created devices `[[client]] name, match = [mac], groups = [group]`.
+  - **6. The sync thread, on the primary.** Its own thread and runtime like the inventory (ADR-912, ADR-930's gate: not an ephemeral pod, not a witness, only the primary), a timer at `interval_secs`, one round per link at a time, baselines in `state.db` (sent best-effort to peers, a missing one makes the link held and additive-only), stale and flapping states, `telltale_unifi_sync_*` metrics (rounds, changes by side and kind, held, conflicts, stale links, write failures), alerts `unifi_sync_stale` and `unifi_sync_flapping`.
+  - **7. The conflict view.** `GET /api/v1/group-links/{id}/conflicts` and `POST .../resolve` (per row: take UniFi, take TelltaleDNS, keep both, skip), shaped like T31.3's conflict rows so M31 can absorb it.
+  - **8. The write client (ADR-999; after the owner accepts it).** `unifi_write::member_op` as the only function that holds the write credential and builds a write; `write_api_key_ref` and `write_username`/`write_password_ref` on `[[router]]` through the M23 store (`SecretField`, `discovery`-style names `router.<name>.write_api_key`); audit before the request; one write a second, 50 changes a round; no redirects; the pinned TLS settings; verify by re-read before the baseline advances; the Check button (a read of the target object and the account's role where reported).
+  - **9. Write modes.** `telltale_definitive` and `two_way` in the merge's apply, behind `writes_enabled` and the admin's applied preview; *Undo last round*; the flapping pause; the mass-change guard in both directions.
+  - **10. API, MCP and agents.** Every operation in OpenAPI with dry run, `Idempotency-Key` and reason (AGT-001..006); MCP read tools `list_group_links`, `get_group_link_preview`, `get_unifi_sync_status` and plan tools `plan_link_group`, `plan_set_group_link_mode`, `plan_unlink_group`; no agent scope applies a preview or a plan that writes to UniFi (403 `agent_not_allowed`, as ADR-903 §5); spec/13 rows; a plan response says `propagates_to_unifi` for a group in a write mode.
+  - **11. UI (standing rule).**
+    - Groups page, per group, a **Linked to UniFi** card: the link state chip (in sync, held, stale, flapping, broken, paused); **Link to UniFi…** (admin) opens a dialog: router, the UniFi objects read from the gateway (searchable, a same-name one only suggested), mode as three radio choices with one sentence each (UniFi is definitive, TelltaleDNS is definitive, both ways), and the switches *Create missing devices* and *Include private MACs*; **Preview** (a table by side and device with the badges *private MAC*, *no MAC, skipped*, *unmatched*, each device's change in effective policy, and a held banner with the reason), **Apply** (admin, only the previewed plan), Pause, **Unlink** (says it deletes nothing). A banner on a linked group's membership editor, for any role, says a change reaches UniFi in the write modes.
+    - Settings or the Network inventory page: the **UniFi sync** card (admin): the `enabled` and `writes_enabled` switches (the second disabled with the reason until a write credential is set), the intervals, the write credential through `SecretField` on the Routers page's UniFi entry, the Check button with its result.
+    - A **Conflicts** tab on the link with the per-row choices.
+    - Help topics `unifi-group-sync`, `unifi-write-access` (how to make the dedicated UniFi user, what it can do) and `unifi-sync-conflicts`; `check:help` passes.
+    - Playwright `dsc_016 link, preview, apply (UniFi definitive)`, `dsc_016 first preview is additive only`, `dsc_016 held round needs the admin`, `dsc_016 conflicts resolved per row`, `dsc_017 write switch disabled without a credential`, `dsc_017 operator cannot link or switch writes`, `dsc_016 viewer sees the state only`, run against `deploy/routers-e2e.sh`'s fake or `page.route`.
+  - **12. Docs and site.** `docs/unifi-sync.md` (what syncs and what does not, the private-MAC note, the first-sync walk-through, the security note on who can change a linked group, outages, the kill switches, how to remove it), `docs/security.md` (the first write to the gateway), the Routers page text, `docs/configuration.md`, `site/guide-devices.html`.
+  - **13. Open from the start (recorded, not built).** Showing read-only which UniFi policies and content-filter profiles use a linked group; creating the UniFi group from a TelltaleDNS group; syncing a display name (the only place last-writer-wins would apply); other object kinds (`usergroup`, `firewallgroup`); writing any UniFi policy; whether UniFi's own admin log records the write.
+  - **Test plan (fake only).** The fake UniFi in `routers_tests.rs` and the Python fake in `deploy/routers-e2e.sh` gain one stateful group object (list, members, add and remove, the CSRF and key checks, a read-only role answering 403 on writes, injectable 500, timeout and 429, a request log with counters, an unparseable and a truncated member list). A guard in the test support refuses a non-loopback base URL, and no test or CI step names the gateway (`192.168.1.1`), a Pi-hole, the VIP or Home Assistant.
+  - *AC (read direction, needs only the owner's capability answer):*
+    - `dsc_016_merge_converges_and_is_idempotent` (property test);
+    - `dsc_016_no_removal_without_baseline`;
+    - `dsc_016_first_round_is_additive_only`;
+    - `dsc_016_unifi_definitive_overwrites_local_change_and_records_it`;
+    - `dsc_016_never_matched_by_name`;
+    - `dsc_016_ip_only_client_is_skipped_never_removed`;
+    - `dsc_016_private_mac_not_auto_created`;
+    - `dsc_016_private_mac_existing_device_syncs`;
+    - `dsc_016_absent_device_is_not_a_removal`;
+    - `dsc_016_unparseable_or_empty_read_aborts_the_round`;
+    - `dsc_016_mass_change_is_held`;
+    - `dsc_016_preview_stale_refused`;
+    - `dsc_016_own_change_does_not_trigger_a_round` (origin `sync:`);
+    - `dsc_016_flapping_pauses_the_link`;
+    - `dsc_016_unifi_outage_changes_nothing_and_dns_answers`;
+    - `dsc_016_recovery_after_long_gap_is_a_clean_diff`;
+    - `dsc_016_runs_only_on_the_primary` (an ephemeral pod, a witness and a replica do not run it);
+    - `dsc_016_promoted_node_without_baseline_is_held`;
+    - `dsc_016_audit_record_per_change`;
+    - `dsc_016_agent_cannot_apply` and `dsc_016_operator_cannot_link`;
+    - `dsc_016_sync_never_on_the_query_path` (the DNS path loads no sync state; `make bench-smoke` is not needed unless a hot-path crate changes, and then it is run and said);
+    - Playwright and help topics as in step 11; `spec/trace.py --check` and `site/build.py --check` pass.
+  - *AC (write directions, after ADR-999 is accepted):*
+    - `dsc_017_write_function_refuses_other_paths_and_methods`;
+    - `dsc_017_write_credential_never_used_to_read` and `dsc_017_read_credential_never_used_to_write`;
+    - `dsc_017_audit_written_before_request` (the audit store failing sends nothing);
+    - `dsc_017_no_write_without_both_switches_and_an_applied_preview`;
+    - `dsc_017_baseline_advances_only_after_verified_reread`;
+    - `dsc_017_rate_and_round_limits`;
+    - `dsc_017_refused_write_stops_the_round`;
+    - `dsc_017_read_only_role_gets_403_and_is_reported`;
+    - `dsc_017_undo_last_round`;
+    - `dsc_017_two_way_converges_both_sides`;
+    - `dsc_017_non_loopback_url_refused_in_tests`;
+    - `api_014_planted_credential_never_returned` extended to the write credential (entries, audit, idempotency, `config check --print`, support package, backups without a passphrase, MCP);
+    - `deploy/routers-e2e.sh` and `deploy/cluster3/e2e.sh` (the primary runs it; after `promote`, the new primary holds the link until previewed).
+  - *Image delta:* no new dependency is expected; if one is added it is recorded with `deploy/image/size.py --oci` against the 25 MiB gate (ADR-916).
+  - *Owner decisions the build needs (asked as one batch at the start of the task; recommendations in brackets):*
+    - **Q1** How is the capability check (step 1) done: the owner downloads the gateway's OpenAPI JSON and, if needed, a browser network log of creating a device group and places them in the repo, or the owner allows one read-only session from wrendns-dev against the gateway? [the owner supplies the files; nothing else touches the gateway.]
+    - **Q2** Accept ADR-998 (links, MAC identity, three-way merge, membership only)? [accept]
+    - **Q3** Accept ADR-999 (the first write to the gateway, one operation, a separate credential)? [accept, with the read direction shipping first]
+    - **Q4** Confirm the premise: is UniFi's content filter, on the owner's gateway, traffic-level or DNS-level? Public sources say DNS-level. It decides the product wording and whether the two filters stack. [owner checks and tells us]
+    - **Q5** Default for a new link: `unifi_definitive` and preview-only until applied, and `create_missing_devices` on, `include_private_macs` off? [yes]
+    - **Q6** The write credential: a dedicated local UniFi user with the narrowest role that works (the build finds which), or the owner's existing key? [dedicated user]
+    - **Q7** Mass-change guard: hold a round that removes more than 5 members or 20% of a link? [yes]
+    - **Q8** Should an operator be allowed to change the membership of a linked group in a write mode (it reaches UniFi), or only admins? [operators may, with the banner and the audit; links and modes stay admin-only]
+    - **Q9** Which UniFi site and which gateway: the first `[[router]]` of type `unifi`, one site per link? [yes]
+    - **Q10** Where does the task sit in the order: right after T25.10, before the rest of M25, or after T25.17? [after T25.10; T25.17 then closes after it]
 
 ## Worker fixes (track worker-rlimit)
 - [x] **T-wl Sandboxed workers in the musl release build and the image.** *(API-007, DSC-002; ADR-988, ADR-989)* The Pi-hole import worker answered `"<path>: <path>"` in every musl build and the image had no `/tmp` for it. mimalloc's 1 GiB arena counted against `RLIMIT_DATA`; workers now start with `MIMALLOC_ARENA_RESERVE=0` (set by `prepare_spawn`), `harden` refuses a limit the process already exceeds and says why, and the import's scratch files live in `<data_dir>/import-tmp/<unique>` (0700, removed afterwards).
