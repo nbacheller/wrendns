@@ -1,7 +1,11 @@
 # Two TelltaleDNS nodes behind one keepalived VIP (REQ: CLU-004, OPS-001; deploy/keepalived/README.md).
 #
 #   docker compose up -d
-#   dig @10.231.250.10 whoami.vip.home.arpa TXT +short      # from a container on the vip network
+#   docker run --rm --network telltale-keepalived_vip --entrypoint dig telltale-keepalived:alpine-3.20 \
+#     +nsid @10.231.250.10 gateway.vip.home.arpa A   # from a container on the vip network: the NSID names the node
+#
+# The two nodes form a cluster and the witness votes for it (profile `witness`); README.md has the
+# commands, and e2e.sh runs them.
 #
 # Each node is two containers that share one network namespace: keepalived-* owns it (it holds the
 # VIP and runs the health check), telltale-* joins it with `network_mode: service:keepalived-*`. So

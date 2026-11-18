@@ -130,6 +130,32 @@ The header lists what has no equivalent, by setting name (values, such as passwo
 
 Query history, the admin password, and API tokens aren't imported. The output is a complete starting configuration: on a fresh install, use it as is next to your node settings (`telltale run -c telltale.toml -c pihole.toml`). Into an existing one, merge by hand: both define the `default` upstream group and group. Upstreams on the Pi-hole machine itself (`127.0.0.1#5335`, usually unbound) are flagged: keep that resolver running next to TelltaleDNS (a built-in recursive resolver is on the post-1.0 list). CI imports real exports from the official Pi-hole v6 and v5 images and checks the answers (`deploy/pihole-import-e2e.sh`).
 
+## Failover with a VIP (keepalived)
+Two nodes can answer for one address, the **VIP**. keepalived (VRRP) holds it on whichever node is healthy, so devices keep one DNS server address and the other node takes over when the first stops answering. This is what a Pi-hole pair does with its keepalived VIP, and TelltaleDNS needs nothing new for it: its DNS listeners bind the **wildcard address** (the default, `0.0.0.0` and `::`), so the node that holds the VIP answers on it, and each node also answers on its own address. A listener bound to one specific address doesn't answer the VIP.
+
+**What hands the VIP over.** The node's check (`check-telltale.sh` in [`deploy/keepalived`](../deploy/keepalived/README.md)) passes only while `/readyz` answers 200 and the node answers a DNS probe on its own listener. A node that stops answering loses the VIP within a few seconds. So does a node in maintenance: `/readyz` answers 503 then, while the node keeps answering the queries that still arrive, which drains a node before work on it.
+
+**Try it in Docker first.** [`deploy/keepalived`](../deploy/keepalived/README.md) runs a two-node cluster with a witness and the VIP on an internal Docker network, and [`deploy/keepalived/e2e.sh`](../deploy/keepalived/e2e.sh) proves the failover: it kills the master, times the takeover, restarts it, and puts it into maintenance. It takes about five minutes and touches no other network.
+
+**Two nodes that must agree.** Without a cluster, keep the same settings in both files, as a Pi-hole pair does. With a cluster, the primary's settings are the cluster's, so the other node keeps only its own: `[node]`, the listeners, `[api]` and `[cluster]`. Automatic promotion of a two-node cluster needs a witness (see automatic failover in [Clusters](#clusters)); the VIP moves on health whatever the cluster decides.
+
+### Moving a Pi-hole pair's VIP
+This moves the address your devices already use. The Pi-holes keep working until you stop their keepalived, so plan a short window, and roll back if the first checks fail.
+
+1. **Prepare two nodes.** Two Linux hosts (a Pi, a small VM) that aren't the Pi-holes, each with TelltaleDNS (for example [`deploy/systemd/install.sh`](../deploy/systemd/install.sh)) and keepalived (`apt install keepalived`) and `dig` (`dnsutils` or `bind9-dnsutils`). Import the Pi-hole setup with `telltale import pihole` and check its answers with `--compare` ([Moving from Pi-hole](#moving-from-pi-hole)). Give both nodes the same `telltale.toml`, or join them into a cluster.
+2. **Check each node on its own address** before anything moves: `dig @<node address> example.com` and a name from your local records, on both nodes.
+3. **Write `/etc/keepalived/keepalived.conf` on each node**, modelled on [`deploy/keepalived/keepalived/node-a.conf`](../deploy/keepalived/keepalived/node-a.conf): the VIP the Pi-holes use, the same `virtual_router_id` the Pi-holes used, the master's priority above the backup's, and a `track_script` running a copy of [`check-telltale.sh`](../deploy/keepalived/check-telltale.sh). Use `unicast_src_ip` and `unicast_peer` if the LAN doesn't carry multicast, and the LAN interface.
+4. **Cut over.** On each Pi-hole, `sudo systemctl stop keepalived`: it lets go of the VIP. On the TelltaleDNS nodes, `sudo systemctl enable --now keepalived`. On the master, `ip -4 addr show` lists the VIP, `dig @<VIP> example.com` answers, and the answer is your new resolver's.
+5. **Roll back** if anything is wrong: `sudo systemctl stop keepalived` on the TelltaleDNS nodes, then `sudo systemctl start keepalived` on the Pi-holes. The VIP comes back within a few seconds.
+6. **Leave the Pi-holes off the VIP** once you are happy: their keepalived stays stopped or is removed, so no two nodes claim one address.
+
+To drain a node for maintenance, start a maintenance window on it (`telltale ctl maintenance start --for 30m --reason "…"`, with an API token in `TELLTALE_TOKEN`): its `/readyz` turns 503, the VIP moves to the peer, and `telltale ctl maintenance end` brings it back.
+
+Caveats:
+- In a container, keepalived and the node share a network namespace (the example does this). Restart them together (`docker compose restart keepalived-a telltale-a`): a restarted keepalived leaves the node listening in a namespace that no longer carries the VIP. A host install has no such pair.
+- VRRP here isn't authenticated. Keep it on the LAN interface, and don't route it out of the LAN.
+- A move takes a few seconds. In the Docker example a killed master's VIP was answered by its peer about 5 seconds later, with one probe lost; a client with a second DNS server fails over the same way.
+
 ## Pi-hole compatible API
 Tools that already talk to Pi-hole (the Home Assistant Pi-hole integration, phone apps, dashboards) can talk to TelltaleDNS instead. TelltaleDNS answers the part of Pi-hole's API they use: the **statistics** (queries and blocked today, the percentage, cached and forwarded, clients, the top domains and clients, the upstreams, the version) and **blocking on or off** (off for a number of seconds, then back on by itself). Nothing else is reachable through it: lists, rules, groups and settings stay on [the API](#api).
 

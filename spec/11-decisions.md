@@ -4490,3 +4490,31 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 **Alternatives rejected:** serving only v6 (phone apps and Home Assistant's fallback need v5); a separate listener (a second port to firewall and a second allowed-networks story); accepting the signed-in session or an agent token on these paths (a different credential model than what the clients can send); "disable forever" (see 5); an unauthenticated `status` (Pi-hole v5 has one; here every read except `versions` needs the token); replicating the token across a cluster now (needs the secrets rules).
 
 **Consequences:** one more credential to rotate, off until an admin asks for it; statistics shown to a Pi-hole client are the same ones a viewer sees (domains and client addresses at the node's privacy level); `unique_domains` and `clients_ever_seen` are bounded counts and say so in the docs.
+
+## ADR-975 — Failover with a VIP: keepalived beside each node in its network namespace, a readiness and DNS health check, the wildcard listener, and a witness for two-node promotion (Proposed 2026-11-18)
+**Context:** T24.4 (fork #1; CLU-004, OPS-001). A Pi-hole pair moves one VIP between its two hosts with keepalived, so devices keep one DNS address. TelltaleDNS needs the same behaviour, and its DNS must never depend on a discovery, cluster or API failure (CLU-004). The task asks for a Docker example with keepalived for a two-node pair, the listener on the wildcard address so the VIP answers, a runbook for moving a Pi-hole pair's VIP, and a witness package for two-node clusters. It has no UI. Where the text leaves room, the conservative choice is recorded below.
+
+**Decision:**
+1. **No new TelltaleDNS mechanism.** The VIP is held by keepalived, not by the node. The DNS listeners bind the wildcard address (the default `0.0.0.0` and `::`; the example sets `[[listen]]` explicitly), so the node that holds the VIP answers on it, and each node also answers on its own address. A listener bound to a single address does not answer the VIP; the runbook says so.
+2. **Health check = readiness plus a DNS answer.** keepalived keeps the VIP only while `/readyz` answers 200 and the node answers the probe name `probe.telltale.invalid` on its own listener (the watchdog's probe, answered locally as NXDOMAIN). `/readyz` answers 503 in maintenance (OPS-010), so a node in maintenance hands the VIP to its peer while it keeps answering the queries that still arrive.
+3. **keepalived shares the node's network namespace in a container** (`network_mode: service:keepalived-*`), so the VIP lands where the node listens. On a host install, keepalived runs on the host beside the node. The sidecar needs `NET_ADMIN`, `NET_BROADCAST`, `NET_RAW`, `SETUID` and `SETGID` (keepalived runs its check as root). The node runs as its image user, with `net.ipv4.ip_unprivileged_port_start=0` set on the shared namespace, as the Pi docs set it on the host. Restarting the sidecar restarts the pair (the runbook).
+4. **Node identity by NSID.** Answers name the node in the NSID option (`[dns] nsid`), which stays per node inside a cluster; a shared local record would be the same on both nodes once the primary's configuration applies.
+5. **Witness package.** A `telltale-witness` service in the example's compose file, behind the `witness` profile: a vote-only `cluster witness` with its own address on the network and no DNS, API or VIP. It joins with a witness token from the primary (CLU-005). The VIP moves on health whatever the cluster decides.
+6. **Unicast VRRP** on the Docker bridge (`unicast_src_ip`, `unicast_peer`); the LAN runbook may use multicast.
+7. **Proof, not a claim:** `deploy/keepalived/e2e.sh` (CI job `keepalived`) builds the image, forms the cluster, checks each node and the VIP, kills the master, checks the takeover (within 15 s, every later query answered by the peer) and the promotion, restarts the master (the VIP back, a replica), and runs a maintenance hand-over through the API.
+
+**Gaps and conservative choices (for the owner):**
+- VRRP in the example is **unauthenticated** (keepalived's `auth_type PASS` is deprecated). The runbook says to keep VRRP on the LAN interface and not to route it. Authenticated VRRP is an owner decision if the LAN is not trusted.
+- The example's subnet is `10.231.250.0/24`: not the owner's LAN, and not another compose project's network. The script stops if a Docker network already uses it. Changing it means changing `compose.yaml`, both node files and `e2e.sh`.
+- The e2e makes an admin with the setup token and signs in with a session. The API refuses HTTP Basic unless `allowBasicApi` is set, and the example does not set it.
+- The LAN variant of the example (keepalived and TelltaleDNS on a host or a macvlan, with the LAN VIP) is documented as a runbook and has not been run on a LAN.
+
+**Alternatives rejected:**
+- A VRRP implementation inside TelltaleDNS: keepalived is the proven one, and a second VRRP speaker in the DNS process would add a privileged path beside the query path.
+- Host networking in the example: it would touch the real network. The isolated bridge tests the same mechanism.
+- A macvlan network in `compose.yaml`: it ties the example to one LAN. The runbook covers the LAN.
+- Multicast VRRP in the example: Docker bridges don't reliably carry it, and unicast is what is tested.
+
+**Test plan:** `deploy/keepalived/e2e.sh` on the isolated bridge, run locally (two complete runs with the same checks: takeover 5.4 to 6.3 s with one probe lost, promotion to epoch 2, the VIP back on the primary, and the maintenance hand-over), and the `keepalived` CI workflow on every change to the example, the sources or the Dockerfile.
+
+**Consequences:** an operator who wants a VIP runs keepalived beside TelltaleDNS (or in the example's sidecar), and restarts them together. No code, dependency or hot-path change, so no image delta. The example's keepalived image is a separate 33 MB image, used only by the example and its checks.
