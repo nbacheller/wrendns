@@ -468,6 +468,38 @@ fn dsc_003_v3_stale_boots_are_refused() {
 }
 
 #[test]
+fn dsc_003_authenticated_time_report_never_moves_the_clock_back() {
+    // An authenticated notInTimeWindow Report with lower boots is refused and the cached
+    // clock stays (RFC 3414 §3.2.7b).
+    let stop = Arc::new(AtomicBool::new(false));
+    let st = state(
+        5,
+        1000,
+        Mode::TimeReportOnce {
+            boots: 4,
+            time: 1200,
+        },
+    );
+    let addr = fake_v3(false, st.clone(), stop.clone());
+    let mut agent = Agent::new(
+        addr,
+        Security::V3 {
+            user: v3_user(false),
+        },
+        timing(),
+    )
+    .unwrap_or_else(|e| panic!("{e:?}"));
+    let got = agent.request(RequestKind::Get, &[oid(SYS_NAME)], 0);
+    assert!(
+        matches!(got, Err(AgentError::Usm(UsmError::NotInTimeWindow))),
+        "{got:?}"
+    );
+    // A failed exchange drops the cached engine; it is never the Report's older clock.
+    assert_ne!(agent.engine().map(|e| e.boots), Some(4));
+    stop.store(true, Ordering::Relaxed);
+}
+
+#[test]
 fn dsc_003_authenticated_time_report_resends_once() {
     time_report_resends_once(false);
 }

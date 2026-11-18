@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [parse_query, parse_response, cache_response, differential, parse_list, qlog_segment, support_redact]
+        target: [parse_query, parse_response, cache_response, differential, parse_list, qlog_segment, support_redact, snmp_ber, snmp_usm, snmp_walk]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly

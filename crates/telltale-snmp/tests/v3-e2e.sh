@@ -20,22 +20,21 @@ set -euo pipefail
 cd "$(dirname "$0")/../../.."
 ROOT=$(pwd)
 
-NET=tt-snmpv3-e2e-net
+NET=tt-snmpv3-e2e-net-$$
 SUBNET=172.30.247.0/24
 IP=172.30.247.10
-NAME=tt-snmpv3-e2e-agent
+NAME=tt-snmpv3-e2e-agent-$$
+MADE_NET=
 DEV=${TT_V3_DEV:-}
 WORK=$(mktemp -d ./.v3e2e.XXXXXX)
 cleanup() {
   if [ -n "$DEV" ]; then docker network disconnect "$NET" "$DEV" >/dev/null 2>&1 || true; fi
   docker rm -f "$NAME" >/dev/null 2>&1 || true
-  docker network rm "$NET" >/dev/null 2>&1 || true
+  if [ -n "$MADE_NET" ]; then docker network rm "$NET" >/dev/null 2>&1 || true; fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT INT TERM
 
-# Refuse to run against anything outside the throwaway range.
-case "$IP" in 172.30.247.*) ;; *) echo "v3-e2e: bad address" >&2; exit 2 ;; esac
 
 rand() { head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24; }
 for u in sha sha256; do
@@ -62,6 +61,7 @@ CONF
 
 docker build -q -t tt-snmpd-v3e2e deploy/snmpd-test >/dev/null
 docker network create --subnet "$SUBNET" "$NET" >/dev/null
+MADE_NET=1
 docker create --name "$NAME" --network "$NET" --ip "$IP" tt-snmpd-v3e2e >/dev/null
 MSYS_NO_PATHCONV=1 docker cp "$WORK/etc/snmpd.conf" "$NAME:/etc/snmp/snmpd.conf"
 # net-snmp turns the createUser lines into localized keys on its first start.
@@ -84,6 +84,8 @@ fi
 
 # Runs one named test with the environment for one user.
 run_test() { # test-name user authproto authfile [privfile]
+  # Refuse to run against anything outside the throwaway range.
+  case "$IP:161" in 172.30.247.*:161) ;; *) echo "v3-e2e: bad address" >&2; exit 2 ;; esac
   local envs="TT_SNMPD_ADDR=$IP:161 TT_SNMPD_SYSNAME=tt-v3-e2e TT_SNMPD_USER=$2 TT_SNMPD_AUTH=$3 TT_SNMPD_AUTH_FILE=$WORKDEV/$4"
   if [ -n "${5:-}" ]; then envs="$envs TT_SNMPD_PRIV_FILE=$WORKDEV/$5"; fi
   envs="$envs TT_SNMPD_WRONG_FILE=$WORKDEV/wrong"

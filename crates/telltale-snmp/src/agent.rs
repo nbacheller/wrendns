@@ -393,8 +393,18 @@ impl Agent {
                 .iter()
                 .any(|vb| vb.oid.to_string() == usm::USM_STATS_NOT_IN_TIME_WINDOW);
             if not_in_window && self.gate.allow(now) {
-                if let Some(e) = self.engine.as_mut() {
-                    e.resync(reply.boots, reply.time, now);
+                // RFC 3414 §3.2.7b: the clock only moves forward, and boots at the maximum
+                // are never taken. A Report that would move it back is refused.
+                match window {
+                    Window::Resync => {
+                        if let Some(e) = self.engine.as_mut() {
+                            e.resync(reply.boots, reply.time, now);
+                        }
+                    }
+                    Window::Accept => {}
+                    Window::Stale => {
+                        return Some(Err(AgentError::Usm(UsmError::NotInTimeWindow)));
+                    }
                 }
                 return Some(Ok(Outcome::Resend));
             }

@@ -10,7 +10,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use telltale_snmp::agent::{Agent, Security, Timing};
+use telltale_snmp::agent::{Agent, AgentError, Security, Timing};
 use telltale_snmp::oid::Oid;
 use telltale_snmp::pdu::{RequestKind, Value};
 use telltale_snmp::secret::SecretValue;
@@ -43,6 +43,14 @@ fn v3_agent(priv_on: bool, user_name: Option<&str>, auth_file: &str) -> Agent {
         timeout: Duration::from_millis(1500),
         retries: 1,
     };
+    // Only the script's throwaway range or loopback is ever a target.
+    let ip = addr.ip();
+    let ok = ip.is_loopback()
+        || matches!(ip, std::net::IpAddr::V4(v4) if v4.octets().get(..3) == Some(&[172, 30, 247][..]));
+    assert!(
+        ok,
+        "TT_SNMPD_ADDR must be 172.30.247.0/24 or loopback: {addr}"
+    );
     Agent::new(addr, Security::V3 { user }, timing).unwrap_or_else(|e| panic!("{e:?}"))
 }
 
@@ -85,7 +93,8 @@ fn dsc_003_net_snmp_v3_walk() {
 fn dsc_003_net_snmp_wrong_password_fails() {
     let mut agent = v3_agent(true, None, "TT_SNMPD_WRONG_FILE");
     let r = agent.request(RequestKind::Get, &[sys_name_oid()], 0);
-    assert!(r.is_err(), "a wrong password must not read data");
+    // The agent drops a request whose MAC fails, and sends nothing back.
+    assert!(matches!(r, Err(AgentError::Timeout)), "{r:?}");
 }
 
 /// A user the agent does not have never yields data.
@@ -94,7 +103,7 @@ fn dsc_003_net_snmp_wrong_password_fails() {
 fn dsc_003_net_snmp_unknown_user_fails() {
     let mut agent = v3_agent(true, Some("nosuchuser"), "TT_SNMPD_AUTH_FILE");
     let r = agent.request(RequestKind::Get, &[sys_name_oid()], 0);
-    assert!(r.is_err(), "an unknown user must not read data");
+    assert!(matches!(r, Err(AgentError::Timeout)), "{r:?}");
 }
 
 #[test]
