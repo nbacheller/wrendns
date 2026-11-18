@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# REQ: CLU-004, CLU-005, OPS-001, DNS-001, OPS-012 — the keepalived failover proof (deploy/keepalived,
-# T24.4). On an isolated Docker bridge network (10.231.250.0/24, no route out):
+# REQ: CLU-004, CLU-005, OPS-001, DNS-001, OPS-010, OPS-012 — the keepalived failover proof
+# (deploy/keepalived, T24.4). On an isolated Docker bridge network (10.231.250.0/24, no route out):
 #   0. node a creates a two-node cluster; node b joins it; the witness joins it; automatic
-#      failover is turned on (the cluster needs the witness to promote on its own);
+#      failover is turned on (the cluster needs the witness to promote on its own); an admin is made
+#      on node a, and users replicate to the other nodes;
 #   a. each node answers on its own address, and the answer names the node (NSID);
 #   b. the VIP (10.231.250.10) is held by node a and answers as node a;
 #   c. node a is killed hard (its TelltaleDNS and its keepalived, both at once): node b takes the VIP
 #      within 15 s and answers every query after that, and the cluster promotes node b (the witness
 #      and node b vote; the lease lapses first);
 #   d. node a comes back: it takes the VIP again (keepalived preempts a backup with higher priority)
-#      and steps down to a replica of node b in the cluster.
+#      and steps down to a replica of node b in the cluster;
+#   e. node a goes into maintenance through the API: /readyz answers 503, the VIP moves to b while
+#      a keeps answering on its own address, and when the window ends the VIP returns to a (the
+#      runbook in docs/running.md relies on this).
 # Nothing here touches the LAN, the host network or any other compose project: its own project
 # name (telltale-keepalived), its own bridge network, no published ports. Every container and the
 # network are removed at exit, and the image too when this run built it.
@@ -44,6 +48,10 @@ fi
 export TELLTALE_IMAGE=$IMAGE
 COMPOSE=(docker compose -p "$PROJECT" -f "$HERE_W/compose.yaml")
 NODES=(a b)
+# The admin of the test cluster: made on node a, with a password that is random per run (never printed).
+ADMIN_PASSWORD=$(python3 -c "import secrets; print('Admin-' + secrets.token_urlsafe(18))")
+COOKIE=
+CSRF=
 
 cleanup() {
   local rc=$?
@@ -126,18 +134,47 @@ join_token() { # extra flags...
     -c /etc/telltale/telltale.toml 2>/dev/null | tr -d '\r' | grep '^tt_join_' || true
 }
 
+# Makes the admin on a node with its setup token (node a is the primary, so the users replicate).
+make_admin() { # address
+  local setup status
+  setup=$("${COMPOSE[@]}" exec -T telltale-a /usr/local/bin/telltale auth setup-token -c /etc/telltale/telltale.toml 2>/dev/null | tr -d '\r' | sed -n 1p)
+  [ -n "$setup" ] || return 1
+  status=$(docker run --rm --network "$NET" --entrypoint curl "$KA_IMAGE" -s -o /dev/null -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    -d "{\"setupToken\":\"$setup\",\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}" \
+    "http://$1:8053/api/v1/auth/setup" 2>/dev/null || true)
+  [ "$status" = 200 ] || [ "$status" = 201 ]
+}
+
+# Signs in as the admin on a node: sets COOKIE and CSRF. Fails when the sign-in is refused.
+admin_login() { # address
+  local out
+  out=$(docker run --rm --network "$NET" --entrypoint curl "$KA_IMAGE" -s -i -H 'Content-Type: application/json' \
+    -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}" "http://$1:8053/api/v1/auth/login" 2>/dev/null) || return 1
+  COOKIE=$(sed -n 's/^[Ss]et-[Cc]ookie: \(telltale_session=[^;]*\).*/\1/p' <<<"$out" | tr -d '\r' | head -n 1)
+  CSRF=$(sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p' <<<"$out" | head -n 1)
+  [ -n "$COOKIE" ] && [ -n "$CSRF" ]
+}
+
+# An API call as the signed-in admin on a node: method path [json-body]. Prints the HTTP status.
+admin_api() { # address method path [json-body]
+  local args=(-s -o /dev/null -w '%{http_code}' -X "$2" -H "Cookie: $COOKIE" -H "X-CSRF-Token: $CSRF")
+  if [ -n "${4:-}" ]; then args+=(-H 'Content-Type: application/json' -d "$4"); fi
+  docker run --rm --network "$NET" --entrypoint curl "$KA_IMAGE" "${args[@]}" "http://$1:8053$3" 2>/dev/null || true
+}
+
 # 0 when the VIP answers as the wanted node, for up to budget_ms.
 vip_answers_as() { # budget_ms node
   until_ok "$1" node_is "$VIP" "telltale-$2"
 }
+
+"${COMPOSE[@]}" --profile witness down -v --remove-orphans >/dev/null 2>&1 || true
 
 step "the isolated network: $SUBNET.0/24 is free"
 if docker network ls -q | xargs -r docker network inspect --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null | grep -qF "$SUBNET.0/24"; then
   bad "$SUBNET.0/24 is already used by a Docker network; change the subnet in compose.yaml, the node files and this script"
 fi
 pass
-
-"${COMPOSE[@]}" --profile witness down -v --remove-orphans >/dev/null 2>&1 || true
 
 if [ -n "$BUILT_IMAGE" ]; then
   step "build the TelltaleDNS image from this checkout ($BUILT_IMAGE)"
@@ -153,7 +190,7 @@ healthy_nodes() { [ "$("${COMPOSE[@]}" ps --format '{{.Service}} {{.Health}}' 2>
 until_ok 120000 healthy_nodes || bad "the two nodes did not come up healthy within 120 s"
 pass
 
-step "0. the cluster: a creates it, b joins, the witness joins, automatic failover is on"
+step "0. the cluster: a creates it, b joins, the witness joins, automatic failover is on, an admin is made"
 TB=$(join_token --eligible)
 [ -n "$TB" ] || bad "node a gave no join token"
 "${COMPOSE[@]}" stop telltale-b >/dev/null 2>&1 || bad "could not stop node b to join it"
@@ -175,7 +212,8 @@ until_ok 120000 metric_is "$SUBNET.11" telltale_cluster_peer_up 'site="witness"'
 [ "$(metric_at "$SUBNET.11" telltale_cluster_primary)" = 1 ] || bad "node a is not the primary"
 [ "$(metric_at "$SUBNET.12" telltale_cluster_primary)" = 0 ] || bad "node b thinks it is the primary"
 until_ok 60000 metric_is "$SUBNET.12" telltale_cluster_failover_auto "" 1 || bad "node b doesn't have automatic failover on"
-pass "primary a, replica b, witness connected, automatic failover on"
+make_admin "$SUBNET.11" || bad "the admin couldn't be made on node a"
+pass "primary a, replica b, witness connected, automatic failover on, admin made"
 
 step "a. each node answers on its own address, and names itself"
 for n in "${NODES[@]}"; do
@@ -227,4 +265,16 @@ until_ok 90000 metric_is "$SUBNET.11" telltale_cluster_primary "" 0 \
   || bad "node a did not step down to a replica within 90 s"
 [ "$(metric_at "$SUBNET.12" telltale_cluster_primary)" = 1 ] || bad "node b lost the primary role"
 pass "the VIP is back on a; a is a replica, b the primary"
+
+step "e. maintenance on a hands the VIP to b, and ending it brings the VIP back"
+admin_login "$SUBNET.11" || bad "the admin can't sign in on node a"
+[ "$(admin_api "$SUBNET.11" POST /api/v1/nodes/local/maintenance '{"forSecs":300,"reason":"keepalived e2e"}')" = 200 ] \
+  || bad "could not start maintenance on node a"
+until_ok 30000 node_is "$VIP" telltale-b || bad "the VIP did not move to b while a is in maintenance (owner: '$(vip_owner)')"
+[ "$(vip_owner)" = b ] || bad "the VIP answers as telltale-b but is held by '$(vip_owner)'"
+[ "$(node_at "$SUBNET.11")" = telltale-a ] || bad "node a stopped answering on its own address during maintenance"
+[ "$(admin_api "$SUBNET.11" DELETE /api/v1/nodes/local/maintenance)" = 200 ] || bad "could not end maintenance on node a"
+vip_answers_as 60000 a || bad "the VIP did not come back to a after maintenance ended (owner: '$(vip_owner)')"
+pass "the VIP moved to b in maintenance and back to a after it, and a kept answering on its own address"
+
 echo "PASS: deploy/keepalived/e2e.sh"
