@@ -2931,6 +2931,11 @@ impl Backend for Federated {
     // answer, this node's own view. (Before: the trait's default, an empty list, so every
     // editor said "None yet" on a cluster node; owner report 2026-10-09.)
     fn config_entries(&self, kind: Option<&str>) -> Vec<telltale_api::model::ConfigEntry> {
+        // REQ: API-016 (T23.11) - sinks are node-managed: the files' sinks are this node's own (the
+        // primary's would be another node's), and every member holds the UI's.
+        if kind == Some("sink") {
+            return self.local.config_entries(kind);
+        }
         if !self.cluster.is_primary()
             && let Some(primary) = self.cluster.reachable_primary()
             && let Some(Ok(body)) = self.call_one(

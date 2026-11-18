@@ -213,7 +213,7 @@ password_file = "/run/secrets/smtp-password"</code></pre>
 
 <section id="export">
   <h2>Send events and traces elsewhere</h2>
-  <p class="muted">All of these are config-file settings, read at startup: restart after changing them. Event sinks and traces follow the query log's privacy level (names hashed at 1 and above, no client addresses at 2 and above).</p>
+  <p class="muted">Event sinks and the OTLP metrics export are changed without a restart: an admin adds, edits or removes them in <b>Settings → Telemetry</b> (operators see them read-only), or in the config file followed by a reload, and every node applies the change within seconds. A token or an API key is a stored secret, entered once in a write-only field and read again for every batch or export. A sink or an export the config file defines is read-only in the UI. Trace settings and dnstap are config-file settings, read at startup. Event sinks and traces follow the query log's privacy level (names hashed at 1 and above, no client addresses at 2 and above).</p>
   <div class="table-wrap"><table class="std wrap">
     <thead><tr><th>You want</th><th>Use</th><th>Goes to</th></tr></thead>
     <tbody>
@@ -235,7 +235,7 @@ name = "siem"
 type = "syslog"                           # RFC 5424
 address = "udp://192.168.1.20:514"        # or tcp://, or tls://host:6514
 statuses = ["blocked"]                    # only blocks; empty means every event</code></pre>
-  <p class="muted">A destination that's slow or down drops events and counts them (<code>telltale_sink_dropped_total</code>, <code>telltale_dnstap_dropped_total</code>, <code>telltale_traces_total{result="dropped"}</code>). Webhook sinks can keep refused batches on disk with <code>spill_max_bytes</code>. Every option: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#opentelemetry-otlp">OpenTelemetry</a>, <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#event-sinks">Event sinks</a>, <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#dnstap">dnstap</a>.</p>
+  <p class="muted">A destination that's slow or down drops events and counts them (<code>telltale_sink_dropped_total</code>, <code>telltale_dnstap_dropped_total</code>, <code>telltale_traces_total{result="dropped"}</code>). Webhook sinks can keep refused batches on disk with <code>spill_max_bytes</code>; they belong to the sink's name and URL, so a name re-used for another collector never replays the old one's events. A removed sink sends what it holds and stops within two seconds. Every option: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#opentelemetry-otlp">OpenTelemetry</a>, <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#event-sinks">Event sinks</a>, <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#dnstap">dnstap</a>.</p>
 </section>
 
 <section id="exclusions">
