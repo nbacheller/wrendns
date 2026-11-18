@@ -887,6 +887,74 @@ test('api_003 two-factor works from the browser: turn it on, sign in with a code
   await expect(page.getByRole('button', { name: 'Set up two-factor sign-in' })).toBeVisible();
 });
 
+// REQ: OBS-003 (ADR-171) — "everything except": each negated filter keeps exactly the rows its filter
+// leaves out (the two add up to the whole window), a flag without its filter is refused, and the
+// Queries page writes and reads the flags: the Match menu's "is not", and the "not" chip for statuses.
+test('obs_003 the query log can keep what a filter does not match', async () => {
+  // One query each: a name asked again would climb the cache page's top list (by hits), which a
+  // later test reads.
+  expect(await query('neg-a.cache.e2e.test')).toBe(0);
+  expect(await query('neg-b.cache.e2e.test')).toBe(0);
+  type Row = { name: string; status: string; qtype: string; client: string; rcode?: string | null };
+  const rows = async (q: string, to?: string) => {
+    const r = await page.request.get(`/api/v1/queries?${q}&from=-1h${to ? `&to=${encodeURIComponent(to)}` : ''}&limit=1000`);
+    expect(r.status(), q).toBe(200);
+    return (await r.json()) as { items: Row[]; nextCursor?: string | null };
+  };
+  await expect.poll(async () => (await rows('name=neg-')).items.length, { timeout: 20_000 }).toBe(2);
+  // One window for every count below, so a probe query logged meanwhile can't move them. It ends
+  // in the past, where the log is whole (it is flushed about once a second), and more than a second
+  // after our rows: the API reads `to` in whole seconds, so a row less than a second before it can
+  // fall outside.
+  await page.waitForTimeout(3000);
+  const to = new Date(Date.now() - 1500).toISOString();
+  const all = await rows('', to);
+  expect(all.nextCursor ?? null, 'the whole window fits in one page').toBeNull();
+  const cases: [string, (r: Row) => boolean][] = [
+    ['name=neg-a', (r) => r.name.includes('neg-a')],
+    ['name=neg-a.cache.e2e.test&match=exact', (r) => r.name === 'neg-a.cache.e2e.test'],
+    ['name=cache.e2e.test&match=suffix', (r) => r.name.endsWith('cache.e2e.test')],
+    ['name=neg-*.cache.e2e.test&match=glob', (r) => /^neg-.\.cache\.e2e\.test$/.test(r.name)],
+    ['name=^neg-[ab][.]cache&match=regex', (r) => /^neg-[ab][.]cache/.test(r.name)],
+    ['status=forwarded', (r) => r.status === 'forwarded'],
+    ['qtype=A', (r) => r.qtype === 'A'],
+    ['client=127.0.0.1', (r) => r.client === '127.0.0.1'],
+    ['rcode=NOERROR', (r) => r.rcode === 'NOERROR'],
+  ];
+  for (const [q, keeps] of cases) {
+    const flag = `${q.split('=')[0]}Not`;
+    const positive = await rows(q, to);
+    const negated = await rows(`${q}&${flag}=true`, to);
+    expect(positive.items.every(keeps), q).toBe(true);
+    expect(negated.items.some(keeps), `${q} negated`).toBe(false);
+    expect(positive.items.length + negated.items.length, `${q}: the match and its negation make the window`).toBe(all.items.length);
+  }
+  expect((await rows('name=neg-a', to)).items).toHaveLength(1);
+  expect((await rows('name=neg-a&nameNot=true', to)).items.filter((r) => r.name.startsWith('neg-'))).toHaveLength(1);
+  // A flag without its filter is refused, naming it.
+  for (const flag of ['nameNot', 'clientNot', 'statusNot', 'qtypeNot', 'rcodeNot']) {
+    const r = await page.request.get(`/api/v1/queries?${flag}=true&from=-1h`);
+    expect(r.status(), flag).toBe(400);
+    expect(await r.text()).toContain(flag);
+  }
+  // The page reads the flag from the address and writes it back.
+  await page.goto('/#/queries?name=neg-a.cache.e2e.test&match=exact&nameNot=true&from=-1h');
+  await expect(page.locator('select[name="match"]')).toHaveValue('!exact');
+  await expect(page.locator('table.log tbody tr').first()).toBeVisible();
+  await expect(page.locator('table.log tbody')).not.toContainText('neg-a.cache.e2e.test');
+  await page.locator('select[name="match"]').selectOption('substring');
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await expect(page).not.toHaveURL(/nameNot/);
+  await expect(page.locator('table.log tbody')).toContainText('neg-a.cache.e2e.test');
+  // The "not" chip turns the chosen statuses around.
+  await page.goto('/#/queries?status=blocked&from=-1h');
+  await expect(page.locator('table.log tbody tr').first()).toBeVisible();
+  await page.getByTestId('status-not').click();
+  await expect(page).toHaveURL(/statusNot=true/);
+  await expect(page.locator('table.log tbody')).not.toContainText('blocked');
+  await expect(page.locator('table.log tbody tr').first()).toBeVisible();
+});
+
 test('works at phone width (360 px)', async () => {
   await page.setViewportSize({ width: 360, height: 740 });
   await page.goto('/#/queries');

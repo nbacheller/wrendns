@@ -568,6 +568,13 @@ fn qlog_filter(q: &QueryParams, from_us: u64, to_us: u64) -> Result<qlog::Filter
         rcode,
         upstream: q.upstream,
         min_total_us: q.min_latency_ms.map(|v| v.saturating_mul(1000)),
+        not: qlog::Not {
+            name: q.name_not.unwrap_or(false),
+            client: q.client_not.unwrap_or(false),
+            status: q.status_not.unwrap_or(false),
+            qtype: q.qtype_not.unwrap_or(false),
+            rcode: q.rcode_not.unwrap_or(false),
+        },
         ..qlog::Filter::default()
     })
 }

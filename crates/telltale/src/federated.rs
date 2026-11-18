@@ -90,6 +90,11 @@ enum Read {
     TailOpen {
         params: Box<TailParams>,
     },
+    /// REQ: OBS-003, OBS-008 (ADR-171) — `TailOpen` with a negated filter. A separate read, so an
+    /// older peer (which would ignore the flags and tail what was not negated) doesn't know it.
+    TailOpenNegated {
+        params: Box<TailParams>,
+    },
     TailPoll {
         id: u64,
     },
@@ -97,6 +102,14 @@ enum Read {
         id: u64,
     },
     Queries {
+        params: Box<QueryParams>,
+        from_us: u64,
+        to_us: u64,
+        limit: usize,
+    },
+    /// REQ: OBS-003 (ADR-171) — `Queries` with a negated filter (older peers don't know it, so
+    /// they are listed as missing instead of answering rows that were not negated).
+    QueriesNegated {
         params: Box<QueryParams>,
         from_us: u64,
         to_us: u64,
@@ -219,13 +232,21 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::Identities => serde_json::to_vec(&b.identities()),
         Read::Identity { client } => serde_json::to_vec(&b.identity(&client).ok()),
         Read::ClientRhythm { client } => serde_json::to_vec(&b.client_rhythm(&client).ok()),
-        Read::TailOpen { params } => serde_json::to_vec(&tail_open(b, &params).map_err(text)?),
+        Read::TailOpen { params } | Read::TailOpenNegated { params } => {
+            serde_json::to_vec(&tail_open(b, &params).map_err(text)?)
+        }
         Read::TailPoll { id } => serde_json::to_vec(&tail_poll(id)),
         Read::TailClose { id } => {
             tail_sessions().remove(&id);
             serde_json::to_vec(&true)
         }
         Read::Queries {
+            params,
+            from_us,
+            to_us,
+            limit,
+        }
+        | Read::QueriesNegated {
             params,
             from_us,
             to_us,
@@ -601,6 +622,9 @@ async fn remote_tail(
     let mut backoff = Duration::from_secs(1);
     loop {
         let read = match id {
+            None if params.negates() => Read::TailOpenNegated {
+                params: Box::new(params.clone()),
+            },
             None => Read::TailOpen {
                 params: Box::new(params.clone()),
             },
@@ -1545,11 +1569,21 @@ impl Backend for Federated {
             .into_iter()
             .filter_map(|p| {
                 let to = until(&p)?;
-                let read = Read::Queries {
-                    params: Box::new(params.clone()),
-                    from_us,
-                    to_us: to,
-                    limit,
+                let (params, from_us, to_us) = (Box::new(params.clone()), from_us, to);
+                let read = if params.negates() {
+                    Read::QueriesNegated {
+                        params,
+                        from_us,
+                        to_us,
+                        limit,
+                    }
+                } else {
+                    Read::Queries {
+                        params,
+                        from_us,
+                        to_us,
+                        limit,
+                    }
                 };
                 Some((p, read))
             })

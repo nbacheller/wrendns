@@ -5171,7 +5171,7 @@
           "queries"
         ],
         "summary": "Search the query log.",
-        "description": "Newest first. Filters combine with AND: name (substring by default; `match=exact|suffix|\nglob|regex`), client, status, query type, response code, upstream, minimum latency, and\ntime range. Pass `nextCursor` back as `cursor` for older rows. Example:\n`GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`.",
+        "description": "Newest first. Filters combine with AND: name (substring by default; `match=exact|suffix|\nglob|regex`), client, status, query type, response code, upstream, minimum latency, and\ntime range. Pass `nextCursor` back as `cursor` for older rows. Example:\n`GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`. To keep what a\nfilter does NOT match, add `nameNot`, `clientNot`, `statusNot`, `qtypeNot`, or `rcodeNot`\n(`=true`): `?name=doubleclick&nameNot=true&from=-1h` is every query in the last hour whose\nname does not contain `doubleclick`. A negated search reads every block the time range and\nthe other filters leave, so give a time range or another filter on a long log.",
         "operationId": "queries",
         "parameters": [
           {
@@ -5193,12 +5193,30 @@
             }
           },
           {
+            "name": "nameNot",
+            "in": "query",
+            "description": "REQ: OBS-003 (ADR-171) — keep the rows whose name does NOT match `name` and `match`:\ndoes not contain, is not, is not under, doesn't match the wildcard or the regex. Needs\n`name`. Default: false.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "client",
             "in": "query",
             "description": "Client IP address.",
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "clientNot",
+            "in": "query",
+            "description": "Keep the rows from every client except `client`. Needs `client`. Default: false.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -5211,6 +5229,15 @@
             }
           },
           {
+            "name": "statusNot",
+            "in": "query",
+            "description": "Keep the rows whose status is none of `status` (`status=blocked&statusNot=true`: every\nquery that was not blocked). Needs `status`. Default: false.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "qtype",
             "in": "query",
             "description": "Query types, comma-separated (`A,AAAA`).",
@@ -5220,12 +5247,30 @@
             }
           },
           {
+            "name": "qtypeNot",
+            "in": "query",
+            "description": "Keep the rows whose type is none of `qtype`. Needs `qtype`. Default: false.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "rcode",
             "in": "query",
             "description": "Response codes, comma-separated (`NXDOMAIN,SERVFAIL`).",
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "rcodeNot",
+            "in": "query",
+            "description": "Keep the rows whose response code is none of `rcode` (queries that got no response code\nare kept). Needs `rcode`. Default: false.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -5355,7 +5400,7 @@
           "queries"
         ],
         "summary": "Live query stream.",
-        "description": "Server-Sent Events, newest as they happen: `event: query` carries a `QueryRow` (same\nfields as GET /queries), `event: dropped` a `TailDropped` when matching queries were\nskipped (over `rate`, or this client fell behind), and a comment every 15 s keeps the\nconnection open. Filters are applied on the server. In a browser:\n`new EventSource('/api/v1/queries/stream?status=blocked')` (the session cookie signs it\nin). Honors the query-log privacy level; at most 16 streams per node.",
+        "description": "Server-Sent Events, newest as they happen: `event: query` carries a `QueryRow` (same\nfields as GET /queries), `event: dropped` a `TailDropped` when matching queries were\nskipped (over `rate`, or this client fell behind), and a comment every 15 s keeps the\nconnection open. Filters, and their `…Not` forms (`status=blocked&statusNot=true`), are\napplied on the server. In a browser:\n`new EventSource('/api/v1/queries/stream?status=blocked')` (the session cookie signs it\nin). Honors the query-log privacy level; at most 16 streams per node.",
         "operationId": "queries_stream",
         "parameters": [
           {
@@ -5377,12 +5422,30 @@
             }
           },
           {
+            "name": "nameNot",
+            "in": "query",
+            "description": "REQ: OBS-003 (ADR-171) — only queries whose name does NOT match `name` and `match`.\nNeeds `name`. Default: false.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "client",
             "in": "query",
             "description": "Client IP address.",
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "clientNot",
+            "in": "query",
+            "description": "Only queries from every client except `client`. Needs `client`. Default: false.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -5404,12 +5467,30 @@
             }
           },
           {
+            "name": "statusNot",
+            "in": "query",
+            "description": "Only queries whose status is none of `status`. Needs `status`. Default: false.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "qtype",
             "in": "query",
             "description": "Query types, comma-separated (`A,AAAA`).",
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "qtypeNot",
+            "in": "query",
+            "description": "Only queries whose type is none of `qtype`. Needs `qtype`. Default: false.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           },
           {

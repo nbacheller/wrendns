@@ -493,14 +493,28 @@ pub struct QueryParams {
     #[serde(rename = "match")]
     #[param(rename = "match")]
     pub name_match: Option<NameMatch>,
+    /// REQ: OBS-003 (ADR-171) — keep the rows whose name does NOT match `name` and `match`:
+    /// does not contain, is not, is not under, doesn't match the wildcard or the regex. Needs
+    /// `name`. Default: false.
+    pub name_not: Option<bool>,
     /// Client IP address.
     pub client: Option<String>,
+    /// Keep the rows from every client except `client`. Needs `client`. Default: false.
+    pub client_not: Option<bool>,
     /// Statuses, comma-separated (`blocked,forwarded`).
     pub status: Option<String>,
+    /// Keep the rows whose status is none of `status` (`status=blocked&statusNot=true`: every
+    /// query that was not blocked). Needs `status`. Default: false.
+    pub status_not: Option<bool>,
     /// Query types, comma-separated (`A,AAAA`).
     pub qtype: Option<String>,
+    /// Keep the rows whose type is none of `qtype`. Needs `qtype`. Default: false.
+    pub qtype_not: Option<bool>,
     /// Response codes, comma-separated (`NXDOMAIN,SERVFAIL`).
     pub rcode: Option<String>,
+    /// Keep the rows whose response code is none of `rcode` (queries that got no response code
+    /// are kept). Needs `rcode`. Default: false.
+    pub rcode_not: Option<bool>,
     /// Upstream ID (from `/upstreams`): the forwarded queries it answered. Coalesced queries
     /// name the upstream that answered for all of them.
     pub upstream: Option<u16>,
@@ -522,6 +536,22 @@ pub struct QueryParams {
     /// REQ: OBS-017 (ADR-110) — the query a trace ID names (32 hex digits, from an exemplar
     /// on `/metrics` or an exported trace). Replaces `from` and `to`.
     pub trace: Option<String>,
+}
+
+impl QueryParams {
+    /// REQ: OBS-003 (ADR-171) — whether any filter is negated. A negated search goes to peers
+    /// as a read that an older node doesn't know (it would ignore the flags and answer rows
+    /// that were not negated).
+    pub fn negates(&self) -> bool {
+        [
+            self.name_not,
+            self.client_not,
+            self.status_not,
+            self.qtype_not,
+            self.rcode_not,
+        ]
+        .contains(&Some(true))
+    }
 }
 
 /// One logged query.
@@ -1105,14 +1135,23 @@ pub struct TailParams {
     #[serde(rename = "match")]
     #[param(rename = "match")]
     pub name_match: Option<NameMatch>,
+    /// REQ: OBS-003 (ADR-171) — only queries whose name does NOT match `name` and `match`.
+    /// Needs `name`. Default: false.
+    pub name_not: Option<bool>,
     /// Client IP address.
     pub client: Option<String>,
+    /// Only queries from every client except `client`. Needs `client`. Default: false.
+    pub client_not: Option<bool>,
     /// The client's group (its highest-priority group).
     pub group: Option<String>,
     /// Statuses, comma-separated (`blocked,forwarded`).
     pub status: Option<String>,
+    /// Only queries whose status is none of `status`. Needs `status`. Default: false.
+    pub status_not: Option<bool>,
     /// Query types, comma-separated (`A,AAAA`).
     pub qtype: Option<String>,
+    /// Only queries whose type is none of `qtype`. Needs `qtype`. Default: false.
+    pub qtype_not: Option<bool>,
     /// Upstream ID (from `GET /upstreams`).
     pub upstream: Option<u16>,
     /// Only queries that took at least this long.
@@ -1123,6 +1162,19 @@ pub struct TailParams {
     /// `cluster` (default: every reachable node's queries, each row naming its node),
     /// `site:<name>`, `node:<id or site>`, or `node:local` (this node only).
     pub scope: Option<String>,
+}
+
+impl TailParams {
+    /// REQ: OBS-003 (ADR-171) — whether any filter is negated (see [`QueryParams::negates`]).
+    pub fn negates(&self) -> bool {
+        [
+            self.name_not,
+            self.client_not,
+            self.status_not,
+            self.qtype_not,
+        ]
+        .contains(&Some(true))
+    }
 }
 
 /// Sent as an SSE `dropped` event when matching queries weren't delivered.

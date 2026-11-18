@@ -2009,7 +2009,11 @@ export interface paths {
          * @description Newest first. Filters combine with AND: name (substring by default; `match=exact|suffix|
          *     glob|regex`), client, status, query type, response code, upstream, minimum latency, and
          *     time range. Pass `nextCursor` back as `cursor` for older rows. Example:
-         *     `GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`.
+         *     `GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`. To keep what a
+         *     filter does NOT match, add `nameNot`, `clientNot`, `statusNot`, `qtypeNot`, or `rcodeNot`
+         *     (`=true`): `?name=doubleclick&nameNot=true&from=-1h` is every query in the last hour whose
+         *     name does not contain `doubleclick`. A negated search reads every block the time range and
+         *     the other filters leave, so give a time range or another filter on a long log.
          */
         get: operations["queries"];
         put?: never;
@@ -2032,7 +2036,8 @@ export interface paths {
          * @description Server-Sent Events, newest as they happen: `event: query` carries a `QueryRow` (same
          *     fields as GET /queries), `event: dropped` a `TailDropped` when matching queries were
          *     skipped (over `rate`, or this client fell behind), and a comment every 15 s keeps the
-         *     connection open. Filters are applied on the server. In a browser:
+         *     connection open. Filters, and their `…Not` forms (`status=blocked&statusNot=true`), are
+         *     applied on the server. In a browser:
          *     `new EventSource('/api/v1/queries/stream?status=blocked')` (the session cookie signs it
          *     in). Honors the query-log privacy level; at most 16 streams per node.
          */
@@ -11882,14 +11887,34 @@ export interface operations {
                 name?: string;
                 /** @description How to match `name`. Default: `substring`. */
                 match?: components["schemas"]["NameMatch"];
+                /**
+                 * @description REQ: OBS-003 (ADR-171) — keep the rows whose name does NOT match `name` and `match`:
+                 *     does not contain, is not, is not under, doesn't match the wildcard or the regex. Needs
+                 *     `name`. Default: false.
+                 */
+                nameNot?: boolean;
                 /** @description Client IP address. */
                 client?: string;
+                /** @description Keep the rows from every client except `client`. Needs `client`. Default: false. */
+                clientNot?: boolean;
                 /** @description Statuses, comma-separated (`blocked,forwarded`). */
                 status?: string;
+                /**
+                 * @description Keep the rows whose status is none of `status` (`status=blocked&statusNot=true`: every
+                 *     query that was not blocked). Needs `status`. Default: false.
+                 */
+                statusNot?: boolean;
                 /** @description Query types, comma-separated (`A,AAAA`). */
                 qtype?: string;
+                /** @description Keep the rows whose type is none of `qtype`. Needs `qtype`. Default: false. */
+                qtypeNot?: boolean;
                 /** @description Response codes, comma-separated (`NXDOMAIN,SERVFAIL`). */
                 rcode?: string;
+                /**
+                 * @description Keep the rows whose response code is none of `rcode` (queries that got no response code
+                 *     are kept). Needs `rcode`. Default: false.
+                 */
+                rcodeNot?: boolean;
                 /**
                  * @description Upstream ID (from `/upstreams`): the forwarded queries it answered. Coalesced queries
                  *     name the upstream that answered for all of them.
@@ -11960,14 +11985,25 @@ export interface operations {
                 name?: string;
                 /** @description How to match `name`: `substring` (default), `exact`, `suffix`, or `glob` (`*`, `?`). */
                 match?: components["schemas"]["NameMatch"];
+                /**
+                 * @description REQ: OBS-003 (ADR-171) — only queries whose name does NOT match `name` and `match`.
+                 *     Needs `name`. Default: false.
+                 */
+                nameNot?: boolean;
                 /** @description Client IP address. */
                 client?: string;
+                /** @description Only queries from every client except `client`. Needs `client`. Default: false. */
+                clientNot?: boolean;
                 /** @description The client's group (its highest-priority group). */
                 group?: string;
                 /** @description Statuses, comma-separated (`blocked,forwarded`). */
                 status?: string;
+                /** @description Only queries whose status is none of `status`. Needs `status`. Default: false. */
+                statusNot?: boolean;
                 /** @description Query types, comma-separated (`A,AAAA`). */
                 qtype?: string;
+                /** @description Only queries whose type is none of `qtype`. Needs `qtype`. Default: false. */
+                qtypeNot?: boolean;
                 /** @description Upstream ID (from `GET /upstreams`). */
                 upstream?: number;
                 /** @description Only queries that took at least this long. */
