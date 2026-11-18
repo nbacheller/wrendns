@@ -128,6 +128,9 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/oidc-providers/{id}",
             put(put_oidc_provider).delete(delete_oidc_provider),
         )
+        // REQ: API-016 (T23.11, ADR-984) - event sinks and the OTLP export (admin-only, node-managed).
+        .route("/api/v1/sinks/{name}", put(put_sink).delete(delete_sink))
+        .route("/api/v1/otlp/default", put(put_otlp).delete(delete_otlp))
         .route(
             "/api/v1/alerts/destinations/{name}/test",
             axum::routing::post(test_alert_destination),
@@ -1098,6 +1101,162 @@ pub(crate) async fn delete_oidc_provider(
         request,
         id,
         Op::Managed(ManagedKind::OidcProvider, None),
+    )
+    .await
+}
+
+/// Add or change an event sink.
+///
+/// API-016, OBS-010 (T23.11, ADR-903 section 7, ADR-984). The body has the fields of
+/// `[[telemetry.sink]]` (the name comes from the path): `type` (`file`, `syslog` or `webhook`),
+/// `address`, `url`, `format`, `batch`, `flush_secs`, `max_buffer`, `statuses`, `spill_max_bytes`.
+/// A file sink's `path` is a file name, written under the node's data directory (`sinks/`).
+/// A webhook's token is a name, never a value: `token_ref` names a stored secret (422
+/// `secret_missing` when none has that name); `token_file`, `tls_ca` and a password in a URL are
+/// set in the configuration file, not through the API. Admins only: an operator or an agent is
+/// refused (403). A sink the config files define is read-only here (409 `set_by_file`). The sink
+/// starts, changes or stops on every node within seconds, without a restart. Under a Git source
+/// the write is refused (409 `gitops_managed`).
+#[utoipa::path(put, path = "/api/v1/sinks/{name}", tag = "config",
+    params(("name" = String, Path, description = "The sink's name: unique, used in logs and metrics."), DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Only an admin can change an event sink."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files define this sink, which is read-only here."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A field is wrong, the reference names no stored secret (`secret_missing`), or a file path or a password in a URL is set through the API."),
+    ))]
+pub(crate) async fn put_sink(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /sinks/{name} {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::Sink, Some(input)),
+    )
+    .await
+}
+
+/// Remove an event sink that the API added.
+///
+/// API-016 (T23.11). The sink sends what it holds (one try, within 2 seconds) and stops on every
+/// node; the batches it kept on disk are deleted.
+#[utoipa::path(delete, path = "/api/v1/sinks/{name}", tag = "config",
+    params(("name" = String, Path, description = "The sink's name."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Only an admin can remove an event sink."),
+        (status = 404, body = Problem, description = "No sink by that name."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files define it."),
+    ))]
+pub(crate) async fn delete_sink(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /sinks/{name}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::Sink, None),
+    )
+    .await
+}
+
+/// Set the OTLP export.
+///
+/// API-016, OBS-006 (T23.11, ADR-984). The body has `endpoint` (the collector's base URL),
+/// `interval_secs` and `header_refs`, a map from header name to the name of a stored secret that
+/// holds the value (422 `secret_missing` when none has that name). Inline `headers`, the trace
+/// settings and a password in the URL are set in the configuration file, not through the API.
+/// Admins only. The files win: when they set an `endpoint`, `headers` or `header_refs`, this is
+/// read-only (409 `set_by_file`). It applies on every node without a restart; the headers are read
+/// for every export.
+#[utoipa::path(put, path = "/api/v1/otlp/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Only an admin can change the OTLP export."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files set the OTLP destination."),
+        (status = 422, body = Problem, description = "A field is wrong, or a reference names no stored secret (`secret_missing`)."),
+    ))]
+pub(crate) async fn put_otlp(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /otlp/default {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        "default".to_owned(),
+        Op::Managed(ManagedKind::Otlp, Some(input)),
+    )
+    .await
+}
+
+/// Turn off the OTLP export the API set.
+///
+/// API-016 (T23.11). Metrics stop going out on every node (unless the configuration files set a
+/// destination).
+#[utoipa::path(delete, path = "/api/v1/otlp/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Only an admin can change the OTLP export."),
+        (status = 404, body = Problem, description = "The API sets no OTLP export."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files set the OTLP destination."),
+    ))]
+pub(crate) async fn delete_otlp(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = "DELETE /otlp/default".to_owned();
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        "default".to_owned(),
+        Op::Managed(ManagedKind::Otlp, None),
     )
     .await
 }
@@ -2236,6 +2395,8 @@ impl Op {
             Self::Managed(ManagedKind::AlertRule, _) => "alert_rule",
             Self::Managed(ManagedKind::Router, _) => "router",
             Self::Managed(ManagedKind::OidcProvider, _) => "oidc_provider",
+            Self::Managed(ManagedKind::Sink, _) => "sink",
+            Self::Managed(ManagedKind::Otlp, _) => "otlp",
             Self::Managed(ManagedKind::Schedule, _) => "schedule",
             Self::Managed(ManagedKind::AnomalyMute, _) => "anomaly_mute",
             Self::Managed(ManagedKind::RateLimit, _) => "ratelimit",

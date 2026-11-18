@@ -301,6 +301,19 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("routers".into(), "/api/v1/routers".into())]),
         },
+        // REQ: API-016 (T23.11, ADR-984) - event sinks and the OTLP export, tokens by name only; no
+        // tool sets one (admin-only, no agent scope).
+        Tool {
+            name: "list_event_sinks",
+            description: "Read-only. Where this node sends query events and metrics: each event sink (file, syslog or webhook) with its settings (a webhook token named, never valued), whether the configuration files define it, whether this node runs it and why not, and how many events it dropped since start; and the OTLP export (collector address, interval, header names, whether it runs). Use it to answer why events are not reaching a collector.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![
+                    ("sinks".into(), "/api/v1/sinks".into()),
+                    ("otlp".into(), "/api/v1/otlp".into()),
+                ])
+            },
+        },
         // REQ: FLT-017 (T15.1)
         Tool {
             name: "list_workloads",

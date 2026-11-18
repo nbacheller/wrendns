@@ -2628,6 +2628,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/otlp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The OTLP export in effect on this node.
+         * @description Its collector address, interval and headers (a header's value is a stored secret's name, or
+         *     `<redacted>` when the configuration file holds it inline), where the setting comes from, and
+         *     whether the export runs here.
+         */
+        get: operations["get_otlp"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/otlp/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the OTLP export.
+         * @description API-016, OBS-006 (T23.11, ADR-984). The body has `endpoint` (the collector's base URL),
+         *     `interval_secs` and `header_refs`, a map from header name to the name of a stored secret that
+         *     holds the value (422 `secret_missing` when none has that name). Inline `headers`, the trace
+         *     settings and a password in the URL are set in the configuration file, not through the API.
+         *     Admins only. The files win: when they set an `endpoint`, `headers` or `header_refs`, this is
+         *     read-only (409 `set_by_file`). It applies on every node without a restart; the headers are read
+         *     for every export.
+         */
+        put: operations["put_otlp"];
+        post?: never;
+        /**
+         * Turn off the OTLP export the API set.
+         * @description API-016 (T23.11). Metrics stop going out on every node (unless the configuration files set a
+         *     destination).
+         */
+        delete: operations["delete_otlp"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/pihole-api": {
         parameters: {
             query?: never;
@@ -3174,6 +3227,63 @@ export interface paths {
          *     applies again. 404 when nothing was stored.
          */
         delete: operations["delete_simulate_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sinks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The event sinks in the configuration, with their status.
+         * @description Each sink comes with its settings (a webhook token as a stored secret's name, never a value),
+         *     where it comes from (the files, or the API), and whether this node runs it: a resolver pod holds
+         *     no stored secrets, so a sink that needs one isn't started there. `dropped` counts the events a
+         *     sink lost since the node started (its buffer was full, or a batch was refused).
+         */
+        get: operations["list_sinks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sinks/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add or change an event sink.
+         * @description API-016, OBS-010 (T23.11, ADR-903 section 7, ADR-984). The body has the fields of
+         *     `[[telemetry.sink]]` (the name comes from the path): `type` (`file`, `syslog` or `webhook`),
+         *     `address`, `url`, `format`, `batch`, `flush_secs`, `max_buffer`, `statuses`, `spill_max_bytes`.
+         *     A file sink's `path` is a file name, written under the node's data directory (`sinks/`).
+         *     A webhook's token is a name, never a value: `token_ref` names a stored secret (422
+         *     `secret_missing` when none has that name); `token_file`, `tls_ca` and a password in a URL are
+         *     set in the configuration file, not through the API. Admins only: an operator or an agent is
+         *     refused (403). A sink the config files define is read-only here (409 `set_by_file`). The sink
+         *     starts, changes or stops on every node within seconds, without a restart. Under a Git source
+         *     the write is refused (409 `gitops_managed`).
+         */
+        put: operations["put_sink"];
+        post?: never;
+        /**
+         * Remove an event sink that the API added.
+         * @description API-016 (T23.11). The sink sends what it holds (one try, within 2 seconds) and stops on every
+         *     node; the batches it kept on disk are deleted.
+         */
+        delete: operations["delete_sink"];
         options?: never;
         head?: never;
         patch?: never;
@@ -8200,6 +8310,45 @@ export interface components {
             /** @description The code from the display's link. */
             code: string;
         };
+        /** @description REQ: API-016, OBS-006 (T23.11) — `GET /api/v1/otlp`: the OTLP export in effect on this node. */
+        OtlpEntry: {
+            /** @description Whether the export runs on this node. */
+            active: boolean;
+            /** @description The collector's address (a password in it removed); absent when there is none. */
+            endpoint?: string | null;
+            headers: components["schemas"]["OtlpHeader"][];
+            /** Format: int32 */
+            intervalSecs: number;
+            /** @description Why it doesn't, when an endpoint is set. */
+            reason?: string | null;
+            /**
+             * @description `none` (no export), `file` (the configuration files set the destination; read-only here)
+             *     or `api`.
+             */
+            source: string;
+            /**
+             * Format: int32
+             * @description Trace settings (a file's; read at start).
+             */
+            tracesSampleEvery: number;
+            /** Format: int32 */
+            tracesSlowMs: number;
+        };
+        /** @description REQ: API-016, OBS-006 (T23.11) — one header of the OTLP export. */
+        OtlpHeader: {
+            name: string;
+            /** @description Whether this node can read the secret now (`stored` only). */
+            readable?: boolean | null;
+            /** @description The stored secret's name, when `source` is `stored`. */
+            secret?: string | null;
+            /**
+             * @description `stored` (a stored secret, by name) or `inline` (a value in the configuration file: never
+             *     shown, `<redacted>`; enter it as a stored secret to move it to the UI).
+             */
+            source: string;
+            /** @description `<redacted>` for an inline value; absent for a stored one. */
+            value?: string | null;
+        };
         /**
          * @description REQ: OBS-018 (ADR-109) — a blocked name that looks like it shouldn't be: devices kept
          *     retrying it, or it was answered normally soon after being blocked (someone paused
@@ -9136,6 +9285,51 @@ export interface components {
              *     different settings: they can't be decided again without the names.
              */
             undetermined: number;
+        };
+        /**
+         * @description REQ: API-016, OBS-010 (T23.11, ADR-984) — one event sink in the configuration: its settings
+         *     (a stored token as a name, never a value), where it comes from, and what this node does with it.
+         */
+        SinkEntry: {
+            /** @description The settings in effect: the `[[telemetry.sink]]` fields as JSON, with `token_ref` named. */
+            definition: unknown;
+            /**
+             * Format: int64
+             * @description Events dropped since this node started (the buffer was full, or a batch was refused).
+             */
+            dropped: number;
+            /**
+             * @description Where events go: the file, the syslog address or the webhook URL (a password in it
+             *     removed, API-014).
+             */
+            location: string;
+            name: string;
+            /** @description Why it doesn't (a resolver pod holds no stored secrets; its settings couldn't be used). */
+            reason?: string | null;
+            /** @description Whether the sink's thread runs on this node. */
+            running: boolean;
+            /** @description `file` (the configuration files define it; read-only here) or `api`. */
+            source: string;
+            /** @description The stored secret's name, when `tokenSource` is `stored`. */
+            token?: string | null;
+            /** @description Whether this node can read the token now; absent when none is set. */
+            tokenReadable?: boolean | null;
+            /**
+             * @description Where the webhook token comes from: `stored` (the encrypted store, by name), `file`, or
+             *     `none`.
+             */
+            tokenSource: string;
+            /** @description `file`, `syslog` or `webhook`. */
+            type: string;
+        };
+        /** @description REQ: API-016 (T23.11) — `GET /api/v1/sinks`. */
+        SinkList: {
+            /**
+             * @description Where a file sink made in the UI writes: the file name it is given goes under this
+             *     directory on every node.
+             */
+            filesDir: string;
+            items: components["schemas"]["SinkEntry"][];
         };
         /** @description REQ: OBS-027 — who and what spent an objective's error budget. */
         SloAttribution: {
@@ -15174,6 +15368,154 @@ export interface operations {
             };
         };
     };
+    get_otlp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The OTLP export. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OtlpEntry"];
+                };
+            };
+        };
+    };
+    put_otlp: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change the OTLP export. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files set the OTLP destination. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, or a reference names no stored secret (`secret_missing`). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_otlp: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change the OTLP export. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The API sets no OTLP export. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files set the OTLP destination. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     get_status: {
         parameters: {
             query?: never;
@@ -16602,6 +16944,169 @@ export interface operations {
             };
             /** @description Nothing was changed through the API: the file's settings are in effect already. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_sinks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The sinks, the files' first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SinkList"];
+                };
+            };
+        };
+    };
+    put_sink: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The sink's name: unique, used in logs and metrics. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change an event sink. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define this sink, which is read-only here. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, the reference names no stored secret (`secret_missing`), or a file path or a password in a URL is set through the API. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_sink: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The sink's name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can remove an event sink. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No sink by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define it. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

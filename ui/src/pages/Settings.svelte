@@ -15,6 +15,7 @@
   import SupportPackage from '../lib/components/SupportPackage.svelte';
   import SecretsPanel from '../lib/components/SecretsPanel.svelte';
   import OidcProviders from '../lib/components/OidcProviders.svelte';
+  import TelemetryOutputs from '../lib/components/TelemetryOutputs.svelte';
   import DomainIcon from '../lib/icons/DomainIcon.svelte';
   import { iconPrefs, setIconPrefs } from '../lib/icons/prefs.svelte';
 
@@ -32,6 +33,8 @@
       ...(can('admin') ? [{ id: 'users', label: 'Users' }, { id: 'audit', label: 'Audit log' }] : []),
       // REQ: API-016 (T23.10) — the OIDC providers people sign in with: an admin's, applied without a restart.
       ...(can('admin') ? [{ id: 'signin', label: 'Sign-in' }] : []),
+      // REQ: API-016 (T23.11) — where events and metrics go: operators see it, an admin changes it.
+      ...(can('operator') ? [{ id: 'telemetry', label: 'Telemetry' }] : []),
       // REQ: API-007 (T24.18) — importing a Pi-hole export is an admin's (never an agent's); REQ: API-005
       // (T24.10) — so is the Pi-hole compatible API (statistics and blocking on/off for Pi-hole clients).
       ...(can('admin') ? [{ id: 'pihole', label: 'Pi-hole' }] : []),
@@ -675,6 +678,9 @@
   {:else if tab === 'signin' && can('admin')}
     <!-- REQ: API-016 (T23.10, ADR-967) — the Sign-in tab (admins only): OIDC providers. -->
     <OidcProviders />
+  {:else if tab === 'telemetry' && can('operator')}
+    <!-- REQ: API-016 (T23.11, ADR-984) — the Telemetry tab: event sinks and the OTLP export (admins change them). -->
+    <TelemetryOutputs />
   {:else if tab === 'pihole' && can('admin')}
     <!-- REQ: API-007 (T24.18, ADR-940) — the Pi-hole tab (admins only): the import, and (REQ: API-005,
          T24.10, ADR-961) the Pi-hole compatible API. -->

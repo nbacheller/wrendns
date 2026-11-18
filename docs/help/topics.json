@@ -1238,6 +1238,26 @@
       "example": "A device is Failing: its flow to the resolver is red because a quarter of its lookups got SERVFAIL. Open the device, then Show its queries.",
       "caution": "The map is drawn from a sample of lookups, so the rates are estimates (a banner says 1 in N when it is thinned) and a quiet device is Idle, not healthy. At privacy level 2 devices are hidden; at 3 only totals show. No domain name appears on the map.",
       "docs": "network-map"
+    },
+    {
+      "id": "sinks",
+      "title": "Send every query to your own log pipeline",
+      "term": "Event sink",
+      "summary": "A sink copies each query event, as it happens, to a file on this node, a syslog collector or a webhook (Loki, Vector, Splunk, a SIEM). You add, change or remove one here and it applies on every node within seconds, with no restart.",
+      "when": "You want the query log in your own tooling, or an alert on blocked queries in a SIEM.",
+      "example": "A webhook sink to https://logs.example.net/ingest with the token stored as sink.loki.token: events go out in batches of 500, or every 5 seconds, whichever comes first.",
+      "caution": "A slow or missing destination never slows DNS: its buffer fills and new events are dropped and counted (telltale_sink_dropped_total). Names and clients follow the query log's privacy level. A sink the configuration file defines is read-only here, and so are its token file and CA: set those in the file.",
+      "docs": "event-sinks"
+    },
+    {
+      "id": "otlp",
+      "title": "Push metrics to an OpenTelemetry collector",
+      "term": "OTLP export",
+      "summary": "The same metrics Prometheus scrapes can be pushed to an OpenTelemetry collector (the OpenTelemetry Collector, Grafana Alloy, a hosted backend) every interval. A header such as an API key is a stored secret, read for every export.",
+      "when": "Your metrics live in a hosted backend, or Prometheus can't reach this node.",
+      "example": "Collector http://otel-collector:4318, every 60 seconds, with the header x-api-key taken from the stored secret otlp.default.header-x-api-key.",
+      "caution": "Only an admin changes it, and it applies on every node without a restart. If the configuration file sets the collector, headers or header references, the file wins and the card is read-only; an inline header value in the file is never shown (it reads <redacted>). Trace settings stay in the file and are read at start.",
+      "docs": "opentelemetry-otlp"
     }
   ]
 }

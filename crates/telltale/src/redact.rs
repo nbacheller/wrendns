@@ -22,6 +22,8 @@ pub(crate) const fn api_kind(kind: ManagedKind) -> &'static str {
         ManagedKind::AlertRule => "alert_rule",
         ManagedKind::Router => "router",
         ManagedKind::OidcProvider => "oidc_provider",
+        ManagedKind::Sink => "sink",
+        ManagedKind::Otlp => "otlp",
         ManagedKind::Schedule => "schedule",
         ManagedKind::AnomalyMute => "anomaly_mute",
         ManagedKind::RateLimit => "ratelimit",

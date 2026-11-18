@@ -2575,6 +2575,13 @@ impl Backend for Federated {
     fn oidc_provider_entries(&self) -> telltale_api::model::OidcProviderList {
         self.local.oidc_provider_entries()
     }
+    // REQ: API-016 (T23.11) - every member holds the node-managed sinks; the status is this node's.
+    fn sink_entries(&self) -> telltale_api::model::SinkList {
+        self.local.sink_entries()
+    }
+    fn otlp_entry(&self) -> telltale_api::model::OtlpEntry {
+        self.local.otlp_entry()
+    }
     // REQ: API-016 (T23.8) — the checks run on the node that answers (an admin's draft).
     fn check_router(
         &self,
@@ -2985,6 +2992,11 @@ impl Backend for Federated {
     // answer, this node's own view. (Before: the trait's default, an empty list, so every
     // editor said "None yet" on a cluster node; owner report 2026-10-09.)
     fn config_entries(&self, kind: Option<&str>) -> Vec<telltale_api::model::ConfigEntry> {
+        // REQ: API-016 (T23.11) - sinks are node-managed: the files' sinks are this node's own (the
+        // primary's would be another node's), and every member holds the UI's.
+        if kind == Some("sink") {
+            return self.local.config_entries(kind);
+        }
         if !self.cluster.is_primary()
             && let Some(primary) = self.cluster.reachable_primary()
             && let Some(Ok(body)) = self.call_one(

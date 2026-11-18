@@ -2727,6 +2727,13 @@ impl Backend for ApiBackend {
     fn oidc_provider_entries(&self) -> telltale_api::model::OidcProviderList {
         crate::oidc_settings::list(&self.src)
     }
+    // REQ: API-016 (T23.11) - the sinks and the OTLP export in effect on this node.
+    fn sink_entries(&self) -> telltale_api::model::SinkList {
+        crate::sink_settings::list(&self.src)
+    }
+    fn otlp_entry(&self) -> telltale_api::model::OtlpEntry {
+        crate::sink_settings::otlp_entry(&self.src)
+    }
     // REQ: API-016 (T23.8) — one read of a draft, without saving it (admin; see the route).
     fn check_router(
         &self,
@@ -3322,6 +3329,19 @@ impl Backend for ApiBackend {
         // REQ: API-016 (T23.7) — the routers in effect, with the files' and the API's sources.
         if want("router") {
             rows("router", &cfg.router, &file.router, &e.routers, &mut out);
+        }
+        // REQ: API-016 (T23.11, ADR-984) — the event sinks in effect: the files' (read-only here)
+        // and the ones made in the UI. A file sink made in the UI shows its file name.
+        if want("sink") {
+            for (s, from_file) in cfg
+                .telemetry
+                .sink
+                .iter()
+                .map(|s| (s, true))
+                .chain(cfg.telemetry.managed_sink.iter().map(|s| (s, false)))
+            {
+                out.push(crate::sink_settings::config_entry(&cfg, s, from_file));
+            }
         }
         // REQ: DNS-014 (review 01 q1) — the one rate limit in effect, and whether the API or UI
         // replaced the files'.
@@ -4330,6 +4350,8 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Discovery => crate::managed::DISCOVERY,
         ManagedKind::Router => crate::managed::ROUTER,
         ManagedKind::OidcProvider => crate::managed::OIDC_PROVIDER,
+        ManagedKind::Sink => crate::managed::SINK,
+        ManagedKind::Otlp => crate::managed::OTLP,
     }
 }
 
@@ -4767,6 +4789,12 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
             "Names under `{name}` go back to the default upstreams; {recent_queries} queries for them in the last two hours (at least)."
         ),
         (ManagedKind::Rule, _) => String::new(), // rule_impact says it better
+        (ManagedKind::Sink, _) => {
+            "Started, changed or stopped on every node within seconds, without a restart: a removed sink sends what it holds and ends, and the batches it kept on disk go.".into()
+        }
+        (ManagedKind::Otlp, _) => {
+            "Applied on every node at its next export, without a restart; the headers are read for every export.".into()
+        }
         (ManagedKind::OidcProvider, _) => {
             "Applied on every node within seconds, without a restart: its sign-in button appears or goes (a node without public_url shows it as inactive), and the sessions of a removed provider end.".into()
         }
@@ -4865,6 +4893,10 @@ fn plan_managed(
     // REQ: API-016 (T23.10, ADR-967) — OIDC providers: admin-only, node-managed, files win.
     if w.kind == ManagedKind::OidcProvider {
         return crate::oidc_settings::plan(src, state, w);
+    }
+    // REQ: API-016 (T23.11, ADR-984) - event sinks and the OTLP export: admin-only, node-managed.
+    if matches!(w.kind, ManagedKind::Sink | ManagedKind::Otlp) {
+        return crate::sink_settings::plan(src, state, w);
     }
     if matches!(
         w.kind,
@@ -5843,10 +5875,16 @@ pub(crate) fn secret_references(
         ManagedKind::AlertDestination => "alert_destination",
         ManagedKind::Router => "router",
         ManagedKind::OidcProvider => "oidc_provider",
+        ManagedKind::Sink => "sink",
         _ => return Ok(None),
     };
     let before = match w.kind {
         ManagedKind::Router => named_json(&current.router, name),
+        ManagedKind::Sink => current
+            .telemetry
+            .all_sinks()
+            .find(|s| s.name.as_str() == name)
+            .and_then(|s| serde_json::to_value(s).ok()),
         ManagedKind::OidcProvider => current
             .auth
             .oidc
@@ -6394,6 +6432,8 @@ fn keep_in_git(
         ManagedKind::AlertRule => "alerts.rule",
         ManagedKind::Router => "router",
         ManagedKind::OidcProvider => "auth.oidc.provider",
+        ManagedKind::Sink => "telemetry.sink",
+        ManagedKind::Otlp => "telemetry.otlp",
         ManagedKind::Schedule => "schedule",
         ManagedKind::AnomalyMute => "anomaly_mute",
         ManagedKind::RateLimit => "ratelimit",

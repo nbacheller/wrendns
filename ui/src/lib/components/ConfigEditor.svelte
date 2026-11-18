@@ -34,6 +34,9 @@
      *  one is sent): shown read-only to others. A function decides from the entry as it was
      *  read (`{}` for a new one) and the credential paths the entry keeps (`redacted`, T24.16). */
     admin?: boolean | ((original: Record<string, unknown>, redacted: string[]) => boolean);
+    /** REQ: API-016 (T23.11) — shown only while this holds for the entry's values (an address
+     *  only for a syslog sink); a hidden field is not sent. */
+    showIf?: (values: Record<string, unknown>) => boolean;
     /** REQ: API-015 (T23.6) — a `secret` field: `key` is the `*_ref` it writes, `fileKey` the
      *  `*_file` it replaces (read-only when the configuration files set it), `secretName` the
      *  name a new secret is saved under for this entry. */
@@ -70,9 +73,10 @@
     note,
     draft = null,
     adminOnly,
+    fileReadOnly = false,
   }: {
-    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit' | 'exclusions' | 'simulate' | 'rollout' | 'special' | 'local' | 'clients';
-    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings';
+    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit' | 'exclusions' | 'simulate' | 'rollout' | 'special' | 'local' | 'clients' | 'sink';
+    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'sinks';
     title: string;
     noun: string;
     fields: Field[];
@@ -98,6 +102,10 @@
      *  entry as it was read (null for a new entry), so a draft that leaves a saved program address
      *  alone isn't held. */
     adminOnly?: (draft: Record<string, unknown>, saved: Record<string, unknown> | null) => string | null;
+    /** REQ: API-016 (T23.11, ADR-040) — an entry the configuration files define can't be changed or
+     *  removed here (the server refuses it, 409 `set_by_file`): its row says so instead of offering
+     *  Edit (event sinks). */
+    fileReadOnly?: boolean;
   } = $props();
   let formOut = $state<{ ok: boolean; text: string } | null>(null);
   async function runFormAction() {
@@ -226,6 +234,8 @@
     const v = { ...editing!.values };
     delete v.name;
     for (const f of fields) if (f.fromText) v[f.key] = f.fromText(texts[f.key] ?? '');
+    // A field hidden for this entry's type isn't sent (a syslog sink has no URL).
+    for (const f of fields) if (f.showIf && !f.showIf(editing!.values)) delete v[f.key];
     for (const f of fields) {
       const x = v[f.key];
       if (x === '' || x === null || x === undefined || (Array.isArray(x) && x.length === 0 && f.type !== 'multi')) delete v[f.key];
@@ -331,11 +341,15 @@
                   {#if rowAction && e.source !== 'hidden'}
                     <button class="link small" onclick={() => runAction(e.name)}>{rowAction.label}</button>
                   {/if}
+                  {#if fileReadOnly && e.source === 'file'}
+                    <span class="muted small" data-testid="set-by-file-row">Set by file: change it there</span>
+                  {:else}
                   {#if e.source !== 'hidden'}<button class="link small" onclick={() => open(e)}>Edit</button>{/if}
                   {#if e.source === 'override' || e.source === 'hidden'}
                     <button class="link small" disabled={busy} onclick={() => remove(e)}>Revert to the file</button>
                   {:else if !singleton}
                     <button class="link small danger" disabled={busy} onclick={() => remove(e)}>Remove</button>
+                  {/if}
                   {/if}
                 </td>
               {/if}
@@ -365,7 +379,9 @@
           <input class="mono" bind:value={editing.name} required readonly={!editing.isNew} aria-label="Name" />
         </label>
         {#each shown as f (f.key)}
-          {#if f.type === 'secret'}
+          {#if f.showIf && !f.showIf(editing.values)}
+            <!-- not for this entry's type -->
+          {:else if f.type === 'secret'}
             <!-- REQ: API-015 (T23.6) — a credential is entered only through SecretField. -->
             {@const fileKey = f.fileKey ?? ''}
             {@const fileCred = credentials.find((c) => c.kind === kind && c.entry === editing!.name && c.source === 'file' && c.field === f.key.replace(/_ref$/, ''))}

@@ -83,6 +83,9 @@ mod settings_kinds_tests;
 mod shadow;
 mod ship;
 mod simulate;
+mod sink_settings;
+#[cfg(test)]
+mod sink_settings_tests;
 mod sinks;
 mod smtp;
 mod snmp_cli;
