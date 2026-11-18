@@ -2341,7 +2341,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * The live map's settings.
+         * @description The `[map]` section as this node runs it: `enabled`, `event_rate`, `min_sample`,
+         *     `warn_latency_ms` (null: the latency objective's), and the thresholds that colour the map.
+         *     `source` is `file` (the configuration files' section or the defaults) or `override` (set
+         *     through the API or the UI). Written with `PUT /api/v1/map-settings/default`, reverted with
+         *     `DELETE`. The same entry is in `GET /api/v1/config/entries?kind=map`.
+         */
+        get: operations["get_settings"];
         /**
          * The live network map's settings (OBS-901).
          * @description The body has the same fields as `[map]` in `telltale.toml`: `enabled`, `event_rate` (lookups
@@ -14246,6 +14254,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The map's settings and where they come from. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigEntry"];
                 };
             };
         };

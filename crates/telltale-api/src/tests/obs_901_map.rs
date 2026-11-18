@@ -211,6 +211,12 @@ async fn obs_901_roles() {
         let (s, _, v) = send(&app, get_with(uri, &viewer)).await;
         assert_eq!(s, StatusCode::OK, "{uri}: {v}");
     }
+    // The settings are read on the same path they are written on: a viewer reads, and may not write.
+    let (s, _, v) = send(&app, get_with("/api/v1/map-settings/default", &viewer)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["kind"], "map");
+    assert_eq!(v["definition"]["event_rate"], 200);
+    assert_eq!(v["source"], "file");
     let (s, _, _) = send(&app, put(&viewer, r#"{"event_rate": 300}"#)).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "a viewer can't change thresholds");
     // An operator's write reaches the backend as the map's managed kind.
@@ -266,6 +272,11 @@ async fn obs_901_roles() {
     }
     let (s, _, _) = send(&app, put(&reader, r#"{"event_rate": 300}"#)).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "analytics:read can't write");
+    // The settings are config: `config:read` reads them, `analytics:read` alone doesn't.
+    let (s, _, v) = send(&app, get_with("/api/v1/map-settings/default", &cfg)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _, _) = send(&app, get_with("/api/v1/map-settings/default", &reader)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
     let req = Request::put("/api/v1/map-settings/default")
         .header("authorization", format!("Bearer {writer}"))
         .header("x-telltale-reason", "the map is too thin")

@@ -43,6 +43,21 @@ impl Backend for Fake {
     fn map_part(&self) -> Option<crate::map::MapPart> {
         self.map.lock().unwrap().1.parts.first().cloned()
     }
+    fn config_entries(&self, kind: Option<&str>) -> Vec<crate::model::ConfigEntry> {
+        if kind != Some("map") {
+            return Vec::new();
+        }
+        vec![crate::model::ConfigEntry {
+            kind: "map".into(),
+            name: "default".into(),
+            source: "file".into(),
+            definition: serde_json::to_value(telltale_config::MapConfig::default()).ok(),
+            redacted: Vec::new(),
+            credential_issues: Vec::new(),
+            set_by_file: Vec::new(),
+            answering: None,
+        }]
+    }
     fn map_parts(&self) -> crate::map::MapParts {
         self.map.lock().unwrap().1.clone()
     }

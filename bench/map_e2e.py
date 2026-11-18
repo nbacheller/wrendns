@@ -161,8 +161,12 @@ def main():
         # The settings: read through config entries, change, and see it apply with no restart.
         st, e = call("GET", "/api/v1/config/entries?kind=map", token=tok)
         check(st == 200 and e["items"][0]["definition"]["event_rate"] == 200, "the map's settings are in config/entries")
+        st, e = call("GET", "/api/v1/map-settings/default", token=tok)
+        check(st == 200 and e["source"] == "file" and e["definition"]["min_sample"] == 20, "and at GET /api/v1/map-settings/default")
         st, c = call("PUT", "/api/v1/map-settings/default", {"event_rate": 500, "error_pct": 40, "min_sample": 10}, token=tok)
         check(st == 200, f"PUT map-settings ({st} {c if st != 200 else ''})")
+        st, e = call("GET", "/api/v1/map-settings/default", token=tok)
+        check(st == 200 and e["source"] == "override" and e["definition"]["event_rate"] == 500, "the entry now says override")
         st, c = call("PUT", "/api/v1/map-settings/default", {"event_rate": 5}, token=tok)
         check(st == 422 and "event_rate" in json.dumps(c), "an out-of-range value is 422 and names the field")
         st, c = call("PUT", "/api/v1/map-settings/default", {"enabled": False}, token=tok)

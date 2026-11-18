@@ -6000,6 +6000,26 @@
       }
     },
     "/api/v1/map-settings/default": {
+      "get": {
+        "tags": [
+          "map"
+        ],
+        "summary": "The live map's settings.",
+        "description": "The `[map]` section as this node runs it: `enabled`, `event_rate`, `min_sample`,\n`warn_latency_ms` (null: the latency objective's), and the thresholds that colour the map.\n`source` is `file` (the configuration files' section or the defaults) or `override` (set\nthrough the API or the UI). Written with `PUT /api/v1/map-settings/default`, reverted with\n`DELETE`. The same entry is in `GET /api/v1/config/entries?kind=map`.",
+        "operationId": "get_settings",
+        "responses": {
+          "200": {
+            "description": "The map's settings and where they come from.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigEntry"
+                }
+              }
+            }
+          }
+        }
+      },
       "put": {
         "tags": [
           "config"

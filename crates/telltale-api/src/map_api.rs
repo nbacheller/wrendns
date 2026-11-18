@@ -47,6 +47,8 @@ pub(crate) fn read_routes(backend: Shared) -> Router {
         .route("/api/v1/map/stream", get(map_stream))
         .route("/api/v1/map/world", get(get_world))
         .route("/api/v1/map/health", get(get_health))
+        // The settings are read here (viewers) and written in `config_api` (operators): one path.
+        .route("/api/v1/map-settings/default", get(get_settings))
         .with_state(state)
 }
 
@@ -218,6 +220,29 @@ pub(crate) async fn get_world(State(s): State<MapState>) -> Result<Json<map::Map
         settings(&*b)?;
         let parts = b.map_parts();
         Ok(map::world_unavailable(&parts, b.now_unix_seconds()))
+    })
+    .await
+    .map(Json)
+}
+
+/// The live map's settings.
+///
+/// The `[map]` section as this node runs it: `enabled`, `event_rate`, `min_sample`,
+/// `warn_latency_ms` (null: the latency objective's), and the thresholds that colour the map.
+/// `source` is `file` (the configuration files' section or the defaults) or `override` (set
+/// through the API or the UI). Written with `PUT /api/v1/map-settings/default`, reverted with
+/// `DELETE`. The same entry is in `GET /api/v1/config/entries?kind=map`.
+#[utoipa::path(get, path = "/api/v1/map-settings/default", tag = "map",
+    responses((status = 200, body = crate::model::ConfigEntry, description = "The map's settings and where they come from.")))]
+pub(crate) async fn get_settings(
+    State(s): State<MapState>,
+) -> Result<Json<crate::model::ConfigEntry>, Problem> {
+    let b = s.backend;
+    blocking(move || {
+        b.config_entries(Some("map"))
+            .into_iter()
+            .next()
+            .ok_or_else(|| Problem::not_found("this node has no map settings"))
     })
     .await
     .map(Json)
