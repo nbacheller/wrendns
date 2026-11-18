@@ -465,6 +465,32 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("lists".into(), "/api/v1/lists".into())]),
         },
+        // REQ: FLT-004, AGT-001 (T24.28, ADR-992) - which lists add little. Read-only: turning
+        // lists off is a person's (`POST /api/v1/lists/prune` refuses agent tokens).
+        Tool {
+            name: "list_overlap",
+            description: "Read-only. Which filter lists add little: each enabled list's entries, the names no other list of its kind has (unique), its regexes and modifier rules (counted as unique), the share it adds, the lists covering the rest of it, and the groups that name it; plus the prune plan: the block lists that add at most thresholdPercent of their own entries (default 1), with the most names turning them all off could stop blocking, and why every other list stays. Allow lists, shadow lists, lists a group names, and lists not compiled yet are never proposed. Changes nothing: a person turns the lists off in the UI after previewing; propose it to them with the numbers.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "thresholdPercent": {"type": "number", "minimum": 0, "maximum": 50, "description": "Propose lists adding at most this percent of their own entries. Default 1."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                let plan = match a.get("thresholdPercent") {
+                    None | Some(Value::Null) => "/api/v1/lists/prune-plan".to_owned(),
+                    Some(v) => match v.as_f64() {
+                        Some(t) if t.is_finite() => {
+                            format!("/api/v1/lists/prune-plan?thresholdPercent={t}")
+                        }
+                        _ => return Err("`thresholdPercent` must be a number from 0 to 50".into()),
+                    },
+                };
+                Ok(vec![
+                    ("overlap".into(), "/api/v1/lists/overlap".into()),
+                    ("plan".into(), plan),
+                ])
+            },
+        },
         Tool {
             name: "find_anomalies",
             description: "Read-only. Device anomalies with their evidence: rate spikes, heavy volume to one domain, behavior drift, beaconing (regular call-home patterns), NXDOMAIN storms, and machine-generated-looking (DGA) new domains, from every cluster node. Each has an id (for acknowledge_anomalies) and, once someone looked at it, who acknowledged it. Alert-only; nothing is blocked automatically.",

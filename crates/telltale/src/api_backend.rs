@@ -1768,6 +1768,7 @@ impl Backend for ApiBackend {
         })
     }
 
+    #[allow(clippy::too_many_lines)] // one row per list: its configuration, download state and overlap
     fn lists(&self) -> Vec<ListInfo> {
         let cfg = self.src.config.load();
         let shared = self.src.lists.load_full();
@@ -1801,6 +1802,7 @@ impl Backend for ApiBackend {
                 let entries = per.map_or(0, |s| s.entries);
                 let unique = per.map_or(0, |s| s.unique);
                 let regex_skipped = per.map_or(0, |s| s.regex_skipped);
+                let rules = per.map_or(0, |s| s.rules);
                 let mut overlap: Vec<telltale_api::model::ListShare> = match (&compiled, id) {
                     (Some(m), Some(i)) => {
                         let i = u16::try_from(i).unwrap_or(u16::MAX);
@@ -1858,6 +1860,7 @@ impl Backend for ApiBackend {
                     regex_skipped,
                     hits: decided.get(&*l.name).copied().unwrap_or(0),
                     overlap,
+                    rules,
                     last_checked_unix_seconds: meta.and_then(|m| m.last_attempt),
                     // Inline lists have no download to confirm (REQ: FLT-004, issue #59).
                     last_success_unix_seconds: meta

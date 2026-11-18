@@ -13,8 +13,9 @@ function walk(dir) {
     const p = join(dir, f);
     if (statSync(p).isDirectory()) walk(p);
     else if (/\.(svelte|ts)$/.test(f)) {
-      // A form field names its topic as `helpTopic: 'id'` (ConfigEditor fields).
-      for (const m of readFileSync(p, 'utf8').matchAll(/(?:<HelpButton id="|helpTopic: ')([^"']+)/g)) {
+      // A HelpButton tag, or a ConfigEditor field's `helpTopic` (rendered as a HelpButton).
+      for (const m of readFileSync(p, 'utf8').matchAll(/<HelpButton id="([^"]+)"|helpTopic: '([^']+)'/g)) {
+        m[1] ??= m[2];
         used.set(m[1], [...(used.get(m[1]) ?? []), p.slice(resolve(here, '..').length + 1)]);
       }
     }

@@ -1155,6 +1155,8 @@ fsync = true                            # sync a compiled snapshot to disk befor
 max_regexes = 1000                      # regex rules kept per snapshot (0 = no limit); the rest are reported
 allow_link_local_urls = false           # true: allow list URLs on 169.254.0.0/16 or fe80::/10
 ```
+
+**A list that failed to download** says why on its Lists row. Over its size limit: the row names the limit (and the size the server announced) and **Raise the limit to N MiB** sets that list's own `max_bytes` (the announced size plus a quarter, or double the old limit, up to 128 MiB for one list) and downloads it again; past 128 MiB, remove the list or use a smaller one. Not found (HTTP 404 or 410): the maintainer moved or deleted it, so **Remove it** or edit its address in Manage lists. A list whose every name is also in another list says so, with **Turn it off** and **Remove it**. In a Pi-hole import, a GitHub page address (`github.com/.../blob/...`) is imported as its raw file and the preview says so, and a regex list (such as `regex.list`) is not imported as a list: add its patterns as regex deny rules.
 - **Link-local and cloud-metadata addresses are refused** (169.254.0.0/16, fe80::/10, AWS's fd00:ec2::254), whatever name or redirect leads there, so a list URL can't read what a cloud instance serves there. Private LAN addresses are fine. When an agent's pre-save check can't reach a list or an upstream, it's told only that it was unreachable; the UI and the audit log show why.
 - **Downloads are polite:** after the first download, a refresh sends `If-None-Match`/`If-Modified-Since`, so an unchanged list costs one small request. Redirects are followed, except from `https` to `http`.
 - **A failed refresh never loses a list.** The last good copy stays in use. A failing list is retried after 5 minutes, then 10, 20, and so on up to hourly, instead of waiting a whole day. Responses that can't be a list are rejected: an empty body, an HTML page from a captive portal, a compressed body (`Content-Encoding` other than `identity`), or text that is mostly not rules (a JSON error from a CDN, a mirror that changed format). "Mostly" is `[filter] max_invalid_percent` (default 50: more invalid lines than rules); cosmetic and unsupported rules don't count as invalid, and `100` turns the check off.
@@ -1234,6 +1236,19 @@ telltale lists compile -c telltale.toml     # compile now and show per-list numb
 `unique` counts the names no other list has. A list with few unique names adds little beyond your other lists.
 
 The **Lists** page and `GET /api/v1/lists` show the same per list: `unique`, `hits` (queries it decided since each node started; in a cluster, every node's added up), and `overlap` (the lists it shares names with, and how many). A list that's 95% or more inside another is marked, and one with no hits is marked "none yet".
+
+#### Finding lists that add little (prune)
+Overlap is counted by name, while the lists are compiled (once per compile, never on a query). A name a block list and an allow list both have is not "shared": they do opposite things, so a block list is only compared with other block lists. Regexes and modifier rules can't be compared, so they count as the list's own (`rules`), and wildcard coverage (`||example.com^` already blocks `ads.example.com`) isn't seen, which only makes a list look more useful than it is. `GET /api/v1/lists/overlap` has, per enabled list, `unique`, `rules`, `addsPercent` (unique names plus rules, as a share of its entries), `coveredBy` (the lists with the rest of it) and `groups` (the groups that name it).
+
+**Prune…** on the Lists page (operators) previews the lists to turn off: you set the threshold (default 1, 0 to 50), and a block list in enforce mode is proposed when it adds at most that percent of its own entries. The list is a plan: lists are added least-adding first, and each has to keep the whole set within the threshold, so two lists that mirror each other are never both proposed. Never proposed: allow lists, shadow lists, lists not compiled yet, and lists a group names in its own `lists` (that group may not use the lists that cover them); the preview says why each stays. "Could lose" is an upper bound on the names that would stop being blocked. A list whose covering list was just turned off, or whose cover isn't blocking now, is not judged covered; while a compile is pending after a change the plan proposes nothing and says so. After you confirm, the lists are written back with `enabled = false`; they stay in the configuration, and **Undo** on the notice (or turning one on in **Manage lists**) brings them back. If the configuration or the compiled lists changed between the preview and the confirmation, nothing is turned off (409): preview again. A cluster replica reads the primary's numbers and its writes go to the primary, like any list edit.
+
+```sh
+curl -s 'http://127.0.0.1:8053/api/v1/lists/prune-plan?thresholdPercent=1' -H "Authorization: Bearer $TOKEN"   # the plan; changes nothing
+curl -s -X POST http://127.0.0.1:8053/api/v1/lists/prune -H "Authorization: Bearer $TOKEN"   -d '{"thresholdPercent": 1, "names": ["oisd-small"], "snapshotVersion": 7, "configVersion": 12}'   # the plan's versions; a person's: agent tokens get agent_not_allowed
+```
+Agents read the plan (`config:read`; the MCP tool `list_overlap`) and propose it; they can't apply it. A prune is audit-logged as `lists.prune`, and each list's own change as `list.put`.
+
+Cost: the overlap is a table of counters per pair of lists (a few KiB for 40 lists, at most 64 KiB; more than 128 lists use a map of the pairs that share a name) updated while the compile merges the lists. With 40 lists and 2 million names it adds no measurable time to the compile and no memory (peak 146 MiB with or without it, on one thread); see ADR-992.
 
 ### Blocking
 A query is checked against the filter after local records and before the cache, so a blocked name never reaches an upstream:
@@ -2337,6 +2352,13 @@ telltale cluster set-failover auto
   *lease* with a majority every 5 s, and publishes only while the lease holds. If it disappears,
   the eligible nodes wait for the lease to run out, and one is elected by a majority vote in a
   new epoch, typically within 15–25 s.
+- **A witness on the Cluster page:** a witness only votes (REQ: CLU-009), so its row says
+  "witness, votes only" and shows *not applicable* for configuration, secrets and DNS. It shows
+  whether it is up and linked, its version and uptime, and its vote: when it last answered the
+  primary's vote request or lease renewal, and the epoch it voted in. It is never "behind" or
+  "not serving", and the Health checks, rollouts and Compare leave it out for those. One that
+  is unreachable still fails the "nodes up" check and raises the `node_down` health reason and
+  alert, because automatic failover needs its vote.
 - **Never two primaries writing:** a voter votes once per epoch and won't vote for anyone else
   while the lease it granted runs. A primary that loses its majority (for example, cut off by a
   network split) stops taking changes before anyone else can be elected. Proven by a simulator
@@ -3624,6 +3646,7 @@ For agents that start their tools as a subprocess, use the stdio transport. It r
 | `health` | healthy, degraded, or severe, and why (start here when something seems wrong) |
 | `upstream_health` | upstream health (healthy, benched, probing), latency |
 | `list_effectiveness` | list sizes, updates, errors, hits, unique names, and overlap |
+| `list_overlap` | which lists add little: each list's unique names and who covers the rest, and the plan that would turn the least-adding lists off (read-only; a person applies it in **Lists**) |
 | `find_anomalies` | device anomalies from every node with evidence (including NXDOMAIN storms and DGA-like names), optionally only the unacknowledged ones, or with `muted` also the ones a mute matched |
 | `list_anomaly_mutes` | the [anomaly mutes](#muting-a-kind-of-finding-for-a-device): devices or groups, kinds, end time, note (needs `config:read`) |
 | `acknowledge_anomalies` | marks findings as seen on every node, or takes it back with `undo` (needs `ops:anomalies`; changes at once, audited) |
@@ -3875,7 +3898,7 @@ For planned downtime longer than a restart, [put the node in maintenance](#takin
 In Kubernetes, pair this with a short `preStop` sleep so endpoints are removed before the drain begins (the Helm chart will set this).
 
 ## Logging
-Logs go to stderr. Set the level with `TELLTALE_LOG` (`error`, `warn`, `info` (default), `debug`, `trace`).
+Logs go to stderr. Set the level with `TELLTALE_LOG` (`error`, `warn`, `info` (default), `debug`, `trace`), or per module, for example `TELLTALE_LOG=info,telltale_cluster::failover=debug`. To trace a primary's lease lapse without debug logging for the whole server, use that example: each renewal round and each vote answer (with `took_ms`) is logged at debug. The Cluster page's event list shows `Lease lapsed` and `Lease renewed` (with how long publishing paused); a node that is no longer the primary logs that the lapse ended instead. A slow ballot store (500 ms or more) logs a warning at most once a minute.
 
 ## Error responses
 | Query | Response |
