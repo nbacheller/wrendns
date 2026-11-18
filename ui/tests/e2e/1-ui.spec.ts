@@ -875,6 +875,22 @@ test('admins add users; viewers see less', async () => {
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
 });
 
+// REQ: API-003 (T24.7, ADR-972) — the sign-in form's "Forgot the password" help opens from the
+// sign-in page, and says the reset runs on the machine with the node stopped.
+test('api_003 the sign-in page explains the offline password reset', async () => {
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Sign in' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Help: Forgot the password' }).click();
+  const panel = page.getByTestId('help-panel');
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText('with it stopped');
+  await page.keyboard.press('Escape');
+  await expect(panel).toHaveCount(0);
+  await signIn(ADMIN.user, ADMIN.pass);
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+});
+
 test('works at phone width (360 px)', async () => {
   await page.setViewportSize({ width: 360, height: 740 });
   await page.goto('/#/queries');
