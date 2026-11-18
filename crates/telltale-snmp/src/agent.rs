@@ -189,6 +189,21 @@ impl Agent {
         self.engine.as_ref()
     }
 
+    /// Moves the learned engine's clock origin back by `by`, as if that much local time had
+    /// passed without a reply: the estimate then runs ahead of a slow or paused agent. For
+    /// tests of the time-window recovery (DSC-003); it has no use in a poller.
+    #[doc(hidden)]
+    pub fn age_engine_estimate(&mut self, by: Duration) {
+        for e in [self.engine.as_mut(), self.trusted.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(t) = e.learned.checked_sub(by) {
+                e.learned = t;
+            }
+        }
+    }
+
     /// Derives the round's keys once, before a walk or a poll round (ADR-908).
     pub fn begin_round(&mut self) -> Result<(), AgentError> {
         if let (Security::V3 { user }, None) = (&self.security, self.keys.as_ref()) {
@@ -437,7 +452,11 @@ impl Agent {
                             e.resync(reply.boots, reply.time, now);
                         }
                     }
-                    Window::Accept => {}
+                    Window::Accept => {
+                        if let Some(e) = self.engine.as_mut() {
+                            e.note_received(reply.boots, reply.time);
+                        }
+                    }
                     Window::Stale => {
                         return Some(Err(AgentError::Usm(UsmError::NotInTimeWindow)));
                     }
@@ -451,7 +470,11 @@ impl Agent {
             return None;
         }
         match window {
-            Window::Accept => {}
+            Window::Accept => {
+                if let Some(e) = self.engine.as_mut() {
+                    e.note_received(reply.boots, reply.time);
+                }
+            }
             Window::Resync => {
                 if let Some(e) = self.engine.as_mut() {
                     e.resync(reply.boots, reply.time, now);
@@ -556,6 +579,7 @@ fn accept_discovery(
         boots: reply.boots,
         time: reply.time,
         learned: now,
+        latest: None,
     }))
 }
 

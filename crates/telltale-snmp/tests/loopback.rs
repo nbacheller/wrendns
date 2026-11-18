@@ -604,3 +604,66 @@ fn dsc_003_rediscovery_behind_the_trusted_clock_still_recovers() {
     assert_eq!(agent.engine().map(|e| e.boots), Some(5));
     stop.store(true, Ordering::Relaxed);
 }
+
+/// The agent's clock runs behind the client's estimate by more than the 150 s window (a slow
+/// clock or a paused VM). The estimate is aged by 400 s; the agent still reports `agent_time`.
+fn slow_agent(agent_time: u32) -> (Result<(), AgentError>, Option<u32>) {
+    let stop = Arc::new(AtomicBool::new(false));
+    let st = state(
+        5,
+        1000,
+        Mode::TimeReportOnce {
+            boots: 5,
+            time: agent_time,
+        },
+    );
+    // The first request is answered normally; the Report is armed after it.
+    if let Ok(mut s) = st.lock() {
+        s.mode = Mode::Normal;
+    }
+    let addr = fake_v3(false, st.clone(), stop.clone());
+    let mut agent = Agent::new(
+        addr,
+        Security::V3 {
+            user: v3_user(false),
+        },
+        timing(),
+    )
+    .unwrap_or_else(|e| panic!("{e:?}"));
+    assert!(agent.request(RequestKind::Get, &[oid(SYS_NAME)], 0).is_ok());
+    agent.age_engine_estimate(Duration::from_secs(400));
+    if let Ok(mut s) = st.lock() {
+        s.mode = Mode::TimeReportOnce {
+            boots: 5,
+            time: agent_time,
+        };
+    }
+    let got = agent
+        .request(RequestKind::Get, &[oid(SYS_NAME)], 0)
+        .map(|_| ());
+    let time = agent.engine().map(|e| e.time);
+    stop.store(true, Ordering::Relaxed);
+    (got, time)
+}
+
+#[test]
+fn dsc_003_agent_clock_behind_the_estimate_recovers() {
+    // Last authenticated time was 1000; the agent is at 1010, the estimate at about 1400. The
+    // authenticated Report is later than the last authenticated value, so the clock is taken
+    // and the request is answered.
+    let (got, time) = slow_agent(1010);
+    assert!(got.is_ok(), "{got:?}");
+    assert!(time.is_some_and(|t| t >= 1010), "{time:?}");
+}
+
+#[test]
+fn dsc_003_agent_clock_never_goes_back_past_the_last_authenticated_value() {
+    // The agent reports 990, older than the 1000 already received: refused, and the cached
+    // clock is not that value.
+    let (got, time) = slow_agent(990);
+    assert!(
+        matches!(got, Err(AgentError::Usm(UsmError::NotInTimeWindow))),
+        "{got:?}"
+    );
+    assert!(time.is_none_or(|t| t >= 1000), "{time:?}");
+}

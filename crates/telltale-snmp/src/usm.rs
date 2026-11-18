@@ -295,6 +295,10 @@ pub struct Engine {
     pub boots: u32,
     pub time: u32,
     pub learned: Instant,
+    /// The boots and time of the last authenticated message received from the agent
+    /// (RFC 3414 latestReceivedEngineTime). `None` until one verifies: discovery is
+    /// unauthenticated and never sets it.
+    pub latest: Option<(u32, u32)>,
 }
 
 /// What a message's boots and time mean for our copy of the agent's clock (RFC 3414 §3.2.7b).
@@ -336,7 +340,14 @@ impl Engine {
             return Window::Resync;
         }
         if local.saturating_sub(time) > TIME_WINDOW {
-            return Window::Stale;
+            // REQ: DSC-003. Behind our estimate, but the estimate only runs ahead of an agent
+            // whose clock is slow or was paused. RFC 3414 §3.2.7b updates the clock when the
+            // time is later than latestReceivedEngineTime, not when it is later than the
+            // projected estimate; an older authenticated message (a replay) stays stale.
+            return match self.latest {
+                Some((b, t)) if b == boots && time > t => Window::Resync,
+                _ => Window::Stale,
+            };
         }
         Window::Accept
     }
@@ -346,6 +357,16 @@ impl Engine {
         self.boots = boots;
         self.time = time;
         self.learned = now;
+        self.latest = Some((boots, time));
+    }
+
+    /// Records an authenticated message that was inside the window, so the latest received
+    /// time only moves forward.
+    pub fn note_received(&mut self, boots: u32, time: u32) {
+        match self.latest {
+            Some((b, t)) if b > boots || (b == boots && t >= time) => {}
+            _ => self.latest = Some((boots, time)),
+        }
     }
 }
 
@@ -798,12 +819,14 @@ mod tests {
             boots: 5,
             time: 1000,
             learned: now,
+            latest: None,
         };
         let found = |boots, time| Engine {
             id: vec![1, 2],
             boots,
             time,
             learned: now,
+            latest: None,
         };
         assert!(!discovery_allowed(Some(&t), &found(4, 9999), now));
         assert!(!discovery_allowed(Some(&t), &found(5, 100), now));
@@ -814,6 +837,7 @@ mod tests {
             boots: 1,
             time: 1,
             learned: now,
+            latest: None,
         };
         assert!(discovery_allowed(Some(&t), &other, now));
     }
@@ -852,6 +876,7 @@ mod tests {
             boots: 5,
             time: 1000,
             learned: t0,
+            latest: None,
         };
         // Same boots, time within 150 s either way: accepted.
         assert_eq!(e.window(5, 1000, t0), Window::Accept);
@@ -873,6 +898,32 @@ mod tests {
         e.resync(6, 50, t0);
         assert_eq!(e.boots, 6);
         assert_eq!(e.time, 50);
+    }
+
+    #[test]
+    fn dsc_003_slow_agent_clock_resyncs_but_never_below_the_latest_received() {
+        let t0 = Instant::now();
+        let mut e = Engine {
+            id: vec![1],
+            boots: 5,
+            time: 1000,
+            learned: t0,
+            latest: None,
+        };
+        // No authenticated message yet: behind the estimate is stale, as before.
+        let later = t0 + Duration::from_secs(400);
+        assert_eq!(e.window(5, 1010, later), Window::Stale);
+        e.note_received(5, 1000);
+        // The estimate (1400) ran ahead of a slow agent (1010): later than the latest received.
+        assert_eq!(e.window(5, 1010, later), Window::Resync);
+        // Not later than the latest received (a replay, or a clock that went back): stale.
+        assert_eq!(e.window(5, 1000, later), Window::Stale);
+        assert_eq!(e.window(5, 990, later), Window::Stale);
+        // note_received only moves forward.
+        e.note_received(5, 900);
+        assert_eq!(e.latest, Some((5, 1000)));
+        e.resync(5, 1010, later);
+        assert_eq!(e.latest, Some((5, 1010)));
     }
 
     #[test]
