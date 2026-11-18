@@ -218,7 +218,7 @@ pub struct Heartbeat {
     pub peers: Vec<PeerHealth>,
 }
 
-/// REQ: CLU-001 (ADR-960) — what a node tells its peers about another member it hears from.
+/// REQ: CLU-001 (ADR-960) — what a node tells its peers about another member it hears from (a relay).
 #[derive(Clone, PartialEq, Eq, Message)]
 pub struct PeerHealth {
     #[prost(string, tag = "1")]
