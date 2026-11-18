@@ -21,6 +21,10 @@
   let busy = $state(false);
   // The admin's switch.
   let mdnsOn = $state(false);
+  // The value the last Check sent: Apply sends this, so it applies what was previewed.
+  let mdnsChecked = $state(false);
+  // The server's value at the last load. A reload only moves the switch when the admin has not changed it.
+  let mdnsSeen = false;
   let mdnsPreview = $state<S['ConfigChange'] | null>(null);
   let mdnsError = $state<unknown>(null);
 
@@ -42,7 +46,8 @@
       const [l, c] = await Promise.all([api.configEntries('local'), api.configEntries('clients')]);
       local = l.items[0] ?? null;
       clients = c.items[0] ?? null;
-      mdnsOn = clientsMdns;
+      if (mdnsOn === mdnsSeen) mdnsOn = clientsMdns;
+      mdnsSeen = clientsMdns;
       error = null;
     } catch (e) {
       error = e;
@@ -131,7 +136,8 @@
     busy = true;
     mdnsError = null;
     try {
-      mdnsPreview = await api.putEntry('clients-settings', 'default', { mdns: mdnsOn }, true);
+      mdnsChecked = mdnsOn;
+      mdnsPreview = await api.putEntry('clients-settings', 'default', { mdns: mdnsChecked }, true);
     } catch (err) {
       mdnsError = err;
       mdnsPreview = null;
@@ -142,9 +148,9 @@
   async function mdnsApply() {
     busy = true;
     try {
-      await api.putEntry('clients-settings', 'default', { mdns: mdnsOn }, false);
+      await api.putEntry('clients-settings', 'default', { mdns: mdnsChecked }, false);
       mdnsPreview = null;
-      notice = mdnsOn ? 'mDNS listening is on.' : 'mDNS listening is off.';
+      notice = mdnsChecked ? 'mDNS listening is on.' : 'mDNS listening is off.';
       await load();
     } catch (err) {
       mdnsError = err;

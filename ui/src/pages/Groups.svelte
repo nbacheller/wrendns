@@ -59,8 +59,24 @@
     const d = s.replace(/\.+$/, '');
     return d.length > 0 && d.length <= 253 && d.split('.').every((l) => l.length > 0 && l.length <= 63 && /^[A-Za-z0-9_-]+$/.test(l));
   };
-  const isIp = (s: string) =>
-    /^(\d{1,3}\.){3}\d{1,3}$/.test(s) ? s.split('.').every((o) => Number(o) <= 255) : s.includes(':') && /^[0-9a-fA-F:.]+$/.test(s);
+  const isIpv4 = (s: string) => /^(\d{1,3}\.){3}\d{1,3}$/.test(s) && s.split('.').every((o) => Number(o) <= 255);
+  // An IPv6 address: at most one `::`, 8 groups of 1 to 4 hex digits (7 with `::`), and an IPv4 tail allowed.
+  const isIpv6 = (s: string) => {
+    if (!s.includes(':') || !/^[0-9a-fA-F:.]+$/.test(s)) return false;
+    let t = s;
+    if (t.includes('.')) {
+      const cut = t.lastIndexOf(':');
+      if (!isIpv4(t.slice(cut + 1))) return false;
+      t = `${t.slice(0, cut + 1)}0:0`;
+    }
+    const halves = t.split('::');
+    if (halves.length > 2) return false;
+    const groups = (h: string) => (h === '' ? [] : h.split(':'));
+    const all = halves.flatMap(groups);
+    if (!all.every((g) => /^[0-9a-fA-F]{1,4}$/.test(g))) return false;
+    return halves.length === 2 ? all.length <= 7 : all.length === 8;
+  };
+  const isIp = (s: string) => isIpv4(s) || isIpv6(s);
   const linesOf = (v: unknown) => ((v as string[] | undefined) ?? []).join('\n');
   // Each line of a `lines` field, checked; a bad line stops Check with its message.
   function addressesFrom(s: string): string[] {

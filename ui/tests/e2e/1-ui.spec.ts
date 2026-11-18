@@ -2837,10 +2837,15 @@ test('flt_014 add a rewrite to a group', async () => {
   await rewrites.fill('rw.e2e.test');
   await page.getByRole('button', { name: 'Check', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('write the name and the answer');
+  // An answer that is neither an address nor a domain is named; `::::` is not an IPv6 address.
+  await rewrites.fill('rw.e2e.test ::::');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('an IP address or a domain');
   await rewrites.fill('rw.e2e.test 192.0.2.88\nrw.e2e.test 192.0.2.89');
   await page.getByRole('button', { name: 'Check', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('rewritten twice');
-  await rewrites.fill('rw.e2e.test 192.0.2.88');
+  // A wildcard (*.domain) and a CNAME-style answer (a name) are accepted with the address rewrite.
+  await rewrites.fill('rw.e2e.test 192.0.2.88\n*.rw-wild.e2e.test 192.0.2.90\nalias.e2e.test rw.e2e.test');
   await page.getByRole('button', { name: 'Check', exact: true }).click();
   await expect(page.getByTestId('entry-preview')).toBeVisible();
   await page.getByRole('button', { name: 'Apply' }).click();
@@ -2850,6 +2855,10 @@ test('flt_014 add a rewrite to a group', async () => {
   await expect
     .poll(async () => (await queryDetail('rw.e2e.test')).address, { timeout: 20_000 })
     .toBe('192.0.2.88');
+  // A name under the wildcard gets its address.
+  await expect
+    .poll(async () => (await queryDetail('host.rw-wild.e2e.test')).address, { timeout: 20_000 })
+    .toBe('192.0.2.90');
   await page.goto('/#/explain?name=rw.e2e.test&client=127.0.0.1');
   await expect(page.locator('.explain')).toContainText('rewritten to 192.0.2.88', { timeout: 30_000 });
 
