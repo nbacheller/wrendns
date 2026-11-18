@@ -1560,6 +1560,12 @@ pub enum AlertWhen {
     /// API; once per backup, from the audit log's `backup.create` records): the secrets left the
     /// node, under a passphrase.
     SecretsExported,
+    /// REQ: API-902 (T27.13, ADR-956 §6) — an admin changed a guarded setting (a listener, the API
+    /// address, TLS, proxies, secret keys, cluster, restart): once when it is applied or staged and
+    /// again on its outcome (confirmed, rolled back with the reason, restarting), from the audit
+    /// log's `settings.guarded*` records, so a second channel sees what an attacker with an admin
+    /// session does.
+    GuardedSettingChanged,
 }
 
 /// REQ: FLT-014 (T7.20) — one rewrite.
@@ -2858,7 +2864,14 @@ pub struct ApiConfig {
     /// on the same host. Read from this node's own files; the API can't set it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub allow_secrets_over_http: bool,
+    /// REQ: API-902 (T27.13, ADR-956 §3) — how long a guarded change to an address, certificate
+    /// or proxy list waits to be confirmed through the new address before it is rolled back, in
+    /// seconds: 30 to 600. Read from this node's own files; the API can't set it.
+    pub confirm_window_secs: u32,
 }
+
+/// REQ: API-902 — `[api] confirm_window_secs` when not set (ADR-956 §3).
+pub const DEFAULT_CONFIRM_WINDOW_SECS: u32 = 120;
 
 impl Default for ApiConfig {
     fn default() -> Self {
@@ -2868,6 +2881,7 @@ impl Default for ApiConfig {
             trusted_proxies: Vec::new(),
             tls: None,
             allow_secrets_over_http: false,
+            confirm_window_secs: DEFAULT_CONFIRM_WINDOW_SECS,
         }
     }
 }

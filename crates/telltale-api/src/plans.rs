@@ -139,7 +139,15 @@ impl Plans {
     }
 
     /// Keeps `plan`; its `body` is kept for `apply_plan` (`write_body`) and shown redacted.
+    ///
+    /// REQ: API-902 (ADR-956 §7) — a plan for a guarded path is never kept: it comes back
+    /// `discarded`, so nothing can approve or replay it.
     pub fn add(&self, mut plan: Plan) -> Plan {
+        if crate::guarded::is_guarded_path(&plan.path) {
+            "discarded".clone_into(&mut plan.state);
+            plan.write_body = None;
+            return plan;
+        }
         if plan.write_body.is_none() {
             plan.write_body.clone_from(&plan.body);
         }
@@ -337,11 +345,17 @@ fn decide(
     }
 }
 
+/// A plan for the other modules' tests.
+#[cfg(test)]
+pub(crate) fn tests_plan(id: &str, owner: &str, state: &str, expires: u64) -> Plan {
+    tests::plan(id, owner, state, expires)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn plan(id: &str, owner: &str, state: &str, expires: u64) -> Plan {
+    pub(super) fn plan(id: &str, owner: &str, state: &str, expires: u64) -> Plan {
         Plan {
             id: id.into(),
             tool: "plan_block_domain".into(),

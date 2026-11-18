@@ -204,6 +204,8 @@ pub(crate) struct Entries {
     pub(crate) clients_settings: Option<serde_json::Value>,
     /// REQ: DSC-001 (T25.2) — the stored `[discovery]` section, likewise.
     pub(crate) discovery: Option<serde_json::Value>,
+    /// REQ: API-902 (T27.13) — this node's guarded entries (the reserved kind `guarded`).
+    pub(crate) guarded: Vec<crate::guarded::store::Stored>,
 }
 
 impl Entries {
@@ -427,6 +429,7 @@ pub(crate) fn entries(state: &State) -> Entries {
             .into_iter()
             .next()
             .map(|(_, v)| v),
+        guarded: crate::guarded::store::all(state),
     }
 }
 
@@ -498,7 +501,9 @@ fn safe(s: &str) -> Result<SafeString, String> {
 }
 
 /// The one-of sections the API or UI set, each replacing the files' section as a whole.
-fn apply_one_of(cfg: &mut Config, e: &Entries) {
+fn apply_one_of(cfg: &mut Config, own: &Config, e: &Entries) {
+    // REQ: API-902 (T27.13, ADR-956 §2) — the guarded values in force (a field the files set wins).
+    crate::guarded::appliers::overlay(cfg, own, &e.guarded, None);
     if let Some(r) = &e.ratelimit {
         cfg.ratelimit = r.clone();
     }
@@ -574,7 +579,7 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
     apply_ovr(&mut cfg.schedule, &e.schedules);
     apply_ovr(&mut cfg.anomaly_mute, &e.anomaly_mutes);
     apply_kubernetes_map(&mut cfg, &e.kubernetes_map);
-    apply_one_of(&mut cfg, e);
+    apply_one_of(&mut cfg, own, e);
     // REQ: API-014 (T23.2, ADR-903 §4) — a stored path the rules refuse isn't read
     // (`effective` logs why; the entries list it in `credentialIssues`).
     crate::credential_rules::confine(&mut cfg, own, e);

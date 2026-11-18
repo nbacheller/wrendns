@@ -1340,6 +1340,10 @@ fn auth(cfg: &Config, r: &mut Report<'_>) {
             ),
         }
     }
+    // REQ: API-902 (ADR-956 §3) — the confirmation window of a guarded address change.
+    if !(30..=600).contains(&cfg.api.confirm_window_secs) {
+        r.err("api.confirm_window_secs", "must be 30 to 600 seconds");
+    }
     oidc(&a.oidc, r);
 }
 

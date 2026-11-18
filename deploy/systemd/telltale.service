@@ -21,6 +21,10 @@ OOMPolicy=continue
 Environment=TELLTALE_LOG=info
 # REQ: OPS-004 (ADR-046) — how this node updates (self-update).
 Environment=TELLTALE_INSTALL=native
+# REQ: API-902 (T27.13, ADR-956 §4a) - this unit restarts the process on exit (Restart=on-failure), so the
+# UI may offer "Restart now" (exit status 75). Nothing is guessed from the environment: a node run by
+# hand has no supervisor.
+Environment=TELLTALE_SUPERVISOR=systemd
 
 # Port 53 without root: only this capability, nothing else.
 AmbientCapabilities=CAP_NET_BIND_SERVICE

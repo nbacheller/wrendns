@@ -95,11 +95,15 @@ dhat-heap = ["dep:dhat"]
 # every runtime worker n seconds after start, so the watchdog can be tried on a real process
 # (`deploy/watchdog/e2e.sh`).
 wedge-test = []
+# REQ: API-902 (T27.13, ADR-956 §3) — the guarded framework's test rows and the simulated restart
+# (`TT_E2E_RESTART_HOOK`). Never in a release build: only the end-to-end server is built with it
+# (`ui/tests/e2e/server.mjs`); the registry rows and the hook are compiled out without it.
+e2e = ["telltale-config/e2e"]
 
 [dev-dependencies]
 # REQ: NFR-002 — the whole-pipeline allocation test (`pipeline.rs`).
 allocation-counter = "0.8.1"
 tempfile = "3.27.0"
-tokio = { version = "1.53.1", features = ["io-util"] }
+tokio = { version = "1.53.1", features = ["io-util", "test-util"] }
 # REQ: OPS-006 (T10.6) — health endpoint tests call the router directly.
 tower = { version = "0.5.3", default-features = false, features = ["util"] }

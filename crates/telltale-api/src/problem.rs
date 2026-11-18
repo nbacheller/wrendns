@@ -127,6 +127,34 @@ pub enum Code {
     /// REQ: API-007 (T23.9, ADR-903 §8) — a backup with a passphrase needs an interactive session
     /// signed in within the last 10 minutes: sign in again (a token or Basic sign-in never can).
     ReauthRequired,
+    /// REQ: API-902 (T27.13, ADR-956) — a managed kind that only the guarded module writes (`guarded`): use `/api/v1/guarded` (ADR-956 §2).
+    GuardedOnly,
+    /// REQ: API-902 (T27.13, ADR-956) — this node already has a guarded change waiting to be confirmed (or a restart waiting for its start): confirm, cancel or wait for it (ADR-956 §3).
+    GuardedChangePending,
+    /// REQ: API-902 (T27.13, ADR-956) — the value, the configuration or the node changed since the preview, or the preview is older than 5 minutes, or it was made by someone else: preview again.
+    PreviewStale,
+    /// REQ: API-902 (T27.13, ADR-956) — the node can't reach the primary to record the change, so it was not kept (it rolls back when the window ends).
+    PrimaryUnreachable,
+    /// REQ: API-902 (T27.13, ADR-956) — the change would leave the node with no API listener or no DNS listener, or removes the listener this request came in on.
+    WouldDisconnectYou,
+    /// REQ: API-902 (T27.13, ADR-956) — no admin could sign in afterwards.
+    WouldLockOutAdmins,
+    /// REQ: API-902 (T27.13, ADR-956) — the node declares no supervisor (`TELLTALE_SUPERVISOR`), so it won't exit: restart it yourself.
+    NoSupervisor,
+    /// REQ: API-902 (T27.13, ADR-956) — the new directory already holds state that a copy would overwrite.
+    TargetNotEmpty,
+    /// REQ: API-902 (T27.13, ADR-956) — this change needs the extra acknowledgement named in the preview.
+    AcknowledgementRequired,
+    /// REQ: API-902 (T27.13, ADR-956) — leave the cluster first, make the change, then join again.
+    ClusteredNode,
+    /// REQ: API-902 (T27.13, ADR-956) — a restart was accepted: guarded requests wait until the node is back.
+    Restarting,
+    /// REQ: API-902 (T27.13, ADR-956) — some stored secrets are still under the previous key.
+    RotationIncomplete,
+    /// REQ: API-902 (T27.13, ADR-956) — the target is on storage the node was told is ephemeral.
+    DataDirNotPersistent,
+    /// REQ: API-902 (T27.13, ADR-956) — only the primary forwards a guarded request for another node (the detail names it).
+    NotPrimary,
 }
 
 impl Code {
@@ -183,6 +211,24 @@ impl Code {
             Self::MapDisabled => "https://telltaledns.dev/problems/map_disabled",
             Self::MapStreamsBusy => "https://telltaledns.dev/problems/map_streams_busy",
             Self::ReauthRequired => "https://telltaledns.dev/problems/reauth_required",
+            Self::GuardedOnly => "https://telltaledns.dev/problems/guarded_only",
+            Self::GuardedChangePending => "https://telltaledns.dev/problems/guarded_change_pending",
+            Self::PreviewStale => "https://telltaledns.dev/problems/preview_stale",
+            Self::PrimaryUnreachable => "https://telltaledns.dev/problems/primary_unreachable",
+            Self::WouldDisconnectYou => "https://telltaledns.dev/problems/would_disconnect_you",
+            Self::WouldLockOutAdmins => "https://telltaledns.dev/problems/would_lock_out_admins",
+            Self::NoSupervisor => "https://telltaledns.dev/problems/no_supervisor",
+            Self::TargetNotEmpty => "https://telltaledns.dev/problems/target_not_empty",
+            Self::AcknowledgementRequired => {
+                "https://telltaledns.dev/problems/acknowledgement_required"
+            }
+            Self::ClusteredNode => "https://telltaledns.dev/problems/clustered_node",
+            Self::Restarting => "https://telltaledns.dev/problems/restarting",
+            Self::RotationIncomplete => "https://telltaledns.dev/problems/rotation_incomplete",
+            Self::DataDirNotPersistent => {
+                "https://telltaledns.dev/problems/data_dir_not_persistent"
+            }
+            Self::NotPrimary => "https://telltaledns.dev/problems/not_primary",
         }
     }
 
@@ -237,6 +283,20 @@ impl Code {
             Self::MapDisabled => "The network map is off",
             Self::MapStreamsBusy => "Too many map streams",
             Self::ReauthRequired => "Recent sign-in needed",
+            Self::GuardedOnly => "The setting is changed from the guarded form",
+            Self::GuardedChangePending => "A guarded change is already pending",
+            Self::PreviewStale => "The preview is out of date",
+            Self::PrimaryUnreachable => "The primary can't be reached",
+            Self::WouldDisconnectYou => "The change would cut you off",
+            Self::WouldLockOutAdmins => "The change would lock every admin out",
+            Self::NoSupervisor => "Nothing will restart the node",
+            Self::TargetNotEmpty => "The target directory isn't empty",
+            Self::AcknowledgementRequired => "A second acknowledgement is needed",
+            Self::ClusteredNode => "The node is a cluster member",
+            Self::Restarting => "The node is restarting",
+            Self::RotationIncomplete => "A key rotation isn't finished",
+            Self::DataDirNotPersistent => "The directory isn't persistent",
+            Self::NotPrimary => "Ask the primary",
         }
     }
 
@@ -271,7 +331,21 @@ impl Code {
             | Self::UpgradeRequired
             | Self::MembersTooOld
             | Self::SetByFile
+            | Self::GuardedOnly
+            | Self::GuardedChangePending
+            | Self::PreviewStale
+            | Self::PrimaryUnreachable
+            | Self::WouldDisconnectYou
+            | Self::WouldLockOutAdmins
+            | Self::NoSupervisor
+            | Self::TargetNotEmpty
+            | Self::AcknowledgementRequired
+            | Self::ClusteredNode
+            | Self::Restarting
+            | Self::RotationIncomplete
+            | Self::DataDirNotPersistent
             | Self::SecretInUse => StatusCode::CONFLICT,
+            Self::NotPrimary => StatusCode::MISDIRECTED_REQUEST,
             Self::RateLimited | Self::MapStreamsBusy => StatusCode::TOO_MANY_REQUESTS,
             Self::VersionConflict => StatusCode::PRECONDITION_FAILED,
             Self::InvalidConfig

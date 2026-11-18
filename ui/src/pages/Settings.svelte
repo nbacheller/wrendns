@@ -12,6 +12,7 @@
   import TabPanel from '../lib/components/TabPanel.svelte';
   import WallDisplays from '../lib/components/WallDisplays.svelte';
   import BackupCard from '../lib/components/BackupCard.svelte';
+  import GuardedCard from '../lib/components/GuardedCard.svelte';
   import SupportPackage from '../lib/components/SupportPackage.svelte';
   import SecretsPanel from '../lib/components/SecretsPanel.svelte';
   import OidcProviders from '../lib/components/OidcProviders.svelte';
@@ -983,6 +984,8 @@
       </section>
     {/if}
     {#if can('admin')}
+      <!-- REQ: API-902 (T27.13, ADR-956) - the guarded settings' state, the restart, and the recovery steps. -->
+      <GuardedCard />
       <!-- REQ: API-007 (T6.7, T23.9) -->
       <BackupCard />
       <!-- REQ: OPS-011 (ADR-156) — one redacted file for a bug report. -->

@@ -1056,6 +1056,12 @@ fn restore_staged(
             key_id: crate::secrets::hex(&keys.current.key_id()),
         });
     }
+    // REQ: API-902 (ADR-956 §4) — a restore brings the guarded entries back and starts the node with
+    // them on probation: an address that isn't this machine's must not lock it out for good.
+    let restored_db = stage.join("data/state.db");
+    if restored_db.is_file() {
+        crate::guarded::store::mark_restored(&restored_db);
+    }
     // From here files move: a key made for them stays.
     if let Some(g) = key_guard.as_mut() {
         g.keep();

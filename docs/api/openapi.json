@@ -5045,6 +5045,370 @@
         }
       }
     },
+    "/api/v1/guarded": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "What is guarded on each node, what a file sets, and what is pending.",
+        "description": "Never holds a value, a preview ID or a confirmation token: only that a change is pending, its\nsetting and the seconds left. `config:read` is enough, agent tokens included.",
+        "operationId": "guarded_status",
+        "responses": {
+          "200": {
+            "description": "Each node's guarded settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardedStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/guarded/pending/{id}/cancel": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Cancels a pending window change.",
+        "description": "The new sockets close, nothing is kept (the old ones were never touched), and the rollback is\naudited as `settings.guarded_rolled_back` with the reason `cancelled`. The admin who made it, or\nany admin session, can cancel; an agent token never can.",
+        "operationId": "guarded_cancel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The pending change's ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rolled back.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardedResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an admin session, or an agent token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing is pending under that ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/guarded/pending/{id}/confirm": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Confirms a pending window change.",
+        "description": "The request has to arrive through the new address or certificate the change set up (what the\nsetting's proof says), carrying the single-use `confirmToken` or the same admin's session. A\nwrong token or a request on the old address is refused and counted (5 in 10 minutes block the\nsession) and the window runs on. On success the node keeps the new value, closes the old\nsockets and audits `settings.guarded`.",
+        "operationId": "guarded_confirm",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The pending change's ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuardedConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Confirmed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardedResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Neither a session nor a token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token or the arrival point is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing is pending under that ID (it may have rolled back).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "primary_unreachable: the node couldn't record the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many failed confirmations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/guarded/{id}": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Makes a guarded change.",
+        "description": "Send the `previewId`, the `confirm` phrase the preview returned (the server compares it), the\nsame `value`, and a `reason`. The answer depends on the setting: 200 `applied` (it took effect),\n202 `staged` (it waits for the node's next start; `pendingRestart`), 202 `pending` (a window\nchange: confirm it through the new address within `deadlineSecs` with the single-use\n`confirmToken`, or it rolls back) or 202 `restarting`. A change that weakens security needs a\nsession signed in within the last 10 minutes (403 `reauth_required`). Audited as\n`settings.guarded`; it raises the `guarded_setting_changed` alert.",
+        "operationId": "guarded_apply",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The setting.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuardedApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardedApplied"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Staged for the next start, waiting for confirmation, or restarting.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardedApplied"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The phrase doesn't match, or the request is malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an admin session, an agent token, another token, or a weakening change without a recent sign-in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "preview_stale, set_by_file, guarded_change_pending, restarting, would_disconnect_you, no_supervisor, primary_unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "421": {
+            "description": "Ask the primary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests, or too many failed confirmations from this session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/guarded/{id}/preview": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The dry run of a guarded change: what it would do, and the phrase to type.",
+        "description": "Changes nothing. The preview is bound to you, the node, the setting, the value and the\nconfiguration version, and lives 5 minutes (a changed value is 409 `preview_stale`). Admin\nsession only: 403 `agent_not_allowed` for agent tokens, 403 `reauth_required` for other tokens.",
+        "operationId": "guarded_preview",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The setting (`listen`, `restart-now`, ...).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuardedPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The dry run.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardedPreview"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an admin session, an agent token, or another token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such guarded setting.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Set by file, a change already pending, restarting, no supervisor, would disconnect you.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "421": {
+            "description": "Ask the primary: only it forwards a request for another node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests, or too many failed confirmations from this session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/hooks/git": {
       "post": {
         "tags": [
@@ -14586,7 +14950,21 @@
           "agent_not_allowed",
           "map_disabled",
           "map_streams_busy",
-          "reauth_required"
+          "reauth_required",
+          "guarded_only",
+          "guarded_change_pending",
+          "preview_stale",
+          "primary_unreachable",
+          "would_disconnect_you",
+          "would_lock_out_admins",
+          "no_supervisor",
+          "target_not_empty",
+          "acknowledgement_required",
+          "clustered_node",
+          "restarting",
+          "rotation_incomplete",
+          "data_dir_not_persistent",
+          "not_primary"
         ]
       },
       "ConfigChange": {
@@ -16615,6 +16993,526 @@
           }
         }
       },
+      "GuardedApplied": {
+        "type": "object",
+        "description": "What happened to a request to change a guarded setting.",
+        "required": [
+          "status",
+          "setting",
+          "node",
+          "pendingRestart",
+          "message"
+        ],
+        "properties": {
+          "confirmToken": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`pending`: the single-use token that confirms it from the new address (put it in the\naddress's `#fragment`, never in a query)."
+          },
+          "deadlineSecs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`pending`: seconds left, on the node's monotonic clock.",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string",
+            "description": "What to tell the admin, in words."
+          },
+          "newAddress": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`pending`: where to confirm, when the confirmation has to arrive somewhere new."
+          },
+          "node": {
+            "type": "string"
+          },
+          "pendingId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`pending`: the change waiting to be confirmed."
+          },
+          "pendingRestart": {
+            "type": "boolean",
+            "description": "`staged`: the change waits for the node's next start."
+          },
+          "proof": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`pending`: what the confirming request has to prove (`new_socket`, `new_cert`,\n`proxy_list`)."
+          },
+          "setting": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "`applied` (200), `staged` (202), `pending` (202) or `restarting` (202)."
+          }
+        }
+      },
+      "GuardedApplyRequest": {
+        "type": "object",
+        "description": "The body of `POST /api/v1/guarded/{id}`.",
+        "required": [
+          "previewId",
+          "confirm"
+        ],
+        "properties": {
+          "acknowledge": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The extra acknowledgements the preview named."
+          },
+          "confirm": {
+            "type": "string",
+            "description": "The phrase the preview returned, typed by the admin. The server compares it."
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node the preview was for."
+          },
+          "options": {
+            "type": "object"
+          },
+          "previewId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why: kept in the audit record."
+          },
+          "value": {
+            "type": "object",
+            "description": "The same value (and options) the preview was made for: a different one is\n409 `preview_stale`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "GuardedCheck": {
+        "type": "object",
+        "description": "One check of a dry run.",
+        "required": [
+          "name",
+          "ok",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "GuardedConfirmRequest": {
+        "type": "object",
+        "description": "The body of `POST /api/v1/guarded/pending/{id}/confirm`.",
+        "properties": {
+          "confirmToken": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The single-use token the change answered with. Without one, the request must be the same\nadmin's session."
+          }
+        },
+        "additionalProperties": false
+      },
+      "GuardedNodeStatus": {
+        "type": "object",
+        "description": "`GET /api/v1/guarded`: what is guarded on a node and what is pending. No value, preview ID or\nconfirmation token is ever in it.",
+        "required": [
+          "node",
+          "supervisor",
+          "settings",
+          "pendingRestart",
+          "outcomes",
+          "restarting",
+          "ignored",
+          "confirmWindowSecs"
+        ],
+        "properties": {
+          "confirmWindowSecs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The seconds a window change waits (`[api] confirm_window_secs`).",
+            "minimum": 0
+          },
+          "ignored": {
+            "type": "boolean",
+            "description": "`TELLTALE_IGNORE_GUARDED` is set: every guarded entry is ignored (health reason\n`guarded_ignored`)."
+          },
+          "node": {
+            "type": "string"
+          },
+          "outcomes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardedOutcome"
+            },
+            "description": "The latest outcomes (newest first, at most 10): applied, confirmed, or rolled back with\nthe reason."
+          },
+          "pending": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GuardedPending",
+                "description": "The window change waiting for confirmation, if any."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pendingRestart": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Staged changes waiting for a restart (setting IDs)."
+          },
+          "restarting": {
+            "type": "boolean",
+            "description": "A restart was accepted and the node is on its way down."
+          },
+          "settings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardedSetting"
+            }
+          },
+          "supervisor": {
+            "$ref": "#/components/schemas/Supervisor"
+          }
+        }
+      },
+      "GuardedOutcome": {
+        "type": "object",
+        "description": "How a guarded change ended.",
+        "required": [
+          "setting",
+          "node",
+          "outcome",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds.",
+            "minimum": 0
+          },
+          "node": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`confirmed`, `applied` or `rolled_back`."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `rolled_back`: `expired`, `cancelled`, `commit_failed`, `bind_failed` or\n`failed_start`."
+          },
+          "setting": {
+            "type": "string"
+          }
+        }
+      },
+      "GuardedPending": {
+        "type": "object",
+        "description": "A window change waiting to be confirmed: what it is and how long is left, never its value, a\npreview ID or the confirmation token.",
+        "required": [
+          "id",
+          "setting",
+          "node",
+          "deadlineSecs",
+          "by"
+        ],
+        "properties": {
+          "by": {
+            "type": "string",
+            "description": "Who made it."
+          },
+          "deadlineSecs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds left, measured on the node's monotonic clock.",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "description": "The pending change's ID (what `confirm` and `cancel` name)."
+          },
+          "node": {
+            "type": "string"
+          },
+          "setting": {
+            "type": "string"
+          }
+        }
+      },
+      "GuardedPreview": {
+        "type": "object",
+        "description": "The dry run's answer. Nothing was changed.",
+        "required": [
+          "previewId",
+          "phrase",
+          "setting",
+          "node",
+          "mode",
+          "effect",
+          "nodes",
+          "weakening",
+          "restartRequired",
+          "wouldDisconnect",
+          "warnings",
+          "checks",
+          "windowSecs",
+          "needsRecentSignIn",
+          "setByFile"
+        ],
+        "properties": {
+          "acknowledgements": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "A second acknowledgement the change needs (`acknowledgeNoAdmins`, ...), when it does."
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardedCheck"
+            }
+          },
+          "effect": {
+            "type": "string",
+            "description": "What the change does, in words."
+          },
+          "mode": {
+            "type": "string"
+          },
+          "needsRecentSignIn": {
+            "type": "boolean",
+            "description": "The change needs a session signed in within the last 10 minutes (it weakens security, or\nit restarts the node)."
+          },
+          "node": {
+            "type": "string"
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The nodes it reaches (always one)."
+          },
+          "phrase": {
+            "type": "string",
+            "description": "What to type to confirm (`<node> <setting>`)."
+          },
+          "previewId": {
+            "type": "string",
+            "description": "Send it back with the change. Bound to you, the node, the setting, the value and the\nconfiguration version; lives 5 minutes."
+          },
+          "proofPort": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "For a window change that needs a temporary parallel listener (a TLS-only change): its port.",
+            "minimum": 0
+          },
+          "restartRequired": {
+            "type": "boolean"
+          },
+          "setByFile": {
+            "type": "boolean",
+            "description": "The setting is a file's: the control is locked."
+          },
+          "setting": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "weakening": {
+            "type": "boolean",
+            "description": "The change is weaker than what is set now: marked in red, and it needs a sign-in within\nthe last 10 minutes."
+          },
+          "windowSecs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds a window change would wait for its confirmation.",
+            "minimum": 0
+          },
+          "wouldDisconnect": {
+            "type": "boolean",
+            "description": "Once confirmed, the node would have no API or DNS listener, or this request's listener\nwould go."
+          }
+        }
+      },
+      "GuardedPreviewRequest": {
+        "type": "object",
+        "description": "The body of `POST /api/v1/guarded/{id}/preview`.",
+        "properties": {
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node the change is for (its ID or name). Default: the node answering."
+          },
+          "options": {
+            "type": "object",
+            "description": "Options the setting's form carries (for example `copyState`)."
+          },
+          "value": {
+            "type": "object",
+            "description": "The new value, in the shape the setting's configuration section has. Not needed for an\naction such as `restart-now`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "GuardedResult": {
+        "type": "object",
+        "description": "The answer of a confirmation or a cancellation.",
+        "required": [
+          "setting",
+          "node",
+          "outcome"
+        ],
+        "properties": {
+          "node": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`confirmed` or `rolled_back`."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seenClient": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a `proxy_list` proof: the client address the node now sees for this request."
+          },
+          "setting": {
+            "type": "string"
+          }
+        }
+      },
+      "GuardedSetting": {
+        "type": "object",
+        "description": "One guarded setting, as `GET /api/v1/guarded` lists it for this node.",
+        "required": [
+          "id",
+          "label",
+          "mode",
+          "paths",
+          "setByFile",
+          "hasEntry",
+          "pendingRestart",
+          "onProbation",
+          "suppressed"
+        ],
+        "properties": {
+          "hasEntry": {
+            "type": "boolean",
+            "description": "A guarded entry holds a value for it (confirmed, applied or staged)."
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "description": "`window`, `immediate`, `staged` or `action`."
+          },
+          "onProbation": {
+            "type": "boolean",
+            "description": "A start has the entry on probation (it counts as applied once the node is healthy)."
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The configuration paths it covers."
+          },
+          "pendingRestart": {
+            "type": "boolean",
+            "description": "A staged change waits for the node to restart."
+          },
+          "proof": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a `window` setting: `new_socket`, `new_cert` or `proxy_list`."
+          },
+          "setByFile": {
+            "type": "boolean",
+            "description": "A file sets it, and wins: the control is locked and shows the file."
+          },
+          "suppressed": {
+            "type": "boolean",
+            "description": "A command-line clear is hiding the replicated entry until the primary's copy changes."
+          }
+        }
+      },
+      "GuardedStatus": {
+        "type": "object",
+        "description": "The answer of `GET /api/v1/guarded`.",
+        "required": [
+          "nodes"
+        ],
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardedNodeStatus"
+            },
+            "description": "This node first, then the members the primary can see."
+          }
+        }
+      },
       "Health": {
         "type": "object",
         "description": "REQ: OBS-015 (ADR-104) — how TelltaleDNS is doing, in one word, with the reasons.",
@@ -16723,7 +17621,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,\n`rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`.",
+            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,\n`rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,\n`guarded_ignored`, `guarded_bind_fallback`.",
             "example": "upstream_down"
           },
           "level": {
@@ -24759,6 +25657,24 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "Supervisor": {
+        "type": "object",
+        "description": "How a node is supervised (ADR-956 §4a): from a declaration only.",
+        "required": [
+          "kind",
+          "how"
+        ],
+        "properties": {
+          "how": {
+            "type": "string",
+            "description": "How the node knows: `TELLTALE_SUPERVISOR`, or `not declared`."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`systemd`, `docker`, `kubernetes` or `none`."
           }
         }
       },

@@ -139,6 +139,7 @@ fn one_off(w: AlertWhen) -> bool {
             | AlertWhen::DrillReport
             | AlertWhen::CredentialRedirected
             | AlertWhen::SecretsExported
+            | AlertWhen::GuardedSettingChanged
     )
 }
 
@@ -423,7 +424,17 @@ fn observe(
         // REQ: API-014 (T23.2, ADR-903 §4) — once per change of where a credential goes.
         AlertWhen::CredentialRedirected => redirects.to_vec(),
         // REQ: API-007 (T23.9, ADR-903 §8) — a backup took the stored secrets out of the node.
-        AlertWhen::SecretsExported => exports.to_vec(),
+        AlertWhen::SecretsExported => exports
+            .iter()
+            .filter(|(s, _)| !s.starts_with(GUARDED_PREFIX))
+            .cloned()
+            .collect(),
+        // REQ: API-902 (T27.13, ADR-956 §6) — a guarded setting was changed, or its change ended.
+        AlertWhen::GuardedSettingChanged => exports
+            .iter()
+            .filter(|(s, _)| s.starts_with(GUARDED_PREFIX))
+            .cloned()
+            .collect(),
         AlertWhen::PlanPending => pending
             .iter()
             .map(|(id, summary)| {
@@ -992,23 +1003,75 @@ pub(crate) fn recent_exports(sources: &crate::http::Sources, now: u64) -> Vec<(S
     let Some(auth) = sources.auth.get() else {
         return Vec::new();
     };
+    let mut out = recent_guarded(auth, now);
+    let since = now.saturating_sub(REDIRECT_WINDOW_SECS);
+    out.extend(
+        auth.state()
+            .audit_page(None, 50, Some("backup.create"), None)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.action == "backup.create" && e.ts >= since)
+            .filter_map(|e| {
+                let d: serde_json::Value = serde_json::from_str(&e.detail).unwrap_or_default();
+                d["secretsIncluded"].as_bool().filter(|x| *x)?;
+                Some((
+                    e.seq.to_string(),
+                    format!(
+                        "{} made a backup that carries {} stored secret(s), encrypted with a passphrase",
+                        e.actor,
+                        d["count"].as_u64().unwrap_or(0)
+                    ),
+                ))
+            }),
+    );
+    out
+}
+
+/// What marks a `(subject, summary)` pair as a guarded-setting event (they share the vector the
+/// `secrets_exported` events travel in, so the condition's own arm picks them out).
+const GUARDED_PREFIX: &str = "guarded:";
+
+/// REQ: API-902 (T27.13, ADR-956 §6) — this node's `settings.guarded*` audit records of the last
+/// hour as `(subject, summary)`: a change applied or staged, its outcome (confirmed, rolled back
+/// with the reason) and an accepted restart, each once (the subject is the record's sequence
+/// number). The summary names who, what and where, never a value: a rule's channels reach
+/// people who aren't admins. Refusals and offline clears aren't events here.
+pub(crate) fn recent_guarded(auth: &telltale_api::auth::Auth, now: u64) -> Vec<(String, String)> {
     let since = now.saturating_sub(REDIRECT_WINDOW_SECS);
     auth.state()
-        .audit_page(None, 50, Some("backup.create"), None)
+        .audit_page(None, 50, Some("settings.guarded"), None)
         .unwrap_or_default()
         .into_iter()
-        .filter(|e| e.action == "backup.create" && e.ts >= since)
+        .filter(|e| e.ts >= since)
         .filter_map(|e| {
             let d: serde_json::Value = serde_json::from_str(&e.detail).unwrap_or_default();
-            d["secretsIncluded"].as_bool().filter(|x| *x)?;
-            Some((
-                e.seq.to_string(),
-                format!(
-                    "{} made a backup that carries {} stored secret(s), encrypted with a passphrase",
+            let setting = d["setting"].as_str().unwrap_or("a setting").to_owned();
+            let node = d["node"].as_str().unwrap_or("this node");
+            let what = match e.action.as_str() {
+                "settings.guarded" => format!(
+                    "{} {} the guarded setting `{setting}` on {node}{}",
                     e.actor,
-                    d["count"].as_u64().unwrap_or(0)
+                    match d["outcome"].as_str() {
+                        Some("staged") => "staged a change to",
+                        Some("confirmed") => "confirmed a change to",
+                        _ => "changed",
+                    },
+                    if d["weakening"].as_bool() == Some(true) {
+                        " (it weakens security)"
+                    } else {
+                        ""
+                    }
                 ),
-            ))
+                "settings.guarded_rolled_back" => format!(
+                    "the change to the guarded setting `{setting}` on {node} was rolled back ({})",
+                    d["reason"].as_str().unwrap_or("unknown")
+                ),
+                "settings.guarded_restart" => {
+                    format!("{} restarted {node} to apply guarded changes", e.actor)
+                }
+                _ => return None,
+            };
+            Some((format!("{GUARDED_PREFIX}{}", e.seq), what))
         })
         .collect()
 }

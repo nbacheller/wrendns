@@ -235,6 +235,9 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/sinks"
             | "/api/v1/otlp"
             | "/api/v1/secrets"
+            // REQ: API-902 (T27.13, ADR-956 §7) — what is guarded and what is pending, never a
+            // value, a preview ID or a token. Every change is refused (`never_for_agents`).
+            | "/api/v1/guarded"
             // REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API's status (no token).
             | "/api/v1/pihole-api" => {
                 return Need::Scope("config:read");
@@ -358,7 +361,11 @@ pub fn never_for_agents(method: &Method, path: &str) -> bool {
     let write = *method == Method::PUT || *method == Method::DELETE || *method == Method::POST;
     // REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API's settings and token.
     let pihole = p == "/api/v1/pihole-api" || p == "/api/v1/pihole-api/token";
+    // REQ: API-902 (T27.13, ADR-956 §7) — guarded changes: no tool, plan or scope; an agent token
+    // gets `agent_not_allowed` on preview, apply, confirm and cancel.
+    let guarded = p == "/api/v1/guarded" || p.starts_with("/api/v1/guarded/");
     ((secret || pihole) && write)
+        || (guarded && *method != Method::GET && *method != Method::HEAD)
         || (*method == Method::POST
             && (p == "/api/v1/backup" || p.starts_with("/api/v1/checks/router")))
 }

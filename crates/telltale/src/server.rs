@@ -851,7 +851,10 @@ async fn start_http(
         audit_discovery(sources, None, &file);
         // REQ: FLT-005 (ADR-067) — expired quick rules are removed and audit-logged.
         crate::api_backend::spawn_rule_sweep(Arc::clone(sources), Arc::clone(&auth), stop.clone());
-        let app = http::api_router(Arc::clone(sources), auth);
+        let app = http::api_router(Arc::clone(sources), Arc::clone(&auth));
+        // REQ: API-902 (T27.13, ADR-956) — the guarded-changes engine: the API's routes reach it
+        // through `Sources`, and the cluster channel's forwarded requests do too.
+        start_guarded(sources, &auth, &app, cfg, stop.clone());
         // REQ: API-003 (ADR-149) — HTTPS on the listener itself. Without a certificate the API
         // stays off rather than serving sign-ins in the clear; DNS keeps answering.
         let tls = match &cfg.api.tls {
@@ -873,6 +876,49 @@ async fn start_http(
         info!(addr = %bound, scheme, "serving the API at /api/v1 (OpenAPI: /api/v1/openapi.json)");
     }
     Ok(())
+}
+
+/// REQ: API-902 (T27.13, ADR-956 §4) — builds the guarded engine and starts the probation watch: the
+/// entries a start put on probation become active once the node is healthy (the API listener is
+/// bound, its own DNS answers and, for the secrets key, the store is unlocked) within
+/// `max(confirm_window_secs, 180)` seconds. DNS never waits for it (CLU-004).
+fn start_guarded(
+    sources: &Arc<http::Sources>,
+    auth: &Arc<telltale_api::auth::Auth>,
+    app: &axum::Router,
+    cfg: &Config,
+    stop: tokio::sync::watch::Receiver<bool>,
+) {
+    let node = crate::guarded::node_label(cfg);
+    crate::guarded::set_this_node(&node);
+    let host = crate::guarded::prod::ProdHost::new(Arc::clone(sources), app.clone(), auth);
+    let engine = crate::guarded::Engine::new(
+        node.clone(),
+        Arc::clone(auth.state()),
+        host.clone(),
+        crate::guarded::appliers::rows(),
+        crate::guarded::restart::detect_process(),
+    );
+    host.set_engine(&engine);
+    if sources.guarded.set(engine).is_err() {
+        return;
+    }
+    // REQ: API-902 (ADR-957 step 10) — a removal queued by an offline clear on this replica.
+    crate::guarded::prod::spawn_removals(
+        Arc::clone(&host),
+        Arc::clone(auth.state()),
+        node.clone(),
+        stop.clone(),
+    );
+    crate::guarded::probation::spawn_watch(
+        Arc::clone(sources),
+        Arc::clone(auth.state()),
+        node,
+        PathBuf::from(cfg.node.data_dir.as_str()),
+        cfg.clone(),
+        crate::guarded::probation::healthy_deadline_secs(cfg),
+        stop,
+    );
 }
 
 /// Runs until SIGTERM/SIGINT. SIGHUP reloads config from `files`.
@@ -1082,6 +1128,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         traces,
         secrets,
         discovery: Arc::default(),
+        guarded: crate::guarded::Slot::new(),
     });
     // REQ: DSC-001 (T25.2, ADR-907) — the network inventory starts here only if `[discovery]` is
     // on and this node is the designated one (ephemeral pods and witnesses never are).
@@ -1277,6 +1324,9 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         tokio::select! {
             _ = term.recv() => { info!(signal = "SIGTERM", "shutting down"); break; }
             _ = tokio::signal::ctrl_c() => { info!(signal = "SIGINT", "shutting down"); break; }
+            // REQ: API-902 (ADR-956 §4a) — an admin's "Restart now": the same drain as a SIGTERM,
+            // then exit 75 (main).
+            () = crate::guarded::restart::wait_requested() => { info!("restart requested: draining"); break; }
             _ = hup.recv() => { reload(&files, &mut current, &mut listeners, &mut health, &pipeline, &sources, &mut lists, false).await; }
             // ADR-040 — a change made through the API: re-read files + state.db and apply.
             Some(done) = reload_rx.recv() => {
@@ -1314,7 +1364,12 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     let _ = stop_http.send(true);
     // Keep answering while load balancers notice: a Kubernetes Service takes a moment to drop
     // a terminating pod, and queries sent to it meanwhile would otherwise be lost.
-    let delay = current.node.drain_delay_secs.min(60);
+    // A requested restart drains within 5 seconds (ADR-956 §4a), whatever the drain delay says.
+    let delay = if crate::guarded::restart::requested() {
+        0
+    } else {
+        current.node.drain_delay_secs.min(60)
+    };
     if delay > 0 {
         info!(
             seconds = delay,

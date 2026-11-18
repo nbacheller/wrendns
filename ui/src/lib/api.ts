@@ -53,7 +53,18 @@ const READABLE: Record<string, (detail: string) => string> = {
   insecure_transport: () =>
     'A secret is only sent over HTTPS, or from this node itself. Open this page over HTTPS to change it.',
   reauth_required: () =>
-    'A backup with secrets needs a sign-in from the last 10 minutes. Confirm your password to go on.',
+    'This needs a sign-in from the last 10 minutes. Confirm your password to go on.',
+  // REQ: API-902 (T27.13, ADR-956) — the guarded framework's refusals, in words.
+  guarded_change_pending: () =>
+    'This node already has a guarded change in progress. Confirm or cancel it (or wait for its window to end) first.',
+  preview_stale: () => 'The value, the configuration or the preview changed since you reviewed it. Review the change again.',
+  restarting: () => 'The node is restarting. Guarded changes wait until it is back.',
+  no_supervisor: () =>
+    "Nothing is declared to start this node again, so it won't restart itself. Restart it yourself, then it applies the staged change.",
+  agent_not_allowed: () => 'Guarded settings are for people: an admin changes them here, or in the configuration file.',
+  would_disconnect_you: () => 'That change would cut you off: the node would have no API or DNS listener, or lose the one you are using.',
+  primary_unreachable: () => "This node can't reach the cluster's primary to record the change, so it wasn't kept.",
+  not_primary: (d) => `Only the primary forwards a change for another node. ${d}`,
   lists_not_here: () => "This node doesn't download lists. Ask a node that does.",
 };
 
@@ -325,6 +336,18 @@ export const api = {
     const warnings = (res.headers.get('x-telltale-backup-warnings') ?? '').split(' | ').filter(Boolean);
     return { blob: await res.blob(), name, secrets: (m?.[1] as 'included' | 'omitted' | undefined) ?? 'omitted', count: Number(m?.[2] ?? 0), warnings };
   },
+  // REQ: API-902 (T27.13, ADR-956) — guarded changes: what is guarded and pending (no value is in it),
+  // the dry run, the change, and the two ends of a confirmation window. Admin sessions only.
+  guarded: () => get<S['GuardedStatus']>('/guarded'),
+  guardedPreview: (id: string, b: { node?: string; value?: unknown; options?: unknown }) =>
+    post<S['GuardedPreview']>(`/guarded/${encodeURIComponent(id)}/preview`, b),
+  guardedApply: (
+    id: string,
+    b: { previewId: string; confirm: string; reason?: string; value?: unknown; options?: unknown; node?: string; acknowledge?: string[] },
+  ) => post<S['GuardedApplied']>(`/guarded/${encodeURIComponent(id)}`, b),
+  guardedConfirm: (pending: string, confirmToken?: string) =>
+    post<S['GuardedResult']>(`/guarded/pending/${encodeURIComponent(pending)}/confirm`, confirmToken ? { confirmToken } : {}),
+  guardedCancel: (pending: string) => post<S['GuardedResult']>(`/guarded/pending/${encodeURIComponent(pending)}/cancel`),
   // REQ: OPS-004 — "Check now" (admin).
   checkUpdates: () => post<S['UpdateStatus']>('/system/update-check'),
   // `scope`: `cluster` (default, every node), `node:<id>`, or `site:<name>` (CLU-002).

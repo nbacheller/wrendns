@@ -151,8 +151,17 @@ impl UdpListener {
 
     /// Signals workers to stop and waits for them (at most ~`POLL_INTERVAL`).
     pub fn shutdown(self) {
+        drop(self);
+    }
+}
+
+/// REQ: CLU-004 — a listener dropped on an early-error path (a failed start) stops its workers
+/// too, so a second start's `SO_REUSEPORT` sockets never share traffic with orphaned workers whose
+/// runtime is gone.
+impl Drop for UdpListener {
+    fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        for t in self.threads {
+        for t in self.threads.drain(..) {
             let _ = t.join();
         }
     }

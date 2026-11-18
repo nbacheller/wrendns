@@ -901,6 +901,34 @@ impl Auth {
         }
     }
 
+    /// REQ: API-902 (T27.13, ADR-956 §3) — when this principal's session was created (Unix
+    /// seconds), for the guarded framework's own recency check at apply (a weakening change and a
+    /// restart need it within [`RECENT_SIGN_IN_SECS`]). `None` for a token, Basic sign-in, a
+    /// display session or a session that is gone. Blocking (reads the session).
+    pub fn sign_in_time(&self, p: &Principal) -> Option<u64> {
+        let Via::Session { id_hash, .. } = &p.via else {
+            return None;
+        };
+        match self.state.session(id_hash) {
+            Ok(Some(s)) if s.display_token.is_none() => Some(s.created),
+            _ => None,
+        }
+    }
+
+    /// REQ: API-902 — a short, stable name for a session that is safe to keep in memory and in
+    /// logs (a prefix of the hash of its identifier; never the cookie).
+    pub fn session_key(p: &Principal) -> Option<String> {
+        use std::fmt::Write as _;
+        let Via::Session { id_hash, .. } = &p.via else {
+            return None;
+        };
+        let mut key = String::new();
+        for b in id_hash.iter().take(8) {
+            let _ = write!(key, "{b:02x}");
+        }
+        Some(key)
+    }
+
     /// REQ: API-003 (T10.7, ADR-142) — changes to the account itself (its password, two-factor
     /// sign-in, its API tokens) come only from a signed-in session. A leaked token or Basic
     /// credential can then use the account but can't take it over, mint more tokens to outlive

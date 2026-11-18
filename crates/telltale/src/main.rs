@@ -36,6 +36,7 @@ mod federated;
 mod federated_wedge_tests;
 mod forward;
 mod gitsource;
+mod guarded;
 mod health;
 mod host;
 mod http;
@@ -179,6 +180,16 @@ enum Command {
     Auth {
         #[command(subcommand)]
         command: AuthCommand,
+    },
+    /// Guarded settings (listeners, the API address, TLS, proxies, secret keys, cluster, restart):
+    /// list what is stored on this node, or clear it, with the node stopped (lockout recovery).
+    // REQ: API-902 (T27.13, ADR-957; the offline command, so no UI control, API-901)
+    Guarded {
+        #[command(subcommand)]
+        command: GuardedCommand,
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config", global = true)]
+        config: Vec<PathBuf>,
     },
     /// The secrets entered in the UI: the store's state and key, and a new key. Run on the node,
     /// with the same configuration and environment as the server.
@@ -640,6 +651,23 @@ enum AuthCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum GuardedCommand {
+    /// Every guarded entry on this node: staged (waiting for the next start), on probation,
+    /// active, or hidden by a local clear. Needs the node stopped (it reads `state.db`).
+    List,
+    /// Remove this node's guarded entries so it starts on its configuration file's values.
+    /// Audited as `cli:<os user>`. Needs the node stopped. In a cluster it clears only this node;
+    /// a replica also ignores the primary's copy until that copy changes.
+    Clear {
+        /// The setting to clear (`telltale guarded list` shows the IDs).
+        id: Option<String>,
+        /// Clear every guarded entry on this node.
+        #[arg(long, conflicts_with = "id")]
+        all: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum SecretsCommand {
     /// The store (ready, locked, or ephemeral), its key's source and ID (never the key), each
     /// stored secret without its value, and every credential field with its source and whether
@@ -947,6 +975,7 @@ fn main() -> ExitCode {
         }
         Command::Auth { command } => Ok(run_auth(command)),
         Command::Secrets { command, config } => Ok(run_secrets(&command, config)),
+        Command::Guarded { command, config } => Ok(run_guarded(command, config)),
         Command::Audit { command } => Ok(run_audit(command)),
         Command::Explain {
             name,
@@ -1245,6 +1274,38 @@ fn run_mcp(
 }
 
 // REQ: OPS-014 (ADR-903 §3)
+/// REQ: API-902 (ADR-957) — `telltale guarded list|clear`, offline.
+fn run_guarded(command: GuardedCommand, config: Vec<PathBuf>) -> ExitCode {
+    let Some(cfg) = server::load_files(&config_files(config)) else {
+        return ExitCode::FAILURE;
+    };
+    let done = match command {
+        GuardedCommand::List => guarded::cli::run_list(&cfg, &mut io::stdout().lock()),
+        GuardedCommand::Clear { id, all } => {
+            let target = match (id, all) {
+                (Some(id), false) => guarded::cli::Target::One(id),
+                (None, true) => guarded::cli::Target::All,
+                _ => {
+                    eprintln!("error: name a setting to clear, or pass --all");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let user = std::env::var("USER")
+                .or_else(|_| std::env::var("USERNAME"))
+                .unwrap_or_else(|_| "unknown".to_owned());
+            guarded::cli::run_clear(&cfg, &target, &user, &mut io::stdout().lock())
+        }
+    };
+    match done {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn run_secrets(command: &SecretsCommand, config: Vec<PathBuf>) -> ExitCode {
     let files = config_files(config);
     let Some(cfg) = server::load(&files) else {
@@ -1672,6 +1733,12 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
     telltale_net::allocator_purge_at_once();
     init_logging();
     let files = config_files(config);
+    // REQ: API-902 (T27.13, ADR-956 §4, ADR-957) — before anything the UI stored is applied: the
+    // staged and restored guarded entries go on probation (or are dropped after two failed
+    // starts), and `TELLTALE_IGNORE_GUARDED=1` makes the node run on its files alone.
+    if let Some(file_cfg) = server::load_files_quiet(&files) {
+        guarded::probation::begin(&file_cfg, &guarded::appliers::rows(), guarded::now_secs());
+    }
     let Some(cfg) = server::load(&files) else {
         return Ok(ExitCode::FAILURE);
     };
@@ -1721,19 +1788,32 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
         "starting TelltaleDNS"
     );
 
-    // spec/02 §3: UDP has dedicated worker threads; everything else runs on Tokio.
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .thread_name("telltale-rt")
-        .build()?;
-    // REQ: CLU-004 (upstream #7) — the runtime's own worker count (the container's CPU quota, on a
-    // 2-CPU replica): the three-node run asserts it, since the UDP workers are a different count.
-    info!(
-        runtime_workers = rt.metrics().num_workers(),
-        "tokio runtime ready"
-    );
     let data_dir = data_dir.to_owned();
-    let served = rt.block_on(server::serve(files, cfg));
+    // REQ: API-902 (ADR-956 §4) — a confirmed guarded listener that can't bind at this start falls
+    // back to the file's value, once, on a fresh runtime.
+    let served = guarded::serve_with_fallback(
+        cfg,
+        || server::load(&files),
+        || server::load_files_quiet(&files),
+        &guarded::appliers::rows(),
+        |cfg| {
+            // spec/02 §3: UDP has dedicated worker threads; everything else runs on Tokio.
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("telltale-rt")
+                .build()?;
+            // REQ: CLU-004 (upstream #7) — the runtime's own worker count (the container's CPU
+            // quota, on a 2-CPU replica): the three-node run asserts it, since the UDP workers are
+            // a different count.
+            info!(
+                runtime_workers = rt.metrics().num_workers(),
+                "tokio runtime ready"
+            );
+            let r = rt.block_on(server::serve(files.clone(), cfg));
+            rt.shutdown_timeout(std::time::Duration::from_secs(2));
+            r
+        },
+    );
     if lock.is_some() {
         datadir::record_stop(&data_dir);
     }
@@ -1741,7 +1821,8 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
     info!("stopped");
     // REQ: OPS-011 — the last lines (why it stopped) reach the log files before the process exits.
     support_log::global().flush();
-    Ok(ExitCode::SUCCESS)
+    // REQ: API-902 (ADR-956 §4a) — a requested restart ends with exit 75, for the supervisor.
+    Ok(ExitCode::from(guarded::restart::exit_status()))
 }
 
 fn run_lists(cmd: ListsCommand) -> io::Result<ExitCode> {

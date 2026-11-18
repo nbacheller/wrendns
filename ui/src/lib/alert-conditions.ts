@@ -18,6 +18,7 @@ export const alertConditions: string[] = [
   'maintenance',
   'credential_redirected',
   'secrets_exported',
+  'guarded_setting_changed',
   'slo_burn',
   'probe_failing',
   'cert_expiring',

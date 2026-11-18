@@ -2047,6 +2047,121 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/guarded": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What is guarded on each node, what a file sets, and what is pending.
+         * @description Never holds a value, a preview ID or a confirmation token: only that a change is pending, its
+         *     setting and the seconds left. `config:read` is enough, agent tokens included.
+         */
+        get: operations["guarded_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/guarded/pending/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancels a pending window change.
+         * @description The new sockets close, nothing is kept (the old ones were never touched), and the rollback is
+         *     audited as `settings.guarded_rolled_back` with the reason `cancelled`. The admin who made it, or
+         *     any admin session, can cancel; an agent token never can.
+         */
+        post: operations["guarded_cancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/guarded/pending/{id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirms a pending window change.
+         * @description The request has to arrive through the new address or certificate the change set up (what the
+         *     setting's proof says), carrying the single-use `confirmToken` or the same admin's session. A
+         *     wrong token or a request on the old address is refused and counted (5 in 10 minutes block the
+         *     session) and the window runs on. On success the node keeps the new value, closes the old
+         *     sockets and audits `settings.guarded`.
+         */
+        post: operations["guarded_confirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/guarded/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Makes a guarded change.
+         * @description Send the `previewId`, the `confirm` phrase the preview returned (the server compares it), the
+         *     same `value`, and a `reason`. The answer depends on the setting: 200 `applied` (it took effect),
+         *     202 `staged` (it waits for the node's next start; `pendingRestart`), 202 `pending` (a window
+         *     change: confirm it through the new address within `deadlineSecs` with the single-use
+         *     `confirmToken`, or it rolls back) or 202 `restarting`. A change that weakens security needs a
+         *     session signed in within the last 10 minutes (403 `reauth_required`). Audited as
+         *     `settings.guarded`; it raises the `guarded_setting_changed` alert.
+         */
+        post: operations["guarded_apply"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/guarded/{id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The dry run of a guarded change: what it would do, and the phrase to type.
+         * @description Changes nothing. The preview is bound to you, the node, the setting, the value and the
+         *     configuration version, and lives 5 minutes (a changed value is 409 `preview_stale`). Admin
+         *     session only: 403 `agent_not_allowed` for agent tokens, 403 `reauth_required` for other tokens.
+         */
+        post: operations["guarded_preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/hooks/git": {
         parameters: {
             query?: never;
@@ -5316,7 +5431,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "members_too_old" | "path_not_allowed" | "set_by_file" | "secret_missing" | "secret_in_use" | "insecure_transport" | "agent_not_allowed" | "map_disabled" | "map_streams_busy" | "reauth_required";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "members_too_old" | "path_not_allowed" | "set_by_file" | "secret_missing" | "secret_in_use" | "insecure_transport" | "agent_not_allowed" | "map_disabled" | "map_streams_busy" | "reauth_required" | "guarded_only" | "guarded_change_pending" | "preview_stale" | "primary_unreachable" | "would_disconnect_you" | "would_lock_out_admins" | "no_supervisor" | "target_not_empty" | "acknowledgement_required" | "clustered_node" | "restarting" | "rotation_incomplete" | "data_dir_not_persistent" | "not_primary";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -6170,6 +6285,228 @@ export interface components {
             /** @description Why the guard failed the version, when it did. */
             reason?: string | null;
         };
+        /** @description What happened to a request to change a guarded setting. */
+        GuardedApplied: {
+            /**
+             * @description `pending`: the single-use token that confirms it from the new address (put it in the
+             *     address's `#fragment`, never in a query).
+             */
+            confirmToken?: string | null;
+            /**
+             * Format: int64
+             * @description `pending`: seconds left, on the node's monotonic clock.
+             */
+            deadlineSecs?: number | null;
+            /** @description What to tell the admin, in words. */
+            message: string;
+            /** @description `pending`: where to confirm, when the confirmation has to arrive somewhere new. */
+            newAddress?: string | null;
+            node: string;
+            /** @description `pending`: the change waiting to be confirmed. */
+            pendingId?: string | null;
+            /** @description `staged`: the change waits for the node's next start. */
+            pendingRestart: boolean;
+            /**
+             * @description `pending`: what the confirming request has to prove (`new_socket`, `new_cert`,
+             *     `proxy_list`).
+             */
+            proof?: string | null;
+            setting: string;
+            /** @description `applied` (200), `staged` (202), `pending` (202) or `restarting` (202). */
+            status: string;
+        };
+        /** @description The body of `POST /api/v1/guarded/{id}`. */
+        GuardedApplyRequest: {
+            /** @description The extra acknowledgements the preview named. */
+            acknowledge?: string[];
+            /** @description The phrase the preview returned, typed by the admin. The server compares it. */
+            confirm: string;
+            /** @description The node the preview was for. */
+            node?: string | null;
+            options?: Record<string, never>;
+            previewId: string;
+            /** @description Why: kept in the audit record. */
+            reason?: string | null;
+            /**
+             * @description The same value (and options) the preview was made for: a different one is
+             *     409 `preview_stale`.
+             */
+            value?: Record<string, never>;
+        };
+        /** @description One check of a dry run. */
+        GuardedCheck: {
+            detail: string;
+            name: string;
+            ok: boolean;
+        };
+        /** @description The body of `POST /api/v1/guarded/pending/{id}/confirm`. */
+        GuardedConfirmRequest: {
+            /**
+             * @description The single-use token the change answered with. Without one, the request must be the same
+             *     admin's session.
+             */
+            confirmToken?: string | null;
+        };
+        /**
+         * @description `GET /api/v1/guarded`: what is guarded on a node and what is pending. No value, preview ID or
+         *     confirmation token is ever in it.
+         */
+        GuardedNodeStatus: {
+            /**
+             * Format: int32
+             * @description The seconds a window change waits (`[api] confirm_window_secs`).
+             */
+            confirmWindowSecs: number;
+            /**
+             * @description `TELLTALE_IGNORE_GUARDED` is set: every guarded entry is ignored (health reason
+             *     `guarded_ignored`).
+             */
+            ignored: boolean;
+            node: string;
+            /**
+             * @description The latest outcomes (newest first, at most 10): applied, confirmed, or rolled back with
+             *     the reason.
+             */
+            outcomes: components["schemas"]["GuardedOutcome"][];
+            pending?: components["schemas"]["GuardedPending"] | null;
+            /** @description Staged changes waiting for a restart (setting IDs). */
+            pendingRestart: string[];
+            /** @description A restart was accepted and the node is on its way down. */
+            restarting: boolean;
+            settings: components["schemas"]["GuardedSetting"][];
+            supervisor: components["schemas"]["Supervisor"];
+        };
+        /** @description How a guarded change ended. */
+        GuardedOutcome: {
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            at: number;
+            node: string;
+            /** @description `confirmed`, `applied` or `rolled_back`. */
+            outcome: string;
+            /**
+             * @description For `rolled_back`: `expired`, `cancelled`, `commit_failed`, `bind_failed` or
+             *     `failed_start`.
+             */
+            reason?: string | null;
+            setting: string;
+        };
+        /**
+         * @description A window change waiting to be confirmed: what it is and how long is left, never its value, a
+         *     preview ID or the confirmation token.
+         */
+        GuardedPending: {
+            /** @description Who made it. */
+            by: string;
+            /**
+             * Format: int64
+             * @description Seconds left, measured on the node's monotonic clock.
+             */
+            deadlineSecs: number;
+            /** @description The pending change's ID (what `confirm` and `cancel` name). */
+            id: string;
+            node: string;
+            setting: string;
+        };
+        /** @description The dry run's answer. Nothing was changed. */
+        GuardedPreview: {
+            /** @description A second acknowledgement the change needs (`acknowledgeNoAdmins`, ...), when it does. */
+            acknowledgements?: string[];
+            checks: components["schemas"]["GuardedCheck"][];
+            /** @description What the change does, in words. */
+            effect: string;
+            mode: string;
+            /**
+             * @description The change needs a session signed in within the last 10 minutes (it weakens security, or
+             *     it restarts the node).
+             */
+            needsRecentSignIn: boolean;
+            node: string;
+            /** @description The nodes it reaches (always one). */
+            nodes: string[];
+            /** @description What to type to confirm (`<node> <setting>`). */
+            phrase: string;
+            /**
+             * @description Send it back with the change. Bound to you, the node, the setting, the value and the
+             *     configuration version; lives 5 minutes.
+             */
+            previewId: string;
+            /**
+             * Format: int32
+             * @description For a window change that needs a temporary parallel listener (a TLS-only change): its port.
+             */
+            proofPort?: number | null;
+            restartRequired: boolean;
+            /** @description The setting is a file's: the control is locked. */
+            setByFile: boolean;
+            setting: string;
+            warnings: string[];
+            /**
+             * @description The change is weaker than what is set now: marked in red, and it needs a sign-in within
+             *     the last 10 minutes.
+             */
+            weakening: boolean;
+            /**
+             * Format: int32
+             * @description Seconds a window change would wait for its confirmation.
+             */
+            windowSecs: number;
+            /**
+             * @description Once confirmed, the node would have no API or DNS listener, or this request's listener
+             *     would go.
+             */
+            wouldDisconnect: boolean;
+        };
+        /** @description The body of `POST /api/v1/guarded/{id}/preview`. */
+        GuardedPreviewRequest: {
+            /** @description The node the change is for (its ID or name). Default: the node answering. */
+            node?: string | null;
+            /** @description Options the setting's form carries (for example `copyState`). */
+            options?: Record<string, never>;
+            /**
+             * @description The new value, in the shape the setting's configuration section has. Not needed for an
+             *     action such as `restart-now`.
+             */
+            value?: Record<string, never>;
+        };
+        /** @description The answer of a confirmation or a cancellation. */
+        GuardedResult: {
+            node: string;
+            /** @description `confirmed` or `rolled_back`. */
+            outcome: string;
+            reason?: string | null;
+            /** @description For a `proxy_list` proof: the client address the node now sees for this request. */
+            seenClient?: string | null;
+            setting: string;
+        };
+        /** @description One guarded setting, as `GET /api/v1/guarded` lists it for this node. */
+        GuardedSetting: {
+            /** @description A guarded entry holds a value for it (confirmed, applied or staged). */
+            hasEntry: boolean;
+            id: string;
+            label: string;
+            /** @description `window`, `immediate`, `staged` or `action`. */
+            mode: string;
+            /** @description A start has the entry on probation (it counts as applied once the node is healthy). */
+            onProbation: boolean;
+            /** @description The configuration paths it covers. */
+            paths: string[];
+            /** @description A staged change waits for the node to restart. */
+            pendingRestart: boolean;
+            /** @description For a `window` setting: `new_socket`, `new_cert` or `proxy_list`. */
+            proof?: string | null;
+            /** @description A file sets it, and wins: the control is locked and shows the file. */
+            setByFile: boolean;
+            /** @description A command-line clear is hiding the replicated entry until the primary's copy changes. */
+            suppressed: boolean;
+        };
+        /** @description The answer of `GET /api/v1/guarded`. */
+        GuardedStatus: {
+            /** @description This node first, then the members the primary can see. */
+            nodes: components["schemas"]["GuardedNodeStatus"][];
+        };
         /** @description REQ: OBS-015 (ADR-104) — how TelltaleDNS is doing, in one word, with the reasons. */
         Health: {
             /** @description When it was worked out (RFC 3339). */
@@ -6212,7 +6549,8 @@ export interface components {
              * @description Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,
              *     `sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
              *     `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
-             *     `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`.
+             *     `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,
+             *     `guarded_ignored`, `guarded_bind_fallback`.
              * @example upstream_down
              */
             code: string;
@@ -9500,6 +9838,13 @@ export interface components {
             servfail: number;
             /** Format: int64 */
             toUnixSeconds: number;
+        };
+        /** @description How a node is supervised (ADR-956 §4a): from a declaration only. */
+        Supervisor: {
+            /** @description How the node knows: `TELLTALE_SUPERVISOR`, or `not declared`. */
+            how: string;
+            /** @description `systemd`, `docker`, `kubernetes` or `none`. */
+            kind: string;
         };
         /** @description REQ: OPS-011 (ADR-156) — `POST /system/support-package`: what the package should hold. */
         SupportPackageRequest: {
@@ -13942,6 +14287,292 @@ export interface operations {
             };
             /** @description Something still uses it: problem+json says what. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    guarded_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Each node's guarded settings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardedStatus"];
+                };
+            };
+        };
+    };
+    guarded_cancel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The pending change's ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rolled back. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardedResult"];
+                };
+            };
+            /** @description Not an admin session, or an agent token. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing is pending under that ID. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    guarded_confirm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The pending change's ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GuardedConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description Confirmed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardedResult"];
+                };
+            };
+            /** @description Neither a session nor a token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The token or the arrival point is wrong. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing is pending under that ID (it may have rolled back). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description primary_unreachable: the node couldn't record the change. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many failed confirmations. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    guarded_apply: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The setting. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GuardedApplyRequest"];
+            };
+        };
+        responses: {
+            /** @description Applied. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardedApplied"];
+                };
+            };
+            /** @description Staged for the next start, waiting for confirmation, or restarting. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardedApplied"];
+                };
+            };
+            /** @description The phrase doesn't match, or the request is malformed. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not an admin session, an agent token, another token, or a weakening change without a recent sign-in. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description preview_stale, set_by_file, guarded_change_pending, restarting, would_disconnect_you, no_supervisor, primary_unreachable. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Ask the primary. */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many requests, or too many failed confirmations from this session. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    guarded_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The setting (`listen`, `restart-now`, ...). */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GuardedPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description The dry run. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardedPreview"];
+                };
+            };
+            /** @description Not an admin session, an agent token, or another token. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such guarded setting. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Set by file, a change already pending, restarting, no supervisor, would disconnect you. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Ask the primary: only it forwards a request for another node. */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many requests, or too many failed confirmations from this session. */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

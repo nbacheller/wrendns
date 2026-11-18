@@ -16,6 +16,7 @@
 pub mod credentials;
 pub mod discovery;
 mod env;
+pub mod guarded;
 pub mod mute;
 pub mod safesearch;
 pub mod schedule;
@@ -182,6 +183,9 @@ fn explicit_keys(root: &Table) -> Vec<String> {
             keys.extend(t.keys().map(|k| format!("{section}.{k}")));
         }
     }
+    // REQ: API-902 (T27.13, ADR-956 §2) — the guarded settings a file sets: the file wins over a
+    // guarded entry, and the control is locked.
+    keys.extend(guarded::explicit_paths(root));
     keys
 }
 

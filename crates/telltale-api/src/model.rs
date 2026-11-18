@@ -2945,7 +2945,8 @@ pub struct HealthReason {
     /// Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,
     /// `sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
     /// `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
-    /// `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`.
+    /// `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,
+    /// `guarded_ignored`, `guarded_bind_fallback`.
     #[schema(example = "upstream_down")]
     pub code: String,
     /// In words, with the numbers.

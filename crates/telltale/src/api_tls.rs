@@ -48,10 +48,22 @@ pub(crate) async fn serve(
     tls: &ApiTlsSetup,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> io::Result<SocketAddr> {
+    serve_with(addr, app, tls, shutdown, !tls.self_signed).await
+}
+
+/// [`serve`], with whether to watch the certificate files for a change (the listener of a guarded
+/// confirmation window lives minutes and doesn't).
+pub(crate) async fn serve_with(
+    addr: SocketAddr,
+    app: HttpRouter,
+    tls: &ApiTlsSetup,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    watch: bool,
+) -> io::Result<SocketAddr> {
     let listener = TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;
     let acceptor = tokio_rustls::TlsAcceptor::from(tls.store.server_config(&[b"http/1.1"])?);
-    if !tls.self_signed {
+    if watch {
         crate::server::watch_cert(Arc::clone(&tls.store));
     }
     let hsts = tls.hsts;
