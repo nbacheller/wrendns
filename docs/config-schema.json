@@ -1579,6 +1579,11 @@
           "type": "boolean",
           "default": false
         },
+        "home_assistant_all_devices": {
+          "description": "REQ: DSC-009 (ADR-912) — read Home Assistant's registry devices that have a MAC and no\nentity, into the inventory only. On by default; it applies only when discovery is on.",
+          "type": "boolean",
+          "default": true
+        },
         "node": {
           "description": "The node that runs discovery. Unset: the cluster's primary, or the standalone node.\nEphemeral pods and witnesses never run it, whatever is set here.",
           "type": [
@@ -1593,6 +1598,22 @@
           "default": [],
           "items": {
             "$ref": "#/$defs/DiscoverySubnet"
+          }
+        },
+        "unifi_all_users_within_hours": {
+          "description": "REQ: DSC-009 (ADR-912) — how far back `stat/alluser` reaches, in hours (1 to 8,760).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 720,
+          "minimum": 0
+        },
+        "unifi_reads": {
+          "description": "REQ: DSC-009 (ADR-912) — the extra UniFi reads, all off by default.",
+          "$ref": "#/$defs/UnifiReads",
+          "default": {
+            "all_users": false,
+            "client_fields": false,
+            "devices": false
           }
         },
         "worker_memory_mib": {
@@ -4230,6 +4251,28 @@
         "cert",
         "key"
       ]
+    },
+    "UnifiReads": {
+      "description": "REQ: DSC-009 (T25.10, ADR-912) — which extra read-only UniFi reads the inventory makes, for\neach UniFi `[[router]]`. Each one is off until an admin turns it on.",
+      "type": "object",
+      "properties": {
+        "all_users": {
+          "description": "`POST stat/alluser` (a query, it changes nothing): clients UniFi has seen within\n`unifi_all_users_within_hours`, as history (class 5). Never a current address.",
+          "type": "boolean",
+          "default": false
+        },
+        "client_fields": {
+          "description": "Read more fields of the clients the router poll already reads (`stat/sta`, `rest/user`):\nwired or wireless, the switch port, the access point, the VLAN and network, and the first\ntime the client was seen. No extra request.",
+          "type": "boolean",
+          "default": false
+        },
+        "devices": {
+          "description": "`GET stat/device`: UniFi's own devices, their switch-port MAC tables (where a client plugs\nin) and LLDP neighbours.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
     },
     "UpdatesConfig": {
       "description": "`[updates]` (REQ: OPS-004, ADR-046).",

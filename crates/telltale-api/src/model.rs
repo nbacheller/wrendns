@@ -1317,6 +1317,33 @@ pub struct DiscoveryStatus {
     pub node: Option<String>,
     /// The worker processes this node runs (none unless enabled and designated).
     pub workers: Vec<DiscoveryWorker>,
+    /// REQ: DSC-009 (T25.10, ADR-912) - the last result of each extra UniFi and Home Assistant
+    /// read: which ones work, and which the console refused. Empty unless one is on.
+    pub reads: Vec<DiscoveryRead>,
+}
+
+/// REQ: DSC-009 (T25.10, ADR-912) - one extra read of one router, as the inventory thread last saw
+/// it. Read-only: nothing here changes a console.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryRead {
+    /// The `[[router]]` read.
+    #[schema(example = "udm")]
+    pub router: String,
+    /// `client_fields`, `all_users`, `devices` or `home_assistant_all_devices`.
+    #[schema(example = "all_users")]
+    pub read: String,
+    /// `ok`, `refused` (the console answered 401 or 403) or `failed`.
+    #[schema(example = "ok")]
+    pub state: String,
+    /// Rows used.
+    pub rows: u32,
+    /// More rows were offered than the 8,192 cap; the rest were left out.
+    pub truncated: bool,
+    /// Why a read did not work, in words (no credential in it).
+    pub error: Option<String>,
+    /// When the result was recorded (Unix seconds).
+    pub at: Option<u64>,
 }
 
 /// REQ: DSC-002 (T25.3, ADR-908) — one discovery worker process, as the supervisor sees it.

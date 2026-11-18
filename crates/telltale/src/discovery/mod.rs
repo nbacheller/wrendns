@@ -18,6 +18,7 @@ pub(crate) mod gate;
 // import parser (T25.11); until those land, the tests are their only callers.
 #[allow(dead_code)]
 pub(crate) mod inventory;
+pub(crate) mod reads;
 pub(crate) mod runtime;
 // REQ: DSC-008, DSC-009 — the readers of these modules are used by the API (T25.12) and the
 // import parser (T25.11); until those land, the tests are their only callers.
