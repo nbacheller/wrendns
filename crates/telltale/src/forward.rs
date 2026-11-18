@@ -233,6 +233,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
             let action = match kind {
                 ManagedKind::Record => "record",
                 ManagedKind::Forward => "forward",
+                ManagedKind::Zone => "zone",
                 ManagedKind::Rule => "rule",
                 ManagedKind::Upstream => "upstream",
                 ManagedKind::UpstreamGroup => "upstream_group",

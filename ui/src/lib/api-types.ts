@@ -4097,6 +4097,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/zones/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Create or replace an authoritative zone (DNS-010, T27.7, ADR-1007).
+         * @description Every name under `name` is answered from the zone's records, for everyone or only `groups`
+         *     (split horizon); a name the zone doesn't have gets "no such name". A zone the configuration
+         *     files define is read-only here (409 `set_by_file`), and so is its zone file (guarded, T27.17).
+         *     Needs the operator role (or the `config:write:records` agent scope, with a reason).
+         */
+        put: operations["put_zone"];
+        post?: never;
+        /**
+         * Remove a zone made through the API (DNS-010, T27.7).
+         * @description The names it answered go back to the upstreams. A zone the configuration files define can't be
+         *     removed here (409).
+         */
+        delete: operations["delete_zone"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -6166,8 +6194,16 @@ export interface components {
         };
         /** @description A domain sent to other servers (conditional forwarding). */
         ForwardInfo: {
+            /** @description REQ: DNS-010 (T27.7) — a DNSSEC negative trust anchor is added for the domain. */
+            dnssecNta: boolean;
             /** @example corp.example */
             domain: string;
+            /** @description REQ: DNS-010 (T27.7) — the client groups the route applies to (empty: every client). */
+            matchGroup: string[];
+            /** @description REQ: DNS-010 (T27.7) — the query types the route applies to (empty: all). */
+            matchQtype: string[];
+            /** @description REQ: CLU-006 (T27.7) — this route stays on this node. */
+            nodeOnly: boolean;
             /** @description The servers (upstream URLs), in order; a stub zone's are IP addresses. */
             servers: string[];
             /** @description `file` (read-only here) or `api`. */
@@ -6180,6 +6216,17 @@ export interface components {
         };
         /** @description The servers a domain is sent to (`PUT /api/v1/forwards/{domain}`). */
         ForwardInput: {
+            /**
+             * @description REQ: DNS-010 (T27.7) — add a DNSSEC negative trust anchor for the domain (default `true`:
+             *     local zones are usually unsigned).
+             */
+            dnssecNta?: boolean;
+            /** @description REQ: DNS-010 (T27.7) — only these client groups are sent (empty: every client). */
+            matchGroup?: string[];
+            /** @description REQ: DNS-010 (T27.7) — only these query types are sent, e.g. `["PTR"]` (empty: all). */
+            matchQtype?: string[];
+            /** @description REQ: CLU-006 (T27.7) — keep this route on this node only. */
+            nodeOnly?: boolean;
             /**
              * @description Addresses (plain DNS) or `udp://`, `tcp://`, `tls://`, `https://` URLs, tried in order.
              *     For a stub zone: the zone's own servers, as IP addresses (port 53).
@@ -7073,8 +7120,16 @@ export interface components {
         /** @description A list wrapper used by every collection endpoint. */
         Items_ForwardInfo: {
             items: {
+                /** @description REQ: DNS-010 (T27.7) — a DNSSEC negative trust anchor is added for the domain. */
+                dnssecNta: boolean;
                 /** @example corp.example */
                 domain: string;
+                /** @description REQ: DNS-010 (T27.7) — the client groups the route applies to (empty: every client). */
+                matchGroup: string[];
+                /** @description REQ: DNS-010 (T27.7) — the query types the route applies to (empty: all). */
+                matchQtype: string[];
+                /** @description REQ: CLU-006 (T27.7) — this route stays on this node. */
+                nodeOnly: boolean;
                 /** @description The servers (upstream URLs), in order; a stub zone's are IP addresses. */
                 servers: string[];
                 /** @description `file` (read-only here) or `api`. */
@@ -7739,6 +7794,13 @@ export interface components {
                  * @description Records loaded (from the file and inline).
                  */
                 records: number;
+                /** @description REQ: DNS-010 (T27.7) — `file` (read-only here) or `api` (made in the UI or API). */
+                source: string;
+                /**
+                 * @description REQ: DNS-010 (T27.7) — an API zone's records, to edit them; empty for a file zone (its
+                 *     records are read-only here, and only the count shows).
+                 */
+                values: components["schemas"]["ZoneRecordInput"][];
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -9020,6 +9082,8 @@ export interface components {
         };
         /** @description One record of a local name. */
         RecordInput: {
+            /** @description REQ: CLU-006 (T27.7) — keep this record on this node only (a cluster doesn't share it). */
+            nodeOnly?: boolean;
             /**
              * Format: int32
              * @description TTL in seconds (default: `[local] default_ttl`).
@@ -10443,6 +10507,49 @@ export interface components {
              * @description Records loaded (from the file and inline).
              */
             records: number;
+            /** @description REQ: DNS-010 (T27.7) — `file` (read-only here) or `api` (made in the UI or API). */
+            source: string;
+            /**
+             * @description REQ: DNS-010 (T27.7) — an API zone's records, to edit them; empty for a file zone (its
+             *     records are read-only here, and only the count shows).
+             */
+            values: components["schemas"]["ZoneRecordInput"][];
+        };
+        /**
+         * @description REQ: DNS-010 (T27.7) — an authoritative zone made through the API or UI
+         *     (`PUT /api/v1/zones/{name}`). The zone file is set in the configuration file (guarded, T27.17),
+         *     so a body that names one is refused.
+         */
+        ZoneInput: {
+            /** @description Groups that see the zone (split horizon); empty: everyone. */
+            groups?: string[];
+            /**
+             * Format: int32
+             * @description TTL of its NXDOMAIN and no-data answers (default 300).
+             */
+            negativeTtlSeconds?: number | null;
+            /** @description The zone's records: names under the zone. */
+            records?: components["schemas"]["ZoneRecordInput"][];
+        };
+        /**
+         * @description REQ: DNS-010 (T27.7) — one record of an API zone: the owner name, its type and value, and
+         *     an optional TTL.
+         */
+        ZoneRecordInput: {
+            /** @example printer.home.example.com */
+            name: string;
+            /**
+             * Format: int32
+             * @description TTL in seconds (default: `[local] default_ttl`).
+             */
+            ttl?: number | null;
+            /**
+             * @description `A`, `AAAA`, `CNAME`, `PTR`, `TXT`, `MX` or `SRV`.
+             * @example A
+             */
+            type: string;
+            /** @example 192.168.1.20 */
+            value: string;
         };
     };
     responses: never;
@@ -19120,6 +19227,140 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_ZoneInfo"];
+                };
+            };
+        };
+    };
+    put_zone: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The zone's apex, e.g. home.example.com. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ZoneInput"];
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Defined in the configuration files (`set_by_file`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A name, group, or record is invalid, or the body names a zone file. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_zone: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The zone's apex. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Defined in the configuration files (`set_by_file`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

@@ -13,6 +13,7 @@ pub(crate) const fn api_kind(kind: ManagedKind) -> &'static str {
     match kind {
         ManagedKind::Record => "record",
         ManagedKind::Forward => "forward",
+        ManagedKind::Zone => "zone",
         ManagedKind::Rule => "rule",
         ManagedKind::Upstream => "upstream",
         ManagedKind::UpstreamGroup => "upstream_group",

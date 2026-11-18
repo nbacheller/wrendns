@@ -336,9 +336,31 @@
       "summary": "Questions for one domain go to a specific server instead of the public ones, such as your work network's or your router's.",
       "when": "Names like nas.home or corp.example only exist on another server.",
       "example": "Send everything under corp.example to 10.0.0.53 so work names resolve at home over the VPN.",
-      "caution": "That server sees those questions; private reverse lookups never leave your network by default. If that server only knows this domain (it refuses other questions and hands sub-domains to other servers), tick the stub zone box.",
+      "caution": "That server sees those questions; private reverse lookups never leave your network by default. If that server only knows this domain (it refuses other questions and hands sub-domains to other servers), tick the stub zone box. Limit it with groups (only their devices are sent) and query types (only PTR, say), and leave the DNSSEC box ticked unless the domain is signed or you know why it isn't. Ticking “Only on this node” keeps the route here: the other nodes answer as if it weren't there.",
       "diagram": "route",
       "docs": "routing-conditional-forwarding"
+    },
+    {
+      "id": "records",
+      "title": "A name's TTL and whether this node only keeps it",
+      "term": "Record TTL (time to live)",
+      "summary": "How long other devices may keep an answer before they ask again, and whether only this node keeps the name.",
+      "when": "A name changes often, so devices should ask again soon (a short TTL); or a name only this node should answer, such as a test name.",
+      "example": "printer.home.arpa with TTL 60 is asked again within a minute; a name marked this node only is not shared with the other nodes of a cluster.",
+      "caution": "A blank TTL means `[local] default_ttl`. A node-only name is missing on the other nodes of a cluster, so their devices don't get it.",
+      "diagram": "local",
+      "docs": "local-records"
+    },
+    {
+      "id": "zones",
+      "title": "Answer a whole domain from its own records",
+      "term": "Authoritative zone",
+      "summary": "TelltaleDNS answers every name under a domain itself, from the records you list; a name it doesn't have gets “no such name”.",
+      "when": "A private domain such as home.example.com should be answered only from your own records, and a made-up name under it should fail at once.",
+      "example": "home.example.com with printer.home.example.com → 192.168.1.20; ghost.home.example.com gets “no such name” at once, from this node.",
+      "caution": "Only the groups you pick see the zone (split horizon). A zone the configuration file defines, or its zone file, is read-only here. The negative TTL is how long devices may remember “no such name”.",
+      "diagram": "local",
+      "docs": "local-zones"
     },
     {
       "id": "config-sources",

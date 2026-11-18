@@ -3461,6 +3461,78 @@ test('dns_023 viewer sees device-name settings read-only', async () => {
   }
 });
 
+// REQ: DNS-010 (T27.7, ADR-1007) — a record's TTL and node-only flag from the local DNS page: the
+// answer on the wire carries the TTL, and the node-only name shows as such in the list.
+test('dns_010 record ttl', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/local-dns');
+  await page.getByRole('button', { name: 'Add a name' }).click();
+  const form = page.locator('form').filter({ has: page.getByLabel('TTL in seconds (optional)') });
+  await form.getByLabel('Name', { exact: true }).fill('ttl010.home.arpa');
+  await form.getByLabel('Address', { exact: true }).fill('192.0.2.10');
+  await form.getByLabel('TTL in seconds (optional)').fill('60');
+  await form.getByLabel('Only on this node (the cluster doesn\'t share it)').check();
+  await form.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved.' })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+  const row = page.locator('tr').filter({ hasText: 'ttl010.home.arpa' });
+  await expect(row).toContainText('60');
+  await expect(row).toContainText('this node only');
+  const answer = await queryDetail('ttl010.home.arpa');
+  expect(answer.address).toBe('192.0.2.10');
+  expect(answer.ttl).toBe(60);
+  await row.getByRole('button', { name: 'Remove ttl010.home.arpa' }).click();
+  await expect(page.locator('tr').filter({ hasText: 'ttl010.home.arpa' })).toHaveCount(0);
+});
+
+// REQ: DNS-010 (T27.7, ADR-1007) — a conditional-forwarding route limited to a client group and a
+// query type, with the trust anchor and node-only choices, shown in the preview and the list.
+test('dns_010 route by group and type', async () => {
+  await page.goto('/#/local-dns');
+  await page.getByRole('button', { name: 'Send a domain to another server', exact: true }).click();
+  const form = page.locator('form').filter({ has: page.getByLabel('Only for these query types (optional)') });
+  await form.getByLabel('Domain', { exact: true }).fill('routed010.example');
+  await form.getByLabel('Server address', { exact: true }).fill('10.10.10.53');
+  await form.getByLabel('Only for the devices in these groups (optional)').fill('lab');
+  await form.getByLabel('Only for these query types (optional)').fill('ptr');
+  await expect(form.getByText('for the devices in lab')).toBeVisible();
+  await form.getByLabel('Only on this node (the cluster doesn\'t share it)').check();
+  await form.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'routed010.example for the devices in lab' })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+  const row = page.locator('tr').filter({ hasText: 'routed010.example' });
+  await expect(row).toContainText('for lab');
+  await expect(row).toContainText('PTR');
+  await expect(row).toContainText('this node only');
+  await row.getByRole('button', { name: 'Stop sending routed010.example' }).click();
+  await expect(page.locator('tr').filter({ hasText: 'routed010.example' })).toHaveCount(0);
+});
+
+// REQ: DNS-010 (T27.7, ADR-1007) — an authoritative zone made from the local DNS page answers its
+// names itself and gives "no such name" for a name the zone doesn't have.
+test('dns_010 add a zone', async () => {
+  await page.goto('/#/local-dns');
+  await page.getByTestId('zone-add').click();
+  const form = page.getByTestId('zone-form');
+  await form.getByLabel('Zone (its domain)').fill('zone010.e2e.test');
+  await form.getByLabel('Record 1 name').fill('printer.zone010.e2e.test');
+  await form.getByLabel('Record 1 type').selectOption('A');
+  await form.getByLabel('Record 1 value').fill('192.168.11.20');
+  await form.getByLabel('Record 1 TTL').fill('120');
+  await form.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'zone010.e2e.test' })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+  const zoneRow = page.getByTestId('zone-row').filter({ hasText: 'zone010.e2e.test' });
+  await expect(zoneRow).toContainText('the UI / API');
+  const answer = await queryDetail('printer.zone010.e2e.test');
+  expect(answer.address).toBe('192.168.11.20');
+  expect(answer.ttl).toBe(120);
+  // The refusal for a name it doesn't have is expected: the zone answers it itself.
+  expect(await query('ghost.zone010.e2e.test')).toBe(3);
+  await zoneRow.getByRole('button', { name: 'Remove zone zone010.e2e.test' }).click();
+  await expect(page.getByTestId('zone-row').filter({ hasText: 'zone010.e2e.test' })).toHaveCount(0);
+});
+
 // REQ: UPS-007 (T9.25) — a group's upstream servers are chosen in the Groups editor.
 test('ups_007 a group picks its upstream group from the UI', async () => {
   await page.goto('/#/groups');

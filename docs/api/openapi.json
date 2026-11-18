@@ -11800,6 +11800,194 @@
           }
         }
       }
+    },
+    "/api/v1/zones/{name}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Create or replace an authoritative zone (DNS-010, T27.7, ADR-1007).",
+        "description": "Every name under `name` is answered from the zone's records, for everyone or only `groups`\n(split horizon); a name the zone doesn't have gets \"no such name\". A zone the configuration\nfiles define is read-only here (409 `set_by_file`), and so is its zone file (guarded, T27.17).\nNeeds the operator role (or the `config:write:records` agent scope, with a reason).",
+        "operationId": "put_zone",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The zone's apex, e.g. home.example.com.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ZoneInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Defined in the configuration files (`set_by_file`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A name, group, or record is invalid, or the body names a zone file.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove a zone made through the API (DNS-010, T27.7).",
+        "description": "The names it answered go back to the upstreams. A zone the configuration files define can't be\nremoved here (409).",
+        "operationId": "delete_zone",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The zone's apex.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Defined in the configuration files (`set_by_file`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -16749,12 +16937,38 @@
           "domain",
           "servers",
           "stub",
-          "source"
+          "source",
+          "matchGroup",
+          "matchQtype",
+          "dnssecNta",
+          "nodeOnly"
         ],
         "properties": {
+          "dnssecNta": {
+            "type": "boolean",
+            "description": "REQ: DNS-010 (T27.7) — a DNSSEC negative trust anchor is added for the domain."
+          },
           "domain": {
             "type": "string",
             "example": "corp.example"
+          },
+          "matchGroup": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "REQ: DNS-010 (T27.7) — the client groups the route applies to (empty: every client)."
+          },
+          "matchQtype": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "REQ: DNS-010 (T27.7) — the query types the route applies to (empty: all)."
+          },
+          "nodeOnly": {
+            "type": "boolean",
+            "description": "REQ: CLU-006 (T27.7) — this route stays on this node."
           },
           "servers": {
             "type": "array",
@@ -16780,6 +16994,28 @@
           "servers"
         ],
         "properties": {
+          "dnssecNta": {
+            "type": "boolean",
+            "description": "REQ: DNS-010 (T27.7) — add a DNSSEC negative trust anchor for the domain (default `true`:\nlocal zones are usually unsigned)."
+          },
+          "matchGroup": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "REQ: DNS-010 (T27.7) — only these client groups are sent (empty: every client)."
+          },
+          "matchQtype": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "REQ: DNS-010 (T27.7) — only these query types are sent, e.g. `[\"PTR\"]` (empty: all)."
+          },
+          "nodeOnly": {
+            "type": "boolean",
+            "description": "REQ: CLU-006 (T27.7) — keep this route on this node only."
+          },
           "servers": {
             "type": "array",
             "items": {
@@ -18958,12 +19194,38 @@
                 "domain",
                 "servers",
                 "stub",
-                "source"
+                "source",
+                "matchGroup",
+                "matchQtype",
+                "dnssecNta",
+                "nodeOnly"
               ],
               "properties": {
+                "dnssecNta": {
+                  "type": "boolean",
+                  "description": "REQ: DNS-010 (T27.7) — a DNSSEC negative trust anchor is added for the domain."
+                },
                 "domain": {
                   "type": "string",
                   "example": "corp.example"
+                },
+                "matchGroup": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "REQ: DNS-010 (T27.7) — the client groups the route applies to (empty: every client)."
+                },
+                "matchQtype": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "REQ: DNS-010 (T27.7) — the query types the route applies to (empty: all)."
+                },
+                "nodeOnly": {
+                  "type": "boolean",
+                  "description": "REQ: CLU-006 (T27.7) — this route stays on this node."
                 },
                 "servers": {
                   "type": "array",
@@ -20592,7 +20854,9 @@
                 "name",
                 "groups",
                 "records",
-                "negativeTtlSeconds"
+                "negativeTtlSeconds",
+                "source",
+                "values"
               ],
               "properties": {
                 "file": {
@@ -20625,6 +20889,17 @@
                   "format": "int64",
                   "description": "Records loaded (from the file and inline).",
                   "minimum": 0
+                },
+                "source": {
+                  "type": "string",
+                  "description": "REQ: DNS-010 (T27.7) — `file` (read-only here) or `api` (made in the UI or API)."
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ZoneRecordInput"
+                  },
+                  "description": "REQ: DNS-010 (T27.7) — an API zone's records, to edit them; empty for a file zone (its\nrecords are read-only here, and only the count shows)."
                 }
               }
             }
@@ -23699,6 +23974,10 @@
           "value"
         ],
         "properties": {
+          "nodeOnly": {
+            "type": "boolean",
+            "description": "REQ: CLU-006 (T27.7) — keep this record on this node only (a cluster doesn't share it)."
+          },
           "ttl": {
             "type": [
               "integer",
@@ -27094,7 +27373,9 @@
           "name",
           "groups",
           "records",
-          "negativeTtlSeconds"
+          "negativeTtlSeconds",
+          "source",
+          "values"
         ],
         "properties": {
           "file": {
@@ -27127,8 +27408,83 @@
             "format": "int64",
             "description": "Records loaded (from the file and inline).",
             "minimum": 0
+          },
+          "source": {
+            "type": "string",
+            "description": "REQ: DNS-010 (T27.7) — `file` (read-only here) or `api` (made in the UI or API)."
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ZoneRecordInput"
+            },
+            "description": "REQ: DNS-010 (T27.7) — an API zone's records, to edit them; empty for a file zone (its\nrecords are read-only here, and only the count shows)."
           }
         }
+      },
+      "ZoneInput": {
+        "type": "object",
+        "description": "REQ: DNS-010 (T27.7) — an authoritative zone made through the API or UI\n(`PUT /api/v1/zones/{name}`). The zone file is set in the configuration file (guarded, T27.17),\nso a body that names one is refused.",
+        "properties": {
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Groups that see the zone (split horizon); empty: everyone."
+          },
+          "negativeTtlSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "TTL of its NXDOMAIN and no-data answers (default 300).",
+            "minimum": 0
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ZoneRecordInput"
+            },
+            "description": "The zone's records: names under the zone."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ZoneRecordInput": {
+        "type": "object",
+        "description": "REQ: DNS-010 (T27.7) — one record of an API zone: the owner name, its type and value, and\nan optional TTL.",
+        "required": [
+          "name",
+          "type",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "printer.home.example.com"
+          },
+          "ttl": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "TTL in seconds (default: `[local] default_ttl`).",
+            "minimum": 0
+          },
+          "type": {
+            "type": "string",
+            "description": "`A`, `AAAA`, `CNAME`, `PTR`, `TXT`, `MX` or `SRV`.",
+            "example": "A"
+          },
+          "value": {
+            "type": "string",
+            "example": "192.168.1.20"
+          }
+        },
+        "additionalProperties": false
       }
     },
     "securitySchemes": {

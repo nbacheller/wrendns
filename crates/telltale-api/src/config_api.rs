@@ -97,6 +97,8 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/forwards/{domain}",
             put(put_forward).delete(delete_forward),
         )
+        // REQ: DNS-010 (T27.7) — authoritative zones made through the API or UI.
+        .route("/api/v1/zones/{name}", put(put_zone).delete(delete_zone))
         .route("/api/v1/rules/{id}", put(put_rule).delete(delete_rule))
         // REQ: API-002 (T7.5, ADR-069)
         .route(
@@ -2386,6 +2388,7 @@ impl Op {
             Self::Client(_) => "client",
             Self::Managed(ManagedKind::Record, _) => "record",
             Self::Managed(ManagedKind::Forward, _) => "forward",
+            Self::Managed(ManagedKind::Zone, _) => "zone",
             Self::Managed(ManagedKind::Rule, _) => "rule",
             Self::Managed(ManagedKind::Upstream, _) => "upstream",
             Self::Managed(ManagedKind::UpstreamGroup, _) => "upstream_group",
@@ -2650,6 +2653,81 @@ pub(crate) async fn put_forward(
         request,
         domain,
         Op::Managed(ManagedKind::Forward, Some(v)),
+    )
+    .await
+}
+
+/// Create or replace an authoritative zone (DNS-010, T27.7, ADR-1007).
+///
+/// Every name under `name` is answered from the zone's records, for everyone or only `groups`
+/// (split horizon); a name the zone doesn't have gets "no such name". A zone the configuration
+/// files define is read-only here (409 `set_by_file`), and so is its zone file (guarded, T27.17).
+/// Needs the operator role (or the `config:write:records` agent scope, with a reason).
+#[utoipa::path(put, path = "/api/v1/zones/{name}", tag = "config",
+    params(("name" = String, Path, description = "The zone's apex, e.g. home.example.com."), DryRun),
+    request_body = crate::model::ZoneInput,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 409, body = Problem, description = "Defined in the configuration files (`set_by_file`)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A name, group, or record is invalid, or the body names a zone file."),
+    ))]
+pub(crate) async fn put_zone(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<crate::model::ZoneInput>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /zones/{name} {}", json_of(&input));
+    let v = serde_json::to_value(&input).unwrap_or_default();
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::Zone, Some(v)),
+    )
+    .await
+}
+
+/// Remove a zone made through the API (DNS-010, T27.7).
+///
+/// The names it answered go back to the upstreams. A zone the configuration files define can't be
+/// removed here (409).
+#[utoipa::path(delete, path = "/api/v1/zones/{name}", tag = "config",
+    params(("name" = String, Path, description = "The zone's apex."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "Not found."),
+        (status = 409, body = Problem, description = "Defined in the configuration files (`set_by_file`)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+    ))]
+pub(crate) async fn delete_zone(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /zones/{name}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::Zone, None),
     )
     .await
 }

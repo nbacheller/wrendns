@@ -643,6 +643,7 @@ pub(crate) fn build(
                 rtype: r.rtype.as_str().to_owned(),
                 value: r.value.as_str().to_owned(),
                 ttl: r.ttl,
+                node_only: false,
             });
     }
     for (name, recs) in by_name {
@@ -702,6 +703,10 @@ pub(crate) fn build(
             let f = Forward {
                 servers: servers.clone(),
                 stub: false,
+                match_group: Vec::new(),
+                match_qtype: Vec::new(),
+                dnssec_nta: true,
+                node_only: false,
             };
             write_item(
                 &mut items,
