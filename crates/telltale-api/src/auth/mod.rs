@@ -662,7 +662,7 @@ impl Auth {
             let mut locked = None;
             if f.count > FREE_ATTEMPTS {
                 let exp = (f.count - FREE_ATTEMPTS - 1).min(10);
-                f.locked_until = now + (30u64 << exp).min(MAX_LOCK_SECS);
+                f.locked_until = now.saturating_add((30u64 << exp).min(MAX_LOCK_SECS));
                 locked = Some((f.count, f.locked_until - now));
             }
             // Bound the map: forget the stalest entries when an address sprays usernames.
@@ -901,7 +901,7 @@ impl Auth {
     ) -> Result<NewSession, Problem> {
         let cookie = crypto::random_secret();
         let csrf = crypto::random_secret();
-        let expires = now + self.settings.session_ttl_secs;
+        let expires = now.saturating_add(self.settings.session_ttl_secs);
         self.state
             .create_session(
                 &crypto::secret_hash(&cookie),
@@ -1096,7 +1096,9 @@ impl Auth {
         self.succeed(&akey);
         let cookie = crypto::random_secret();
         let csrf = crypto::random_secret();
-        let expires = token.expires.unwrap_or(now + DISPLAY_SESSION_SECS);
+        let expires = token
+            .expires
+            .unwrap_or(now.saturating_add(DISPLAY_SESSION_SECS));
         let hash = crypto::secret_hash(&cookie);
         self.state
             .create_session(
@@ -1252,7 +1254,7 @@ impl Auth {
             if c.len() > 1000 {
                 c.retain(|_, (_, exp)| *exp > now);
             }
-            c.insert(key, (u.id, now + BASIC_CACHE_SECS));
+            c.insert(key, (u.id, now.saturating_add(BASIC_CACHE_SECS)));
             u
         };
         if !user.allow_basic_api {

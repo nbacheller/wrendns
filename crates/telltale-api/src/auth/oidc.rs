@@ -45,9 +45,9 @@ const MAX_FLOWS: usize = 1000;
 const DISCOVERY_TTL: Duration = Duration::from_secs(3600);
 /// A key set is refetched when a token's key isn't in it or its signature fails, at most once
 /// per provider in this interval (ADR-951, "JWKS").
+const JWKS_MIN_INTERVAL: Duration = Duration::from_secs(60);
 /// After a failed discovery reload, the cached copy is served this long before trying again.
 const RELOAD_BACKOFF: Duration = Duration::from_secs(60);
-const JWKS_MIN_INTERVAL: Duration = Duration::from_secs(60);
 /// The largest discovery document or key set read from a provider.
 const MAX_RESPONSE: usize = 1 << 20;
 pub const FLOW_COOKIE: &str = "telltale_oidc";
@@ -236,7 +236,8 @@ fn id_token_algs(meta: &metadata::Metadata) -> Result<Vec<jose::Alg>, Problem> {
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+        // A clock before 1970 fails closed: every token then reads as expired.
+        .map_or(u64::MAX, |d| d.as_secs())
 }
 
 impl Oidc {
