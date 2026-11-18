@@ -69,9 +69,16 @@ pass() { echo "ok${1:+ ($1)}"; }
 bad() { echo "FAIL: $*"; exit 1; }
 now_ms() { date +%s%3N; }
 
-# The A or TXT answer of the VIP (or of any address given as $3) for a name: empty when no answer.
+# The answer's A record for a name at an address, or empty: the VIP, or a node's own address.
 dig_at() { # address name type
   docker run --rm --network "$NET" --entrypoint dig "$KA_IMAGE" +time=1 +tries=1 +short "@$1" "$2" "$3" 2>/dev/null | head -n 1 || true
+}
+
+# The node that answered an address: its name from the NSID option of the answer (`[node] name`), or
+# empty when nothing answered. The VIP answers as the node that holds it.
+node_at() { # address
+  docker run --rm --network "$NET" --entrypoint dig "$KA_IMAGE" +time=1 +tries=1 +nsid "@$1" gateway.vip.home.arpa A 2>/dev/null \
+    | sed -n 's/^; NSID: .*("\(.*\)").*$/\1/p' | head -n 1 || true
 }
 
 # Which node holds the VIP: a or b, or empty. The check runs inside each node's network namespace.
@@ -86,14 +93,11 @@ vip_owner() {
   return 0
 }
 
-# The node name in a TXT answer, for example "telltale-a" (the quotes are removed).
-who() { sed 's/"//g' <<<"$1"; }
-
-# Waits until the VIP answers as the wanted node, for up to budget_ms. Prints nothing.
+# Waits until the VIP answers as the wanted node, for up to budget_ms.
 await_vip() { # budget_ms node
   local end=$(( $(now_ms) + $1 ))
   while [ "$(now_ms)" -lt "$end" ]; do
-    [ "$(who "$(dig_at "$VIP" whoami.vip.home.arpa TXT)")" = "telltale-$2" ] && return 0
+    [ "$(node_at "$VIP")" = "telltale-$2" ] && return 0
     sleep 0.5
   done
   return 1
@@ -125,7 +129,7 @@ for n in "${NODES[@]}"; do
   end=$(( $(now_ms) + 120000 ))
   got=
   while [ "$(now_ms)" -lt "$end" ]; do
-    got=$(who "$(dig_at "$SUBNET.$i" whoami.vip.home.arpa TXT)")
+    got=$(node_at "$SUBNET.$i")
     [ "$got" = "telltale-$n" ] && break
     sleep 1
   done
@@ -146,7 +150,7 @@ lost=0
 took=
 end=$(( t0 + 30000 ))
 while [ "$(now_ms)" -lt "$end" ]; do
-  if [ "$(who "$(dig_at "$VIP" whoami.vip.home.arpa TXT)")" = telltale-b ]; then
+  if [ "$(node_at "$VIP")" = telltale-b ]; then
     took=$(( $(now_ms) - t0 ))
     break
   fi
@@ -158,7 +162,7 @@ done
 [ "$(vip_owner)" = b ] || bad "the VIP answers as telltale-b but is held by '$(vip_owner)'"
 ok_after=0
 for _ in 1 2 3 4 5; do
-  [ "$(who "$(dig_at "$VIP" whoami.vip.home.arpa TXT)")" = telltale-b ] && ok_after=$(( ok_after + 1 ))
+  [ "$(node_at "$VIP")" = telltale-b ] && ok_after=$(( ok_after + 1 ))
 done
 [ "$ok_after" = 5 ] || bad "only $ok_after of 5 queries answered as telltale-b after the move"
 [ "$(dig_at "$VIP" gateway.vip.home.arpa A)" = 192.0.2.1 ] || bad "the A record does not answer through the VIP after the move"

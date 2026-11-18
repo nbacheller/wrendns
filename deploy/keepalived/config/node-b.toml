@@ -1,10 +1,6 @@
-# One of the two TelltaleDNS nodes behind the keepalived VIP (deploy/keepalived, REQ: CLU-004).
-# The two files are the same except for [node] name and the identity record below. The DNS
-# listeners bind the wildcard address, so they answer on the VIP the node holds (and on its own
-# address). Keep every shared setting identical on both nodes: a Pi-hole pair works the same way.
-#
-# This example has no upstream resolvers: the test network has no internet. Add [[upstream]] and
-# [[upstream_group]] (see deploy/compose/telltale.toml) for a real node.
+# The second TelltaleDNS node behind the keepalived VIP (deploy/keepalived, REQ: CLU-004). It is the
+# same as node a except for [node] name and [cluster] site, and it has no [cluster.init]: it joins
+# node a's cluster with a token (README.md). Until it has joined it runs as a standalone node.
 config_version = 1
 
 [node]
@@ -21,11 +17,13 @@ addr = "0.0.0.0:53"
 [api]
 listen = "0.0.0.0:8053"
 
-# Answers that show which node holds the VIP: `dig @VIP whoami.vip.home.arpa TXT`.
-[[record]]
-name = "whoami.vip.home.arpa"
-type = "TXT"
-value = "telltale-b"
+[dns]
+nsid = true
+
+[cluster]
+name = "keepalived"
+site = "telltale-b"
+listen = "0.0.0.0:8443"
 
 [[record]]
 name = "gateway.vip.home.arpa"
