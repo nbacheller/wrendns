@@ -6,9 +6,22 @@ use super::*;
 use crate::node::{Identity, JoinRequest};
 use crate::pki;
 
-async fn free_port() -> SocketAddr {
+/// A loopback port this test owns. The listener stays bound until [`serve_on`] takes it: the
+/// older "pick a free port, release it, bind later" lost the port to another test's socket
+/// (a foreign server answered, or a client's ephemeral port blocked the bind) when the suite
+/// ran in parallel.
+async fn bound_port() -> (TcpListener, SocketAddr) {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    l.local_addr().unwrap()
+    let addr = l.local_addr().unwrap();
+    (l, addr)
+}
+
+/// The notBefore and notAfter of a PEM certificate, as Unix seconds.
+fn validity_window(cert_pem: &str) -> (i64, i64) {
+    let der = crate::pki::der_of(cert_pem).unwrap();
+    let (_, cert) = x509_parser::parse_x509_certificate(&der).unwrap();
+    let v = cert.validity();
+    (v.not_before.timestamp(), v.not_after.timestamp())
 }
 
 // Waits until a spawned `serve` accepts connections. A fixed sleep raced the bind (and its
@@ -50,13 +63,13 @@ async fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
 #[tokio::test(flavor = "multi_thread")]
 async fn clu_009_bootstrap_secret_joins_ephemeral_members_that_expire() {
     let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let addr = free_port().await;
+    let (addr_l, addr) = bound_port().await;
     let url = format!("https://{addr}");
     let primary = Identity::init(pdir.path(), "home", vec![url.clone()], "k8s").unwrap();
     let primary = Cluster::new(primary, "0.1.0");
     primary.set_bootstrap_secret("s3cret-shared-by-helm".into());
     let (stop_tx, stop) = watch::channel(false);
-    tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
+    tokio::spawn(serve_on(Arc::clone(&primary), addr_l, stop.clone()));
     listening(addr).await;
 
     // The wrong secret: the primary's proof doesn't match, so its CA isn't trusted.
@@ -121,7 +134,7 @@ async fn clu_009_bootstrap_secret_joins_ephemeral_members_that_expire() {
 #[allow(clippy::too_many_lines)] // one scenario: join, stream, RPCs, renewal
 async fn clu_001_join_then_mutual_stream_registers_both_peers() {
     let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let addr = free_port().await;
+    let (addr_l, addr) = bound_port().await;
     let url = format!("https://{addr}");
 
     let primary = Identity::init(pdir.path(), "home", vec![url.clone()], "k8s").unwrap();
@@ -137,7 +150,7 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
         .unwrap();
     let primary = Cluster::new(primary, "0.1.0");
     let (stop_tx, stop) = watch::channel(false);
-    tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
+    tokio::spawn(serve_on(Arc::clone(&primary), addr_l, stop.clone()));
     listening(addr).await;
 
     // The replica joins: the token pins the CA; the secret earns a certificate.
@@ -241,8 +254,12 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
     if had_key {
         std::fs::rename(&key, rdir.join("ca.key.aside")).unwrap();
     }
-    let before = replica.identity.reload().cert_pem;
-    std::thread::sleep(Duration::from_millis(1100)); // a later notBefore
+    // The certificate's validity window is taken from the wall clock when it is issued. The
+    // renewal is proven by the stored certificate's event and generation, and by its validity
+    // window not moving backwards. A changed PEM is not required: the key is kept, so the serial
+    // (derived from the key) and the public key are the same. Whether a clock step explains an
+    // identical PEM was never reproduced, so this is a recorded assumption, not a proven cause.
+    let before = replica.identity.reload();
     crate::renew::renew_now(&replica).await.unwrap();
     if had_key {
         std::fs::rename(rdir.join("ca.key.aside"), &key).unwrap();
@@ -252,10 +269,23 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
         primary.events().iter().any(|e| e.kind == "cert_issued"),
         "the primary signed it"
     );
-    assert_ne!(after.cert_pem, before, "a new certificate");
+    assert!(
+        replica.events().iter().any(|e| e.kind == "cert_renewed"),
+        "the replica stored the renewed certificate"
+    );
     assert_eq!(after.meta.node_id, rid, "same node ID");
     crate::pki::verify_issued(&after.cert_pem, &after.ca_pem).unwrap();
     assert_eq!(replica.cert_generation(), 1);
+    let (before_from, before_until) = validity_window(&before.cert_pem);
+    let (after_from, after_until) = validity_window(&after.cert_pem);
+    assert!(
+        after_from >= before_from,
+        "the renewed certificate starts no earlier"
+    );
+    assert!(
+        after_until >= before_until,
+        "the renewed certificate ends no earlier"
+    );
     assert!(!crate::renew::due(&after.cert_pem));
     // Someone else's CSR is refused: the certificate names come from the asking peer.
     let csr = crate::pki::csr_for(&after.key_pem).unwrap();
@@ -271,14 +301,14 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
 #[tokio::test(flavor = "multi_thread")]
 async fn clu_001_a_token_for_another_ca_is_refused_before_the_secret_is_sent() {
     let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let addr = free_port().await;
+    let (addr_l, addr) = bound_port().await;
     let url = format!("https://{addr}");
     let real = Identity::init(a.path(), "real", vec![url.clone()], "k8s").unwrap();
     let other = Identity::init(b.path(), "other", vec![url.clone()], "k8s").unwrap();
     // A token from `other` pointed at `real`'s address: the CA pin fails in the handshake.
     let token = other.create_token(600, Some(vec![url.clone()])).unwrap();
     let (_stop_tx, stop) = watch::channel(false);
-    tokio::spawn(serve(Cluster::new(real, "0.1.0"), addr, stop));
+    tokio::spawn(serve_on(Cluster::new(real, "0.1.0"), addr_l, stop));
     listening(addr).await;
     let key = pki::new_node_key().unwrap();
     let req = JoinRequest {
@@ -298,12 +328,12 @@ async fn clu_001_a_token_for_another_ca_is_refused_before_the_secret_is_sent() {
 #[tokio::test(flavor = "multi_thread")]
 async fn clu_001_streams_need_a_cluster_certificate() {
     let dir = tempfile::tempdir().unwrap();
-    let addr = free_port().await;
+    let (addr_l, addr) = bound_port().await;
     let url = format!("https://{addr}");
     let id = Identity::init(dir.path(), "home", vec![url.clone()], "k8s").unwrap();
     let token = id.create_token(600, Some(vec![url.clone()])).unwrap();
     let (_stop_tx, stop) = watch::channel(false);
-    tokio::spawn(serve(Cluster::new(id, "0.1.0"), addr, stop));
+    tokio::spawn(serve_on(Cluster::new(id, "0.1.0"), addr_l, stop));
     listening(addr).await;
     // Connect with the join-time TLS (CA pinned, no client certificate) and ask for a stream.
     let mut fp = [0u8; 32];
@@ -333,6 +363,41 @@ async fn clu_001_streams_need_a_cluster_certificate() {
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+}
+
+// REQ: CLU-008 — a round trip is monotonic time less the peer's hold time; a wall-clock step
+// cannot make it 0 (the earlier wall-clock mix did).
+#[test]
+fn clu_008_round_trips_are_monotonic_less_the_hold() {
+    let sent = tokio::time::Instant::now();
+    let now = sent + Duration::from_millis(100);
+    assert_eq!(echo_round_trip_ms(sent, now, 30), 70);
+    assert_eq!(echo_round_trip_ms(sent, now, 0), 100);
+    // A hold longer than the elapsed time saturates to 0 instead of going negative.
+    assert_eq!(echo_round_trip_ms(sent, now, 500), 0);
+}
+
+// REQ: CLU-008 — two heartbeats sent in the same millisecond share a ts_ms; the newer is taken.
+// An echo older than the kept window has no send instant (no sample).
+#[test]
+fn clu_008_an_echo_takes_the_newest_heartbeat_with_that_ts_and_none_past_the_window() {
+    let t0 = tokio::time::Instant::now();
+    let mut sent = VecDeque::new();
+    remember_sent(&mut sent, 5, t0);
+    remember_sent(&mut sent, 5, t0 + Duration::from_millis(3));
+    assert_eq!(
+        echoed_sent_at(&sent, 5),
+        Some(t0 + Duration::from_millis(3))
+    );
+    assert_eq!(echoed_sent_at(&sent, 6), None);
+    // The window keeps ECHO_KEPT heartbeats: the oldest falls out, and its echo gives no sample.
+    let mut window = VecDeque::new();
+    for ts in 1..=(ECHO_KEPT as u64 + 1) {
+        remember_sent(&mut window, ts, t0);
+    }
+    assert_eq!(window.len(), ECHO_KEPT);
+    assert_eq!(echoed_sent_at(&window, 1), None);
+    assert_eq!(echoed_sent_at(&window, 2), Some(t0));
 }
 
 #[test]
@@ -453,7 +518,7 @@ fn publish(primary: &Cluster, dir: &std::path::Path, seq: u64, config: &[u8], sh
 #[allow(clippy::too_many_lines)] // one scenario, start to finish
 async fn clu_003_replicas_fetch_only_changed_blobs_and_converge_fast_over_a_wan() {
     let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let addr = free_port().await;
+    let (addr_l, addr) = bound_port().await;
     let wan = delay_proxy(addr, Duration::from_millis(25)).await;
     let url = format!("https://{wan}");
     let primary_id = Identity::init(pdir.path(), "home", vec![url.clone()], "home-pi").unwrap();
@@ -469,7 +534,7 @@ async fn clu_003_replicas_fetch_only_changed_blobs_and_converge_fast_over_a_wan(
         .unwrap();
     let primary = Cluster::new(primary_id, "0.1.0");
     let (stop_tx, stop) = watch::channel(false);
-    tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
+    tokio::spawn(serve_on(Arc::clone(&primary), addr_l, stop.clone()));
     listening(addr).await;
 
     let key = pki::new_node_key().unwrap();
@@ -531,6 +596,12 @@ async fn clu_003_replicas_fetch_only_changed_blobs_and_converge_fast_over_a_wan(
         replica.connected_primary(),
         replica.members().len()
     );
+    // The apply callback runs before follow() records the sync status: wait for that too.
+    let r = Arc::clone(&replica);
+    wait_until("version 1 is recorded as applied", move || {
+        r.sync_status().seq == 1
+    })
+    .await;
     assert_eq!(replica.sync_status().fetched, 9);
 
     // Manifest 2: one shard changes; only it is fetched.
@@ -538,6 +609,11 @@ async fn clu_003_replicas_fetch_only_changed_blobs_and_converge_fast_over_a_wan(
     publish(&primary, pdir.path(), 2, b"{\"v\":1}", &shards);
     let a = Arc::clone(&applied);
     wait_for(|| a.lock().unwrap().iter().any(|x| x.0 == 2)).await;
+    let r = Arc::clone(&replica);
+    wait_until("version 2 is recorded as applied", move || {
+        r.sync_status().seq == 2
+    })
+    .await;
     assert_eq!(
         replica.sync_status().fetched,
         1,
@@ -723,13 +799,13 @@ fn clu_013_the_canary_head_reaches_only_its_peers() {
 #[tokio::test(flavor = "multi_thread")]
 async fn clu_009_a_pod_that_shuts_down_leaves_at_once() {
     let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let addr = free_port().await;
+    let (addr_l, addr) = bound_port().await;
     let url = format!("https://{addr}");
     let primary = Identity::init(pdir.path(), "home", vec![url.clone()], "k8s").unwrap();
     let primary = Cluster::new(primary, "0.1.0");
     primary.set_bootstrap_secret("s3cret-shared-by-helm".into());
     let (stop_tx, stop) = watch::channel(false);
-    tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
+    tokio::spawn(serve_on(Arc::clone(&primary), addr_l, stop.clone()));
     listening(addr).await;
     let token = bootstrap_token(&url, "s3cret-shared-by-helm")
         .await
@@ -785,13 +861,13 @@ async fn clu_009_a_pod_that_shuts_down_leaves_at_once() {
 #[tokio::test(flavor = "multi_thread")]
 async fn clu_002_a_pod_that_left_is_not_asked_by_federated_reads() {
     let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let addr = free_port().await;
+    let (addr_l, addr) = bound_port().await;
     let url = format!("https://{addr}");
     let primary = Identity::init(pdir.path(), "home", vec![url.clone()], "k8s").unwrap();
     let primary = Cluster::new(primary, "0.1.0");
     primary.set_bootstrap_secret("s3cret-shared-by-helm".into());
     let (stop_tx, stop) = watch::channel(false);
-    tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
+    tokio::spawn(serve_on(Arc::clone(&primary), addr_l, stop.clone()));
     listening(addr).await;
     let token = bootstrap_token(&url, "s3cret-shared-by-helm")
         .await
@@ -1271,13 +1347,13 @@ fn clu_002_an_answer_counts_only_from_the_peer_asked() {
 async fn clu_003_users_and_tokens_are_not_served_to_pods() {
     use crate::sync::blob_ref;
     let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let addr = free_port().await;
+    let (addr_l, addr) = bound_port().await;
     let url = format!("https://{addr}");
     let primary = Identity::init(pdir.path(), "home", vec![url.clone()], "k8s").unwrap();
     let primary = Cluster::new(primary, "0.1.0");
     primary.set_bootstrap_secret("s3cret-shared-by-helm".into());
     let (stop_tx, stop) = watch::channel(false);
-    tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
+    tokio::spawn(serve_on(Arc::clone(&primary), addr_l, stop.clone()));
     listening(addr).await;
     let token = bootstrap_token(&url, "s3cret-shared-by-helm")
         .await
@@ -1392,10 +1468,15 @@ async fn replica_with_a_dead_primary_url(start: Start) {
         tempfile::tempdir().unwrap(),
         tempfile::tempdir().unwrap(),
     );
-    let (p_addr, b_addr, dead) = (free_port().await, free_port().await, free_port().await);
+    let (p_l, p_addr) = bound_port().await;
+    let (b_l, b_addr) = bound_port().await;
+    // Bound but never listened on: connections are refused, and the port stays ours.
+    let dead_port = tokio::net::TcpSocket::new_v4().unwrap();
+    dead_port.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let dead = dead_port.local_addr().unwrap();
     let (p_url, b_url) = (format!("https://{p_addr}"), format!("https://{b_addr}"));
     // Where the replica serves, for the primary's own stream to it.
-    let r_addr = free_port().await;
+    let (r_l, r_addr) = bound_port().await;
     let primary = Identity::init(
         pdir.path(),
         "home",
@@ -1436,8 +1517,8 @@ async fn replica_with_a_dead_primary_url(start: Start) {
 
     let (peer, replica) = (Cluster::new(peer, "0.1.0"), Cluster::new(replica, "0.1.0"));
     let (stop_tx, stop) = watch::channel(false);
-    tokio::spawn(serve(Arc::clone(&peer), b_addr, stop.clone()));
-    tokio::spawn(serve(Arc::clone(&replica), r_addr, stop.clone()));
+    tokio::spawn(serve_on(Arc::clone(&peer), b_l, stop.clone()));
+    tokio::spawn(serve_on(Arc::clone(&replica), r_l, stop.clone()));
     let mut primary = Some(primary);
     let mut start_primary = || {
         let c = Cluster::new(primary.take().unwrap(), "0.1.0");
@@ -1451,8 +1532,9 @@ async fn replica_with_a_dead_primary_url(start: Start) {
         }
         c
     };
-    let serve_primary = |c: &Arc<Cluster>| {
-        tokio::spawn(serve(Arc::clone(c), p_addr, stop.clone()));
+    let mut p_l = Some(p_l);
+    let mut serve_primary = |c: &Arc<Cluster>| {
+        tokio::spawn(serve_on(Arc::clone(c), p_l.take().unwrap(), stop.clone()));
     };
     let _primary = primary_first.then(|| {
         let c = start_primary();
