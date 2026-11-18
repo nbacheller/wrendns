@@ -152,6 +152,31 @@ fn dns_001_wildcard_bind_replies_from_destination_address() {
 }
 
 #[test]
+fn dns_001_wildcard_bind_answers_every_local_address_from_that_address() {
+    // REQ: DNS-001, CLU-004 (T24.32) — a node on several VLANs (or holding a VIP) has several local
+    // addresses; the whole 127/8 range stands in for them. A listener on the wildcard answers a
+    // query to each one, and the reply comes from the address that was asked.
+    let rt = rt();
+    let listener = UdpListener::spawn(
+        &UdpConfig::new("0.0.0.0:0".parse().unwrap(), 1),
+        &Arc::new(echo),
+        rt.handle(),
+    )
+    .unwrap();
+    let port = listener.local_addr().port();
+    let c = client();
+    for last in [2u8, 3, 4] {
+        let target: SocketAddr = format!("127.0.0.{last}:{port}").parse().unwrap();
+        c.send_to(&[0, last, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0], target)
+            .unwrap();
+        let mut buf = [0u8; 64];
+        let (_, from) = c.recv_from(&mut buf).unwrap();
+        assert_eq!(from, target, "the reply names the address that was queried");
+    }
+    listener.shutdown();
+}
+
+#[test]
 fn dns_001_handler_can_drop() {
     let rt = rt();
     let drop_all = |_: &[u8], _: &RequestMeta, _: &mut [u8]| Response::Drop;

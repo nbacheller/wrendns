@@ -291,6 +291,17 @@ fn upstream_reasons(upstreams: &[UpstreamInfo], out: &mut Vec<HealthReason>) {
             covered.extend(down_names.iter().copied());
         }
     }
+    // REQ: UPS-013 (T24.31) — an upstream whose source address left the node.
+    for u in upstreams {
+        if let Some(p) = &u.source_problem {
+            out.push(reason(
+                DEGRADED,
+                "upstream_source_lost",
+                format!("upstream {}: {p}", u.name),
+                "#/upstreams",
+            ));
+        }
+    }
     for u in upstreams
         .iter()
         .filter(|u| down(u) && !covered.contains(u.name.as_str()))
@@ -538,6 +549,8 @@ mod tests {
             failures: 0,
             failures_by_kind: FailureKinds::default(),
             latency_ewma_ms: 0.0,
+            source: None,
+            source_problem: None,
         }
     }
 
