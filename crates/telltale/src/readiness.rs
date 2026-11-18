@@ -16,6 +16,11 @@ pub(crate) struct Readiness {
     synced: AtomicBool,
     stopping: AtomicBool,
     maintenance: AtomicBool,
+    /// REQ: OPS-901 (ADR-1014) — `/readyz` also asks the node's own UDP listener a question
+    /// (off until the real listeners are up, so a test's `Sources` never asks port 53).
+    dns_check: AtomicBool,
+    /// The last answer of that check and when it was got (it is reused for a second).
+    dns_last: std::sync::Mutex<Option<(std::time::Instant, bool)>>,
 }
 
 impl Readiness {
@@ -27,6 +32,8 @@ impl Readiness {
             synced: AtomicBool::new(!needs_sync),
             stopping: AtomicBool::new(false),
             maintenance: AtomicBool::new(false),
+            dns_check: AtomicBool::new(false),
+            dns_last: std::sync::Mutex::new(None),
         }
     }
 
@@ -46,6 +53,34 @@ impl Readiness {
     /// The cluster's configuration is applied (CLU-009).
     pub(crate) fn set_synced(&self) {
         self.synced.store(true, Ordering::Release);
+    }
+
+    /// REQ: OPS-901 — `/readyz` asks the node's own UDP listener from now on.
+    pub(crate) fn enable_dns_check(&self) {
+        self.dns_check.store(true, Ordering::Release);
+    }
+
+    /// The check's answer if it is younger than `reuse`.
+    pub(crate) fn dns_cached(&self, reuse: std::time::Duration) -> Option<bool> {
+        let g = self
+            .dns_last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        g.filter(|(at, _)| at.elapsed() < reuse).map(|(_, ok)| ok)
+    }
+
+    /// Keeps the check's answer.
+    pub(crate) fn dns_store(&self, ok: bool) {
+        *self
+            .dns_last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((std::time::Instant::now(), ok));
+    }
+
+    /// Whether `/readyz` asks the listener.
+    pub(crate) fn dns_check_enabled(&self) -> bool {
+        self.dns_check.load(Ordering::Acquire)
     }
 
     /// REQ: OPS-007 — shutdown started: not ready from now on.

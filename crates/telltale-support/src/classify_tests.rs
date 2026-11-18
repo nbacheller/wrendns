@@ -83,6 +83,7 @@ fn api_014_api_paths_cover_path_fields() {
         "upstream[].bootstrap[]",
         "upstream[].ecs",
         "upstream[].recursive.stub_servers[]",
+        "upstream[].source",
         "upstream[].tls_server_name",
     ];
     let prefix = |kind: &str| match kind {

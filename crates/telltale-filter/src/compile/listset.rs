@@ -117,6 +117,30 @@ impl ListSetBuilder {
         }
     }
 
+    /// REQ: FLT-004 (T24.28, ADR-992) - the lists holding the current name on one side: the
+    /// block side (`Block` and `ImportantBlock`) or the allow side (`Allow` and
+    /// `ImportantAllow`), in list-ID order. A name a block list and an allow list both have
+    /// is not "shared" between them: they do opposite things.
+    pub(crate) fn side_members(&self, allow: bool, out: &mut Vec<u16>) {
+        out.clear();
+        let (first, second) = if allow {
+            (Class::Allow, Class::ImportantAllow)
+        } else {
+            (Class::Block, Class::ImportantBlock)
+        };
+        for w in 0..self.words {
+            let mut bits = self.scratch[first as usize * self.words + w]
+                | self.scratch[second as usize * self.words + w];
+            while bits != 0 {
+                let b = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                if let Ok(id) = u16::try_from(w * 64 + b) {
+                    out.push(id);
+                }
+            }
+        }
+    }
+
     /// Interns the current entry and returns its index.
     pub(crate) fn intern(&mut self) -> u32 {
         if let Some(id) = self.last_id

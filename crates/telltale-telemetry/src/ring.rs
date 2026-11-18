@@ -51,6 +51,10 @@ pub struct Hub {
     /// REQ: OBS-022 — queries left out of the analytics and every sink, and how many so far.
     exclusions: Mutex<Option<Arc<crate::exclude::Exclusions>>>,
     excluded: AtomicU64,
+    /// REQ: OBS-903 — queries kept out of the query log only (the analytics still count them),
+    /// and how many so far.
+    log_exclusions: Mutex<Option<Arc<crate::exclude::LogExclusions>>>,
+    log_excluded: AtomicU64,
     /// REQ: FLT-017 — pod address → workload analytics key, read once per drain.
     workload_keys: Mutex<Option<Arc<crate::workload::Keys>>>,
     /// REQ: OBS-901 (ADR-958) — the live map's sampler; `None` while the map is off. Locked by
@@ -100,6 +104,8 @@ impl Hub {
             privacy: AtomicU8::new(0),
             exclusions: Mutex::new(None),
             excluded: AtomicU64::new(0),
+            log_exclusions: Mutex::new(None),
+            log_excluded: AtomicU64::new(0),
             workload_keys: Mutex::new(None),
             map: Mutex::new(None),
         })
@@ -168,6 +174,37 @@ impl Hub {
             .exclusions
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = x.filter(|x| !x.is_empty()).map(Arc::new);
+    }
+
+    /// REQ: OBS-903 (T24.35) — from the next drain on, queries these match stay out of the query
+    /// log, the live view and the event sinks, and still count in the analytics (`None` or
+    /// empty: nothing is left out).
+    pub fn set_log_exclusions(&self, x: Option<crate::exclude::LogExclusions>) {
+        *self
+            .log_exclusions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = x.filter(|x| !x.is_empty()).map(Arc::new);
+    }
+
+    /// Queries kept out of the log so far ([`Self::set_log_exclusions`]), for `/metrics`.
+    pub fn log_excluded_total(&self) -> u64 {
+        self.log_excluded.load(Ordering::Relaxed)
+    }
+
+    fn log_exclusions(&self) -> Option<Arc<crate::exclude::LogExclusions>> {
+        self.log_exclusions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Whether `r` stays out of the log (counting it when it does).
+    fn log_left_out(&self, x: Option<&crate::exclude::LogExclusions>, r: &Record) -> bool {
+        let out = x.is_some_and(|x| x.excludes(r));
+        if out {
+            self.log_excluded.fetch_add(1, Ordering::Relaxed);
+        }
+        out
     }
 
     /// REQ: FLT-017 (ADR-150) — from the next drain on, a query from one of these pod addresses
@@ -367,6 +404,7 @@ impl Hub {
                     {
                         let level = hub.privacy.load(Ordering::Relaxed);
                         let excluded = hub.exclusions();
+                        let log_excluded = hub.log_exclusions();
                         let keys = hub.workload_keys();
                         let mut agg = hub.aggregates();
                         // REQ: OBS-901 (ADR-958) — the map's sampler sits beside the analytics,
@@ -400,7 +438,10 @@ impl Hub {
                             // REQ: FLT-017 — the sinks that log a query get it now, with the
                             // pod's address; the analytics count a pod's query under its
                             // workload's key, and may see an unknown address's query late.
-                            if let Some(s) = sink.as_mut() {
+                            // REQ: OBS-903 — kept out of the log, still in the analytics below.
+                            if !hub.log_left_out(log_excluded.as_deref(), &r)
+                                && let Some(s) = sink.as_mut()
+                            {
                                 s.record_log(&r);
                             }
                             hold.offer(keys.as_deref(), r, now, |k| {

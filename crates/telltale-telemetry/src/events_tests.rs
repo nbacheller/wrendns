@@ -1105,3 +1105,78 @@ fn api_005_record_and_replay_fill_the_last_hour() {
         .collect();
     assert_eq!(hourly, ["10.0.0.2"]);
 }
+
+/// Keeps the names of the records the log would write.
+struct Names(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl crate::ring::Sink for Names {
+    fn record(&mut self, r: &Record) {
+        if let Record::Query(e, n) = r {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("{}:{}", e.client_ip[15], n.as_wire().len()));
+        }
+    }
+}
+
+/// REQ: OBS-903 (T24.35, ADR-1014) — a query the log exclusions match never reaches the log's
+/// sink, but the analytics count it and the log counter says how many were kept out; clearing
+/// the exclusions logs again. Nothing here touches the query path (the check is on the
+/// aggregator thread).
+#[test]
+fn obs_903_log_exclusions_keep_queries_out_of_the_log_only() {
+    let hub = Arc::new(Hub::new(1 << 16));
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    hub.set_log_exclusions(Some(crate::exclude::LogExclusions::new(
+        [wire("localhost")],
+        [],
+        &[("127.0.0.0".parse().unwrap(), 8)],
+        [],
+    )));
+    let agg = hub
+        .spawn_aggregator(
+            Duration::from_millis(5),
+            Some(Box::new(Names(Arc::clone(&seen)))),
+        )
+        .unwrap();
+    let ts = 1_700_000_000_000_000;
+    hub.emit_query(
+        &query(ts, ipv4(127, 0, 0, 1), Status::Forwarded, 20),
+        &wire("shop.example"),
+    );
+    hub.emit_query(
+        &query(ts, ipv4(192, 168, 1, 5), Status::Forwarded, 20),
+        &wire("localhost"),
+    );
+    hub.emit_query(
+        &query(ts, ipv4(192, 168, 1, 5), Status::Forwarded, 20),
+        &wire("shop.example"),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let counted = |hub: &Hub| -> u32 {
+        hub.aggregates()
+            .series(Resolution::Second, 0, u64::MAX)
+            .iter()
+            .map(|(_, c)| c.total)
+            .sum()
+    };
+    while counted(&hub) < 3 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(counted(&hub), 3, "the analytics count all three");
+    assert_eq!(hub.log_excluded_total(), 2);
+    assert_eq!(hub.excluded_total(), 0, "[exclusions] is another list");
+    assert_eq!(seen.lock().unwrap().len(), 1, "one query is logged");
+    hub.set_log_exclusions(None);
+    hub.emit_query(
+        &query(ts, ipv4(127, 0, 0, 1), Status::Forwarded, 20),
+        &wire("shop.example"),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while seen.lock().unwrap().len() < 2 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    drop(agg);
+}

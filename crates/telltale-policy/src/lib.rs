@@ -17,8 +17,8 @@ use std::net::IpAddr;
 use telltale_config::Cidr;
 
 pub use clients::{
-    AnswerFilter, BlockPolicy, Client, ClientTable, Group, IdSource, Identity, Neighbors, Pause,
-    Rewrite, RewriteTarget,
+    AnswerFilter, BlockPolicy, Client, ClientTable, Group, GroupFrom, IdSource, Identity,
+    MatchedKey, Neighbors, Pause, Rewrite, RewriteTarget,
 };
 pub use local::{LoadReport, LocalData, device_label, reverse_name};
 pub use quick::{QuickMatch, QuickRule, QuickRules, RuleScope, quick_ref};
