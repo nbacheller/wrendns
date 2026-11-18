@@ -69,6 +69,7 @@ fn setup(fake: &Fake, enabled: bool) {
             parts: vec![part("pi1")],
             missing: Vec::new(),
             unseen: Vec::new(),
+            pending: Vec::new(),
         },
     );
 }
@@ -620,7 +621,8 @@ fn obs_901_peer_cache_rules() {
         v.parts[0].node, "pi-a",
         "labelled by the cluster, not by the peer"
     );
-    assert_eq!(v.missing, ["pi-c"], "b is still within its grace");
+    assert_eq!(v.missing, ["pi-c"]);
+    assert_eq!(v.pending, ["pi-b"], "b is still within its grace");
     let v = c.view(&peers, t0 + Duration::from_secs(7));
     assert!(v.parts.is_empty(), "a's answer is 7 s old");
     assert_eq!(v.missing, ["pi-a", "pi-b", "pi-c"]);
@@ -659,6 +661,7 @@ fn obs_901_grace_restarts_with_the_gather_and_relayed_members_are_unseen() {
         "pending, not missing: {:?}",
         v.missing
     );
+    assert_eq!(v.pending, ["pi-a", "pi-b"], "named, never dropped");
     assert_eq!(v.unseen, ["pi-r"]);
     let v = c.view(&peers, late + Duration::from_secs(7));
     assert_eq!(v.missing, ["pi-a", "pi-b"]);
@@ -703,4 +706,30 @@ async fn obs_901_stream_is_told_when_the_map_goes_off() {
         }
     }
     assert!(saw_off, "an empty text is the end-of-stream marker");
+}
+
+/// REQ: OBS-901 (review fix) - a cold one-shot read, with peers still inside their grace, is not
+/// `partial: false` showing no peers: it is partial, with each pending peer shown idle.
+#[tokio::test]
+async fn obs_901_cold_read_is_partial_not_complete() {
+    let (app, fake) = app();
+    setup(&fake, true);
+    fake.map.lock().unwrap().1.pending = vec!["pi-b".into(), "pi-c".into()];
+    let reader = bearer_for(&app, "cold", auth::Role::Viewer, "read");
+    let req = Request::get("/api/v1/map")
+        .header("authorization", format!("Bearer {reader}"))
+        .body(Body::empty())
+        .unwrap();
+    let (s, _, v) = send(&app, req).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["partial"], true, "{v}");
+    assert_eq!(v["missingNodes"].as_array().unwrap().len(), 0, "{v}");
+    let pend: Vec<&serde_json::Value> = v["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["reasons"].to_string().contains("pending"))
+        .collect();
+    assert_eq!(pend.len(), 2, "{v}");
+    assert!(pend.iter().all(|n| n["health"] == "idle"), "{v}");
 }

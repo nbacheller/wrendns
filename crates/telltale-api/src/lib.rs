@@ -372,6 +372,7 @@ pub trait Backend: Send + Sync + 'static {
             parts: self.map_part().into_iter().collect(),
             missing: Vec::new(),
             unseen: Vec::new(),
+            pending: Vec::new(),
         }
     }
     /// REQ: OBS-018 (ADR-109) — what the shadow lists would have blocked (every node, merged).

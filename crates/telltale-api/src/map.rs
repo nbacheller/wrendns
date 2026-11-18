@@ -277,6 +277,9 @@ pub struct MapParts {
     /// Members this node has no stream to but the cluster's health relay reports up (a replica
     /// in manual failover sees only the primary): shown idle, not red (ADR-971).
     pub unseen: Vec<String>,
+    /// Peers connected but not heard from yet, inside the grace of a gather that has just
+    /// started: shown idle and the snapshot is `partial` (ADR-971).
+    pub pending: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1117,6 +1120,35 @@ pub fn build(parts: &MapParts, ctx: &Context<'_>, filter: &Filter) -> MapSnapsho
         });
     }
 
+    // REQ: OBS-901 (ADR-971) - a peer whose first answer hasn't landed: idle with a reason, and
+    // the map says it is partial, so a cold one-shot read is never mistaken for a whole map.
+    let mut pending = parts.pending.clone();
+    pending.sort();
+    pending.dedup();
+    for m in pending.iter().filter(|m| !missing.contains(m)) {
+        if filter.node.as_deref().is_some_and(|n| !ci_eq(n, m)) {
+            continue;
+        }
+        nodes.push(MapNode {
+            id: format!("res:{m}"),
+            kind: MapNodeKind::Resolver,
+            label: m.clone(),
+            health: MapHealth::Idle,
+            reasons: vec![reason(
+                "pending",
+                "this node hasn't answered yet (the first read after an idle spell); ask again in a few seconds",
+            )],
+            qps: 0.0,
+            count: 0,
+            sampled: 0,
+            address: None,
+            network: None,
+            group: None,
+            node: Some(m.clone()),
+            folded: None,
+        });
+    }
+
     // The last lookups of the busiest device edges.
     let mut busiest: Vec<usize> = (0..edges.len())
         .filter(|i| edges[*i].from.starts_with("dev:") && edges[*i].count > 0)
@@ -1180,7 +1212,7 @@ pub fn build(parts: &MapParts, ctx: &Context<'_>, filter: &Filter) -> MapSnapsho
         dropped,
         privacy,
         truncated,
-        partial: !missing.is_empty(),
+        partial: !missing.is_empty() || !pending.is_empty(),
         missing_nodes: missing,
         health,
         counts,

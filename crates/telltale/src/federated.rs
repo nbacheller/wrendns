@@ -2166,6 +2166,8 @@ impl Backend for Federated {
         let seen = self.map.cache.view(&peers, std::time::Instant::now());
         out.parts.extend(seen.parts);
         out.missing = seen.missing;
+        out.unseen = seen.unseen;
+        out.pending = seen.pending;
         out
     }
     // REQ: OBS-015 (ADR-104) — every node's own conditions, plus the cluster's (peers

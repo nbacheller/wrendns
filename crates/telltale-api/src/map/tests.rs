@@ -366,6 +366,7 @@ fn obs_901_snapshot_shape() {
         )],
         missing: vec![],
         unseen: Vec::new(),
+        pending: Vec::new(),
     };
     let names = |ip: IpAddr| (ip.to_string() == "192.168.1.7").then(|| "kitchen-tv".to_owned());
     let s = build(&parts, &ctx(&names), &Filter::default());
@@ -422,6 +423,7 @@ fn obs_901_merge_two_nodes() {
         parts: vec![a, b],
         missing: vec![],
         unseen: Vec::new(),
+        pending: Vec::new(),
     };
     let s = build(&parts, &ctx(&no_names), &Filter::default());
     let dev = find(&s, "dev:192.168.1.7");
@@ -474,6 +476,7 @@ fn obs_901_missing_node_is_red() {
         )],
         missing: vec!["pi2".into()],
         unseen: vec![],
+        pending: Vec::new(),
     };
     let s = build(&parts, &ctx(&no_names), &Filter::default());
     assert!(s.partial);
@@ -509,6 +512,7 @@ fn obs_901_resolver_takes_its_level_and_its_children() {
             parts: vec![p.clone()],
             missing: vec![],
             unseen: Vec::new(),
+            pending: Vec::new(),
         },
         &ctx(&no_names),
         &Filter::default(),
@@ -525,6 +529,7 @@ fn obs_901_resolver_takes_its_level_and_its_children() {
         parts: vec![p.clone()],
         missing: vec![],
         unseen: Vec::new(),
+        pending: Vec::new(),
     };
     let s = build(&one(&p), &ctx(&no_names), &Filter::default());
     assert_eq!(find(&s, "res:pi1").health, MapHealth::Yellow);
@@ -550,6 +555,7 @@ fn obs_901_open_breaker_without_traffic() {
             parts: vec![p],
             missing: vec![],
             unseen: Vec::new(),
+            pending: Vec::new(),
         },
         &ctx(&no_names),
         &Filter::default(),
@@ -605,6 +611,7 @@ fn obs_901_network_rollup_and_fold() {
             parts: vec![part("pi1", entries)],
             missing: vec![],
             unseen: Vec::new(),
+            pending: Vec::new(),
         },
         &ctx(&no_names),
         &Filter::default(),
@@ -653,6 +660,7 @@ fn obs_901_quiet_network_is_idle() {
             )],
             missing: vec![],
             unseen: Vec::new(),
+            pending: Vec::new(),
         },
         &ctx(&no_names),
         &Filter::default(),
@@ -665,6 +673,7 @@ fn obs_901_quiet_network_is_idle() {
 /// ADR-958 section 7: the anomaly's yellow is only for privacy level 0; the privacy levels hide
 /// devices at 2 and keep only totals at 3; no node carries an address then.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn obs_901_privacy_levels() {
     let base = |privacy: u8, entries: Vec<Entry>| {
         let mut p = part("pi1", entries);
@@ -675,6 +684,7 @@ fn obs_901_privacy_levels() {
                 parts: vec![p],
                 missing: vec![],
                 unseen: Vec::new(),
+                pending: Vec::new(),
             },
             &ctx(&no_names),
             &Filter::default(),
@@ -765,6 +775,7 @@ fn obs_901_privacy_levels() {
             parts: vec![p],
             missing: vec![],
             unseen: Vec::new(),
+            pending: Vec::new(),
         },
         &ctx(&no_names),
         &f,
@@ -801,6 +812,7 @@ fn obs_901_filters_narrow_the_map() {
         ],
         missing: vec![],
         unseen: Vec::new(),
+        pending: Vec::new(),
     };
     let names = |ip: IpAddr| (ip.to_string() == "192.168.1.7").then(|| "Kitchen TV".to_owned());
     let devices = |f: Filter| -> Vec<String> {
@@ -893,6 +905,7 @@ fn obs_901_recent_lookups_and_determinism() {
         parts: vec![p],
         missing: vec![],
         unseen: Vec::new(),
+        pending: Vec::new(),
     };
     let s = build(&parts, &ctx(&no_names), &Filter::default());
     let e = edge(&s, "dev:192.168.1.7", "res:pi1");
@@ -925,6 +938,7 @@ fn obs_901_network_health_summary() {
         )],
         missing: vec!["pi2".into()],
         unseen: vec![],
+        pending: Vec::new(),
     };
     let s = build(&parts, &ctx(&no_names), &Filter::default());
     let h = network_health(&s);
@@ -957,6 +971,7 @@ fn obs_901_world_is_unavailable_without_addresses() {
         )],
         missing: vec![],
         unseen: Vec::new(),
+        pending: Vec::new(),
     };
     let w = world_unavailable(&parts, 1_791_072_000);
     assert!(!w.available);
@@ -981,6 +996,7 @@ fn obs_901_unseen_member_is_idle_not_red() {
         )],
         missing: vec![],
         unseen: vec!["pi2".into()],
+        pending: Vec::new(),
     };
     let s = build(&parts, &ctx(&no_names), &Filter::default());
     assert!(!s.partial);

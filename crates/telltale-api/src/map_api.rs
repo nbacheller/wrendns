@@ -333,7 +333,12 @@ impl Subscription {
     /// The next snapshot (as JSON text): the newest one at once when `first`, else the next
     /// the ticker builds. `None` when the hub is gone.
     pub async fn next(&mut self, first: bool) -> Option<Arc<String>> {
-        if first && let Some(v) = self.rx.borrow_and_update().clone() {
+        // An empty text is the end-of-stream marker of an earlier map-off: a new stream joining
+        // after a quick off-then-on toggle must not take it as its first frame.
+        if first
+            && let Some(v) = self.rx.borrow_and_update().clone()
+            && !v.is_empty()
+        {
             return Some(v);
         }
         loop {
@@ -385,6 +390,8 @@ impl MapHub {
     /// window out and sums it outside the sampler's lock, so it never stalls the aggregator.
     pub async fn read(&self, filter: &Filter) -> Result<Arc<MapSnapshot>, Problem> {
         let plain = *filter == Filter::default();
+        // A cached snapshot is never served once the map is off (404 at once, not within 2 s).
+        settings(&*self.backend)?;
         if plain
             && let Some((at, m)) = self
                 .last
@@ -626,7 +633,7 @@ impl PeerCache {
                     out.parts.push(part);
                 }
                 // An old part or none: pending while the gather's first round may still land.
-                _ if grace => {}
+                _ if grace => out.pending.push(p.label.clone()),
                 _ => out.missing.push(p.label.clone()),
             }
         }
