@@ -1213,8 +1213,12 @@ impl Backend for Federated {
         self.local.git_hook(signature, body)
     }
     // A backup is of this node (ADR-063).
-    fn backup(&self) -> Result<(String, Vec<u8>), Problem> {
-        self.local.backup()
+    fn backup_create(
+        &self,
+        include_qlog: bool,
+        passphrase: Option<zeroize::Zeroizing<String>>,
+    ) -> Result<telltale_api::BackupOutput, Problem> {
+        self.local.backup_create(include_qlog, passphrase)
     }
     // REQ: OPS-011 (ADR-156) — a support package is of this node: its own log and state, redacted on
     // it (a `--cluster` package, asking each node, is a later phase).

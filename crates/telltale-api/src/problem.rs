@@ -120,6 +120,9 @@ pub enum Code {
     /// REQ: API-015, AGT-004 (ADR-903 §5) — agent tokens never do this, whatever their scopes
     /// (secret values, backups, router checks: a value would sit in an agent's plan and transcript).
     AgentNotAllowed,
+    /// REQ: API-007 (T23.9, ADR-903 §8) — a backup with a passphrase needs an interactive session
+    /// signed in within the last 10 minutes: sign in again (a token or Basic sign-in never can).
+    ReauthRequired,
 }
 
 impl Code {
@@ -173,6 +176,7 @@ impl Code {
             Self::SecretInUse => "https://telltaledns.dev/problems/secret_in_use",
             Self::InsecureTransport => "https://telltaledns.dev/problems/insecure_transport",
             Self::AgentNotAllowed => "https://telltaledns.dev/problems/agent_not_allowed",
+            Self::ReauthRequired => "https://telltaledns.dev/problems/reauth_required",
         }
     }
 
@@ -224,6 +228,7 @@ impl Code {
             Self::SecretInUse => "Secret in use",
             Self::InsecureTransport => "HTTPS needed",
             Self::AgentNotAllowed => "Not for agents",
+            Self::ReauthRequired => "Recent sign-in needed",
         }
     }
 
@@ -239,7 +244,8 @@ impl Code {
             Self::Forbidden
             | Self::CsrfRejected
             | Self::InsecureTransport
-            | Self::AgentNotAllowed => StatusCode::FORBIDDEN,
+            | Self::AgentNotAllowed
+            | Self::ReauthRequired => StatusCode::FORBIDDEN,
             Self::Conflict
             | Self::GitopsManaged
             | Self::SimulationBusy

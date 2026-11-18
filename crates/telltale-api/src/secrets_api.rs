@@ -404,7 +404,7 @@ pub(crate) async fn get_secret(
 /// REQ: API-015 (ADR-903 §4) — secret values cross only HTTPS (the API's own TLS, or a trusted
 /// proxy saying so) or the loopback interface (a request no proxy forwarded), unless
 /// `[api] allow_secrets_over_http` says otherwise.
-fn transport_ok(
+pub(crate) fn transport_ok(
     auth: &Auth,
     backend: &Shared,
     ext: &axum::http::Extensions,

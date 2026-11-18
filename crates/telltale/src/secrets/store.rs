@@ -1196,6 +1196,47 @@ impl SecretStore {
         Ok(out)
     }
 
+    /// REQ: API-007 (T23.9, ADR-903 §8) — every live secret this node can read, decrypted, for a
+    /// backup that carries them under a passphrase; and how many live ones were left out (stored
+    /// under another key, damaged, or orphaned by a failover). Refused while the store is locked.
+    pub(crate) fn export_rows(&self) -> Result<(Vec<crate::backup::ExportRow>, usize), String> {
+        let g = self.ready();
+        if let Some(why) = &g.locked {
+            return Err(format!("the secrets store is locked: {why}"));
+        }
+        // Nothing stored: nothing to read, and no key needed (a node that never stored one).
+        if g.rows.values().all(|c| c.row.deleted) {
+            return Ok((Vec::new(), 0));
+        }
+        let Some(keys) = g.keys.clone() else {
+            return Err(g.key_error.clone().unwrap_or_else(|| "no key".to_owned()));
+        };
+        let (mut out, mut skipped) = (Vec::new(), 0);
+        for c in g.rows.values() {
+            let r = &c.row;
+            if r.deleted {
+                continue;
+            }
+            if r.orphaned || c.health != RowHealth::Readable {
+                skipped += 1;
+                continue;
+            }
+            let opened = open(&keys.current, r)
+                .or_else(|e| keys.previous.as_ref().map_or(Err(e), |p| open(p, r)));
+            match opened {
+                Ok(value) => out.push(crate::backup::ExportRow {
+                    name: r.name.clone(),
+                    kind: r.kind.clone(),
+                    value,
+                    updated: r.updated,
+                    updated_by: r.updated_by.clone(),
+                }),
+                Err(_) => skipped += 1,
+            }
+        }
+        Ok((out, skipped))
+    }
+
     /// REQ: CLU-015 — every row this node holds (tombstones too): `(name, stamp, deleted)`. A
     /// reverse heal needs each one from a replica at the same stamp.
     pub(crate) fn heal_needs(&self) -> Vec<(String, Stamp, bool)> {

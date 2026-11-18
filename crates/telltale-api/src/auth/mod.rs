@@ -90,6 +90,10 @@ impl Scope {
     }
 }
 
+/// REQ: API-007 (T23.9, ADR-903 §8) — how recently a session must have been signed in for a
+/// step that hands over every stored secret: 10 minutes.
+pub const RECENT_SIGN_IN_SECS: u64 = 600;
+
 /// How a request authenticated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Via {
@@ -860,6 +864,37 @@ impl Auth {
         }
         self.succeed(&ukey);
         Ok(())
+    }
+
+    /// REQ: API-007 (T23.9, ADR-903 §8) — a step that hands over every stored secret (a backup
+    /// with a passphrase) needs an interactive session signed in within the last
+    /// [`RECENT_SIGN_IN_SECS`]. A token or Basic credential never has one: 403 `reauth_required`,
+    /// naming the CLI as the way for those. Blocking (reads the session).
+    pub fn recent_sign_in(&self, p: &Principal, now: u64) -> Result<(), Problem> {
+        let Via::Session { id_hash, .. } = &p.via else {
+            return Err(Problem::new(
+                Code::ReauthRequired,
+                "this needs a session you signed in to just now; API tokens and Basic credentials can't do it",
+            )
+            .hint("Run `telltale backup create --secrets-passphrase-file FILE` on the node, or sign in to the web UI and make the backup from Settings."));
+        };
+        match self.state.session(id_hash) {
+            Ok(Some(s))
+                if s.display_token.is_none()
+                    && now.saturating_sub(s.created) <= RECENT_SIGN_IN_SECS =>
+            {
+                Ok(())
+            }
+            Ok(_) => Err(Problem::new(
+                Code::ReauthRequired,
+                format!(
+                    "this needs a sign-in within the last {} minutes; yours is older",
+                    RECENT_SIGN_IN_SECS / 60
+                ),
+            )
+            .hint("Sign in again (POST /api/v1/auth/login), then retry.")),
+            Err(e) => Err(db(e)),
+        }
     }
 
     /// REQ: API-003 (T10.7, ADR-142) — changes to the account itself (its password, two-factor

@@ -200,6 +200,11 @@ pub(crate) fn harness_with(
 }
 
 impl Harness {
+    /// The node's data directory (a temporary one).
+    pub(crate) fn _dir_path(&self) -> &std::path::Path {
+        self._dir.path()
+    }
+
     pub(crate) fn request(&self, method: &str, uri: &str, body: Option<&Value>) -> Request<Body> {
         Request::builder()
             .method(method)
