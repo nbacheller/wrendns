@@ -261,16 +261,33 @@ async fn ups_005_fastest_prefers_lower_latency() {
     );
 }
 
+/// REQ: UPS-005 (`parallel`) — the first good answer wins, and the group does not wait for the
+/// slower member.
+///
+/// The bound is the slow member's own attempt cap (`attempt_timeout`, 1 s), not the 150 ms this
+/// test used to check: in Docker Desktop every UDP `bind()` takes about 10 ms and they queue one at
+/// a time across the process (`bench/README.md`), so a tight bound measured sibling tests' socket
+/// setup, not the race (issue #20). A group that waited for the slow member could not return before
+/// that cap; the correct group returns in the time its own two socket setups take.
 #[tokio::test]
 async fn ups_005_parallel_races_and_first_answer_wins() {
-    let slow = upstream(
-        1,
-        fake(Fake::Healthy {
-            tag: 1,
-            delay: Duration::from_millis(200),
-        })
-        .await,
-        1,
+    // The slow member's own attempt timeout is longer than the budget, so only the group could
+    // stop waiting for it.
+    let budget = Duration::from_secs(5);
+    let slow_addr = fake(Fake::Healthy {
+        tag: 1,
+        delay: Duration::from_secs(30),
+    })
+    .await;
+    let slow = Arc::new(
+        Upstream::new(
+            1,
+            "u1",
+            Endpoint::parse(&format!("udp://{slow_addr}")).unwrap(),
+            budget,
+            1,
+        )
+        .unwrap(),
     );
     let fast = upstream(
         2,
@@ -284,14 +301,16 @@ async fn ups_005_parallel_races_and_first_answer_wins() {
     let g = Group::new("p", vec![slow, fast], Strategy::Parallel { fanout: 2 });
     let t = Instant::now();
     let ans = g
-        .resolve(question("x.example"), Duration::from_secs(2))
+        .resolve(question("x.example"), budget)
         .await
-        .unwrap();
-    assert_eq!(ans.upstream_id, 2);
+        .expect("the fast member's answer");
     assert!(
-        t.elapsed() < Duration::from_millis(150),
-        "did not wait for the slow member"
+        t.elapsed() < Duration::from_secs(1),
+        "waited for the slow member's attempt: {:?}",
+        t.elapsed()
     );
+    assert_eq!(ans.upstream_id, 2);
+    assert_eq!(answer_tag(&ans.bytes), 2, "answered by the fast member");
 }
 
 #[tokio::test]
