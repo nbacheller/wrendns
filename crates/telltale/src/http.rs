@@ -245,8 +245,15 @@ async fn readyz(
         .startup
         .as_deref()
         .is_some_and(|v| v != "0" && v != "false");
-    let ok = if startup { r.started() } else { r.ready() };
-    let reason = (!ok).then(|| r.reason()).flatten();
+    let mut ok = if startup { r.started() } else { r.ready() };
+    let mut reason = (!ok).then(|| r.reason()).flatten();
+    // REQ: OPS-901 (ADR-1014) — ready only when the node's own UDP listener answers a local
+    // query. The probe name is kept out of the query log and the analytics (OBS-020), and the
+    // answer is checked at most once a second however many probes ask.
+    if ok && r.dns_check_enabled() && !dns_answers(&src).await {
+        ok = false;
+        reason = Some("dns_unanswered");
+    }
     let body = match reason {
         None if ok => "{\"ready\":true}\n".to_owned(),
         None => "{\"ready\":false}\n".to_owned(),
@@ -258,6 +265,34 @@ async fn readyz(
         StatusCode::SERVICE_UNAVAILABLE
     };
     (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
+}
+
+/// How long `/readyz` waits for the listener's answer.
+const DNS_CHECK_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+/// A result is reused this long: an unauthenticated route must not turn into a query source.
+const DNS_CHECK_REUSE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// REQ: OPS-901 (ADR-1014) — whether the first UDP listener answers a query for the probe name
+/// from loopback (a wildcard bind is asked on `127.0.0.1`). A node with no UDP listener has
+/// nothing to ask: its listeners being bound is the answer.
+async fn dns_answers(src: &Sources) -> bool {
+    static PROBE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    if let Some(ok) = src.readiness.dns_cached(DNS_CHECK_REUSE) {
+        return ok;
+    }
+    let Some(addr) = crate::watchdog::udp_listener(&src.config.load()) else {
+        return true;
+    };
+    // Single flight: callers that arrive together wait for one probe and share its answer.
+    let _one = PROBE.lock().await;
+    if let Some(ok) = src.readiness.dns_cached(DNS_CHECK_REUSE) {
+        return ok;
+    }
+    let ok = tokio::task::spawn_blocking(move || crate::watchdog::ask_udp(addr, DNS_CHECK_WAIT))
+        .await
+        .unwrap_or(false);
+    src.readiness.dns_store(ok);
+    ok
 }
 
 async fn metrics(State(src): State<Arc<Sources>>, headers: header::HeaderMap) -> Response {
@@ -540,6 +575,35 @@ fn peer_maintenance_metrics(
     }
 }
 
+/// REQ: CLU-009 (T24.33) — each peer's configuration lag; a witness holds no configuration, so it
+/// has none.
+fn peer_config_lag_metrics(
+    c: &telltale_cluster::net::Cluster,
+    peers: &[telltale_cluster::net::Member],
+    newest: u64,
+    w: &mut PromWriter,
+) {
+    w.family(
+        "telltale_cluster_peer_config_lag",
+        "gauge",
+        "Configuration versions the peer is behind the newest known.",
+    );
+    let witnesses: Vec<String> = c
+        .identity
+        .registry()
+        .into_iter()
+        .filter(|n| n.witness)
+        .map(|n| n.node_id)
+        .collect();
+    for p in peers.iter().filter(|p| !witnesses.contains(&p.node_id)) {
+        w.sample(
+            "telltale_cluster_peer_config_lag",
+            &[("node", &p.node_id), ("site", &p.site)],
+            newest.saturating_sub(p.stable_seq()),
+        );
+    }
+}
+
 fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
     if let Some(c) = &src.cluster {
         let now = std::time::SystemTime::now()
@@ -588,18 +652,7 @@ fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
         }
         peer_detail_metrics(&peers, w);
         peer_maintenance_metrics(&peers, now, w);
-        w.family(
-            "telltale_cluster_peer_config_lag",
-            "gauge",
-            "Configuration versions the peer is behind the newest known.",
-        );
-        for p in &peers {
-            w.sample(
-                "telltale_cluster_peer_config_lag",
-                &[("node", &p.node_id), ("site", &p.site)],
-                newest.saturating_sub(p.stable_seq()),
-            );
-        }
+        peer_config_lag_metrics(c, &peers, newest, w);
         let local = c.local_state();
         w.family(
             "telltale_cluster_config_seq",
@@ -1097,6 +1150,17 @@ fn render_telemetry(w: &mut PromWriter, hub: &telltale_telemetry::Hub) {
         "Queries left out of the query log, analytics, and exports by [exclusions] (still in telltale_queries_total).",
     )
     .sample("telltale_queries_excluded_total", &[], hub.excluded_total());
+    // REQ: OBS-903 (T24.35) — queries kept out of the query log only (still in the analytics).
+    w.family(
+        "telltale_queries_log_excluded_total",
+        "counter",
+        "Queries kept out of the query log by [exclusions.log] (still in the analytics and telltale_queries_total).",
+    )
+    .sample(
+        "telltale_queries_log_excluded_total",
+        &[],
+        hub.log_excluded_total(),
+    );
     // REQ: OBS-001 — clock steps the event clock followed (NTP's first sync on a Pi).
     let (steps, latest_step_us) = hub.clock_steps();
     w.family(

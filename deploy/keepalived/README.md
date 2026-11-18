@@ -10,7 +10,7 @@ real LAN, including moving a Pi-hole pair's VIP, is in [`docs/running.md`](../..
 | `compose.yaml` | Two nodes, each with a keepalived sidecar that shares its network namespace, a witness (profile `witness`), on two internal bridges, `10.231.250.0/24` and `10.231.251.0/24` (the second is the pair's second VLAN; the witness is only on the first) |
 | `Dockerfile` | The keepalived image: Alpine, keepalived, `dig` and `curl` for the checks and the test calls |
 | `start-keepalived.sh` | Copies the mounted configuration to a private file (keepalived refuses an executable one), fills in `@iface:<address>@` with the interface that carries that address (Docker's interface order varies), and starts keepalived |
-| `check-telltale.sh` | The health check: `/readyz` answers 200, and the node answers a probe name on its own listener |
+| `check-telltale.sh` | The health check: one `/readyz` call, which answers 200 only while the node's own listener answers a DNS query (never logged or counted in the statistics) |
 | `keepalived/node-a.conf`, `node-b.conf` | Two VRRP instances, one per network (VIPs `10.231.250.10` and `10.231.251.10`, `virtual_router_id` 53 and 54), both tracking the same health check; node a has the higher priority |
 | `config/node-a.toml`, `config/node-b.toml`, `config/witness.toml` | The nodes' configuration: the wildcard listeners, the API, `[dns] nsid` and the cluster |
 | `e2e.sh` | The proof: builds the image, runs the cluster, and checks the failover and maintenance |

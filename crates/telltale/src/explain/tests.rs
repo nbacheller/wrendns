@@ -639,3 +639,485 @@ fn dns_019_special_key_names_ddr() {
     let e = p.explain(&req, |n| sources.get(n).cloned()).unwrap();
     assert_eq!(e.special, Some("resolver_arpa"), "{}", e.summary);
 }
+
+// ---- T24.30 (ADR-996): a device's effective policy agrees with Explain.
+
+const POLICY_EXTRA: &str = r#"
+[[group]]
+name = "iot"
+networks = ["10.7.0.0/16"]
+safe_search = true
+blocked_services = ["tiktok"]
+
+[[group]]
+name = "night"
+networks = ["10.0.3.0/24"]
+schedules = ["bedtime"]
+
+[[schedule]]
+name = "bedtime"
+action = "block_all"
+tz = "UTC"
+window = [{ days = ["daily"], start = "21:00", end = "07:00" }]
+
+[[client]]
+name = "phone"
+match = ["aa:bb:cc:dd:ee:02"]
+groups = ["kids"]
+
+[[client]]
+name = "printer"
+match = ["10.8.0.0/24"]
+groups = ["iot"]
+
+[[client]]
+name = "badge"
+match = ["id:badge-1"]
+groups = ["kids"]
+
+[[rule]]
+id = "r-tablet"
+action = "block"
+domain = "game.example"
+devices = ["tablet"]
+expires = "2026-11-18T22:00:00Z"
+note = "homework"
+
+[[rule]]
+id = "r-kids"
+action = "allow"
+domain = "school.example"
+groups = ["kids"]
+
+[[rule]]
+id = "r-all"
+action = "block"
+domain = "everyone.example"
+"#;
+
+fn policy_cfg() -> telltale_config::Config {
+    telltale_config::Loader::new()
+        .toml_str("t.toml", format!("{CONFIG}{POLICY_EXTRA}"))
+        .env(Vec::<(String, String)>::new())
+        .load()
+        .unwrap()
+        .config
+}
+
+fn policy_of(
+    p: &Pipeline,
+    ip: &str,
+    mac: Option<[u8; 6]>,
+    client_id: Option<&str>,
+    now: u64,
+) -> telltale_api::policy_api::ClientPolicy {
+    let cfg = policy_cfg();
+    let subject = crate::policy_view::Subject {
+        asked: ip.to_owned(),
+        ip: ip.parse().unwrap(),
+        mac,
+        client_id: client_id.map(str::to_owned),
+        wanted_device: None,
+        stand_in: false,
+        observed: false,
+    };
+    p.with_explain_state(|st| crate::policy_view::build(st, &cfg, &subject, now))
+}
+
+fn explain_as(
+    p: &Pipeline,
+    sources: &HashMap<String, Vec<u8>>,
+    ip: &str,
+    mac: Option<[u8; 6]>,
+    client_id: Option<&str>,
+) -> Explanation {
+    let req = Request {
+        name: "www.example.org",
+        qtype: rtype::A,
+        client: ip.parse().unwrap(),
+        mac,
+        client_id,
+    };
+    p.explain(&req, |n| sources.get(n).cloned()).unwrap()
+}
+
+fn section<'a>(
+    p: &'a telltale_api::policy_api::ClientPolicy,
+    id: &str,
+) -> &'a telltale_api::policy_api::PolicySection {
+    p.sections.iter().find(|s| s.id == id).unwrap()
+}
+
+/// One row of the identification table: (ip, mac, client id) in; (identified by, group, matched
+/// key, group from, group key) out.
+type Case = (
+    &'static str,
+    Option<[u8; 6]>,
+    Option<&'static str>,
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+    &'static str,
+    Option<&'static str>,
+);
+
+/// REQ: FLT-006, API-010 (T24.30) — a device matched by network and another matched by MAC (and a
+/// client ID, a CIDR and an exact address) each get the right group and key, and the panel's answer
+/// is Explain's for the same device: one identification, two readers.
+#[test]
+fn flt_006_policy_names_the_group_and_key_and_agrees_with_explain() {
+    let (p, sources) = setup_with(POLICY_EXTRA);
+    let mac = Some([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x02]);
+    let cases: [Case; 6] = [
+        (
+            "10.7.1.9",
+            None,
+            None,
+            "default",
+            "iot",
+            None,
+            "network",
+            Some("10.7.0.0/16"),
+        ),
+        (
+            "10.9.9.9",
+            mac,
+            None,
+            "neighbor_mac",
+            "kids",
+            Some("aa:bb:cc:dd:ee:02"),
+            "device",
+            None,
+        ),
+        (
+            "10.8.0.77",
+            None,
+            None,
+            "cidr",
+            "iot",
+            Some("10.8.0.0/24"),
+            "device",
+            None,
+        ),
+        (
+            "10.0.0.5",
+            None,
+            None,
+            "ip",
+            "kids",
+            Some("10.0.0.5"),
+            "device",
+            None,
+        ),
+        (
+            "10.9.9.9",
+            None,
+            Some("badge-1"),
+            "client_id",
+            "kids",
+            Some("id:badge-1"),
+            "device",
+            None,
+        ),
+        (
+            "203.0.113.9",
+            None,
+            None,
+            "default",
+            "default",
+            None,
+            "default",
+            None,
+        ),
+    ];
+    for (ip, mac, id, by, group, key, from, gkey) in cases {
+        let pol = policy_of(&p, ip, mac, id, 1_795_035_000);
+        let ex = explain_as(&p, &sources, ip, mac, id);
+        let label = format!("{ip} {mac:?} {id:?}");
+        assert_eq!(pol.identified_by, by, "{label}");
+        assert_eq!(pol.group, group, "{label}");
+        assert_eq!(pol.matched_key.as_deref(), key, "{label}");
+        assert_eq!(pol.group_from, from, "{label}");
+        assert_eq!(pol.group_key.as_deref(), gkey, "{label}");
+        // Explain says the same, field by field.
+        assert_eq!(pol.identified_by, ex.client.identified_by, "{label}");
+        assert_eq!(pol.groups, ex.client.groups, "{label}");
+        assert_eq!(pol.group, ex.client.group, "{label}");
+        assert_eq!(pol.device, ex.client.device, "{label}");
+        assert_eq!(pol.matched_key, ex.client.matched_key, "{label}");
+        assert_eq!(pol.group_from, ex.client.group_from, "{label}");
+        assert_eq!(pol.group_key, ex.client.group_key, "{label}");
+        assert_eq!(
+            pol.groups.first().map(String::as_str),
+            Some(group),
+            "{label}"
+        );
+        // The ladder marks exactly the rung that decided.
+        let matched: Vec<&str> = pol
+            .precedence
+            .iter()
+            .filter(|r| r.matched)
+            .map(|r| r.source.as_str())
+            .collect();
+        assert_eq!(matched, [by], "{label}");
+    }
+}
+
+/// REQ: FLT-006, API-010 (T24.30) — the network group's settings show as sections: its blocked
+/// services, safe search, the lists in use, and the default upstream group, each with a link.
+#[test]
+fn flt_006_policy_sections_show_the_groups_settings() {
+    let (p, _sources) = setup_with(POLICY_EXTRA);
+    let pol = policy_of(&p, "10.7.1.9", None, None, 1_795_035_000);
+    let ids: Vec<&str> = pol.sections.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "block",
+            "lists",
+            "services",
+            "safe_search",
+            "answers",
+            "rewrites",
+            "schedules",
+            "rules",
+            "upstream"
+        ]
+    );
+    let svc = section(&pol, "services");
+    assert_eq!(svc.items.len(), 1, "{svc:?}");
+    assert_eq!(svc.items[0].label.to_ascii_lowercase(), "tiktok");
+    assert_eq!(svc.items[0].from.as_deref(), Some("group iot"));
+    assert_eq!(
+        svc.items[0].link.as_ref().map(|l| l.path.as_str()),
+        Some("/groups")
+    );
+    let ss = section(&pol, "safe_search");
+    assert_eq!(ss.items[0].state.as_deref(), Some("on"));
+    // The iot group names no lists, so it uses every enabled one; each links to Lists.
+    let lists = section(&pol, "lists");
+    assert!(lists.items.iter().any(|i| i.label == "ads"), "{lists:?}");
+    assert!(
+        lists
+            .items
+            .iter()
+            .all(|i| i.link.as_ref().is_some_and(|l| l.path == "/lists"))
+    );
+    let up = section(&pol, "upstream");
+    assert_eq!(up.items[0].label, "default");
+    // The route for corp.example is listed beside it.
+    assert!(
+        up.items
+            .iter()
+            .any(|i| i.label == "corp.example" && i.detail.as_deref() == Some("goes to lan"))
+    );
+}
+
+/// REQ: FLT-010, API-010 (T24.30) — a scheduled group's schedule is in effect at its start and not
+/// a second before, and Explain (the pipeline's `ScheduleNow`) agrees at both times.
+#[test]
+fn flt_006_policy_schedule_flips_at_its_boundary() {
+    let (p, sources) = setup_with(POLICY_EXTRA);
+    let cfg = policy_cfg();
+    let compiled = telltale_config::schedule::compile(&cfg);
+    let clients = telltale_policy::ClientTable::from_config(&cfg);
+    for (now, on) in [
+        (1_795_035_599_u64, false),
+        (1_795_035_600, true),
+        (1_795_035_601, true),
+    ] {
+        let pol = policy_of(&p, "10.0.3.5", None, None, now);
+        let sched = section(&pol, "schedules");
+        assert_eq!(sched.items.len(), 1, "{sched:?}");
+        assert_eq!(
+            sched.items[0].state.as_deref(),
+            Some(if on { "in_effect" } else { "not_in_effect" }),
+            "at {now}"
+        );
+        // Explain, with the schedule state the ticker would hold at the same time.
+        p.schedules
+            .store(Arc::new(crate::pipeline::ScheduleNow::compute(
+                &cfg,
+                &compiled,
+                clients.groups(),
+                i64::try_from(now).unwrap(),
+            )));
+        let ex = explain_as(&p, &sources, "10.0.3.5", None, None);
+        assert_eq!(
+            ex.outcome == Outcome::Blocked,
+            on,
+            "at {now}: {}",
+            ex.summary
+        );
+    }
+}
+
+/// REQ: FLT-010, FLT-006 (T24.30) — a block-all schedule counts only on a device's first group
+/// (the query path and Explain); on a later group the panel says "not applied", not "in effect".
+#[test]
+fn flt_006_policy_block_all_on_a_later_group_is_not_applied() {
+    const SLEEPERS: &str = r#"
+[[client]]
+name = "sleeper"
+match = ["10.0.9.9"]
+groups = ["kids", "night"]
+
+[[client]]
+name = "owl"
+match = ["10.0.9.10"]
+groups = ["night"]
+"#;
+    let extra = format!("{POLICY_EXTRA}{SLEEPERS}");
+    let (p, sources) = setup_with(&extra);
+    let cfg = telltale_config::Loader::new()
+        .toml_str("t.toml", format!("{CONFIG}{extra}"))
+        .env(Vec::<(String, String)>::new())
+        .load()
+        .unwrap()
+        .config;
+    let compiled = telltale_config::schedule::compile(&cfg);
+    let clients = telltale_policy::ClientTable::from_config(&cfg);
+    let now = 1_795_035_600_u64;
+    p.schedules
+        .store(Arc::new(crate::pipeline::ScheduleNow::compute(
+            &cfg,
+            &compiled,
+            clients.groups(),
+            i64::try_from(now).unwrap(),
+        )));
+    for (ip, state, blocked) in [
+        ("10.0.9.9", "not_applied", false),
+        ("10.0.9.10", "in_effect", true),
+    ] {
+        let subject = crate::policy_view::Subject {
+            asked: ip.to_owned(),
+            ip: ip.parse().unwrap(),
+            mac: None,
+            client_id: None,
+            wanted_device: None,
+            stand_in: false,
+            observed: false,
+        };
+        let pol = p.with_explain_state(|st| crate::policy_view::build(st, &cfg, &subject, now));
+        assert_eq!(
+            section(&pol, "schedules").items[0].state.as_deref(),
+            Some(state),
+            "{ip}"
+        );
+        let ex = explain_as(&p, &sources, ip, None, None);
+        assert_eq!(
+            ex.outcome == Outcome::Blocked,
+            blocked,
+            "{ip}: {}",
+            ex.summary
+        );
+    }
+}
+
+/// REQ: FLT-006 (T24.30) — a device keyed by a network range has no single address: it is probed as
+/// a stand-in (never at the range's own address) and the note says its group depends on the member.
+#[test]
+fn flt_006_policy_cidr_device_is_a_stand_in() {
+    let (p, _sources) = setup_with(POLICY_EXTRA);
+    let cfg = policy_cfg();
+    let subject = crate::policy_view::Subject {
+        asked: "printer".to_owned(),
+        ip: "0.0.0.0".parse().unwrap(),
+        mac: None,
+        client_id: None,
+        wanted_device: Some("printer".to_owned()),
+        stand_in: true,
+        observed: false,
+    };
+    let pol =
+        p.with_explain_state(|st| crate::policy_view::build(st, &cfg, &subject, 1_795_035_600));
+    assert!(pol.address.is_none(), "{pol:?}");
+    assert!(
+        pol.notes.iter().any(|n| n.contains("no single address")),
+        "{:?}",
+        pol.notes
+    );
+    // Not recognized as the printer at the stand-in address: the note says so.
+    assert!(
+        pol.notes
+            .iter()
+            .any(|n| n.contains("not recognized as printer")),
+        "{:?}",
+        pol.notes
+    );
+}
+
+/// REQ: FLT-005, FLT-006, API-010 (T24.30) — device-scoped, group-scoped and everyone rules show
+/// for the devices they apply to, with their expiry, and not for the others; an expired one says so.
+#[test]
+fn flt_006_policy_rules_apply_by_scope_and_expiry() {
+    let (p, _sources) = setup_with(POLICY_EXTRA);
+    // The tablet (10.0.0.5, group kids): its own rule, its group's, and everyone's.
+    let before = policy_of(&p, "10.0.0.5", None, None, 1_795_035_600);
+    let rules = section(&before, "rules");
+    let by: HashMap<&str, &telltale_api::policy_api::PolicyItem> =
+        rules.items.iter().map(|i| (i.label.as_str(), i)).collect();
+    let own = by["block game.example"];
+    assert_eq!(own.state.as_deref(), Some("in_effect"));
+    assert_eq!(own.from.as_deref(), Some("this device"));
+    assert_eq!(own.until_unix_seconds, Some(1_795_039_200));
+    assert_eq!(own.detail.as_deref(), Some("homework"));
+    assert_eq!(
+        own.link
+            .as_ref()
+            .and_then(|l| l.params.get("rule"))
+            .map(String::as_str),
+        Some("r-tablet")
+    );
+    assert_eq!(
+        by["allow school.example"].from.as_deref(),
+        Some("group kids")
+    );
+    assert_eq!(
+        by["block everyone.example"].from.as_deref(),
+        Some("everyone")
+    );
+    // After its expiry the device rule says expired (the sweep hasn't deleted it yet).
+    let after = policy_of(&p, "10.0.0.5", None, None, 1_795_039_200);
+    let own = section(&after, "rules")
+        .items
+        .iter()
+        .find(|i| i.label == "block game.example")
+        .unwrap();
+    assert_eq!(own.state.as_deref(), Some("expired"));
+    // Another device (default group, not the tablet) sees only the everyone rule.
+    let other = policy_of(&p, "203.0.113.9", None, None, 1_795_035_600);
+    let labels: Vec<&str> = section(&other, "rules")
+        .items
+        .iter()
+        .map(|i| i.label.as_str())
+        .collect();
+    assert_eq!(labels, ["block everyone.example"]);
+}
+
+/// REQ: FLT-006 (T24.30, ADR-996) — an observed subject with no MAC ignores this node's own
+/// neighbor table, so a replica's "no MAC" is not replaced by what only the primary knows.
+#[test]
+fn flt_006_policy_observed_without_mac_ignores_local_neighbors() {
+    let (p, _sources) = setup_with(POLICY_EXTRA);
+    let cfg = policy_cfg();
+    let ip: std::net::IpAddr = "10.9.9.9".parse().unwrap();
+    p.neighbors
+        .replace([(ip, [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x02])]);
+    let mut subject = crate::policy_view::Subject {
+        asked: "phone".to_owned(),
+        ip,
+        mac: None,
+        client_id: None,
+        wanted_device: Some("phone".to_owned()),
+        stand_in: false,
+        observed: false,
+    };
+    let live =
+        p.with_explain_state(|st| crate::policy_view::build(st, &cfg, &subject, 1_795_035_600));
+    assert_eq!(live.identified_by, "neighbor_mac", "{live:?}");
+    subject.observed = true;
+    let seen =
+        p.with_explain_state(|st| crate::policy_view::build(st, &cfg, &subject, 1_795_035_600));
+    assert_ne!(seen.identified_by, "neighbor_mac", "{seen:?}");
+}

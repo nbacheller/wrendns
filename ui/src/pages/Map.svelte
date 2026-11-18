@@ -9,6 +9,7 @@
   import { untrack } from 'svelte';
   import { api, ApiError } from '../lib/api';
   import { route, navigate, href } from '../lib/router.svelte';
+  import PolicyPanel from '../lib/components/PolicyPanel.svelte';
   import { poll } from '../lib/poll';
   import { num, pct } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
@@ -450,6 +451,11 @@
             {/if}
             {#if sel.reasons.length}
               <ul class="reasons small">{#each sel.reasons as r (r.code)}<li><b>{r.code.replace(/_/g, ' ')}</b>: {r.summary}</li>{/each}</ul>
+            {/if}
+            <!-- REQ: FLT-006, API-010 (T24.30, ADR-996) — what applies to this device, and why. -->
+            {#if sel.kind === 'device' && sel.address && snap.privacy < 2}
+              <h3>Policy</h3>
+              <PolicyPanel client={sel.address} compact />
             {/if}
             {#if selEdges.length}
               <h3>Flows</h3>

@@ -83,6 +83,18 @@ pub(crate) struct ClientInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) device: Option<String>,
     pub(crate) identified_by: &'static str,
+    /// REQ: FLT-006, API-010 (T24.30, ADR-996) — the key it matched on, as a `[[client]] match`
+    /// is written (`id:kids`, a MAC, an address, a network, `hostname:tv`) or the workload's
+    /// name; `None` for the `default` group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) matched_key: Option<String>,
+    /// The group whose settings apply (the first of `groups`).
+    pub(crate) group: String,
+    /// Where that group came from: `device`, `network`, `router_name`, `kubernetes`, `default`.
+    pub(crate) group_from: &'static str,
+    /// The network or router name that gave the group, when it isn't the device's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) group_key: Option<String>,
     /// Highest priority first; the first one's settings apply.
     pub(crate) groups: Vec<String>,
     /// REQ: FLT-017 — the Kubernetes workload a pod address belongs to.
@@ -114,7 +126,7 @@ pub(crate) struct RouteInfo {
     pub(crate) routed: bool,
 }
 
-fn source_name(s: IdSource) -> &'static str {
+pub(crate) fn source_name(s: IdSource) -> &'static str {
     match s {
         IdSource::ClientId => "client_id",
         IdSource::EdnsMac => "edns_mac",
@@ -128,7 +140,43 @@ fn source_name(s: IdSource) -> &'static str {
     }
 }
 
-fn mac_text(m: [u8; 6]) -> String {
+/// REQ: FLT-006, API-010 (T24.30, ADR-996) — a client identified: the identity, the key it
+/// matched on, and the MAC it was seen with.
+pub(crate) struct Resolved {
+    pub(crate) ident: telltale_policy::Identity,
+    pub(crate) key: telltale_policy::MatchedKey,
+    pub(crate) mac: Option<[u8; 6]>,
+}
+
+/// REQ: FLT-006, API-010 (T24.30, ADR-996) — identifies `ip` the way a query from it is
+/// (`ClientTable::identify`), with `mac` standing in for the neighbor table's when given.
+pub(crate) fn resolve_identity(
+    clients: &ClientTable,
+    live: &Neighbors,
+    workloads: &Workloads,
+    ip: IpAddr,
+    client_id: Option<&str>,
+    mac: Option<[u8; 6]>,
+) -> Resolved {
+    let given;
+    let neighbors = match mac {
+        Some(mac) => {
+            given = Neighbors::default();
+            given.replace([(ip, mac)]);
+            &given
+        }
+        None => live,
+    };
+    let ident = clients.identify(ip, client_id, None, neighbors, workloads);
+    let key = clients.match_key(ident, ip, client_id, None, neighbors);
+    Resolved {
+        ident,
+        key,
+        mac: mac.or_else(|| neighbors.get(ip)),
+    }
+}
+
+pub(crate) fn mac_text(m: [u8; 6]) -> String {
     format!(
         "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
         m[0], m[1], m[2], m[3], m[4], m[5]
@@ -167,16 +215,20 @@ pub(crate) fn explain(
     // The filter's client table is the one its masks were built for (they match after a
     // reload; before the first snapshot only the policy's exists).
     let clients: &ClientTable = st.filter.map_or(&policy.clients, |f| &f.clients);
-    let given;
-    let neighbors = match req.mac {
-        Some(mac) => {
-            given = Neighbors::default();
-            given.replace([(req.client, mac)]);
-            &given
-        }
-        None => st.neighbors,
-    };
-    let ident = clients.identify(req.client, req.client_id, None, neighbors, st.workloads);
+    // REQ: FLT-006, API-010 (T24.30, ADR-996) — the one place a device is identified for a
+    // read: Explain and the device's Policy panel both call it.
+    let Resolved {
+        ident,
+        key: by_key,
+        mac: mac_seen,
+    } = resolve_identity(
+        clients,
+        st.neighbors,
+        st.workloads,
+        req.client,
+        req.client_id,
+        req.mac,
+    );
     // REQ: FLT-017 — a pod address is named by its workload (and `$client` rules match it).
     let workload = (ident.source == IdSource::Workload)
         .then(|| st.workloads.load())
@@ -201,9 +253,22 @@ pub(crate) fn explain(
         qtype: req.qtype,
         client: ClientInfo {
             ip: req.client,
-            mac: req.mac.or_else(|| neighbors.get(req.client)).map(mac_text),
+            mac: mac_seen.map(mac_text),
             device: device.clone(),
             identified_by: source_name(ident.source),
+            matched_key: by_key.key.clone().or_else(|| {
+                workload
+                    .as_ref()
+                    .map(|(w, _)| w.name.clone())
+                    .filter(|_| ident.source == IdSource::Workload)
+            }),
+            group: clients.primary_group(ident).name.to_string(),
+            group_from: if ident.source == IdSource::Workload {
+                "kubernetes"
+            } else {
+                by_key.group_from.as_str()
+            },
+            group_key: by_key.group_key.clone(),
             groups: clients
                 .group_names(ident)
                 .iter()
@@ -707,7 +772,7 @@ fn decide(
     }
     false
 }
-fn block_answer_text(mode: BlockMode) -> &'static str {
+pub(crate) fn block_answer_text(mode: BlockMode) -> &'static str {
     match mode {
         BlockMode::NullIp => "0.0.0.0 / ::",
         BlockMode::Nxdomain => "NXDOMAIN",
