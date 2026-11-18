@@ -193,7 +193,9 @@ The listeners need nothing for this: they bind the wildcard address (`0.0.0.0` a
 **2. A tagged interface per VLAN on each node.** For VLAN 100 on `eth0`, address `198.51.100.<n>` where `<n>` is different on each node. **If `nmcli general status` works** (Raspberry Pi OS since Bookworm, and Debian with NetworkManager or a desktop):
 
 ```sh
-sudo nmcli con add type vlan con-name eth0.100 ifname eth0.100 dev eth0 id 100   ipv4.method manual ipv4.addresses 198.51.100.<n>/24   ipv4.never-default yes ipv6.method disabled
+sudo nmcli con add type vlan con-name eth0.100 ifname eth0.100 dev eth0 id 100 \
+  ipv4.method manual ipv4.addresses 198.51.100.<n>/24 \
+  ipv4.never-default yes ipv6.method disabled
 sudo nmcli con up eth0.100
 ```
 

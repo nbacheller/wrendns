@@ -101,6 +101,18 @@ mod tests {
     use super::*;
     use telltale_net::IfaceAddr;
 
+    // REQ: API-013
+    #[test]
+    fn api_013_a_bridged_container_lists_no_own_network() {
+        // A container marker without the host-network override: no own networks.
+        assert!(in_container_network(true, false));
+        // The override (the host-network Compose bundle sets it) keeps them.
+        assert!(!in_container_network(true, true));
+        // No marker: a bare host.
+        assert!(!in_container_network(false, false));
+        assert!(!in_container_network(false, true));
+    }
+
     fn iface(name: &str, idx: u32, addrs: &[([u8; 4], u8)]) -> Ipv4Interface {
         Ipv4Interface {
             name: name.into(),
