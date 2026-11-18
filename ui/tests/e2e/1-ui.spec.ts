@@ -4226,6 +4226,26 @@ test('obs_035 wall', async () => {
   await expect(page.locator('nav.side')).toBeVisible();
 });
 
+// REQ: OBS-035 (upstream #69) — a panel the viewer moved to stays put while the wall is measured
+// or resized: the area's size is read after the first render (and again when the layout
+// changes), and that must not send the rotation back to the first panel.
+test('obs_035 wall keeps its place when remeasured', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/wall?layout=single&every=600');
+  const slot = page.getByTestId('wall-slot');
+  await expect(slot).toHaveAttribute('data-panel', 'map');
+  await page.keyboard.press('ArrowRight');
+  await expect(slot).toHaveAttribute('data-panel', 'flow');
+  // Each resize changes the panel area's size, so the layout is computed again.
+  for (const [width, height] of [[1100, 700], [1280, 800], [1200, 760]]) {
+    await page.setViewportSize({ width, height });
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    await expect(slot).toHaveAttribute('data-panel', 'flow');
+  }
+  await page.keyboard.press('ArrowRight');
+  await expect(slot).toHaveAttribute('data-panel', 'slo');
+});
+
 // REQ: OBS-036 — a chatty loop is shown with its strip and marked informational, and the
 // sidebar badge doesn't count it.
 test('obs_036 chatty loop', async () => {
