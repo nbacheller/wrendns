@@ -2,7 +2,7 @@
 //!
 //! REQ: FLT-005, FLT-006. Precedence: client ID (DoH path / DoT SNI) → EDNS MAC (only from
 //! trusted forwarders) → MAC from the neighbor table → Kubernetes workload (FLT-017) → exact
-//! IP → most specific CIDR → the `default` group. All lookups are hash maps or a short prefix
+//! IP → most specific CIDR → router name (T24.24) → the `default` group. All lookups are hash maps or a short prefix
 //! list built once per config, so identifying a client allocates nothing.
 
 use std::collections::HashMap;
@@ -730,10 +730,17 @@ impl ClientTable {
         if let Some(&c) = self.by_ip.get(&peer) {
             return found(c, IdSource::Ip);
         }
-        // REQ: FLT-006 (T24.9, ADR-973) — the router's name for the address: a client that names
-        // it, else the group that lists it (which takes the device like a network does). One
-        // lock-free load and two lookups, and only when a client or group uses a name.
-        if (!self.by_host.is_empty() || !self.host_groups.is_empty())
+        if let Some((_, c)) = self.cidrs.iter().find(|(n, _)| n.contains(peer)) {
+            return found(*c, IdSource::Cidr);
+        }
+        // REQ: FLT-006 (T24.24, ADR-973 owner decision, ADR-976) — the router's name for the address,
+        // after the most specific CIDR (a client's or a group's network), before `default`: a device
+        // can't take a looser client's identity by naming itself after it. A client that names it,
+        // else the group that lists it (which takes the device like a network does). One lock-free
+        // load and two lookups, and only when a client or group uses a name and no network has
+        // already taken the device.
+        if net.is_none()
+            && (!self.by_host.is_empty() || !self.host_groups.is_empty())
             && let Some(label) = self.router_name(peer)
         {
             if let Some(&c) = self.by_host.get(&*label) {
@@ -746,9 +753,6 @@ impl ClientTable {
                     net: Some(g),
                 };
             }
-        }
-        if let Some((_, c)) = self.cidrs.iter().find(|(n, _)| n.contains(peer)) {
-            return found(*c, IdSource::Cidr);
         }
         Identity {
             client: None,
@@ -925,6 +929,10 @@ match = ["10.0.0.0/8", "10.5.0.0/16"]
 name = "printer"
 match = ["10.5.5.5"]
 
+[[client]]
+name = "phone"
+match = ["hostname:phone"]
+
 [clients]
 trust_edns_mac_from = ["192.168.1.1/32"]
 "#,
@@ -1000,6 +1008,69 @@ trust_edns_mac_from = ["192.168.1.1/32"]
             ("-".into(), IdSource::Default)
         );
         assert!(t.uses_macs());
+        // REQ: FLT-006 (T24.24, ADR-973 owner decision) — a router name ranks below the most
+        // specific CIDR and above `default`: in the office network the CIDR identifies the
+        // device even though a client has its router name; outside every CIDR the name does.
+        let ip = |s: &str| -> IpAddr { s.parse().unwrap() };
+        t.set_router_names(
+            [
+                (ip("10.5.9.9"), Arc::from("phone")),
+                (ip("172.16.0.1"), Arc::from("phone")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert_eq!(
+            who(&t, "10.5.9.9", None, None, &n),
+            ("office".into(), IdSource::Cidr)
+        );
+        assert_eq!(
+            who(&t, "172.16.0.1", None, None, &n),
+            ("phone".into(), IdSource::Hostname)
+        );
+        assert_eq!(
+            who(&t, "172.16.0.2", None, None, &n),
+            ("-".into(), IdSource::Default)
+        );
+    }
+
+    // REQ: FLT-006 (T24.24, ADR-973) — a group's network takes a device before a router name
+    // does; a device in no network is the name's.
+    #[test]
+    fn flt_006_group_network_beats_router_name() {
+        let cfg: Config = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                r#"
+[[group]]
+name = "guest"
+networks = ["10.9.0.0/16"]
+
+[[group]]
+name = "kids"
+router_names = ["kids-ipad"]
+"#,
+            )
+            .load()
+            .unwrap()
+            .config;
+        let t = ClientTable::from_config(&cfg);
+        let n = Neighbors::default();
+        let ip = |s: &str| -> IpAddr { s.parse().unwrap() };
+        t.set_router_names(
+            [
+                (ip("10.9.1.1"), Arc::from("kids-ipad")),
+                (ip("10.8.1.1"), Arc::from("kids-ipad")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let names = |s: &str| -> Vec<String> {
+            let id = t.identify(ip(s), None, None, &n, Workloads::none());
+            t.group_names(id).iter().map(ToString::to_string).collect()
+        };
+        assert_eq!(names("10.9.1.1"), ["guest"]);
+        assert_eq!(names("10.8.1.1"), ["kids"]);
     }
 
     // REQ: FLT-006 (T24.9, ADR-973) — a router's name for an address: a client that names it, or
