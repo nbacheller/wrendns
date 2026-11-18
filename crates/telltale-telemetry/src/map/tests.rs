@@ -294,7 +294,7 @@ fn obs_901_sampler_privacy_levels() {
             ));
         }
         for slot in &s.slots {
-            for k in slot.map.keys() {
+            for (k, _) in &slot.rows {
                 assert!(
                     k.client.is_hidden(),
                     "level {level}: a client key in the state"
@@ -435,4 +435,78 @@ fn obs_901_hub_feeds_and_stops_the_sampler() {
     );
     hub.set_map(None);
     assert!(hub.map_window(1_700_000_000).is_none());
+}
+
+/// REQ: OBS-901 (T26.2, ADR-958 test plan) — the aggregator's throughput with the sampler on and
+/// off: 7 alternating runs, compared by their medians. The sampler passes when the on-median is
+/// within 5% of the off-median (the noise band of this harness; the spread of the off runs is
+/// printed with the result). Run with
+/// `cargo test --release -p telltale-telemetry obs_901_sampler_throughput_ab -- --ignored --nocapture`.
+#[test]
+#[ignore = "a benchmark: run it with --release and --ignored"]
+fn obs_901_sampler_throughput_ab() {
+    use std::time::{Duration, Instant};
+    let names: Vec<Vec<u8>> = (0..2000)
+        .map(|i| {
+            let host = format!("host{i}");
+            let mut w = vec![u8::try_from(host.len()).unwrap_or(0)];
+            w.extend_from_slice(host.as_bytes());
+            w.extend_from_slice(b"\x07example\x03com\x00");
+            w
+        })
+        .collect();
+    let run = |on: bool| -> f64 {
+        let hub = crate::Hub::new(16 << 20);
+        hub.set_map(on.then(Settings::default));
+        let mut d = hub.drainer();
+        let mut rng = Lcg(5);
+        let base_us = 1_700_000_000_000_000u64;
+        let mut seq = 0u64;
+        let (mut drained, mut spent) = (0usize, Duration::ZERO);
+        let begun = Instant::now();
+        // 0.6 s untimed so N has settled, then 1.5 s timed, in drains of 20,000 events.
+        while begun.elapsed() < Duration::from_millis(2100) {
+            for _ in 0..20_000u32 {
+                seq += 1;
+                let (c, st, up) = pick(&mut rng);
+                let name = &names[usize::try_from(rng.next() % 2000).unwrap_or(0)];
+                let mut e = ev(base_us + seq, c, st, up, 1_000);
+                e.client_ip[14] = u8::try_from(rng.next() % 4).unwrap_or(0);
+                hub.emit_query(&e, name);
+            }
+            let t = Instant::now();
+            let n = hub.drain_once(&mut d);
+            if begun.elapsed() > Duration::from_millis(600) {
+                drained += n;
+                spent += t.elapsed();
+            }
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let rate = drained as f64 / spent.as_secs_f64();
+        rate
+    };
+    let (mut off, mut on) = (Vec::new(), Vec::new());
+    let _ = run(false); // warm the allocator and the caches
+    for _ in 0..7 {
+        off.push(run(false));
+        on.push(run(true));
+    }
+    let median = |v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    let spread = |v: &[f64]| {
+        let (lo, hi) = (
+            v.iter().copied().fold(f64::MAX, f64::min),
+            v.iter().copied().fold(0.0, f64::max),
+        );
+        (hi - lo) / hi * 100.0
+    };
+    let (so, sn) = (spread(&off), spread(&on));
+    let (mo, mn) = (median(&mut off), median(&mut on));
+    println!(
+        "aggregator throughput, sampler off: median {mo:.0} events/s (spread {so:.1}%); on: median {mn:.0} events/s (spread {sn:.1}%); on/off {:.3}",
+        mn / mo
+    );
+    assert!(mn >= mo * 0.95, "the sampler costs more than 5%: {mn} vs {mo}");
 }

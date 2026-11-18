@@ -433,7 +433,7 @@ impl Hub {
         if let Some(m) = map.as_mut() {
             m.set_privacy(level);
         }
-        drainer.drain(|r| {
+        let n = drainer.drain(|r| {
             if !r.is_probe() && !self.left_out(excluded.as_deref(), &r) {
                 let keyed = keyed(keys.as_deref(), &r);
                 let r = keyed.as_ref().unwrap_or(&r);
@@ -442,7 +442,12 @@ impl Hub {
                     m.offer_record(r);
                 }
             }
-        })
+        });
+        if let Some(m) = map.as_mut() {
+            let ms = u64::try_from(self.epoch_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            m.tick(ms, self.dropped_total());
+        }
+        n
     }
 
     /// The single consumer of this hub's rings.

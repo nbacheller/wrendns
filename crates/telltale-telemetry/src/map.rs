@@ -46,6 +46,8 @@ pub const KEYS_PER_SLOT: usize = 1024;
 pub const ENTRY_BYTES: usize = 80;
 /// The cap on the counters in total: a flood of distinct devices stops adding keys here.
 pub const MAX_BYTES: usize = 1 << 20;
+/// The sizes a slot's rows grow through.
+const GROW: [usize; 3] = [64, 256, KEYS_PER_SLOT];
 /// Lookups kept for the busiest edges' recent samples (64 edges of 20).
 pub const RECENT_KEEP: usize = 64 * 20;
 /// Most keys a window part carries to the API (the rest fold into `other`): a part must fit the
@@ -240,7 +242,12 @@ impl Default for Settings {
 struct Slot {
     /// `ts_s / SLOT_SECS` this slot holds (a slot is reused every 60 s).
     start: u64,
-    map: HashMap<Key, Counts>,
+    /// A flat list, not a hash table: a table's load factor and its doubling leave a third or
+    /// more of its memory empty and fragment the allocator, and at most `event_rate` lookups a
+    /// second are kept, so a scan of at most [`KEYS_PER_SLOT`] rows costs a few microseconds
+    /// on the aggregator thread. It grows in three steps (64, 256, 1,024 rows) so a flood
+    /// allocates each size once.
+    rows: Vec<(Key, Counts)>,
     other: Counts,
     dropped: u64,
 }
@@ -375,12 +382,12 @@ impl Sampler {
                 // Older than the window: late, and of no use.
                 return;
             }
-            self.entries -= slot.map.len();
+            self.entries -= slot.rows.len();
             // Gives a flood's memory back once its slot has gone round.
-            if slot.map.capacity() > 256 && slot.map.len() < slot.map.capacity() / 4 {
-                slot.map = HashMap::new();
+            if slot.rows.capacity() > GROW[0] && slot.rows.len() < slot.rows.capacity() / 4 {
+                slot.rows = Vec::new();
             } else {
-                slot.map.clear();
+                slot.rows.clear();
             }
             slot.other = Counts::default();
             slot.dropped = 0;
@@ -406,10 +413,18 @@ impl Sampler {
             upstream,
             kind,
         };
-        if let Some(cur) = slot.map.get_mut(&key) {
+        if let Some((_, cur)) = slot.rows.iter_mut().find(|(k, _)| *k == key) {
             cur.add(&c);
-        } else if slot.map.len() < KEYS_PER_SLOT && (self.entries + 1) * ENTRY_BYTES <= MAX_BYTES {
-            slot.map.insert(key, c);
+        } else if slot.rows.len() < KEYS_PER_SLOT && (self.entries + 1) * ENTRY_BYTES <= MAX_BYTES {
+            if slot.rows.len() == slot.rows.capacity() {
+                let want = GROW
+                    .iter()
+                    .copied()
+                    .find(|g| *g > slot.rows.len())
+                    .unwrap_or(KEYS_PER_SLOT);
+                slot.rows.reserve_exact(want - slot.rows.len());
+            }
+            slot.rows.push((key, c));
             self.entries += 1;
         } else {
             slot.other.add(&c);
@@ -482,12 +497,12 @@ impl Sampler {
         let mut other = Counts::default();
         let mut dropped = 0u64;
         for s in &self.slots {
-            if s.start < oldest || s.start > newest || (s.map.is_empty() && s.other.is_empty()) {
+            if s.start < oldest || s.start > newest || (s.rows.is_empty() && s.other.is_empty()) {
                 continue;
             }
             dropped = dropped.saturating_add(s.dropped);
             other.add(&s.other);
-            for (k, c) in &s.map {
+            for (k, c) in &s.rows {
                 sum.entry(*k).or_default().add(c);
             }
         }
