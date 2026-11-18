@@ -5451,6 +5451,12 @@ export interface components {
             /** @description The name the router knows it by (its DHCP host name or alias), or the one it announces. */
             hostname?: string | null;
             ip: string;
+            /**
+             * @description REQ: DNS-023 (T24.8, ADR-983) — the IPv6 addresses the router reports for the device
+             *     (global and unique-local, never link-local), up to 4. With `[local] device_domain` set,
+             *     each answers AAAA and an `ip6.arpa` PTR under `dnsName`.
+             */
+            ipv6?: string[];
             mac: string;
             /**
              * @description REQ: T8.2 (ADR-166, ADR-942) — a client the router remembers but doesn't see now (UniFi's
@@ -6589,6 +6595,12 @@ export interface components {
                 /** @description The name the router knows it by (its DHCP host name or alias), or the one it announces. */
                 hostname?: string | null;
                 ip: string;
+                /**
+                 * @description REQ: DNS-023 (T24.8, ADR-983) — the IPv6 addresses the router reports for the device
+                 *     (global and unique-local, never link-local), up to 4. With `[local] device_domain` set,
+                 *     each answers AAAA and an `ip6.arpa` PTR under `dnsName`.
+                 */
+                ipv6?: string[];
                 mac: string;
                 /**
                  * @description REQ: T8.2 (ADR-166, ADR-942) — a client the router remembers but doesn't see now (UniFi's

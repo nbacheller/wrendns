@@ -13,8 +13,8 @@
 //! others get neither an A record nor a PTR; collisions are counted in the log line that
 //! reports each change.
 
-use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr};
+use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -48,6 +48,15 @@ impl Settings {
             mdns: cfg.local.device_mdns && cfg.clients.mdns,
         })
     }
+}
+
+/// REQ: DNS-023 (T24.8, ADR-983) — one device that answers in DNS: its full name, its IPv4
+/// address (the key the routers know it by) and the IPv6 addresses that answer AAAA and PTR for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Named {
+    pub(crate) name: String,
+    pub(crate) ip: Ipv4Addr,
+    pub(crate) v6: Vec<Ipv6Addr>,
 }
 
 /// The table the pipeline answers from, and each address's name for the API.
@@ -86,8 +95,8 @@ fn parse_mac(s: &str) -> Option<[u8; 6]> {
     parts.next().is_none().then_some(out)
 }
 
-/// The `(full name, address)` pairs to answer, sorted by name, and how many names collided.
-pub(crate) fn names(inputs: &Inputs<'_>, domain: &str) -> (Vec<(String, Ipv4Addr)>, usize) {
+/// The devices to answer, sorted by name, and how many names collided.
+pub(crate) fn names(inputs: &Inputs<'_>, domain: &str) -> (Vec<Named>, usize) {
     // Best name per address.
     let mut by_ip: HashMap<Ipv4Addr, (u8, String)> = HashMap::new();
     let mut offer = |ip: Ipv4Addr, rank: u8, name: &str| {
@@ -124,6 +133,15 @@ pub(crate) fn names(inputs: &Inputs<'_>, domain: &str) -> (Vec<(String, Ipv4Addr
             }
         }
     }
+    // REQ: DNS-023 (T24.8, ADR-983) — the IPv6 addresses the routers report for a device, by its
+    // IPv4 address: this node's routers first, then the peers'; an offline client has none
+    // (it publishes no name either, ADR-166).
+    let mut v6_of: HashMap<Ipv4Addr, &[Ipv6Addr]> = HashMap::new();
+    for table in inputs.routers {
+        for l in table.values().filter(|l| !l.offline && !l.ipv6.is_empty()) {
+            v6_of.entry(l.ip).or_insert(l.ipv6.as_slice());
+        }
+    }
     // Best address per label: rank, then the lowest address.
     let mut ranked: Vec<(u8, Ipv4Addr, String)> = by_ip
         .into_iter()
@@ -132,6 +150,9 @@ pub(crate) fn names(inputs: &Inputs<'_>, domain: &str) -> (Vec<(String, Ipv4Addr
         .collect();
     ranked.sort_by(|a, b| (a.0, u32::from(a.1)).cmp(&(b.0, u32::from(b.1))));
     let mut taken: HashMap<String, Ipv4Addr> = HashMap::new();
+    // One IPv6 address, one name: the better-ranked device keeps it (as for an IPv4 address).
+    let mut v6_taken: HashSet<Ipv6Addr> = HashSet::new();
+    let mut v6_kept: HashMap<Ipv4Addr, Vec<Ipv6Addr>> = HashMap::new();
     let mut collisions = 0;
     for (_, ip, label) in ranked {
         if let Some(kept) = taken.get(&label) {
@@ -139,13 +160,24 @@ pub(crate) fn names(inputs: &Inputs<'_>, domain: &str) -> (Vec<(String, Ipv4Addr
             tracing::debug!(%label, %kept, dropped = %ip, "device names: two devices share a name; the first keeps it");
             continue;
         }
+        let v6: Vec<Ipv6Addr> = v6_of
+            .get(&ip)
+            .into_iter()
+            .flat_map(|a| a.iter().copied())
+            .filter(|a| crate::devices::usable_ipv6(a) && v6_taken.insert(*a))
+            .collect();
+        v6_kept.insert(ip, v6);
         taken.insert(label, ip);
     }
-    let mut out: Vec<(String, Ipv4Addr)> = taken
+    let mut out: Vec<Named> = taken
         .into_iter()
-        .map(|(label, ip)| (format!("{label}.{domain}"), ip))
+        .map(|(label, ip)| Named {
+            name: format!("{label}.{domain}"),
+            ip,
+            v6: v6_kept.remove(&ip).unwrap_or_default(),
+        })
         .collect();
-    out.sort();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
     (out, collisions)
 }
 
@@ -170,10 +202,14 @@ pub(crate) fn router_names(routers: [&Leases; 2]) -> HashMap<IpAddr, Arc<str>> {
 }
 
 /// The table for `names`.
-pub(crate) fn build(names: &[(String, Ipv4Addr)], ttl: u32) -> DeviceNames {
+pub(crate) fn build(names: &[Named], ttl: u32) -> DeviceNames {
+    let addrs = names.iter().flat_map(|n| {
+        std::iter::once((n.name.as_str(), IpAddr::V4(n.ip)))
+            .chain(n.v6.iter().map(|a| (n.name.as_str(), IpAddr::V6(*a))))
+    });
     DeviceNames {
-        data: LocalData::from_device_names(names.iter().map(|(n, ip)| (n.as_str(), *ip)), ttl),
-        by_ip: names.iter().map(|(n, ip)| (*ip, n.clone())).collect(),
+        data: LocalData::from_device_names(addrs, ttl),
+        by_ip: names.iter().map(|n| (n.ip, n.name.clone())).collect(),
     }
 }
 
@@ -186,7 +222,7 @@ pub(crate) async fn run(
     mdns_listening: bool,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) {
-    let mut last: Option<(Settings, Vec<(String, Ipv4Addr)>)> = None;
+    let mut last: Option<(Settings, Vec<Named>)> = None;
     // REQ: FLT-006 (T24.9) — the router names last given to the policy in force (a reload makes
     // a new one, so the names are given again to it). The policy is held as a `Weak`: its
     // allocation stays reserved while it is remembered, so a new policy can't reuse its address.
@@ -265,8 +301,18 @@ mod tests {
                 expires: 0,
                 router: Some("udm".into()),
                 offline: false,
+                ipv6: Vec::new(),
             },
         )
+    }
+
+    /// `(name, IPv4 address)` of each device.
+    fn pairs(got: &[Named]) -> Vec<(String, Ipv4Addr)> {
+        got.iter().map(|n| (n.name.clone(), n.ip)).collect()
+    }
+
+    fn v6(s: &str) -> Ipv6Addr {
+        s.parse().unwrap()
     }
 
     fn cfg(toml: &str) -> telltale_config::Config {
@@ -325,7 +371,7 @@ mod tests {
         let (got, collisions) = names(&inputs, "home.arpa");
         let ip = |d: [u8; 4]| Ipv4Addr::from(d);
         assert_eq!(
-            got,
+            pairs(&got),
             vec![
                 ("android.home.arpa".to_owned(), ip([192, 0, 2, 30])),
                 ("brw123.home.arpa".to_owned(), ip([192, 0, 2, 60])),
@@ -374,7 +420,7 @@ mod tests {
         };
         let (got, _) = names(&inputs, "home.arpa");
         assert_eq!(
-            got,
+            pairs(&got),
             vec![("ipad.home.arpa".to_owned(), Ipv4Addr::new(192, 0, 2, 53))]
         );
     }
@@ -426,7 +472,11 @@ mod tests {
     /// map matches.
     #[test]
     fn dns_023_built_table() {
-        let names = vec![("nas.home.arpa".to_owned(), Ipv4Addr::new(192, 0, 2, 5))];
+        let names = vec![Named {
+            name: "nas.home.arpa".to_owned(),
+            ip: Ipv4Addr::new(192, 0, 2, 5),
+            v6: Vec::new(),
+        }];
         let t = build(&names, 60);
         assert_eq!(t.data.len(), 2, "an A and a PTR");
         assert_eq!(
@@ -457,5 +507,100 @@ mod tests {
                 .map(|x| (x.domain, x.ttl, x.mdns)),
             Some(("lan".into(), 30, true))
         );
+    }
+
+    /// REQ: DNS-023 (T24.8, ADR-983) — a device the router reports with IPv6 addresses answers
+    /// AAAA and `ip6.arpa` PTR under the name it has for IPv4, by the same label rules; an
+    /// offline client publishes none; a name collision drops the loser's addresses too; one
+    /// IPv6 address names one device (the better-ranked keeps it); no table, no addresses.
+    #[test]
+    fn dns_023_ipv6_names_follow_the_ipv4_rules() {
+        let clients = table(
+            "[[client]]
+name = \"NAS\"
+match = [\"192.0.2.5\"]
+",
+        );
+        let mut routers: Leases = [
+            lease([192, 0, 2, 5], "aa:bb:cc:00:00:05", Some("diskstation")),
+            lease(
+                [192, 0, 2, 21],
+                "aa:bb:cc:00:00:21",
+                Some("Kitchen Tablet"),
+            ),
+            lease([192, 0, 2, 30], "aa:bb:cc:00:00:30", Some("android")),
+            lease([192, 0, 2, 31], "aa:bb:cc:00:00:31", Some("Android")),
+            lease([192, 0, 2, 32], "aa:bb:cc:00:00:32", Some("stale-claim")),
+            lease([192, 0, 2, 33], "aa:bb:cc:00:00:33", Some("gone")),
+        ]
+        .into();
+        let set = |t: &mut Leases, ip: [u8; 4], a: &[&str], off: bool| {
+            let l = t.get_mut(&Ipv4Addr::from(ip)).unwrap();
+            l.ipv6 = a.iter().map(|x| v6(x)).collect();
+            l.offline = off;
+        };
+        set(&mut routers, [192, 0, 2, 5], &["fd00:10::5"], false);
+        set(
+            &mut routers,
+            [192, 0, 2, 21],
+            &["2001:db8:1::21", "fd00:10::21"],
+            false,
+        );
+        set(&mut routers, [192, 0, 2, 30], &["fd00:10::30"], false);
+        // The loser of the `android` label gets no addresses at all.
+        set(&mut routers, [192, 0, 2, 31], &["fd00:10::31"], false);
+        // Claims an address a better-ranked device already has.
+        set(&mut routers, [192, 0, 2, 32], &["fd00:10::21"], false);
+        set(&mut routers, [192, 0, 2, 33], &["fd00:10::33"], true);
+        let empty = Leases::new();
+        let inputs = Inputs {
+            clients: &clients,
+            routers: [&routers, &empty],
+            mdns: [&empty, &empty],
+        };
+        let (got, collisions) = names(&inputs, "home.arpa");
+        assert_eq!(collisions, 1);
+        let find = |n: &str| got.iter().find(|x| x.name == n).map(|x| x.v6.clone());
+        assert_eq!(find("nas.home.arpa"), Some(vec![v6("fd00:10::5")]));
+        assert_eq!(
+            find("kitchen-tablet.home.arpa"),
+            Some(vec![v6("2001:db8:1::21"), v6("fd00:10::21")])
+        );
+        assert_eq!(find("android.home.arpa"), Some(vec![v6("fd00:10::30")]));
+        assert_eq!(
+            find("stale-claim.home.arpa"),
+            Some(Vec::new()),
+            "the address belongs to the better-ranked device"
+        );
+        assert_eq!(find("gone.home.arpa"), None, "offline: no name, no address");
+        let all: Vec<Ipv6Addr> = got.iter().flat_map(|n| n.v6.clone()).collect();
+        assert!(
+            !all.contains(&v6("fd00:10::31")),
+            "the dropped label's address"
+        );
+        assert!(!all.contains(&v6("fd00:10::33")), "offline address");
+        // The built table answers for each address.
+        let t = build(&got, 60);
+        // An A or AAAA and a PTR for each address.
+        assert_eq!(t.data.len(), 2 * (got.len() + all.len()));
+    }
+
+    /// REQ: DNS-023 (T24.8, ADR-983) — an address only names a device when it could be a
+    /// neighbour's: link-local, loopback, multicast, unspecified and mapped ones never do.
+    #[test]
+    fn dns_023_ipv6_addresses_that_may_name_a_device() {
+        for ok in ["2001:db8::1", "fd12:3456::9", "fc00::1"] {
+            assert!(crate::devices::usable_ipv6(&v6(ok)), "{ok}");
+        }
+        for bad in [
+            "fe80::1",
+            "febf::1",
+            "::1",
+            "::",
+            "ff02::1",
+            "::ffff:10.0.0.1",
+        ] {
+            assert!(!crate::devices::usable_ipv6(&v6(bad)), "{bad}");
+        }
     }
 }

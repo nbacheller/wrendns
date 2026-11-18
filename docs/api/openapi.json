@@ -14763,6 +14763,13 @@
           "ip": {
             "type": "string"
           },
+          "ipv6": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "REQ: DNS-023 (T24.8, ADR-983) — the IPv6 addresses the router reports for the device\n(global and unique-local, never link-local), up to 4. With `[local] device_domain` set,\neach answers AAAA and an `ip6.arpa` PTR under `dnsName`."
+          },
           "mac": {
             "type": "string"
           },
@@ -17587,6 +17594,13 @@
                 },
                 "ip": {
                   "type": "string"
+                },
+                "ipv6": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "REQ: DNS-023 (T24.8, ADR-983) — the IPv6 addresses the router reports for the device\n(global and unique-local, never link-local), up to 4. With `[local] device_domain` set,\neach answers AAAA and an `ip6.arpa` PTR under `dnsName`."
                 },
                 "mac": {
                   "type": "string"

@@ -3,7 +3,7 @@
 //! TelltaleDNS doesn't hand out addresses itself (ADR-091): the router's DHCP does.
 
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +27,27 @@ pub(crate) struct Lease {
     /// which doesn't know the field, reads the same form as before.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) offline: bool,
+    /// REQ: DNS-023 (T24.8, ADR-983) — the device's global IPv6 addresses as the router reports
+    /// them (UniFi's `ipv6_addresses`), at most [`MAX_IPV6`], sorted. Not written when empty, and
+    /// an older node ignores it, so the wire form is what it was for a device without one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) ipv6: Vec<Ipv6Addr>,
+}
+
+/// REQ: DNS-023 (T24.8, ADR-983) — most IPv6 addresses kept per device (privacy extensions make
+/// a device carry several).
+pub(crate) const MAX_IPV6: usize = 4;
+
+/// REQ: DNS-023 (T24.8, ADR-983) — whether a router-reported IPv6 address may name a device in
+/// DNS: a unicast address a neighbour could use, not link-local (`fe80::/10`, the same on every
+/// link), unspecified, loopback, multicast or IPv4-mapped.
+pub(crate) fn usable_ipv6(ip: &Ipv6Addr) -> bool {
+    let link_local = ip.segments()[0] & 0xffc0 == 0xfe80;
+    !(ip.is_unspecified()
+        || ip.is_loopback()
+        || ip.is_multicast()
+        || link_local
+        || ip.to_ipv4_mapped().is_some())
 }
 
 /// Devices by address.
@@ -131,6 +152,7 @@ mod tests {
             expires: 0,
             router: None,
             offline: false,
+            ipv6: Vec::new(),
         }
     }
 
@@ -178,6 +200,7 @@ mod tests {
         assert!(!connected.contains("offline"), "{connected}");
         let gone = Lease {
             offline: true,
+            ipv6: Vec::new(),
             ..lease([10, 0, 0, 3], "old phone")
         };
         let text = serde_json::to_string(&gone).unwrap();
@@ -185,5 +208,24 @@ mod tests {
         assert_eq!(serde_json::from_str::<Lease>(&text).unwrap(), gone);
         let older = r#"{"mac":"","ip":"10.0.0.2","hostname":"k8s","expires":0}"#;
         assert!(!serde_json::from_str::<Lease>(older).unwrap().offline);
+    }
+
+    // REQ: DNS-023, CLU-002 (T24.8, ADR-983) — IPv6 addresses travel to peers that know them and
+    // cost nothing on the wire for a device without any; an answer from an older node (no field)
+    // is a device with none.
+    #[test]
+    fn dns_023_ipv6_is_compatible_on_the_wire() {
+        let plain = serde_json::to_string(&lease([10, 0, 0, 2], "k8s")).unwrap();
+        assert!(!plain.contains("ipv6"), "{plain}");
+        let with = Lease {
+            ipv6: vec!["2001:db8::2".parse().unwrap()],
+            ..lease([10, 0, 0, 3], "nas")
+        };
+        let text = serde_json::to_string(&with).unwrap();
+        assert!(text.contains("\"ipv6\":[\"2001:db8::2\"]"), "{text}");
+        assert_eq!(serde_json::from_str::<Lease>(&text).unwrap(), with);
+        let older = r#"{"mac":"","ip":"10.0.0.2","hostname":"k8s","expires":0}"#;
+        let none = serde_json::from_str::<Lease>(older).unwrap().ipv6;
+        assert_eq!(none.len(), 0);
     }
 }

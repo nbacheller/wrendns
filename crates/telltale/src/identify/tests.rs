@@ -604,6 +604,7 @@ fn t8_2_offline_router_clients_are_not_announced_as_seen() {
         expires: 0,
         router: None,
         offline,
+        ipv6: Vec::new(),
     };
     let table = |ls: &[crate::devices::Lease]| -> crate::devices::Leases {
         ls.iter().map(|l| (l.ip, l.clone())).collect()

@@ -725,6 +725,7 @@ fn dsc_008_expired_lease_is_skipped() {
                 expires,
                 router: None,
                 offline: false,
+                ipv6: Vec::new(),
             },
         );
     };
@@ -752,6 +753,7 @@ fn t8_2_offline_lease_is_not_an_observation() {
                 expires: 0,
                 router: None,
                 offline,
+                ipv6: Vec::new(),
             },
         );
     };
@@ -1056,6 +1058,7 @@ fn dsc_008_tick_reads_router_view() {
             expires: 0,
             router: Some("ucg".to_owned()),
             offline: false,
+            ipv6: Vec::new(),
         },
     );
     let providers = thread::Providers {

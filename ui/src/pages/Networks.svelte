@@ -172,7 +172,7 @@
       {#if devices.length}
         <div class="table-wrap">
           <table data-testid="network-devices">
-            <thead><tr><th>Address</th><th>DNS name</th><th>Name it gave</th><th>From</th></tr></thead>
+            <thead><tr><th>Address</th><th>DNS name</th><th>IPv6</th><th>Name it gave</th><th>From</th></tr></thead>
             <tbody>
               {#each devices as d (d.ip + d.mac)}
                 <tr>
@@ -180,6 +180,7 @@
                       <span class="badge warn" data-testid="offline-badge" title="The router remembers this client but doesn't see it now">offline</span>
                     {/if}</td>
                   <td class="mono small" data-testid="network-dns-name">{d.dnsName ?? 'none'}</td>
+                  <td class="mono small" data-testid="network-ipv6">{d.ipv6?.length ? d.ipv6.join(', ') : 'none'}</td>
                   <td>{d.hostname ?? ''}</td>
                   <td class="small">{d.source === 'router' && d.router ? `router: ${d.router}` : d.source}</td>
                 </tr>
