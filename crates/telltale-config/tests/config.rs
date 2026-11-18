@@ -850,41 +850,75 @@ fn obs_901_map_config_defaults_and_bounds() {
     );
     assert_eq!(m.warn_latency_ms, None, "follows [slo] latency_ms");
     for (bad, field) in [
-        ("[map]
+        (
+            "[map]
 event_rate = 9
-", "map.event_rate"),
-        ("[map]
+",
+            "map.event_rate",
+        ),
+        (
+            "[map]
 event_rate = 2001
-", "map.event_rate"),
-        ("[map]
+",
+            "map.event_rate",
+        ),
+        (
+            "[map]
 min_sample = 0
-", "map.min_sample"),
-        ("[map]
+",
+            "map.min_sample",
+        ),
+        (
+            "[map]
 warn_latency_ms = 0
-", "map.warn_latency_ms"),
-        ("[map]
+",
+            "map.warn_latency_ms",
+        ),
+        (
+            "[map]
 warn_slow_pct = 101
-", "map.warn_slow_pct"),
-        ("[map]
+",
+            "map.warn_slow_pct",
+        ),
+        (
+            "[map]
 warn_blocked_pct = 0
-", "map.warn_blocked_pct"),
-        ("[map]
+",
+            "map.warn_blocked_pct",
+        ),
+        (
+            "[map]
 warn_error_pct = 30
-", "map.error_pct"),
-        ("[map]
+",
+            "map.error_pct",
+        ),
+        (
+            "[map]
 speed = 3
-", "speed"),
+",
+            "speed",
+        ),
     ] {
         let err = format!("{:?}", load(bad).unwrap_err());
         assert!(err.contains(field), "{bad}: {err}");
     }
-    assert!(load("[map]
+    assert!(
+        load(
+            "[map]
 event_rate = 10
 error_pct = 5
-").is_ok());
-    assert!(load("[map]
+"
+        )
+        .is_ok()
+    );
+    assert!(
+        load(
+            "[map]
 enabled = false
-").is_ok());
+"
+        )
+        .is_ok()
+    );
 }
 
 /// REQ: OPS-010 (T13.4) — maintenance lasts an hour unless a request says otherwise; the

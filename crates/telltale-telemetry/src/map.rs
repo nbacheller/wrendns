@@ -446,13 +446,18 @@ impl Sampler {
         }
         let total = offered.saturating_add(dropped);
         let cap = self.per_tick();
-        self.n = u32::try_from(total.div_ceil(cap)).unwrap_or(u32::MAX).max(1);
+        self.n = u32::try_from(total.div_ceil(cap))
+            .unwrap_or(u32::MAX)
+            .max(1);
         // Drops scale the weights of the next tick, as far as this one says.
         self.drop_scale = if offered == 0 {
             1 << 16
         } else {
             // At most 64x: a tick that lost nearly everything can't blow the weights up.
-            total.saturating_mul(1 << 16).div_ceil(offered).min(64 << 16)
+            total
+                .saturating_mul(1 << 16)
+                .div_ceil(offered)
+                .min(64 << 16)
         };
         self.tick_seen = 0;
         self.tick_kept = 0;

@@ -358,19 +358,18 @@ impl Hub {
                         if let Some(m) = map.as_mut() {
                             m.set_privacy(level);
                         }
-                        let analytics =
-                            |agg: &mut Aggregates,
-                             map: &mut Option<crate::map::Sampler>,
-                             sink: &mut Option<Box<dyn Sink>>,
-                             k: &Record| {
-                                agg.record_private(k, level);
-                                if let Some(m) = map.as_mut() {
-                                    m.offer_record(k);
-                                }
-                                if let Some(s) = sink.as_mut() {
-                                    s.record_analytics(k);
-                                }
-                            };
+                        let analytics = |agg: &mut Aggregates,
+                                         map: &mut Option<crate::map::Sampler>,
+                                         sink: &mut Option<Box<dyn Sink>>,
+                                         k: &Record| {
+                            agg.record_private(k, level);
+                            if let Some(m) = map.as_mut() {
+                                m.offer_record(k);
+                            }
+                            if let Some(s) = sink.as_mut() {
+                                s.record_analytics(k);
+                            }
+                        };
                         let now = Instant::now();
                         hold.release(keys.as_ref(), now, |k| {
                             analytics(&mut agg, &mut map, &mut sink, k);

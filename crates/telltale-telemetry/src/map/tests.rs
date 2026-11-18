@@ -377,7 +377,10 @@ fn obs_901_window_round_trips_as_json() {
     s.offer(&ev(1_700_000_000_000_000, 7, Status::Forwarded, 2, 90_000));
     let w = s.window(1_700_000_000);
     let text = serde_json::to_string(&w).unwrap();
-    assert!(text.contains("\"client\":\"00000000000000000000ffff"), "{text}");
+    assert!(
+        text.contains("\"client\":\"00000000000000000000ffff"),
+        "{text}"
+    );
     let back: Window = serde_json::from_str(&text).unwrap();
     assert_eq!(back, w);
     assert!(serde_json::from_str::<ClientKey>("\"12\"").is_err());
