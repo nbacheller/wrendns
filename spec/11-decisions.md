@@ -4962,7 +4962,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 **Test plan:** `ups_013_*` (`telltale-upstream/tests/source.rs`: UDP and TCP leave from the bound address, a foreign stored source starts degraded while other upstreams serve, a lost one is a problem, family mismatch, an IPv6 source with a v4-only hostname; `source.rs` unit tests for the network choice); the Playwright upstream-source test.
 
 
-## ADR-1003 — The extra UniFi and Home Assistant reads: their settings, what the poll shares, and what history is (Proposed)
+## ADR-1003 — The extra UniFi and Home Assistant reads: their settings, what the poll shares, and what history is (Accepted 2026-11-18)
 **Context:** ADR-912 (Accepted) fixes what T25.10 reads and where it runs. It leaves the shape of the settings, the hand-over between the router poll and the inventory thread, the treatment of history, and how far Home Assistant's templates reach to the implementation. The task also closes the Open item of T25.1: nothing fed `sources::ha_observations`.
 **Decision:**
 1. **Settings.** `[discovery.unifi_reads]` is a table of three booleans (`client_fields`, `all_users`, `devices`), each off by default. `unifi_all_users_within_hours` is 1 to 8,760, default 720. `home_assistant_all_devices` is a boolean, default true (it applies only while discovery is on). The three keys are always serialized and are fields of the `discovery` settings kind (admin-only, no agent, set-by-file per key). They ship in the release that introduces `[discovery]`, so no new members gate (`DISCOVERY_SINCE`) is added.
