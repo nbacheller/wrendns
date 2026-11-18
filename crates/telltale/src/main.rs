@@ -246,6 +246,9 @@ enum Command {
     PiholeImportWorker {
         /// The uploaded file (a Teleporter archive, a gravity.db, or a directory).
         path: PathBuf,
+        /// A private directory to unpack an archive's gravity.db into (ADR-989).
+        #[arg(long)]
+        scratch: Option<PathBuf>,
     },
     /// Serve MCP to an AI agent over stdin/stdout (the `stdio` transport), relaying to a
     /// running node's `/mcp` with an API token (`TELLTALE_TOKEN`, or `--token-file`).
@@ -1004,7 +1007,9 @@ fn main() -> ExitCode {
             u8::try_from(discovery::worker::main(import)).unwrap_or(1),
         )),
         Command::Import { command } => Ok(run_import(command)),
-        Command::PiholeImportWorker { path } => Ok(pihole_import::run_worker(&path)),
+        Command::PiholeImportWorker { path, scratch } => {
+            Ok(pihole_import::run_worker(&path, scratch.as_deref()))
+        }
         Command::Backup { command } => Ok(run_backup(command)),
         Command::Mcp {
             stdio,

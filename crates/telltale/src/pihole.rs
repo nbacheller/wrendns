@@ -91,6 +91,13 @@ fn is_conf(file: &str) -> bool {
 impl Source {
     /// Reads `path`: an archive, a `gravity.db`, or a directory.
     pub(crate) fn load(path: &Path) -> Result<Self, String> {
+        Self::load_in(path, &std::env::temp_dir())
+    }
+
+    /// [`Source::load`] with the directory an archive's `gravity.db` is unpacked into (SQLite reads
+    /// files). The import worker passes a private directory the server made under its data
+    /// directory, because the image has no `/tmp` (REQ: API-007, ADR-989).
+    pub(crate) fn load_in(path: &Path, scratch: &Path) -> Result<Self, String> {
         let shown = path.display();
         if path.is_dir() {
             return Self::from_dir(path);
@@ -110,10 +117,15 @@ impl Source {
                 || JSON_TABLES.iter().any(|t| t.0 == b)
         })
         .map_err(|e| format!("{shown}: {e}"))?;
-        Self::from_entries(entries)
+        Self::from_entries_in(entries, scratch)
     }
 
+    #[cfg(test)]
     pub(crate) fn from_entries(entries: archive::Entries) -> Result<Self, String> {
+        Self::from_entries_in(entries, &std::env::temp_dir())
+    }
+
+    fn from_entries_in(entries: archive::Entries, scratch: &Path) -> Result<Self, String> {
         let mut s = Self::default();
         let mut json: BTreeMap<String, Vec<u8>> = BTreeMap::new();
         for (name, data) in entries {
@@ -122,7 +134,7 @@ impl Source {
                 s.dnsmasq.entry(b.clone()).or_insert_with(|| data.clone());
             }
             if b == "gravity.db" {
-                let tmp = TempFile::write(&data)?;
+                let tmp = TempFile::write(scratch, &data)?;
                 s.tables = sqlite_tables(&tmp.0)?;
             } else if FILES.contains(&b.as_str()) {
                 s.files.insert(b, data);
@@ -207,13 +219,12 @@ impl Source {
 struct TempFile(PathBuf);
 
 impl TempFile {
-    fn write(data: &[u8]) -> Result<Self, String> {
+    fn write(dir: &Path, data: &[u8]) -> Result<Self, String> {
         use std::io::Write as _;
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
-        let p =
-            std::env::temp_dir().join(format!("telltale-import-{}-{nanos}.db", std::process::id()));
+        let p = dir.join(format!("telltale-import-{}-{nanos}.db", std::process::id()));
         let mut o = std::fs::OpenOptions::new();
         o.write(true).create_new(true);
         #[cfg(unix)]

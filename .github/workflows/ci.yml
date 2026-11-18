@@ -385,6 +385,25 @@ jobs:
       # REQ: API-007 (T6.4) — Technitium import through the API of the official image.
       - name: Technitium import (API)
         run: bash deploy/technitium-import-e2e.sh target/bench-fast/telltale
+  # REQ: API-007, DSC-002 (ADR-988, ADR-989) — the sandboxed workers in the shipped shape: the
+  # musl binary (mimalloc, reserving address space `RLIMIT_DATA` counts), the scratch image with a
+  # read-only root and no /tmp. The discovery worker handshakes under its limit and the import
+  # worker previews a gravity.db and a Teleporter zip. `bench-fast` is the release profile without
+  # fat LTO: the same musl toolchain, allocator and limits, in a quarter of the build time.
+  worker-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the musl image
+        run: docker buildx build --platform linux/amd64 --build-arg PROFILE=bench-fast --load -t telltale:ci .
+      - name: Workers in the image (discovery handshake, Pi-hole import)
+        run: bash deploy/worker-image-e2e.sh telltale:ci
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Worker tests on an optimized build
+        run: cargo test -j 4 --profile bench-fast -p telltale --test pihole_import_worker --test discovery_workers
   # REQ: DSC-003 (T25.4, ADR-908) — the SNMP client against net-snmp `snmpd` in a container on an
   # RFC 1918 Docker network: v2c GET and walk, v3 SHA with and without AES.
   snmp:

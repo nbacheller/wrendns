@@ -36,14 +36,16 @@ struct Worker {
 
 impl Worker {
     fn start(args: &[&str]) -> Self {
-        Self::spawn(
-            Command::new(BIN)
-                .args(args)
-                .env_clear()
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null()),
-        )
+        let mut cmd = Command::new(BIN);
+        cmd.args(args)
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        // REQ: DSC-002 (ADR-988) - started as the supervisor starts it: the spawn preparation sets
+        // the allocator's environment, without which a release worker can't run under its limit.
+        telltale_net::worker::prepare_spawn(&mut cmd).unwrap();
+        Self::spawn(&mut cmd)
     }
 
     /// Starts the worker as another user (`uid` and `gid`), as the systemd unit, the image and the
@@ -51,16 +53,16 @@ impl Worker {
     #[cfg(target_os = "linux")]
     fn start_as(args: &[&str], uid: u32) -> Self {
         use std::os::unix::process::CommandExt;
-        Self::spawn(
-            Command::new(BIN)
-                .args(args)
-                .env_clear()
-                .uid(uid)
-                .gid(uid)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null()),
-        )
+        let mut cmd = Command::new(BIN);
+        cmd.args(args)
+            .env_clear()
+            .uid(uid)
+            .gid(uid)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        telltale_net::worker::prepare_spawn(&mut cmd).unwrap();
+        Self::spawn(&mut cmd)
     }
 
     fn spawn(cmd: &mut Command) -> Self {
@@ -170,12 +172,16 @@ fn limits_reply(memory_mib: u32) -> Value {
 }
 
 /// REQ: DSC-002 (`dsc_002_worker_env_is_empty`) — the worker starts with no environment: the parent
-/// cleared it, and the worker reports how many variables it sees.
+/// cleared it, and the worker reports how many variables it sees: the one the spawn preparation
+/// sets for the allocator (ADR-988), nothing else.
 #[test]
 fn dsc_002_worker_env_is_empty() {
     let reply = limits_reply(64);
     assert_eq!(reply["t"], "hello");
-    assert_eq!(reply["env_vars"], 0, "the worker sees no environment");
+    assert_eq!(
+        reply["env_vars"], 1,
+        "the worker sees only the allocator's variable"
+    );
     assert_eq!(reply["mode"], "snmp");
 }
 

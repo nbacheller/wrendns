@@ -140,33 +140,100 @@ fn new_id() -> String {
     telltale_api::auth::crypto::random_secret()
 }
 
-/// The upload, as a private temporary file the worker reads; removed when dropped.
-struct Upload(PathBuf);
+/// The upload, as a private file in a private scratch directory the worker reads; the directory
+/// and everything in it is removed when this is dropped.
+///
+/// REQ: API-007 (ADR-989) — the directory is made under the node's data directory, the one path
+/// every install can write (the scratch image has no `/tmp`, and the worker unpacks an archive's
+/// `gravity.db` next to the upload). It is `<data_dir>/import-tmp/<unique>`, mode 0700; when the
+/// data directory can't be written it falls back to the system's temporary directory.
+struct Upload {
+    dir: PathBuf,
+    file: PathBuf,
+}
+
+/// The directory under the data directory that holds the scratch directories.
+const SCRATCH_PARENT: &str = "import-tmp";
+/// A scratch directory older than this is left over from a crash and is removed.
+const SCRATCH_STALE: Duration = Duration::from_secs(3600);
 
 impl Upload {
-    fn write(data: &[u8]) -> Result<Self, Problem> {
+    fn write(data_dir: &Path, data: &[u8]) -> Result<Self, Problem> {
         use std::io::Write as _;
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let p = std::env::temp_dir().join(format!(
-            "telltale-pihole-{}-{}-{n}.upload",
-            std::process::id(),
-            now()
-        ));
+        let name = format!("{}-{}-{n}", std::process::id(), now());
+        let fail = |what: &str, e: std::io::Error| {
+            Problem::internal(format!("can't store the upload ({what}): {e}"))
+        };
+        let dir = match Self::make_dir(&data_dir.join(SCRATCH_PARENT), &name) {
+            Ok(d) => d,
+            Err(_) => Self::make_dir(&std::env::temp_dir(), &format!("telltale-import-{name}"))
+                .map_err(|e| fail("no writable scratch directory", e))?,
+        };
+        let up = Self {
+            file: dir.join("upload"),
+            dir,
+        };
         let mut o = std::fs::OpenOptions::new();
         o.write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-        let up = Self(p);
-        o.open(&up.0)
+        o.open(&up.file)
             .and_then(|mut f| f.write_all(data))
-            .map_err(|e| Problem::internal(format!("can't store the upload: {e}")))?;
+            .map_err(|e| fail("writing it", e))?;
         Ok(up)
+    }
+
+    /// Makes `<parent>/<name>` (and `parent`), private to this user, and clears stale siblings.
+    fn make_dir(parent: &Path, name: &str) -> std::io::Result<PathBuf> {
+        let private = |p: &Path| -> std::io::Result<()> {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+                match std::fs::DirBuilder::new().mode(0o700).create(p) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700))?;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            #[cfg(not(unix))]
+            std::fs::create_dir_all(p)?;
+            Ok(())
+        };
+        if let Some(grand) = parent.parent() {
+            std::fs::create_dir_all(grand)?;
+        }
+        private(parent)?;
+        Self::sweep(parent);
+        let dir = parent.join(name);
+        private(&dir)?;
+        Ok(dir)
+    }
+
+    /// Removes scratch directories a crashed worker or server left behind (best effort).
+    fn sweep(parent: &Path) {
+        let Ok(list) = std::fs::read_dir(parent) else {
+            return;
+        };
+        for e in list.flatten() {
+            let old = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > SCRATCH_STALE);
+            if old {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
     }
 }
 
 impl Drop for Upload {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -175,10 +242,10 @@ impl Drop for Upload {
 /// worker applies the same limits as a discovery worker first (REQ: API-007, ADR-939): the memory
 /// limit, no capability, no `bind`/`listen`/`ptrace`, and not dumpable. If it can't, it says so
 /// and converts nothing.
-pub(crate) fn run_worker(path: &Path) -> std::process::ExitCode {
+pub(crate) fn run_worker(path: &Path, scratch: Option<&Path>) -> std::process::ExitCode {
     use std::io::Write as _;
     let out = match telltale_net::worker::harden(WORKER_MEMORY) {
-        Ok(()) => worker_answer(path),
+        Ok(()) => worker_answer(path, scratch),
         Err(e) => json!({
             "ok": false,
             "error": format!("the import worker can't apply its limits: {e}"),
@@ -189,8 +256,12 @@ pub(crate) fn run_worker(path: &Path) -> std::process::ExitCode {
 }
 
 /// The worker's answer for the file at `path`: the conversion, or the reason there isn't one.
-fn worker_answer(path: &Path) -> Value {
-    match pihole::Source::load(path).and_then(|src| pihole::convert(&src, "the uploaded export")) {
+fn worker_answer(path: &Path, scratch: Option<&Path>) -> Value {
+    let loaded = match scratch {
+        Some(dir) => pihole::Source::load_in(path, dir),
+        None => pihole::Source::load(path),
+    };
+    match loaded.and_then(|src| pihole::convert(&src, "the uploaded export")) {
         Ok(im) => json!({
             "ok": true,
             "toml": im.toml,
@@ -275,12 +346,16 @@ fn wire_from_bytes(out: &[u8]) -> Result<Wire, Problem> {
 /// Runs the worker on `path` in a child process with an empty environment, under a timeout and
 /// an output limit (ADR-939), with the spawn preparation a discovery worker gets (no ambient
 /// capability, the parent not dumpable).
-async fn run_worker_process(path: &Path) -> Result<Wire, Problem> {
+async fn run_worker_process(path: &Path, scratch: &Path) -> Result<Wire, Problem> {
     let exe = std::env::current_exe().map_err(|e| {
         Problem::internal(format!("can't find this program to run the import: {e}"))
     })?;
     let mut cmd = tokio::process::Command::new(exe);
-    cmd.arg("pihole-import-worker").arg(path).env_clear();
+    cmd.arg("pihole-import-worker")
+        .arg(path)
+        .arg("--scratch")
+        .arg(scratch)
+        .env_clear();
     telltale_net::worker::prepare_spawn(cmd.as_std_mut())
         .map_err(|e| Problem::internal(format!("can't prepare the import worker: {e}")))?;
     let out = run_capped(cmd, WORKER_TIMEOUT, WORKER_OUTPUT_LIMIT).await?;
@@ -840,10 +915,11 @@ pub(crate) async fn preview(src: Arc<Sources>, req: PiholeImportRequest) -> Resu
     let by = req.by.clone();
     let data = req.data;
     // The write is blocking I/O of up to 64 MiB: it runs off the request's thread.
-    let upload = tokio::task::spawn_blocking(move || Upload::write(&data))
+    let data_dir = PathBuf::from(src.config.load().node.data_dir.as_str());
+    let upload = tokio::task::spawn_blocking(move || Upload::write(&data_dir, &data))
         .await
         .map_err(|e| Problem::internal(format!("the upload failed: {e}")))??;
-    let wire = run_worker_process(&upload.0).await?;
+    let wire = run_worker_process(&upload.file, &upload.dir).await?;
     drop(upload);
     let mut names = wire.samples.clone();
     names.extend(req.samples.iter().cloned());
@@ -1119,6 +1195,39 @@ mod tests {
         );
     }
 
+    // REQ: API-007 (ADR-989) — the upload lives in a private directory under the data directory
+    // (the image has no /tmp), and the whole directory goes when the upload does.
+    #[test]
+    fn api_007_upload_scratch_is_private_and_removed() {
+        let data = tempfile::tempdir().unwrap();
+        let up = Upload::write(data.path(), b"hello").unwrap();
+        assert!(up.dir.starts_with(data.path().join(SCRATCH_PARENT)));
+        assert_eq!(std::fs::read(&up.file).unwrap(), b"hello");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&up.dir), 0o700);
+            assert_eq!(mode(&data.path().join(SCRATCH_PARENT)), 0o700);
+            assert_eq!(mode(&up.file), 0o600);
+        }
+        let dir = up.dir.clone();
+        drop(up);
+        assert!(!dir.exists(), "the scratch directory is removed");
+    }
+
+    // REQ: API-007 (ADR-989) — a data directory that can't be written falls back to the system's
+    // temporary directory instead of failing the import.
+    #[test]
+    fn api_007_upload_scratch_falls_back_to_temp_dir() {
+        let data = tempfile::tempdir().unwrap();
+        let blocked = data.path().join("not-a-dir");
+        std::fs::write(&blocked, b"a file where the data directory should be").unwrap();
+        let up = Upload::write(&blocked, b"x").unwrap();
+        assert!(up.dir.starts_with(std::env::temp_dir()));
+        assert_eq!(std::fs::read(&up.file).unwrap(), b"x");
+    }
+
     // REQ: API-007 (T24.18) — a damaged archive, gravity.db or text file is refused with the reason
     // (422), by the worker's answer; the worker's own process limits are the child's concern.
     #[test]
@@ -1133,7 +1242,7 @@ mod tests {
         let text = dir.path().join("notes.txt");
         std::fs::write(&text, b"hello").unwrap();
         for path in [&zip, &db, &text] {
-            let answer = worker_answer(path).to_string();
+            let answer = worker_answer(path, None).to_string();
             let Err(err) = wire_from_bytes(answer.as_bytes()) else {
                 panic!("{} should be refused", path.display())
             };
