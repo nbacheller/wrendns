@@ -7,6 +7,12 @@ on:
   pull_request:
     paths: ["integrations/home-assistant/**", "crates/telltale/src/routers.rs", "crates/telltale/src/device_dns.rs", "deploy/ha-test/**", "crates/telltale-api/src/pihole_api.rs", ".github/workflows/home-assistant.yml"]
   workflow_dispatch:
+# A newer push to the same branch supersedes a run still in progress (it would only spend minutes and
+# the shared GitHub API limit); runs on main are never cancelled, the release workflow waits on them.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 permissions:
   contents: read
 jobs:

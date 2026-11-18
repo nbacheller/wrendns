@@ -7,6 +7,11 @@ on:
   pull_request:
   # The release workflow starts CI for the commit it pushes to main (T9.26).
   workflow_dispatch:
+# A newer push to the same branch supersedes a run still in progress (it would only spend minutes and
+# the shared GitHub API limit); runs on main are never cancelled, the release workflow waits on them.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Least privilege: every job reads the repository and nothing more (the repository's default is
 # read-only already; CodeQL's actions/missing-workflow-permissions asks for it to be explicit).
