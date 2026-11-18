@@ -46,7 +46,7 @@ Any scalar key can be set from the environment. Upper-case the path and join it 
 - Arrays of tables (`[[listen]]`, `[[upstream]]`, ...) can't be set from the environment. Use a file.
 - An invalid value is an error that names the variable: `cache.max_ttl (from TELLTALE_CACHE_MAX_TTL): expected an integer, got "soon"`.
 - Unknown `TELLTALE_*` variables are logged as warnings and ignored. This is deliberate: Kubernetes injects `TELLTALE_PORT`, `TELLTALE_SERVICE_HOST`, and similar variables for any Service named `telltale`.
-- `TELLTALE_CONFIG`, `TELLTALE_NODE_CONFIG`, `TELLTALE_LOG`, and `TELLTALE_LOG_FORMAT` are reserved for the binary itself, as are `TELLTALE_BOOTSTRAP_ADMIN_USER`, `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD`, and `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH` (the first admin from a secret; see `docs/running.md`).
+- `TELLTALE_CONFIG`, `TELLTALE_NODE_CONFIG`, `TELLTALE_LOG`, and `TELLTALE_LOG_FORMAT` are reserved for the binary itself, as are `TELLTALE_BOOTSTRAP_ADMIN_USER`, `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD`, and `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH` (the first admin from a secret; see `docs/running.md`). Also known and never reported: `TELLTALE_SUPERVISOR` (set by the shipped unit, bundles and chart; see the guarded restart), `TELLTALE_IGNORE_GUARDED`, `TELLTALE_TOKEN` (for `telltale ctl`), and `TELLTALE_LOG_DNSSEC_LIBRARY`.
 
 ## Sizes
 Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`, `"2 GiB"`, `"500MB"`. Binary units (KiB, MiB, GiB, TiB) are powers of 1024; decimal units (KB, MB, GB, TB) are powers of 1000.

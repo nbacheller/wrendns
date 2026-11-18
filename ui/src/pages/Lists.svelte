@@ -10,6 +10,7 @@
   import { currentMode } from '../lib/mode.svelte';
   import { can } from '../lib/session.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
+  import { classifyListError } from '../lib/list-failure';
 
   // REQ: API-002 (T7.5) — add and change lists here.
   const listFields: Field[] = [
@@ -140,6 +141,51 @@
     }, 2000);
     return () => clearInterval(t);
   });
+  // REQ: T24.27 — fixes offered on a list row: raise a list's size limit, turn off or remove a list
+  // that failed for good (404) or adds nothing (every name is in another list).
+  let fixing = $state<string | null>(null);
+  let fixError = $state<unknown>(null);
+  let fixNote = $state<string | null>(null);
+  let confirmRemove = $state<string | null>(null);
+  async function definitionOf(name: string): Promise<Record<string, unknown>> {
+    const e = (await api.configEntries('list')).items.find((x) => x.name === name);
+    if (!e?.definition) throw new Error(`The list ${name} isn't in this node's configuration.`);
+    const { name: _n, ...def } = e.definition as Record<string, unknown>;
+    return def;
+  }
+  async function fix(name: string, note: string, change: () => Promise<unknown>) {
+    fixing = name;
+    fixError = null;
+    fixNote = null;
+    confirmRemove = null;
+    try {
+      await change();
+      fixNote = note;
+      ({ items: lists, missingNodes: unread = [] } = await api.lists());
+    } catch (e) {
+      fixError = e;
+    } finally {
+      fixing = null;
+    }
+  }
+  // Sets this list's own `max_bytes`, then downloads it again.
+  const raiseLimit = (name: string, mib: number) =>
+    fix(name, `${name}: the limit is now ${mib} MiB and the list is downloading again.`, async () => {
+      const def = await definitionOf(name);
+      await api.putEntry('lists', name, { ...def, max_bytes: `${mib}MiB` });
+      await api.refreshLists([name]);
+    });
+  const turnOff = (name: string) =>
+    fix(name, `${name} is off. It stays in the configuration; turn it on from Manage lists.`, async () => {
+      const def = await definitionOf(name);
+      await api.putEntry('lists', name, { ...def, enabled: false });
+    });
+  const removeList = (name: string) =>
+    fix(name, `${name} was removed.`, () => api.deleteEntry('lists', name));
+  // Every name in it is also in another list: it adds nothing, so it can go.
+  const redundantWith = (l: S['ListInfo']): string | null =>
+    l.enabled && l.state === 'ok' && l.entries > 0 && l.unique === 0 && l.overlap.length ? l.overlap[0].list : null;
+
   // REQ: API-002 (T9.12) — download and parse the draft list before saving it.
   const tryList = {
     label: 'Test it',
@@ -152,6 +198,15 @@
     },
   };
 </script>
+
+{#snippet removeButtons(name: string)}
+  {#if confirmRemove === name}
+    <button class="link small danger" disabled={fixing !== null} data-testid="list-remove-confirm" onclick={() => removeList(name)}>Yes, remove {name}</button>
+    <button class="link small" onclick={() => (confirmRemove = null)}>Keep it</button>
+  {:else}
+    <button class="link small danger" disabled={fixing !== null} data-testid="list-remove" onclick={() => (confirmRemove = name)}>Remove it</button>
+  {/if}
+{/snippet}
 
 <div class="page">
   <div class="page-head">
@@ -173,6 +228,8 @@
   </div>
   <ErrorNote {error} />
   <ErrorNote error={refreshError} />
+  <ErrorNote error={fixError} />
+  {#if fixNote}<div class="notice" role="status" data-testid="list-fix-note">{fixNote}</div>{/if}
   {#if unread.length}
     {#if primaryUnread}
       <div class="notice warn" role="status" data-testid="lists-unread">Not read: {unread.join(', ')}. The download state shown isn't confirmed from the primary until it answers.</div>
@@ -218,11 +275,45 @@
           </thead>
           <tbody>
             {#each lists as l (l.name)}
+              {@const failure = classifyListError(l.error)}
+              {@const redundant = redundantWith(l)}
               <tr class:off={!l.enabled}>
                 <td>
                   <strong>{l.name}</strong>{#if !l.enabled} <span class="badge">off</span>{/if}{#if l.mode === 'shadow'} <span class="badge info" title="Never blocks: what it would have blocked is counted below">shadow</span>{/if}
                   {#if advanced}<div class="muted small src">{l.source}</div>{/if}
-                  {#if l.error}<div class="small err">{l.error}</div>{/if}
+                  {#if l.error}<div class="small err" data-testid="list-error">{l.error}</div>{/if}
+                  <!-- REQ: T24.27 — a failure says what to do about it. -->
+                  {#if failure?.kind === 'too_large'}
+                    <div class="small fix" data-testid="list-too-large">
+                      This list is bigger than its {bytes(failure.limit)} limit{failure.seen ? ` (the server says ${bytes(failure.seen)})` : ''}; the last good copy, if any, is still used.<HelpButton id="list-too-large" />
+                      {#if can('operator') && failure.suggestedMiB}
+                        <button class="link small" disabled={fixing !== null} data-testid="list-raise-limit"
+                          onclick={() => raiseLimit(l.name, failure.suggestedMiB!)}
+                          title="Sets this list's max_bytes to {failure.suggestedMiB} MiB and downloads it again">
+                          {fixing === l.name ? 'Working…' : `Raise the limit to ${failure.suggestedMiB} MiB`}
+                        </button>
+                      {:else if failure.suggestedMiB === null}
+                        <span class="muted">It is over what a small device's memory allows for one list (128 MiB); remove it or use a smaller list.</span>
+                      {/if}
+                    </div>
+                  {:else if failure?.kind === 'not_found'}
+                    <div class="small fix" data-testid="list-not-found">
+                      The address returns "not found" (HTTP {failure.status}): the list was moved or deleted by its maintainer. Remove it, or replace it with the list's new address.<HelpButton id="list-not-found" />
+                      {#if can('operator')}
+                        {@render removeButtons(l.name)}
+                      {/if}
+                    </div>
+                  {/if}
+                  <!-- Pruning: a list that adds nothing. -->
+                  {#if redundant}
+                    <div class="small fix" data-testid="list-redundant">
+                      Every name in it is also in <strong>{redundant}</strong>: it adds nothing.<HelpButton id="list-redundant" />
+                      {#if can('operator')}
+                        <button class="link small" disabled={fixing !== null} data-testid="list-turn-off" onclick={() => turnOff(l.name)}>Turn it off</button>
+                        {@render removeButtons(l.name)}
+                      {/if}
+                    </div>
+                  {/if}
                   <!-- REQ: FLT-003 (review 02-08) — regex rules the snapshot leaves out. -->
                   {#if l.regexSkipped > 0}<div class="small warn-text" data-testid="list-regex-skipped">{num(l.regexSkipped)} regex {l.regexSkipped === 1 ? 'rule' : 'rules'} left out (over the limit of <code>max_regexes</code>, or too large to compile)</div>{/if}
                 </td>
@@ -345,6 +436,9 @@
   }
   .err {
     color: var(--bad);
+  }
+  .fix {
+    margin-top: 2px;
   }
   .warn-text {
     color: var(--warn);

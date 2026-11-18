@@ -1868,7 +1868,8 @@ fn t24_27_binary_env_vars_are_not_reported_unknown() {
             ("TELLTALE_IGNORE_GUARDED", "1"),
             ("TELLTALE_TOKEN", "t"),
             ("TELLTALE_LOG_DNSSEC_LIBRARY", "1"),
-            ("TELLTALE_DRAIN_DELAY_SECS", "5"),
+            // A schema key (`node.drain_delay_secs`): applied, not reported.
+            ("TELLTALE_DRAIN_DELAY_SECS", "7"),
         ])
         .load()
         .unwrap();
@@ -1878,4 +1879,5 @@ fn t24_27_binary_env_vars_are_not_reported_unknown() {
         .filter(|w| w.contains("unknown environment variable"))
         .collect();
     assert!(unknown.is_empty(), "{unknown:?}");
+    assert_eq!(loaded.config.node.drain_delay_secs, 7);
 }
