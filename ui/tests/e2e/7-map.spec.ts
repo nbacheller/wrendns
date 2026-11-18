@@ -410,6 +410,18 @@ test('obs_901 reduced motion stops animation', async ({ browser }) => {
   await o.ctx.close();
 });
 
+test('obs_901 leaving the page closes the stream', async ({ browser }) => {
+  const o = await open(browser);
+  await go(o);
+  const es = () => o.page.evaluate(() => (window as unknown as { __es: { readyState: number }[] }).__es.map((e) => e.readyState));
+  await expect.poll(es).toEqual([1]);
+  await o.page.evaluate(() => {
+    location.hash = '#/dashboard';
+  });
+  await expect.poll(es).toEqual([2]);
+  await o.ctx.close();
+});
+
 test('obs_901 hidden tab pauses and closes the stream', async ({ browser }) => {
   const o = await open(browser);
   await go(o);

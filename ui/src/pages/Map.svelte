@@ -171,7 +171,9 @@
     let errors = 0;
     es.addEventListener('snapshot', (m) => {
       try {
-        accept(JSON.parse((m as MessageEvent).data) as Snapshot, false);
+        const frame = JSON.parse((m as MessageEvent).data) as Snapshot;
+        seq++; // a slower initial fetch must not overwrite this newer frame
+        accept(frame, false);
         mode = 'live';
         errors = 0;
       } catch {
@@ -452,7 +454,7 @@
             {#if selEdges.length}
               <h3>Flows</h3>
               <ul class="small flows">
-                {#each selEdges as e (e.from + e.to)}
+                {#each selEdges as e, i (`${e.from}>${e.to}#${i}`)}
                   <li>{labelOf(e.from)} → {labelOf(e.to)}: {rate(e.qps)}, {pct(e.slowPct, 0)} slow, {pct(e.errPct, 0)} failing, {HEALTH_WORDS[e.health]}</li>
                 {/each}
               </ul>
