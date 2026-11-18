@@ -719,6 +719,7 @@ fn policy_of(
         client_id: client_id.map(str::to_owned),
         wanted_device: None,
         stand_in: false,
+        observed: false,
     };
     p.with_explain_state(|st| crate::policy_view::build(st, &cfg, &subject, now))
 }
@@ -995,6 +996,7 @@ groups = ["night"]
             client_id: None,
             wanted_device: None,
             stand_in: false,
+            observed: false,
         };
         let pol = p.with_explain_state(|st| crate::policy_view::build(st, &cfg, &subject, now));
         assert_eq!(
@@ -1025,6 +1027,7 @@ fn flt_006_policy_cidr_device_is_a_stand_in() {
         client_id: None,
         wanted_device: Some("printer".to_owned()),
         stand_in: true,
+        observed: false,
     };
     let pol =
         p.with_explain_state(|st| crate::policy_view::build(st, &cfg, &subject, 1_795_035_600));
@@ -1090,4 +1093,31 @@ fn flt_006_policy_rules_apply_by_scope_and_expiry() {
         .map(|i| i.label.as_str())
         .collect();
     assert_eq!(labels, ["block everyone.example"]);
+}
+
+/// REQ: FLT-006 (T24.30, ADR-996) — an observed subject with no MAC ignores this node's own
+/// neighbor table, so a replica's "no MAC" is not replaced by what only the primary knows.
+#[test]
+fn flt_006_policy_observed_without_mac_ignores_local_neighbors() {
+    let (p, _sources) = setup_with(POLICY_EXTRA);
+    let cfg = policy_cfg();
+    let ip: std::net::IpAddr = "10.9.9.9".parse().unwrap();
+    p.neighbors
+        .replace([(ip, [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x02])]);
+    let mut subject = crate::policy_view::Subject {
+        asked: "phone".to_owned(),
+        ip,
+        mac: None,
+        client_id: None,
+        wanted_device: Some("phone".to_owned()),
+        stand_in: false,
+        observed: false,
+    };
+    let live =
+        p.with_explain_state(|st| crate::policy_view::build(st, &cfg, &subject, 1_795_035_600));
+    assert_eq!(live.identified_by, "neighbor_mac", "{live:?}");
+    subject.observed = true;
+    let seen =
+        p.with_explain_state(|st| crate::policy_view::build(st, &cfg, &subject, 1_795_035_600));
+    assert_ne!(seen.identified_by, "neighbor_mac", "{seen:?}");
 }

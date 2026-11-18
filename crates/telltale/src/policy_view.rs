@@ -35,6 +35,10 @@ pub(crate) struct Subject {
     pub(crate) wanted_device: Option<String>,
     /// The address is a stand-in (the device has no address yet).
     pub(crate) stand_in: bool,
+    /// Another node's observations are being applied: this node's own neighbor table says
+    /// nothing about the device (an observed absence of a MAC stays absent).
+    #[serde(default)]
+    pub(crate) observed: bool,
 }
 
 #[allow(clippy::unnecessary_wraps)] // the `link` fields are `Option`s: call sites pass it on
@@ -110,13 +114,18 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
     let policy = &st.dynamic.policy;
     // The filter's table is the one its masks were built for (as in Explain).
     let clients = st.filter.map_or(&policy.clients, |f| &f.clients);
+    let no_neighbors = telltale_policy::Neighbors::default();
     let Resolved {
         ident,
         key: matched,
         mac,
     } = resolve_identity(
         clients,
-        st.neighbors,
+        if subject.observed {
+            &no_neighbors
+        } else {
+            st.neighbors
+        },
         st.workloads,
         subject.ip,
         subject.client_id.as_deref(),
@@ -148,6 +157,11 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
         (Some(want), Some(got)) if !want.eq_ignore_ascii_case(got) => notes.push(format!(
             "A query with this device's keys is recognized as {got}, which ranks higher; that device's policy is shown."
         )),
+        (Some(want), None) if subject.stand_in && subject.client_id.is_none() && subject.mac.is_none() => {
+            notes.push(format!(
+                "A query from a member address of {want}'s network is not recognized as {want}: a group network takes it first, so that network's policy is shown."
+            ));
+        }
         (Some(want), None) => notes.push(format!(
             "A query with {want}'s keys is not recognized as {want} (another rung, such as its network, takes it first), so the default or network policy is shown."
         )),

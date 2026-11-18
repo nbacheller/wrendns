@@ -2040,6 +2040,7 @@ impl Backend for ApiBackend {
         subject.mac = observed.mac;
         subject.client_id.clone_from(&observed.client_id);
         subject.stand_in = false;
+        subject.observed = true;
         Ok(self.policy_of(&subject))
     }
 
@@ -6206,6 +6207,7 @@ impl ApiBackend {
             client_id,
             wanted_device: wanted,
             stand_in,
+            observed: false,
         };
         if let Some(ip) = self.pod_address(given) {
             return Ok(subject(ip, None, None, None, false));
@@ -6252,9 +6254,21 @@ impl ApiBackend {
                     _ => None,
                 })
             });
-        // A network range names no single address: like a MAC-only device, it is probed as a
-        // stand-in (its group depends on the member's address), never at the range's own address.
+        // A network range names no single address: like a MAC-only device, it is a stand-in (its
+        // group depends on the member's address). It is probed at a member address (the range's
+        // first host), never at the range's own address, and the result compared with the device.
         let wanted = Some(c.name.to_string());
+        let member = keys.iter().find_map(|k| match k {
+            MatchKey::Cidr(c) => Some(member_of(c)),
+            _ => None,
+        });
+        if ip.is_none()
+            && mac.is_none()
+            && client_id.is_none()
+            && let Some(m) = member
+        {
+            return Ok(subject(m, None, None, wanted, true));
+        }
         Ok(match ip {
             Some(ip) => subject(ip, None, client_id, wanted, false),
             // No address to read it at: the MAC (or client ID) says who it is.
@@ -6266,6 +6280,24 @@ impl ApiBackend {
                 true,
             ),
         })
+    }
+}
+
+/// A member address of a network (its first host; the address itself for a host route).
+fn member_of(c: &telltale_config::Cidr) -> IpAddr {
+    match c.addr {
+        IpAddr::V4(a) if c.prefix < 32 => IpAddr::V4(std::net::Ipv4Addr::from(
+            (u32::from(a) & u32::MAX.checked_shl(32 - u32::from(c.prefix)).unwrap_or(0))
+                .saturating_add(1),
+        )),
+        IpAddr::V6(a) if c.prefix < 128 => IpAddr::V6(std::net::Ipv6Addr::from(
+            (u128::from(a)
+                & u128::MAX
+                    .checked_shl(128 - u32::from(c.prefix))
+                    .unwrap_or(0))
+            .saturating_add(1),
+        )),
+        a => a,
     }
 }
 
@@ -8092,10 +8124,12 @@ groups = ["iot"]
             "{:?}",
             pr.notes
         );
+        // Probed at a member address it is the printer, in its own group, with no false note.
+        assert_eq!(pr.device.as_deref(), Some("printer"));
+        assert_eq!(pr.identified_by, "cidr");
+        assert_eq!(pr.group, "iot");
         assert!(
-            pr.notes
-                .iter()
-                .any(|n| n.contains("not recognized as printer")),
+            !pr.notes.iter().any(|n| n.contains("not recognized")),
             "{:?}",
             pr.notes
         );
