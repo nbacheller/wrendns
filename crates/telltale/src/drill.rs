@@ -926,7 +926,7 @@ async fn relay(
     for m in cluster
         .members()
         .into_iter()
-        .filter(|m| relays_to(&m.node_id, caller, skip))
+        .filter(|m| relays_to(&m.node_id, caller, skip) && !cluster.is_witness(&m.node_id))
     {
         let (c, body) = (Arc::clone(cluster), body.clone());
         calls.spawn(async move {
@@ -1276,7 +1276,11 @@ pub(crate) async fn ask_all(
         return (Vec::new(), Vec::new());
     };
     let mut calls = tokio::task::JoinSet::new();
-    for m in cluster.members() {
+    for m in cluster
+        .members()
+        .into_iter()
+        .filter(|m| !cluster.is_witness(&m.node_id))
+    {
         let (c, body) = (Arc::clone(cluster), body.clone());
         calls.spawn(async move {
             let label = member_label(&m);
@@ -1748,6 +1752,7 @@ async fn collect(src: &Arc<Sources>, mut s: Stored) {
         let drills_ok: HashMap<String, bool> = c
             .members()
             .into_iter()
+            .filter(|m| !c.is_witness(&m.node_id))
             .map(|m| (member_label(&m), m.drills))
             .collect();
         for (label, body) in answers {

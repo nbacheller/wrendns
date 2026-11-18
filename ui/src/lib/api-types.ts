@@ -5250,7 +5250,12 @@ export interface components {
             /** Format: int64 */
             uptimeSeconds: number;
             version: string;
-            /** @description Votes in automatic failover only (ADR-056). */
+            vote?: components["schemas"]["ClusterVote"] | null;
+            /**
+             * @description Votes in automatic failover only (ADR-056). A witness has no configuration version, no
+             *     secrets and no DNS: `configSeq`, `configLag`, `secrets` and `ready` mean nothing for it
+             *     (REQ: CLU-009, T24.33, ADR-1011), and the checks and alerts about them skip it.
+             */
             witness: boolean;
         };
         /** @description A peer node, as last heard over the cluster channel. */
@@ -5426,6 +5431,28 @@ export interface components {
             source?: components["schemas"]["ClusterSource"] | null;
             /** @description The node answering this request. */
             thisNode?: string | null;
+        };
+        /**
+         * @description REQ: CLU-009 (T24.33, ADR-1011) — a witness's part in the election, as this node sees it. A
+         *     witness only votes: it has no configuration, no secrets and no DNS.
+         */
+        ClusterVote: {
+            /**
+             * Format: int64
+             * @description Seconds since it last granted one.
+             */
+            lastGrantSecondsAgo?: number | null;
+            /**
+             * Format: int64
+             * @description Seconds since it last answered a vote request or lease renewal from this node (absent: this
+             *     node hasn't asked it, as in manual failover or on a node that isn't the primary).
+             */
+            lastReplySecondsAgo?: number | null;
+            /**
+             * Format: int64
+             * @description The epoch it reported in its last reply (the epoch it voted in).
+             */
+            votedEpoch?: number | null;
         };
         /**
          * @description Stable error codes.

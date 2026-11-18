@@ -665,6 +665,16 @@
       "docs": "replicated-secrets"
     },
     {
+      "id": "cluster-witness",
+      "title": "A witness only votes",
+      "term": "Witness",
+      "summary": "A witness is a small vote-only member (telltale cluster witness). It holds no configuration, no secrets and no DNS, so the Cluster page shows those as not applicable instead of behind or not ready. What it shows is whether it is up and linked, its version and uptime, and its vote: when it last answered this node's vote request or lease renewal, and the epoch it voted in.",
+      "when": "Your cluster has two full nodes and a witness so that automatic failover has three voters, and the witness's row shows no configuration version.",
+      "example": "node-c (witness, votes only): up, last vote 4 s ago, epoch 7; configuration, secrets and DNS: not applicable. It is green in the topology while it is up.",
+      "caution": "A witness that is down is a real problem: with two voters left, one more failure leaves no majority and no primary can keep its lease. The checks, health reasons and the node_down alert still name it, but it never counts as behind, not serving or odd.",
+      "docs": "clusters"
+    },
+    {
       "id": "host-resources",
       "title": "The machines your nodes run on",
       "term": "Host resources",

@@ -5029,6 +5029,16 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Owner decision (2026-11-18).** Accepted. The exposure in Q11 is accepted only with the read direction shipped first.
 
+## ADR-1011 — A witness is a voter: the cluster view says so and the checks skip it for configuration, secrets and DNS (Proposed 2026-11-18)
+**Context:** A witness (ADR-056, `telltale cluster witness`) runs the cluster channel and the election only: no configuration, no secrets, no DNS. The cluster view built every member the same way, so a witness showed "version 0, 13 behind", secrets "not reported", "not ready", uptime 0, an amber topology box, and counted in the Health and Compare tabs. An unreachable witness mattered, though: with three voters, losing one leaves two, and automatic failover needs a majority.
+**Decision:**
+1. The view keeps `witness: true` as the marker (the role string stays `replica`, so no consumer of `role` changes) and clears the fields that mean nothing for it (`configSeq`, `configLag`, `behindSeconds`, `secrets`, `ready`, load and cache). It adds `vote` (`lastReplySecondsAgo`, `lastGrantSecondsAgo`, `votedEpoch`), taken from the last reply the witness gave this node's vote request or lease renewal; absent times mean this node has not asked it (manual failover, or a node that is not the primary).
+2. A witness's heartbeat carries its process start and uptime (fields every peer already reads; nothing added to the wire, so older peers show 0 as before). Its version is already in its Hello.
+3. Checks, health reasons, alerts, the peer-lag metric and the rollout skip a witness for configuration, secrets and DNS (`in_sync`, `serving`, `sync_lag`, canary choice, rollout samples). An unreachable witness still fails `peers_up` and raises `node_down` (health reason and alert), which the health reason had suppressed.
+4. The UI shows "witness, votes only", "not applicable" for the three, and the vote state; the topology draws it green while up and red when down.
+**Alternatives rejected:** a new `role: "witness"` string (every `role` comparison, the promote form and older clients would need to learn it); hiding the witness from the page (the owner needs to see its vote and that it is up); asking the witness for its ballot over a new RPC (a wire change for a number the primary already learns from the replies it gets).
+**Consequences:** the view is a little different for a witness in the API (`vote`, cleared fields); `docs/api/openapi.json` and the UI types are regenerated. No DNS path change.
+
 ## ADR-1000 — Serving several networks: routed by default, directly on a VLAN when the owner wants it; what changes in the node (Proposed 2026-11-18)
 **Context:** T24.32. Owner decision 2026-11-18: the VLANs reach TelltaleDNS routed through the gateway now; document and build what being directly on each VLAN needs, for later. Measured on the owner's network from the IoT VLAN (203.0.113.0/24): the Pi-hole VIP 192.0.2.249:53 and TelltaleDNS on 192.0.2.12:1053 answer through the gateway; the Pis' extra 198.51.100.x and 203.0.113.x addresses on the untagged eth0 time out (an untagged alias address is on the native VLAN's wire, so nothing on a tagged VLAN can reach it); the IoT DHCP hands out the gateway 203.0.113.1 as DNS.
 

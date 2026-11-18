@@ -384,7 +384,9 @@ pub(crate) fn cluster_reasons(view: &ClusterView) -> Vec<HealthReason> {
             out.push(r);
         }
     }
-    for n in view.nodes.iter().filter(|n| !n.this_node && !n.witness) {
+    // REQ: CLU-009 (T24.33) — a witness that is unreachable still counts (automatic failover needs
+    // its vote); it is never "behind" or "not serving", as it has no configuration and no DNS.
+    for n in view.nodes.iter().filter(|n| !n.this_node) {
         let name = node_name(n);
         if !n.ephemeral && !n.connected {
             let mut r = reason(
@@ -399,6 +401,7 @@ pub(crate) fn cluster_reasons(view: &ClusterView) -> Vec<HealthReason> {
             r.node = Some(name);
             out.push(r);
         } else if n.connected
+            && !n.witness
             && n.config_lag > 0
             && n.behind_seconds.is_some_and(|s| s >= SYNC_LAG_SECONDS)
         {
@@ -829,6 +832,54 @@ mod tests {
         assert!(codes(vec![primary.clone(), maint]).is_empty());
         // Reconnected: the value is absent, so the reason clears.
         assert!(codes(vec![primary, node("r", None)]).is_empty());
+    }
+
+    // REQ: CLU-009 (T24.33) — an unreachable witness is a degraded reason (automatic failover
+    // needs its vote); a connected one is never "behind", whatever it reports.
+    #[test]
+    fn clu_009_t24_33_health_counts_a_witness_only_as_a_voter() {
+        use telltale_api::model::ClusterNode;
+        let node = |id: &str, connected: bool| ClusterNode {
+            node_id: id.into(),
+            site: id.into(),
+            role: "replica".into(),
+            connected,
+            up: connected,
+            ..ClusterNode::default()
+        };
+        let mut primary = node("p", true);
+        primary.role = "primary".into();
+        primary.this_node = true;
+        let view = |nodes: Vec<ClusterNode>| ClusterView {
+            enabled: true,
+            cluster_id: None,
+            name: None,
+            this_node: Some("p".into()),
+            newest_config_seq: 14,
+            healthy: true,
+            checks: Vec::new(),
+            nodes,
+            events: Vec::new(),
+            authority: None,
+            conflicts: Vec::new(),
+            failover: None,
+            source: None,
+            rollout: None,
+            host: None,
+        };
+        let mut witness = node("w", true);
+        witness.witness = true;
+        witness.config_lag = 13;
+        witness.behind_seconds = Some(1920);
+        assert!(cluster_reasons(&view(vec![primary.clone(), witness.clone()])).is_empty());
+        witness.connected = false;
+        witness.up = false;
+        let r = cluster_reasons(&view(vec![primary, witness]));
+        assert_eq!(r.len(), 1);
+        assert_eq!(
+            (r[0].code.as_str(), r[0].node.as_deref()),
+            ("node_down", Some("w"))
+        );
     }
 
     // REQ: OPS-010 (ADR-118) — a node in maintenance that went silent: its `node_down` and

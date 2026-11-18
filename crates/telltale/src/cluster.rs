@@ -336,6 +336,41 @@ fn started_at(ms: u64) -> Option<String> {
     (ms > 0).then(|| format_us(ms.saturating_mul(1000)))
 }
 
+/// REQ: CLU-009 (T24.33, ADR-1011) — a witness only votes. Its view carries what it has: whether
+/// it's up and linked, its version and uptime, and its vote state. It has no configuration, no
+/// secrets and no DNS, so those fields are cleared (a witness reports no version of the
+/// configuration, which would read as "behind"), and the checks and alerts skip it for them.
+fn witness_view(
+    nodes: &mut [telltale_api::model::ClusterNode],
+    replies: &std::collections::BTreeMap<String, telltale_cluster::failover::VoterReply>,
+    now: u64,
+) {
+    for n in nodes.iter_mut().filter(|n| n.witness) {
+        n.config_seq = 0;
+        n.config_lag = 0;
+        n.behind_seconds = None;
+        n.primary_silent_seconds = None;
+        n.secrets = None;
+        n.ready = false;
+        n.qps = 0.0;
+        n.servfail_percent = 0.0;
+        n.upstream_p90_ms = 0.0;
+        n.cache_entries = None;
+        n.cache_hit_percent = None;
+        n.query_share_percent = None;
+        n.source_commit = None;
+        n.config_source = None;
+        let seen = replies.get(&n.node_id);
+        n.vote = Some(telltale_api::model::ClusterVote {
+            last_reply_seconds_ago: seen.map(|r| now.saturating_sub(r.at_ms) / 1000),
+            last_grant_seconds_ago: seen
+                .and_then(|r| r.last_grant_ms)
+                .map(|g| now.saturating_sub(g) / 1000),
+            voted_epoch: seen.map(|r| r.epoch),
+        });
+    }
+}
+
 /// REQ: CLU-008 (T6.14) — each node's share of the queries answered by the nodes that are up.
 #[allow(clippy::cast_precision_loss)] // a percentage for display
 fn query_shares(nodes: &mut [telltale_api::model::ClusterNode]) {
@@ -453,6 +488,7 @@ pub(crate) fn view(
         secrets: Some(secrets_view(&local.secrets, secrets_primary.as_ref())),
         ephemeral: flags(&me.node_id).0,
         witness: me.witness,
+        vote: None,
         protocol: telltale_cluster::wire::PROTOCOL,
         source_commit: Some(local.source_commit.clone()).filter(|s| !s.is_empty()),
         node_id: me.node_id.clone(),
@@ -508,6 +544,7 @@ pub(crate) fn view(
             secrets: Some(secrets_view(&p.secrets, secrets_primary.as_ref())),
             ephemeral: flags(&p.node_id).0,
             witness: flags(&p.node_id).1,
+            vote: None,
             protocol: p.protocol,
             source_commit: Some(p.source_commit.clone()).filter(|s| !s.is_empty()),
             node_id: p.node_id.clone(),
@@ -602,6 +639,7 @@ pub(crate) fn view(
             });
         }
     }
+    witness_view(&mut nodes, &c.voter_replies(), now);
     query_shares(&mut nodes);
     let sync = c.sync_status();
     let cert_days = expires.saturating_sub(now / 1000) / 86_400;
@@ -783,12 +821,14 @@ fn health_checks(
         .map(|n| n.node_id.as_str())
         .collect();
     let primary_up = nodes.iter().any(|n| n.role == "primary" && n.up);
+    // REQ: CLU-009 (T24.33) — a witness only votes: it is counted as up or down, never as behind
+    // or not serving.
     let lagging: Vec<&str> = counted()
-        .filter(|n| n.up && n.behind_seconds.is_some_and(|s| s > LAG_WARN_SECS))
+        .filter(|n| !n.witness && n.up && n.behind_seconds.is_some_and(|s| s > LAG_WARN_SECS))
         .map(|n| n.node_id.as_str())
         .collect();
     let not_serving: Vec<&str> = counted()
-        .filter(|n| n.up && !n.ready)
+        .filter(|n| !n.witness && n.up && !n.ready)
         .map(|n| n.node_id.as_str())
         .collect();
     vec![
@@ -1545,6 +1585,10 @@ pub(crate) fn witness(cfg: &telltale_config::Config) -> ExitCode {
         }
         tokio::spawn(net::dial(Arc::clone(&cluster), stop.clone()));
         tokio::spawn(net::mesh(Arc::clone(&cluster), stop.clone()));
+        // REQ: CLU-009 (T24.33) — a witness reports its process start and uptime in its
+        // heartbeats (peers already read both fields), so the Cluster page shows how long it has
+        // been up. It reports nothing else: no configuration, no DNS.
+        tokio::spawn(report_uptime(Arc::clone(&cluster), stop.clone()));
         tokio::spawn(telltale_cluster::failover::run(Arc::clone(&cluster), stop.clone()));
         // T5.4c: the CAs to trust (a rotation) and the witness's own certificate renewal.
         tokio::spawn(net::follow_trust(Arc::clone(&cluster), stop.clone()));
@@ -1574,6 +1618,23 @@ pub(crate) fn witness(cfg: &telltale_config::Config) -> ExitCode {
         let _ = stop_tx.send(true);
     });
     ExitCode::SUCCESS
+}
+
+/// REQ: CLU-009 (T24.33) — keeps a witness's process start and uptime in its heartbeats.
+async fn report_uptime(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
+    let started = std::time::Instant::now();
+    let started_ms = now_ms();
+    loop {
+        let up = started.elapsed().as_secs();
+        cluster.set_local(|l| {
+            l.started_ms = started_ms;
+            l.uptime_s = up;
+        });
+        tokio::select! {
+            _ = stop.changed() => return,
+            () = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -1677,6 +1738,65 @@ mod tests {
         away.maintenance = Some(window);
         let nodes = [primary, away];
         assert_eq!(failing(&nodes), Vec::<String>::new());
+    }
+
+    /// REQ: CLU-009 (T24.33, ADR-1011) — a witness only votes: its view clears configuration,
+    /// secrets and DNS, carries its vote state, and the checks count it as up or down, never as
+    /// behind or not serving; one that is unreachable still fails `peers_up`.
+    #[test]
+    fn clu_009_t24_33_witness_is_a_voter_in_the_view_and_the_checks() {
+        let mut primary = pod("home", "pi", 50);
+        primary.role = "primary".into();
+        let mut witness = pod("home", "pi3", 0);
+        witness.witness = true;
+        witness.ready = true; // stale values a witness reports must not survive
+        witness.config_lag = 13;
+        witness.behind_seconds = Some(1920);
+        witness.secrets = Some(telltale_api::model::ClusterSecrets::default());
+        witness.uptime_seconds = 7200;
+        witness.version = "0.9.0".into();
+        let mut replies = std::collections::BTreeMap::new();
+        replies.insert(
+            "id-pi3".to_owned(),
+            telltale_cluster::failover::VoterReply {
+                at_ms: 99_000,
+                granted: true,
+                epoch: 4,
+                last_grant_ms: Some(99_000),
+            },
+        );
+        let mut nodes = vec![primary, witness];
+        witness_view(&mut nodes, &replies, 104_000);
+        let w = &nodes[1];
+        assert!(!w.ready && w.secrets.is_none() && w.config_lag == 0 && w.behind_seconds.is_none());
+        assert_eq!((w.uptime_seconds, w.version.as_str()), (7200, "0.9.0"));
+        let vote = w.vote.clone().expect("a witness has a vote state");
+        assert_eq!(vote.last_reply_seconds_ago, Some(5));
+        assert_eq!(vote.last_grant_seconds_ago, Some(5));
+        assert_eq!(vote.voted_epoch, Some(4));
+        assert!(nodes[0].vote.is_none(), "a full node has none");
+        let failing = |nodes: &[telltale_api::model::ClusterNode]| -> Vec<String> {
+            health_checks(nodes, false, 7, None, 300)
+                .into_iter()
+                .filter(|c| !c.ok)
+                .map(|c| c.id)
+                .collect()
+        };
+        // Even a witness reporting lag and no DNS (an older build) never fails those checks.
+        let mut noisy = nodes.clone();
+        noisy[1].ready = false;
+        noisy[1].behind_seconds = Some(600);
+        assert_eq!(failing(&noisy), Vec::<String>::new());
+        // Unreachable: automatic failover needs it, so it still fails `peers_up`.
+        nodes[1].up = false;
+        assert_eq!(failing(&nodes), ["peers_up"]);
+        // No reply yet (manual failover): no vote times, but still a vote state.
+        witness_view(&mut nodes, &std::collections::BTreeMap::new(), 104_000);
+        let vote = nodes[1].vote.clone().expect("vote state");
+        assert_eq!(
+            (vote.last_reply_seconds_ago, vote.voted_epoch),
+            (None, None)
+        );
     }
 
     /// REQ: CLU-008 (T6.14) — shares add up over the nodes that are up; a site's pods are
