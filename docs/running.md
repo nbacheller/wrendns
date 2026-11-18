@@ -246,6 +246,8 @@ TelltaleDNS never updates itself from the UI. The panel shows the step for your 
 
 In a cluster, upgrade replicas first.
 
+**The check** (T27.11): Settings → System has *Check for new builds once a day* (`[updates] check`) for this node. Admins change it; it applies after a restart of the node. API: `PUT` and `DELETE /api/v1/updates-settings/{node}`, and `GET /api/v1/node-settings` for the state of this node.
+
 ## Backups and moving to a new machine
 ```sh
 telltale backup create -o pi.ttbk               # safe while TelltaleDNS runs
@@ -290,6 +292,8 @@ A backup carries the [stored secrets](#stored-secrets) only when you give a pass
 - **Through the API,** `POST /api/v1/backup` with a passphrase is for an admin's signed-in session that signed in within the last 10 minutes (403 `reauth_required` otherwise; the web UI then asks for the password again), over HTTPS or from the node itself (403 `insecure_transport`; `[api] allow_secrets_over_http` lifts that), never an agent token. One key derivation runs at a time on a node: a second backup with a passphrase gets 429 until it finishes (before any work is done). On a cluster replica a backup with a passphrase is refused (409): make it on the primary, which holds the same secrets and is the node that raises the alert. An API token, even an admin's, can't make one: run the command on the node.
 - **Audit and alert.** `backup.create {secretsIncluded, count}` (never the passphrase). A backup that carried secrets raises the alert condition `secrets_exported` (once per backup).
 - **Keep the passphrase apart from the file.** Anyone with both can read every secret in it. There is no way to recover the secrets from a backup whose passphrase is lost; the rest of it restores with `--skip-secrets`.
+
+**Query history** (T27.11): the backup page's *Include the query history* choice is the same as `--include-qlog` on the command line. A backup with the history can be over 256 MiB, and the API then refuses it.
 
 ## Guarded changes
 Some settings can lock every admin out, put passwords on the wire, re-encrypt your stored secrets, or replace a node's configuration: the listeners (`[[listen]]`), the API address, its TLS certificate and trusted proxies (`[api]`), the secret key and the directories secret files may be read from, `allow_secrets_over_http` and `allow_insecure_basic`, the watchdog and the file paths the server reads, a node's name and data directory, and the cluster actions (init, join, leave, Git source). The web UI changes them only through one framework, **guarded changes** (ADR-914, ADR-956); each setting's own form (Settings, Cluster) uses it, and **Settings → System → Guarded settings** shows what is pending on a node and, where a change needs a restart, **Restart now**.
@@ -350,6 +354,8 @@ In every level **secrets are removed**: passwords and hashes, API and session to
 **The log.** No platform lets a process read its own stderr back (a systemd unit has no journal access, a container's log is outside it, the Helm chart's root file system is read-only), so TelltaleDNS keeps its own small log: the last 2,000 lines at INFO and above in memory from the first line it logs, whatever `TELLTALE_LOG` says, and two rotating files of about 1 MiB under `<data_dir>/logs/` (directory `0750`, files `0640`), so lines from before a restart reach the package. About 21 KB a day on a quiet node. The files are **not** redacted (they hold client addresses): the package redacts when it is made. `[support] persist_logs = false` keeps only the in-memory lines (read at start); a read-only data directory does the same on its own and the manifest says so. Writing the log never blocks DNS: a full queue drops the line and counts it.
 
 **Who can, and the record.** Admins only. Each package is recorded in the audit log as `support.package` (the level and counts, never the content) and each map download as `support.package.map`. One package at a time per node (a second request gets 409).
+
+**Keeping logs** (T27.11): Settings → System has *Keep support logs on disk* (`[support] persist_logs`) for this node. Admins change it; it applies after a restart. API: `PUT` and `DELETE /api/v1/support-settings/{node}`.
 
 ## When a node stops answering (the watchdog)
 Rarely, a process can hang with its service still `active`: DNS, the web UI, the metrics and the cluster port all go quiet and nothing exits, so nothing restarts it. A **watchdog** looks for that. A thread of its own, outside the runtime that serves everything, makes two checks every 5 seconds: the runtime can run a task, and this node's own first UDP listener answers a question (`probe.telltale.invalid`, the name the listener checks use; it is answered without asking an upstream and kept out of the query log and analytics). When a check hasn't passed for `stall_secs` (60 by default), the node is called stuck. The watchdog then writes a **dump** and, by default, ends the process with exit status 70 so its supervisor starts it again: systemd (`Restart=on-failure`, which the unit has), Docker or Podman Compose (`restart: unless-stopped`), or Kubernetes (a container restarts). A node started by hand in a terminal just exits.
@@ -1124,6 +1130,8 @@ mode = "shadow"          # enforce (the default) or shadow
 - **Likely over-blocking** (on the same page, `GET /api/v1/analytics/overblocking`, the MCP tool `overblocking_suspects`): blocked names that someone seems to want. *Allowed soon after* counts devices that got the name answered within 10 minutes of a block (you paused blocking, or allowed it); *retry bursts* count devices asking for it 10 or more times within a minute while it was blocked (apps that break retry; ad libraries do too, so it's the weaker sign). With the lists that blocked them: candidates for an allowlist, or a sign a list is too aggressive.
 - Names follow the query log's privacy level (hashed at 1 and above); devices aren't counted at 2 and above.
 - Like every list, a shadow list is checked once the snapshot is compiled (a few seconds after start or a change): queries answered before that aren't counted. `telltale explain` marks its rules with `~`.
+
+**Limits** (T27.11): each list takes a largest download (`max_bytes`, for example `64MiB`) and a stale age (`stale_after_days`, 0 for never) in its own form. The Lists page holds the refresh interval and the default stale age (`[filter] refresh_secs` and `stale_after_days`), which apply after a restart. API: `PUT` and `DELETE /api/v1/filter-settings/default`.
 
 ## Groups and devices
 Decide which lists apply to which devices:
@@ -1918,6 +1926,8 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
   ```
   It replaces the built-in anchors; a file that can't be read or holds no key is logged and the built-in anchors stay. Automatic tracking of key changes (RFC 5011) isn't done (ADR-086).
 
+**The settings** (T27.11): Settings → Query handling shows the validation mode (`[dnssec] mode`: off, validate, or validate and count) and the negative trust anchors (domains not validated, one per line). The change applies on every node within seconds. API: `PUT` and `DELETE /api/v1/dnssec-settings/default`.
+
 ## Clusters
 
 Nodes can form a cluster: the first node creates it and holds the cluster's certificate
@@ -2517,6 +2527,8 @@ each device's queries per node over the last week, and its share on the node it 
 pi", "both"; `GET /api/v1/clients/affinity?window=7d`). A device that has only used one server
 may still have a second one configured; most systems use their first server until it stops
 answering. Run a drill to find out.
+
+**The schedule** (T27.11): the Cluster page shows the scheduled drills (`[drill] schedule`: off, or once a month on the nodes named in `nodes`, at `hour`). Admins change it there; the scheduler reads it at each check, so no restart is needed. API: `PUT` and `DELETE /api/v1/drill-settings/default`.
 
 ## Rolling a change out in stages
 A bad change (a typo in an upstream, a list that blocks the bank) normally reaches every node

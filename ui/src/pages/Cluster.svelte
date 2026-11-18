@@ -15,6 +15,8 @@
   import DrillForm from '../lib/components/DrillForm.svelte';
   import NodeRemoveForm from '../lib/components/NodeRemoveForm.svelte';
   import DrillPanel from '../lib/components/DrillPanel.svelte';
+  // REQ: CLU-014 (T27.11) — the scheduled drills' schedule and nodes, above the drills.
+  import DrillSchedule from '../lib/components/DrillSchedule.svelte';
   import RolloutPanel from '../lib/components/RolloutPanel.svelte';
   import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
   import TabPanel from '../lib/components/TabPanel.svelte';
@@ -288,6 +290,8 @@
   <ErrorNote error={maintError} />
 
   {#if view && !view.enabled}
+    <!-- REQ: CLU-014 (T27.11) — the schedule is kept on a single node too: it applies once the node is in a cluster. -->
+    <DrillSchedule />
     <section class="card" data-testid="cluster-standalone">
       <h2>This node runs on its own</h2>
       <p>
@@ -653,6 +657,7 @@ telltale cluster join tt_join_…</pre>
     {:else if tab === 'compare'}
       <NodeCompare data={compare} error={compareError} win={compareWin} onwindow={setCompareWin} />
     {:else if tab === 'drills'}
+      <DrillSchedule />
       <DrillPanel open={drillParam} />
     {:else}
       <section class="card">

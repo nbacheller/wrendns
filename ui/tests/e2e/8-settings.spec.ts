@@ -88,3 +88,104 @@ test.describe('dns_006 cache settings', () => {
     }
   });
 });
+
+test.describe('settings from T27.11', () => {
+  test('clu_014 drill schedule', async ({ browser }) => {
+    // REQ: CLU-014 (T27.11) — the Cluster page's Drills tab: a monthly schedule on this node, checked then saved.
+    const page = await signedIn(browser, ADMIN, 'cluster');
+    try {
+      const card = page.getByTestId('drill-schedule-card');
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await card.getByTestId('drill-schedule-edit').click();
+      await card.getByLabel('Scheduled drills').selectOption('monthly');
+      await card.getByLabel('Nodes that drill').fill('home-dns');
+      await card.getByRole('button', { name: 'Check' }).click();
+      await expect(card.getByTestId('drill-schedule-preview')).toBeVisible();
+      await card.getByRole('button', { name: 'Apply' }).click();
+      await expect(card.getByTestId('drill-schedule-values')).toContainText('once a month');
+      await expect(card.getByTestId('drill-schedule-values')).toContainText('home-dns');
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  test('dns_011 add a negative trust anchor', async ({ browser }) => {
+    // REQ: DNS-011 (T27.11) — DNSSEC on Settings → Query handling: a domain not validated, checked then saved.
+    const page = await signedIn(browser, ADMIN, 'settings?tab=queries');
+    try {
+      const card = page.getByTestId('dnssec-card');
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await card.getByTestId('dnssec-edit').click();
+      await card.getByLabel('Negative trust anchors').fill('lab.example');
+      await card.getByRole('button', { name: 'Check' }).click();
+      await expect(card.getByTestId('dnssec-preview')).toBeVisible();
+      await card.getByRole('button', { name: 'Apply' }).click();
+      await expect(card.getByTestId('dnssec-values')).toContainText('lab.example');
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  test('flt_004 list size limit', async ({ browser }) => {
+    // REQ: FLT-004 (T27.11) — the list settings on the Lists page: the stale age, checked then saved.
+    const page = await signedIn(browser, ADMIN, 'lists');
+    try {
+      const card = page.getByTestId('filter-settings-card');
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await card.getByTestId('filter-settings-edit').click();
+      await card.getByLabel('Flag a list as stale after (days)').fill('14');
+      await card.getByRole('button', { name: 'Check' }).click();
+      await expect(card.getByTestId('filter-settings-preview')).toBeVisible();
+      await card.getByRole('button', { name: 'Apply' }).click();
+      await expect(card.getByTestId('filter-settings-values')).toContainText('14 days');
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  test('api_007 backup with query history', async ({ browser }) => {
+    // REQ: API-007 (T27.11) — the backup page's query-history choice is sent as includeQlog.
+    const page = await signedIn(browser, ADMIN, 'settings?tab=system');
+    try {
+      await expect(page.getByTestId('backup-qlog')).toBeVisible({ timeout: 30_000 });
+      await page.getByTestId('backup-qlog').check();
+      await expect(page.getByTestId('backup-qlog')).toBeChecked();
+      const request = page.waitForRequest((r) => r.url().includes('/api/v1/backup') && r.method() === 'POST');
+      await page.getByTestId('backup-make').click();
+      expect((await request).postDataJSON().includeQlog).toBe(true);
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  test('ops_011 keep support logs switch', async ({ browser }) => {
+    // REQ: OPS-011 (T27.11) — Settings → System: the support-log switch, checked, saved, and pending a restart.
+    const page = await signedIn(browser, ADMIN, 'settings?tab=system');
+    try {
+      const card = page.getByTestId('node-switches');
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await card.getByTestId('support-persist-logs').click();
+      await expect(page.getByTestId('node-switches-preview')).toBeVisible();
+      await page.getByTestId('node-switches-preview').getByRole('button', { name: 'Apply' }).click();
+      await expect(card).toContainText('Saved. It takes effect when this node restarts.');
+      await expect(card).toContainText('pending restart');
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  test('ops_012 update check switch', async ({ browser }) => {
+    // REQ: OPS-012 (T27.11) — Settings → System: the update-check switch, checked and saved (an admin's).
+    const page = await signedIn(browser, ADMIN, 'settings?tab=system');
+    try {
+      const card = page.getByTestId('node-switches');
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await card.getByTestId('updates-check').click();
+      await expect(page.getByTestId('node-switches-preview')).toBeVisible();
+      await page.getByTestId('node-switches-preview').getByRole('button', { name: 'Apply' }).click();
+      await expect(card).toContainText('Saved. It takes effect when this node restarts.');
+    } finally {
+      await page.context().close();
+    }
+  });
+});
