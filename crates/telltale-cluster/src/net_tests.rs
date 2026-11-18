@@ -246,8 +246,10 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
     if had_key {
         std::fs::rename(&key, rdir.join("ca.key.aside")).unwrap();
     }
-    let before = replica.identity.reload().cert_pem;
-    std::thread::sleep(Duration::from_millis(1100)); // a later notBefore
+    // The certificate's validity starts at the wall-clock second it is issued. The clock can
+    // step (a VM resumes or syncs), so two issues a second apart can carry the same bytes:
+    // the renewal is proven by the stored certificate's generation and event below, not by a
+    // different PEM.
     crate::renew::renew_now(&replica).await.unwrap();
     if had_key {
         std::fs::rename(rdir.join("ca.key.aside"), &key).unwrap();
@@ -257,7 +259,10 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
         primary.events().iter().any(|e| e.kind == "cert_issued"),
         "the primary signed it"
     );
-    assert_ne!(after.cert_pem, before, "a new certificate");
+    assert!(
+        replica.events().iter().any(|e| e.kind == "cert_renewed"),
+        "the replica stored the renewed certificate"
+    );
     assert_eq!(after.meta.node_id, rid, "same node ID");
     crate::pki::verify_issued(&after.cert_pem, &after.ca_pem).unwrap();
     assert_eq!(replica.cert_generation(), 1);

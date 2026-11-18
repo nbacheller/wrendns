@@ -699,8 +699,22 @@ type PendingCalls = HashMap<
 /// Largest RPC answer (the frame limit, less framing).
 const MAX_RPC: usize = crate::wire::MAX_FRAME - 1024;
 
-/// The last heartbeat received on a stream, echoed back on the same stream.
-type EchoSlot = Arc<Mutex<Option<(u64, tokio::time::Instant)>>>;
+/// Heartbeats kept per stream for round-trip times (a peer echoes one of the last few).
+const ECHO_KEPT: usize = 16;
+
+/// What a stream needs for round-trip times. Peers echo heartbeats by their wall-clock `ts_ms`,
+/// but the round trip is measured on the monotonic clock only: the last heartbeat received
+/// (echoed back on this stream, with how long it was held), and the heartbeats sent, as
+/// (`ts_ms`, when sent). Mixing the wall clock with the monotonic hold time gave a round trip of
+/// 0 ms when the wall clock stepped during the exchange (REQ: CLU-008).
+#[derive(Default)]
+struct EchoState {
+    received: Option<(u64, tokio::time::Instant)>,
+    sent: VecDeque<(u64, tokio::time::Instant)>,
+}
+
+/// The echo state of one stream, shared by its reader and writer.
+type EchoSlot = Arc<Mutex<EchoState>>;
 
 /// Where the primary reads a blob it serves.
 #[derive(Debug, Clone)]
@@ -2088,25 +2102,33 @@ impl Cluster {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        let (echo_ms, echo_delay_ms) =
-            echo.lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .map_or((0, 0), |(ts, at)| {
-                    (
-                        ts,
-                        u32::try_from(at.elapsed().as_millis()).unwrap_or(u32::MAX),
-                    )
-                });
+        let (echo_ms, echo_delay_ms) = {
+            let e = echo.lock().unwrap_or_else(PoisonError::into_inner);
+            e.received.map_or((0, 0), |(ts, at)| {
+                (
+                    ts,
+                    u32::try_from(at.elapsed().as_millis()).unwrap_or(u32::MAX),
+                )
+            })
+        };
         // T5.4c — what this node trusts, and who issued its certificate.
         let id = self.identity.reload();
         let trust_fp = crate::pki::trust_fp(&id.ca_pem);
         let issuer_fp = crate::pki::issuer_fp(&id.cert_pem, &id.ca_pem).unwrap_or_default();
+        let ts_ms = now_ms();
+        {
+            let mut e = echo.lock().unwrap_or_else(PoisonError::into_inner);
+            e.sent.push_back((ts_ms, tokio::time::Instant::now()));
+            while e.sent.len() > ECHO_KEPT {
+                e.sent.pop_front();
+            }
+        }
         Frame {
             body: Some(Body::Heartbeat(Heartbeat {
                 source_commit: l.source_commit.clone(),
                 trust_fp,
                 issuer_fp,
-                ts_ms: now_ms(),
+                ts_ms,
                 epoch: l.epoch.max(self.role().1),
                 primary: Some(self.is_primary()),
                 applied_seq: l.applied_seq,
@@ -2270,7 +2292,7 @@ impl Cluster {
             }
             Some(Body::Heartbeat(mut hb)) => {
                 let id = peer.as_ref().ok_or("heartbeat before Hello")?;
-                *echo.lock().unwrap_or_else(PoisonError::into_inner) =
+                echo.lock().unwrap_or_else(PoisonError::into_inner).received =
                     Some((hb.ts_ms, tokio::time::Instant::now()));
                 let now = now_ms();
                 let own = {
@@ -2363,10 +2385,22 @@ impl Cluster {
                     m.pod = hb.pod;
                     m.cache_entries = hb.cache_entries;
                     m.cache_hit_permille = hb.cache_hit_permille;
-                    if hb.echo_ms > 0 {
-                        let rtt = now
-                            .saturating_sub(hb.echo_ms)
-                            .saturating_sub(u64::from(hb.echo_delay_ms));
+                    // REQ: CLU-008 — the round trip: from when we sent the echoed heartbeat to
+                    // now, less how long the peer held it. Both ends are on the monotonic clock.
+                    let sent_at = if hb.echo_ms > 0 {
+                        let e = echo.lock().unwrap_or_else(PoisonError::into_inner);
+                        e.sent
+                            .iter()
+                            .rev()
+                            .find(|(ts, _)| *ts == hb.echo_ms)
+                            .map(|(_, at)| *at)
+                    } else {
+                        None
+                    };
+                    if let Some(sent_at) = sent_at {
+                        let elapsed =
+                            u64::try_from(sent_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+                        let rtt = elapsed.saturating_sub(u64::from(hb.echo_delay_ms));
                         m.rtt_ms = Some(u32::try_from(rtt).unwrap_or(u32::MAX));
                         // T6.11 — its clock was at ts_ms about half a round trip ago.
                         let theirs = i128::from(hb.ts_ms) + i128::from(rtt / 2);
