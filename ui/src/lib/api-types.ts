@@ -930,7 +930,8 @@ export interface paths {
          *     itself (403 `insecure_transport`). With a passphrase it needs an interactive session signed in
          *     within the last 10 minutes: tokens and Basic sign-in get 403 `reauth_required`, with a hint to
          *     run `telltale backup create` on the node. One key derivation runs at a time: a second request
-         *     gets 429. Audited as `backup.create` (`secretsIncluded`, `count`; never the passphrase), and
+         *     gets 429. On a cluster replica a passphrase is refused (409): make it on the primary, which
+         *     holds the same secrets and raises the alert. Audited as `backup.create` (`secretsIncluded`, `count`; never the passphrase), and
          *     a backup with secrets raises the alert event `secrets_exported`. It takes no
          *     `Idempotency-Key`: it changes no state.
          */
@@ -11049,6 +11050,15 @@ export interface operations {
             };
             /** @description Not an admin, an agent token (`agent_not_allowed`), plain HTTP from another host (`insecure_transport`), or a passphrase without a recent sign-in (`reauth_required`). */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A backup with a passphrase on a cluster replica: make it on the primary. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

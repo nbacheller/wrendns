@@ -6022,6 +6022,8 @@ test('api_007 passphrase backup from settings', async () => {
       await expect(card).toContainText('another backup with a passphrase is running');
       await expect(card.getByLabel('Backup passphrase', { exact: true })).toHaveValue('');
       await expect(card.getByLabel('Repeat the backup passphrase')).toHaveValue('');
+      // The refusal is the point of this case: its 429 is expected, nothing else is.
+      for (let i = problems.length - 1; i >= 0; i--) if (/status of 429/.test(problems[i])) problems.splice(i, 1);
     } finally {
       await page.unroute('**/api/v1/backup');
     }
