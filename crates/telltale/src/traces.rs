@@ -470,7 +470,7 @@ pub(crate) async fn run(
     let Some(client) = crate::otlp::client() else {
         return;
     };
-    let url = format!("{endpoint}/v1/traces");
+    drop(endpoint);
     let shared = &sources.traces;
     let mut failing = false;
     loop {
@@ -478,7 +478,14 @@ pub(crate) async fn run(
             _ = stop.changed() => return,
             () = tokio::time::sleep(TRACE_INTERVAL) => {}
         }
+        // REQ: API-016 — one configuration per round: the address and the headers come from
+        // the same snapshot, so a changed collector never gets the old one's credentials (and
+        // an export turned off sends nothing).
         let cfg = sources.config.load_full();
+        let Some(endpoint) = crate::otlp::endpoint(&cfg) else {
+            continue;
+        };
+        let url = format!("{endpoint}/v1/traces");
         let node = crate::http::node_name(&cfg);
         let state = sources.pipeline.current();
         let upstreams: Vec<(u16, String)> = state

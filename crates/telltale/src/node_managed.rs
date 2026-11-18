@@ -183,7 +183,13 @@ pub(crate) fn sinks(entries: &[Entry]) -> (Vec<SinkConfig>, Vec<String>) {
             Ok(mut s) => {
                 s.token_file = None;
                 s.tls_ca = None;
-                let errs = telltale_config::sink_errors(&s);
+                let mut errs = telltale_config::sink_errors(&s);
+                if let Err(why) = crate::sink_settings::stored_limits(&s) {
+                    errs.push(why);
+                }
+                if ok.len() >= crate::sink_settings::max_sinks() {
+                    errs.push("more sinks than a node takes".into());
+                }
                 if errs.is_empty() {
                     ok.push(s);
                 } else {

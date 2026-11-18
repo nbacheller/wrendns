@@ -538,3 +538,76 @@ async fn api_016_sink_token_ref_read_per_batch() {
         "{text}"
     );
 }
+
+/// REQ: API-016, OBS-010 (T23.11, review fix) - a webhook sink stopped while its collector
+/// swallows requests doesn't hold up its replacement: the manager returns within the retire
+/// wait, and the abandoned thread never touches the kept batches the new sink owns (an edit
+/// that keeps the URL keeps the key).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_016_stopped_sink_against_blackhole_leaves_replacement_spill_alone() {
+    // Accepts connections and never answers.
+    let hole = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/in", hole.local_addr().unwrap());
+    let held = Arc::new(Mutex::new(Vec::new()));
+    let held_t = Arc::clone(&held);
+    std::thread::spawn(move || {
+        for c in hole.incoming().flatten() {
+            held_t.lock().unwrap().push(c);
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (m, rx) = Manager::new();
+    let rt = tokio::runtime::Handle::current();
+    let a = webhook("hole", &url, "spill_max_bytes = \"1MiB\"\n");
+    m.apply(
+        &config_with(dir.path(), std::slice::from_ref(&a)),
+        &rt,
+        None,
+    );
+    let outs = latest(&rx);
+    for i in 0..10 {
+        outs[0].tx.try_send(format!("{{\"n\":{i}}}")).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Same URL (same kept-batches key), another setting: the sink restarts.
+    let b = webhook(
+        "hole",
+        &url,
+        "spill_max_bytes = \"1MiB\"\nformat = \"json_array\"\n",
+    );
+    let started = Instant::now();
+    let (m2, rt2, dir_path) = (Arc::clone(&m), rt.clone(), dir.path().to_owned());
+    tokio::task::spawn_blocking(move || {
+        m2.apply(
+            &config_with(&dir_path, std::slice::from_ref(&b)),
+            &rt2,
+            None,
+        );
+    })
+    .await
+    .unwrap();
+    assert!(
+        started.elapsed() <= Duration::from_millis(3500),
+        "the swap took {:?}",
+        started.elapsed()
+    );
+    let spill = Spill::new(&a, dir.path().to_str().unwrap()).unwrap();
+    assert!(spill.push(&["{\"mine\":1}".to_owned()]));
+    // The straggler's request times out (15 s) and it ends; it must not have touched the files.
+    assert!(
+        wait_for(
+            || {
+                let inner = m.inner.lock().unwrap();
+                inner
+                    .stragglers
+                    .iter()
+                    .all(std::thread::JoinHandle::is_finished)
+            },
+            30
+        ),
+        "the abandoned thread ended"
+    );
+    let (events, _) = spill.take(100);
+    assert_eq!(events, vec!["{\"mine\":1}".to_owned()]);
+}

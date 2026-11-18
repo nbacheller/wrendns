@@ -6,6 +6,8 @@
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
+use std::sync::Arc;
+use std::time::Duration;
 use telltale_api::auth::Role;
 use telltale_config::Config;
 
@@ -400,6 +402,52 @@ async fn obs_006_otlp_header_ref_sent() {
     assert!(got[0].starts_with("post /v1/metrics"), "{:?}", got[0]);
 }
 
+/// REQ: API-016, OBS-006 (T23.11, review fix) - moving the export to another collector (with
+/// another header) sends nothing more to the old address and never the new header there.
+#[tokio::test]
+async fn obs_006_otlp_export_follows_endpoint_and_headers_together() {
+    let (old, new) = (
+        crate::sinks::Collector::new(),
+        crate::sinks::Collector::new(),
+    );
+    let h = bare();
+    store_secret(&h, "key-old", "old-secret-1111");
+    store_secret(&h, "key-new", "new-secret-2222");
+    let put = |url: String, name: &str| json!({"endpoint": url, "interval_secs": 5, "header_refs": {"x-api-key": name}});
+    let (s, _, out) = h
+        .call("PUT", OTLP_PUT, Some(&put(old.url_base(), "key-old")))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let task = tokio::spawn(crate::otlp::run(Arc::clone(&h.src), stop_rx));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (s, _, out) = h
+        .call("PUT", OTLP_PUT, Some(&put(new.url_base(), "key-new")))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let mut got = false;
+    for _ in 0..200 {
+        if !new.heads().is_empty() {
+            got = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(got, "the new collector got an export");
+    assert!(
+        new.heads()[0].contains("x-api-key: new-secret-2222"),
+        "{:?}",
+        new.heads()
+    );
+    assert!(
+        old.heads().is_empty(),
+        "nothing reached the old address: {:?}",
+        old.heads()
+    );
+    let _ = stop_tx.send(true);
+    let _ = task.await;
+}
+
 fn rows(entries: &[(&str, &str, Value)]) -> Vec<(String, String, String)> {
     entries
         .iter()
@@ -588,4 +636,34 @@ fn clu_015_promoted_primary_seeds_sinks_and_otlp() {
     state.delete_managed(SINK, "good", None).unwrap();
     assert!(node_managed::seed_once(&state_path, &cluster, "h1", &blob));
     assert_eq!(state.managed(SINK).unwrap().len(), 0);
+}
+
+/// REQ: API-016 (T23.11, review fix) - a sink that arrives in a replicated blob meets the API's
+/// limits: no directory in a file name, no rotation-style name, no huge buffer, no password in an
+/// address; a bad one is dropped alone.
+#[test]
+fn clu_004_replicated_sink_meets_api_limits() {
+    let mk = |name: &str, body: Value| Entry {
+        kind: SINK.into(),
+        name: name.into(),
+        body,
+    };
+    let entries = vec![
+        mk("ok", json!({"type": "file", "path": "events.jsonl"})),
+        mk("esc", json!({"type": "file", "path": "../../etc/passwd"})),
+        mk("abs", json!({"type": "file", "path": "/etc/passwd"})),
+        mk("rot", json!({"type": "file", "path": "events.1"})),
+        mk(
+            "big",
+            json!({"type": "webhook", "url": "https://c.example/in", "max_buffer": 5_000_000}),
+        ),
+        mk(
+            "pw",
+            json!({"type": "webhook", "url": "https://u:p@c.example/in"}),
+        ),
+    ];
+    let (ok, bad) = node_managed::sinks(&entries);
+    let names: Vec<String> = ok.iter().map(|s| s.name.to_string()).collect();
+    assert_eq!(names, vec!["ok"], "{bad:?}");
+    assert_eq!(bad.len(), 5);
 }

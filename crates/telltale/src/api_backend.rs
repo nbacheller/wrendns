@@ -568,6 +568,13 @@ fn qlog_filter(q: &QueryParams, from_us: u64, to_us: u64) -> Result<qlog::Filter
         rcode,
         upstream: q.upstream,
         min_total_us: q.min_latency_ms.map(|v| v.saturating_mul(1000)),
+        not: qlog::Not {
+            name: q.name_not.unwrap_or(false),
+            client: q.client_not.unwrap_or(false),
+            status: q.status_not.unwrap_or(false),
+            qtype: q.qtype_not.unwrap_or(false),
+            rcode: q.rcode_not.unwrap_or(false),
+        },
         ..qlog::Filter::default()
     })
 }
@@ -925,7 +932,21 @@ impl Backend for ApiBackend {
         req: &telltale_api::model::SupportPackageRequest,
         dry_run: bool,
     ) -> Result<telltale_api::SupportPackageOutput, Problem> {
+        if req.cluster {
+            return Err(
+                Problem::invalid("`cluster`: this node isn't part of a cluster")
+                    .hint("Leave `cluster` out to make this node's own package."),
+            );
+        }
         crate::support::build(self, req, dry_run)
+    }
+
+    // REQ: OPS-011 (ADR-172) — this node's part of a cluster package, for the node that asked.
+    fn support_part(
+        &self,
+        req: &telltale_api::model::SupportCollectRequest,
+    ) -> Result<Vec<u8>, Problem> {
+        crate::support::part(self, req)
     }
 
     fn support_map(&self, id: &str) -> Option<String> {
@@ -1547,7 +1568,8 @@ impl Backend for ApiBackend {
             ips.truncate(MAX_WORKLOAD_ADDRESSES);
             filter.client_any = ips.into_iter().map(mapped).collect();
             if filter.client_any.is_empty() {
-                // No address carries the name now: match no row (a workload key never has a colon).
+                // No address carries the name now: a sentinel key no row has (a workload key never has a
+                // colon). Plain, it matches no row; with clientNot it matches every row.
                 filter.client_ip = Some(telltale_telemetry::workload::key(&format!(
                     "hostname:{label}"
                 )));

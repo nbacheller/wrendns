@@ -237,7 +237,13 @@ impl Entries {
             s.name = telltale_config::SafeString::new(name).unwrap_or(s.name);
             s.token_file = None;
             s.tls_ca = None;
-            let errs = telltale_config::sink_errors(&s);
+            let mut errs = telltale_config::sink_errors(&s);
+            if let Err(why) = crate::sink_settings::stored_limits(&s) {
+                errs.push(why);
+            }
+            if ok.len() >= crate::sink_settings::max_sinks() {
+                errs.push("more sinks than a node takes".into());
+            }
             if errs.is_empty() {
                 ok.push(s);
             } else {

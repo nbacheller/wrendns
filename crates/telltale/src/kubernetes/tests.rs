@@ -953,4 +953,34 @@ async fn flt_017_a_deployment_is_one_device() {
     )
     .items;
     assert_eq!(new.len(), 300);
+    // REQ: FLT-006 (T24.9, ADR-973): a router name no address carries: the sentinel matches no
+    // row, and with `clientNot` it matches every row.
+    let router = |not: bool| {
+        api.queries(
+            &telltale_api::model::QueryParams {
+                client: Some("hostname:nobody".into()),
+                client_not: Some(not),
+                ..telltale_api::model::QueryParams::default()
+            },
+            t0 * 1_000_000,
+            0,
+            5_000,
+        )
+        .unwrap()
+        .items
+        .len()
+    };
+    let all = api
+        .queries(
+            &telltale_api::model::QueryParams::default(),
+            t0 * 1_000_000,
+            0,
+            5_000,
+        )
+        .unwrap()
+        .items
+        .len();
+    assert!(all >= 1_300, "{all}");
+    assert_eq!(router(false), 0);
+    assert_eq!(router(true), all);
 }

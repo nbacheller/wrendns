@@ -359,13 +359,13 @@ pub(crate) async fn run(
                 "this resolver pod holds no stored secrets: the OTLP export that needs one isn't made here"
             );
         }
-        let Some(endpoint) = endpoint.filter(|_| !pod_skips) else {
+        if endpoint.is_none() || pod_skips {
             tokio::select! {
                 _ = stop.changed() => return,
                 () = sources.otlp_changed.notified() => {}
             }
             continue;
-        };
+        }
         drop(o);
         tokio::select! {
             _ = stop.changed() => return,
@@ -373,7 +373,12 @@ pub(crate) async fn run(
             () = sources.otlp_changed.notified() => { failing = false; continue; }
             () = tokio::time::sleep(interval) => {}
         }
+        // One snapshot for the address and the headers: a change that landed during the sleep
+        // is picked up whole, never half (the old address with the new credentials).
         let cfg = sources.config.load_full();
+        let Some(endpoint) = self::endpoint(&cfg) else {
+            continue;
+        };
         let url = format!("{}/v1/metrics", endpoint.trim_end_matches('/'));
         let text = crate::http::render(&sources);
         let now_ns = crate::pipeline::unix_now().saturating_mul(1_000_000_000);

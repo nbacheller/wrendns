@@ -66,9 +66,22 @@ struct Control {
     /// Set with `stop` when the sink is gone for good (or its destination changed): its
     /// spill files are deleted when the thread ends.
     remove: AtomicBool,
+    /// Set by the manager when it stops waiting for a stopped thread: that thread never
+    /// touches the kept batches again and never deletes them (a new sink may own them now).
+    abandoned: AtomicBool,
+    /// When it was told to stop (the deadline to end by counts from here, not from when the
+    /// thread notices).
+    stopped_at: std::sync::OnceLock<Instant>,
 }
 
 impl Control {
+    fn stop_now(&self) {
+        let _ = self.stopped_at.set(Instant::now());
+        self.stop.store(true, Ordering::Release);
+    }
+    fn is_abandoned(&self) -> bool {
+        self.abandoned.load(Ordering::Acquire)
+    }
     fn stopping(&self) -> bool {
         self.stop.load(Ordering::Acquire)
     }
@@ -364,7 +377,7 @@ fn retire_changed(
             if r.spill_key.is_some() && r.spill_key != next_key {
                 r.ctl.remove.store(true, Ordering::Release);
             }
-            r.ctl.stop.store(true, Ordering::Release);
+            r.ctl.stop_now();
             retiring.push(r);
         }
     }
@@ -377,6 +390,7 @@ fn retire_changed(
             if t.is_finished() {
                 let _ = t.join();
             } else {
+                r.ctl.abandoned.store(true, Ordering::Release);
                 warn!(sink = %r.cfg.name, "a stopped event sink is still sending; it ends after its attempt");
                 inner.stragglers.push(t);
             }
@@ -899,9 +913,15 @@ fn webhook_writer(
     let mut first: Option<Instant> = None;
     let mut open = true;
     let mut last_idle = Instant::now();
+    // REQ: API-016 — a stopping writer has one overall deadline; past it nothing more goes to
+    // the network (the rest is kept or counted dropped), so it can't outlive its replacement.
+    let mut stop_deadline: Option<Instant> = None;
     while open || !buf.is_empty() {
         let stopping = ctl.stopping();
         if stopping {
+            stop_deadline.get_or_insert_with(|| {
+                ctl.stopped_at.get().copied().unwrap_or_else(Instant::now) + RETIRE_WAIT
+            });
             // Everything still queued goes out in this last round.
             while let Ok(l) = rx.try_recv() {
                 buf.push(l);
@@ -940,16 +960,40 @@ fn webhook_writer(
             continue;
         }
         for chunk in std::mem::take(&mut buf).chunks(batch) {
-            deliver(
-                c, chunk, ctl, dropped, client, rt, host, spill, store, batch,
-            );
+            if stop_deadline.is_some_and(|d| Instant::now() >= d) {
+                keep_or_drop(c, chunk, ctl, dropped, spill);
+            } else {
+                deliver(
+                    c, chunk, ctl, dropped, client, rt, host, spill, store, batch,
+                );
+            }
         }
         first = None;
     }
     if ctl.removing()
+        && !ctl.is_abandoned()
         && let Some(s) = spill
     {
         s.delete();
+    }
+}
+
+/// Not sent (no network): kept on disk when the sink has kept batches, isn't being removed and
+/// hasn't been abandoned by the manager; counted as dropped otherwise.
+fn keep_or_drop(
+    c: &SinkConfig,
+    events: &[String],
+    ctl: &Control,
+    dropped: &AtomicU64,
+    spill: Option<&Spill>,
+) {
+    match spill {
+        Some(s) if !ctl.removing() && !ctl.is_abandoned() && s.push(events) => {
+            info!(sink = %c.name, events = events.len(), "event sink batch kept on disk until the collector is back");
+        }
+        _ => {
+            dropped.fetch_add(events.len() as u64, Ordering::Relaxed);
+        }
     }
 }
 
@@ -992,12 +1036,7 @@ fn deliver(
         // while stopping: the sink is on its way out).
         (true, Some(s)) if !ctl.stopping() => replay(s, c, client, rt, host, batch, store),
         (true, _) => {}
-        (false, Some(s)) if !ctl.removing() && s.push(events) => {
-            info!(sink = %c.name, events = events.len(), "event sink batch kept on disk until the collector is back");
-        }
-        (false, _) => {
-            dropped.fetch_add(events.len() as u64, Ordering::Relaxed);
-        }
+        (false, _) => keep_or_drop(c, events, ctl, dropped, spill),
     }
 }
 

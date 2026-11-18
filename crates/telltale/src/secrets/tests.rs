@@ -793,6 +793,7 @@ fn ops_014_key_vars_never_logged() {
         reveal: Vec::new(),
         query_sample: 0,
         keep_map: false,
+        cluster: false,
     };
     let (pkg, _) = crate::support::offline(&cfg, &req).unwrap();
     let files = telltale_support::archive::read_tar_gz(&pkg.archive).unwrap();

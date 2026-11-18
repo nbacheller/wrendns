@@ -36,7 +36,7 @@ const FILE_FIELDS: [&str; 2] = ["token_file", "tls_ca"];
 /// The most sinks the UI can add (each has a thread and a buffer).
 const MAX_SINKS: usize = 16;
 /// The largest event buffer a sink made through the API may ask for.
-const MAX_BUFFER: u32 = 1_000_000;
+const MAX_BUFFER: u32 = 100_000;
 /// The largest set of kept batches a sink made through the API may ask for.
 const MAX_SPILL: u64 = 1 << 30;
 /// Headers the export sets itself.
@@ -92,6 +92,39 @@ fn valid_file_name(n: &str) -> bool {
         && ![".spill", ".pos", ".tmp"]
             .iter()
             .any(|ext| n.to_ascii_lowercase().ends_with(ext))
+        // `a` rotates to `a.1`, `a.2`: another sink's file can't be named like that.
+        && !n
+            .rsplit_once('.')
+            .is_some_and(|(_, e)| !e.is_empty() && e.bytes().all(|c| c.is_ascii_digit()))
+}
+
+/// REQ: API-016 (T23.11) — the API's limits, applied again to a sink that arrives by another
+/// road (a replicated blob, a stored row): the file name, the sizes, no password in an address.
+pub(crate) fn stored_limits(s: &SinkConfig) -> Result<(), String> {
+    if s.kind == SinkKind::File {
+        if !s.path.as_deref().is_some_and(valid_file_name) {
+            return Err("`path` isn't a plain file name".into());
+        }
+    } else if s.path.is_some() {
+        return Err("`path`: only a file sink has one".into());
+    }
+    if s.max_buffer > MAX_BUFFER {
+        return Err(format!("`max_buffer`: at most {MAX_BUFFER} events"));
+    }
+    if s.spill_max_bytes.is_some_and(|b| b.bytes() > MAX_SPILL) {
+        return Err("`spill_max_bytes`: at most 1 GiB".into());
+    }
+    for (f, v) in [("url", s.url.as_deref()), ("address", s.address.as_deref())] {
+        if v.is_some_and(|v| telltale_config::credentials::redact_url(v).is_some()) {
+            return Err(format!("`{f}`: a password in an address"));
+        }
+    }
+    Ok(())
+}
+
+/// The most sinks a node takes from the API (and from a replicated blob).
+pub(crate) const fn max_sinks() -> usize {
+    MAX_SINKS
 }
 
 /// 422 when `value` is a URL that carries a credential (a password, a secret query value).
@@ -521,7 +554,7 @@ pub(crate) fn list(src: &Sources) -> SinkList {
             SinkKind::Syslog => s
                 .address
                 .as_ref()
-                .map(ToString::to_string)
+                .map(|a| telltale_config::credentials::url_shown(a.as_str()))
                 .unwrap_or_default(),
             SinkKind::Webhook => s
                 .url
@@ -540,6 +573,13 @@ pub(crate) fn list(src: &Sources) -> SinkList {
         if let Some(u) = definition.get("url").and_then(serde_json::Value::as_str) {
             definition["url"] =
                 serde_json::Value::String(telltale_config::credentials::url_shown(u));
+        }
+        if let Some(a) = definition
+            .get("address")
+            .and_then(serde_json::Value::as_str)
+        {
+            definition["address"] =
+                serde_json::Value::String(telltale_config::credentials::url_shown(a));
         }
         if location.is_empty() {
             "-".clone_into(&mut location);
