@@ -67,6 +67,14 @@ pub(crate) const ROUTER: &str = "router";
 /// (ADR-903 §6). Admin-only; a provider the files define is read-only through the API, and the
 /// rows travel to the other members as the manifest's `node_managed` blob, not in `[auth]`.
 pub(crate) const OIDC_PROVIDER: &str = "oidc_provider";
+/// REQ: API-016 (T23.11, ADR-984) — event sinks, by name: a node-managed kind (ADR-903 §6),
+/// admin-only; a sink the files define is read-only through the API.
+pub(crate) const SINK: &str = "sink";
+/// REQ: API-016 (T23.11, ADR-984) — the OTLP export (one row, named `default`): a node-managed
+/// kind, admin-only; the files win when they set a destination.
+pub(crate) const OTLP: &str = "otlp";
+/// The one OTLP row's name.
+pub(crate) const OTLP_NAME: &str = "default";
 
 /// An API entry for a kind that can override the files (ADR-069): a definition, or the
 /// files' entry of that name left out.
@@ -168,6 +176,10 @@ pub(crate) struct Entries {
     pub(crate) routers: Vec<(String, Ovr<telltale_config::RouterConfig>)>,
     /// REQ: API-016 (T23.10) — the OIDC providers made through the API or UI, by ID.
     pub(crate) oidc_providers: Vec<(String, telltale_config::OidcProvider)>,
+    /// REQ: API-016 (T23.11) — the event sinks made through the API or UI, by name.
+    pub(crate) sinks: Vec<(String, telltale_config::SinkConfig)>,
+    /// REQ: API-016 (T23.11) — the OTLP export made through the API or UI.
+    pub(crate) otlp: Option<telltale_config::OtlpConfig>,
     pub(crate) schedules: Vec<(String, Ovr<telltale_config::ScheduleConfig>)>,
     /// REQ: OBS-038 — anomaly mutes.
     pub(crate) anomaly_mutes: Vec<(String, Ovr<telltale_config::AnomalyMuteConfig>)>,
@@ -215,6 +227,42 @@ impl Entries {
     }
 }
 
+impl Entries {
+    /// REQ: API-016 (T23.11) — the stored sinks that validate (those that don't are logged and
+    /// left out alone, CLU-004), with the fields a body never carries cleared.
+    pub(crate) fn valid_sinks(&self) -> Vec<telltale_config::SinkConfig> {
+        let mut ok = Vec::new();
+        for (name, s) in &self.sinks {
+            let mut s = s.clone();
+            s.name = telltale_config::SafeString::new(name).unwrap_or(s.name);
+            s.token_file = None;
+            s.tls_ca = None;
+            let errs = telltale_config::sink_errors(&s);
+            if errs.is_empty() {
+                ok.push(s);
+            } else {
+                warn!(sink = %name, "skipping a stored event sink: {}", errs.join("; "));
+            }
+        }
+        ok
+    }
+
+    /// REQ: API-016 (T23.11) — the stored OTLP export, if it validates.
+    pub(crate) fn valid_otlp(&self) -> Option<telltale_config::OtlpConfig> {
+        let mut o = self.otlp.clone()?;
+        o.headers.clear();
+        o.traces_sample_every = 0;
+        o.traces_slow_ms = 0;
+        let errs = telltale_config::otlp_errors(&o);
+        if errs.is_empty() {
+            Some(o)
+        } else {
+            warn!("skipping the stored OTLP export: {}", errs.join("; "));
+            None
+        }
+    }
+}
+
 /// Where the state database lives.
 pub(crate) fn state_path(cfg: &Config) -> std::path::PathBuf {
     Path::new(cfg.node.data_dir.as_str()).join("state.db")
@@ -252,6 +300,25 @@ fn decode_oidc_providers(state: &State) -> Vec<(String, telltale_config::OidcPro
                 Ok(p) => Some((name, p)),
                 Err(e) => {
                     warn!(kind = OIDC_PROVIDER, %name, "skipping a stored entry: {e}");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// REQ: API-016 (T23.11) — the stored sinks: the row's name is the sink's, whatever the body says.
+fn decode_sinks(state: &State) -> Vec<(String, telltale_config::SinkConfig)> {
+    decode::<serde_json::Value>(state, SINK)
+        .into_iter()
+        .filter_map(|(name, mut v)| {
+            if let Some(o) = v.as_object_mut() {
+                o.insert("name".into(), serde_json::Value::String(name.clone()));
+            }
+            match serde_json::from_value::<telltale_config::SinkConfig>(v) {
+                Ok(s) => Some((name, s)),
+                Err(e) => {
+                    warn!(kind = SINK, %name, "skipping a stored entry: {e}");
                     None
                 }
             }
@@ -310,6 +377,11 @@ pub(crate) fn entries(state: &State) -> Entries {
         alert_rules: decode_ovr(state, ALERT_RULE),
         routers: decode_ovr(state, ROUTER),
         oidc_providers: decode_oidc_providers(state),
+        sinks: decode_sinks(state),
+        otlp: decode::<telltale_config::OtlpConfig>(state, OTLP)
+            .into_iter()
+            .next()
+            .map(|(_, o)| o),
         schedules: decode_ovr(state, SCHEDULE),
         anomaly_mutes: decode_ovr(state, ANOMALY_MUTE),
         ratelimit: decode::<telltale_config::RateLimitConfig>(state, RATELIMIT)
@@ -438,6 +510,15 @@ fn apply_one_of(cfg: &mut Config, e: &Entries) {
     }
 }
 
+/// REQ: API-016 (T23.10, T23.11, ADR-967, ADR-984) - the node-managed kinds: OIDC providers, event
+/// sinks and the OTLP export, merged apart from their file sections (the files win, a bad entry is
+/// dropped alone).
+fn overlay_node_managed(cfg: &mut Config, e: &Entries) {
+    crate::node_managed::overlay_providers(cfg, e.valid_oidc_providers());
+    crate::node_managed::overlay_sinks(cfg, e.valid_sinks());
+    crate::node_managed::overlay_otlp(cfg, e.valid_otlp());
+}
+
 /// `file` plus the entries (names the files already use are skipped), if the result validates
 /// (including record values); otherwise `Err` with the reasons.
 pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
@@ -483,7 +564,7 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
     // REQ: API-016 (T23.10, ADR-967) — the providers made in the UI are node-managed: merged
     // apart from `[[auth.oidc.provider]]` (a node without `public_url` shows them as inactive
     // instead of failing the configuration), the files' ID wins, and a bad one is dropped alone.
-    crate::node_managed::overlay_providers(&mut cfg, e.valid_oidc_providers());
+    overlay_node_managed(&mut cfg, e);
     apply_ovr(&mut cfg.schedule, &e.schedules);
     apply_ovr(&mut cfg.anomaly_mute, &e.anomaly_mutes);
     apply_kubernetes_map(&mut cfg, &e.kubernetes_map);

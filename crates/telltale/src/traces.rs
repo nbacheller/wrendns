@@ -149,7 +149,7 @@ pub(crate) struct TraceSink {
 
 impl TraceSink {
     pub(crate) fn new(shared: Arc<Traces>, cfg: &telltale_config::Config) -> Self {
-        let o = &cfg.telemetry.otlp;
+        let o = cfg.telemetry.otlp_effective();
         let tracing = o.endpoint.is_some();
         Self {
             shared,
@@ -460,7 +460,7 @@ pub(crate) async fn run(
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) {
     let cfg = sources.config.load_full();
-    let o = &cfg.telemetry.otlp;
+    let o = cfg.telemetry.otlp_effective();
     if o.traces_sample_every == 0 && o.traces_slow_ms == 0 {
         return;
     }

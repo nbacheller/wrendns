@@ -2,7 +2,7 @@
 //!
 //! A node-local section (`NODE_LOCAL`: `auth`, `telemetry`, ...) never travels in the shared
 //! configuration. The few settings of those sections an admin changes in the UI (`oidc_provider`
-//! today, `sink` and `otlp` with T23.11) are entries of a *node-managed kind*: stored by the
+//! and, with T23.11 (ADR-984), `sink` and `otlp`) are entries of a *node-managed kind*: stored by the
 //! primary in `managed` like any entry, and replicated as one more blob of the signed manifest
 //! (`ClusterManifest.node_managed`) holding **references only**: a secret is named, never carried.
 //!
@@ -16,21 +16,29 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use telltale_config::{Config, OidcProvider};
+use telltale_config::{Config, OidcProvider, OtlpConfig, SinkConfig};
 use telltale_store::state::State;
 use tracing::{info, warn};
 
-use crate::managed::OIDC_PROVIDER;
+use crate::managed::{OIDC_PROVIDER, OTLP, SINK};
 
 /// The blob's name in the manifest.
 pub(crate) const BLOB: &str = "node-managed.json";
 /// The document's version.
 const VERSION: u32 = 1;
 /// The kinds that are node-managed (the others are the shared configuration's).
-pub(crate) const KINDS: &[&str] = &[OIDC_PROVIDER];
-/// The fields of a provider that hold or point at a secret outside the store. A blob never
-/// carries them: only `client_secret_ref` (a name) travels.
-const SECRET_FIELDS: &[&str] = &["client_secret", "client_secret_file"];
+pub(crate) const KINDS: &[&str] = &[OIDC_PROVIDER, SINK, OTLP];
+/// The fields that hold or point at a secret outside the store: a provider's `client_secret` and
+/// its file, a sink's `token_file` (and `tls_ca`, a path), OTLP's inline `headers`. A blob never
+/// carries them: only the references (`client_secret_ref`, `token_ref`, `header_refs`: names)
+/// travel.
+const SECRET_FIELDS: &[&str] = &[
+    "client_secret",
+    "client_secret_file",
+    "token_file",
+    "tls_ca",
+    "headers",
+];
 /// The marker a primary keeps once it seeded its rows from an inherited blob (its hash).
 const SEEDED: &str = "node-managed-seeded";
 
@@ -53,8 +61,13 @@ pub(crate) struct Entry {
 /// Whether `body` carries a field that holds or points at a secret outside the store.
 fn carries_secret(body: &Value) -> bool {
     SECRET_FIELDS.iter().any(|f| {
-        body.get(*f)
-            .is_some_and(|v| !v.is_null() && v.as_str() != Some(""))
+        body.get(*f).is_some_and(|v| match v {
+            Value::Null => false,
+            Value::String(s) => !s.is_empty(),
+            Value::Object(o) => !o.is_empty(),
+            Value::Array(a) => !a.is_empty(),
+            _ => true,
+        })
     })
 }
 
@@ -156,6 +169,83 @@ pub(crate) fn providers(entries: &[Entry]) -> (Vec<OidcProvider>, Vec<String>) {
     (ok, bad)
 }
 
+/// REQ: API-016 (T23.11) — the sinks among `entries` that validate, and what was wrong with the
+/// others. The name is the entry's, whatever the body says.
+pub(crate) fn sinks(entries: &[Entry]) -> (Vec<SinkConfig>, Vec<String>) {
+    let mut ok = Vec::new();
+    let mut bad = Vec::new();
+    for e in entries.iter().filter(|e| e.kind == SINK) {
+        let mut body = e.body.clone();
+        if let Some(o) = body.as_object_mut() {
+            o.insert("name".into(), Value::String(e.name.clone()));
+        }
+        match serde_json::from_value::<SinkConfig>(body) {
+            Ok(mut s) => {
+                s.token_file = None;
+                s.tls_ca = None;
+                let errs = telltale_config::sink_errors(&s);
+                if errs.is_empty() {
+                    ok.push(s);
+                } else {
+                    bad.push(format!("sink `{}`: {}", e.name, errs.join("; ")));
+                }
+            }
+            Err(err) => bad.push(format!("sink `{}`: {err}", e.name)),
+        }
+    }
+    (ok, bad)
+}
+
+/// REQ: API-016 (T23.11) — the OTLP export among `entries`, if it validates.
+pub(crate) fn otlp(entries: &[Entry]) -> (Option<OtlpConfig>, Vec<String>) {
+    let mut bad = Vec::new();
+    for e in entries.iter().filter(|e| e.kind == OTLP) {
+        match serde_json::from_value::<OtlpConfig>(e.body.clone()) {
+            Ok(mut o) => {
+                o.headers.clear();
+                o.traces_sample_every = 0;
+                o.traces_slow_ms = 0;
+                let errs = telltale_config::otlp_errors(&o);
+                if errs.is_empty() {
+                    return (Some(o), bad);
+                }
+                bad.push(format!("the OTLP export: {}", errs.join("; ")));
+            }
+            Err(err) => bad.push(format!("the OTLP export: {err}")),
+        }
+    }
+    (None, bad)
+}
+
+/// REQ: API-016 (T23.11) — merges `sinks` into `cfg` as the node-managed ones: a sink the files
+/// define (by name) is left out, a node-managed one of the same name is replaced. A file sink
+/// made in the UI is a bare file name; it is written under `<data_dir>/sinks/`.
+pub(crate) fn overlay_sinks(cfg: &mut Config, sinks: Vec<SinkConfig>) {
+    let dir = Path::new(cfg.node.data_dir.as_str()).join("sinks");
+    for mut s in sinks {
+        if cfg.telemetry.sink.iter().any(|f| f.name == s.name) {
+            continue;
+        }
+        if s.kind == telltale_config::SinkKind::File
+            && let Some(name) = s.path.as_ref().map(ToString::to_string)
+            && let Ok(full) =
+                telltale_config::SafeString::new(dir.join(name).to_string_lossy().as_ref())
+        {
+            s.path = Some(full);
+        }
+        cfg.telemetry.managed_sink.retain(|q| q.name != s.name);
+        cfg.telemetry.managed_sink.push(s);
+    }
+}
+
+/// REQ: API-016 (T23.11) — the node-managed OTLP export; the files win when they set a
+/// destination (`telemetry.otlp_set_by_file`).
+pub(crate) fn overlay_otlp(cfg: &mut Config, otlp: Option<OtlpConfig>) {
+    if let Some(o) = otlp {
+        cfg.telemetry.managed_otlp = Some(o);
+    }
+}
+
 /// Merges `providers` into `cfg` as the node-managed ones: a provider the files define (by ID)
 /// is left out, a node-managed one of the same ID is replaced, and a resolver pod skips the
 /// ones that need a stored secret (it holds none, and serves no sign-in).
@@ -214,10 +304,14 @@ pub(crate) fn overlay_blob(cfg: &mut Config, bytes: &[u8]) {
         }
     };
     let (ok, bad) = providers(&entries);
-    for b in &bad {
+    let (sink_ok, sink_bad) = sinks(&entries);
+    let (otlp_ok, otlp_bad) = otlp(&entries);
+    for b in bad.iter().chain(&sink_bad).chain(&otlp_bad) {
         warn_once("an entry", b);
     }
     overlay_providers(cfg, ok);
+    overlay_sinks(cfg, sink_ok);
+    overlay_otlp(cfg, otlp_ok);
 }
 
 /// The rows of this node's own `state.db` for the node-managed kinds, as providers: what a
@@ -230,11 +324,16 @@ pub(crate) fn overlay_own(cfg: &mut Config, state_path: &Path) {
     let Ok(state) = State::open(state_path) else {
         return;
     };
-    let (ok, bad) = providers(&parse(&export(&state)).unwrap_or_default());
-    for b in &bad {
+    let entries = parse(&export(&state)).unwrap_or_default();
+    let (ok, bad) = providers(&entries);
+    let (sink_ok, sink_bad) = sinks(&entries);
+    let (otlp_ok, otlp_bad) = otlp(&entries);
+    for b in bad.iter().chain(&sink_bad).chain(&otlp_bad) {
         warn!("a node-managed entry on this node is ignored: {b}");
     }
     overlay_providers(cfg, ok);
+    overlay_sinks(cfg, sink_ok);
+    overlay_otlp(cfg, otlp_ok);
 }
 
 /// A promoted primary's seeding (ADR-903 §6): the entries of the blob it inherited that it has no
@@ -264,10 +363,17 @@ pub(crate) fn seed_once(state_path: &Path, cluster_dir: &Path, hash: &str, bytes
         .map(|m| (m.kind, m.name))
         .collect();
     let (valid, _) = providers(&entries);
+    let (valid_sinks, _) = sinks(&entries);
+    let (valid_otlp, _) = otlp(&entries);
     let rows: Vec<(String, String, String)> = entries
         .iter()
         .filter(|e| !have.iter().any(|(k, n)| *k == e.kind && *n == e.name))
-        .filter(|e| e.kind != OIDC_PROVIDER || valid.iter().any(|p| p.id.as_str() == e.name))
+        .filter(|e| match e.kind.as_str() {
+            OIDC_PROVIDER => valid.iter().any(|p| p.id.as_str() == e.name),
+            SINK => valid_sinks.iter().any(|s| s.name.as_str() == e.name),
+            OTLP => valid_otlp.is_some(),
+            _ => true,
+        })
         .filter_map(|e| {
             Some((
                 e.kind.clone(),

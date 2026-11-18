@@ -273,6 +273,8 @@ pub fn entry_prefix(kind: &str) -> Option<&'static str> {
         "list" => Some("list[]"),
         // REQ: API-016 (review of T23.7) — a router's URL can carry a password, as a list's can.
         "router" => Some("router[]"),
+        // REQ: API-016 (T23.11) — a sink's URL can carry a password, as a router's can.
+        "sink" => Some("telemetry.sink[]"),
         _ => None,
     }
 }

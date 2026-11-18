@@ -2408,6 +2408,51 @@ pub struct TelemetryConfig {
     /// addresses always do, and so does `cluster.local` with `[kubernetes] enabled`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub internal_names: Vec<SafeString>,
+    /// REQ: API-016 (T23.11, ADR-984) — the sinks made in the UI (a `node_managed` kind),
+    /// merged by this node at load. Never in a file, never serialized and never part of the
+    /// shared configuration (the primary publishes them in the manifest's `node_managed`
+    /// blob); a file's sink of the same name wins. Read through [`Self::all_sinks`].
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub managed_sink: Vec<SinkConfig>,
+    /// REQ: API-016 (T23.11, ADR-984) — the OTLP export made in the UI, likewise; used only
+    /// while the files set no `endpoint`, `headers` or `header_refs`. Read through
+    /// [`Self::otlp_effective`].
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub managed_otlp: Option<OtlpConfig>,
+}
+
+impl TelemetryConfig {
+    /// Every sink in effect: the files' first, then the ones made in the UI.
+    pub fn all_sinks(&self) -> impl Iterator<Item = &SinkConfig> {
+        self.sink.iter().chain(&self.managed_sink)
+    }
+
+    /// Whether the files set the OTLP destination (`endpoint`, `headers` or `header_refs`):
+    /// then they win over an entry made in the UI (ADR-040).
+    #[must_use]
+    pub fn otlp_set_by_file(&self) -> bool {
+        self.otlp.endpoint.is_some()
+            || !self.otlp.headers.is_empty()
+            || !self.otlp.header_refs.is_empty()
+    }
+
+    /// The OTLP settings in effect: the files', or, when they set no destination, the UI's
+    /// `endpoint`, `interval_secs` and `header_refs` over the files' trace settings.
+    #[must_use]
+    pub fn otlp_effective(&self) -> std::borrow::Cow<'_, OtlpConfig> {
+        match &self.managed_otlp {
+            Some(m) if !self.otlp_set_by_file() => {
+                let mut o = self.otlp.clone();
+                o.endpoint.clone_from(&m.endpoint);
+                o.interval_secs = m.interval_secs;
+                o.header_refs.clone_from(&m.header_refs);
+                std::borrow::Cow::Owned(o)
+            }
+            _ => std::borrow::Cow::Borrowed(&self.otlp),
+        }
+    }
 }
 
 /// Thresholds the latency objective may use, in milliseconds: the `/metrics` latency
@@ -2590,6 +2635,8 @@ impl Default for TelemetryConfig {
             otlp: OtlpConfig::default(),
             dnstap: DnstapConfig::default(),
             internal_names: Vec::new(),
+            managed_sink: Vec::new(),
+            managed_otlp: None,
         }
     }
 }

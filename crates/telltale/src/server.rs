@@ -608,13 +608,29 @@ struct ListenerStats {
     doq: Vec<Arc<telltale_net::DoqStats>>,
 }
 
+/// `[telemetry]` without what a reload applies (the event sinks and the OTLP destination,
+/// interval and headers): what is left is read once, at start.
+fn telemetry_at_start(t: &telltale_config::TelemetryConfig) -> telltale_config::TelemetryConfig {
+    let mut t = t.clone();
+    t.sink.clear();
+    t.managed_sink.clear();
+    t.managed_otlp = None;
+    t.otlp.endpoint = None;
+    t.otlp.headers.clear();
+    t.otlp.header_refs.clear();
+    t.otlp.interval_secs = 0;
+    t
+}
+
 /// Settings a reload can't change without a restart; returns what differs.
 fn restart_only_changes(old: &Config, new: &Config) -> Vec<&'static str> {
     let mut v = Vec::new();
     if old.cache != new.cache {
         v.push("[cache]");
     }
-    if old.telemetry != new.telemetry {
+    // REQ: API-016 (T23.11) — sinks and the OTLP destination apply on reload; the rest of
+    // `[telemetry]` (and the trace settings) are read once, at start.
+    if telemetry_at_start(&old.telemetry) != telemetry_at_start(&new.telemetry) {
         v.push("[telemetry]");
     }
     // REQ: OPS-011 — the log files are opened once, at start.
@@ -928,7 +944,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // the blocking load below, opens it). DNS never waits for it.
     let secrets = Arc::new(crate::secrets::SecretStore::new(&cfg));
     // REQ: OBS-010 (T7.13) — event sinks (file, syslog, webhook) on the same pass.
-    let events = crate::sinks::start(
+    let (events, sink_manager) = crate::sinks::start(
         &cfg,
         &pipeline,
         &tokio::runtime::Handle::current(),
@@ -949,8 +965,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         as Box<dyn telltale_telemetry::ring::Sink>;
     let extra: Vec<Box<dyn telltale_telemetry::ring::Sink>> = anomaly_sink
         .into_iter()
-        .chain(events)
-        .chain([shadow_sink, trace_sink])
+        .chain([events, shadow_sink, trace_sink])
         .collect();
     let extra =
         Some(Box::new(crate::tail::Fanout(extra)) as Box<dyn telltale_telemetry::ring::Sink>);
@@ -1056,6 +1071,9 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         routers: Arc::default(),
         routers_changed: Arc::default(),
         oidc_changed: Arc::default(),
+        telemetry_changed: Arc::default(),
+        otlp_changed: Arc::default(),
+        sinks: sink_manager,
         oidc_fetch: crate::auth_setup::FetchSlot::default(),
         reload: reload_tx,
         config_writes: tokio::sync::Mutex::new(()),
@@ -1144,6 +1162,11 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     tokio::spawn(schedule_ticker(Arc::clone(&sources), http_stopped.clone()));
     // REQ: OBS-010 (T7.12)
     tokio::spawn(crate::alerts::run(
+        Arc::clone(&sources),
+        http_stopped.clone(),
+    ));
+    // REQ: API-016 (T23.11) — event sinks follow the configuration without a restart.
+    tokio::spawn(crate::sinks::run(
         Arc::clone(&sources),
         http_stopped.clone(),
     ));
@@ -1531,6 +1554,9 @@ async fn reload(
     // the UI's, or a replicated node-managed entry) apply now, without a restart; discovery and
     // keys are read off this task, and a failure keeps the previous settings.
     sources.oidc_changed.notify_one();
+    // REQ: API-016 (T23.11, ADR-984) - event sinks and the OTLP export follow the configuration
+    // (the files', the UI's, or a replicated node-managed entry) without a restart.
+    sources.notify_telemetry_changed();
     // REQ: FLT-017 — a `[[kubernetes.map]]` rule or a group change reaches the workload table
     // before the next query, not on the watcher's next tick.
     sources.pipeline.kube.reconfigured.notify_one();

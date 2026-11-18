@@ -6981,6 +6981,198 @@
         }
       }
     },
+    "/api/v1/otlp": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The OTLP export in effect on this node.",
+        "description": "Its collector address, interval and headers (a header's value is a stored secret's name, or\n`<redacted>` when the configuration file holds it inline), where the setting comes from, and\nwhether the export runs here.",
+        "operationId": "get_otlp",
+        "responses": {
+          "200": {
+            "description": "The OTLP export.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OtlpEntry"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/otlp/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set the OTLP export.",
+        "description": "API-016, OBS-006 (T23.11, ADR-984). The body has `endpoint` (the collector's base URL),\n`interval_secs` and `header_refs`, a map from header name to the name of a stored secret that\nholds the value (422 `secret_missing` when none has that name). Inline `headers`, the trace\nsettings and a password in the URL are set in the configuration file, not through the API.\nAdmins only. The files win: when they set an `endpoint`, `headers` or `header_refs`, this is\nread-only (409 `set_by_file`). It applies on every node without a restart; the headers are read\nfor every export.",
+        "operationId": "put_otlp",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change the OTLP export.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files set the OTLP destination.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong, or a reference names no stored secret (`secret_missing`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Turn off the OTLP export the API set.",
+        "description": "API-016 (T23.11). Metrics stop going out on every node (unless the configuration files set a\ndestination).",
+        "operationId": "delete_otlp",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change the OTLP export.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The API sets no OTLP export.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files set the OTLP destination.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/pihole-api": {
       "get": {
         "tags": [
@@ -8971,6 +9163,226 @@
           },
           "404": {
             "description": "Nothing was changed through the API: the file's settings are in effect already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sinks": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The event sinks in the configuration, with their status.",
+        "description": "Each sink comes with its settings (a webhook token as a stored secret's name, never a value),\nwhere it comes from (the files, or the API), and whether this node runs it: a resolver pod holds\nno stored secrets, so a sink that needs one isn't started there. `dropped` counts the events a\nsink lost since the node started (its buffer was full, or a batch was refused).",
+        "operationId": "list_sinks",
+        "responses": {
+          "200": {
+            "description": "The sinks, the files' first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SinkList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sinks/{name}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Add or change an event sink.",
+        "description": "API-016, OBS-010 (T23.11, ADR-903 section 7, ADR-984). The body has the fields of\n`[[telemetry.sink]]` (the name comes from the path): `type` (`file`, `syslog` or `webhook`),\n`address`, `url`, `format`, `batch`, `flush_secs`, `max_buffer`, `statuses`, `spill_max_bytes`.\nA file sink's `path` is a file name, written under the node's data directory (`sinks/`).\nA webhook's token is a name, never a value: `token_ref` names a stored secret (422\n`secret_missing` when none has that name); `token_file`, `tls_ca` and a password in a URL are\nset in the configuration file, not through the API. Admins only: an operator or an agent is\nrefused (403). A sink the config files define is read-only here (409 `set_by_file`). The sink\nstarts, changes or stops on every node within seconds, without a restart. Under a Git source\nthe write is refused (409 `gitops_managed`).",
+        "operationId": "put_sink",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The sink's name: unique, used in logs and metrics.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can change an event sink.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files define this sink, which is read-only here.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong, the reference names no stored secret (`secret_missing`), or a file path or a password in a URL is set through the API.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove an event sink that the API added.",
+        "description": "API-016 (T23.11). The sink sends what it holds (one try, within 2 seconds) and stops on every\nnode; the batches it kept on disk are deleted.",
+        "operationId": "delete_sink",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The sink's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can remove an event sink.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No sink by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files define it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -21448,6 +21860,102 @@
         },
         "additionalProperties": false
       },
+      "OtlpEntry": {
+        "type": "object",
+        "description": "REQ: API-016, OBS-006 (T23.11) — `GET /api/v1/otlp`: the OTLP export in effect on this node.",
+        "required": [
+          "source",
+          "intervalSecs",
+          "headers",
+          "tracesSampleEvery",
+          "tracesSlowMs",
+          "active"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean",
+            "description": "Whether the export runs on this node."
+          },
+          "endpoint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The collector's address (a password in it removed); absent when there is none."
+          },
+          "headers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OtlpHeader"
+            }
+          },
+          "intervalSecs": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it doesn't, when an endpoint is set."
+          },
+          "source": {
+            "type": "string",
+            "description": "`none` (no export), `file` (the configuration files set the destination; read-only here)\nor `api`."
+          },
+          "tracesSampleEvery": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Trace settings (a file's; read at start).",
+            "minimum": 0
+          },
+          "tracesSlowMs": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "OtlpHeader": {
+        "type": "object",
+        "description": "REQ: API-016, OBS-006 (T23.11) — one header of the OTLP export.",
+        "required": [
+          "name",
+          "source"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "readable": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether this node can read the secret now (`stored` only)."
+          },
+          "secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stored secret's name, when `source` is `stored`."
+          },
+          "source": {
+            "type": "string",
+            "description": "`stored` (a stored secret, by name) or `inline` (a value in the configuration file: never\nshown, `<redacted>`; enter it as a stored secret to move it to the UI)."
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`<redacted>` for an inline value; absent for a stored one."
+          }
+        }
+      },
       "OverblockSuspect": {
         "type": "object",
         "description": "REQ: OBS-018 (ADR-109) — a blocked name that looks like it shouldn't be: devices kept\nretrying it, or it was answered normally soon after being blocked (someone paused\nblocking or allowed it).",
@@ -23708,6 +24216,95 @@
             "format": "int64",
             "description": "At privacy level 1 (names hashed), queries of devices whose group changes to one with\ndifferent settings: they can't be decided again without the names.",
             "minimum": 0
+          }
+        }
+      },
+      "SinkEntry": {
+        "type": "object",
+        "description": "REQ: API-016, OBS-010 (T23.11, ADR-984) — one event sink in the configuration: its settings\n(a stored token as a name, never a value), where it comes from, and what this node does with it.",
+        "required": [
+          "name",
+          "type",
+          "source",
+          "location",
+          "definition",
+          "tokenSource",
+          "running",
+          "dropped"
+        ],
+        "properties": {
+          "definition": {
+            "description": "The settings in effect: the `[[telemetry.sink]]` fields as JSON, with `token_ref` named."
+          },
+          "dropped": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Events dropped since this node started (the buffer was full, or a batch was refused).",
+            "minimum": 0
+          },
+          "location": {
+            "type": "string",
+            "description": "Where events go: the file, the syslog address or the webhook URL (a password in it\nremoved, API-014)."
+          },
+          "name": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it doesn't (a resolver pod holds no stored secrets; its settings couldn't be used)."
+          },
+          "running": {
+            "type": "boolean",
+            "description": "Whether the sink's thread runs on this node."
+          },
+          "source": {
+            "type": "string",
+            "description": "`file` (the configuration files define it; read-only here) or `api`."
+          },
+          "token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stored secret's name, when `tokenSource` is `stored`."
+          },
+          "tokenReadable": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether this node can read the token now; absent when none is set."
+          },
+          "tokenSource": {
+            "type": "string",
+            "description": "Where the webhook token comes from: `stored` (the encrypted store, by name), `file`, or\n`none`."
+          },
+          "type": {
+            "type": "string",
+            "description": "`file`, `syslog` or `webhook`."
+          }
+        }
+      },
+      "SinkList": {
+        "type": "object",
+        "description": "REQ: API-016 (T23.11) — `GET /api/v1/sinks`.",
+        "required": [
+          "items",
+          "filesDir"
+        ],
+        "properties": {
+          "filesDir": {
+            "type": "string",
+            "description": "Where a file sink made in the UI writes: the file name it is given goes under this\ndirectory on every node."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SinkEntry"
+            }
           }
         }
       },

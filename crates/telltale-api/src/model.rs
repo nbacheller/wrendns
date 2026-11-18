@@ -3875,3 +3875,88 @@ pub struct OidcProviderList {
     /// then every provider is inactive here.
     pub public_url: String,
 }
+
+/// REQ: API-016, OBS-010 (T23.11, ADR-984) — one event sink in the configuration: its settings
+/// (a stored token as a name, never a value), where it comes from, and what this node does with it.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SinkEntry {
+    pub name: String,
+    /// `file`, `syslog` or `webhook`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// `file` (the configuration files define it; read-only here) or `api`.
+    pub source: String,
+    /// Where events go: the file, the syslog address or the webhook URL (a password in it
+    /// removed, API-014).
+    pub location: String,
+    /// The settings in effect: the `[[telemetry.sink]]` fields as JSON, with `token_ref` named.
+    pub definition: serde_json::Value,
+    /// Where the webhook token comes from: `stored` (the encrypted store, by name), `file`, or
+    /// `none`.
+    pub token_source: String,
+    /// The stored secret's name, when `tokenSource` is `stored`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// Whether this node can read the token now; absent when none is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_readable: Option<bool>,
+    /// Whether the sink's thread runs on this node.
+    pub running: bool,
+    /// Why it doesn't (a resolver pod holds no stored secrets; its settings couldn't be used).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Events dropped since this node started (the buffer was full, or a batch was refused).
+    pub dropped: u64,
+}
+
+/// REQ: API-016 (T23.11) — `GET /api/v1/sinks`.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SinkList {
+    pub items: Vec<SinkEntry>,
+    /// Where a file sink made in the UI writes: the file name it is given goes under this
+    /// directory on every node.
+    pub files_dir: String,
+}
+
+/// REQ: API-016, OBS-006 (T23.11) — one header of the OTLP export.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OtlpHeader {
+    pub name: String,
+    /// `stored` (a stored secret, by name) or `inline` (a value in the configuration file: never
+    /// shown, `<redacted>`; enter it as a stored secret to move it to the UI).
+    pub source: String,
+    /// The stored secret's name, when `source` is `stored`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// Whether this node can read the secret now (`stored` only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readable: Option<bool>,
+    /// `<redacted>` for an inline value; absent for a stored one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+/// REQ: API-016, OBS-006 (T23.11) — `GET /api/v1/otlp`: the OTLP export in effect on this node.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OtlpEntry {
+    /// `none` (no export), `file` (the configuration files set the destination; read-only here)
+    /// or `api`.
+    pub source: String,
+    /// The collector's address (a password in it removed); absent when there is none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    pub interval_secs: u32,
+    pub headers: Vec<OtlpHeader>,
+    /// Trace settings (a file's; read at start).
+    pub traces_sample_every: u32,
+    pub traces_slow_ms: u32,
+    /// Whether the export runs on this node.
+    pub active: bool,
+    /// Why it doesn't, when an endpoint is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}

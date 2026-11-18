@@ -668,7 +668,31 @@ fn identify(cfg: &Config, r: &mut Report<'_>) {
 
 // REQ: OBS-006 (T7.17) — OTLP: an http(s) endpoint, a sane interval.
 fn otlp(cfg: &Config, r: &mut Report<'_>) {
-    let o = &cfg.telemetry.otlp;
+    otlp_one(&cfg.telemetry.otlp, r);
+    // REQ: OBS-007 (T7.18)
+    let d = &cfg.telemetry.dnstap;
+    if d.socket.is_some() && d.address.is_some() {
+        r.err("telemetry.dnstap", "set socket or address, not both");
+    }
+    if let Some(a) = &d.address {
+        let hp = a.strip_prefix("tcp://").unwrap_or(a);
+        if !hp
+            .rsplit_once(':')
+            .is_some_and(|(h, p)| !h.is_empty() && p.parse::<u16>().is_ok())
+        {
+            r.err("telemetry.dnstap.address", "use tcp://host:port");
+        }
+    }
+    if d.sample_every == 0 {
+        r.err("telemetry.dnstap.sample_every", "at least 1 (every query)");
+    }
+    if d.buffer < 100 {
+        r.err("telemetry.dnstap.buffer", "at least 100");
+    }
+}
+
+/// The OTLP export's own rules (the endpoint, the interval, the trace settings).
+fn otlp_one(o: &crate::OtlpConfig, r: &mut Report<'_>) {
     if let Some(e) = &o.endpoint
         && !(e.starts_with("http://") || e.starts_with("https://"))
     {
@@ -694,29 +718,21 @@ fn otlp(cfg: &Config, r: &mut Report<'_>) {
             }
         }
     }
-    // REQ: OBS-007 (T7.18)
-    let d = &cfg.telemetry.dnstap;
-    if d.socket.is_some() && d.address.is_some() {
-        r.err("telemetry.dnstap", "set socket or address, not both");
-    }
-    if let Some(a) = &d.address {
-        let hp = a.strip_prefix("tcp://").unwrap_or(a);
-        if !hp
-            .rsplit_once(':')
-            .is_some_and(|(h, p)| !h.is_empty() && p.parse::<u16>().is_ok())
-        {
-            r.err("telemetry.dnstap.address", "use tcp://host:port");
-        }
-    }
-    if d.sample_every == 0 {
-        r.err("telemetry.dnstap.sample_every", "at least 1 (every query)");
-    }
-    if d.buffer < 100 {
-        r.err("telemetry.dnstap.buffer", "at least 100");
-    }
 }
 
 fn sinks(cfg: &Config, r: &mut Report<'_>) {
+    let mut names = HashSet::new();
+    for (i, s) in cfg.telemetry.sink.iter().enumerate() {
+        let p = format!("telemetry.sink[{i}]");
+        if s.name.is_empty() || !names.insert(s.name.as_str()) {
+            r.err(format!("{p}.name"), "must be unique and not empty");
+        }
+        sink_one(s, &p, r);
+    }
+}
+
+/// One sink's own settings (everything but the uniqueness of its name).
+fn sink_one(s: &crate::SinkConfig, p: &str, r: &mut Report<'_>) {
     use crate::SinkKind;
     const STATUSES: &[&str] = &[
         "cached",
@@ -732,85 +748,78 @@ fn sinks(cfg: &Config, r: &mut Report<'_>) {
         "servfail",
         "dropped",
     ];
-    let mut names = HashSet::new();
-    for (i, s) in cfg.telemetry.sink.iter().enumerate() {
-        let p = format!("telemetry.sink[{i}]");
-        if s.name.is_empty() || !names.insert(s.name.as_str()) {
-            r.err(format!("{p}.name"), "must be unique and not empty");
-        }
-        match s.kind {
-            SinkKind::File => {
-                if s.path.as_ref().is_none_or(|x| x.is_empty()) {
-                    r.err(format!("{p}.path"), "a file sink needs `path`");
-                }
-                if s.max_bytes.bytes() < 1024 * 1024 {
-                    r.err(format!("{p}.max_bytes"), "at least 1 MiB");
-                }
+    match s.kind {
+        SinkKind::File => {
+            if s.path.as_ref().is_none_or(|x| x.is_empty()) {
+                r.err(format!("{p}.path"), "a file sink needs `path`");
             }
-            SinkKind::Syslog => {
-                let a = s.address.as_ref().map_or("", |x| x.as_str());
-                let ok = a
-                    .strip_prefix("udp://")
-                    .or_else(|| a.strip_prefix("tcp://"))
-                    .or_else(|| a.strip_prefix("tls://"))
-                    .is_some_and(|hp| {
-                        hp.rsplit_once(':')
-                            .is_some_and(|(h, port)| !h.is_empty() && port.parse::<u16>().is_ok())
-                    });
-                if !ok {
-                    r.err(
-                        format!("{p}.address"),
-                        "use udp://host:port, tcp://host:port, or tls://host:port",
-                    );
-                }
-                // REQ: OBS-010 (T9.11)
-                if s.tls_ca.is_some() && !a.starts_with("tls://") {
-                    r.err(format!("{p}.tls_ca"), "only for tls:// syslog addresses");
-                }
-                if s.facility > 23 {
-                    r.err(format!("{p}.facility"), "a syslog facility from 0 to 23");
-                }
-            }
-            SinkKind::Webhook => {
-                let u = s.url.as_ref().map_or("", |x| x.as_str());
-                if !(u.starts_with("https://") || u.starts_with("http://")) {
-                    r.err(
-                        format!("{p}.url"),
-                        "a webhook sink needs an http:// or https:// `url`",
-                    );
-                }
-                if s.batch == 0 || s.batch > 10_000 {
-                    r.err(format!("{p}.batch"), "from 1 to 10000");
-                }
-                if s.flush_secs == 0 {
-                    r.err(format!("{p}.flush_secs"), "at least 1");
-                }
-                // REQ: OBS-010 (T9.11)
-                if s.spill_max_bytes.is_some_and(|b| b.bytes() < 1024 * 1024) {
-                    r.err(format!("{p}.spill_max_bytes"), "at least 1 MiB");
-                }
+            if s.max_bytes.bytes() < 1024 * 1024 {
+                r.err(format!("{p}.max_bytes"), "at least 1 MiB");
             }
         }
-        if s.spill_max_bytes.is_some() && s.kind != SinkKind::Webhook {
-            r.err(format!("{p}.spill_max_bytes"), "only for webhook sinks");
-        }
-        if s.format == crate::SinkFormat::OtlpLogs && s.kind != SinkKind::Webhook {
-            r.err(format!("{p}.format"), "otlp_logs is for webhook sinks");
-        }
-        if s.max_buffer < 100 {
-            r.err(format!("{p}.max_buffer"), "at least 100");
-        }
-        for (j, st) in s.statuses.iter().enumerate() {
-            if !STATUSES.contains(&st.as_str()) {
+        SinkKind::Syslog => {
+            let a = s.address.as_ref().map_or("", |x| x.as_str());
+            let ok = a
+                .strip_prefix("udp://")
+                .or_else(|| a.strip_prefix("tcp://"))
+                .or_else(|| a.strip_prefix("tls://"))
+                .is_some_and(|hp| {
+                    hp.rsplit_once(':')
+                        .is_some_and(|(h, port)| !h.is_empty() && port.parse::<u16>().is_ok())
+                });
+            if !ok {
                 r.err(
-                    format!("{p}.statuses[{j}]"),
-                    format!(
-                        "unknown status `{}` (one of {})",
-                        st.as_str(),
-                        STATUSES.join(", ")
-                    ),
+                    format!("{p}.address"),
+                    "use udp://host:port, tcp://host:port, or tls://host:port",
                 );
             }
+            // REQ: OBS-010 (T9.11)
+            if s.tls_ca.is_some() && !a.starts_with("tls://") {
+                r.err(format!("{p}.tls_ca"), "only for tls:// syslog addresses");
+            }
+            if s.facility > 23 {
+                r.err(format!("{p}.facility"), "a syslog facility from 0 to 23");
+            }
+        }
+        SinkKind::Webhook => {
+            let u = s.url.as_ref().map_or("", |x| x.as_str());
+            if !(u.starts_with("https://") || u.starts_with("http://")) {
+                r.err(
+                    format!("{p}.url"),
+                    "a webhook sink needs an http:// or https:// `url`",
+                );
+            }
+            if s.batch == 0 || s.batch > 10_000 {
+                r.err(format!("{p}.batch"), "from 1 to 10000");
+            }
+            if s.flush_secs == 0 {
+                r.err(format!("{p}.flush_secs"), "at least 1");
+            }
+            // REQ: OBS-010 (T9.11)
+            if s.spill_max_bytes.is_some_and(|b| b.bytes() < 1024 * 1024) {
+                r.err(format!("{p}.spill_max_bytes"), "at least 1 MiB");
+            }
+        }
+    }
+    if s.spill_max_bytes.is_some() && s.kind != SinkKind::Webhook {
+        r.err(format!("{p}.spill_max_bytes"), "only for webhook sinks");
+    }
+    if s.format == crate::SinkFormat::OtlpLogs && s.kind != SinkKind::Webhook {
+        r.err(format!("{p}.format"), "otlp_logs is for webhook sinks");
+    }
+    if s.max_buffer < 100 {
+        r.err(format!("{p}.max_buffer"), "at least 100");
+    }
+    for (j, st) in s.statuses.iter().enumerate() {
+        if !STATUSES.contains(&st.as_str()) {
+            r.err(
+                format!("{p}.statuses[{j}]"),
+                format!(
+                    "unknown status `{}` (one of {})",
+                    st.as_str(),
+                    STATUSES.join(", ")
+                ),
+            );
         }
     }
 }
@@ -1410,6 +1419,69 @@ fn provider(p: &crate::OidcProvider, at: &str, r: &mut Report<'_>) {
             "{at}: no [[...role]] rules and no default_role: nobody can sign in with `{id}`"
         ));
     }
+}
+
+/// REQ: API-016 (T23.11) — the problems with one event sink on its own (a sink made in the UI),
+/// as messages: the rules `validate_config` applies to a file's sinks, minus the uniqueness of
+/// its name across the list.
+pub fn sink_errors(s: &crate::SinkConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut report = Report {
+        errors: &mut errors,
+        warnings: Vec::new(),
+    };
+    if s.name.is_empty() {
+        report.err("sink.name", "must not be empty");
+    }
+    sink_one(s, "sink", &mut report);
+    if let Some(n) = s.token_ref.as_ref()
+        && !crate::secret_refs::valid_name(n.as_str())
+    {
+        report.err("sink.token_ref", "not a valid stored secret name");
+    }
+    if s.token_ref.is_some() && s.token_file.is_some() {
+        report.err(
+            "sink.token_ref",
+            "set one of token_file, token_ref, not both",
+        );
+    }
+    errors.iter().map(ToString::to_string).collect()
+}
+
+/// REQ: API-016 (T23.11) — the problems with an OTLP export on its own (the one made in the UI),
+/// as messages.
+pub fn otlp_errors(o: &crate::OtlpConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut report = Report {
+        errors: &mut errors,
+        warnings: Vec::new(),
+    };
+    otlp_one(o, &mut report);
+    for (h, n) in &o.header_refs {
+        if o.headers.contains_key(h) {
+            report.err(
+                format!("telemetry.otlp.header_refs.{h}"),
+                "the header is in `headers` too: set it in one of them",
+            );
+        }
+        if !crate::secret_refs::valid_name(n.as_str()) {
+            report.err(
+                format!("telemetry.otlp.header_refs.{h}"),
+                "not a valid stored secret name",
+            );
+        }
+        if h.is_empty()
+            || !h
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            report.err(
+                format!("telemetry.otlp.header_refs.{h}"),
+                "a header name: letters, digits, `-` or `_`",
+            );
+        }
+    }
+    errors.iter().map(ToString::to_string).collect()
 }
 
 /// REQ: API-016 (T23.10) — the problems with one OIDC provider on its own (a provider made in

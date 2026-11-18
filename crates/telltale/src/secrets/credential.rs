@@ -283,7 +283,7 @@ pub(crate) fn fields(
                 .with_inline(p.client_secret.as_ref()),
         );
     }
-    for s in &cfg.telemetry.sink {
+    for s in cfg.telemetry.all_sinks() {
         add(
             "sink",
             &s.name,
@@ -291,7 +291,7 @@ pub(crate) fn fields(
             Credential::of(s.token_file.as_ref(), s.token_ref.as_ref()),
         );
     }
-    let o = &cfg.telemetry.otlp;
+    let o = cfg.telemetry.otlp_effective();
     for h in o.headers.keys() {
         add(
             "otlp",

@@ -2514,6 +2514,13 @@ impl Backend for Federated {
     fn oidc_provider_entries(&self) -> telltale_api::model::OidcProviderList {
         self.local.oidc_provider_entries()
     }
+    // REQ: API-016 (T23.11) - every member holds the node-managed sinks; the status is this node's.
+    fn sink_entries(&self) -> telltale_api::model::SinkList {
+        self.local.sink_entries()
+    }
+    fn otlp_entry(&self) -> telltale_api::model::OtlpEntry {
+        self.local.otlp_entry()
+    }
     // REQ: API-016 (T23.8) — the checks run on the node that answers (an admin's draft).
     fn check_router(
         &self,

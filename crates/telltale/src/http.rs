@@ -96,6 +96,13 @@ pub(crate) struct Sources {
     /// REQ: API-016 (T23.10) — wakes the OIDC applier when the configuration, a stored secret
     /// (here or replicated) or a node-managed entry changes.
     pub(crate) oidc_changed: Arc<tokio::sync::Notify>,
+    /// REQ: API-016 (T23.11) — wakes the event-sink applier and the OTLP exports when the
+    /// configuration (or a stored secret they name) changes.
+    pub(crate) telemetry_changed: Arc<tokio::sync::Notify>,
+    /// REQ: API-016 (T23.11) — the same for the OTLP metrics export (one waiter per notify).
+    pub(crate) otlp_changed: Arc<tokio::sync::Notify>,
+    /// REQ: API-016 (T23.11) — the event sinks: started and changed without a restart.
+    pub(crate) sinks: Arc<crate::sinks::Manager>,
     /// How OIDC providers are reached; unset, the HTTPS client list downloads use (tests set a
     /// fake issuer).
     pub(crate) oidc_fetch: crate::auth_setup::FetchSlot,
@@ -120,6 +127,12 @@ pub(crate) struct Sources {
 }
 
 impl Sources {
+    /// REQ: API-016 (T23.11) - wakes the event-sink applier and the OTLP export after a change.
+    pub(crate) fn notify_telemetry_changed(&self) {
+        self.telemetry_changed.notify_one();
+        self.otlp_changed.notify_one();
+    }
+
     /// REQ: OPS-003 — whether client IPs appear masked in the latest 10-minute window.
     pub(crate) fn masked_clients(&self) -> Option<crate::masking::Masked> {
         let now = std::time::SystemTime::now()
@@ -816,7 +829,7 @@ fn render_shadow(w: &mut PromWriter, shadow: &crate::shadow::Shadow) {
 /// REQ: OBS-017 (T11.6, ADR-110) — the trace export, while it's configured.
 fn render_traces(w: &mut PromWriter, src: &Sources) {
     let cfg = src.config.load();
-    let o = &cfg.telemetry.otlp;
+    let o = cfg.telemetry.otlp_effective();
     if o.endpoint.is_none() || (o.traces_sample_every == 0 && o.traces_slow_ms == 0) {
         return;
     }

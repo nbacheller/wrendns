@@ -231,6 +231,9 @@ pub fn required(method: &Method, path: &str) -> Need {
             // REQ: API-015, AGT-001 (ADR-903 §5) — stored secrets' metadata, never a value.
             // REQ: API-016 (T23.7) — router settings and status (secrets as names only).
             | "/api/v1/routers"
+            // REQ: API-016 (T23.11) - event sinks and the OTLP export (tokens as names only).
+            | "/api/v1/sinks"
+            | "/api/v1/otlp"
             | "/api/v1/secrets"
             // REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API's status (no token).
             | "/api/v1/pihole-api" => {
@@ -301,6 +304,10 @@ pub fn required(method: &Method, path: &str) -> Need {
         }
         // REQ: API-016 (T23.10, ADR-967) — OIDC providers are admin-only and have no agent scope.
         if under("/api/v1/oidc-providers") {
+            return Need::Forbidden;
+        }
+        // REQ: API-016 (T23.11, ADR-984) - sinks and the OTLP export are admin-only: no agent scope.
+        if under("/api/v1/sinks") || under("/api/v1/otlp") {
             return Need::Forbidden;
         }
         // REQ: DSC-001 (T25.2, ADR-907) — `[discovery]` and the inventory's status have no agent

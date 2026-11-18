@@ -137,8 +137,18 @@ pub(crate) fn harness_with(
     allowed: Vec<telltale_config::Cidr>,
     settings: auth::Settings,
 ) -> Harness {
+    harness_toml(&planted_toml(extra), cluster, allowed, settings)
+}
+
+/// [`harness_with`] over exactly this configuration (none of the planted settings).
+pub(crate) fn harness_toml(
+    toml: &str,
+    cluster: Option<Arc<telltale_cluster::net::Cluster>>,
+    allowed: Vec<telltale_config::Cidr>,
+    settings: auth::Settings,
+) -> Harness {
     let dir = tempfile::tempdir().unwrap();
-    let mut cfg = config(&planted_toml(extra));
+    let mut cfg = config(toml);
     cfg.node.data_dir = telltale_config::SafeString::new(dir.path().to_str().unwrap()).unwrap();
     let (reload, mut reloads) = tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<bool>>(4);
     let src = Arc::new(Sources {
@@ -187,6 +197,9 @@ pub(crate) fn harness_with(
             s2.routers_changed.notify_one();
             // REQ: API-016 (T23.10) — and the OIDC applier, as the reload does.
             s2.oidc_changed.notify_one();
+            // REQ: API-016 (T23.11) - and the sinks and OTLP export, as the reload does.
+            s2.telemetry_changed.notify_one();
+            s2.otlp_changed.notify_one();
             let _ = done.send(ok);
         }
     });

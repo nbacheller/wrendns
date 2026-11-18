@@ -171,10 +171,10 @@ pub fn references(cfg: &Config) -> Vec<Reference> {
             p.client_secret_ref.as_ref(),
         );
     }
-    for s in &cfg.telemetry.sink {
+    for s in cfg.telemetry.all_sinks() {
         add("sink", &s.name, "token_ref", s.token_ref.as_ref());
     }
-    for (h, n) in &cfg.telemetry.otlp.header_refs {
+    for (h, n) in &cfg.telemetry.otlp_effective().header_refs {
         add("otlp", "default", &format!("header_refs.{h}"), Some(n));
     }
     if let Some(g) = &cfg.cluster.git {

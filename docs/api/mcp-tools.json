@@ -287,6 +287,21 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. Where this node sends query events and metrics: each event sink (file, syslog or webhook) with its settings (a webhook token named, never valued), whether the configuration files define it, whether this node runs it and why not, and how many events it dropped since start; and the OTLP export (collector address, interval, header names, whether it runs). Use it to answer why events are not reaching a collector.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "list_event_sinks"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. The Kubernetes workloads TelltaleDNS names as devices: namespace/kind/name (a Deployment's replicas are one device across rollouts), the group and where it came from (pod label, namespace label, map rule, or default group), the pods and their addresses, queries and blocked answers in the last 24 hours (every node's), and when it last asked. Filter by namespace or group (`none` for workloads without one). A workload's name works as `client` in search_queries, get_client_profile, device_timeline, and activity_heatmap. Errors with kubernetes_disabled when the feature is off. Needs analytics:read.",
     "inputSchema": {
       "additionalProperties": false,
