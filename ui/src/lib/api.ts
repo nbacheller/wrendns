@@ -52,6 +52,8 @@ const READABLE: Record<string, (detail: string) => string> = {
     "The secrets on this node can't be read, so they can't be changed. Check the secrets key under Settings → Integrations & secrets.",
   insecure_transport: () =>
     'A secret is only sent over HTTPS, or from this node itself. Open this page over HTTPS to change it.',
+  reauth_required: () =>
+    'A backup with secrets needs a sign-in from the last 10 minutes. Confirm your password to go on.',
   lists_not_here: () => "This node doesn't download lists. Ask a node that does.",
 };
 
@@ -142,6 +144,9 @@ function newKey(): string {
 }
 
 export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'discovery-settings';
+
+/** REQ: API-007 (T23.9) — a backup made through the API. */
+export type BackupResult = { blob: Blob; name: string; secrets: 'included' | 'omitted'; count: number; warnings: string[] };
 
 /** REQ: OPS-011 — a support package's manifest (`MANIFEST.json`). */
 export type SupportManifest = {
@@ -296,6 +301,15 @@ export const api = {
     return { blob, name, id: res.headers.get('x-support-package-id') ?? undefined, manifest: await manifestOf(blob) };
   },
   supportMap: async (id: string) => (await callFile('GET', `/system/support-package/${encodeURIComponent(id)}/map`, undefined)).blob(),
+  // REQ: API-007 (T23.9, ADR-903 §8) — a backup. With a passphrase the stored secrets are in it,
+  // encrypted; the answer says how many went in, or were left out, and what to know.
+  backup: async (b: { includeQlog?: boolean; passphrase?: string }): Promise<BackupResult> => {
+    const res = await callFile('POST', '/backup', b);
+    const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? 'telltale.ttbk';
+    const m = /^(included|omitted); count=(\d+)$/.exec(res.headers.get('x-telltale-backup-secrets') ?? '');
+    const warnings = (res.headers.get('x-telltale-backup-warnings') ?? '').split(' | ').filter(Boolean);
+    return { blob: await res.blob(), name, secrets: (m?.[1] as 'included' | 'omitted' | undefined) ?? 'omitted', count: Number(m?.[2] ?? 0), warnings };
+  },
   // REQ: OPS-004 — "Check now" (admin).
   checkUpdates: () => post<S['UpdateStatus']>('/system/update-check'),
   // `scope`: `cluster` (default, every node), `node:<id>`, or `site:<name>` (CLU-002).

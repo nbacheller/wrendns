@@ -11,6 +11,8 @@ mod api_tls;
 mod archive;
 mod auth_setup;
 mod backup;
+#[cfg(test)]
+mod backup_api_tests;
 mod build_info;
 mod cache_history;
 mod cache_sizing;
@@ -458,6 +460,35 @@ enum ClusterTokenCommand {
     },
 }
 
+/// REQ: API-007 (T23.9, ADR-903 §8) — where a backup's passphrase comes from. Never an argument.
+#[derive(Debug, clap::Args)]
+#[allow(clippy::struct_field_names)] // the flags are named by the spec: --secrets-passphrase-*
+struct PassphraseArgs {
+    /// Read the passphrase (at least 12 characters) from the first line of this file.
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["secrets_passphrase_stdin", "secrets_passphrase_prompt"])]
+    secrets_passphrase_file: Option<PathBuf>,
+    /// Read the passphrase from standard input (one line).
+    #[arg(long, conflicts_with = "secrets_passphrase_prompt")]
+    secrets_passphrase_stdin: bool,
+    /// Ask for the passphrase on the terminal (not shown).
+    #[arg(long)]
+    secrets_passphrase_prompt: bool,
+}
+
+impl PassphraseArgs {
+    fn source(&self) -> Option<backup::cli::Source> {
+        if let Some(f) = &self.secrets_passphrase_file {
+            Some(backup::cli::Source::File(f.clone()))
+        } else if self.secrets_passphrase_stdin {
+            Some(backup::cli::Source::Stdin)
+        } else if self.secrets_passphrase_prompt {
+            Some(backup::cli::Source::Prompt)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum BackupCommand {
     /// Write a backup: the config files, users and API tokens, devices and names made in the
@@ -474,6 +505,10 @@ enum BackupCommand {
         /// Config files (same defaults as `telltale run`).
         #[arg(short, long = "config")]
         config: Vec<PathBuf>,
+        /// Stored secrets (entered in the UI) are left out unless a passphrase is given: with
+        /// one, they are encrypted into the backup under a key made from it.
+        #[command(flatten)]
+        passphrase: PassphraseArgs,
     },
     /// Restore a backup onto this machine. Stop TelltaleDNS first. Every file is checked
     /// before anything is written; existing files are only replaced with --force.
@@ -489,6 +524,16 @@ enum BackupCommand {
         /// Replace existing files.
         #[arg(long)]
         force: bool,
+        /// The configuration whose secrets-key settings name this node's key (the environment
+        /// counts too). Without one, the data directory's own key is used (made if missing).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+        /// The passphrase of a backup that holds stored secrets.
+        #[command(flatten)]
+        passphrase: PassphraseArgs,
+        /// Restore a backup that holds stored secrets without them.
+        #[arg(long, conflicts_with_all = ["secrets_passphrase_file", "secrets_passphrase_stdin", "secrets_passphrase_prompt"])]
+        skip_secrets: bool,
     },
     /// Check a backup and list what's in it.
     Show {
@@ -1204,72 +1249,58 @@ fn run_secrets(command: &SecretsCommand, config: Vec<PathBuf>) -> ExitCode {
     })
 }
 
-// REQ: API-007 (T6.7, ADR-063)
+// REQ: API-007 (T6.7, ADR-063; T23.9, ADR-903 §8)
 fn run_backup(command: BackupCommand) -> ExitCode {
     let result = match command {
         BackupCommand::Create {
             include_qlog,
             output,
             config,
+            passphrase,
         } => {
             let files = config_files(config);
             let Some(cfg) = server::load(&files) else {
                 return ExitCode::FAILURE;
             };
             let out = output.unwrap_or_else(|| backup::default_name(cfg.node.name.as_str()));
-            backup::create(&files, &cfg, include_qlog, &out).map(|c| {
-                eprintln!(
-                    "wrote {} ({} files, {} KiB). It holds password hashes: keep it private.",
-                    c.path.display(),
-                    c.entries,
-                    c.bytes.div_ceil(1024)
-                );
-            })
+            backup::cli::create(
+                &files,
+                &cfg,
+                include_qlog,
+                &out,
+                passphrase.source().as_ref(),
+            )
         }
         BackupCommand::Restore {
             file,
             data_dir,
             config_dir,
             force,
-        } => backup::restore(&file, data_dir.as_deref(), config_dir.as_deref(), force).map(|r| {
-            eprintln!(
-                "restored {} files from {} (node {}, TelltaleDNS {}): data in {}, config in {}",
-                r.files,
-                file.display(),
-                r.manifest.node,
-                r.manifest.telltale_version,
-                r.data_dir.display(),
-                r.config_dir.display()
-            );
-            if Path::new(&r.manifest.data_dir) != r.data_dir {
-                eprintln!(
-                    "note: the restored config files say data_dir = {}; set it to {} (or add a file that does).",
-                    r.manifest.data_dir,
-                    r.data_dir.display()
-                );
-            }
-            if r.manifest.cluster_member {
-                eprintln!(
-                    "note: the backup came from a cluster member; cluster identity isn't in backups. Start this node, then `telltale cluster init` or join it again (docs: Clusters)."
-                );
-            }
-        }),
-        BackupCommand::Show { file } => backup::show(&file).map(|m| {
-            let mut out = io::stdout().lock();
-            let total: u64 = m.entries.iter().map(|e| e.size).sum();
-            let _ = writeln!(
-                out,
-                "TelltaleDNS {} backup of node `{}`, taken {} (unix), {} files, {} KiB, checksums OK",
-                m.telltale_version,
-                m.node,
-                m.created,
-                m.entries.len(),
-                total.div_ceil(1024)
-            );
-            for e in &m.entries {
-                let _ = writeln!(out, "  {:>10}  {}", e.size, e.path);
-            }
-        }),
+            config,
+            passphrase,
+            skip_secrets,
+        } => {
+            // The key settings come from -c (and the environment); no file given, no
+            // configuration is read: the restored node has none yet.
+            let key_cfg = if config.is_empty() {
+                None
+            } else {
+                match server::load(&config) {
+                    Some(c) => Some(c),
+                    None => return ExitCode::FAILURE,
+                }
+            };
+            backup::cli::restore(
+                &file,
+                data_dir.as_deref(),
+                config_dir.as_deref(),
+                force,
+                key_cfg.as_ref(),
+                skip_secrets,
+                passphrase.source().as_ref(),
+            )
+        }
+        BackupCommand::Show { file } => backup::cli::show(&file),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

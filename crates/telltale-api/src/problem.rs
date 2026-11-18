@@ -124,6 +124,9 @@ pub enum Code {
     MapDisabled,
     /// REQ: OBS-901 (ADR-958) — 8 map streams are already open on this node.
     MapStreamsBusy,
+    /// REQ: API-007 (T23.9, ADR-903 §8) — a backup with a passphrase needs an interactive session
+    /// signed in within the last 10 minutes: sign in again (a token or Basic sign-in never can).
+    ReauthRequired,
 }
 
 impl Code {
@@ -179,6 +182,7 @@ impl Code {
             Self::AgentNotAllowed => "https://telltaledns.dev/problems/agent_not_allowed",
             Self::MapDisabled => "https://telltaledns.dev/problems/map_disabled",
             Self::MapStreamsBusy => "https://telltaledns.dev/problems/map_streams_busy",
+            Self::ReauthRequired => "https://telltaledns.dev/problems/reauth_required",
         }
     }
 
@@ -232,6 +236,7 @@ impl Code {
             Self::AgentNotAllowed => "Not for agents",
             Self::MapDisabled => "The network map is off",
             Self::MapStreamsBusy => "Too many map streams",
+            Self::ReauthRequired => "Recent sign-in needed",
         }
     }
 
@@ -249,7 +254,8 @@ impl Code {
             Self::Forbidden
             | Self::CsrfRejected
             | Self::InsecureTransport
-            | Self::AgentNotAllowed => StatusCode::FORBIDDEN,
+            | Self::AgentNotAllowed
+            | Self::ReauthRequired => StatusCode::FORBIDDEN,
             Self::Conflict
             | Self::GitopsManaged
             | Self::SimulationBusy

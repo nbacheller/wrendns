@@ -1556,6 +1556,10 @@ pub enum AlertWhen {
     /// (an upstream's URL or TLS name, an alert destination's URL): once per change, from the
     /// audit log's `credential.redirect` records.
     CredentialRedirected,
+    /// REQ: API-007 (T23.9, ADR-903 §8) — a backup with the stored secrets was made (through the
+    /// API; once per backup, from the audit log's `backup.create` records): the secrets left the
+    /// node, under a passphrase.
+    SecretsExported,
 }
 
 /// REQ: FLT-014 (T7.20) — one rewrite.

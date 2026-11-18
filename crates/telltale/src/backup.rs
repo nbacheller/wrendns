@@ -8,6 +8,8 @@
 //!   copied consistently while the server runs (`VACUUM INTO`), without sessions;
 //! - `data/rollups.db` (statistics history) and `data/anomaly.json` (learned baselines);
 //! - `data/qlog/...` (and `data/qlog-nodes/...`): the query log, only with `--include-qlog`;
+//! - `data/secrets.enc`, only when a passphrase was given (REQ: API-007, T23.9, ADR-903 §8): the
+//!   node's stored secrets, encrypted under a key made from it ([`passphrase`]);
 //! - `manifest.json`, last: the format version, where things came from, and every entry's
 //!   size and BLAKE3 hash.
 //!
@@ -21,10 +23,23 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
+
+pub(crate) mod cli;
+mod passphrase;
+
+pub(crate) use passphrase::{
+    BackupError, ExportRow, SecretsExport, SecretsInfo, check_passphrase, kdf_busy,
+};
+#[cfg(test)]
+pub(crate) use passphrase::{kdf_slot_for_tests, test_lock};
 
 /// `manifest.json`'s `format`.
 const FORMAT: &str = "telltale-backup";
+/// A backup without secrets stays version 1 (builds before T23.9 restore it); one with
+/// `data/secrets.enc` is version 2, which they refuse (ADR-903 §8).
 const VERSION: u32 = 1;
+const VERSION_SECRETS: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct Entry {
@@ -55,6 +70,17 @@ pub(crate) struct Manifest {
     /// The node was a cluster member (its identity isn't in the backup).
     pub cluster_member: bool,
     pub entries: Vec<Entry>,
+    /// REQ: API-007 (T23.9) — what the backup holds of the stored secrets (absent in archives
+    /// made before it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<SecretsInfo>,
+}
+
+impl Manifest {
+    /// The backup carries secrets (`data/secrets.enc`).
+    pub(crate) fn has_secrets(&self) -> bool {
+        self.secrets.as_ref().is_some_and(|s| s.included)
+    }
 }
 
 // ------------------------------------------------------------------ tar (ustar + GNU names)
@@ -147,6 +173,17 @@ impl<W: Write> TarWriter<W> {
         self.pad(data.len() as u64)
     }
 
+    /// An entry made from memory, hashed into the manifest like a file.
+    fn entry_bytes(&mut self, name: &str, data: &[u8]) -> io::Result<()> {
+        self.bytes(name, data)?;
+        self.entries.push(Entry {
+            path: name.to_owned(),
+            size: data.len() as u64,
+            blake3: blake3::hash(data).to_hex().to_string(),
+        });
+        Ok(())
+    }
+
     fn finish(mut self) -> io::Result<W> {
         self.out.write_all(&[0u8; 1024])?;
         Ok(self.out)
@@ -161,6 +198,11 @@ pub(crate) struct Created {
     pub path: PathBuf,
     pub entries: usize,
     pub bytes: u64,
+    /// What the archive holds of the stored secrets.
+    pub secrets: SecretsInfo,
+    /// Things to tell whoever made it (inline credentials copied as they are, secrets that
+    /// couldn't be read).
+    pub warnings: Vec<String>,
 }
 
 /// A consistent copy of an SQLite database (works while the server writes to it), with the
@@ -238,20 +280,120 @@ pub(crate) fn default_name(node: &str) -> PathBuf {
     ))
 }
 
-/// Writes a backup of the node configured by `files` / `cfg` to `out` (owner-only).
+/// Writes a backup of the node configured by `files` / `cfg` to `out` (owner-only), without the
+/// stored secrets.
+#[cfg(test)]
 pub(crate) fn create(
     files: &[PathBuf],
     cfg: &telltale_config::Config,
     include_qlog: bool,
     out: &Path,
 ) -> Result<Created, String> {
+    create_with(files, cfg, include_qlog, out, None).map_err(|e| e.to_string())
+}
+
+/// REQ: API-007 (T23.9, ADR-903 §8) — [`create`], with the stored secrets sealed under a
+/// passphrase into `data/secrets.enc` when `secrets` is given (and holds any).
+pub(crate) fn create_with(
+    files: &[PathBuf],
+    cfg: &telltale_config::Config,
+    include_qlog: bool,
+    out: &Path,
+    secrets: Option<&SecretsExport>,
+) -> Result<Created, BackupError> {
     let data = PathBuf::from(cfg.node.data_dir.as_str());
     let stage = data.join(format!(".backup-{}", std::process::id()));
     let _ = fs::remove_dir_all(&stage);
     fs::create_dir_all(&stage).map_err(|e| format!("{}: {e}", stage.display()))?;
-    let result = write_archive(files, cfg, &data, &stage, include_qlog, out);
+    let result = write_archive(files, cfg, &data, &stage, include_qlog, out, secrets);
     let _ = fs::remove_dir_all(&stage);
     result
+}
+
+/// The most query log a backup through the API holds in memory (the CLI has no such limit).
+pub(crate) const API_QLOG_MAX: u64 = 256 << 20;
+
+/// The size of the query log under `data` (what `include_qlog` would add).
+pub(crate) fn qlog_bytes(data: &Path) -> u64 {
+    ["qlog", "qlog-nodes"]
+        .iter()
+        .flat_map(|d| files_under(&data.join(d)))
+        .filter_map(|f| fs::metadata(f).ok())
+        .map(|m| m.len())
+        .sum()
+}
+
+/// How many live secrets the database at `src` holds (0 for a database without the table).
+fn live_secret_count(src: &Path) -> usize {
+    let Ok(db) = rusqlite::Connection::open_with_flags(
+        src,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return 0;
+    };
+    db.query_row("SELECT count(*) FROM secrets WHERE deleted = 0", [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .map_or(0, |n| usize::try_from(n).unwrap_or(0))
+}
+
+/// `entry` without the fields that name a stored secret or a file: what is left holds a
+/// credential only when it sits in the entry itself.
+fn inline_credential(kind: &str, entry: &serde_json::Value) -> bool {
+    let mut probe = entry.clone();
+    if let Some(m) = probe.as_object_mut() {
+        m.retain(|k, _| {
+            !(k.ends_with("_ref")
+                || k.ends_with("_refs")
+                || k.ends_with("_file")
+                || k == "tls_client_key")
+        });
+    }
+    telltale_config::credentials::holds_credential(kind, &probe)
+}
+
+/// REQ: API-007 (ADR-903 §8) — the entries of the configuration files and the UI-made (`managed`)
+/// rows that hold a credential inline. A backup copies them as they are; stored secrets and
+/// credential files are the ways to keep one out of it.
+fn inline_credentials(cfg: &telltale_config::Config, state_copy: Option<&Path>) -> (usize, usize) {
+    let mut in_files = 0;
+    if let Ok(v) = serde_json::to_value(cfg) {
+        for (kind, list) in [
+            ("upstream", v.get("upstream")),
+            ("list", v.get("list")),
+            ("alert_destination", v.pointer("/alerts/destination")),
+        ] {
+            if let Some(a) = list.and_then(serde_json::Value::as_array) {
+                in_files += a.iter().filter(|e| inline_credential(kind, e)).count();
+            }
+        }
+    }
+    // The other kinds the settings pages hold (routers, OIDC providers, sinks, OTLP, Git).
+    in_files += crate::secrets::credential::fields(cfg, None)
+        .iter()
+        .filter(|f| {
+            f.source == crate::secrets::Source::Inline
+                && !matches!(f.kind, "upstream" | "list" | "alert_destination")
+        })
+        .count();
+    let mut managed = 0;
+    if let Some(p) = state_copy
+        && let Ok(db) = rusqlite::Connection::open_with_flags(
+            p,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        && let Ok(mut q) = db.prepare("SELECT kind, body FROM managed")
+        && let Ok(rows) = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+    {
+        for (kind, body) in rows.flatten() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body)
+                && inline_credential(&kind, &v)
+            {
+                managed += 1;
+            }
+        }
+    }
+    (in_files, managed)
 }
 
 fn write_archive(
@@ -261,7 +403,8 @@ fn write_archive(
     stage: &Path,
     include_qlog: bool,
     out: &Path,
-) -> Result<Created, String> {
+    secrets: Option<&SecretsExport>,
+) -> Result<Created, BackupError> {
     let tmp = out.with_extension("ttbk.partial");
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
@@ -270,6 +413,29 @@ fn write_archive(
     let file = opts
         .open(&tmp)
         .map_err(|e| format!("{}: {e}", tmp.display()))?;
+    let result = write_into(
+        file,
+        files,
+        cfg,
+        (data, stage, include_qlog),
+        (out, &tmp),
+        secrets,
+    );
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+#[allow(clippy::too_many_lines)] // one archive, written in order
+fn write_into(
+    file: File,
+    files: &[PathBuf],
+    cfg: &telltale_config::Config,
+    (data, stage, include_qlog): (&Path, &Path, bool),
+    (out, tmp): (&Path, &Path),
+    secrets: Option<&SecretsExport>,
+) -> Result<Created, BackupError> {
     let mut enc = zstd::stream::Encoder::new(BufWriter::new(file), 6).map_err(|e| e.to_string())?;
     enc.include_checksum(true).map_err(|e| e.to_string())?;
     let mut tar = TarWriter {
@@ -299,10 +465,13 @@ fn write_archive(
         });
     }
 
+    let mut stored = 0;
+    let mut state_copy = None;
     for (db, strip) in [
         // REQ: OPS-014 (ADR-903 §8) — sessions and retry records never; nor the secrets store
         // (rows, shadows, tombstones and its stamp): its values are encrypted under this node's
-        // key, which no backup holds. REQ: CLU-015 (ADR-917 point 4) — shadows included.
+        // key, which no backup holds. They travel only as `data/secrets.enc`, under a
+        // passphrase. REQ: CLU-015 (ADR-917 point 4) — shadows included.
         (
             "state.db",
             &[
@@ -318,8 +487,14 @@ fn write_archive(
         let src = data.join(db);
         if src.exists() {
             let copy = stage.join(db);
+            if db == "state.db" {
+                stored = live_secret_count(&src);
+            }
             sqlite_copy(&src, &copy, strip)?;
             tar.file(&format!("data/{db}"), &copy).map_err(err)?;
+            if db == "state.db" {
+                state_copy = Some(copy);
+            }
         }
     }
     let anomaly = data.join("anomaly.json");
@@ -339,9 +514,52 @@ fn write_archive(
         }
     }
 
+    let mut warnings = Vec::new();
+    let (in_files, managed) = inline_credentials(cfg, state_copy.as_deref());
+    if in_files + managed > 0 {
+        warnings.push(format!(
+            "{in_files} entr{} in the configuration files and {managed} made in the UI or API hold a credential inline: a backup copies them as they are, so keep it as private as the files (stored secrets and credential files keep a credential out of it)",
+            if in_files + managed == 1 { "y" } else { "ies" }
+        ));
+    }
+    let secrets_info = match secrets {
+        Some(x) if !x.rows.is_empty() => {
+            // The version is the one a backup with secrets has (ADR-965 §10): the binding covers
+            // every entry written so far (all but `secrets.enc`).
+            let bind = passphrase::binding(
+                FORMAT,
+                VERSION_SECRETS,
+                cfg.node.name.as_str(),
+                &tar.entries,
+            );
+            let (ct, info) = passphrase::seal(x, &bind)?;
+            tar.entry_bytes(passphrase::ENTRY, &ct).map_err(err)?;
+            if x.unreadable > 0 {
+                warnings.push(format!(
+                    "{} stored secret(s) couldn't be read on this node (another key, or damaged) and were left out",
+                    x.unreadable
+                ));
+            }
+            info
+        }
+        Some(x) => SecretsInfo::omitted(
+            x.unreadable,
+            if x.unreadable > 0 {
+                "none of the stored secrets could be read on this node"
+            } else {
+                "none stored"
+            },
+        ),
+        None => SecretsInfo::omitted(stored, "no passphrase"),
+    };
+
     let manifest = Manifest {
         format: FORMAT.into(),
-        version: VERSION,
+        version: if secrets_info.included {
+            VERSION_SECRETS
+        } else {
+            VERSION
+        },
         telltale_version: crate::build_info::VERSION.into(),
         created: unix_now(),
         node: cfg.node.name.to_string(),
@@ -350,6 +568,7 @@ fn write_archive(
         includes_qlog: include_qlog,
         cluster_member: data.join("cluster").join("cluster.json").exists(),
         entries: tar.entries.clone(),
+        secrets: Some(secrets_info.clone()),
     };
     let json = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
     tar.bytes("manifest.json", &json).map_err(err)?;
@@ -358,12 +577,14 @@ fn write_archive(
     let mut w = enc.finish().map_err(err)?;
     w.flush().map_err(err)?;
     drop(w);
-    fs::rename(&tmp, out).map_err(|e| format!("{}: {e}", out.display()))?;
+    fs::rename(tmp, out).map_err(|e| format!("{}: {e}", out.display()))?;
     let bytes = fs::metadata(out).map_or(0, |m| m.len());
     Ok(Created {
         path: out.to_path_buf(),
         entries,
         bytes,
+        secrets: secrets_info,
+        warnings,
     })
 }
 
@@ -462,7 +683,7 @@ fn read_archive(
     if m.format != FORMAT {
         return Err(bad("not a TelltaleDNS backup"));
     }
-    if m.version > VERSION {
+    if m.version > VERSION_SECRETS {
         return Err(format!(
             "{}: made by a newer TelltaleDNS (backup format {}); upgrade to restore it",
             archive.display(),
@@ -476,6 +697,12 @@ fn read_archive(
         .collect();
     if want != seen {
         return Err(bad("contents don't match the manifest"));
+    }
+    // REQ: API-007 (ADR-903 §8) — version 2 is exactly the archives that hold `secrets.enc`.
+    if m.has_secrets() != want.contains_key(passphrase::ENTRY)
+        || m.has_secrets() != (m.version >= VERSION_SECRETS)
+    {
+        return Err(bad("the secrets block doesn't match the contents"));
     }
     Ok(m)
 }
@@ -525,6 +752,25 @@ fn recorded_dir(dir: &str, flag: &str) -> Result<PathBuf, String> {
     }
 }
 
+/// REQ: API-007 (T23.9) — what restore does with the secrets of a version 2 backup.
+pub(crate) enum SecretsMode {
+    /// Nothing was said: a backup that holds secrets is refused before anything moves.
+    Unspecified,
+    /// `--skip-secrets`: restore everything else.
+    Skip,
+    /// Open them with this passphrase and store them under this node's key.
+    Passphrase(Zeroizing<String>),
+}
+
+/// The stored secrets a restore put back.
+#[derive(Debug)]
+pub(crate) struct RestoredSecrets {
+    pub count: usize,
+    /// Where the node's key came from (never the key).
+    pub key_source: String,
+    pub key_id: String,
+}
+
 /// Where `restore` put things.
 #[derive(Debug)]
 pub(crate) struct Restored {
@@ -532,19 +778,72 @@ pub(crate) struct Restored {
     pub data_dir: PathBuf,
     pub config_dir: PathBuf,
     pub files: usize,
+    /// Secrets stored again (a passphrase was given).
+    pub secrets: Option<RestoredSecrets>,
+    /// Secrets the backup holds that `--skip-secrets` left out.
+    pub secrets_skipped: usize,
 }
 
 /// Restores `archive`: data into `data_dir` (default: where it came from) and config files
 /// into `config_dir` (default: the first config file's directory). Nothing is moved into
 /// place until every entry checks out; existing files are only replaced with `force`.
+#[cfg(test)]
 pub(crate) fn restore(
     archive: &Path,
     data_dir: Option<&Path>,
     config_dir: Option<&Path>,
     force: bool,
 ) -> Result<Restored, String> {
+    restore_with(
+        archive,
+        data_dir,
+        config_dir,
+        force,
+        &SecretsMode::Unspecified,
+        &RestoreKeys {
+            cfg: None,
+            env: &crate::secrets::process_env,
+        },
+    )
+}
+
+/// Where a restore finds the node's secrets key: the configuration's (`-c`) key settings and the
+/// environment; without a configuration only the environment and the data directory's own key.
+pub(crate) struct RestoreKeys<'a> {
+    pub cfg: Option<&'a telltale_config::Config>,
+    pub env: &'a dyn Fn(&str) -> Option<String>,
+}
+
+/// REQ: API-007 (T23.9, ADR-903 §8) — [`restore`], with `secrets` saying what to do with the
+/// backup's stored secrets and `key_cfg` where the node's key comes from. A configured key that
+/// can't be read stops the restore (nothing is generated in its place), before anything moves.
+pub(crate) fn restore_with(
+    archive: &Path,
+    data_dir: Option<&Path>,
+    config_dir: Option<&Path>,
+    force: bool,
+    secrets: &SecretsMode,
+    key_cfg: &RestoreKeys<'_>,
+) -> Result<Restored, String> {
     // The manifest comes last, so read once to learn the defaults (and check everything).
     let m = show(archive)?;
+    if m.has_secrets() {
+        let n = m.secrets.as_ref().map_or(0, |x| x.count);
+        match secrets {
+            SecretsMode::Unspecified => {
+                return Err(format!(
+                    "this backup holds {n} stored secret(s) encrypted with a passphrase: give it with --secrets-passphrase-file FILE (or --secrets-passphrase-stdin, --secrets-passphrase-prompt), or restore without them with --skip-secrets. Nothing was restored."
+                ));
+            }
+            SecretsMode::Passphrase(p) => {
+                passphrase::check_passphrase(p)?;
+                if let Some(k) = m.secrets.as_ref().and_then(|x| x.kdf.as_ref()) {
+                    passphrase::check_kdf(k)?;
+                }
+            }
+            SecretsMode::Skip => {}
+        }
+    }
     let data_dir = match data_dir {
         Some(d) => d.to_path_buf(),
         None => recorded_dir(&m.data_dir, "--data-dir")?,
@@ -569,6 +868,7 @@ pub(crate) fn restore(
     let existing: Vec<String> = m
         .entries
         .iter()
+        .filter(|e| e.path != passphrase::ENTRY)
         .map(|e| target(&e.path))
         .filter(|p| p.exists())
         .map(|p| p.display().to_string())
@@ -594,15 +894,96 @@ pub(crate) fn restore(
     };
     let stage = data_dir.join(format!(".restore-{}", std::process::id()));
     let _ = fs::remove_dir_all(&stage);
-    let result = restore_staged(archive, &m, &stage, &target, &data_dir);
+    let result = restore_staged(archive, &m, &stage, &target, &data_dir, (secrets, key_cfg));
     let _ = fs::remove_dir_all(&stage);
-    let files = result?;
+    let (files, restored) = result?;
+    let secrets_skipped = match secrets {
+        SecretsMode::Skip if m.has_secrets() => m.secrets.as_ref().map_or(0, |x| x.count),
+        _ => 0,
+    };
     Ok(Restored {
         manifest: m,
         data_dir,
         config_dir,
         files,
+        secrets: restored,
+        secrets_skipped,
     })
+}
+
+/// A data-directory key this restore made, removed again if the restore fails before anything
+/// moves (a stray key would be there for the next start to find, sealing nothing).
+struct NewKey(Option<PathBuf>);
+
+impl NewKey {
+    /// The restore went on: the key stays.
+    fn keep(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for NewKey {
+    fn drop(&mut self) {
+        if let Some(p) = self.0.take() {
+            let _ = fs::remove_file(p);
+        }
+    }
+}
+
+/// REQ: API-007 (ADR-903 §8, ADR-965 §6) — the node's keys for a restore into `data_dir`: from
+/// the environment and the key settings (`-c`'s, else those of the archive's own configuration
+/// files, staged in `config_files`: the ones the restored server starts with), else the data
+/// directory's own key (made when there is none, and owned like the data directory). A source
+/// that is configured but can't be read is an error: nothing is generated in its place. The
+/// guard removes a key this call made unless [`NewKey::keep`] is called.
+fn restore_keys(
+    data_dir: &Path,
+    key_cfg: &RestoreKeys<'_>,
+    config_files: &[PathBuf],
+    owner: Option<(u32, u32)>,
+) -> Result<(crate::secrets::Keys, NewKey), String> {
+    let staged_cfg;
+    let cfg = match key_cfg.cfg {
+        Some(c) => Some(c),
+        None if !config_files.is_empty() => {
+            staged_cfg = crate::server::load_files_quiet(config_files).ok_or_else(|| {
+                "the backup's configuration files don't load here, so the key settings in them can't be read: give the configuration with -c FILE, or restore with --skip-secrets".to_owned()
+            })?;
+            Some(&staged_cfg)
+        }
+        None => None,
+    };
+    let mut paths = cfg.map_or_else(
+        || crate::secrets::KeyPaths {
+            data_dir: data_dir.to_path_buf(),
+            key_file: String::new(),
+            previous_file: String::new(),
+            ephemeral: false,
+        },
+        crate::secrets::KeyPaths::of,
+    );
+    if paths.ephemeral {
+        return Err("this configuration is a resolver pod's, which holds no stored secrets: restore onto a full member, or use --skip-secrets".to_owned());
+    }
+    // The key belongs to the node the data is restored onto.
+    paths.data_dir = data_dir.to_path_buf();
+    let made = paths.uses_data_key(key_cfg.env) && !paths.data_key().exists();
+    let keys = crate::secrets::load(&paths, key_cfg.env, true)?;
+    let mut guard = NewKey(None);
+    if made {
+        let key = paths.data_key();
+        guard.0 = Some(key.clone());
+        // Run as root for a service user, the key would be root's and the service couldn't
+        // read it: it is the data directory's owner's, as the restored files are.
+        #[cfg(unix)]
+        if let Some((uid, gid)) = owner {
+            std::os::unix::fs::chown(&key, Some(uid), Some(gid))
+                .map_err(|e| format!("{}: {e}", key.display()))?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = owner;
+    Ok((keys, guard))
 }
 
 fn restore_staged(
@@ -611,7 +992,8 @@ fn restore_staged(
     stage: &Path,
     target: &dyn Fn(&str) -> PathBuf,
     data_dir: &Path,
-) -> Result<usize, String> {
+    (secrets, key_cfg): (&SecretsMode, &RestoreKeys<'_>),
+) -> Result<(usize, Option<RestoredSecrets>), String> {
     // Extract to staging; read_archive checks every hash against the manifest.
     let mut staged = Vec::new();
     let again = read_archive(archive, |path, r| {
@@ -634,13 +1016,51 @@ fn restore_staged(
             archive.display()
         ));
     }
+    // REQ: API-007 (T23.9) — the secrets come out of `secrets.enc` before anything moves: a wrong
+    // passphrase, a key that can't be had, or a bad row leaves the machine as it was.
+    let mut restored = None;
+    let mut key_guard = None;
     // Owned like the data directory (restore usually runs as root for a service user).
     #[cfg(unix)]
     let owner = {
         use std::os::unix::fs::MetadataExt;
         fs::metadata(data_dir).ok().map(|md| (md.uid(), md.gid()))
     };
-    for path in &staged {
+    #[cfg(not(unix))]
+    let owner: Option<(u32, u32)> = None;
+    if let (true, SecretsMode::Passphrase(pass)) = (m.has_secrets(), secrets)
+        && let Some(info) = &m.secrets
+    {
+        let enc = fs::read(stage.join(passphrase::ENTRY))
+            .map_err(|e| format!("{}: {e}", passphrase::ENTRY))?;
+        let bind = passphrase::binding(&m.format, m.version, &m.node, &m.entries);
+        let rows = passphrase::open(&enc, info, pass, &bind)?;
+        let config_files: Vec<PathBuf> = staged
+            .iter()
+            .filter(|p| p.starts_with("config/"))
+            .map(|p| stage.join(p))
+            .collect();
+        let (keys, new_key) = restore_keys(data_dir, key_cfg, &config_files, owner)?;
+        key_guard = Some(new_key);
+        let db = stage.join("data/state.db");
+        if let Some(parent) = db.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+        passphrase::store_rows(&db, &rows, &keys)?;
+        if !staged.iter().any(|p| p == "data/state.db") {
+            staged.push("data/state.db".to_owned());
+        }
+        restored = Some(RestoredSecrets {
+            count: rows.len(),
+            key_source: keys.current.source().to_string(),
+            key_id: crate::secrets::hex(&keys.current.key_id()),
+        });
+    }
+    // From here files move: a key made for them stays.
+    if let Some(g) = key_guard.as_mut() {
+        g.keep();
+    }
+    for path in staged.iter().filter(|p| *p != passphrase::ENTRY) {
         let to = target(path);
         if let Some(parent) = to.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
@@ -655,8 +1075,10 @@ fn restore_staged(
             let _ = std::os::unix::fs::chown(&to, Some(uid), Some(gid));
         }
     }
-    Ok(staged.len())
+    Ok((staged.len(), restored))
 }
 
+#[cfg(test)]
+mod secret_tests;
 #[cfg(test)]
 mod tests;

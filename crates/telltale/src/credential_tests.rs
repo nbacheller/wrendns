@@ -90,7 +90,7 @@ pub(crate) struct Harness {
     pub(crate) auth: Arc<Auth>,
     pub(crate) bearer: String,
     pub(crate) admin_id: i64,
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
 }
 
 pub(crate) fn config(toml: &str) -> telltale_config::Config {
@@ -195,11 +195,16 @@ pub(crate) fn harness_with(
         auth,
         bearer: format!("tt_{id}_{secret}"),
         admin_id: admin.id,
-        _dir: dir,
+        dir,
     }
 }
 
 impl Harness {
+    /// The node's data directory (a temporary one).
+    pub(crate) fn dir_path(&self) -> &std::path::Path {
+        self.dir.path()
+    }
+
     pub(crate) fn request(&self, method: &str, uri: &str, body: Option<&Value>) -> Request<Body> {
         Request::builder()
             .method(method)

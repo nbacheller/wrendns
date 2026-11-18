@@ -4,7 +4,7 @@ TelltaleDNS reads a credential (a router's API key, an alert destination's token
 
 ## What a stored secret is
 
-- **Write-only.** A value goes in once and never comes back out: no API, UI page, MCP tool, log line, support package or backup returns it. Status reads show its name, when and by whom it was set, and whether this node can read it.
+- **Write-only.** A value goes in once and never comes back out: no API, UI page, MCP tool, log line or support package returns it, and a backup carries it only encrypted under a passphrase you choose. Status reads show its name, when and by whom it was set, and whether this node can read it.
 - **Encrypted per node.** Each value is encrypted in `state.db` with ChaCha20-Poly1305 under a key that belongs to this node, with a random 96-bit nonce. The ciphertext is bound to the key's ID, the secret's kind and name, and the stamp of its last change, so a row copied over another one (or given another stamp) fails to decrypt and is reported `corrupt`.
 - **Kept in memory as ciphertext.** The node decrypts a value only when an integration uses it, and wipes its own copy afterwards. That covers TelltaleDNS's own buffers; what the HTTP, TLS and protobuf libraries copy while sending a request isn't wiped.
 - **The files win.** A credential set inline or by file in the configuration files is used, and the API can't replace it (409 `set_by_file`).
@@ -15,7 +15,7 @@ TelltaleDNS reads a credential (a router's API key, an alert destination's token
 
 | Who | Can they read a stored secret? |
 |---|---|
-| Someone with a copy of `state.db` or a backup | No. `state.db` holds only ciphertext, and backups leave the secrets table out entirely. |
+| Someone with a copy of `state.db` or a backup | No. `state.db` holds only ciphertext, and a backup never copies the secrets table: its secrets travel only in `secrets.enc`, encrypted under a passphrase (see Backups below). Anyone with that file *and* the passphrase can read them, so keep the two apart. |
 | Someone with the whole data directory (`state.db` and `secrets.key`) | **Yes**, with the default data-directory key. Keep the key elsewhere (below) if the volume itself may leak. |
 | A process running as the TelltaleDNS user | Yes: it can read the key wherever it is. Plugins (`exec://` upstreams) and the self-update are started without the key variables, but a same-user process can still read `secrets.key`; that's why only admins can create a plugin upstream. |
 | An admin | Can set, replace and clear a secret, and point a reference at one, but can't read one back. |
@@ -95,4 +95,4 @@ What to do:
 | One secret `unreadable` or `corrupt` | Set it again; nothing else is affected. |
 | Data directory not kept (Helm `persistence.enabled: false`) | Health says `secrets_ephemeral` while secrets are stored: they're lost at every restart. Turn persistence on, or use files. |
 
-**Backups** never include stored secrets or the key. After restoring a backup onto a new machine, set the secrets again (or keep using files).
+**Backups** never copy the secrets table or the key. With a passphrase (`telltale backup create --secrets-passphrase-file F`, or the passphrase in Settings → System → Backup) the secrets are encrypted into the backup under a key made from it (Argon2id, then ChaCha20-Poly1305) and a restore (`--secrets-passphrase-file`) stores them under the new node's own key, taken from `-c` (else the configuration files in the backup) and the environment as the server reads it. Without a passphrase the command and the page say how many were left out, and after a restore you set them again (or keep using files). Making a backup with secrets through the API needs a sign-in from the last 10 minutes, is audited as `backup.create {secretsIncluded, count}`, and raises the alert `secrets_exported`. Details: [docs/running.md](running.md#stored-secrets-in-a-backup).

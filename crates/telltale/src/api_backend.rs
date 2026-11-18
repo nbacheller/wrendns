@@ -834,21 +834,89 @@ impl Backend for ApiBackend {
         }
     }
 
-    // REQ: API-007 (T6.7, ADR-063)
-    fn backup(&self) -> Result<(String, Vec<u8>), Problem> {
+    // REQ: API-007 (T6.7, ADR-063; T23.9, ADR-903 §8)
+    fn backup_create(
+        &self,
+        include_qlog: bool,
+        passphrase: Option<zeroize::Zeroizing<String>>,
+    ) -> Result<telltale_api::BackupOutput, Problem> {
         let cfg = self.src.config.load_full();
+        let data = std::path::PathBuf::from(cfg.node.data_dir.as_str());
+        if include_qlog && crate::backup::qlog_bytes(&data) > crate::backup::API_QLOG_MAX {
+            return Err(Problem::invalid(format!(
+                "the query log is over {} MiB, more than the API builds in memory: use `telltale backup create --include-qlog` on the node",
+                crate::backup::API_QLOG_MAX >> 20
+            )));
+        }
+        let export = match passphrase {
+            Some(pass) => {
+                // REQ: API-007 (ADR-966 §7) — the `secrets_exported` alert is evaluated on the
+                // primary from its own audit log, so a backup with secrets is made there: the
+                // secrets are replicated, the content is the same.
+                if self.src.cluster.as_ref().is_some_and(|c| !c.is_primary()) {
+                    return Err(Problem::new(
+                        Code::Conflict,
+                        "this node is a replica: a backup with a passphrase is made on the primary",
+                    )
+                    .hint("Make it on the primary node (the secrets are replicated, so it holds the same ones), or make a backup without a passphrase here."));
+                }
+                // REQ: API-007 — refused before the secrets are read and the databases copied.
+                if crate::backup::kdf_busy() {
+                    return Err(busy_problem());
+                }
+                let (rows, unreadable) =
+                    self.src.secrets.export_rows().map_err(|why| {
+                        Problem::new(telltale_api::problem::Code::SecretsLocked, format!("the stored secrets can't be read, so none can be backed up: {why}"))
+                            .hint("Fix the node's secrets key (docs/secrets.md), or make the backup without a passphrase.")
+                    })?;
+                Some(crate::backup::SecretsExport {
+                    passphrase: pass,
+                    rows,
+                    unreadable,
+                })
+            }
+            None => None,
+        };
         let name = crate::backup::default_name(cfg.node.name.as_str());
-        let tmp = std::path::Path::new(cfg.node.data_dir.as_str()).join(format!(
+        let tmp = data.join(format!(
             ".backup-api-{}-{}.ttbk",
             std::process::id(),
             self.now_unix_seconds()
         ));
-        let made = crate::backup::create(&self.src.config_files, &cfg, false, &tmp);
-        let bytes = made.and_then(|_| std::fs::read(&tmp).map_err(|e| e.to_string()));
+        let made = crate::backup::create_with(
+            &self.src.config_files,
+            &cfg,
+            include_qlog,
+            &tmp,
+            export.as_ref(),
+        );
+        let made = match made {
+            Ok(m) => m,
+            Err(crate::backup::BackupError::Busy) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(busy_problem());
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(Problem::internal(format!("backup failed: {e}")));
+            }
+        };
+        let bytes = std::fs::read(&tmp).map_err(|e| e.to_string());
         let _ = std::fs::remove_file(&tmp);
         let bytes = bytes.map_err(|e| Problem::internal(format!("backup failed: {e}")))?;
-        tracing::info!(bytes = bytes.len(), "backup downloaded through the API");
-        Ok((name.display().to_string(), bytes))
+        tracing::info!(
+            bytes = bytes.len(),
+            secrets_included = made.secrets.included,
+            secrets = made.secrets.count,
+            "backup downloaded through the API"
+        );
+        Ok(telltale_api::BackupOutput {
+            name: name.display().to_string(),
+            bytes,
+            secrets_included: made.secrets.included,
+            secrets_count: made.secrets.count,
+            warnings: made.warnings,
+        })
     }
 
     // REQ: OPS-011 (ADR-156) — a support package, and its map for one download.
@@ -7498,4 +7566,14 @@ mod dhcp_lease_tests {
         );
         assert!(at.iter().any(|l| l.source == "mdns" && !l.offline));
     }
+}
+
+/// REQ: API-007 (ADR-965 §8) — the 429 a backup with a passphrase gets while another derives.
+fn busy_problem() -> Problem {
+    Problem::new(
+        telltale_api::problem::Code::RateLimited,
+        "another backup with a passphrase is running on this node",
+    )
+    .retry_after(2)
+    .hint("Try again in a few seconds: one key derivation runs at a time.")
 }

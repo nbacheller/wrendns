@@ -1971,11 +1971,19 @@
           "system"
         ],
         "summary": "Download a backup of this node.",
-        "description": "One `.ttbk` file (ADR-063) with the configuration files, users and API tokens, devices and\nnames made through the API, the audit log, statistics history, and anomaly baselines.\nSign-in sessions, lists, and the cluster identity aren't included, and neither is the\nquery log (use `telltale backup create --include-qlog` for that). Restore it with\n`telltale backup restore FILE` on the new machine.\n\nThe file holds password hashes: keep it private. Admin only; audited as `backup.create`.",
+        "description": "One `.ttbk` file (ADR-063) with the configuration files, users and API tokens, devices and\nnames made through the API, the audit log, statistics history, and anomaly baselines.\nSign-in sessions, lists, and the cluster identity aren't included, and neither is the\nquery log (use `POST /api/v1/backup` with `includeQlog`, or `telltale backup create\n--include-qlog`, for that). **The stored secrets are left out** (they are encrypted with this\nnode's key, which no backup holds): `X-Telltale-Backup-Secrets: omitted; count=N` says how\nmany. `POST /api/v1/backup` with a passphrase carries them. Restore it with\n`telltale backup restore FILE` on the new machine.\n\nThe file holds password hashes: keep it private. Admin only; audited as `backup.create`.",
         "operationId": "backup_download",
         "responses": {
           "200": {
             "description": "The backup, as an attachment named `telltale-<node>-<time>.ttbk`.",
+            "headers": {
+              "X-Telltale-Backup-Secrets": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`omitted; count=N`: how many stored secrets were left out."
+              }
+            },
             "content": {
               "application/octet-stream": {
                 "schema": {
@@ -1991,6 +1999,106 @@
           },
           "503": {
             "description": "Backups aren't available on this node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Make a backup, optionally with the stored secrets.",
+        "description": "Like `GET /api/v1/backup` (one `.ttbk`; ADR-063), and with a body it can carry more:\n- `includeQlog`: the query log too;\n- `passphrase` (at least 12 characters): the node's stored secrets, encrypted under a key made\n  from it (Argon2id m = 19 MiB, t = 2, p = 1; ChaCha20-Poly1305), as `data/secrets.enc`.\n  The archive is then format 2, which builds before this one refuse. Restore needs the\n  passphrase (`telltale backup restore --secrets-passphrase-file`) or `--skip-secrets`.\n\n`X-Telltale-Backup-Secrets` says `included; count=N` or `omitted; count=N` (how many were left\nout), and `X-Telltale-Backup-Warnings` lists what to know (credentials held inline in the\nconfiguration are copied as they are).\n\nAdmin only, never an agent token (403 `agent_not_allowed`), only over HTTPS or from the node\nitself (403 `insecure_transport`). With a passphrase it needs an interactive session signed in\nwithin the last 10 minutes: tokens and Basic sign-in get 403 `reauth_required`, with a hint to\nrun `telltale backup create` on the node. One key derivation runs at a time: a second request\ngets 429. On a cluster replica a passphrase is refused (409): make it on the primary, which\nholds the same secrets and raises the alert. Audited as `backup.create` (`secretsIncluded`, `count`; never the passphrase), and\na backup with secrets raises the alert event `secrets_exported`. It takes no\n`Idempotency-Key`: it changes no state.",
+        "operationId": "backup_create",
+        "requestBody": {
+          "description": "Optional: `includeQlog`, `passphrase`.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The backup, as an attachment named `telltale-<node>-<time>.ttbk`.",
+            "headers": {
+              "X-Telltale-Backup-Secrets": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`included; count=N` or `omitted; count=N`."
+              },
+              "X-Telltale-Backup-Warnings": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Present when there is something to know; items separated by ` | `."
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body isn't valid, or the passphrase is under 12 characters, or the query log is too big for the API.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an admin, an agent token (`agent_not_allowed`), plain HTTP from another host (`insecure_transport`), or a passphrase without a recent sign-in (`reauth_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A backup with a passphrase on a cluster replica: make it on the primary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Another backup with a passphrase is deriving its key: wait for Retry-After seconds.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Backups aren't available on this node, or its secrets key can't be read (`secrets_locked`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -11572,6 +11680,29 @@
           }
         }
       },
+      "BackupRequest": {
+        "type": "object",
+        "description": "REQ: API-007 (T23.9, ADR-903 §8) — the body of `POST /api/v1/backup`.",
+        "properties": {
+          "includeQlog": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Also include the query log (refused when it is too big to build in memory: use the CLI)."
+          },
+          "passphrase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At least 12 characters. With one, the node's stored secrets are encrypted into the backup\n(`data/secrets.enc`, Argon2id and ChaCha20-Poly1305), and the request needs a session\nsigned in within the last 10 minutes. Write-only: never answered, logged or audited.",
+            "example": "correct horse battery staple",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
       "BlockingBody": {
         "type": "object",
         "description": "Body of `POST /api/dns/blocking`.",
@@ -13731,7 +13862,8 @@
           "insecure_transport",
           "agent_not_allowed",
           "map_disabled",
-          "map_streams_busy"
+          "map_streams_busy",
+          "reauth_required"
         ]
       },
       "ConfigChange": {

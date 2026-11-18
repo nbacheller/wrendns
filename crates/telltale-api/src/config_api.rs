@@ -497,7 +497,10 @@ pub(crate) fn admin_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router
             "/api/v1/cluster/promote",
             axum::routing::post(cluster_promote),
         )
-        .route("/api/v1/backup", axum::routing::get(backup_download))
+        .route(
+            "/api/v1/backup",
+            axum::routing::get(backup_download).post(backup_create),
+        )
         .with_state((backend, auth))
 }
 
@@ -593,13 +596,17 @@ pub(crate) async fn cluster_promote(
 /// One `.ttbk` file (ADR-063) with the configuration files, users and API tokens, devices and
 /// names made through the API, the audit log, statistics history, and anomaly baselines.
 /// Sign-in sessions, lists, and the cluster identity aren't included, and neither is the
-/// query log (use `telltale backup create --include-qlog` for that). Restore it with
+/// query log (use `POST /api/v1/backup` with `includeQlog`, or `telltale backup create
+/// --include-qlog`, for that). **The stored secrets are left out** (they are encrypted with this
+/// node's key, which no backup holds): `X-Telltale-Backup-Secrets: omitted; count=N` says how
+/// many. `POST /api/v1/backup` with a passphrase carries them. Restore it with
 /// `telltale backup restore FILE` on the new machine.
 ///
 /// The file holds password hashes: keep it private. Admin only; audited as `backup.create`.
 #[utoipa::path(get, path = "/api/v1/backup", tag = "system",
     responses(
         (status = 200, content_type = "application/octet-stream", body = Vec<u8>,
+            headers(("X-Telltale-Backup-Secrets" = String, description = "`omitted; count=N`: how many stored secrets were left out.")),
             description = "The backup, as an attachment named `telltale-<node>-<time>.ttbk`."),
         (status = 503, body = Problem, description = "Backups aren't available on this node."),
     ))]
@@ -613,19 +620,177 @@ pub(crate) async fn backup_download(
         Err(e) => return e.into_response(),
     };
     let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
+    backup_response(backend, &auth, &actor, false, None).await
+}
+
+/// REQ: API-007 (T23.9, ADR-903 §8) — the body of `POST /api/v1/backup`.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct BackupRequest {
+    /// Also include the query log (refused when it is too big to build in memory: use the CLI).
+    #[serde(default)]
+    pub include_qlog: Option<bool>,
+    /// At least 12 characters. With one, the node's stored secrets are encrypted into the backup
+    /// (`data/secrets.enc`, Argon2id and ChaCha20-Poly1305), and the request needs a session
+    /// signed in within the last 10 minutes. Write-only: never answered, logged or audited.
+    #[serde(default)]
+    #[schema(value_type = Option<String>, write_only, example = "correct horse battery staple")]
+    pub passphrase: Option<crate::secrets_api::SecretText>,
+}
+
+/// Make a backup, optionally with the stored secrets.
+///
+/// Like `GET /api/v1/backup` (one `.ttbk`; ADR-063), and with a body it can carry more:
+/// - `includeQlog`: the query log too;
+/// - `passphrase` (at least 12 characters): the node's stored secrets, encrypted under a key made
+///   from it (Argon2id m = 19 MiB, t = 2, p = 1; ChaCha20-Poly1305), as `data/secrets.enc`.
+///   The archive is then format 2, which builds before this one refuse. Restore needs the
+///   passphrase (`telltale backup restore --secrets-passphrase-file`) or `--skip-secrets`.
+///
+/// `X-Telltale-Backup-Secrets` says `included; count=N` or `omitted; count=N` (how many were left
+/// out), and `X-Telltale-Backup-Warnings` lists what to know (credentials held inline in the
+/// configuration are copied as they are).
+///
+/// Admin only, never an agent token (403 `agent_not_allowed`), only over HTTPS or from the node
+/// itself (403 `insecure_transport`). With a passphrase it needs an interactive session signed in
+/// within the last 10 minutes: tokens and Basic sign-in get 403 `reauth_required`, with a hint to
+/// run `telltale backup create` on the node. One key derivation runs at a time: a second request
+/// gets 429. On a cluster replica a passphrase is refused (409): make it on the primary, which
+/// holds the same secrets and raises the alert. Audited as `backup.create` (`secretsIncluded`, `count`; never the passphrase), and
+/// a backup with secrets raises the alert event `secrets_exported`. It takes no
+/// `Idempotency-Key`: it changes no state.
+#[utoipa::path(post, path = "/api/v1/backup", tag = "system",
+    request_body(content = BackupRequest, description = "Optional: `includeQlog`, `passphrase`."),
+    responses(
+        (status = 200, content_type = "application/octet-stream", body = Vec<u8>,
+            headers(
+                ("X-Telltale-Backup-Secrets" = String, description = "`included; count=N` or `omitted; count=N`."),
+                ("X-Telltale-Backup-Warnings" = String, description = "Present when there is something to know; items separated by ` | `."),
+            ),
+            description = "The backup, as an attachment named `telltale-<node>-<time>.ttbk`."),
+        (status = 400, body = Problem, description = "The body isn't valid, or the passphrase is under 12 characters, or the query log is too big for the API."),
+        (status = 403, body = Problem, description = "Not an admin, an agent token (`agent_not_allowed`), plain HTTP from another host (`insecure_transport`), or a passphrase without a recent sign-in (`reauth_required`)."),
+        (status = 409, body = Problem, description = "A backup with a passphrase on a cluster replica: make it on the primary."),
+        (status = 429, body = Problem, description = "Another backup with a passphrase is deriving its key: wait for Retry-After seconds."),
+        (status = 503, body = Problem, description = "Backups aren't available on this node, or its secrets key can't be read (`secrets_locked`)."),
+    ))]
+pub(crate) async fn backup_create(
+    State((backend, auth)): State<Ctx>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    raw: axum::body::Bytes,
+) -> Response {
+    let p = match principal(&ext) {
+        Ok(p) => p,
+        Err(e) => return no_store(e.into_response()),
+    };
+    if p.agent.is_some() {
+        return no_store(
+            Problem::new(
+                Code::AgentNotAllowed,
+                "agent tokens can't make backups, whatever their scopes",
+            )
+            .hint("A backup holds password hashes and, with a passphrase, every stored secret: it is for people.")
+            .into_response(),
+        );
+    }
+    if let Err(e) = crate::secrets_api::transport_ok(&auth, &backend, &ext, &headers) {
+        return no_store(e.into_response());
+    }
+    // REQ: API-015 — the parser's own message can quote the input, so only its category is told.
+    let req: BackupRequest = if raw.iter().all(u8::is_ascii_whitespace) {
+        BackupRequest {
+            include_qlog: None,
+            passphrase: None,
+        }
+    } else {
+        match serde_json::from_slice(&raw) {
+            Ok(b) => b,
+            Err(e) => {
+                let what = match e.classify() {
+                    serde_json::error::Category::Syntax => "isn't valid JSON",
+                    serde_json::error::Category::Eof => "ended early",
+                    serde_json::error::Category::Data => {
+                        "has an unknown or wrongly typed field (`includeQlog` is a boolean, `passphrase` a string)"
+                    }
+                    serde_json::error::Category::Io => "couldn't be read",
+                };
+                return no_store(
+                    Problem::invalid(format!(
+                        "the body {what}; it should be {{\"includeQlog\": false, \"passphrase\": \"...\"}}"
+                    ))
+                    .into_response(),
+                );
+            }
+        }
+    };
+    drop(raw);
+    let passphrase = req
+        .passphrase
+        .map(crate::secrets_api::SecretText::into_inner);
+    if let Some(pass) = &passphrase
+        && pass.chars().count() < 12
+    {
+        return no_store(
+            Problem::invalid("the passphrase must be at least 12 characters").into_response(),
+        );
+    }
+    let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
+    if passphrase.is_some() {
+        let (a2, p2, now) = (Arc::clone(&auth), p.clone(), backend.now_unix_seconds());
+        let ok = tokio::task::spawn_blocking(move || a2.recent_sign_in(&p2, now))
+            .await
+            .unwrap_or_else(|e| Err(Problem::internal(format!("request worker failed: {e}"))));
+        if let Err(e) = ok {
+            return no_store(e.into_response());
+        }
+    }
+    backup_response(
+        backend,
+        &auth,
+        &actor,
+        req.include_qlog.unwrap_or(false),
+        passphrase,
+    )
+    .await
+}
+
+fn no_store(mut r: Response) -> Response {
+    r.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store"),
+    );
+    r
+}
+
+/// Builds the backup on a blocking thread, audits it, and answers with the file.
+async fn backup_response(
+    backend: Arc<dyn Backend>,
+    auth: &Arc<Auth>,
+    actor: &crate::auth::Actor,
+    include_qlog: bool,
+    passphrase: Option<zeroize::Zeroizing<String>>,
+) -> Response {
     let b2 = Arc::clone(&backend);
-    let result = tokio::task::spawn_blocking(move || b2.backup())
+    let result = tokio::task::spawn_blocking(move || b2.backup_create(include_qlog, passphrase))
         .await
         .unwrap_or_else(|e| Err(Problem::internal(format!("request worker failed: {e}"))));
     match result {
-        Ok((name, bytes)) => {
+        Ok(out) => {
+            // REQ: API-007 (ADR-903 §8) — the record says whether secrets went out and how many,
+            // never the passphrase; the `secrets_exported` alert reads `secretsIncluded`.
             auth.record(
-                &actor,
+                actor,
                 "backup.create",
-                &name,
-                &serde_json::json!({ "bytes": bytes.len() }),
+                &out.name,
+                &serde_json::json!({
+                    "bytes": out.bytes.len(),
+                    "secretsIncluded": out.secrets_included,
+                    "count": out.secrets_count,
+                    "includeQlog": include_qlog,
+                }),
             );
-            let mut resp = bytes.into_response();
+            let mut resp = out.bytes.into_response();
             let h = resp.headers_mut();
             h.insert(
                 axum::http::header::CONTENT_TYPE,
@@ -636,12 +801,26 @@ pub(crate) async fn backup_download(
                 HeaderValue::from_static("no-store"),
             );
             // The name is ours (letters, digits, `-`, `.`), so it's safe in the header.
-            if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{name}\"")) {
+            if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{}\"", out.name))
+            {
                 h.insert(axum::http::header::CONTENT_DISPOSITION, v);
+            }
+            let word = if out.secrets_included {
+                "included"
+            } else {
+                "omitted"
+            };
+            if let Ok(v) = HeaderValue::from_str(&format!("{word}; count={}", out.secrets_count)) {
+                h.insert("x-telltale-backup-secrets", v);
+            }
+            if !out.warnings.is_empty()
+                && let Ok(v) = HeaderValue::from_str(&out.warnings.join(" | "))
+            {
+                h.insert("x-telltale-backup-warnings", v);
             }
             resp
         }
-        Err(e) => e.into_response(),
+        Err(e) => no_store(e.into_response()),
     }
 }
 

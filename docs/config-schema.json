@@ -838,6 +838,11 @@
           "description": "REQ: API-014 (T23.2, ADR-903 §4) — an admin changed where an entry's credential is sent\n(an upstream's URL or TLS name, an alert destination's URL): once per change, from the\naudit log's `credential.redirect` records.",
           "type": "string",
           "const": "credential_redirected"
+        },
+        {
+          "description": "REQ: API-007 (T23.9, ADR-903 §8) — a backup with the stored secrets was made (through the\nAPI; once per backup, from the audit log's `backup.create` records): the secrets left the\nnode, under a passphrase.",
+          "type": "string",
+          "const": "secrets_exported"
         }
       ]
     },

@@ -138,6 +138,7 @@ fn one_off(w: AlertWhen) -> bool {
             | AlertWhen::RolloutFailed
             | AlertWhen::DrillReport
             | AlertWhen::CredentialRedirected
+            | AlertWhen::SecretsExported
     )
 }
 
@@ -291,7 +292,8 @@ fn record_delivery(sources: &crate::http::Sources, destination: &str, r: &Result
 
 /// What `rule` sees now, read from `b` (blocking: run it on a blocking thread). `pending`:
 /// agents' plans waiting for approval on this node, as `(id, summary)`; `redirects`: this node's
-/// recent `credential.redirect` audit records, likewise.
+/// recent `credential.redirect` audit records, likewise; `exports`: its `backup.create` records
+/// that carried secrets.
 #[allow(clippy::too_many_lines)] // one arm per condition
 fn observe(
     b: &dyn Backend,
@@ -299,6 +301,7 @@ fn observe(
     now: u64,
     pending: &[(String, String)],
     redirects: &[(String, String)],
+    exports: &[(String, String)],
     m: &Paused,
 ) -> Observed {
     let node_label = |n: &telltale_api::model::ClusterNode| {
@@ -419,6 +422,8 @@ fn observe(
         }
         // REQ: API-014 (T23.2, ADR-903 §4) — once per change of where a credential goes.
         AlertWhen::CredentialRedirected => redirects.to_vec(),
+        // REQ: API-007 (T23.9, ADR-903 §8) — a backup took the stored secrets out of the node.
+        AlertWhen::SecretsExported => exports.to_vec(),
         AlertWhen::PlanPending => pending
             .iter()
             .map(|(id, summary)| {
@@ -979,6 +984,35 @@ pub(crate) fn recent_redirects(sources: &crate::http::Sources, now: u64) -> Vec<
         .collect()
 }
 
+/// REQ: API-007 (T23.9, ADR-903 §8) — this node's `backup.create` audit records of the last hour
+/// that carried stored secrets (`secretsIncluded`), as `(subject, summary)`: the subject is the
+/// record's sequence number, so each backup goes out once. The summary names who made it and how
+/// many secrets, never a name or a value.
+pub(crate) fn recent_exports(sources: &crate::http::Sources, now: u64) -> Vec<(String, String)> {
+    let Some(auth) = sources.auth.get() else {
+        return Vec::new();
+    };
+    let since = now.saturating_sub(REDIRECT_WINDOW_SECS);
+    auth.state()
+        .audit_page(None, 50, Some("backup.create"), None)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.action == "backup.create" && e.ts >= since)
+        .filter_map(|e| {
+            let d: serde_json::Value = serde_json::from_str(&e.detail).unwrap_or_default();
+            d["secretsIncluded"].as_bool().filter(|x| *x)?;
+            Some((
+                e.seq.to_string(),
+                format!(
+                    "{} made a backup that carries {} stored secret(s), encrypted with a passphrase",
+                    e.actor,
+                    d["count"].as_u64().unwrap_or(0)
+                ),
+            ))
+        })
+        .collect()
+}
+
 /// `scheme://host[:port]` of a URL, without its user information or path; anything else as is.
 fn url_origin(s: &str) -> String {
     let Some(i) = s.find("://") else {
@@ -1019,6 +1053,7 @@ async fn paused_now(
 
 /// The alert task: every `interval_secs`, evaluate (on the primary or a standalone node) and
 /// send what started or cleared.
+#[allow(clippy::too_many_lines)] // one loop: read, observe, step, deliver
 pub(crate) async fn run(
     sources: Arc<crate::http::Sources>,
     mut stop: tokio::sync::watch::Receiver<bool>,
@@ -1072,9 +1107,20 @@ pub(crate) async fn run(
             let in_maintenance = Arc::clone(&paused);
             let pending = pending_plans(&sources);
             let redirects = recent_redirects(&sources, now);
+            let exports = recent_exports(&sources, now);
             let observed = tokio::task::spawn_blocking(move || {
                 rs.iter()
-                    .map(|r| observe(b.as_ref(), r, now, &pending, &redirects, &in_maintenance))
+                    .map(|r| {
+                        observe(
+                            b.as_ref(),
+                            r,
+                            now,
+                            &pending,
+                            &redirects,
+                            &exports,
+                            &in_maintenance,
+                        )
+                    })
                     .collect::<Vec<_>>()
             })
             .await
@@ -1264,7 +1310,7 @@ mod tests {
             probes: Vec::new(),
             findings: vec![finding("beacon", false), finding("chatty_loop", true)],
         };
-        let o = |w: AlertWhen| observe(&b, &rule(w, 0), 1000, &[], &[], &Paused::default());
+        let o = |w: AlertWhen| observe(&b, &rule(w, 0), 1000, &[], &[], &[], &Paused::default());
         let anomaly = o(AlertWhen::Anomaly);
         let chatty = o(AlertWhen::ChattyLoop);
         assert_eq!(anomaly.len(), 1, "{anomaly:?}");
@@ -1418,7 +1464,7 @@ mod tests {
             ..rule(AlertWhen::PrimaryUnreachable, 30)
         };
         let seen = |nodes: Vec<ClusterNode>| {
-            observe(&stub(nodes), &rule, 1000, &[], &[], &Paused::default())
+            observe(&stub(nodes), &rule, 1000, &[], &[], &[], &Paused::default())
         };
         // One second short of the default 60 s: nothing. Exactly 60 s: raised.
         assert!(
@@ -1449,6 +1495,7 @@ mod tests {
             &stub(vec![primary.clone(), node("r1", Some(15))]),
             &tight,
             1000,
+            &[],
             &[],
             &[],
             &Paused::default(),
@@ -1541,7 +1588,7 @@ mod tests {
         let seen = |backend: &Stub, paused: &Paused| -> Vec<Observed> {
             rules
                 .iter()
-                .map(|r| observe(backend, r, 1000, &[], &[], paused))
+                .map(|r| observe(backend, r, 1000, &[], &[], &[], paused))
                 .collect()
         };
         let subjects = |o: &Observed| o.iter().map(|(x, _)| x.clone()).collect::<Vec<_>>();
@@ -1704,7 +1751,7 @@ mod tests {
             };
             rules
                 .iter()
-                .map(|x| observe(&b, x, 1000, &[], &[], &Paused::default()))
+                .map(|x| observe(&b, x, 1000, &[], &[], &[], &Paused::default()))
                 .collect()
         };
         let mut e = Engine::default();

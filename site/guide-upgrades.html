@@ -118,14 +118,15 @@ sudo telltale self-update --channel edge --restart  # builds from main</code></p
   <h2>Back up</h2>
   <p>A backup is one file. Make one before a big change, and whenever you'd hate to set things up again.</p>
   <ul>
-    <li><b>In the web UI:</b> an admin clicks <b>Settings → System → Download a backup</b>.</li>
-    <li><b>Through the API:</b> <code>GET /api/v1/backup</code>.</li>
+    <li><b>In the web UI:</b> an admin opens <b>Settings → System → Backup</b> and clicks <b>Download a backup</b>.</li>
+    <li><b>Through the API:</b> <code>GET /api/v1/backup</code>, or <code>POST /api/v1/backup</code> with <code>{"includeQlog": true, "passphrase": "..."}</code>.</li>
     <li><b>On the server</b>, safe while TelltaleDNS runs:</li>
   </ul>
 <pre><code>telltale backup create -o pi.ttbk                 # settings, users, history
 telltale backup create --include-qlog -o pi.ttbk  # also the query log (can be large)
+telltale backup create --secrets-passphrase-file pass.txt -o pi.ttbk  # with your stored secrets, encrypted
 telltale backup show pi.ttbk                      # check it and list what's in it</code></pre>
-  <p class="muted">Downloads from the UI and API leave out the query log; use the command for that. Each download is recorded in the audit log as <code>backup.create</code>.</p>
+  <p class="muted">The UI includes the query log only if you tick it (and it is under 256 MiB); the command has no limit. Each backup is recorded in the audit log as <code>backup.create</code>.</p>
   <div class="two">
     <div class="card">
       <h3>In a backup</h3>
@@ -133,9 +134,10 @@ telltale backup show pi.ttbk                      # check it and list what's in 
     </div>
     <div class="card">
       <h3>Left out</h3>
-      <p>Sign-in sessions (everyone signs in again); downloaded lists, compiled snapshots, and the cache, which are rebuilt; and the cluster identity and its CA key.</p>
+      <p>Sign-in sessions (everyone signs in again); downloaded lists, compiled snapshots, and the cache, which are rebuilt; the cluster identity and its CA key; and your <a href="guide-settings.html#secrets">stored secrets</a> unless you give a passphrase (below).</p>
     </div>
   </div>
+  <p><b>Stored secrets.</b> Passwords and tokens you stored in the UI are left out of a backup, and the page and the command say how many. To carry them, tick <b>Include the stored secrets</b> and choose a passphrase of at least 12 characters (the command takes <code>--secrets-passphrase-file</code>, <code>--secrets-passphrase-stdin</code> or <code>--secrets-passphrase-prompt</code>). They are encrypted into the file with a key made from the passphrase, so the file and the passphrase together are what opens them: keep the two apart, because a lost passphrase can't be recovered. In the web UI a backup with secrets needs a sign-in from the last 10 minutes (it asks for your password again), and it raises the <code>secrets_exported</code> alert; an API token can't make one, so use the command on the node.</p>
   <div class="callout warn"><p><b>Keep it private.</b> It holds password hashes and API tokens. The file is zstd-compressed tar with a manifest of BLAKE3 checksums, written owner-only (<code>0600</code>).</p></div>
 </section>
 
@@ -145,8 +147,9 @@ telltale backup show pi.ttbk                      # check it and list what's in 
     <li class="step"><b>Install TelltaleDNS on the new machine</b> (see <a href="start.html#install">Get started</a>), and copy the backup file to it.</li>
     <li class="step"><b>Stop TelltaleDNS there.</b> Restore refuses while TelltaleDNS runs on that data directory, because it can't take the directory's lock.</li>
     <li class="step"><b>Restore:</b>
-<pre><code>telltale backup restore pi.ttbk</code></pre>
-      Every file is checked before anything is written, so a damaged or truncated backup changes nothing. Existing files are only replaced with <code>--force</code> (the installer writes a starter config, so a fresh install already has one).</li>
+<pre><code>telltale backup restore pi.ttbk
+telltale backup restore --secrets-passphrase-file pass.txt pi.ttbk   # a backup that holds secrets</code></pre>
+      A backup with secrets needs its passphrase, or <code>--skip-secrets</code> to restore everything else and enter them again. They are stored under the new machine's own key. Every file is checked before anything is written, so a damaged or truncated backup changes nothing. Existing files are only replaced with <code>--force</code> (the installer writes a starter config, so a fresh install already has one).</li>
     <li class="step"><b>Start TelltaleDNS</b> and sign in again. Lists are downloaded and compiled again.</li>
     <li class="step"><b>Point your router's DHCP DNS setting</b> at the new machine.</li>
   </ol>

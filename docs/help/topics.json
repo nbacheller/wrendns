@@ -497,10 +497,10 @@
       "id": "backup",
       "title": "Keep a copy of your setup",
       "term": "Backup and restore",
-      "summary": "One file with your settings, users, API tokens, the devices and names you added, the audit log, and statistics history.",
+      "summary": "One file with your settings, users, API tokens, the devices and names you added, the audit log, and statistics history. Tick \"Include the stored secrets\" to carry the passwords and tokens you stored in the UI too, encrypted with a passphrase you choose.",
       "when": "Before an upgrade, before moving to new hardware, or just to have a copy.",
-      "example": "Download a backup on the old Pi, then run telltale backup restore on the new one.",
-      "caution": "The file holds password hashes: keep it private. The query log is only included from the command line (--include-qlog).",
+      "example": "Download a backup with a passphrase on the old Pi, then run telltale backup restore --secrets-passphrase-file on the new one: the stored secrets come back under the new node's own key.",
+      "caution": "The file holds password hashes: keep it private. Without a passphrase the stored secrets are left out (the page says how many); with one, they need that passphrase to come back, and a backup with secrets needs a sign-in from the last 10 minutes. The query log is included only if you tick it, or from the command line (--include-qlog).",
       "docs": "backups-and-moving-to-a-new-machine"
     },
     {
@@ -906,7 +906,7 @@
       "summary": "A password or token (a router's API key, an alert's token, an OIDC client secret) kept in TelltaleDNS's own database, encrypted with the node's key, and never shown again once saved. Settings → Integrations & secrets lists them and shows where each one is used.",
       "when": "You'd rather type a password or token into the UI than put a file on the machine.",
       "example": "api_key_ref = \"unifi\" uses the stored secret named unifi as the UniFi console's API key.",
-      "caution": "A credential set in the config file wins and can't be changed in the UI. Keep a copy of the node's key: without it, stored secrets can't be read. Backups never include them.",
+      "caution": "A credential set in the config file wins and can't be changed in the UI. Keep a copy of the node's key: without it, stored secrets can't be read. Backups leave them out unless you give a passphrase (Settings → System → Backup).",
       "docs": "stored-secrets"
     },
     {
