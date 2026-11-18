@@ -246,6 +246,8 @@ pub fn required(method: &Method, path: &str) -> Need {
             _ if timeline_path(p) => return Need::Scope("querylog:read"),
             // REQ: API-015 — one stored secret's metadata.
             _ if secret_path(p) => return Need::Scope("config:read"),
+            // REQ: FLT-006, API-010 (T24.30) — a device's effective policy is configuration.
+            _ if policy_path(p) => return Need::Scope("config:read"),
             _ if under("/api/v1/stats") || under("/api/v1/analytics") => {
                 return Need::Scope("analytics:read");
             }
@@ -377,6 +379,13 @@ fn timeline_path(p: &str) -> bool {
         .is_some_and(|id| !id.is_empty() && !id.contains('/'))
 }
 
+/// REQ: FLT-006, API-010 (T24.30) — `/api/v1/clients/{id}/policy`.
+fn policy_path(p: &str) -> bool {
+    p.strip_prefix("/api/v1/clients/")
+        .and_then(|r| r.strip_suffix("/policy"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
 /// Reads under `analytics:read` beyond the plain paths.
 fn analytics_extra(p: &str) -> bool {
     // REQ: OBS-025 — what kind of device each address is.
@@ -492,6 +501,8 @@ pub fn group_aware(method: &Method, path: &str) -> bool {
         | "/api/v1/stats/top"
         | "/api/v1/clients" => read,
         "/mcp" => true,
+        // REQ: FLT-006, API-010 (T24.30) — a device's policy: the handler narrows to the group.
+        _ if read && policy_path(p) => true,
         _ => {
             (*method == Method::PUT || *method == Method::DELETE)
                 && p.strip_prefix("/api/v1/clients/")
@@ -970,6 +981,19 @@ mod tests {
         }
         assert_eq!(
             required(&Method::GET, "/api/v1/clients/a/b/identity"),
+            Need::Forbidden
+        );
+    }
+
+    /// REQ: FLT-006, API-010 (T24.30) — a device's policy is configuration, read-only.
+    #[test]
+    fn flt_006_policy_route_needs_config_read() {
+        assert_eq!(
+            required(&Method::GET, "/api/v1/clients/living-room-tv/policy"),
+            Need::Scope("config:read")
+        );
+        assert_eq!(
+            required(&Method::GET, "/api/v1/clients/a/b/policy"),
             Need::Forbidden
         );
     }

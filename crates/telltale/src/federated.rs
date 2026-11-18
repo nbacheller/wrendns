@@ -86,6 +86,11 @@ enum Read {
     ClientRhythm {
         client: String,
     },
+    /// REQ: FLT-006, API-010 (T24.30, ADR-971, ADR-996) — a device's effective policy, read from
+    /// the primary's configuration (an older peer doesn't know it: it is a missing node).
+    ClientPolicy {
+        client: String,
+    },
     /// REQ: CLU-002 (T9.2) — the histograms behind `Latency` (older peers don't know it).
     LatencyHist {
         by: LatencyBy,
@@ -286,6 +291,7 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::Identities => serde_json::to_vec(&b.identities()),
         Read::Identity { client } => serde_json::to_vec(&b.identity(&client).ok()),
         Read::ClientRhythm { client } => serde_json::to_vec(&b.client_rhythm(&client).ok()),
+        Read::ClientPolicy { client } => serde_json::to_vec(&b.client_policy(&client).ok()),
         Read::TailOpen { params } | Read::TailOpenNegated { params } => {
             serde_json::to_vec(&tail_open(b, &params).map_err(text)?)
         }
@@ -2112,6 +2118,59 @@ impl Backend for Federated {
             .into_iter()
             .next()
             .unwrap_or_else(|| crate::identify::unavailable(&key, "not_seen")))
+    }
+    // REQ: FLT-006, API-010 (T24.30, ADR-971, ADR-996) — the policy is the primary's configuration
+    // read, so every node gives the same answer: a replica asks the reachable primary and, when it
+    // can't (down, or an older version that doesn't know the read), answers from its own copy and
+    // names the primary in `missingNodes`.
+    fn client_policy(
+        &self,
+        client: &str,
+    ) -> Result<telltale_api::policy_api::ClientPolicy, Problem> {
+        let primary = self
+            .cluster
+            .members()
+            .into_iter()
+            .find(|m| m.primary)
+            .map(|m| m.node_id)
+            .filter(|_| !self.cluster.is_primary());
+        let Some(primary) = primary else {
+            let mut mine = self.local.client_policy(client)?;
+            mine.node = Some(self.own_label());
+            self.record_missing(Vec::new());
+            return Ok(mine);
+        };
+        let theirs = self
+            .cluster
+            .reachable_primary()
+            .and_then(|p| {
+                self.call_one(
+                    &p,
+                    &Read::ClientPolicy {
+                        client: client.to_owned(),
+                    },
+                    DEADLINE,
+                )
+            })
+            .and_then(Result::ok)
+            .and_then(|body| {
+                serde_json::from_slice::<Option<telltale_api::policy_api::ClientPolicy>>(&body)
+                    .ok()
+                    .flatten()
+            });
+        if let Some(mut p) = theirs {
+            p.node = Some(self.label_of(&primary));
+            self.record_missing(Vec::new());
+            return Ok(p);
+        }
+        let mut mine = self.local.client_policy(client)?;
+        mine.node = Some(self.own_label());
+        mine.notes.push(
+            "The primary didn't answer, so this is this node's own copy of the configuration."
+                .to_owned(),
+        );
+        self.record_missing(vec![self.label_of(&primary)]);
+        Ok(mine)
     }
     // REQ: OBS-031 — every node's view of the device (it may roam), summed by domain.
     fn client_rhythm(

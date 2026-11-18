@@ -675,6 +675,18 @@ pub struct ExplainClient {
     pub device: Option<String>,
     /// `client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `router_name`, `ip`, `cidr`, or `default`.
     pub identified_by: String,
+    /// REQ: FLT-006, API-010 (T24.30, ADR-996) — the key it matched on, written as a
+    /// `[[client]] match` is (`id:kids`, a MAC, an address, a network, `hostname:tv`), or the
+    /// workload's name. Absent for the `default` group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_key: Option<String>,
+    /// The group whose settings apply (the first of `groups`).
+    pub group: String,
+    /// Where that group came from: `device`, `network`, `router_name`, `kubernetes`, `default`.
+    pub group_from: String,
+    /// The network or router name that gave the group, when it isn't the device's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_key: Option<String>,
     /// Highest priority first.
     pub groups: Vec<String>,
     /// REQ: FLT-017 — the Kubernetes workload a pod address belongs to.
