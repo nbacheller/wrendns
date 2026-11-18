@@ -7303,7 +7303,11 @@ export interface components {
                 purpose?: string | null;
                 /** @description The `[[router]]` that reported it. */
                 router?: string | null;
-                /** @description `router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry). */
+                /**
+                 * @description `router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example
+                 *     on a tagged VLAN interface; it is named after the interface) or `group` (only a
+                 *     `[[group]] networks` entry).
+                 */
                 source: string;
                 /**
                  * @description The network in CIDR form.
@@ -8347,7 +8351,11 @@ export interface components {
             purpose?: string | null;
             /** @description The `[[router]]` that reported it. */
             router?: string | null;
-            /** @description `router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry). */
+            /**
+             * @description `router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example
+             *     on a tagged VLAN interface; it is named after the interface) or `group` (only a
+             *     `[[group]] networks` entry).
+             */
             source: string;
             /**
              * @description The network in CIDR form.
