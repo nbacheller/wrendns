@@ -116,6 +116,25 @@ async fn fake(kind: Fake) -> SocketAddr {
     addr
 }
 
+/// A fake that answers at once with `tag` and stamps the instant just before each reply is sent.
+async fn fake_stamped(tag: u8) -> (SocketAddr, Arc<std::sync::Mutex<Option<Instant>>>) {
+    let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let addr = sock.local_addr().unwrap();
+    let stamp = Arc::new(std::sync::Mutex::new(None));
+    let stamp_task = Arc::clone(&stamp);
+    tokio::spawn(async move {
+        let mut buf = [0u8; 1500];
+        while let Ok((n, peer)) = sock.recv_from(&mut buf).await {
+            let Some(r) = answer(&buf[..n], rcode::NOERROR, tag, false) else {
+                continue;
+            };
+            *stamp_task.lock().unwrap() = Some(Instant::now());
+            let _ = sock.send_to(&r, peer).await;
+        }
+    });
+    (addr, stamp)
+}
+
 fn upstream(id: u16, addr: SocketAddr, weight: u32) -> Arc<Upstream> {
     let ep = Endpoint::parse(&format!("udp://{addr}")).unwrap();
     Arc::new(Upstream::new(id, format!("u{id}"), ep, Duration::from_millis(400), weight).unwrap())
@@ -268,7 +287,8 @@ async fn ups_005_fastest_prefers_lower_latency() {
 /// test used to check: in Docker Desktop every UDP `bind()` takes about 10 ms and they queue one at
 /// a time across the process (`bench/README.md`), so a tight bound measured sibling tests' socket
 /// setup, not the race (issue #20). A group that waited for the slow member could not return before
-/// that cap; the correct group returns in the time its own two socket setups take.
+/// that cap; the correct group returns in the time its own two socket setups take. The second check
+/// (the gap from the fast reply being sent to the group returning) carries no bind cost at all.
 #[tokio::test]
 async fn ups_005_parallel_races_and_first_answer_wins() {
     // The slow member's configured timeout (the budget, 5 s) is above its attempt cap (1 s), which
@@ -289,21 +309,15 @@ async fn ups_005_parallel_races_and_first_answer_wins() {
         )
         .unwrap(),
     );
-    let fast = upstream(
-        2,
-        fake(Fake::Healthy {
-            tag: 2,
-            delay: Duration::from_millis(5),
-        })
-        .await,
-        1,
-    );
+    let (fast_addr, fast_sent) = fake_stamped(2).await;
+    let fast = upstream(2, fast_addr, 1);
     let g = Group::new("p", vec![slow, fast], Strategy::Parallel { fanout: 2 });
     let t = Instant::now();
     let ans = g
         .resolve(question("x.example"), budget)
         .await
         .expect("the fast member's answer");
+    let returned = Instant::now();
     assert!(
         t.elapsed() < Duration::from_secs(1),
         "waited for the slow member's attempt: {:?}",
@@ -311,6 +325,16 @@ async fn ups_005_parallel_races_and_first_answer_wins() {
     );
     assert_eq!(ans.upstream_id, 2);
     assert_eq!(answer_tag(&ans.bytes), 2, "answered by the fast member");
+    // The group must hand the fast answer back as soon as it arrives. The fake stamps the instant
+    // it sent the reply, so this gap is the reply's path plus the group's wake-up, with no socket
+    // bind in it (binds happen before the query is sent, and the bind cost is what the bound
+    // above cannot separate from the race).
+    let sent = fast_sent.lock().unwrap().expect("the fast member replied");
+    assert!(
+        returned.saturating_duration_since(sent) < Duration::from_millis(150),
+        "the group held the fast answer for {:?} after it was sent",
+        returned.saturating_duration_since(sent)
+    );
 }
 
 #[tokio::test]
@@ -401,8 +425,10 @@ async fn ups_006_single_member_waits_for_a_slow_answer() {
         .resolve(question("slow.example"), Duration::from_millis(150))
         .await
         .unwrap_err();
+    // The slow answer arrives at 600 ms. A group that honoured the budget returns near 150 ms
+    // (more when socket binds queue behind sibling tests); one that ignored it returns at 600 ms.
     assert!(
-        t.elapsed() < Duration::from_millis(280),
+        t.elapsed() < Duration::from_millis(500),
         "{err}: {:?}",
         t.elapsed()
     );
