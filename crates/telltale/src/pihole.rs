@@ -566,7 +566,7 @@ fn literal_regex(r: &str) -> Option<String> {
     while let Some(c) = it.next() {
         match c {
             '\\' => out.push(it.next().filter(|n| *n == '.' || *n == '-')?),
-            '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' => {
+            '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' | '/' => {
                 return None;
             }
             c => out.push(c),
@@ -588,13 +588,19 @@ fn map_exclusions(s: &Settings) -> (Vec<String>, Vec<String>, Vec<String>) {
         let mapped = if s.exclude_regex {
             let body = d.strip_prefix('^').and_then(|b| b.strip_suffix('$'));
             match body {
-                Some(b) => match b
-                    .strip_prefix(".*\\.")
-                    .or_else(|| b.strip_prefix("(.*\\.)?"))
-                {
-                    Some(rest) => literal_regex(rest).map(|n| format!("*.{n}")),
-                    None => literal_regex(b),
-                },
+                Some(b) => {
+                    if let Some(rest) = b.strip_prefix("(.*\\.)?") {
+                        // matches the apex too: list both
+                        if let Some(n) = literal_regex(rest).filter(|n| !n.is_empty()) {
+                            domains.push(n.to_ascii_lowercase());
+                        }
+                        literal_regex(rest).map(|n| format!("*.{n}"))
+                    } else if let Some(rest) = b.strip_prefix(".*\\.") {
+                        literal_regex(rest).map(|n| format!("*.{n}"))
+                    } else {
+                        literal_regex(b)
+                    }
+                }
                 None => d
                     .strip_prefix("\\.")
                     .and_then(|r| r.strip_suffix('$'))
@@ -1702,14 +1708,14 @@ impl<'a> Builder<'a> {
                 let _ = writeln!(head, "clients = {}", toml_array(&clients));
             }
             self.notes.push(format!(
-                "Excluded from Pi-hole's query log and lists: {} domain(s) and {} client(s) are imported as                  [exclusions.log] (kept out of the query log, still counted in the statistics).",
+                "Excluded from Pi-hole's query log and lists: {} domain(s) and {} client(s) are imported as [exclusions.log] (kept out of the query log and the live view, but still counted in the dashboard and top lists, which Pi-hole leaves them out of: the totals will differ from Pi-hole's; add the names to [exclusions] to leave them out of the statistics too).",
                 domains.len(),
                 clients.len()
             ));
         }
         if !skipped.is_empty() {
             self.notes.push(format!(
-                "Pi-hole excluded domains or clients that aren't a plain name, address or                  `^name$` pattern (not imported): {}.",
+                "Pi-hole excluded domains or clients that aren't a plain name, address or `^name$` pattern (not imported): {}.",
                 skipped.join(", ")
             ));
         }

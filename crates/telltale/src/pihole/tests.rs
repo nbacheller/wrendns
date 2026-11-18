@@ -598,7 +598,7 @@ fn obs_903_pihole_excluded_domains_and_clients() {
 
 [webserver.api]
   excludeClients = [ "^192\\.168\\.1\\.5$", "^10\\.0\\.0\\.7$", "^kitchen-.*$", "nas" ] ### CHANGED, default = []
-  excludeDomains = [ "^localhost$", "^.*\\.lan$", "^(ads|trk)\\..*$", "internal" ] ### CHANGED, default = []
+  excludeDomains = [ "^localhost$", "^.*\\.lan$", "^(.*\\.)?corp\\.example$", "^(ads|trk)\\..*$", "internal" ] ### CHANGED, default = []
 "#);
     let cfg = load(&im.toml);
     let log = &cfg.exclusions.log;
@@ -607,7 +607,7 @@ fn obs_903_pihole_excluded_domains_and_clients() {
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>(),
-        ["localhost", "*.lan"]
+        ["localhost", "*.lan", "corp.example", "*.corp.example"]
     );
     assert_eq!(
         log.clients
@@ -619,7 +619,7 @@ fn obs_903_pihole_excluded_domains_and_clients() {
     assert!(!log.own_lookups, "never switched on by an import");
     let notes = im.notes.join("\n");
     assert!(
-        notes.contains("2 domain(s) and 2 client(s) are imported"),
+        notes.contains("4 domain(s) and 2 client(s) are imported"),
         "{notes}"
     );
     for skipped in ["kitchen-.*", "nas", "internal", "(ads|trk)"] {

@@ -276,12 +276,18 @@ const DNS_CHECK_REUSE: std::time::Duration = std::time::Duration::from_secs(1);
 /// from loopback (a wildcard bind is asked on `127.0.0.1`). A node with no UDP listener has
 /// nothing to ask: its listeners being bound is the answer.
 async fn dns_answers(src: &Sources) -> bool {
+    static PROBE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     if let Some(ok) = src.readiness.dns_cached(DNS_CHECK_REUSE) {
         return ok;
     }
     let Some(addr) = crate::watchdog::udp_listener(&src.config.load()) else {
         return true;
     };
+    // Single flight: callers that arrive together wait for one probe and share its answer.
+    let _one = PROBE.lock().await;
+    if let Some(ok) = src.readiness.dns_cached(DNS_CHECK_REUSE) {
+        return ok;
+    }
     let ok = tokio::task::spawn_blocking(move || crate::watchdog::ask_udp(addr, DNS_CHECK_WAIT))
         .await
         .unwrap_or(false);
