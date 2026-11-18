@@ -467,3 +467,26 @@ async fn api_007_secrets_exported_alert() {
         "no resolve"
     );
 }
+
+// REQ: API-007 (ADR-966 §7) — the `secrets_exported` alert is the primary's, so a replica refuses
+// a backup with a passphrase (409, naming the primary) and still makes one without.
+#[tokio::test(flavor = "multi_thread")]
+async fn api_007_replica_refuses_passphrase_backup() {
+    let _serial = crate::backup::test_lock();
+    let (replica, _primary) = crate::credential_tests::older_primary_and_replica("0.7.4").await;
+    let h = crate::credential_tests::harness_in("", Some(replica));
+    let (s, _, b) = send(&h, from_session(&h, 0, Some(json!({"passphrase": PASS})))).await;
+    let text = String::from_utf8_lossy(&b).into_owned();
+    assert_eq!(s, StatusCode::CONFLICT, "{text}");
+    assert!(text.contains("primary"), "{text}");
+    assert!(!text.contains(PASS), "{text}");
+    assert_eq!(audit_backups(&h), "", "nothing was made, nothing audited");
+    let (s, hd, _) = send(&h, h.request("POST", "/api/v1/backup", Some(&json!({})))).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        hd["x-telltale-backup-secrets"]
+            .to_str()
+            .unwrap()
+            .starts_with("omitted")
+    );
+}

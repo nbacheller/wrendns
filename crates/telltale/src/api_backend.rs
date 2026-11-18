@@ -850,6 +850,20 @@ impl Backend for ApiBackend {
         }
         let export = match passphrase {
             Some(pass) => {
+                // REQ: API-007 (ADR-966 §7) — the `secrets_exported` alert is evaluated on the
+                // primary from its own audit log, so a backup with secrets is made there: the
+                // secrets are replicated, the content is the same.
+                if self.src.cluster.as_ref().is_some_and(|c| !c.is_primary()) {
+                    return Err(Problem::new(
+                        Code::Conflict,
+                        "this node is a replica: a backup with a passphrase is made on the primary",
+                    )
+                    .hint("Make it on the primary node (the secrets are replicated, so it holds the same ones), or make a backup without a passphrase here."));
+                }
+                // REQ: API-007 — refused before the secrets are read and the databases copied.
+                if crate::backup::kdf_busy() {
+                    return Err(busy_problem());
+                }
                 let (rows, unreadable) =
                     self.src.secrets.export_rows().map_err(|why| {
                         Problem::new(telltale_api::problem::Code::SecretsLocked, format!("the stored secrets can't be read, so none can be backed up: {why}"))
@@ -880,12 +894,7 @@ impl Backend for ApiBackend {
             Ok(m) => m,
             Err(crate::backup::BackupError::Busy) => {
                 let _ = std::fs::remove_file(&tmp);
-                return Err(Problem::new(
-                    telltale_api::problem::Code::RateLimited,
-                    "another backup with a passphrase is running on this node",
-                )
-                .retry_after(2)
-                .hint("Try again in a few seconds: one key derivation runs at a time."));
+                return Err(busy_problem());
             }
             Err(e) => {
                 let _ = std::fs::remove_file(&tmp);
@@ -7368,4 +7377,14 @@ mod dhcp_lease_tests {
         );
         assert!(at.iter().any(|l| l.source == "mdns" && !l.offline));
     }
+}
+
+/// REQ: API-007 (ADR-965 §8) — the 429 a backup with a passphrase gets while another derives.
+fn busy_problem() -> Problem {
+    Problem::new(
+        telltale_api::problem::Code::RateLimited,
+        "another backup with a passphrase is running on this node",
+    )
+    .retry_after(2)
+    .hint("Try again in a few seconds: one key derivation runs at a time.")
 }

@@ -896,3 +896,271 @@ fn api_007_debug_never_shows_passphrase_or_values() {
     };
     assert!(!format!("{plain:?}").contains("planted-plain-1"));
 }
+
+/// A copy of `archive` with the bytes of the files changed by `edit` (the manifest's hashes and
+/// sizes made to match, as someone without the passphrase could do), the manifest by `meta`, and
+/// `add` entries put in.
+fn rewrite_files(
+    archive: &Path,
+    out: &Path,
+    edit: impl Fn(&str, &mut Vec<u8>),
+    meta: impl FnOnce(&mut Manifest),
+    add: &[(&str, &[u8])],
+) {
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    let m = read_archive(archive, |name, r| {
+        let mut b = Vec::new();
+        r.read_to_end(&mut b).map_err(|e| e.to_string())?;
+        files.push((name.to_owned(), b));
+        Ok(())
+    })
+    .unwrap();
+    let mut m2 = m;
+    let mut enc =
+        zstd::stream::Encoder::new(BufWriter::new(File::create(out).unwrap()), 3).unwrap();
+    enc.include_checksum(true).unwrap();
+    let mut tar = TarWriter {
+        out: enc,
+        entries: Vec::new(),
+    };
+    for (name, bytes) in &mut files {
+        edit(name, bytes);
+        tar.entry_bytes(name, bytes).unwrap();
+    }
+    for (name, bytes) in add {
+        tar.entry_bytes(name, bytes).unwrap();
+    }
+    m2.entries = tar.entries.clone();
+    meta(&mut m2);
+    tar.bytes("manifest.json", &serde_json::to_vec_pretty(&m2).unwrap())
+        .unwrap();
+    tar.finish().unwrap().finish().unwrap().flush().unwrap();
+}
+
+// REQ: API-007 (ADR-965 §10) — nothing in the archive can be changed without the passphrase: the
+// configuration (a router's URL, with the hashes made to match), a data file, an added entry and
+// the node's name are all part of what the cipher authenticates, so each is the same refusal as
+// a wrong passphrase and moves nothing; `--skip-secrets` of the same archive still restores.
+#[test]
+fn api_007_edited_archive_is_refused() {
+    let _serial = test_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let (files, cfg) = node_with_secrets(&tmp.path().join("old"));
+    let first = tmp.path().join("first.ttbk");
+    create_with(&files, &cfg, false, &first, Some(&export_of(&cfg, PASS))).unwrap();
+    let none = env(&[]);
+    let attempt = |archive: &Path, name: &str, mode: &SecretsMode| {
+        let new = tmp.path().join(name);
+        let r = restore_with(
+            archive,
+            Some(&new.join("data")),
+            Some(&new.join("etc")),
+            false,
+            mode,
+            &plain_keys(&*none),
+        );
+        (r.map(|_| ()), new)
+    };
+    let pass = || SecretsMode::Passphrase(Zeroizing::new(PASS.to_owned()));
+    // The unedited archive restores (the rewrite itself changes nothing the cipher binds).
+    let same = tmp.path().join("same.ttbk");
+    rewrite_files(&first, &same, |_, _| {}, |_| {}, &[]);
+    let (r, _) = attempt(&same, "ok", &pass());
+    r.unwrap();
+    // A configuration file pointed at another host.
+    let edited = tmp.path().join("conf.ttbk");
+    rewrite_files(
+        &first,
+        &edited,
+        |n, b| {
+            if n.starts_with("config/") {
+                b.extend_from_slice(b"\n# router url = https://attacker.example\n");
+            }
+        },
+        |_| {},
+        &[],
+    );
+    let (r, new) = attempt(&edited, "n1", &pass());
+    assert_eq!(r.unwrap_err(), "wrong passphrase or damaged archive");
+    assert!(!new.join("data/state.db").exists() && !new.join("etc/telltale.toml").exists());
+    // A data file.
+    let data = tmp.path().join("data.ttbk");
+    rewrite_files(
+        &first,
+        &data,
+        |n, b| {
+            if n == "data/state.db" {
+                b.push(0);
+            }
+        },
+        |_| {},
+        &[],
+    );
+    let (r, _) = attempt(&data, "n2", &pass());
+    assert_eq!(r.unwrap_err(), "wrong passphrase or damaged archive");
+    // An entry added.
+    let added = tmp.path().join("added.ttbk");
+    rewrite_files(
+        &first,
+        &added,
+        |_, _| {},
+        |_| {},
+        &[("data/anomaly.json", b"{}")],
+    );
+    let (r, _) = attempt(&added, "n3", &pass());
+    assert_eq!(r.unwrap_err(), "wrong passphrase or damaged archive");
+    // The node's name.
+    let renamed = tmp.path().join("node.ttbk");
+    rewrite_files(
+        &first,
+        &renamed,
+        |_, _| {},
+        |m| m.node = "other".into(),
+        &[],
+    );
+    let (r, _) = attempt(&renamed, "n4", &pass());
+    assert_eq!(r.unwrap_err(), "wrong passphrase or damaged archive");
+    // Without the secrets the edited archive is the owner's to restore, as any backup is.
+    let (r, _) = attempt(&edited, "n5", &SecretsMode::Skip);
+    r.unwrap();
+}
+
+// REQ: API-007 (ADR-965 §6) — without `-c`, the key settings are those of the archive's own
+// configuration files (the ones the restored server starts with): a `secrets_key_file` in them
+// is the key the rows are sealed under, no `secrets.key` is made beside it, and one that can't
+// be read stops the restore before anything moves.
+#[test]
+fn api_007_restore_reads_key_settings_from_the_archive() {
+    let _serial = test_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let key_file = tmp.path().join("node.key");
+    let (files, cfg) = node_with_secrets(&tmp.path().join("a"));
+    let mut text = fs::read_to_string(&files[0]).unwrap();
+    text += &[
+        "secrets_key_file = \"",
+        &key_file.display().to_string(),
+        "\"
+",
+    ]
+    .concat();
+    fs::write(&files[0], text).unwrap();
+    let out = tmp.path().join("a.ttbk");
+    create_with(&files, &cfg, false, &out, Some(&export_of(&cfg, PASS))).unwrap();
+    let none = env(&[]);
+    let pass = || SecretsMode::Passphrase(Zeroizing::new(PASS.to_owned()));
+    // The file is missing: refused, nothing made or moved.
+    let miss = tmp.path().join("miss");
+    let e = restore_with(
+        &out,
+        Some(&miss.join("data")),
+        Some(&miss.join("etc")),
+        false,
+        &pass(),
+        &plain_keys(&*none),
+    )
+    .unwrap_err();
+    assert!(e.contains("node.key"), "{e}");
+    assert!(!miss.join("data/secrets.key").exists());
+    assert!(!miss.join("data/state.db").exists());
+    // The file is there: the rows are sealed under it.
+    let key = crate::secrets::NodeKey::generate().unwrap();
+    fs::write(&key_file, format!("{}\n", key.as_str())).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&key_file, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let new = tmp.path().join("new");
+    let r = restore_with(
+        &out,
+        Some(&new.join("data")),
+        Some(&new.join("etc")),
+        false,
+        &pass(),
+        &plain_keys(&*none),
+    )
+    .unwrap();
+    assert_eq!(
+        r.secrets.unwrap().key_source,
+        key_file.display().to_string()
+    );
+    assert!(!new.join("data/secrets.key").exists(), "nothing generated");
+    let extra = format!("secrets_key_file = \"{}\"\n", key_file.display());
+    let (_, new_cfg) = config_in(&new, &extra);
+    let store = SecretStore::with_env(&new_cfg, env(&[]), false, false);
+    store.load_now();
+    assert_eq!(store.get("unifi").unwrap().expose(), UNIFI);
+}
+
+// REQ: API-007, OPS-014 (ADR-965 §6) — a key the restore makes is the data directory's owner's
+// (restore runs as root for a service user: a root-owned key would lock the service out of its
+// own secrets), and one made for a restore that then fails is removed again.
+#[cfg(unix)]
+#[test]
+fn api_007_restore_key_owner_and_cleanup() {
+    use std::os::unix::fs::MetadataExt as _;
+    let tmp = tempfile::tempdir().unwrap();
+    let none = env(&[]);
+    let keys_cfg = plain_keys(&*none);
+    // Dropped without `keep`: no stray key.
+    let d1 = tmp.path().join("d1");
+    fs::create_dir_all(&d1).unwrap();
+    let (_k, guard) = restore_keys(&d1, &keys_cfg, &[], None).unwrap();
+    assert!(d1.join("secrets.key").exists());
+    drop(guard);
+    assert!(!d1.join("secrets.key").exists(), "removed with the failure");
+    // Kept: stays; and a key that was there already is never removed.
+    let (_k, mut guard) = restore_keys(&d1, &keys_cfg, &[], None).unwrap();
+    guard.keep();
+    drop(guard);
+    assert!(d1.join("secrets.key").exists());
+    let (_k, guard) = restore_keys(&d1, &keys_cfg, &[], None).unwrap();
+    drop(guard);
+    assert!(d1.join("secrets.key").exists(), "an existing key stays");
+    // Owner: only root can give a file to another uid.
+    let me = fs::metadata("/proc/self").map_or(1, |m| m.uid());
+    if me != 0 {
+        return;
+    }
+    let d2 = tmp.path().join("d2");
+    fs::create_dir_all(&d2).unwrap();
+    std::os::unix::fs::chown(&d2, Some(4242), Some(4343)).unwrap();
+    let (_k, mut guard) = restore_keys(&d2, &keys_cfg, &[], Some((4242, 4343))).unwrap();
+    guard.keep();
+    let md = fs::metadata(d2.join("secrets.key")).unwrap();
+    assert_eq!((md.uid(), md.gid()), (4242, 4343));
+    assert_eq!(md.mode() & 0o777, 0o600);
+}
+
+// REQ: API-007 (ADR-965 §6) — the whole restore, as root into a directory another user owns: the
+// restored files and the key made for them are that user's.
+#[cfg(unix)]
+#[test]
+fn api_007_restore_as_root_gives_the_key_to_the_data_owner() {
+    use std::os::unix::fs::MetadataExt as _;
+    if fs::metadata("/proc/self").map_or(1, |m| m.uid()) != 0 {
+        return;
+    }
+    let _serial = test_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let (files, cfg) = node_with_secrets(&tmp.path().join("old"));
+    let out = tmp.path().join("b.ttbk");
+    create_with(&files, &cfg, false, &out, Some(&export_of(&cfg, PASS))).unwrap();
+    let new = tmp.path().join("new");
+    fs::create_dir_all(new.join("data")).unwrap();
+    std::os::unix::fs::chown(new.join("data"), Some(4242), Some(4343)).unwrap();
+    let none = env(&[]);
+    restore_with(
+        &out,
+        Some(&new.join("data")),
+        Some(&new.join("etc")),
+        false,
+        &SecretsMode::Passphrase(Zeroizing::new(PASS.to_owned())),
+        &plain_keys(&*none),
+    )
+    .unwrap();
+    for f in ["secrets.key", "state.db"] {
+        let md = fs::metadata(new.join("data").join(f)).unwrap();
+        assert_eq!((md.uid(), md.gid()), (4242, 4343), "{f}");
+    }
+}

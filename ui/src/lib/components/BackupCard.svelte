@@ -60,8 +60,11 @@
         reauth = true;
         error = null;
       } else {
+        // A terminal outcome other than the wait for a password: nothing typed stays (ADR-966 §8).
         pending = null;
         reauth = false;
+        passphrase = '';
+        confirm = '';
         error = e;
       }
     } finally {
@@ -100,6 +103,8 @@
   function cancelReauth() {
     pending = null;
     reauth = false;
+    passphrase = '';
+    confirm = '';
     password = '';
     totp = '';
     needTotp = false;

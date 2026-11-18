@@ -650,7 +650,8 @@ pub struct BackupRequest {
 /// itself (403 `insecure_transport`). With a passphrase it needs an interactive session signed in
 /// within the last 10 minutes: tokens and Basic sign-in get 403 `reauth_required`, with a hint to
 /// run `telltale backup create` on the node. One key derivation runs at a time: a second request
-/// gets 429. Audited as `backup.create` (`secretsIncluded`, `count`; never the passphrase), and
+/// gets 429. On a cluster replica a passphrase is refused (409): make it on the primary, which
+/// holds the same secrets and raises the alert. Audited as `backup.create` (`secretsIncluded`, `count`; never the passphrase), and
 /// a backup with secrets raises the alert event `secrets_exported`. It takes no
 /// `Idempotency-Key`: it changes no state.
 #[utoipa::path(post, path = "/api/v1/backup", tag = "system",
@@ -664,6 +665,7 @@ pub struct BackupRequest {
             description = "The backup, as an attachment named `telltale-<node>-<time>.ttbk`."),
         (status = 400, body = Problem, description = "The body isn't valid, or the passphrase is under 12 characters, or the query log is too big for the API."),
         (status = 403, body = Problem, description = "Not an admin, an agent token (`agent_not_allowed`), plain HTTP from another host (`insecure_transport`), or a passphrase without a recent sign-in (`reauth_required`)."),
+        (status = 409, body = Problem, description = "A backup with a passphrase on a cluster replica: make it on the primary."),
         (status = 429, body = Problem, description = "Another backup with a passphrase is deriving its key: wait for Retry-After seconds."),
         (status = 503, body = Problem, description = "Backups aren't available on this node, or its secrets key can't be read (`secrets_locked`)."),
     ))]

@@ -6,7 +6,10 @@
 //! - **Key:** Argon2id v1.3 from the passphrase, with a 16-byte random salt, 32 bytes out. The
 //!   parameters are recorded in the manifest (`kdf`) and bounded on restore.
 //! - **Cipher:** ChaCha20-Poly1305 (`ring`), a 12-byte random nonce (recorded in the manifest),
-//!   associated data `"telltale-backup-secrets v1" ‖ backup_id`.
+//!   associated data `"telltale-backup-secrets v2" ‖ backup_id ‖ binding`, where the binding
+//!   is a BLAKE3 hash over the manifest's `format`, `version` and `node` and the sorted
+//!   `(path, size, blake3)` of every other entry (ADR-965 §10): an archive edited without the
+//!   passphrase (a router's URL in the configuration, say) fails like a wrong passphrase.
 //! - **One KDF at a time per process** ([`kdf_slot`]): a second request is refused (the API
 //!   answers 429), so a burst of backups can't use more than one KDF's memory (`02 §8`).
 //!
@@ -38,7 +41,8 @@ pub(crate) const MAX_M_KIB: u32 = 256 * 1024;
 pub(crate) const MAX_T: u32 = 10;
 pub(crate) const MAX_P: u32 = 8;
 const SALT_LEN: usize = 16;
-const AAD_PREFIX: &[u8] = b"telltale-backup-secrets v1";
+/// ADR-965 §10: the prefix is `v2` since the associated data also holds the archive's binding.
+const AAD_PREFIX: &[u8] = b"telltale-backup-secrets v2";
 pub(crate) const KDF_NAME: &str = "argon2id";
 pub(crate) const AEAD_NAME: &str = "chacha20-poly1305";
 /// The archive entry.
@@ -106,6 +110,12 @@ pub(crate) fn kdf_slot_for_tests() -> KdfSlot {
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
+}
+
+/// Whether a derivation is running now: a request that would only be refused answers before it
+/// reads the secrets and copies the databases (the slot itself is still taken in [`seal`]).
+pub(crate) fn kdf_busy() -> bool {
+    KDF_BUSY.load(Ordering::Acquire)
 }
 
 /// Takes the slot, or `None` while another derivation holds it.
@@ -267,10 +277,38 @@ fn cipher(key: &[u8; 32]) -> Result<aead::LessSafeKey, String> {
         .map_err(|_| "the backup cipher couldn't start".to_owned())
 }
 
-fn aad(backup_id: &str) -> Vec<u8> {
+fn aad(backup_id: &str, binding: &[u8; 32]) -> Vec<u8> {
     let mut a = AAD_PREFIX.to_vec();
     a.extend_from_slice(backup_id.as_bytes());
+    a.extend_from_slice(binding);
     a
+}
+
+/// REQ: API-007 (ADR-965 §10) — the hash that ties the rest of the archive to the passphrase:
+/// `format`, `version`, `node` and every entry but `secrets.enc` (path, size and BLAKE3), in
+/// path order, each field length-prefixed.
+pub(crate) fn binding(
+    format: &str,
+    version: u32,
+    node: &str,
+    entries: &[super::Entry],
+) -> [u8; 32] {
+    let mut h = blake3::Hasher::new_derive_key("telltale-backup-binding v1");
+    let mut field = |b: &[u8]| {
+        h.update(&(b.len() as u64).to_le_bytes());
+        h.update(b);
+    };
+    field(format.as_bytes());
+    field(&version.to_le_bytes());
+    field(node.as_bytes());
+    let mut rest: Vec<&super::Entry> = entries.iter().filter(|e| e.path != ENTRY).collect();
+    rest.sort_by(|a, b| a.path.cmp(&b.path));
+    for e in rest {
+        field(e.path.as_bytes());
+        field(&e.size.to_le_bytes());
+        field(e.blake3.as_bytes());
+    }
+    *h.finalize().as_bytes()
 }
 
 #[derive(Serialize)]
@@ -317,7 +355,10 @@ pub(crate) struct PlainRow {
 /// REQ: API-007 (ADR-903 §8) — `export` sealed under its passphrase: the bytes of
 /// `data/secrets.enc` and the manifest block that describes them. Takes the process's one KDF
 /// slot, or says [`BackupError::Busy`].
-pub(crate) fn seal(export: &SecretsExport) -> Result<(Vec<u8>, SecretsInfo), BackupError> {
+pub(crate) fn seal(
+    export: &SecretsExport,
+    binding: &[u8; 32],
+) -> Result<(Vec<u8>, SecretsInfo), BackupError> {
     check_passphrase(&export.passphrase)?;
     let _slot = kdf_slot().ok_or(BackupError::Busy)?;
     let rng = SystemRandom::new();
@@ -355,7 +396,7 @@ pub(crate) fn seal(export: &SecretsExport) -> Result<(Vec<u8>, SecretsInfo), Bac
     cipher(&key)?
         .seal_in_place_append_tag(
             aead::Nonce::assume_unique_for_key(nonce),
-            aead::Aad::from(aad(&backup_id)),
+            aead::Aad::from(aad(&backup_id, binding)),
             &mut *buf,
         )
         .map_err(|_| "the secrets couldn't be encrypted".to_owned())?;
@@ -378,6 +419,7 @@ pub(crate) fn open(
     ciphertext: &[u8],
     info: &SecretsInfo,
     passphrase: &str,
+    binding: &[u8; 32],
 ) -> Result<Vec<PlainRow>, String> {
     let (Some(kdf), Some(aead_name), Some(nonce), Some(id)) =
         (&info.kdf, &info.aead, &info.nonce, &info.backup_id)
@@ -401,7 +443,7 @@ pub(crate) fn open(
     let len = cipher(&key)?
         .open_in_place(
             aead::Nonce::assume_unique_for_key(nonce),
-            aead::Aad::from(aad(id)),
+            aead::Aad::from(aad(id, binding)),
             &mut buf,
         )
         .map_err(|_| WRONG.to_owned())?

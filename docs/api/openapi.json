@@ -2014,7 +2014,7 @@
           "system"
         ],
         "summary": "Make a backup, optionally with the stored secrets.",
-        "description": "Like `GET /api/v1/backup` (one `.ttbk`; ADR-063), and with a body it can carry more:\n- `includeQlog`: the query log too;\n- `passphrase` (at least 12 characters): the node's stored secrets, encrypted under a key made\n  from it (Argon2id m = 19 MiB, t = 2, p = 1; ChaCha20-Poly1305), as `data/secrets.enc`.\n  The archive is then format 2, which builds before this one refuse. Restore needs the\n  passphrase (`telltale backup restore --secrets-passphrase-file`) or `--skip-secrets`.\n\n`X-Telltale-Backup-Secrets` says `included; count=N` or `omitted; count=N` (how many were left\nout), and `X-Telltale-Backup-Warnings` lists what to know (credentials held inline in the\nconfiguration are copied as they are).\n\nAdmin only, never an agent token (403 `agent_not_allowed`), only over HTTPS or from the node\nitself (403 `insecure_transport`). With a passphrase it needs an interactive session signed in\nwithin the last 10 minutes: tokens and Basic sign-in get 403 `reauth_required`, with a hint to\nrun `telltale backup create` on the node. One key derivation runs at a time: a second request\ngets 429. Audited as `backup.create` (`secretsIncluded`, `count`; never the passphrase), and\na backup with secrets raises the alert event `secrets_exported`. It takes no\n`Idempotency-Key`: it changes no state.",
+        "description": "Like `GET /api/v1/backup` (one `.ttbk`; ADR-063), and with a body it can carry more:\n- `includeQlog`: the query log too;\n- `passphrase` (at least 12 characters): the node's stored secrets, encrypted under a key made\n  from it (Argon2id m = 19 MiB, t = 2, p = 1; ChaCha20-Poly1305), as `data/secrets.enc`.\n  The archive is then format 2, which builds before this one refuse. Restore needs the\n  passphrase (`telltale backup restore --secrets-passphrase-file`) or `--skip-secrets`.\n\n`X-Telltale-Backup-Secrets` says `included; count=N` or `omitted; count=N` (how many were left\nout), and `X-Telltale-Backup-Warnings` lists what to know (credentials held inline in the\nconfiguration are copied as they are).\n\nAdmin only, never an agent token (403 `agent_not_allowed`), only over HTTPS or from the node\nitself (403 `insecure_transport`). With a passphrase it needs an interactive session signed in\nwithin the last 10 minutes: tokens and Basic sign-in get 403 `reauth_required`, with a hint to\nrun `telltale backup create` on the node. One key derivation runs at a time: a second request\ngets 429. On a cluster replica a passphrase is refused (409): make it on the primary, which\nholds the same secrets and raises the alert. Audited as `backup.create` (`secretsIncluded`, `count`; never the passphrase), and\na backup with secrets raises the alert event `secrets_exported`. It takes no\n`Idempotency-Key`: it changes no state.",
         "operationId": "backup_create",
         "requestBody": {
           "description": "Optional: `includeQlog`, `passphrase`.",
@@ -2069,6 +2069,16 @@
           },
           "403": {
             "description": "Not an admin, an agent token (`agent_not_allowed`), plain HTTP from another host (`insecure_transport`), or a passphrase without a recent sign-in (`reauth_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A backup with a passphrase on a cluster replica: make it on the primary.",
             "content": {
               "application/json": {
                 "schema": {

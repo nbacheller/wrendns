@@ -23,7 +23,17 @@ fn first_line(mut r: impl io::Read) -> io::Result<Zeroizing<String>> {
     Ok(Zeroizing::new(line.to_owned()))
 }
 
-/// Reads one line from the terminal without showing it (`stty -echo`, restored after).
+/// Turns the terminal's echo back on when dropped.
+struct Echo<'a>(&'a dyn Fn(&str) -> bool);
+
+impl Drop for Echo<'_> {
+    fn drop(&mut self) {
+        (self.0)("echo");
+    }
+}
+
+/// Reads one line from the terminal without showing it (`stty -echo`, restored after, by a drop
+/// guard; after an interrupt, `stty echo` does it).
 fn prompt_hidden(label: &str) -> Result<Zeroizing<String>, String> {
     let tty = std::fs::File::open("/dev/tty")
         .map_err(|_| "there is no terminal to ask on: use --secrets-passphrase-file".to_owned())?;
@@ -42,11 +52,14 @@ fn prompt_hidden(label: &str) -> Result<Zeroizing<String>, String> {
             "couldn't turn the terminal's echo off: use --secrets-passphrase-file".to_owned(),
         );
     }
+    // Echo comes back whichever way this returns or unwinds. (A process killed by a signal
+    // mid-prompt can't run it: `stty echo` restores the terminal, as the prompt says.)
+    let echo = Echo(&stty);
     eprint!("{label}");
     let _ = io::stderr().flush();
     let mut line = Zeroizing::new(String::new());
     let read = io::BufReader::new(&tty).read_line(&mut line);
-    stty("echo");
+    drop(echo);
     eprintln!();
     read.map_err(|e| e.to_string())?;
     let t = line.trim_end_matches(['\r', '\n']).to_owned();
@@ -96,6 +109,9 @@ pub(crate) fn create(
         Some(src) => {
             let pass = read(src, true)?;
             super::check_passphrase(&pass)?;
+            if super::kdf_busy() {
+                return Err(super::BackupError::Busy.to_string());
+            }
             let store = crate::secrets::SecretStore::read_only(cfg, crate::secrets::cli::env());
             store.load_now();
             let (rows, unreadable) = store.export_rows().map_err(|why| {

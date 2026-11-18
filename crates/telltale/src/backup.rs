@@ -28,7 +28,9 @@ use zeroize::Zeroizing;
 pub(crate) mod cli;
 mod passphrase;
 
-pub(crate) use passphrase::{BackupError, ExportRow, SecretsExport, SecretsInfo, check_passphrase};
+pub(crate) use passphrase::{
+    BackupError, ExportRow, SecretsExport, SecretsInfo, check_passphrase, kdf_busy,
+};
 #[cfg(test)]
 pub(crate) use passphrase::{kdf_slot_for_tests, test_lock};
 
@@ -522,7 +524,15 @@ fn write_into(
     }
     let secrets_info = match secrets {
         Some(x) if !x.rows.is_empty() => {
-            let (ct, info) = passphrase::seal(x)?;
+            // The version is the one a backup with secrets has (ADR-965 §10): the binding covers
+            // every entry written so far (all but `secrets.enc`).
+            let bind = passphrase::binding(
+                FORMAT,
+                VERSION_SECRETS,
+                cfg.node.name.as_str(),
+                &tar.entries,
+            );
+            let (ct, info) = passphrase::seal(x, &bind)?;
             tar.entry_bytes(passphrase::ENTRY, &ct).map_err(err)?;
             if x.unreadable > 0 {
                 warnings.push(format!(
@@ -901,14 +911,49 @@ pub(crate) fn restore_with(
     })
 }
 
-/// REQ: API-007 (ADR-903 §8) — the node's keys for a restore into `data_dir`: from the
-/// environment and `key_cfg`'s settings, else the data directory's own key (made when there is
-/// none). A source that is configured but can't be read is an error: nothing is generated.
+/// A data-directory key this restore made, removed again if the restore fails before anything
+/// moves (a stray key would be there for the next start to find, sealing nothing).
+struct NewKey(Option<PathBuf>);
+
+impl NewKey {
+    /// The restore went on: the key stays.
+    fn keep(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for NewKey {
+    fn drop(&mut self) {
+        if let Some(p) = self.0.take() {
+            let _ = fs::remove_file(p);
+        }
+    }
+}
+
+/// REQ: API-007 (ADR-903 §8, ADR-965 §6) — the node's keys for a restore into `data_dir`: from
+/// the environment and the key settings (`-c`'s, else those of the archive's own configuration
+/// files, staged in `config_files`: the ones the restored server starts with), else the data
+/// directory's own key (made when there is none, and owned like the data directory). A source
+/// that is configured but can't be read is an error: nothing is generated in its place. The
+/// guard removes a key this call made unless [`NewKey::keep`] is called.
 fn restore_keys(
     data_dir: &Path,
     key_cfg: &RestoreKeys<'_>,
-) -> Result<crate::secrets::Keys, String> {
-    let mut paths = key_cfg.cfg.map_or_else(
+    config_files: &[PathBuf],
+    owner: Option<(u32, u32)>,
+) -> Result<(crate::secrets::Keys, NewKey), String> {
+    let staged_cfg;
+    let cfg = match key_cfg.cfg {
+        Some(c) => Some(c),
+        None if !config_files.is_empty() => {
+            staged_cfg = crate::server::load_files_quiet(config_files).ok_or_else(|| {
+                "the backup's configuration files don't load here, so the key settings in them can't be read: give the configuration with -c FILE, or restore with --skip-secrets".to_owned()
+            })?;
+            Some(&staged_cfg)
+        }
+        None => None,
+    };
+    let mut paths = cfg.map_or_else(
         || crate::secrets::KeyPaths {
             data_dir: data_dir.to_path_buf(),
             key_file: String::new(),
@@ -922,7 +967,23 @@ fn restore_keys(
     }
     // The key belongs to the node the data is restored onto.
     paths.data_dir = data_dir.to_path_buf();
-    crate::secrets::load(&paths, key_cfg.env, true)
+    let made = paths.uses_data_key(key_cfg.env) && !paths.data_key().exists();
+    let keys = crate::secrets::load(&paths, key_cfg.env, true)?;
+    let mut guard = NewKey(None);
+    if made {
+        let key = paths.data_key();
+        guard.0 = Some(key.clone());
+        // Run as root for a service user, the key would be root's and the service couldn't
+        // read it: it is the data directory's owner's, as the restored files are.
+        #[cfg(unix)]
+        if let Some((uid, gid)) = owner {
+            std::os::unix::fs::chown(&key, Some(uid), Some(gid))
+                .map_err(|e| format!("{}: {e}", key.display()))?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = owner;
+    Ok((keys, guard))
 }
 
 fn restore_staged(
@@ -958,13 +1019,29 @@ fn restore_staged(
     // REQ: API-007 (T23.9) — the secrets come out of `secrets.enc` before anything moves: a wrong
     // passphrase, a key that can't be had, or a bad row leaves the machine as it was.
     let mut restored = None;
+    let mut key_guard = None;
+    // Owned like the data directory (restore usually runs as root for a service user).
+    #[cfg(unix)]
+    let owner = {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(data_dir).ok().map(|md| (md.uid(), md.gid()))
+    };
+    #[cfg(not(unix))]
+    let owner: Option<(u32, u32)> = None;
     if let (true, SecretsMode::Passphrase(pass)) = (m.has_secrets(), secrets)
         && let Some(info) = &m.secrets
     {
         let enc = fs::read(stage.join(passphrase::ENTRY))
             .map_err(|e| format!("{}: {e}", passphrase::ENTRY))?;
-        let rows = passphrase::open(&enc, info, pass)?;
-        let keys = restore_keys(data_dir, key_cfg)?;
+        let bind = passphrase::binding(&m.format, m.version, &m.node, &m.entries);
+        let rows = passphrase::open(&enc, info, pass, &bind)?;
+        let config_files: Vec<PathBuf> = staged
+            .iter()
+            .filter(|p| p.starts_with("config/"))
+            .map(|p| stage.join(p))
+            .collect();
+        let (keys, new_key) = restore_keys(data_dir, key_cfg, &config_files, owner)?;
+        key_guard = Some(new_key);
         let db = stage.join("data/state.db");
         if let Some(parent) = db.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
@@ -979,12 +1056,10 @@ fn restore_staged(
             key_id: crate::secrets::hex(&keys.current.key_id()),
         });
     }
-    // Owned like the data directory (restore usually runs as root for a service user).
-    #[cfg(unix)]
-    let owner = {
-        use std::os::unix::fs::MetadataExt;
-        fs::metadata(data_dir).ok().map(|md| (md.uid(), md.gid()))
-    };
+    // From here files move: a key made for them stays.
+    if let Some(g) = key_guard.as_mut() {
+        g.keep();
+    }
     for path in staged.iter().filter(|p| *p != passphrase::ENTRY) {
         let to = target(path);
         if let Some(parent) = to.parent() {

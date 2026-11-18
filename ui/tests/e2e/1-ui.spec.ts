@@ -3,6 +3,7 @@
 // phone-width layout, and the masked-client-IP banner. Any CSP violation or page error fails the suite.
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { readFileSync } from 'node:fs';
+import { zstdDecompressSync } from 'node:zlib';
 import { BASE_URL, DNS_PORT, E2E_ROOT, MDNS_PORT, PORTS } from './ports';
 import { resolve } from 'node:path';
 import { query } from './dns';
@@ -6001,6 +6002,32 @@ test('api_007 passphrase backup from settings', async () => {
     await expect(card.getByTestId('backup-make')).toBeEnabled();
     await expect(card.getByTestId('backup-make')).toHaveText('Download a backup with secrets');
 
+    // A refusal that isn't the recent-sign-in one (here a 429): nothing typed stays in the fields.
+    await page.route('**/api/v1/backup', async (route) => {
+      await route.fulfill({
+        status: 429,
+        contentType: 'application/problem+json',
+        headers: { 'retry-after': '2' },
+        body: JSON.stringify({
+          type: 'https://telltaledns.dev/problems/rate_limited',
+          title: 'Too many requests',
+          status: 429,
+          code: 'rate_limited',
+          detail: 'another backup with a passphrase is running on this node',
+        }),
+      });
+    });
+    try {
+      await card.getByTestId('backup-make').click();
+      await expect(card).toContainText('another backup with a passphrase is running');
+      await expect(card.getByLabel('Backup passphrase', { exact: true })).toHaveValue('');
+      await expect(card.getByLabel('Repeat the backup passphrase')).toHaveValue('');
+    } finally {
+      await page.unroute('**/api/v1/backup');
+    }
+    await card.getByLabel('Backup passphrase', { exact: true }).fill(PASSPHRASE);
+    await card.getByLabel('Repeat the backup passphrase').fill(PASSPHRASE);
+
     // The server asks for a recent sign-in once; the prompt keeps the request until the password
     // is given, then the backup is made for real.
     let refused = 0;
@@ -6042,12 +6069,17 @@ test('api_007 passphrase backup from settings', async () => {
       // The passphrase went in the request body only, twice (the refused try and the retry).
       expect(bodies).toHaveLength(2);
       expect(bodies.every((b) => b.includes(PASSPHRASE))).toBe(true);
-      // The file holds the secret only encrypted.
+      // The file holds the secret only encrypted: checked on the decompressed tar (the file is
+      // zstd, where a plaintext value would hide), with the encrypted entry as the control.
       const path = await enc.path();
-      const bytes = readFileSync(path);
-      expect(bytes.includes(Buffer.from(PLANTED))).toBe(false);
-      expect(bytes.includes(Buffer.from(PASSPHRASE))).toBe(false);
-      expect(bytes.length).toBeGreaterThan(1000);
+      const file = readFileSync(path);
+      expect(file.length).toBeGreaterThan(1000);
+      const tar = zstdDecompressSync(file);
+      expect(tar.includes(Buffer.from('data/secrets.enc'))).toBe(true);
+      expect(tar.includes(Buffer.from('manifest.json'))).toBe(true);
+      expect(tar.includes(Buffer.from(PLANTED))).toBe(false);
+      expect(tar.includes(Buffer.from(PASSPHRASE))).toBe(false);
+      expect(file.includes(Buffer.from(PLANTED))).toBe(false);
     } finally {
       await page.unroute('**/api/v1/backup');
     }
