@@ -262,10 +262,10 @@
       "id": "networks",
       "title": "The networks your routers know",
       "term": "Network",
-      "summary": "A LAN or VLAN your router reports: its subnet, DHCP pool, domain and the group that covers it. Devices on it show how full it is.",
+      "summary": "A LAN or VLAN your router reports, or one this node is directly on: its subnet, DHCP pool, domain and the group that covers it. Devices on it show how full it is.",
       "when": "You want to see which networks are filling up, or which networks no group covers yet.",
       "example": "IoT (192.168.20.0/24, VLAN 20): 42 of 254 addresses in use, 38 of them from the DHCP pool.",
-      "caution": "Networks come from your routers and from your groups' networks. A network no router reports shows as group only."
+      "caution": "Networks come from your routers, from the networks this node is directly on (marked this node: its own LAN and any tagged VLAN interface), and from your groups' networks. A network nothing reports shows as group only. A VLAN reached through the gateway is not on the node, so it shows only if a router reports it. This node means the node answering the API, so through a replica the list differs from the primary's; inside a bridged Docker container there are none (set TELLTALE_HOST_NETWORK=1 on host networking)."
     },
     {
       "id": "network-group",
@@ -338,6 +338,16 @@
       "caution": "If every server is benched, only cached and local answers work.",
       "diagram": "upstream",
       "docs": "encrypted-upstreams"
+    },
+    {
+      "id": "upstream-source",
+      "title": "Send an upstream's queries from one address",
+      "term": "Source address (bind address)",
+      "summary": "The address on this node that an upstream's queries leave from. A network such as 198.51.100.0/24 means the address each node holds in it, so one shared upstream works on every node.",
+      "when": "A DNS filter knows your network by the address its queries come from, or the node sits on several networks and you want one of them.",
+      "example": "The family filter is asked from the 198.51.100.x address, so a service that keys on that network sees it.",
+      "caution": "The node must hold the address (on a real interface); saving one it doesn't is refused. If it is missing at start or disappears later, only that upstream's queries fail and the health icon says why. Binding an address doesn't pick the interface: add a routing rule for it (see the runbook). In a cluster, name a network, not one node's address. This is not what makes a gateway's content filtering apply: that works on traffic, whatever DNS is used.",
+      "docs": "commercial-filters-behind-telltaledns"
     },
     {
       "id": "routes",
