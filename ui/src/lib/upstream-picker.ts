@@ -110,7 +110,8 @@ export function readSaved(entries: S['ConfigEntry'][], presets: Preset[]): Saved
     if (lit === 'v6') sawV6 = true;
   }
   if (out.ticked.size) {
-    out.transport = encrypted ? 'encrypted' : plain ? 'plain' : null;
+    // Plain wins: a provider with no plain address falls back to encrypted entries even in plain mode.
+    out.transport = plain ? 'plain' : encrypted ? 'encrypted' : null;
     // Host-name addresses carry no family: only addresses say which were chosen.
     if (literals) {
       out.v4 = sawV4;

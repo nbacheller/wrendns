@@ -53,6 +53,10 @@
   const groupMembers = $derived(((defaultGroup?.definition as { members?: string[] } | undefined)?.members ?? []));
   const keptMembers = $derived(groupMembers.filter((m) => !isPickerEntry(m)));
 
+  /** Re-read what is saved (the Advanced editor changed something): a stale picker would rewrite the group. */
+  export async function refresh() {
+    await load();
+  }
   async function load() {
     try {
       const [p, e, g] = await Promise.all([api.upstreamPresets(), api.configEntries('upstream'), api.configEntries('upstream_group')]);

@@ -130,7 +130,9 @@
   const opinions = (q: S['UpstreamQuality']) => results.reduce((n, [k]) => n + (q[k] as number), 0);
   const multiNode = $derived(checks.length > 1);
   const anyQuality = $derived(checks.some((c) => c.upstreams.length > 0));
+  let picker = $state<{ refresh: () => Promise<void> }>();
   const reload = async () => {
+    void picker?.refresh();
     upstreams = (await api.upstreams()).items;
     origins = new Map((await api.configEntries('upstream')).items.map((e) => [e.name, e.source]));
   };
@@ -175,7 +177,7 @@
   </div>
   <ErrorNote {error} />
   <div hidden={view !== 'simple'} data-testid="upstreams-simple">
-    <UpstreamPicker onchanged={reload} onadvanced={() => setView('advanced')} />
+    <UpstreamPicker bind:this={picker} onchanged={reload} onadvanced={() => setView('advanced')} />
   </div>
   <section class="card">
     <div class="table-wrap">
