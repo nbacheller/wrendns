@@ -126,10 +126,13 @@ pub(crate) fn oidc_inputs(
     let mut skipped = Vec::new();
     for p in o.provider.iter().chain(&o.managed_provider) {
         if o.public_url.is_empty() {
-            skipped.push(ProviderStatus::inactive(
-                p.id.to_string(),
-                "this node has no [auth.oidc] public_url (set it in this node's file; it is node-local)",
-            ));
+            skipped.push(
+                ProviderStatus::inactive(
+                    p.id.to_string(),
+                    "this node has no [auth.oidc] public_url (set it in this node's file; it is node-local)",
+                )
+                .at(p.issuer.to_string()),
+            );
             continue;
         }
         // REQ: OPS-014 (ADR-903 §2) — inline, its file, or the store.
@@ -152,7 +155,9 @@ pub(crate) fn oidc_inputs(
                 } else {
                     warn!("OIDC provider `{}` is not set up: {e}", p.id);
                 }
-                skipped.push(ProviderStatus::inactive(p.id.to_string(), e.clone()));
+                skipped.push(
+                    ProviderStatus::inactive(p.id.to_string(), e.clone()).at(p.issuer.to_string()),
+                );
                 continue;
             }
         };

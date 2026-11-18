@@ -1508,7 +1508,7 @@ async fn api_016_oidc_provider_added_without_restart() {
         .await;
     assert_eq!(
         out,
-        super::Reloaded::Applied(vec![super::ProviderStatus::active("fake")])
+        super::Reloaded::Applied(vec![super::ProviderStatus::active("fake").at(ISSUER)])
     );
     assert_eq!(
         status_buttons(&h).await,
@@ -1519,7 +1519,8 @@ async fn api_016_oidc_provider_added_without_restart() {
 }
 
 /// REQ: API-016 — a changed issuer that can't be read is left out with the reason (it fails
-/// closed); so is a new provider that can't be read.
+/// closed); so is a new provider that can't be read. (An unchanged issuer keeps its previous
+/// settings: `api_016_oidc_unchanged_issuer_keeps_previous`.)
 #[tokio::test]
 async fn api_016_oidc_discovery_failure_keeps_previous() {
     let (h, f) = reload_harness();
@@ -1530,7 +1531,7 @@ async fn api_016_oidc_discovery_failure_keeps_previous() {
             Arc::clone(&f),
         )
         .await;
-    // The issuer moves to a host nobody serves: the old settings stay.
+    // The issuer moves to a host nobody serves.
     let out = h
         .auth
         .reload_oidc(
@@ -1628,6 +1629,63 @@ async fn api_016_oidc_issuer_change_ends_sessions() {
     h.auth.state().set_user_issuer(user.id, OTHER).unwrap();
     let r = sign_in(&h, "ana", "ana", &["dns-admins"], false).await;
     assert_refused(&r, "another%20issuer");
+}
+
+/// REQ: API-016 (ADR-967 point 7) — a repointed provider this node can't serve at all (its new
+/// secret can't be read, so it is skipped) still ends the old issuer's sessions.
+#[tokio::test]
+async fn api_016_oidc_skipped_repointed_provider_ends_sessions() {
+    let (h, f) = reload_harness();
+    h.auth
+        .reload_oidc(
+            oidc_settings(vec![provider("fake", "Fake IdP", ISSUER, Some("s3cret"))]),
+            Vec::new(),
+            Arc::clone(&f),
+        )
+        .await;
+    let session = session_for(&h, "ana", &["dns-admins"]).await;
+    assert_eq!(me_status(&h, &session).await, StatusCode::OK);
+    h.auth
+        .reload_oidc(
+            oidc_settings(Vec::new()),
+            vec![super::ProviderStatus::inactive("fake", "the secret file is missing").at(OTHER)],
+            f,
+        )
+        .await;
+    assert_eq!(me_status(&h, &session).await, StatusCode::UNAUTHORIZED);
+}
+
+/// REQ: API-016 — a provider that can't be read just now keeps its previous settings when its
+/// issuer is unchanged (it is down, not repointed), with the reason and a retry.
+#[tokio::test]
+async fn api_016_oidc_unchanged_issuer_keeps_previous() {
+    let (h, _f) = reload_harness();
+    let p = provider("fake", "Fake IdP", ISSUER, Some("s3cret"));
+    let down = fetch(HashMap::new());
+    // As after a restart while the provider is down: settings in place, discovery not read.
+    h.auth.start_oidc(
+        oidc_settings(vec![p.clone()]),
+        Vec::new(),
+        Arc::clone(&down),
+    );
+    let mut renamed = p;
+    renamed.name = "Renamed".into();
+    let out = h
+        .auth
+        .reload_oidc(oidc_settings(vec![renamed]), Vec::new(), down)
+        .await;
+    let super::Reloaded::Applied(status) = out else {
+        panic!("applied")
+    };
+    let fake = status.iter().find(|s| s.id == "fake").unwrap();
+    assert!(
+        fake.active && fake.retry && fake.reason.is_some(),
+        "{fake:?}"
+    );
+    assert_eq!(
+        status_buttons(&h).await,
+        json!([{"id": "fake", "name": "Fake IdP"}])
+    );
 }
 
 /// REQ: API-016 (ADR-967 point 7) — a user of a provider the configuration no longer names can't

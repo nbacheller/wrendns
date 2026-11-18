@@ -27,6 +27,9 @@ pub struct ProviderStatus {
     /// soon), not a setting that has to change.
     #[serde(skip)]
     pub retry: bool,
+    /// The issuer the provider is configured at (not the API's business).
+    #[serde(skip)]
+    pub issuer: Option<String>,
 }
 
 impl ProviderStatus {
@@ -36,7 +39,15 @@ impl ProviderStatus {
             active: true,
             reason: None,
             retry: false,
+            issuer: None,
         }
+    }
+
+    /// Records the issuer the provider is configured at.
+    #[must_use]
+    pub fn at(mut self, issuer: impl Into<String>) -> Self {
+        self.issuer = Some(issuer.into());
+        self
     }
 
     pub fn inactive(id: impl Into<String>, reason: impl Into<String>) -> Self {
@@ -45,6 +56,7 @@ impl ProviderStatus {
             active: false,
             reason: Some(reason.into()),
             retry: false,
+            issuer: None,
         }
     }
 
@@ -84,7 +96,7 @@ impl Auth {
         let mut status: Vec<ProviderStatus> = settings
             .providers
             .iter()
-            .map(|p| ProviderStatus::active(p.id.clone()))
+            .map(|p| ProviderStatus::active(p.id.clone()).at(p.issuer.clone()))
             .collect();
         status.extend(skipped);
         let service = (!settings.providers.is_empty()).then(|| {
@@ -127,8 +139,8 @@ impl Auth {
 
     /// REQ: API-016 — applies `settings` (the providers this node can serve) and `skipped` (the
     /// ones it can't, with why: no `public_url`, a secret it can't read). A provider that is new
-    /// or has a new issuer is read now; one that can't be read keeps its previous settings, or is
-    /// left out with the reason. Providers that are gone end their sessions. Returns the status
+    /// or has a new issuer is read now; one that can't be read keeps its previous settings only when its
+    /// issuer is unchanged, else it is left out with the reason (it fails closed). Providers that are gone end their sessions. Returns the status
     /// of each, or [`Reloaded::Discarded`] when a newer rebuild overtook this one.
     #[allow(clippy::too_many_lines)] // one pass: read, decide, swap, end sessions
     pub async fn reload_oidc(
@@ -149,14 +161,14 @@ impl Auth {
         for p in &settings.providers {
             if self.oidc_shared.is_read(&p.id, &p.issuer) {
                 serve.push(p.clone());
-                status.push(ProviderStatus::active(p.id.clone()));
+                status.push(ProviderStatus::active(p.id.clone()).at(p.issuer.clone()));
                 continue;
             }
             match load_discovery(&fetch, &p.issuer).await {
                 Ok(d) => {
                     self.oidc_shared.put(&p.id, &p.issuer, Arc::new(d));
                     serve.push(p.clone());
-                    status.push(ProviderStatus::active(p.id.clone()));
+                    status.push(ProviderStatus::active(p.id.clone()).at(p.issuer.clone()));
                 }
                 Err(e) => {
                     tracing::warn!(provider = %p.id, error = %e, "OIDC discovery failed on reload");
@@ -177,12 +189,16 @@ impl Auth {
                                     "the new settings aren't applied yet, because the provider couldn't be read: {e}"
                                 )),
                                 retry: true,
+                                issuer: Some(p.issuer.clone()),
                             });
                         }
-                        None => status.push(ProviderStatus::unreadable(
-                            p.id.clone(),
-                            format!("the provider couldn't be read: {e}"),
-                        )),
+                        None => status.push(
+                            ProviderStatus::unreadable(
+                                p.id.clone(),
+                                format!("the provider couldn't be read: {e}"),
+                            )
+                            .at(p.issuer.clone()),
+                        ),
                     }
                 }
             }
@@ -227,29 +243,47 @@ impl Auth {
             .map(|s| s.id)
             .filter(|id| !wanted.contains(&id.as_str()))
             .collect();
+        // The issuer each provider was at before this rebuild (the status list holds them all).
+        let was_at: std::collections::HashMap<String, String> = self
+            .oidc_status()
+            .into_iter()
+            .filter_map(|s| s.issuer.map(|i| (s.id, i)))
+            .collect();
         self.oidc_status
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone_from(&status);
         // REQ: API-016 — a provider repointed to another issuer ends the sessions opened at the
-        // old one, whether or not the new one can be read yet.
-        for p in &settings.providers {
+        // old one, whether or not the new one can be read (or its secret) yet; rows from before
+        // issuers were recorded go with the old issuer. `skipped` providers carry their issuer.
+        let configured: Vec<(String, String)> = settings
+            .providers
+            .iter()
+            .map(|p| (p.id.clone(), p.issuer.clone()))
+            .chain(
+                skipped
+                    .iter()
+                    .filter_map(|s| s.issuer.clone().map(|i| (s.id.clone(), i))),
+            )
+            .collect();
+        for (id, issuer) in configured {
+            let was = was_at.get(&id).cloned();
             let state = Arc::clone(&self.state);
-            let (id, issuer) = (p.id.clone(), p.issuer.clone());
+            let (pid, pissuer) = (id.clone(), issuer);
             match tokio::task::spawn_blocking(move || {
-                state.delete_provider_sessions_not_at(&id, &issuer)
+                state.reconcile_provider_issuer(&pid, &pissuer, was.as_deref())
             })
             .await
             {
                 Ok(Ok(n)) if n > 0 => {
-                    tracing::info!(provider = %p.id, sessions = n, "OIDC provider repointed: the old issuer's sessions ended");
+                    tracing::info!(provider = %id, sessions = n, "OIDC provider repointed: the old issuer's sessions ended");
                 }
                 Ok(Ok(_)) => {}
                 Ok(Err(e)) => {
-                    tracing::error!(provider = %p.id, error = %e, "can't end a repointed provider's sessions");
+                    tracing::error!(provider = %id, error = %e, "can't settle a provider's issuer");
                 }
                 Err(e) => {
-                    tracing::error!(provider = %p.id, error = %e, "can't end a repointed provider's sessions");
+                    tracing::error!(provider = %id, error = %e, "can't settle a provider's issuer");
                 }
             }
         }
