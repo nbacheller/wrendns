@@ -278,6 +278,10 @@ out=$(admin_api "$SUBNET.11" POST /api/v1/nodes/local/maintenance '{"forSecs":30
 until_ok 30000 node_is "$VIP" telltale-b || bad "the VIP did not move to b while a is in maintenance (owner: '$(vip_owner)')"
 [ "$(vip_owner)" = b ] || bad "the VIP answers as telltale-b but is held by '$(vip_owner)'"
 [ "$(node_at "$SUBNET.11")" = telltale-a ] || bad "node a stopped answering on its own address during maintenance"
+# The first identity sync from the primary after node a rejoined replaces the admin that node a made
+# locally, and that ends its sessions (crates/telltale-store identity import). It can land between
+# the two calls, so the session is made again before the call that ends maintenance.
+admin_login "$SUBNET.11" || bad "the admin can't sign in on node a before ending maintenance"
 out=$(admin_api "$SUBNET.11" DELETE /api/v1/nodes/local/maintenance)
 [ "$(api_status "$out")" = 200 ] || bad "could not end maintenance on node a (HTTP $(api_status "$out"): $(api_body "$out"))"
 vip_answers_as 60000 a || bad "the VIP did not come back to a after maintenance ended (owner: '$(vip_owner)')"
