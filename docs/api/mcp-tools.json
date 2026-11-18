@@ -100,11 +100,11 @@
       "additionalProperties": false,
       "properties": {
         "client": {
-          "description": "Client IP or device name.",
+          "description": "A client IP, or several comma-separated (addresses, `hostname:<router name>`, Kubernetes workloads as namespace/kind/name; at most 100). With clientNot, every client except these.",
           "type": "string"
         },
         "clientNot": {
-          "description": "Keep the queries from every client except `client`. Needs `client`.",
+          "description": "Keep the queries from every client except those in `client`. Needs `client`.",
           "type": "boolean"
         },
         "cursor": {

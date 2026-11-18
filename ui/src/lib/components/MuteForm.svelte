@@ -4,6 +4,7 @@
   // matches nothing, a MAC address) shows here before anything is saved.
   import { api, type S } from '../api';
   import ErrorNote from './ErrorNote.svelte';
+  import Picker from './Picker.svelte';
 
   let {
     finding,
@@ -105,10 +106,6 @@
       saving = false;
     }
   }
-
-  function toggle(k: string, on: boolean) {
-    kinds = on ? [...kinds, k] : kinds.filter((x) => x !== k);
-  }
 </script>
 
 <form class="mute" onsubmit={save} data-testid="mute-form">
@@ -119,15 +116,10 @@
   <label class="small field">Device (name, IP or network)
     <input class="mono" bind:value={device} required aria-label="Device" />
   </label>
-  <fieldset class="kinds">
-    <legend class="small">Kinds of finding</legend>
-    {#each Object.keys(kindTitles) as k (k)}
-      <label class="small">
-        <input type="checkbox" checked={kinds.includes(k)} onchange={(e) => toggle(k, e.currentTarget.checked)} />
-        {kindTitles[k]}
-      </label>
-    {/each}
-  </fieldset>
+  <div class="field small">
+    <span>Kinds of finding</span>
+    <Picker label="Kinds of finding" items={Object.keys(kindTitles).map((k) => ({ value: k, label: kindTitles[k] }))} bind:selected={kinds} maxChips={4} />
+  </div>
   <div class="row">
     <label class="small">For
       <select bind:value={duration} aria-label="How long">
@@ -173,18 +165,5 @@
   }
   .grow {
     flex: 1 1 220px;
-  }
-  .kinds {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 6px 10px 8px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 16px;
-  }
-  .kinds label {
-    display: inline-flex;
-    gap: 6px;
-    align-items: center;
   }
 </style>

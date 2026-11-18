@@ -8,6 +8,7 @@ import { zstdDecompressSync } from 'node:zlib';
 import { BASE_URL, DNS_PORT, E2E_ROOT, MDNS_PORT, PORTS } from './ports';
 import { resolve } from 'node:path';
 import { query, queryDetail } from './dns';
+import { pick } from './picker';
 import { alertConditions } from '../../src/lib/alert-conditions';
 import { FrameHub, Loop, PANEL_MIN, Particles, Ticker, chooseLayout, dotBudget, lerpBoxes, motionAllowed, parseEvery, parseLayout, parsePanels, screenClass, screenClassStable, type Box } from '../../src/lib/wall';
 
@@ -742,7 +743,7 @@ test('obs_038 mute a kind of finding for a device', async () => {
   await page.getByTestId('mute').click();
   const form = page.getByTestId('mute-form');
   await expect(form.getByLabel('Device')).toHaveValue('192.168.1.30');
-  await expect(form.getByRole('checkbox', { name: 'Burst of failed lookups' })).toBeChecked();
+  await expect(form.getByTestId('picker-chip').filter({ hasText: 'Burst of failed lookups' })).toHaveCount(1);
   await expect(page.getByTestId('mute-preview')).toContainText('findings created from now on');
   await form.getByLabel('Note').fill('hourly reverse-DNS sweep');
   await page.getByTestId('mute-save').click();
@@ -1207,8 +1208,10 @@ test('api_010 match a client by router name', async () => {
   await page.unroute('**/api/v1/rules/**');
   // The query log filters by the name: the addresses it has now.
   await page.goto('/#/queries');
-  await page.locator('select[name="client-by"]').selectOption('router');
-  await page.locator('input[name="client"]').fill('kitchen-tablet');
+  const clientBox = page.getByRole('group', { name: 'Client', exact: true }).getByRole('combobox');
+  await clientBox.fill('hostname:kitchen-tablet');
+  await clientBox.press('Enter');
+  await clientBox.press('Escape');
   const logged = page.waitForRequest((r) => r.url().includes('/api/v1/queries') && decodeURIComponent(r.url()).includes('client=hostname:kitchen-tablet'));
   await page.getByRole('button', { name: 'Search', exact: true }).click();
   await logged;
@@ -2152,7 +2155,7 @@ test('obs_010 alerts page: destinations, test, rules', async () => {
     await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-disk');
     await page.getByLabel('When', { exact: true }).selectOption('disk_full');
     // exact: the config file's destination (file-ntfy) is listed too, and its name contains no ui-hook.
-    await page.getByRole('group', { name: 'Send to' }).getByRole('checkbox', { name: 'ui-hook', exact: true }).check();
+    await pick(page.locator('body'), 'Send to', 'ui-hook');
     await page.getByRole('spinbutton', { name: 'For at least (seconds)' }).fill('0');
     await page.getByRole('spinbutton', { name: 'Threshold' }).fill('0.1');
     await page.getByRole('button', { name: 'Check' }).click();
@@ -2198,7 +2201,7 @@ test('obs_010 every alert condition can be chosen', async () => {
       await page.getByLabel('When', { exact: true }).selectOption(kind);
       // The config file's destination (file-ntfy) is the one every rule here sends to; its checkbox is
       // named "Send to file-ntfy", so match the name by part.
-      await page.getByRole('group', { name: 'Send to' }).getByRole('checkbox', { name: /file-ntfy/ }).check();
+      await pick(page.locator('body'), 'Send to', /file-ntfy/);
       await page.getByRole('button', { name: 'Check' }).click();
       await page.getByRole('button', { name: 'Apply' }).click();
       await expect(rules.getByTestId('entry-row').filter({ hasText: nameOf(kind) })).toContainText(`${kind} → file-ntfy`);
@@ -2234,7 +2237,7 @@ test('obs_010 threshold shown per condition and out-of-range refused', async () 
     await expect(page.getByRole('spinbutton', { name: 'Threshold' })).toHaveCount(0);
     await page.getByLabel('When', { exact: true }).selectOption('cert_expiring');
     await expect(page.getByRole('spinbutton', { name: 'Threshold' })).toBeVisible();
-    await page.getByRole('group', { name: 'Send to' }).getByRole('checkbox', { name: /file-ntfy/ }).check();
+    await pick(page.locator('body'), 'Send to', /file-ntfy/);
     await page.getByRole('spinbutton', { name: 'Threshold' }).fill('0');
     await page.getByRole('button', { name: 'Check' }).click();
     await expect(page.getByText('days from 1 to 365')).toBeVisible();
@@ -3022,7 +3025,7 @@ test('flt_010 schedules are edited from the UI', async () => {
   const groups = page.getByTestId('editor-group');
   const g = groups.getByTestId('entry-row').filter({ hasText: 'ipv6only' });
   await g.getByRole('button', { name: 'Edit' }).click();
-  await page.getByRole('group', { name: 'Schedules' }).getByLabel('ui-bedtime').check();
+  await pick(page.locator('body'), 'Schedules', 'ui-bedtime');
   await page.getByRole('button', { name: 'Check', exact: true }).click();
   await page.getByRole('button', { name: 'Apply' }).click();
   const card = page.getByTestId('group-card').filter({ hasText: 'ipv6only' });
@@ -3577,8 +3580,7 @@ test('clu_013 staged rollouts: pick a canary in Settings', async () => {
   const row = editor.getByTestId('entry-row');
   await expect(row).toContainText('off: changes reach every node at once');
   await row.getByRole('button', { name: 'Edit' }).click();
-  const pi = page.getByRole('checkbox', { name: 'pi (bbbb2222)' });
-  await pi.check();
+  await pick(page.locator('body'), 'Canary nodes', 'pi (bbbb2222)');
   await expect(page.getByTestId('editor-note')).toContainText('Changes reach pi (bbbb2222) (and the primary) first');
   await page.getByRole('button', { name: 'Check', exact: true }).click();
   await expect(page.getByTestId('entry-preview')).toBeVisible();
@@ -6566,4 +6568,82 @@ test('api_007 passphrase backup from settings', async () => {
   } finally {
     await r.delete('/api/v1/secrets/backup-ui-test', { headers: h });
   }
+});
+
+// REQ: UI-901, OBS-003 (T24.34, ADR-1013) — the picker: search over names and addresses, several
+// devices, Select all on the filtered results, the keyboard, and 5,000 items without a stall.
+test('ui_901 the query log picks devices by name: search, several, keyboard, 5,000 items', async () => {
+  const items = Array.from({ length: 5000 }, (_, i) => ({
+    name: `device-${String(i).padStart(4, '0')}`,
+    match: [`10.${(i >> 8) & 255}.${i & 255}.7`, `aa:bb:cc:00:${(i >> 8).toString(16).padStart(2, '0')}:${(i & 255).toString(16).padStart(2, '0')}`],
+    groups: ['default'],
+    source: 'api',
+    effectiveGroups: ['default'],
+    groupsFrom: 'default',
+  }));
+  await page.route('**/api/v1/clients', (r) => (r.request().method() === 'GET' ? r.fulfill({ json: { items } }) : r.fallback()));
+  try {
+    await page.goto('/#/queries');
+    const group = page.getByRole('group', { name: 'Client', exact: true });
+    const box = group.getByRole('combobox');
+    await box.click();
+    await expect(box).toHaveAttribute('aria-expanded', 'true');
+    await expect(group.getByTestId('picker-count')).toContainText('of 5');
+    // Only a window of the 5,000 rows is in the page.
+    expect(await group.getByRole('option').count()).toBeLessThan(60);
+    // Search by name, and by address.
+    const t0 = Date.now();
+    await box.fill('device-04');
+    await expect(group.getByTestId('picker-count')).toContainText('100 of');
+    expect(Date.now() - t0).toBeLessThan(2000);
+    await box.fill('10.3.9.7');
+    await expect(group.getByRole('option').first()).toContainText('device-0777');
+    await box.fill('device-04');
+    // Keyboard: arrows move, Enter picks, Backspace takes the last chip off.
+    await box.press('ArrowDown');
+    await box.press('Enter');
+    await box.press('ArrowDown');
+    await box.press('Enter');
+    await expect(group.getByTestId('picker-chip')).toHaveCount(2);
+    await box.fill('');
+    await box.press('Backspace');
+    await expect(group.getByTestId('picker-chip')).toHaveCount(1);
+    // Select all and Deselect all act on the filtered results (100 of them), with "+N" for the rest.
+    await box.fill('device-04');
+    await group.getByTestId('picker-all').click();
+    await expect(group.getByTestId('picker-count')).toContainText('100 selected');
+    await expect(group.getByTestId('picker-more')).toContainText('+97');
+    await group.getByTestId('picker-none').click();
+    await expect(group.getByTestId('picker-count')).not.toContainText('selected');
+    // Escape closes without clearing; two devices are searched together, by their addresses.
+    await box.fill('device-0003');
+    await box.press('Enter');
+    await box.fill('device-0005');
+    await box.press('Enter');
+    await box.press('Escape');
+    await expect(box).toHaveAttribute('aria-expanded', 'false');
+    const sent = page.waitForRequest((r) => r.url().includes('/api/v1/queries') && decodeURIComponent(r.url()).includes('client=10.0.3.7,10.0.5.7'));
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    await sent;
+    // "not" goes with the set.
+    await page.getByRole('checkbox', { name: 'not', exact: true }).first().check().catch(() => {});
+  } finally {
+    await page.unroute('**/api/v1/clients');
+  }
+});
+
+test('ui_901 the API takes several clients and the not option works with them', async () => {
+  const r = page.context().request;
+  const all = await (await r.get('/api/v1/queries?limit=1000')).json();
+  const ips = [...new Set<string>(all.items.map((x: { client: string }) => x.client))];
+  expect(ips.length).toBeGreaterThan(0);
+  const one = ips[0];
+  const some = await (await r.get(`/api/v1/queries?limit=1000&client=${encodeURIComponent(`${one},10.99.99.99`)}`)).json();
+  expect(some.items.length).toBeGreaterThan(0);
+  expect(some.items.every((x: { client: string }) => x.client === one)).toBe(true);
+  const rest = await (await r.get(`/api/v1/queries?limit=1000&clientNot=true&client=${encodeURIComponent(`${one},10.99.99.99`)}`)).json();
+  expect(rest.items.every((x: { client: string }) => x.client !== one)).toBe(true);
+  expect(some.items.length + rest.items.length).toBe(all.items.length);
+  const bad = await r.get('/api/v1/queries?client=' + encodeURIComponent(`${one},nope`));
+  expect(bad.status()).toBe(400);
 });

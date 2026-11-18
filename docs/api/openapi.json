@@ -7808,7 +7808,7 @@
           {
             "name": "client",
             "in": "query",
-            "description": "Client IP address.",
+            "description": "Client IP address, or several, comma-separated (REQ: OBS-003, ADR-1013): addresses,\n`hostname:<label>` (the addresses a router gave that name now) and Kubernetes workloads\n(`namespace/kind/name`). At most 100 entries and 256 addresses; `clientTruncated` says\nwhen a cap cut the set.",
             "required": false,
             "schema": {
               "type": "string"
@@ -7817,7 +7817,7 @@
           {
             "name": "clientNot",
             "in": "query",
-            "description": "Keep the rows from every client except `client`. Needs `client`. Default: false.",
+            "description": "Keep the rows from every client except `client` (all of them, when several). Needs `client`. Default: false.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -8037,7 +8037,7 @@
           {
             "name": "client",
             "in": "query",
-            "description": "Client IP address.",
+            "description": "Client IP address, or several, comma-separated (addresses, `hostname:<label>` and\nKubernetes workloads; REQ: OBS-003, ADR-1013).",
             "required": false,
             "schema": {
               "type": "string"
@@ -8046,7 +8046,7 @@
           {
             "name": "clientNot",
             "in": "query",
-            "description": "Only queries from every client except `client`. Needs `client`. Default: false.",
+            "description": "Only queries from every client except `client` (all of them, when several). Needs `client`. Default: false.",
             "required": false,
             "schema": {
               "type": "boolean"

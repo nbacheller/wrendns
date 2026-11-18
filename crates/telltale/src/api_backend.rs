@@ -509,6 +509,11 @@ fn stale_days(
 /// REQ: FLT-017 — most pod addresses one workload's query-log search covers.
 const MAX_WORKLOAD_ADDRESSES: usize = 64;
 
+/// REQ: OBS-003 (T24.34, ADR-1013) — most clients (tokens) and most addresses one query-log
+/// search may name, with `client` listing several.
+const MAX_CLIENT_TOKENS: usize = 100;
+const MAX_CLIENT_ADDRESSES: usize = 256;
+
 fn qlog_filter(q: &QueryParams, from_us: u64, to_us: u64) -> Result<qlog::Filter, Problem> {
     let name = q
         .name
@@ -1474,7 +1479,31 @@ impl Backend for ApiBackend {
             .map(|g| g.name.to_string())
             .collect();
         let src = Arc::clone(&self.src);
-        let filter = crate::tail::Filter::parse(p, &groups, &self.src.pipeline.workloads)?;
+        // REQ: OBS-003 (T24.34, ADR-1013) — `client` may list several, and may hold router names
+        // (`hostname:<label>`): those become the addresses the router gave them now.
+        let mut p = p.clone();
+        if let Some(c) = &p.client {
+            let mut out: Vec<String> = Vec::new();
+            for t in c.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+                if telltale_policy::clients::is_router_key(t) {
+                    let mut v = policy
+                        .clients
+                        .router_name_addresses(&t[9..].to_ascii_lowercase());
+                    v.sort();
+                    v.truncate(MAX_WORKLOAD_ADDRESSES);
+                    out.extend(v.iter().map(ToString::to_string));
+                } else {
+                    out.push(t.to_owned());
+                }
+            }
+            // A router name no address carries now matches no event (a bare filter), as in the log search.
+            p.client = Some(if out.is_empty() {
+                "::ffff:0.0.0.0".into()
+            } else {
+                out.join(",")
+            });
+        }
+        let filter = crate::tail::Filter::parse(&p, &groups, &self.src.pipeline.workloads)?;
         let (events, slot) = tail.subscribe().ok_or_else(|| {
             Problem::unavailable(format!(
                 "too many live tails on this node (at most {})",
@@ -1518,6 +1547,7 @@ impl Backend for ApiBackend {
         ))
     }
 
+    #[allow(clippy::too_many_lines)] // the client filter's resolution, step by step
     fn queries(
         &self,
         q: &QueryParams,
@@ -1536,18 +1566,25 @@ impl Backend for ApiBackend {
         // key): the search covers the addresses it held in the window.
         // REQ: FLT-006 (T24.9, ADR-973) — `client` may be `hostname:<label>`: the addresses a router
         // gave that name now (the query log's router-name filter).
-        let router = q
+        // REQ: OBS-003 (T24.34, ADR-1013) — `client` may list several, comma-separated (the
+        // device picker): each is an address, a router name or a workload, resolved here to
+        // addresses off the DNS path; `clientNot` keeps every other client.
+        let tokens: Vec<&str> = q
             .client
             .as_deref()
-            .filter(|c| telltale_policy::clients::is_router_key(c))
-            .map(|c| c[9..].to_ascii_lowercase());
-        let workload = match router {
-            Some(_) => None,
-            None => q.client.as_deref().and_then(|c| {
-                crate::kubernetes::workload_ref(c, &self.src.pipeline.workloads.load())
-            }),
-        };
-        let mut filter = if workload.is_some() || router.is_some() {
+            .map(|c| {
+                c.split(',')
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let single_plain = tokens.len() == 1
+            && tokens[0].parse::<IpAddr>().is_ok()
+            && crate::kubernetes::workload_ref(tokens[0], &self.src.pipeline.workloads.load())
+                .is_none();
+        let resolve = !tokens.is_empty() && !single_plain;
+        let mut filter = if resolve {
             let mut plain = q.clone();
             plain.client = None;
             qlog_filter(&plain, from_us, to_us)?
@@ -1555,44 +1592,77 @@ impl Backend for ApiBackend {
             qlog_filter(q, from_us, to_us)?
         };
         let mut client_truncated = false;
-        if let Some(label) = &router {
-            let mut ips = self
-                .src
-                .pipeline
-                .current()
-                .policy
-                .clients
-                .router_name_addresses(label);
-            ips.sort();
-            client_truncated = ips.len() > MAX_WORKLOAD_ADDRESSES;
-            ips.truncate(MAX_WORKLOAD_ADDRESSES);
-            filter.client_any = ips.into_iter().map(mapped).collect();
-            if filter.client_any.is_empty() {
-                // No address carries the name now: a sentinel key no row has (a workload key never has a
-                // colon). Plain, it matches no row; with clientNot it matches every row.
-                filter.client_ip = Some(telltale_telemetry::workload::key(&format!(
-                    "hostname:{label}"
-                )));
+        let mut workloads: Vec<Box<str>> = Vec::new();
+        // Addresses named outright or through a router name (not through a workload).
+        let mut direct: Vec<[u8; 16]> = Vec::new();
+        if resolve {
+            if tokens.len() > MAX_CLIENT_TOKENS {
+                return Err(Problem::invalid(format!(
+                    "`client`: at most {MAX_CLIENT_TOKENS} clients"
+                ))
+                .hint("Pick a group or fewer devices."));
             }
-        }
-        if let Some(text) = &workload {
             let until_s = if to_us == 0 {
                 u64::MAX
             } else {
                 to_us / 1_000_000 + 1
             };
-            let mut ips =
-                self.src
-                    .pipeline
-                    .workloads
-                    .load()
-                    .addresses_of(text, from_us / 1_000_000, until_s);
-            client_truncated = ips.len() > MAX_WORKLOAD_ADDRESSES;
-            ips.truncate(MAX_WORKLOAD_ADDRESSES);
-            filter.client_any = ips.into_iter().map(mapped).collect();
+            let mut any: Vec<[u8; 16]> = Vec::new();
+            for t in &tokens {
+                let mut ips: Vec<[u8; 16]> = Vec::new();
+                if telltale_policy::clients::is_router_key(t) {
+                    let mut v = self
+                        .src
+                        .pipeline
+                        .current()
+                        .policy
+                        .clients
+                        .router_name_addresses(&t[9..].to_ascii_lowercase());
+                    v.sort();
+                    client_truncated |= v.len() > MAX_WORKLOAD_ADDRESSES;
+                    v.truncate(MAX_WORKLOAD_ADDRESSES);
+                    ips.extend(v.into_iter().map(mapped));
+                    direct.extend(ips.iter().copied());
+                } else if let Some(text) =
+                    crate::kubernetes::workload_ref(t, &self.src.pipeline.workloads.load())
+                {
+                    let mut v = self.src.pipeline.workloads.load().addresses_of(
+                        &text,
+                        from_us / 1_000_000,
+                        until_s,
+                    );
+                    client_truncated |= v.len() > MAX_WORKLOAD_ADDRESSES;
+                    v.truncate(MAX_WORKLOAD_ADDRESSES);
+                    ips.extend(v.into_iter().map(mapped));
+                    workloads.push(text.into());
+                } else {
+                    let ip = t.parse::<IpAddr>().map_err(|_| {
+                        Problem::invalid(format!(
+                            "`client`: `{t}` is not an IP address, a router name or a Kubernetes workload"
+                        ))
+                        .hint("Give addresses, `hostname:<label>`, or workloads as namespace/kind/name, comma-separated.")
+                    })?;
+                    ips.push(mapped(ip));
+                    direct.push(mapped(ip));
+                }
+                for ip in ips {
+                    if !any.contains(&ip) {
+                        any.push(ip);
+                    }
+                }
+            }
+            if any.len() > MAX_CLIENT_ADDRESSES {
+                client_truncated = true;
+                any.truncate(MAX_CLIENT_ADDRESSES);
+            }
+            filter.client_any = any;
             if filter.client_any.is_empty() {
-                // Nothing held by it in the window: match no row (no address is a key).
-                filter.client_ip = Some(telltale_telemetry::workload::key(text));
+                // No address carries any of the names: a sentinel key no row has (a workload key
+                // never has a colon). Plain, it matches no row; with clientNot it matches every row.
+                filter.client_ip = Some(telltale_telemetry::workload::key(&format!(
+                    "client:{}",
+                    tokens.join(",")
+                )));
             }
         }
         if let Some(g) = &q.group {
@@ -1613,17 +1683,22 @@ impl Backend for ApiBackend {
         };
         page.client_truncated = client_truncated;
         // REQ: FLT-017 — an address another workload held at the row's time isn't this one's.
-        if let Some(text) = &workload
-            && let Some(spans) = workload_spans(&self.src, text)
-        {
+        // Only for a plain match: a negated search already left out every address of the set.
+        if !workloads.is_empty() && !q.client_not.unwrap_or(false) {
+            let spans: Vec<_> = workloads
+                .iter()
+                .filter_map(|w| workload_spans(&self.src, w))
+                .flatten()
+                .collect();
             page.items.retain(|r| {
                 let Ok(ip) = r.client.parse::<IpAddr>() else {
                     return false;
                 };
                 let (ip, ts) = (mapped(ip), r.ts_unix_micros / 1_000_000);
-                spans
-                    .iter()
-                    .any(|(a, f, t)| *a == ip && *f <= ts && ts < *t)
+                direct.contains(&ip)
+                    || spans
+                        .iter()
+                        .any(|(a, f, t)| *a == ip && *f <= ts && ts < *t)
             });
         }
         Ok(page)
