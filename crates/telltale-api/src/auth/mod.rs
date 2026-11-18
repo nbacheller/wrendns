@@ -331,6 +331,8 @@ pub struct Auth {
     audit_gap: Mutex<Option<(u64, String)>>,
     /// Password checks in flight (at most [`MAX_PASSWORD_CHECKS`]).
     password_checks: std::sync::atomic::AtomicU32,
+    /// REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API's settings and sessions.
+    pihole: crate::pihole_api::PiholeCompat,
 }
 
 /// A slot for one password check; given back when dropped.
@@ -401,6 +403,7 @@ pub struct Presented<'a> {
 impl Auth {
     pub fn new(state: Arc<State>, settings: Settings) -> Self {
         Self {
+            pihole: crate::pihole_api::PiholeCompat::load(Arc::clone(&state)),
             state,
             settings,
             setup_token: Mutex::new(None),
@@ -414,6 +417,11 @@ impl Auth {
             password_checks: std::sync::atomic::AtomicU32::new(0),
             audit_gap: Mutex::new(None),
         }
+    }
+
+    /// REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API.
+    pub fn pihole(&self) -> &crate::pihole_api::PiholeCompat {
+        &self.pihole
     }
 
     /// REQ: CLU-003 (T9.1) — the replication sets where identities come from (`None`: here).
@@ -643,14 +651,14 @@ impl Auth {
     }
 
     /// Seconds until `key` may try again, if it's locked.
-    fn locked(&self, key: &str, now: u64) -> Option<u64> {
+    pub(crate) fn locked(&self, key: &str, now: u64) -> Option<u64> {
         let f = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
         f.get(key)
             .filter(|x| x.locked_until > now)
             .map(|x| x.locked_until - now)
     }
 
-    fn fail(&self, key: &str, now: u64) {
+    pub(crate) fn fail(&self, key: &str, now: u64) {
         let locked = {
             let mut map = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
             let f = map.entry(key.to_owned()).or_default();
@@ -693,7 +701,7 @@ impl Auth {
         }
     }
 
-    fn succeed(&self, key: &str) {
+    pub(crate) fn succeed(&self, key: &str) {
         self.failures
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

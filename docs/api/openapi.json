@@ -9,6 +9,264 @@
     "version": "0.8.0"
   },
   "paths": {
+    "/admin/api.php": {
+      "get": {
+        "tags": [
+          "pihole-compat"
+        ],
+        "summary": "Pi-hole v5: `/admin/api.php`.",
+        "description": "Part of the Pi-hole compatible API. The query string picks the call, as in Pi-hole v5, with\nthe token as `auth`: `summaryRaw` and `summary` (the 24 hour totals), `status`, `topItems`\n(`topItems=N`: the top permitted and blocked names), `enable`, and `disable` or\n`disable=<seconds>` (the same pause as `POST /api/v1/blocking/pause`; no number pauses for the\nlongest allowed, default 60 minutes). `versions` needs no token. Without a valid token a read\nanswers `[]` and a write 401; the API being off is the ordinary 404. Prefer v6: v5 puts the\ntoken in the address, which proxies and logs may keep.",
+        "operationId": "v5",
+        "responses": {
+          "200": {
+            "description": "Pi-hole v5's answer for the call."
+          },
+          "401": {
+            "description": "A write without a valid token."
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/auth": {
+      "get": {
+        "tags": [
+          "pihole-compat"
+        ],
+        "summary": "Pi-hole v6: the current session.",
+        "description": "Part of the Pi-hole compatible API. With a live `X-FTL-SID` answers\n`{\"session\": {\"valid\": true, \"validity\": 300}}` and renews it; 401 otherwise.",
+        "operationId": "v6_session",
+        "responses": {
+          "200": {
+            "description": "The session is valid."
+          },
+          "401": {
+            "description": "No valid session."
+          }
+        },
+        "security": [
+          {}
+        ]
+      },
+      "post": {
+        "tags": [
+          "pihole-compat"
+        ],
+        "summary": "Pi-hole v6: sign in (the token is the `password`).",
+        "description": "Part of the Pi-hole compatible API (off unless an admin turned it on). Takes\n`{\"password\": \"<token>\"}` and answers `{\"session\": {\"valid\": true, \"sid\": ..., \"csrf\": ...,\n\"validity\": 300}}`; send `sid` as `X-FTL-SID` afterwards. 401 for a wrong password, 429 after\nrepeated failures, the ordinary 404 when the API is off.",
+        "operationId": "v6_login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "A session."
+          },
+          "401": {
+            "description": "Wrong password."
+          },
+          "404": {
+            "description": "The API is off.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many failed attempts."
+          }
+        },
+        "security": [
+          {}
+        ]
+      },
+      "delete": {
+        "tags": [
+          "pihole-compat"
+        ],
+        "summary": "Pi-hole v6: sign out.",
+        "description": "Part of the Pi-hole compatible API. Ends the session named by `X-FTL-SID`; 204.",
+        "operationId": "v6_logout",
+        "responses": {
+          "204": {
+            "description": "Signed out."
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/dns/blocking": {
+      "get": {
+        "tags": [
+          "pihole-compat"
+        ],
+        "summary": "Pi-hole v6: whether blocking is on.",
+        "description": "Part of the Pi-hole compatible API (needs a v6 session). `{\"blocking\": \"enabled\" | \"disabled\" |\n\"unknown\", \"timer\": <seconds left or null>}`: disabled while any node has blocking paused for\neveryone (the same state as `GET /api/v1/blocking`).",
+        "operationId": "v6_blocking",
+        "responses": {
+          "200": {
+            "description": "Pi-hole's blocking object."
+          },
+          "401": {
+            "description": "No valid session."
+          }
+        },
+        "security": [
+          {}
+        ]
+      },
+      "post": {
+        "tags": [
+          "pihole-compat"
+        ],
+        "summary": "Pi-hole v6: turn blocking off for a while, or back on.",
+        "description": "Part of the Pi-hole compatible API (needs a v6 session). `{\"blocking\": false, \"timer\": 300}`\npauses blocking for everyone for the timer's seconds (rounded up to whole minutes; no timer\npauses for the longest allowed, default 60 minutes; a longer timer is cut to it), the same\npause as `POST /api/v1/blocking/pause`. `{\"blocking\": true}` ends every pause. Answers like\n`GET /api/dns/blocking`. Audit-logged as `blocking.pause` / `blocking.resume` by\n`token:pihole-api`.",
+        "operationId": "v6_set_blocking",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BlockingBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Pi-hole's blocking object, as now."
+          },
+          "400": {
+            "description": "No `blocking` boolean."
+          },
+          "401": {
+            "description": "No valid session."
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/info/version": {
+      "get": {
+        "tags": [
+          "pihole-compat"
+        ],
+        "summary": "Pi-hole v6: the version.",
+        "description": "Part of the Pi-hole compatible API (needs a v6 session). Our version as the `core`, `web`\nand `ftl` local versions; the remote (latest) versions are empty, so no update is offered.",
+        "operationId": "v6_version",
+        "responses": {
+          "200": {
+            "description": "Pi-hole's version object."
+          },
+          "401": {
+            "description": "No valid session."
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/stats/summary": {
+      "get": {
+        "tags": [
+          "pihole-compat"
+        ],
+        "summary": "Pi-hole v6: the summary.",
+        "description": "Part of the Pi-hole compatible API (needs a v6 session). The last 24 hours: `queries` (total,\nblocked, percent_blocked, cached, forwarded, unique_domains, types, status, replies),\n`clients` (active, total) and `gravity.domains_being_blocked`, in Pi-hole's shape.",
+        "operationId": "v6_summary",
+        "responses": {
+          "200": {
+            "description": "Pi-hole's summary object."
+          },
+          "401": {
+            "description": "No valid session."
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/stats/top_clients": {
+      "get": {
+        "tags": [
+          "pihole-compat"
+        ],
+        "summary": "Pi-hole v6: the top clients.",
+        "description": "Part of the Pi-hole compatible API (needs a v6 session). The busiest devices over the last 24\nhours (`count`, default 10, at most 100): `{\"clients\": [{\"ip\", \"name\", \"count\"}],\n\"total_queries\", \"blocked_queries\"}`; names and addresses follow the node's privacy level.",
+        "operationId": "v6_top_clients",
+        "responses": {
+          "200": {
+            "description": "Pi-hole's top-clients object."
+          },
+          "401": {
+            "description": "No valid session."
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/stats/top_domains": {
+      "get": {
+        "tags": [
+          "pihole-compat"
+        ],
+        "summary": "Pi-hole v6: the top domains.",
+        "description": "Part of the Pi-hole compatible API (needs a v6 session). `blocked=true` ranks blocked names,\notherwise the permitted ones; `count` (default 10, at most 100). Over the last 24 hours:\n`{\"domains\": [{\"domain\", \"count\"}], \"total_queries\", \"blocked_queries\"}`.",
+        "operationId": "v6_top_domains",
+        "responses": {
+          "200": {
+            "description": "Pi-hole's top-domains object."
+          },
+          "401": {
+            "description": "No valid session."
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/stats/upstreams": {
+      "get": {
+        "tags": [
+          "pihole-compat"
+        ],
+        "summary": "Pi-hole v6: the upstream servers.",
+        "description": "Part of the Pi-hole compatible API (needs a v6 session). Each configured upstream as\n`{\"ip\", \"name\", \"port\", \"count\", \"statistics\": {\"response\", \"variance\"}}` (`count` is the\nrequests sent since start; `response` the smoothed answer time in seconds), with\n`forwarded_queries` and `total_queries`.",
+        "operationId": "v6_upstreams",
+        "responses": {
+          "200": {
+            "description": "Pi-hole's upstreams object."
+          },
+          "401": {
+            "description": "No valid session."
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
     "/api/v1/alerts": {
       "get": {
         "tags": [
@@ -6011,6 +6269,110 @@
         }
       }
     },
+    "/api/v1/pihole-api": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Pi-hole compatible API: settings and status.",
+        "description": "Whether the Pi-hole compatible API (v6 `/api/...` and v5 `/admin/api.php`, for dashboards,\nphone apps and the Home Assistant Pi-hole integration) is on, whether a token has been issued\nand when, when it was last used, and the longest pause it may start. Never the token. Needs\nthe operator role (agents: `config:read`).",
+        "operationId": "get_status",
+        "responses": {
+          "200": {
+            "description": "The settings, without the token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PiholeApiStatus"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Change the Pi-hole compatible API's settings.",
+        "description": "Turns it on or off (off ends every session and makes its paths answer 404) and sets the\nlongest pause it may start (`maxPauseMinutes`, 1 to 1,440, default 60). Fields left out keep\ntheir value. Turning it on needs a token: issue one with `POST /api/v1/pihole-api/token`.\nAdmins only, never agent tokens; audit-logged as `pihole_api.enable`, `pihole_api.disable`\nand `pihole_api.settings`.",
+        "operationId": "put_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PiholeApiSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The settings now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PiholeApiStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`maxPauseMinutes` out of range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pihole-api/token": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Issue or rotate the Pi-hole compatible API's token.",
+        "description": "Makes a new token (replacing any: the old one stops working and every session ends) and\nreturns it. **This is the only time it is shown**; only its hash is kept. It is the v6\n`password` and the v5 `auth` value. Does not turn the API on. Admins only, never agent\ntokens; audit-logged as `pihole_api.token_rotate`; the answer is `Cache-Control: no-store`.",
+        "operationId": "issue_token",
+        "responses": {
+          "200": {
+            "description": "The token, once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PiholeApiToken"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Revoke the Pi-hole compatible API's token.",
+        "description": "Removes the token: nothing can sign in until a new one is issued, and the API is turned off.\nAdmins only, never agent tokens; audit-logged as `pihole_api.token_revoke`.",
+        "operationId": "revoke_token",
+        "responses": {
+          "200": {
+            "description": "The settings now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PiholeApiStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/plans": {
       "get": {
         "tags": [
@@ -10833,6 +11195,27 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "BlockingBody": {
+        "type": "object",
+        "description": "Body of `POST /api/dns/blocking`.",
+        "properties": {
+          "blocking": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true` ends every pause, `false` pauses blocking for everyone."
+          },
+          "timer": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Seconds to stay off (rounded up to whole minutes; none: the longest allowed)."
           }
         }
       },
@@ -18773,6 +19156,19 @@
           }
         }
       },
+      "LoginBody": {
+        "type": "object",
+        "description": "Body of `POST /api/auth`.",
+        "properties": {
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The token."
+          }
+        }
+      },
       "LoginRequest": {
         "type": "object",
         "required": [
@@ -19796,6 +20192,87 @@
           "until": {
             "type": "string",
             "description": "When blocking turns back on (RFC 3339)."
+          }
+        }
+      },
+      "PiholeApiSettings": {
+        "type": "object",
+        "description": "Body of `PUT /api/v1/pihole-api`: fields left out keep their value.",
+        "properties": {
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "maxPauseMinutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "maximum": 1440,
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "PiholeApiStatus": {
+        "type": "object",
+        "description": "The settings as the admin API shows them: never the token.",
+        "required": [
+          "enabled",
+          "tokenSet",
+          "maxPauseMinutes"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the Pi-hole compatible API answers. Off by default."
+          },
+          "lastUsedUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When a request last carried the token (to the minute).",
+            "minimum": 0
+          },
+          "maxPauseMinutes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The longest pause it may start, in minutes (1 to 1,440). Pi-hole's \"disable with no timer\"\npauses for this long.",
+            "minimum": 0
+          },
+          "tokenCreatedUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "tokenSet": {
+            "type": "boolean",
+            "description": "Whether a token has been issued (the token itself is shown only when it is made)."
+          }
+        }
+      },
+      "PiholeApiToken": {
+        "type": "object",
+        "description": "A freshly issued token: shown once.",
+        "required": [
+          "token",
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/PiholeApiStatus"
+          },
+          "token": {
+            "type": "string",
+            "description": "The token. It is not stored and can't be read again: rotate to get another."
           }
         }
       },
@@ -23649,6 +24126,10 @@
     {
       "name": "agents",
       "description": "Changes AI agents planned through MCP, and their approval."
+    },
+    {
+      "name": "pihole-compat",
+      "description": "REQ: API-005 (T24.10, ADR-961) — the part of             Pi-hole's v6 (`/api/...`) and v5 (`/admin/api.php`) interfaces that dashboards, phone             apps and the Home Assistant Pi-hole integration use. Off unless an admin turns it on             (Settings → Pi-hole); authenticated by its own token, not by the sign-in methods             below; it reads the statistics and turns blocking off for a while and on again, and             changes nothing else."
     },
     {
       "name": "auth",

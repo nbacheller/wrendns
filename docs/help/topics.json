@@ -1030,6 +1030,16 @@
       "docs": "migrating-from-pihole"
     },
     {
+      "id": "pihole-api",
+      "title": "Let Pi-hole tools talk to TelltaleDNS",
+      "term": "Pi-hole compatible API",
+      "summary": "Answers the part of Pi-hole's API that the Home Assistant Pi-hole integration, phone apps and dashboards use: the statistics, and turning blocking off for a while and back on. Off until you turn it on; one token you make here.",
+      "when": "You already have Home Assistant, a phone app or a dashboard set up for Pi-hole and want it to keep working against TelltaleDNS.",
+      "example": "Turn it on, copy the token, then in Home Assistant add the Pi-hole integration with this server's address, location admin, and the token as the API key. Its sensors show queries and blocked today, and its switch turns blocking off for a while.",
+      "caution": "The token is shown once and only its hash is kept: make a new one if you lose it, and the old one stops working. It can read the statistics and pause blocking, nothing else. A pause with no timer lasts the longest pause you set (60 minutes by default), so a phone cannot leave filtering off. Prefer Pi-hole v6 mode in your tool: v5 puts the token in the address, which logs may keep.",
+      "docs": "pi-hole-compatible-api"
+    },
+    {
       "id": "pihole-compare",
       "title": "Check the answers match",
       "term": "Compare with Pi-hole",

@@ -17,6 +17,8 @@ struct Fake {
     notes: Mutex<Vec<crate::model::Annotation>>,
     /// REQ: OPS-011 — the fake's one pseudonym map has been handed out.
     map_taken: std::sync::atomic::AtomicBool,
+    /// REQ: API-005 (T24.10) — minutes blocking is paused for everyone, while it is.
+    paused: Mutex<Option<u32>>,
 }
 
 /// The one finding the fake reports.
@@ -356,6 +358,51 @@ impl Backend for Fake {
     }
     fn list_hits(&self) -> BTreeMap<String, u64> {
         BTreeMap::from([("ads".to_owned(), 42)])
+    }
+    // REQ: API-005 (T24.10, ADR-961) — a stateful pause, so `POST /blocking/pause` and the Pi-hole
+    // compatible API can be told apart only by what they ask for.
+    fn blocking_state(&self) -> Vec<crate::model::BlockingNode> {
+        let pauses = self
+            .paused
+            .lock()
+            .unwrap()
+            .map(|m| crate::model::PauseInfo {
+                group: None,
+                until: "2026-10-04T00:05:00.000Z".into(),
+                seconds_left: u64::from(m) * 60,
+            })
+            .into_iter()
+            .collect();
+        vec![crate::model::BlockingNode {
+            node: None,
+            pauses,
+            error: None,
+        }]
+    }
+    fn blocking_pause(
+        &self,
+        group: Option<&str>,
+        minutes: u32,
+        node: Option<&str>,
+    ) -> Result<Vec<crate::model::BlockingNode>, Problem> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(format!("pause {group:?} {minutes} {node:?}"));
+        *self.paused.lock().unwrap() = Some(minutes);
+        Ok(self.blocking_state())
+    }
+    fn blocking_resume(
+        &self,
+        group: Option<&str>,
+        node: Option<&str>,
+    ) -> Result<Vec<crate::model::BlockingNode>, Problem> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(format!("resume {group:?} {node:?}"));
+        *self.paused.lock().unwrap() = None;
+        Ok(self.blocking_state())
     }
     fn groups(&self) -> Vec<GroupInfo> {
         Vec::new()
@@ -1655,8 +1702,11 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // /local-settings/default and /clients-settings/default; 127 with API-016's /routers,
     // /routers/{name}, /checks/router and /checks/router-certificate; 129 with DSC-001's
     // /discovery-settings/default and DSC-014's /discovery/status; 132 with API-007's
-    // /import/pihole, /import/pihole/plans/{id}/apply and /import/pihole/plans/{id}.
-    assert_eq!(paths.len(), 132);
+    // /import/pihole, /import/pihole/plans/{id}/apply and /import/pihole/plans/{id}; 142 with
+    // API-005's /pihole-api and /pihole-api/token (T24.10) and the Pi-hole compatible paths
+    // /api/auth, /api/stats/{summary,top_domains,top_clients,upstreams}, /api/info/version,
+    // /api/dns/blocking and /admin/api.php.
+    assert_eq!(paths.len(), 142);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -3579,4 +3629,894 @@ async fn api_007_pihole_import_discard_is_idempotent() {
         .unwrap();
     let (s, _, _) = send(&app, plain).await;
     assert_eq!(s, StatusCode::OK);
+}
+
+// ---- REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API
+
+/// A request to the compatible API: any method, optional JSON body and headers.
+fn pi(
+    method: &str,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: Option<serde_json::Value>,
+) -> Request<Body> {
+    let mut b = Request::builder().method(method).uri(uri);
+    for (k, v) in headers {
+        b = b.header(*k, *v);
+    }
+    match body {
+        Some(v) => b
+            .header("content-type", "application/json")
+            .body(Body::from(v.to_string()))
+            .unwrap(),
+        None => b.body(Body::empty()).unwrap(),
+    }
+}
+
+/// An admin changes the settings over the API: `(status, body)`.
+async fn pi_admin(
+    app: &TestApp,
+    method: &str,
+    uri: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let (s, _, v) = send(
+        app,
+        pi(
+            method,
+            uri,
+            &[("authorization", &format!("Bearer {}", app.bearer))],
+            Some(body),
+        ),
+    )
+    .await;
+    (s, v)
+}
+
+/// Turns the API on with a fresh token and returns the token.
+async fn pi_on(app: &TestApp) -> String {
+    let (s, v) = pi_admin(
+        app,
+        "POST",
+        "/api/v1/pihole-api/token",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let token = v["token"].as_str().unwrap().to_owned();
+    let (s, v) = pi_admin(
+        app,
+        "PUT",
+        "/api/v1/pihole-api",
+        serde_json::json!({"enabled": true}),
+    )
+    .await;
+    assert_eq!(
+        (s, v["enabled"].as_bool()),
+        (StatusCode::OK, Some(true)),
+        "{v}"
+    );
+    token
+}
+
+/// Signs in to v6 with `token`: the session id.
+async fn pi_sid(app: &TestApp, token: &str) -> String {
+    let (s, _, v) = send(
+        app,
+        pi(
+            "POST",
+            "/api/auth",
+            &[],
+            Some(serde_json::json!({"password": token})),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["session"]["valid"], true);
+    assert_eq!(v["session"]["validity"], 300);
+    v["session"]["sid"].as_str().unwrap().to_owned()
+}
+
+fn audit_count(app: &TestApp, action: &str) -> usize {
+    app.auth
+        .state()
+        .audit_page(None, 100, Some(action), None)
+        .unwrap()
+        .len()
+}
+
+/// REQ: API-005 (ADR-961 §3, §8) — off by default: every compatible path answers the ordinary 404
+/// (a scanner learns nothing), a token that exists is useless until the API is on, and a write
+/// attempt is audited once.
+#[tokio::test]
+async fn api_005_pihole_api_is_off_by_default_and_answers_404() {
+    let (app, fake) = app();
+    for (m, u) in [
+        ("POST", "/api/auth"),
+        ("GET", "/api/auth"),
+        ("GET", "/api/stats/summary"),
+        ("GET", "/api/dns/blocking"),
+        ("POST", "/api/dns/blocking"),
+        ("GET", "/admin/api.php?summaryRaw&auth=x"),
+        ("GET", "/admin/api.php?disable=300&auth=x"),
+        ("GET", "/admin/api.php?versions"),
+    ] {
+        let (s, _, v) = send(&app, pi(m, u, &[], None)).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{m} {u}: {v}");
+    }
+    let (s, v) = pi_admin(
+        &app,
+        "PUT",
+        "/api/v1/pihole-api",
+        serde_json::json!({"enabled": true}),
+    )
+    .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::CONFLICT, Some("conflict")),
+        "no token yet: {v}"
+    );
+    // A token alone doesn't turn it on.
+    let (s, v) = pi_admin(
+        &app,
+        "POST",
+        "/api/v1/pihole-api/token",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let token = v["token"].as_str().unwrap();
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/auth",
+            &[],
+            Some(serde_json::json!({"password": token})),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "off, token or not");
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "GET",
+            &format!("/admin/api.php?disable&auth={token}"),
+            &[],
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert!(
+        !fake
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("pause")),
+        "nothing paused"
+    );
+    // Refused writes from one address in the same minute: one audit entry.
+    assert_eq!(audit_count(&app, "pihole_api.denied"), 1);
+}
+
+/// REQ: API-005, AGT-004 (ADR-961 §7) — the settings are an admin's: the token is shown once and
+/// only its hash is stored; a viewer and an agent can't change them (an agent with `config:read`
+/// may read the status); every change is audited without the token.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one flow: roles, token once, hash only, settings, audit
+async fn api_005_pihole_api_settings_are_an_admins_and_the_token_is_shown_once() {
+    let (app, _) = app();
+    let vic = app
+        .auth
+        .create_user("vic", "a viewer password", auth::Role::Viewer, false, NOW)
+        .unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            vic.id,
+            "ro",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let viewer = format!("tt_{tid}_{secret}");
+    for (m, u) in [
+        ("GET", "/api/v1/pihole-api"),
+        ("PUT", "/api/v1/pihole-api"),
+        ("POST", "/api/v1/pihole-api/token"),
+        ("DELETE", "/api/v1/pihole-api/token"),
+    ] {
+        let (s, _, _) = send(
+            &app,
+            pi(
+                m,
+                u,
+                &[("authorization", &format!("Bearer {viewer}"))],
+                Some(serde_json::json!({})),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "a viewer: {m} {u}");
+    }
+    let (s, _, v) = get(&app, "/api/v1/pihole-api").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        (
+            v["enabled"].as_bool(),
+            v["tokenSet"].as_bool(),
+            v["maxPauseMinutes"].as_u64()
+        ),
+        (Some(false), Some(false), Some(60))
+    );
+    let (s, resp) = pi_admin(
+        &app,
+        "POST",
+        "/api/v1/pihole-api/token",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let token = resp["token"].as_str().unwrap().to_owned();
+    assert!(token.len() >= 40);
+    // Never again: the status has no token, and the database holds only a hash.
+    let (_, _, v) = get(&app, "/api/v1/pihole-api").await;
+    assert_eq!(v["tokenSet"], true);
+    assert!(!v.to_string().contains(&token));
+    let row = app.auth.state().pihole_api().unwrap();
+    let hash = row.token_hash.unwrap();
+    assert_eq!(hash, auth::crypto::secret_hash(&token));
+    assert!(!String::from_utf8_lossy(&hash).contains(&token));
+    // Settings: the cap, on, an unknown field.
+    for bad in [0, 1441] {
+        let (s, _) = pi_admin(
+            &app,
+            "PUT",
+            "/api/v1/pihole-api",
+            serde_json::json!({"maxPauseMinutes": bad}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    let (s, v) = pi_admin(
+        &app,
+        "PUT",
+        "/api/v1/pihole-api",
+        serde_json::json!({"enabled": true, "maxPauseMinutes": 90}),
+    )
+    .await;
+    assert_eq!(
+        (s, v["maxPauseMinutes"].as_u64()),
+        (StatusCode::OK, Some(90))
+    );
+    let (s, _) = pi_admin(
+        &app,
+        "PUT",
+        "/api/v1/pihole-api",
+        serde_json::json!({"token": "x"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    // An agent token: reads with config:read, never writes.
+    let (aid, asecret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    let admin = app.auth.state().user_by_name("root").unwrap().unwrap();
+    app.auth
+        .state()
+        .create_token(
+            &aid,
+            admin.id,
+            "agent",
+            &auth::crypto::secret_hash(&asecret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    app.auth
+        .state()
+        .set_token_agent(&aid, "config:read config:write:lists", None, None)
+        .unwrap();
+    let agent = format!("tt_{aid}_{asecret}");
+    let (s, _, v) = send(
+        &app,
+        pi(
+            "GET",
+            "/api/v1/pihole-api",
+            &[("authorization", &format!("Bearer {agent}"))],
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, v["enabled"].as_bool()),
+        (StatusCode::OK, Some(true)),
+        "{v}"
+    );
+    for (m, u) in [
+        ("PUT", "/api/v1/pihole-api"),
+        ("POST", "/api/v1/pihole-api/token"),
+        ("DELETE", "/api/v1/pihole-api/token"),
+    ] {
+        let (s, _, v) = send(
+            &app,
+            pi(
+                m,
+                u,
+                &[("authorization", &format!("Bearer {agent}"))],
+                Some(serde_json::json!({"enabled": false})),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "an agent: {m} {u}: {v}");
+    }
+    // Revoking removes the token and turns the API off.
+    let (s, v) = pi_admin(
+        &app,
+        "DELETE",
+        "/api/v1/pihole-api/token",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(
+        (s, v["tokenSet"].as_bool(), v["enabled"].as_bool()),
+        (StatusCode::OK, Some(false), Some(false))
+    );
+    // The audit log has each change, never the token.
+    assert_eq!(audit_count(&app, "pihole_api.token_rotate"), 1);
+    assert_eq!(audit_count(&app, "pihole_api.enable"), 1);
+    assert_eq!(audit_count(&app, "pihole_api.token_revoke"), 1);
+    assert_eq!(audit_count(&app, "pihole_api.settings"), 1);
+    let all = app
+        .auth
+        .state()
+        .audit_page(None, 100, Some("pihole_api."), None)
+        .unwrap();
+    assert!(
+        all.iter().all(|e| !format!("{e:?}").contains(&token)),
+        "{all:?}"
+    );
+}
+
+/// REQ: API-005 (ADR-961 §2-§5) — Home Assistant's v6 conversation: sign in with the token, read
+/// the summary, the top lists, the version and the blocking state, switch blocking off with a
+/// timer and back on; pausing is the very call `POST /api/v1/blocking/pause` makes, audited the
+/// same; a wrong or missing credential, a stale session and a wrong CSRF value are refused.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one conversation, start to finish
+async fn api_005_pihole_v6_reads_and_switches_blocking() {
+    let (app, fake) = app();
+    let token = pi_on(&app).await;
+    // Wrong password, none, a malformed body.
+    let (s, _, v) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/auth",
+            &[],
+            Some(serde_json::json!({"password": "nope"})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, v["error"]["key"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("unauthorized"))
+    );
+    let (s, _, v) = send(
+        &app,
+        pi("POST", "/api/auth", &[], Some(serde_json::json!({}))),
+    )
+    .await;
+    assert_eq!(
+        (s, v["error"]["key"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("unauthorized"))
+    );
+    let (s, _, _) = send(&app, pi("POST", "/api/auth", &[], None)).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let sid = pi_sid(&app, &token).await;
+    let hs = [("x-ftl-sid", sid.as_str())];
+    // Reads need the session.
+    let (s, _, _) = send(&app, pi("GET", "/api/stats/summary", &[], None)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "GET",
+            "/api/stats/summary",
+            &[("x-ftl-sid", "made-up")],
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _, v) = send(&app, pi("GET", "/api/stats/summary", &hs, None)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // The fake's two buckets: 200 queries, 50 blocked, 100 cached, 50 forwarded.
+    assert_eq!(v["queries"]["total"], 200);
+    assert_eq!(v["queries"]["blocked"], 50);
+    assert_eq!(v["queries"]["percent_blocked"], 25.0);
+    assert_eq!(v["queries"]["cached"], 100);
+    assert_eq!(v["queries"]["forwarded"], 50);
+    assert_eq!(v["queries"]["status"]["GRAVITY"], 50);
+    assert_eq!(v["queries"]["replies"]["NXDOMAIN"], 6);
+    assert_eq!(v["clients"]["active"], 1);
+    assert_eq!(v["gravity"]["domains_being_blocked"], 42);
+    // The session id also works as a query parameter, and a wrong CSRF value is refused.
+    let (s, _, _) = send(
+        &app,
+        pi("GET", &format!("/api/stats/summary?sid={sid}"), &[], None),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "GET",
+            "/api/stats/summary",
+            &[("x-ftl-sid", &sid), ("x-ftl-csrf", "wrong")],
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::UNAUTHORIZED,
+        "a CSRF value that doesn't match"
+    );
+    // Top lists, upstreams, version.
+    let (s, _, v) = send(
+        &app,
+        pi(
+            "GET",
+            "/api/stats/top_domains?blocked=true&count=10",
+            &hs,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["domains"][0]["count"], 9);
+    assert_eq!(v["blocked_queries"], 50);
+    let (s, _, v) = send(
+        &app,
+        pi("GET", "/api/stats/top_clients?count=10", &hs, None),
+    )
+    .await;
+    assert_eq!(
+        (s, v["clients"][0]["ip"].as_str()),
+        (StatusCode::OK, Some("10.0.0.1"))
+    );
+    let (s, _, v) = send(&app, pi("GET", "/api/stats/upstreams", &hs, None)).await;
+    assert_eq!((s, v["upstreams"].is_array()), (StatusCode::OK, true));
+    let (s, _, v) = send(&app, pi("GET", "/api/info/version", &hs, None)).await;
+    assert_eq!(
+        (s, v["version"]["core"]["local"]["version"].as_str()),
+        (StatusCode::OK, Some("0.1.0"))
+    );
+    // Blocking: on, off for 5 minutes (300 s), the state, on again.
+    let (s, _, v) = send(&app, pi("GET", "/api/dns/blocking", &hs, None)).await;
+    assert_eq!(
+        (s, v["blocking"].as_str(), v["timer"].is_null()),
+        (StatusCode::OK, Some("enabled"), true)
+    );
+    // Without a session the write is refused, and audited as denied.
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/dns/blocking",
+            &[],
+            Some(serde_json::json!({"blocking": false, "timer": 300})),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_eq!(audit_count(&app, "pihole_api.denied"), 1);
+    assert!(
+        !fake
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("pause"))
+    );
+    let (s, _, v) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/dns/blocking",
+            &hs,
+            Some(serde_json::json!({"blocking": false, "timer": 300})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, v["blocking"].as_str(), v["timer"].as_u64()),
+        (StatusCode::OK, Some("disabled"), Some(300)),
+        "{v}"
+    );
+    let (_, _, v) = send(&app, pi("GET", "/api/dns/blocking", &hs, None)).await;
+    assert_eq!(v["blocking"], "disabled");
+    // The same pause as POST /api/v1/blocking/pause: the same backend call, the same audit action.
+    let (s, _) = pi_admin(
+        &app,
+        "POST",
+        "/api/v1/blocking/pause",
+        serde_json::json!({"minutes": 5}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let calls: Vec<String> = fake
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|l| l.starts_with("pause"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        calls,
+        vec!["pause None 5 None".to_owned(); 2],
+        "one call, twice"
+    );
+    let entries = app
+        .auth
+        .state()
+        .audit_page(None, 20, Some("blocking.pause"), None)
+        .unwrap();
+    assert_eq!(entries.len(), 2, "{entries:?}");
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.actor == "token:pihole-api" && e.detail.contains("pihole-api")),
+        "{entries:?}"
+    );
+    let (s, _, v) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/dns/blocking",
+            &hs,
+            Some(serde_json::json!({"blocking": true})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, v["blocking"].as_str()),
+        (StatusCode::OK, Some("enabled"))
+    );
+    assert!(
+        fake.seen
+            .lock()
+            .unwrap()
+            .contains(&"resume None None".to_owned())
+    );
+    assert_eq!(audit_count(&app, "blocking.resume"), 1);
+    // A body without `blocking` is a bad request; a long timer is cut to the cap (60 minutes).
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/dns/blocking",
+            &hs,
+            Some(serde_json::json!({"timer": 5})),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (_, _, v) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/dns/blocking",
+            &hs,
+            Some(serde_json::json!({"blocking": false, "timer": 172_800})),
+        ),
+    )
+    .await;
+    assert_eq!(v["timer"], 3_600, "{v}");
+    let (_, _, v) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/dns/blocking",
+            &hs,
+            Some(serde_json::json!({"blocking": false, "timer": null})),
+        ),
+    )
+    .await;
+    assert_eq!(v["timer"], 3_600, "no timer: the cap, not forever");
+    // The admin raises the cap.
+    pi_admin(
+        &app,
+        "PUT",
+        "/api/v1/pihole-api",
+        serde_json::json!({"maxPauseMinutes": 120}),
+    )
+    .await;
+    let (_, _, v) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/dns/blocking",
+            &hs,
+            Some(serde_json::json!({"blocking": false, "timer": 172_800})),
+        ),
+    )
+    .await;
+    assert_eq!(v["timer"], 7_200, "{v}");
+    // Sign out ends the session.
+    let (s, _, _) = send(&app, pi("DELETE", "/api/auth", &hs, None)).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _, _) = send(&app, pi("GET", "/api/stats/summary", &hs, None)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+/// REQ: API-005 (ADR-961 §3) — rotating the token, or turning the API off, ends every session
+/// and the old token stops working; the new one works.
+#[tokio::test]
+async fn api_005_pihole_rotation_and_off_end_sessions() {
+    let (app, _) = app();
+    let old = pi_on(&app).await;
+    let sid = pi_sid(&app, &old).await;
+    let (s, _, _) = send(
+        &app,
+        pi("GET", "/api/dns/blocking", &[("x-ftl-sid", &sid)], None),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v) = pi_admin(
+        &app,
+        "POST",
+        "/api/v1/pihole-api/token",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let new = v["token"].as_str().unwrap().to_owned();
+    assert_ne!(new, old);
+    let (s, _, _) = send(
+        &app,
+        pi("GET", "/api/dns/blocking", &[("x-ftl-sid", &sid)], None),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::UNAUTHORIZED,
+        "the session ended with the old token"
+    );
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/auth",
+            &[],
+            Some(serde_json::json!({"password": old})),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "the old token");
+    let sid = pi_sid(&app, &new).await;
+    let (s, _) = pi_admin(
+        &app,
+        "PUT",
+        "/api/v1/pihole-api",
+        serde_json::json!({"enabled": false}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, _) = send(
+        &app,
+        pi("GET", "/api/dns/blocking", &[("x-ftl-sid", &sid)], None),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::NOT_FOUND,
+        "off: 404, and the session is gone"
+    );
+}
+
+/// REQ: API-005 (ADR-961 §3) — repeated wrong passwords from one address lock it out (429 with
+/// `Retry-After`), even for the right token, the same lockout as sign-in.
+#[tokio::test]
+async fn api_005_pihole_failed_attempts_are_rate_limited() {
+    let (app, _) = app();
+    let token = pi_on(&app).await;
+    // Five misses are free; the sixth locks the address.
+    for _ in 0..6 {
+        let (s, _, _) = send(
+            &app,
+            pi(
+                "POST",
+                "/api/auth",
+                &[],
+                Some(serde_json::json!({"password": "guess"})),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+    let (s, h, v) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/auth",
+            &[],
+            Some(serde_json::json!({"password": "guess"})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, v["error"]["key"].as_str()),
+        (StatusCode::TOO_MANY_REQUESTS, Some("rate_limiting"))
+    );
+    assert!(h.contains_key("retry-after"));
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/auth",
+            &[],
+            Some(serde_json::json!({"password": token})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::TOO_MANY_REQUESTS,
+        "locked even for the right token"
+    );
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "GET",
+            &format!("/admin/api.php?summaryRaw&auth={token}"),
+            &[],
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "v5 shares the lockout");
+    assert_eq!(audit_count(&app, "auth.lockout"), 1);
+}
+
+/// REQ: API-005 (ADR-961 §2) — Home Assistant's v5 fallback: a wrong token reads `[]` (that is how
+/// it recognizes v5), `versions` needs no token, `summaryRaw` and `summary` carry the totals,
+/// `status` and `topItems` need the token, and `enable` and `disable` make the same pause as v6
+/// (a write without the token is a 401 and audited once).
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one conversation, start to finish
+async fn api_005_pihole_v5_reads_and_switches_blocking() {
+    let (app, fake) = app();
+    let token = pi_on(&app).await;
+    let get5 = |q: String| pi("GET", &format!("/admin/api.php?{q}"), &[], None);
+    let (s, _, v) = send(&app, get5("summaryRaw&auth=wrong_token".into())).await;
+    assert_eq!(
+        (s, v),
+        (StatusCode::OK, serde_json::json!([])),
+        "how Home Assistant tells v5"
+    );
+    let (s, _, v) = send(&app, get5("versions".into())).await;
+    assert_eq!(
+        (s, v["core_current"].as_str(), v["core_update"].as_bool()),
+        (StatusCode::OK, Some("0.1.0"), Some(false))
+    );
+    let (s, _, v) = send(&app, get5(format!("summaryRaw&auth={token}"))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["dns_queries_today"], 200);
+    assert_eq!(v["ads_blocked_today"], 50);
+    assert_eq!(v["ads_percentage_today"], 25.0);
+    assert_eq!(v["queries_cached"], 100);
+    assert_eq!(v["queries_forwarded"], 50);
+    assert_eq!(v["domains_being_blocked"], 42);
+    assert_eq!(v["unique_clients"], 1);
+    assert_eq!(v["status"], "enabled");
+    assert_eq!(v["reply_NXDOMAIN"], 6);
+    let (_, _, v) = send(&app, get5(format!("summary&auth={token}"))).await;
+    assert_eq!(v["dns_queries_today"], "200");
+    assert_eq!(v["ads_percentage_today"], "25.0");
+    let (_, _, v) = send(&app, get5(format!("status&auth={token}"))).await;
+    assert_eq!(v["status"], "enabled");
+    let (_, _, v) = send(&app, get5("status&auth=nope".into())).await;
+    assert_eq!(v, serde_json::json!([]), "status needs the token");
+    let (_, _, v) = send(&app, get5(format!("topItems=5&auth={token}"))).await;
+    assert_eq!(v["top_queries"]["10.0.0.1"], 9, "{v}");
+    // A write without the token: 401, audited once for two tries.
+    for _ in 0..2 {
+        let (s, _, v) = send(&app, get5("disable=300&auth=nope".into())).await;
+        assert_eq!((s, v), (StatusCode::UNAUTHORIZED, serde_json::json!([])));
+    }
+    assert_eq!(audit_count(&app, "pihole_api.denied"), 1);
+    assert!(
+        !fake
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("pause"))
+    );
+    // disable=300 is 5 minutes; no number is the cap; enable is the resume.
+    let (_, _, v) = send(&app, get5(format!("disable=300&auth={token}"))).await;
+    assert_eq!(v["status"], "disabled");
+    assert!(
+        fake.seen
+            .lock()
+            .unwrap()
+            .contains(&"pause None 5 None".to_owned())
+    );
+    let (_, _, v) = send(&app, get5(format!("disable=True&auth={token}"))).await;
+    assert_eq!(v["status"], "disabled");
+    assert!(
+        fake.seen
+            .lock()
+            .unwrap()
+            .contains(&"pause None 60 None".to_owned()),
+        "forever is the cap"
+    );
+    let (_, _, v) = send(&app, get5(format!("enable=True&auth={token}"))).await;
+    assert_eq!(v["status"], "enabled");
+    assert!(
+        fake.seen
+            .lock()
+            .unwrap()
+            .contains(&"resume None None".to_owned())
+    );
+    assert_eq!(audit_count(&app, "blocking.pause"), 2);
+    // An unknown call answers `[]`.
+    let (s, _, v) = send(&app, get5(format!("bogus&auth={token}"))).await;
+    assert_eq!((s, v), (StatusCode::OK, serde_json::json!([])));
+}
+
+/// REQ: API-005 (ADR-961 §6) — the compatible paths take no cookie: a signed-in admin's session
+/// opens nothing there, and an API token for the rest of the API is not the Pi-hole token.
+#[tokio::test]
+async fn api_005_pihole_paths_take_only_their_own_token() {
+    let (app, _) = app();
+    let _token = pi_on(&app).await;
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "GET",
+            "/api/dns/blocking",
+            &[("cookie", &app.cookie), ("x-csrf-token", &app.csrf)],
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::UNAUTHORIZED,
+        "a session cookie is not a Pi-hole session"
+    );
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/auth",
+            &[],
+            Some(serde_json::json!({"password": app.bearer})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::UNAUTHORIZED,
+        "an API token is not the Pi-hole token"
+    );
+    let (s, _, v) = send(
+        &app,
+        pi(
+            "GET",
+            &format!("/admin/api.php?summaryRaw&auth={}", app.bearer),
+            &[],
+            None,
+        ),
+    )
+    .await;
+    assert_eq!((s, v), (StatusCode::OK, serde_json::json!([])));
 }

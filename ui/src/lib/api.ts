@@ -233,6 +233,12 @@ export type PiholeApplied = {
 };
 
 export const api = {
+  // REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API: admins turn it on and make its token
+  // (shown once). Agents may read the status; nothing here is an agent's to change.
+  piholeApi: () => get<S['PiholeApiStatus']>('/pihole-api'),
+  setPiholeApi: (b: S['PiholeApiSettings']) => call<S['PiholeApiStatus']>('PUT', '/pihole-api', { body: b }),
+  newPiholeToken: () => post<S['PiholeApiToken']>('/pihole-api/token'),
+  revokePiholeToken: () => call<S['PiholeApiStatus']>('DELETE', '/pihole-api/token'),
   // REQ: API-007 (T24.18, ADR-940) — importing a Pi-hole export: admins only. The file is the body;
   // nothing changes until its plan is applied.
   piholePreview: (file: Blob, q: { compare?: string; telltale?: string; samples?: string } = {}) =>

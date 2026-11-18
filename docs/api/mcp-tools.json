@@ -257,6 +257,21 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. Whether the Pi-hole compatible API is on (the part of Pi-hole's v6 and v5 interfaces that dashboards, phone apps and the Home Assistant Pi-hole integration use: statistics, and turning blocking off for a while and on again), whether a token has been issued and when, when it was last used, and the longest pause it may start (`maxPauseMinutes`). Never the token. There is no tool to turn it on or to issue or rotate its token: an admin does that in Settings → Pi-hole. Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "pihole_api_status"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. The router integrations in the configuration (UniFi, OPNsense, Home Assistant): each one's name, kind and address (no password), its settings with stored secrets named (never their values), whether the configuration files define it, each credential's source and whether this node can read it, and the last read: its state (ok, failing, waiting, or skipped and why), when, the error, and the devices and networks it reported. There is no tool to add, change or check a router: an admin does that in Settings or the Routers page. Needs config:read.",
     "inputSchema": {
       "additionalProperties": false,

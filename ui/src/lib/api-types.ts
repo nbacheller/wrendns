@@ -4,6 +4,205 @@
  */
 
 export interface paths {
+    "/admin/api.php": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole v5: `/admin/api.php`.
+         * @description Part of the Pi-hole compatible API. The query string picks the call, as in Pi-hole v5, with
+         *     the token as `auth`: `summaryRaw` and `summary` (the 24 hour totals), `status`, `topItems`
+         *     (`topItems=N`: the top permitted and blocked names), `enable`, and `disable` or
+         *     `disable=<seconds>` (the same pause as `POST /api/v1/blocking/pause`; no number pauses for the
+         *     longest allowed, default 60 minutes). `versions` needs no token. Without a valid token a read
+         *     answers `[]` and a write 401; the API being off is the ordinary 404. Prefer v6: v5 puts the
+         *     token in the address, which proxies and logs may keep.
+         */
+        get: operations["v5"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole v6: the current session.
+         * @description Part of the Pi-hole compatible API. With a live `X-FTL-SID` answers
+         *     `{"session": {"valid": true, "validity": 300}}` and renews it; 401 otherwise.
+         */
+        get: operations["v6_session"];
+        put?: never;
+        /**
+         * Pi-hole v6: sign in (the token is the `password`).
+         * @description Part of the Pi-hole compatible API (off unless an admin turned it on). Takes
+         *     `{"password": "<token>"}` and answers `{"session": {"valid": true, "sid": ..., "csrf": ...,
+         *     "validity": 300}}`; send `sid` as `X-FTL-SID` afterwards. 401 for a wrong password, 429 after
+         *     repeated failures, the ordinary 404 when the API is off.
+         */
+        post: operations["v6_login"];
+        /**
+         * Pi-hole v6: sign out.
+         * @description Part of the Pi-hole compatible API. Ends the session named by `X-FTL-SID`; 204.
+         */
+        delete: operations["v6_logout"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dns/blocking": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole v6: whether blocking is on.
+         * @description Part of the Pi-hole compatible API (needs a v6 session). `{"blocking": "enabled" | "disabled" |
+         *     "unknown", "timer": <seconds left or null>}`: disabled while any node has blocking paused for
+         *     everyone (the same state as `GET /api/v1/blocking`).
+         */
+        get: operations["v6_blocking"];
+        put?: never;
+        /**
+         * Pi-hole v6: turn blocking off for a while, or back on.
+         * @description Part of the Pi-hole compatible API (needs a v6 session). `{"blocking": false, "timer": 300}`
+         *     pauses blocking for everyone for the timer's seconds (rounded up to whole minutes; no timer
+         *     pauses for the longest allowed, default 60 minutes; a longer timer is cut to it), the same
+         *     pause as `POST /api/v1/blocking/pause`. `{"blocking": true}` ends every pause. Answers like
+         *     `GET /api/dns/blocking`. Audit-logged as `blocking.pause` / `blocking.resume` by
+         *     `token:pihole-api`.
+         */
+        post: operations["v6_set_blocking"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/info/version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole v6: the version.
+         * @description Part of the Pi-hole compatible API (needs a v6 session). Our version as the `core`, `web`
+         *     and `ftl` local versions; the remote (latest) versions are empty, so no update is offered.
+         */
+        get: operations["v6_version"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/stats/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole v6: the summary.
+         * @description Part of the Pi-hole compatible API (needs a v6 session). The last 24 hours: `queries` (total,
+         *     blocked, percent_blocked, cached, forwarded, unique_domains, types, status, replies),
+         *     `clients` (active, total) and `gravity.domains_being_blocked`, in Pi-hole's shape.
+         */
+        get: operations["v6_summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/stats/top_clients": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole v6: the top clients.
+         * @description Part of the Pi-hole compatible API (needs a v6 session). The busiest devices over the last 24
+         *     hours (`count`, default 10, at most 100): `{"clients": [{"ip", "name", "count"}],
+         *     "total_queries", "blocked_queries"}`; names and addresses follow the node's privacy level.
+         */
+        get: operations["v6_top_clients"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/stats/top_domains": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole v6: the top domains.
+         * @description Part of the Pi-hole compatible API (needs a v6 session). `blocked=true` ranks blocked names,
+         *     otherwise the permitted ones; `count` (default 10, at most 100). Over the last 24 hours:
+         *     `{"domains": [{"domain", "count"}], "total_queries", "blocked_queries"}`.
+         */
+        get: operations["v6_top_domains"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/stats/upstreams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole v6: the upstream servers.
+         * @description Part of the Pi-hole compatible API (needs a v6 session). Each configured upstream as
+         *     `{"ip", "name", "port", "count", "statistics": {"response", "variance"}}` (`count` is the
+         *     requests sent since start; `response` the smoothed answer time in seconds), with
+         *     `forwarded_queries` and `total_queries`.
+         */
+        get: operations["v6_upstreams"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/alerts": {
         parameters: {
             query?: never;
@@ -2217,6 +2416,65 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pihole-api": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole compatible API: settings and status.
+         * @description Whether the Pi-hole compatible API (v6 `/api/...` and v5 `/admin/api.php`, for dashboards,
+         *     phone apps and the Home Assistant Pi-hole integration) is on, whether a token has been issued
+         *     and when, when it was last used, and the longest pause it may start. Never the token. Needs
+         *     the operator role (agents: `config:read`).
+         */
+        get: operations["get_status"];
+        /**
+         * Change the Pi-hole compatible API's settings.
+         * @description Turns it on or off (off ends every session and makes its paths answer 404) and sets the
+         *     longest pause it may start (`maxPauseMinutes`, 1 to 1,440, default 60). Fields left out keep
+         *     their value. Turning it on needs a token: issue one with `POST /api/v1/pihole-api/token`.
+         *     Admins only, never agent tokens; audit-logged as `pihole_api.enable`, `pihole_api.disable`
+         *     and `pihole_api.settings`.
+         */
+        put: operations["put_settings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pihole-api/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue or rotate the Pi-hole compatible API's token.
+         * @description Makes a new token (replacing any: the old one stops working and every session ends) and
+         *     returns it. **This is the only time it is shown**; only its hash is kept. It is the v6
+         *     `password` and the v5 `auth` value. Does not turn the API on. Admins only, never agent
+         *     tokens; audit-logged as `pihole_api.token_rotate`; the answer is `Cache-Control: no-store`.
+         */
+        post: operations["issue_token"];
+        /**
+         * Revoke the Pi-hole compatible API's token.
+         * @description Removes the token: nothing can sign in until a new one is issued, and the API is turned off.
+         *     Admins only, never agent tokens; audit-logged as `pihole_api.token_revoke`.
+         */
+        delete: operations["revoke_token"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/plans": {
         parameters: {
             query?: never;
@@ -3821,6 +4079,16 @@ export interface components {
             /** @description No user exists yet: create the first admin with the setup token. */
             setupRequired: boolean;
             user?: components["schemas"]["Me"] | null;
+        };
+        /** @description Body of `POST /api/dns/blocking`. */
+        BlockingBody: {
+            /** @description `true` ends every pause, `false` pauses blocking for everyone. */
+            blocking?: boolean | null;
+            /**
+             * Format: double
+             * @description Seconds to stay off (rounded up to whole minutes; none: the longest allowed).
+             */
+            timer?: number | null;
         };
         /** @description One node's pauses (`GET /api/v1/blocking`). */
         BlockingNode: {
@@ -7039,6 +7307,11 @@ export interface components {
             /** @description `file` (read-only here) or `api`. */
             source: string;
         };
+        /** @description Body of `POST /api/auth`. */
+        LoginBody: {
+            /** @description The token. */
+            password?: string | null;
+        };
         LoginRequest: {
             password: string;
             /** @description A recovery code instead of `totp`. */
@@ -7484,6 +7757,38 @@ export interface components {
             secondsLeft: number;
             /** @description When blocking turns back on (RFC 3339). */
             until: string;
+        };
+        /** @description Body of `PUT /api/v1/pihole-api`: fields left out keep their value. */
+        PiholeApiSettings: {
+            enabled?: boolean | null;
+            /** Format: int32 */
+            maxPauseMinutes?: number | null;
+        };
+        /** @description The settings as the admin API shows them: never the token. */
+        PiholeApiStatus: {
+            /** @description Whether the Pi-hole compatible API answers. Off by default. */
+            enabled: boolean;
+            /**
+             * Format: int64
+             * @description When a request last carried the token (to the minute).
+             */
+            lastUsedUnixSeconds?: number | null;
+            /**
+             * Format: int32
+             * @description The longest pause it may start, in minutes (1 to 1,440). Pi-hole's "disable with no timer"
+             *     pauses for this long.
+             */
+            maxPauseMinutes: number;
+            /** Format: int64 */
+            tokenCreatedUnixSeconds?: number | null;
+            /** @description Whether a token has been issued (the token itself is shown only when it is made). */
+            tokenSet: boolean;
+        };
+        /** @description A freshly issued token: shown once. */
+        PiholeApiToken: {
+            status: components["schemas"]["PiholeApiStatus"];
+            /** @description The token. It is not stored and can't be read again: rotate to get another. */
+            token: string;
         };
         /** @description REQ: CLU-013 — `POST /api/v1/cluster/versions/{version}/pin`. */
         PinRequest: {
@@ -9086,6 +9391,305 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    v5: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pi-hole v5's answer for the call. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A write without a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The session is valid. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginBody"];
+            };
+        };
+        responses: {
+            /** @description A session. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Wrong password. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The API is off. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many failed attempts. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed out. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_blocking: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pi-hole's blocking object. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_set_blocking: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BlockingBody"];
+            };
+        };
+        responses: {
+            /** @description Pi-hole's blocking object, as now. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No `blocking` boolean. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_version: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pi-hole's version object. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_summary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pi-hole's summary object. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_top_clients: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pi-hole's top-clients object. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_top_domains: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pi-hole's top-domains object. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_upstreams: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pi-hole's upstreams object. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     alerts_status: {
         parameters: {
             query?: never;
@@ -13531,6 +14135,99 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The settings, without the token. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PiholeApiStatus"];
+                };
+            };
+        };
+    };
+    put_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PiholeApiSettings"];
+            };
+        };
+        responses: {
+            /** @description The settings now. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PiholeApiStatus"];
+                };
+            };
+            /** @description `maxPauseMinutes` out of range. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    issue_token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The token, once. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PiholeApiToken"];
+                };
+            };
+        };
+    };
+    revoke_token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The settings now. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PiholeApiStatus"];
                 };
             };
         };
