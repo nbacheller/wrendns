@@ -72,6 +72,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     otlp(cfg, &mut r);
     exclusions(cfg, &mut r);
     simulate(cfg, &mut r);
+    map(cfg, &mut r);
     identify(cfg, &mut r);
     kubernetes(cfg, &mut r);
     drill(cfg, &mut r);
@@ -2192,6 +2193,39 @@ fn secret_references(cfg: &Config, r: &mut Report<'_>) {
                 ),
             );
         }
+    }
+}
+
+// REQ: OBS-901 (T26.2, ADR-958 section 4) — the map's bounds: a rate a Pi can keep up with, and
+// thresholds that are percentages in an order that means something.
+fn map(cfg: &Config, r: &mut Report<'_>) {
+    let m = &cfg.map;
+    if !(10..=2000).contains(&m.event_rate) {
+        r.err("map.event_rate", "from 10 to 2000 lookups per second");
+    }
+    if !(1..=1000).contains(&m.min_sample) {
+        r.err("map.min_sample", "from 1 to 1000 answers");
+    }
+    if let Some(ms) = m.warn_latency_ms
+        && !(1..=60_000).contains(&ms)
+    {
+        r.err("map.warn_latency_ms", "from 1 to 60000 milliseconds");
+    }
+    for (name, v) in [
+        ("warn_slow_pct", m.warn_slow_pct),
+        ("warn_error_pct", m.warn_error_pct),
+        ("error_pct", m.error_pct),
+        ("warn_blocked_pct", m.warn_blocked_pct),
+    ] {
+        if !(1..=100).contains(&v) {
+            r.err(format!("map.{name}"), "a percent from 1 to 100");
+        }
+    }
+    if m.error_pct < m.warn_error_pct {
+        r.err(
+            "map.error_pct",
+            "at least warn_error_pct (red can't come before yellow)",
+        );
     }
 }
 
