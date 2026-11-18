@@ -7,6 +7,21 @@ use std::io;
 /// The OOM score a discovery worker asks for: the kernel kills it before the DNS process.
 pub const OOM_SCORE_ADJ: i32 = 1000;
 
+/// REQ: DSC-002, API-007 (ADR-988) — the environment a worker is started with so its allocator
+/// reserves no arena. mimalloc, the global allocator of the release build, reserves a 1 GiB arena
+/// at its first allocation (before `main`), and Linux counts a mapped read-write range against
+/// `RLIMIT_DATA` whether or not it is touched: under any limit of 1 GiB or less, every allocation
+/// after [`harden`] fails (the Pi-hole import answered `"<path>: <path>"`, SQLite's null handle).
+/// `MIMALLOC_ARENA_RESERVE=0` (KiB) makes mimalloc take each 32 MiB segment from the kernel on
+/// demand, committed page by page, so the limit counts what the worker really holds and still
+/// stops a hostile input. [`prepare_spawn`] sets it; a spawner that skips `prepare_spawn` gets a
+/// clear refusal from [`harden`] instead.
+pub const WORKER_ALLOCATOR_ENV: (&str, &str) = ("MIMALLOC_ARENA_RESERVE", "0");
+
+/// Address space the worker may already hold at [`harden`] before the limit is too small to leave
+/// it room to run (the binary's data segment, the thread stacks' guard pages, the first segment).
+const HARDEN_HEADROOM: u64 = 4 << 20;
+
 /// What a worker reports about its own limits, so the supervisor can check them (DSC-002 AC).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkerLimits {
@@ -40,6 +55,20 @@ pub fn harden(data_bytes: u64) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         std::fs::write("/proc/self/oom_score_adj", OOM_SCORE_ADJ.to_string())?;
+        // REQ: DSC-002 (ADR-988) — a limit below what the process already maps would make the next
+        // allocation fail with a message that names nothing: say why instead, and don't start.
+        if let Some(held) = crate::sys::vm_data_bytes()
+            && held.saturating_add(HARDEN_HEADROOM) > data_bytes
+        {
+            return Err(io::Error::other(format!(
+                "the process already maps {} MiB of data, too much for a {} MiB limit (start the \
+                 worker with {}={}, as prepare_spawn does)",
+                held >> 20,
+                data_bytes >> 20,
+                WORKER_ALLOCATOR_ENV.0,
+                WORKER_ALLOCATOR_ENV.1,
+            )));
+        }
         crate::sys::set_worker_rlimits(data_bytes)?;
         crate::sys::drop_worker_capabilities()?;
         crate::sys::install_worker_seccomp()?;
@@ -53,9 +82,10 @@ pub fn harden(data_bytes: u64) -> io::Result<()> {
     }
 }
 
-/// REQ: DSC-002 (ADR-908, ADR-934) — prepares a spawn of a discovery worker from this process. Two
-/// things, both on the parent side:
+/// REQ: DSC-002 (ADR-908, ADR-934) — prepares a spawn of a discovery worker from this process. Three
+/// things, all on the parent side:
 ///
+/// 0. The child gets [`WORKER_ALLOCATOR_ENV`] (ADR-988).
 /// 1. The child clears its ambient capability set before it execs (`sys::clear_ambient_before_exec`),
 ///    so a worker started by a unit that grants `CAP_NET_BIND_SERVICE` holds nothing.
 /// 2. This process becomes not dumpable. A worker of the same uid could otherwise open
@@ -65,6 +95,8 @@ pub fn harden(data_bytes: u64) -> io::Result<()> {
 ///
 /// Call it before each spawn; both steps are idempotent. A no-op off Linux.
 pub fn prepare_spawn(cmd: &mut std::process::Command) -> io::Result<()> {
+    // REQ: DSC-002, API-007 (ADR-988) — after the caller's `env_clear`, the one variable a worker needs.
+    cmd.env(WORKER_ALLOCATOR_ENV.0, WORKER_ALLOCATOR_ENV.1);
     #[cfg(target_os = "linux")]
     {
         crate::sys::clear_ambient_before_exec(cmd);
@@ -106,6 +138,32 @@ pub fn limits() -> WorkerLimits {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ: DSC-002 (`dsc_002_prepare_spawn_sets_allocator_env`, ADR-988) — a prepared spawn
+    /// carries the allocator variable, whatever else the caller cleared.
+    #[test]
+    fn dsc_002_prepare_spawn_sets_allocator_env() {
+        let mut cmd = std::process::Command::new("true");
+        cmd.env_clear();
+        prepare_spawn(&mut cmd).expect("prepare");
+        let got: Vec<_> = cmd.get_envs().collect();
+        assert_eq!(
+            got,
+            [(
+                std::ffi::OsStr::new(WORKER_ALLOCATOR_ENV.0),
+                Some(std::ffi::OsStr::new(WORKER_ALLOCATOR_ENV.1))
+            )]
+        );
+    }
+
+    /// REQ: DSC-002 (`dsc_002_vm_data_is_readable`, ADR-988) — the address space the limit counts
+    /// can be read, and is more than nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dsc_002_vm_data_is_readable() {
+        let held = crate::sys::vm_data_bytes().expect("VmData");
+        assert!(held > 0);
+    }
 
     /// REQ: DSC-002 — the hardening sets what it promises: the data limit, no dumps, not
     /// dumpable, and the OOM score. Run in a child process so the test process keeps its own.

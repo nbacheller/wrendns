@@ -1029,6 +1029,20 @@ pub(crate) fn ptrace_probe() -> io::Result<()> {
     }
 }
 
+/// REQ: DSC-002 (ADR-988) — the process's private writable address space (`VmData` in
+/// `/proc/self/status`), in bytes: what `RLIMIT_DATA` counts. `None` when it can't be read.
+pub(crate) fn vm_data_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kib = status
+        .lines()
+        .find_map(|l| l.strip_prefix("VmData:"))?
+        .split_whitespace()
+        .next()?
+        .parse::<u64>()
+        .ok()?;
+    Some(kib.saturating_mul(1024))
+}
+
 /// The process's current `RLIMIT_DATA` soft limit, in bytes (`RLIM_INFINITY` as `u64::MAX`).
 pub(crate) fn data_limit() -> io::Result<u64> {
     let mut lim = libc::rlimit {

@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 /// Most bytes one entry may unpack to.
-pub(crate) const ENTRY_LIMIT: usize = 512 << 20;
+pub(crate) const ENTRY_LIMIT: usize = 256 << 20;
 
 /// Entries keyed by their path inside the archive.
 pub(crate) type Entries = BTreeMap<String, Vec<u8>>;
