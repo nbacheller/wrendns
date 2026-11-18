@@ -603,23 +603,41 @@ fn obs_903_pihole_excluded_domains_and_clients() {
     let cfg = load(&im.toml);
     let log = &cfg.exclusions.log;
     assert_eq!(
-        log.domains.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        log.domains
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         ["localhost", "*.lan"]
     );
     assert_eq!(
-        log.clients.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        log.clients
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         ["192.168.1.5", "10.0.0.7"]
     );
     assert!(!log.own_lookups, "never switched on by an import");
     let notes = im.notes.join("\n");
-    assert!(notes.contains("2 domain(s) and 2 client(s) are imported"), "{notes}");
+    assert!(
+        notes.contains("2 domain(s) and 2 client(s) are imported"),
+        "{notes}"
+    );
     for skipped in ["kitchen-.*", "nas", "internal", "(ads|trk)"] {
-        assert!(notes.contains(skipped), "{skipped} is named as not imported:\n{notes}");
+        assert!(
+            notes.contains(skipped),
+            "{skipped} is named as not imported:\n{notes}"
+        );
     }
-    assert!(!notes.contains("webserver.api"), "mapped keys aren't 'unmapped':\n{notes}");
+    assert!(
+        !notes.contains("webserver.api"),
+        "mapped keys aren't 'unmapped':\n{notes}"
+    );
 
     let im = v6("[dns]\n  upstreams = [ \"9.9.9.9\" ] ### CHANGED, default = []\n");
-    assert!(!im.toml.contains("exclusions"), "nothing excluded: nothing written");
+    assert!(
+        !im.toml.contains("exclusions"),
+        "nothing excluded: nothing written"
+    );
 
     let mut e = archive::Entries::new();
     e.insert(
@@ -631,7 +649,12 @@ fn obs_903_pihole_excluded_domains_and_clients() {
     let cfg = load(&im.toml);
     assert_eq!(cfg.exclusions.log.domains.len(), 2);
     assert_eq!(
-        cfg.exclusions.log.clients.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        cfg.exclusions
+            .log
+            .clients
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         ["192.168.1.9", "tv"]
     );
     let notes = im.notes.join("\n");

@@ -469,20 +469,27 @@ async fn ops_901_readyz_asks_the_listener() {
         }
     });
     let mut src = sources();
-    let mut cfg = telltale_config::Config::default();
-    cfg.listen = vec![telltale_config::Listener {
-        proto: telltale_config::ListenProto::Udp,
-        addr,
-        ..serde_json::from_value(serde_json::json!({"proto": "udp", "addr": "127.0.0.1:53"})).unwrap()
-    }];
+    let listener: telltale_config::Listener =
+        serde_json::from_value(serde_json::json!({"proto": "udp", "addr": addr.to_string()}))
+            .unwrap();
+    let cfg = telltale_config::Config {
+        listen: vec![listener],
+        ..telltale_config::Config::default()
+    };
     src.config = ArcSwap::from_pointee(cfg);
     let src = Arc::new(src);
     let ask = |src: &Arc<Sources>| {
         let src = Arc::clone(src);
         async move {
-            let r = readyz(State(src), axum::extract::Query(ReadyQuery { startup: None })).await;
+            let r = readyz(
+                State(src),
+                axum::extract::Query(ReadyQuery { startup: None }),
+            )
+            .await;
             let status = r.status().as_u16();
-            let body = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
+            let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+                .await
+                .unwrap();
             (status, String::from_utf8(body.to_vec()).unwrap())
         }
     };

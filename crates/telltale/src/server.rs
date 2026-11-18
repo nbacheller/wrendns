@@ -807,7 +807,10 @@ pub(crate) fn log_exclusions_with(
     if x.log.own_lookups {
         nets.push((std::net::Ipv4Addr::new(127, 0, 0, 0).into(), 8));
         nets.push((std::net::Ipv6Addr::LOCALHOST.into(), 128));
-        nets.extend(own.iter().map(|ip| (*ip, if ip.is_ipv4() { 32 } else { 128 })));
+        nets.extend(
+            own.iter()
+                .map(|ip| (*ip, if ip.is_ipv4() { 32 } else { 128 })),
+        );
     }
     Some(telltale_telemetry::exclude::LogExclusions::new(
         exact, under, &nets, refs,
@@ -1946,35 +1949,59 @@ own_lookups = true
         assert!(telltale_config::validate_config(&cfg).is_ok());
         let own: Vec<std::net::IpAddr> = vec!["192.168.1.2".parse().unwrap()];
         let x = log_exclusions_with(&cfg, &own).unwrap();
-        assert!(x.excludes(&q("192.168.1.41", 2, "shop.example")), "device name");
-        assert!(!x.excludes(&q("192.168.1.40", 1, "shop.example")), "another client");
+        assert!(
+            x.excludes(&q("192.168.1.41", 2, "shop.example")),
+            "device name"
+        );
+        assert!(
+            !x.excludes(&q("192.168.1.40", 1, "shop.example")),
+            "another client"
+        );
         assert!(x.excludes(&q("10.9.4.4", 0, "shop.example")), "network");
         assert!(x.excludes(&q("192.168.1.99", 0, "shop.example")), "address");
-        assert!(x.excludes(&q("192.168.1.50", 0, "localhost")), "exact domain");
+        assert!(
+            x.excludes(&q("192.168.1.50", 0, "localhost")),
+            "exact domain"
+        );
         assert!(!x.excludes(&q("192.168.1.50", 0, "a.localhost")));
-        assert!(x.excludes(&q("192.168.1.50", 0, "nas.lan")), "wildcard domain");
+        assert!(
+            x.excludes(&q("192.168.1.50", 0, "nas.lan")),
+            "wildcard domain"
+        );
         assert!(!x.excludes(&q("192.168.1.50", 0, "lan")));
-        assert!(x.excludes(&q("127.0.0.1", 0, "shop.example")), "own: loopback");
+        assert!(
+            x.excludes(&q("127.0.0.1", 0, "shop.example")),
+            "own: loopback"
+        );
         assert!(x.excludes(&q("::1", 0, "shop.example")), "own: loopback v6");
-        assert!(x.excludes(&q("192.168.1.2", 0, "shop.example")), "own: node address");
+        assert!(
+            x.excludes(&q("192.168.1.2", 0, "shop.example")),
+            "own: node address"
+        );
         assert!(!x.excludes(&q("192.168.1.3", 0, "shop.example")));
         // Own lookups off: loopback is logged like anyone else's.
-        let no_own = parse("[exclusions.log]
+        let no_own = parse(
+            "[exclusions.log]
 domains = [\"localhost\"]
-");
+",
+        );
         let x = log_exclusions_with(&no_own, &own).unwrap();
         assert!(!x.excludes(&q("127.0.0.1", 0, "shop.example")));
         // The switch turns the lot off without losing it.
-        let off = parse("[exclusions]
+        let off = parse(
+            "[exclusions]
 enabled = false
 [exclusions.log]
 own_lookups = true
-");
+",
+        );
         assert!(log_exclusions_with(&off, &own).is_none());
         for bad in ["domains = [\"not a name\"]", "clients = [\"10.0.0.0/99\"]"] {
-            let cfg = parse(&format!("[exclusions.log]
+            let cfg = parse(&format!(
+                "[exclusions.log]
 {bad}
-"));
+"
+            ));
             assert!(telltale_config::validate_config(&cfg).is_err(), "{bad}");
         }
     }

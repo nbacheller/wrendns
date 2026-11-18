@@ -74,7 +74,8 @@ impl Readiness {
         *self
             .dns_last
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((std::time::Instant::now(), ok));
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((std::time::Instant::now(), ok));
     }
 
     /// Whether `/readyz` asks the listener.

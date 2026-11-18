@@ -134,7 +134,10 @@ impl LogExclusions {
 
     /// Whether there's anything to leave out.
     pub fn is_empty(&self) -> bool {
-        self.exact.is_empty() && self.under.is_empty() && self.nets.is_empty() && self.refs.is_empty()
+        self.exact.is_empty()
+            && self.under.is_empty()
+            && self.nets.is_empty()
+            && self.refs.is_empty()
     }
 
     /// Whether `name` (wire format, lowercase as events carry it) is left out.

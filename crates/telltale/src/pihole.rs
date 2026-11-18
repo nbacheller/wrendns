@@ -619,7 +619,9 @@ fn map_exclusions(s: &Settings) -> (Vec<String>, Vec<String>, Vec<String>) {
             Some(c.to_owned())
         };
         match plain {
-            Some(p) if !p.is_empty() && !p.chars().any(|ch| ch.is_whitespace() || ch.is_control()) => {
+            Some(p)
+                if !p.is_empty() && !p.chars().any(|ch| ch.is_whitespace() || ch.is_control()) =>
+            {
                 clients.push(p);
             }
             _ => skipped.push(one_line(c)),
@@ -1687,9 +1689,12 @@ impl<'a> Builder<'a> {
         // log only (Pi-hole still records them), as `[exclusions.log]`.
         let (domains, clients, skipped) = map_exclusions(&self.s);
         if !domains.is_empty() || !clients.is_empty() {
-            let _ = write!(head, "
+            let _ = write!(
+                head,
+                "
 [exclusions.log]
-");
+"
+            );
             if !domains.is_empty() {
                 let _ = writeln!(head, "domains = {}", toml_array(&domains));
             }
