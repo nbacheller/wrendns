@@ -387,3 +387,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
       - run: bash deploy/snmp-e2e.sh
+      # REQ: DSC-003 (T25.5): v3 at authNoPriv and authPriv, SHA and SHA-256, on its own network.
+      - run: bash crates/telltale-snmp/tests/v3-e2e.sh

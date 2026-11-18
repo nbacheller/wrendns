@@ -17,3 +17,4 @@
 /site/_site/
 __pycache__/
 deploy/mcp-e2e/node_modules/
+/.v3e2e.*/
