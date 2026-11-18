@@ -121,6 +121,24 @@ pub(crate) fn remote_under(
         .unwrap_or(peer)
 }
 
+/// REQ: API-902 (ADR-956 §3) — what a `proxy_list` proof needs: the request passes under the new
+/// list. The connection's peer must be one of the new list's proxies (else the new list is not what
+/// is carrying this request) and the client address under it must be a different address (else the
+/// proxy's header was not read). `Some(client)` then; `None` otherwise.
+pub(crate) fn remote_under_proven(
+    auth: &Auth,
+    req_ext: &axum::http::Extensions,
+    headers: &HeaderMap,
+    proxies: &[(IpAddr, u8)],
+) -> Option<IpAddr> {
+    let peer = req_ext.get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip())?;
+    if !proxies.iter().any(|(n, l)| super::in_network(peer, *n, *l)) {
+        return None;
+    }
+    let client = remote_under(auth, req_ext, headers, proxies);
+    (client != peer).then_some(client)
+}
+
 /// `ip` is one of `[api] trusted_proxies`.
 fn is_trusted_proxy(auth: &Auth, ip: IpAddr) -> bool {
     auth.settings()
@@ -382,6 +400,35 @@ pub async fn authenticate_optional(
         return next.run(req).await;
     }
     authenticate(State(auth), req, next).await
+}
+
+/// REQ: API-902 (ADR-956 §3) — the guarded confirm route's credentials. A request that carries a
+/// `confirmToken` in its body is judged by the token alone: cookies are not scoped to a port, so on
+/// a same-host address change the browser also sends the old session's cookie (stale, or without the
+/// CSRF header), and that must not fail a valid token. A request without a token is authenticated as
+/// [`authenticate_optional`] does (the handler then refuses it).
+pub async fn authenticate_confirm(
+    State(auth): State<AuthState>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let (parts, body) = req.into_parts();
+    // The body is a few dozen bytes; a larger one is not a confirmation.
+    let Ok(bytes) = axum::body::to_bytes(body, 8 * 1024).await else {
+        return Problem::invalid("the request body is too large").into_response();
+    };
+    let token = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|v| v.get("confirmToken").map(serde_json::Value::is_string))
+        .unwrap_or(false);
+    // Only a session cookie is set aside: a bearer token or Basic credentials are still checked
+    // (an agent's token is refused here as everywhere else).
+    let (_, bearer, basic) = presented(&parts.headers);
+    let req = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
+    if token && bearer.is_none() && basic.is_none() {
+        return next.run(req).await;
+    }
+    authenticate_optional(State(auth), req, next).await
 }
 
 /// REQ: AGT-008 (T7.4) — a 401 from `/mcp` tells MCP clients where to sign in (RFC 9728

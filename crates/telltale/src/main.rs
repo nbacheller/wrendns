@@ -1754,19 +1754,32 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
         "starting TelltaleDNS"
     );
 
-    // spec/02 §3: UDP has dedicated worker threads; everything else runs on Tokio.
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .thread_name("telltale-rt")
-        .build()?;
-    // REQ: CLU-004 (upstream #7) — the runtime's own worker count (the container's CPU quota, on a
-    // 2-CPU replica): the three-node run asserts it, since the UDP workers are a different count.
-    info!(
-        runtime_workers = rt.metrics().num_workers(),
-        "tokio runtime ready"
-    );
     let data_dir = data_dir.to_owned();
-    let served = rt.block_on(server::serve(files, cfg));
+    // REQ: API-902 (ADR-956 §4) — a confirmed guarded listener that can't bind at this start falls
+    // back to the file's value, once, on a fresh runtime.
+    let served = guarded::serve_with_fallback(
+        cfg,
+        || server::load(&files),
+        || server::load_files_quiet(&files),
+        &guarded::appliers::rows(),
+        |cfg| {
+            // spec/02 §3: UDP has dedicated worker threads; everything else runs on Tokio.
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("telltale-rt")
+                .build()?;
+            // REQ: CLU-004 (upstream #7) — the runtime's own worker count (the container's CPU
+            // quota, on a 2-CPU replica): the three-node run asserts it, since the UDP workers are
+            // a different count.
+            info!(
+                runtime_workers = rt.metrics().num_workers(),
+                "tokio runtime ready"
+            );
+            let r = rt.block_on(server::serve(files.clone(), cfg));
+            rt.shutdown_timeout(std::time::Duration::from_secs(2));
+            r
+        },
+    );
     if lock.is_some() {
         datadir::record_stop(&data_dir);
     }
@@ -1775,10 +1788,7 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
     // REQ: OPS-011 — the last lines (why it stopped) reach the log files before the process exits.
     support_log::global().flush();
     // REQ: API-902 (ADR-956 §4a) — a requested restart ends with exit 75, for the supervisor.
-    if guarded::restart::requested() {
-        return Ok(ExitCode::from(guarded::restart::EXIT_CODE));
-    }
-    Ok(ExitCode::SUCCESS)
+    Ok(ExitCode::from(guarded::restart::exit_status()))
 }
 
 fn run_lists(cmd: ListsCommand) -> io::Result<ExitCode> {

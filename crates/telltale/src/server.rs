@@ -887,11 +887,19 @@ fn start_guarded(
     if sources.guarded.set(engine).is_err() {
         return;
     }
+    // REQ: API-902 (ADR-957 step 10) — a removal queued by an offline clear on this replica.
+    crate::guarded::prod::spawn_removals(
+        Arc::clone(&host),
+        Arc::clone(auth.state()),
+        node.clone(),
+        stop.clone(),
+    );
     crate::guarded::probation::spawn_watch(
         Arc::clone(sources),
         Arc::clone(auth.state()),
         node,
         PathBuf::from(cfg.node.data_dir.as_str()),
+        cfg.clone(),
         crate::guarded::probation::healthy_deadline_secs(cfg),
         stop,
     );

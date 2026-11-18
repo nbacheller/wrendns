@@ -516,7 +516,7 @@ impl Engine {
 
     /// This node's guarded settings and what is pending. No value, preview ID or token.
     pub(crate) fn status_local(&self) -> GuardedNodeStatus {
-        let entries = store::for_node(&self.state, &self.node);
+        let entries = self.effective_entries();
         let suppressed = store::suppressed(&self.state);
         let g = lock(&self.inner);
         let settings = self
@@ -773,8 +773,25 @@ impl Engine {
         Ok(())
     }
 
+    /// This node's entries as in force: its own rows, and on a replica what the primary replicated
+    /// (a replica has no row of its own for it), with the state this node has for each.
+    fn effective_entries(&self) -> Vec<Stored> {
+        store::effective(&self.host.running_config(), &self.state, &self.node)
+            .into_iter()
+            .map(|(e, _)| e)
+            .filter(|e| !self.suppressed_entry(e))
+            .collect()
+    }
+
+    /// Whether a local clear is suppressing this replicated entry.
+    fn suppressed_entry(&self, e: &Stored) -> bool {
+        store::suppressed(&self.state)
+            .get(&e.id)
+            .is_some_and(|d| *d == e.digest())
+    }
+
     pub(crate) fn staged_ids(&self) -> Vec<String> {
-        store::for_node(&self.state, &self.node)
+        self.effective_entries()
             .into_iter()
             .filter(|e| e.state == EntryState::Staged)
             .map(|e| e.id)
@@ -1081,13 +1098,33 @@ impl Engine {
         pre: &Preview,
         before: Value,
     ) -> Result<GuardedApplied, Problem> {
-        let previous = store::for_node(&self.state, &self.node)
+        let previous = self
+            .effective_entries()
             .into_iter()
             .find(|e| e.id == row.id);
         let entry = self.stored(row, req, EntryState::Active, &c.username);
+        let digest = entry.digest();
         self.host
             .write_entry(&self.node, row.id, Some(entry), &c.username)
             .await?;
+        // On a replica the entry reaches this node through the primary's next version: the reload
+        // below applies it only once it is here (an `applied` answer is never given before).
+        if !self
+            .host
+            .wait_applied(&self.node, row.id, Some(digest))
+            .await
+        {
+            self.audit_best_effort(
+                &c.actor,
+                "settings.guarded",
+                &self.target_name(row.id),
+                &json!({"setting": row.id, "node": self.node, "outcome": "recorded_not_yet_applied"}),
+            );
+            return Err(Problem::unavailable(
+                "the primary recorded the change, but this node hasn't received it yet; it applies when it arrives",
+            )
+            .hint("Check the setting again in a moment; nothing is lost."));
+        }
         // Applied by the same reload the API uses; a failed reload keeps the previous
         // configuration (CLU-004), and the entry goes back to what it was.
         if !self.host.reload().await {

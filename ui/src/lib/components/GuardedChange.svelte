@@ -368,8 +368,8 @@
       {/if}
       <ErrorNote {error} />
       <p class="muted small">
-        A configuration file always wins over what is set here, and is the way back if you get locked out:
-        <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/recovery.md" target="_blank" rel="noreferrer">recovery</a><HelpButton id="guarded-recovery" />
+        A configuration file always wins over what is set here, and is the way back if you get locked out
+        (the recovery steps are in the help)<HelpButton id="guarded-recovery" />
       </p>
     </section>
   {:else if step === 'pending' && result}
@@ -401,9 +401,9 @@
       </p>
       {#if restartTimedOut}
         <div class="notice bad" role="alert" data-testid="guarded-restart-timeout">
-          It hasn't come back. If nothing starts it again, start it by hand; if it starts and stops, see
-          <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/recovery.md" target="_blank" rel="noreferrer">recovery</a>
-          (the configuration file, <code>telltale guarded clear</code>, <code>TELLTALE_IGNORE_GUARDED=1</code>).<HelpButton id="guarded-recovery" />
+          It hasn't come back. If nothing starts it again, start it by hand; if it starts and stops, see the
+          recovery steps (the configuration file, <code>telltale guarded clear</code>,
+          <code>TELLTALE_IGNORE_GUARDED=1</code>).<HelpButton id="guarded-recovery" />
         </div>
       {/if}
     </section>

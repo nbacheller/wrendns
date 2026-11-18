@@ -25,6 +25,10 @@ pub(crate) struct Member {
     pub(crate) name: String,
     pub(crate) is_primary: bool,
     pub(crate) up: bool,
+    /// The site label (display and "a site's only healthy resolver"); not an identity.
+    pub(crate) site: String,
+    /// A witness only votes: it serves no DNS.
+    pub(crate) witness: bool,
 }
 
 /// A socket kept open for the confirmation window's proof. Dropping it closes it.
@@ -55,10 +59,23 @@ pub(crate) trait Host: Send + Sync + 'static {
     ) -> BoxFuture<Result<(), Problem>>;
     /// Whether this node is the primary (a standalone node is its own).
     fn is_primary(&self) -> bool;
+    /// After [`write_entry`](Self::write_entry): waits until this node has the entry it just wrote
+    /// (`Some(digest)` of its value, or `None` for a removal) in the configuration it follows, so a
+    /// reload applies it. On the primary and a standalone node the write is the state, so it is
+    /// already there; on a replica the entry travels through the primary and the replicated blob.
+    /// `false` when it hasn't arrived in time.
+    fn wait_applied(&self, node: &str, id: &str, digest: Option<String>) -> BoxFuture<bool> {
+        let _ = (node, id, digest);
+        Box::pin(std::future::ready(true))
+    }
     /// Whether the node is a cluster member.
     fn clustered(&self) -> bool;
     /// The cluster's members (empty when standalone).
     fn members(&self) -> Vec<Member>;
+    /// This node's own site label (empty when it has none or isn't clustered).
+    fn site(&self) -> String {
+        String::new()
+    }
     /// The primary's name, when known.
     fn primary_name(&self) -> Option<String>;
     /// The primary's API address, for a 421 on a replica.
@@ -83,6 +100,16 @@ pub(crate) trait Host: Send + Sync + 'static {
     /// Binds a listener for the proof of a window change, serving the API tagged with the address it
     /// was reached on. A failed bind is an error naming why.
     fn proof_socket(&self, addr: SocketAddr) -> BoxFuture<Result<Arc<dyn ProofSocket>, String>>;
+    /// [`proof_socket`](Self::proof_socket) serving `tls` instead of the main listener's own
+    /// (a `new_cert` window row's new certificate). `None` is the main listener's.
+    fn proof_socket_with(
+        &self,
+        addr: SocketAddr,
+        tls: Option<&telltale_config::ApiTls>,
+    ) -> BoxFuture<Result<Arc<dyn ProofSocket>, String>> {
+        let _ = tls;
+        self.proof_socket(addr)
+    }
     /// The node's own probe of a DNS listener answers (what a `listen` confirmation also needs).
     fn probe_dns(&self, addr: SocketAddr) -> BoxFuture<bool> {
         let _ = addr;

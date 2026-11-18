@@ -179,6 +179,14 @@ pub(crate) fn run_clear(
         }
         if replica {
             suppressed.insert(e.id.clone(), e.digest());
+            // The primary still holds the entry: a removal request waits for the node to be back
+            // and connected, and is sent then (ADR-957 step 10).
+            if let Err(why) = store::queue_removal(&state, &e.id, &actor) {
+                eprintln!(
+                    "warning: the removal request for `{}` couldn't be queued: {why}",
+                    e.id
+                );
+            }
         }
         let detail = json!({"setting": e.id, "node": node, "was": e.state.as_str(), "suppressedLocally": replica}).to_string();
         let audited = state.audit_append(&NewAudit {
@@ -208,7 +216,7 @@ pub(crate) fn run_clear(
     if replica {
         writeln!(
             out,
-            "This node is a cluster replica: the primary still holds these entries and replicates them back, so this node ignores them locally until the primary's copy changes (the primary can remove them from its own side)."
+            "This node is a cluster replica: the primary still holds these entries, so this node ignores them locally and asks the primary to remove them as soon as it is started and connected."
         )?;
     }
     writeln!(

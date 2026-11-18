@@ -30,8 +30,10 @@ pub struct GuardedCaller {
     pub arrived_on: Option<SocketAddr>,
     /// The client address as the node's current trusted-proxy list sees it (audit, rate limits).
     pub remote: Option<std::net::IpAddr>,
-    /// The client address as the *pending* trusted-proxy list would see it (only the confirm route
-    /// computes it; it is what a `proxy_list` proof shows).
+    /// The client address as the *pending* trusted-proxy list would see it, set only when the
+    /// request passes under that list (its peer is one of the new proxies and the client address
+    /// differs from the peer): only the confirm route computes it, and a `proxy_list` proof needs
+    /// it set (it is also what the result shows as the client now seen).
     pub remote_under_pending: Option<std::net::IpAddr>,
     /// Whether the request came over TLS (and which certificate answered it: the connection's
     /// marker; `new_cert` proofs read it).

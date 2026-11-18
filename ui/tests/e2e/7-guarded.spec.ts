@@ -351,4 +351,69 @@ test.describe('api_902 guarded changes', () => {
       await page.close();
     }
   });
+
+  // REQ: API-902 (standing UI rule) — a change on another node: the picker, that node's own items, and
+  // the request carrying the `node` the primary forwards to. The e2e server is one node, so the
+  // listing gets a second member here (the server's forwarding is covered by the cluster tests).
+  test('api_902 guarded node picker targets another node', async ({ browser }) => {
+    const page = await browser.newPage();
+    try {
+      await page.route('**/api/v1/guarded', async (route) => {
+        if (route.request().method() !== 'GET') return route.continue();
+        const real = await (await route.fetch()).json();
+        const me = real.nodes[0];
+        const other = {
+          ...me,
+          node: 'pi-b',
+          pending: null,
+          pendingRestart: ['e2e-staged'],
+          restarting: false,
+          outcomes: [],
+        };
+        await route.fulfill({ json: { nodes: [me, other] } });
+      });
+      let sent: { node?: string } | null = null;
+      await page.route('**/api/v1/guarded/e2e-immediate/preview', async (route) => {
+        sent = route.request().postDataJSON();
+        await route.fulfill({
+          json: {
+            acknowledgements: [],
+            checks: [],
+            effect: 'Sets the test label on pi-b.',
+            mode: 'immediate',
+            needsRecentSignIn: false,
+            node: 'pi-b',
+            nodes: ['pi-b'],
+            phrase: 'pi-b e2e-imm',
+            previewId: 'stub',
+            restartRequired: false,
+            setByFile: false,
+            setting: 'e2e-immediate',
+            warnings: [],
+            weakening: false,
+            windowSecs: 120,
+          },
+        });
+      });
+      await page.goto('/#/settings?tab=system');
+      await page.getByLabel('Username', { exact: true }).fill(ADMIN.user);
+      await page.getByLabel('Password', { exact: true }).fill(ADMIN.pass);
+      await page.getByRole('button', { name: 'Sign in' }).click();
+      await expect(page.getByTestId('guarded-card')).toBeVisible({ timeout: 30_000 });
+      const picker = page.getByTestId('guarded-node-picker');
+      await expect(picker).toBeVisible();
+      // The other node's own item shows before it is picked.
+      await expect(page.getByTestId('guarded-other-nodes')).toContainText('pi-b');
+      await expect(page.getByTestId('guarded-other-nodes')).toContainText('e2e-staged');
+      await picker.selectOption('pi-b');
+      await expect(page.getByTestId('guarded-restart-item')).toContainText('e2e-staged');
+      const box = page.getByTestId('guarded-test-e2e-immediate');
+      await box.getByTestId('guarded-start-e2e-immediate').click();
+      await expect(box.getByTestId('guarded-node')).toHaveText('pi-b');
+      expect(sent).not.toBeNull();
+      expect((sent as unknown as { node?: string }).node).toBe('pi-b');
+    } finally {
+      await page.close();
+    }
+  });
 });

@@ -7,13 +7,26 @@
   // their reasons, and the recovery steps. A setting's own form (T27.14 to T27.17) uses GuardedChange
   // on its own page; the end-to-end build lists its test settings here.
   import { onMount } from 'svelte';
-  import { guarded, hasSupervisor, reasonText, refreshGuarded, watchGuarded } from '../guarded.svelte';
+  import {
+    guarded,
+    hasItems,
+    hasSupervisor,
+    reasonText,
+    refreshGuarded,
+    selectGuardedNode,
+    targetNode,
+    watchGuarded,
+  } from '../guarded.svelte';
   import GuardedChange from './GuardedChange.svelte';
   import HelpButton from './HelpButton.svelte';
 
   onMount(() => watchGuarded(2_000));
 
   const n = $derived(guarded.node);
+  // Which node the controls act on: another node's change goes through the primary, which forwards it
+  // (the API's `node` field); empty is this node.
+  const target = $derived(targetNode());
+  const others = $derived(guarded.nodes.filter((x) => x.node !== n?.node && hasItems(x)));
   // The settings this build has a form for: the end-to-end build's test rows. The real ones come with
   // their own pages (T27.14 to T27.17); until then they are listed, read-only.
   const test = $derived((n?.settings ?? []).filter((s) => s.id.startsWith('e2e-')));
@@ -42,8 +55,37 @@
       (the listeners, the API address and its certificate, trusted proxies, the secrets key, the cluster). They are
       changed with a review, a phrase you type, and (for addresses) a confirmation window that rolls back by itself.
       A configuration file always wins, and is the way back:
-      <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/recovery.md" target="_blank" rel="noreferrer">recovery</a><HelpButton id="guarded-recovery" />.
+      the recovery steps are in the help<HelpButton id="guarded-recovery" />.
     </p>
+    {#if guarded.nodes.length > 1}
+      <p class="small" data-testid="guarded-node-pick">
+        <label>Change settings on
+          <select
+            aria-label="Node"
+            data-testid="guarded-node-picker"
+            value={n?.node ?? ''}
+            onchange={(e) => selectGuardedNode(e.currentTarget.value)}
+          >
+            {#each guarded.nodes as x, i (x.node)}
+              <option value={x.node}>{x.node}{i === 0 ? ' (this node)' : ''}</option>
+            {/each}
+          </select>
+        </label>
+        {#if target}<span class="muted">The change is sent to {target} through the primary, with your sign-in vouched for by it.</span>{/if}
+      </p>
+      {#if others.length}
+        <ul class="small" data-testid="guarded-other-nodes">
+          {#each others as x (x.node)}
+            <li>
+              <button class="link" onclick={() => selectGuardedNode(x.node)}>{x.node}</button>:
+              {#if x.pending}a change to {x.pending.setting} waits for confirmation ({x.pending.deadlineSecs} s left){/if}
+              {#if x.pendingRestart.length}{x.pending ? '; ' : ''}pending restart: {x.pendingRestart.join(', ')}{/if}
+              {#if x.restarting}{x.pending || x.pendingRestart.length ? '; ' : ''}restarting{/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    {/if}
     <p class="small muted" data-testid="guarded-supervisor">
       Node <strong>{n.node}</strong>. Supervisor:
       {#if hasSupervisor(n)}<strong>{n.supervisor.kind}</strong> ({n.supervisor.how}).
@@ -79,7 +121,9 @@
     {/if}
     {#if hasSupervisor(n)}
       <!-- Kept mounted while a restart is under way, so its outcome shows after the node is back. -->
-      <GuardedChange id="restart-now" label="Restart now" startLabel="Restart now…" hideIdle={n.pendingRestart.length === 0} />
+      {#key n.node}
+        <GuardedChange id="restart-now" label="Restart now" startLabel="Restart now…" node={target} hideIdle={n.pendingRestart.length === 0} />
+      {/key}
     {/if}
     {#if listed.length}
       <table class="small" data-testid="guarded-list">
@@ -117,15 +161,15 @@
           <h4>{s.label}{#if s.setByFile} <span class="muted small" data-testid="guarded-set-by-file">(set by file)</span>{/if}</h4>
           {#if s.id === 'e2e-window'}
             <label class="small">Port <input type="number" bind:value={port} aria-label="Test port" disabled={s.setByFile} /></label>
-            <GuardedChange id={s.id} label={s.label} value={{ port }} disabled={s.setByFile} />
+            <GuardedChange id={s.id} label={s.label} value={{ port }} node={target} disabled={s.setByFile} />
           {:else if s.id === 'e2e-staged'}
             <label class="small">Label <input bind:value={label} aria-label="Test label" disabled={s.setByFile} /></label>
             <label class="check small"><input type="checkbox" bind:checked={fail} disabled={s.setByFile} /> The next start fails</label>
-            <GuardedChange id={s.id} label={s.label} value={{ label, fail }} disabled={s.setByFile} />
+            <GuardedChange id={s.id} label={s.label} value={{ label, fail }} node={target} disabled={s.setByFile} />
           {:else}
             <label class="small">Label <input bind:value={label} aria-label="Test label" disabled={s.setByFile} /></label>
             <label class="check small"><input type="checkbox" bind:checked={weaken} disabled={s.setByFile} /> Weakens security</label>
-            <GuardedChange id={s.id} label={s.label} value={{ label, weaken }} disabled={s.setByFile} />
+            <GuardedChange id={s.id} label={s.label} value={{ label, weaken }} node={target} disabled={s.setByFile} />
           {/if}
         </div>
       {/each}

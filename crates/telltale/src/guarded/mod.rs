@@ -82,18 +82,16 @@ pub(crate) fn this_node() -> Option<String> {
     THIS_NODE.lock().ok().and_then(|n| n.clone())
 }
 
-/// The name a node goes by in guarded phrases, previews and entries (`pi-a listen`): the cluster
-/// site when it is a member and has one, else its node ID; a standalone node's configured name
-/// (or hostname). Every member computes the others' names the same way (`site`, else ID), so the
-/// primary can name a target and the target recognises itself.
+/// The name a node goes by in guarded phrases, previews and entries (`<node-id> listen`): its
+/// cluster node ID when it is a member (unique, unlike the site label, which many nodes share:
+/// every pod of the Helm chart is in site `k8s`); a standalone node's configured name (or
+/// hostname). Every member computes the others' names the same way (the ID), so the primary can
+/// name a target and the target recognises itself, and an entry or a phrase is never shared by two
+/// nodes. The site stays a display label only.
 pub(crate) fn node_label(cfg: &telltale_config::Config) -> String {
     let dir = std::path::Path::new(cfg.node.data_dir.as_str());
     if let Ok(Some(id)) = telltale_cluster::node::Identity::load(dir) {
-        return if id.meta.site.is_empty() {
-            id.meta.node_id
-        } else {
-            id.meta.site
-        };
+        return id.meta.node_id;
     }
     crate::http::node_name(cfg)
 }
@@ -141,6 +139,40 @@ pub(crate) fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// REQ: API-902 (ADR-956 §4) — starts the node with `serve_once`, and when a listener can't bind
+/// and a confirmed guarded listener entry may be the cause, starts it once more on the file's value
+/// for that listener (the entry stays; the next start tries it again). `load` builds the node's
+/// configuration (files plus what the UI stored; the overlay skips a setting that fell back),
+/// `file_cfg` the files alone.
+pub(crate) fn serve_with_fallback<L, F, S>(
+    first: telltale_config::Config,
+    mut load: L,
+    mut file_cfg: F,
+    defs: &[engine::RowDef],
+    mut serve_once: S,
+) -> std::io::Result<()>
+where
+    L: FnMut() -> Option<telltale_config::Config>,
+    F: FnMut() -> Option<telltale_config::Config>,
+    S: FnMut(telltale_config::Config) -> std::io::Result<()>,
+{
+    match serve_once(first) {
+        Err(e) if probation::is_bind_failure(&e) => {
+            let fell = file_cfg().map_or_else(Vec::new, |f| {
+                probation::fall_back_after_bind_failure(&f, defs, now_secs())
+            });
+            match (fell.is_empty(), load()) {
+                (false, Some(cfg)) => {
+                    tracing::warn!(settings = ?fell, "a listener couldn't bind: starting again on the file's value for it");
+                    serve_once(cfg)
+                }
+                _ => Err(e),
+            }
+        }
+        other => other,
+    }
 }
 
 /// REQ: API-902 (ADR-956 §4, ADR-957) — the guarded framework's health reasons for this node:

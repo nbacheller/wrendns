@@ -1474,7 +1474,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
             guarded_api::confirm_routes(Arc::clone(&backend), Arc::clone(&auth)).layer(
                 axum::middleware::from_fn_with_state(
                     Arc::clone(&auth),
-                    auth::routes::authenticate_optional,
+                    auth::routes::authenticate_confirm,
                 ),
             ),
         )

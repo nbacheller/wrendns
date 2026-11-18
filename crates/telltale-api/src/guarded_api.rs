@@ -25,7 +25,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-use crate::auth::routes::{principal, reason, remote, remote_under};
+use crate::auth::routes::{principal, reason, remote, remote_under_proven};
 use crate::auth::{Auth, Principal, Role, Via};
 use crate::guarded::{
     ArrivedOn, GuardedApplied, GuardedApplyRequest, GuardedCaller, GuardedConfirmRequest,
@@ -109,7 +109,7 @@ async fn caller(
     let signed_in_at = blocking(move || Ok(a2.sign_in_time(&p2))).await?;
     let under = backend
         .guarded_pending_proxies()
-        .map(|list| remote_under(auth, ext, headers, &list));
+        .and_then(|list| remote_under_proven(auth, ext, headers, &list));
     Ok(GuardedCaller {
         actor: auth.actor(p, ip, reason(headers)),
         username: p.username.clone(),
@@ -277,7 +277,7 @@ pub(crate) async fn guarded_confirm(
             remote: Some(ip),
             remote_under_pending: backend
                 .guarded_pending_proxies()
-                .map(|list| remote_under(&auth, &ext, &headers, &list)),
+                .and_then(|list| remote_under_proven(&auth, &ext, &headers, &list)),
             tls: ext.get::<crate::auth::routes::TlsConnection>().is_some(),
         }
     };

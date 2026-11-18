@@ -8,18 +8,43 @@ import { poll } from './poll';
 export type GuardedNode = S['GuardedNodeStatus'];
 
 export const guarded = $state<{
-  /** This node's status, once read. */
+  /** The node the controls act on (this node, unless another was picked), once read. */
   node: GuardedNode | null;
+  /** Every node the listing covers: this node first, then the cluster members the primary can see. */
+  nodes: GuardedNode[];
+  /** The node picked in the picker; empty is this node (the first in the listing). */
+  selected: string;
   loaded: boolean;
   /** The last read failed (a restarting node, an agent-less session...). */
   error: string;
-}>({ node: null, loaded: false, error: '' });
+}>({ node: null, nodes: [], selected: '', loaded: false, error: '' });
+
+/** Picks the node the controls act on (empty: this node). */
+export function selectGuardedNode(name: string) {
+  guarded.selected = name;
+  guarded.node = pick(guarded.nodes, name);
+}
+
+/** The listing's node named `name`, else this node (the first). */
+function pick(nodes: GuardedNode[], name: string): GuardedNode | null {
+  return nodes.find((n) => n.node === name) ?? nodes[0] ?? null;
+}
+
+/** The `node` field for a request about the picked node: absent for this node (the first listed). */
+export function targetNode(): string | undefined {
+  const first = guarded.nodes[0];
+  return guarded.node && first && guarded.node.node !== first.node ? guarded.node.node : undefined;
+}
+
+/** Whether a node has anything the admin should see (a pending window, a restart waiting, a restart under way). */
+export const hasItems = (n: GuardedNode): boolean => !!n.pending || n.pendingRestart.length > 0 || n.restarting;
 
 /** Reads the status now. */
 export async function refreshGuarded(): Promise<GuardedNode | null> {
   try {
     const s = await api.guarded();
-    guarded.node = s.nodes[0] ?? null;
+    guarded.nodes = s.nodes;
+    guarded.node = pick(s.nodes, guarded.selected);
     guarded.error = '';
     return guarded.node;
   } catch (e) {

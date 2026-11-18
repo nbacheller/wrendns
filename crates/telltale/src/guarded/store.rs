@@ -116,6 +116,99 @@ pub(crate) fn for_node(state: &State, node: &str) -> Vec<Stored> {
     all(state).into_iter().filter(|s| s.node == node).collect()
 }
 
+/// REQ: API-902 (ADR-956 §4) — the entries in force for `node`, with whether each came from the
+/// primary's replicated blob. A replica holds no row of its own for what the primary wrote: the
+/// entry reaches it in the node-managed blob it applied, so a node that follows the primary reads
+/// that too (a local row wins), with the state it has *locally* (probation is tracked on the node
+/// that is starting, [`replica_states`]).
+pub(crate) fn effective(
+    cfg: &telltale_config::Config,
+    state: &State,
+    node: &str,
+) -> Vec<(Stored, bool)> {
+    let mut out: Vec<(Stored, bool)> = for_node(state, node)
+        .into_iter()
+        .map(|e| (e, false))
+        .collect();
+    if crate::replication::follows_primary(cfg) {
+        let states = replica_states(state);
+        for mut e in crate::node_managed::applied_guarded(cfg, node) {
+            if out.iter().any(|(l, _)| l.id == e.id) || is_local(&e.id) {
+                continue;
+            }
+            if let Some((digest, st)) = states.get(&e.id)
+                && *digest == e.digest()
+            {
+                e.state = *st;
+            }
+            out.push((e, true));
+        }
+    }
+    out
+}
+
+const REPLICA_STATES: &str = "guarded.replica_states";
+
+/// What a replica made of an entry the primary replicated: setting ID to the digest of the value
+/// it is about and the state it has on this node (`probation`, `active`). Node-local, never
+/// replicated; a changed value on the primary (another digest) starts over from `staged`.
+pub(crate) fn replica_states(
+    state: &State,
+) -> std::collections::BTreeMap<String, (String, EntryState)> {
+    state
+        .meta_get(REPLICA_STATES)
+        .ok()
+        .flatten()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn set_replica_states(
+    state: &State,
+    m: &std::collections::BTreeMap<String, (String, EntryState)>,
+) -> Result<(), String> {
+    if m.is_empty() {
+        return state
+            .meta_set(REPLICA_STATES, None)
+            .map_err(|e| e.to_string());
+    }
+    let t = serde_json::to_string(m).map_err(|e| e.to_string())?;
+    state
+        .meta_set(REPLICA_STATES, Some(&t))
+        .map_err(|e| e.to_string())
+}
+
+/// Moves an entry to `to`: a local row is rewritten; a replicated one gets a local state note (the
+/// primary's copy stays as it is).
+pub(crate) fn transition(
+    state: &State,
+    e: &Stored,
+    replicated: bool,
+    to: EntryState,
+    now: u64,
+    by: &str,
+) -> Result<(), String> {
+    if replicated {
+        let mut m = replica_states(state);
+        m.insert(e.id.clone(), (e.digest(), to));
+        return set_replica_states(state, &m);
+    }
+    let mut n = e.clone();
+    n.state = to;
+    put(state, &n, now, by)
+}
+
+/// Drops an entry from this node: a local row is deleted; a replicated one (the primary keeps it)
+/// is suppressed locally until the primary's copy changes (ADR-957).
+pub(crate) fn drop_entry(state: &State, e: &Stored, replicated: bool) -> Result<(), String> {
+    if replicated {
+        let mut s = suppressed(state);
+        s.insert(e.id.clone(), e.digest());
+        return set_suppressed(state, &s);
+    }
+    delete(state, &e.node, &e.id)
+}
+
 /// Writes (or replaces) an entry. Bumps the configuration version like any managed write, so the
 /// primary publishes it in the node-managed blob.
 pub(crate) fn put(state: &State, s: &Stored, now: u64, by: &str) -> Result<(), String> {
@@ -202,6 +295,62 @@ pub(crate) fn set_suppressed(
     state
         .meta_set(SUPPRESSED, Some(&t))
         .map_err(|e| e.to_string())
+}
+
+const REMOVALS: &str = "guarded.removals";
+
+/// A removal a replica owes the primary: an offline `telltale guarded clear` on a replica can't
+/// reach the primary (the node is stopped), so it is queued here and sent when the node is back
+/// and connected (ADR-957 step 10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Removal {
+    pub(crate) id: String,
+    pub(crate) by: String,
+}
+
+/// The queued removals.
+pub(crate) fn removals(state: &State) -> Vec<Removal> {
+    state
+        .meta_get(REMOVALS)
+        .ok()
+        .flatten()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn set_removals(state: &State, v: &[Removal]) -> Result<(), String> {
+    if v.is_empty() {
+        return state.meta_set(REMOVALS, None).map_err(|e| e.to_string());
+    }
+    let t = serde_json::to_string(v).map_err(|e| e.to_string())?;
+    state
+        .meta_set(REMOVALS, Some(&t))
+        .map_err(|e| e.to_string())
+}
+
+/// Queues a removal of `id` for the primary (once).
+pub(crate) fn queue_removal(state: &State, id: &str, by: &str) -> Result<(), String> {
+    let mut v = removals(state);
+    if !v.iter().any(|r| r.id == id) {
+        v.push(Removal {
+            id: id.to_owned(),
+            by: by.to_owned(),
+        });
+    }
+    set_removals(state, &v)
+}
+
+/// The primary took the removal: it is no longer queued, and the local suppression (which hid the
+/// primary's copy until then) is dropped with it.
+pub(crate) fn removal_done(state: &State, id: &str) -> Result<(), String> {
+    let mut v = removals(state);
+    v.retain(|r| r.id != id);
+    set_removals(state, &v)?;
+    let mut s = suppressed(state);
+    if s.remove(id).is_some() {
+        set_suppressed(state, &s)?;
+    }
+    Ok(())
 }
 
 /// A restore brought the guarded entries of the archive back: every one is marked `staged`, so the

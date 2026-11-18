@@ -251,7 +251,7 @@ fn overlay_guarded(cfg: &mut Config, entries: &[Entry]) {
         return;
     };
     let own = cfg.clone();
-    let mine = guarded_of(entries, &me);
+    let mut mine = guarded_of(entries, &me);
     if mine.is_empty() {
         return;
     }
@@ -263,6 +263,18 @@ fn overlay_guarded(cfg: &mut Config, entries: &[Entry]) {
             None
         }
     };
+    // REQ: API-902 (ADR-956 §4) — what this node made of an entry the primary replicated (on
+    // probation after a start with it, then active) lives here, not in the primary's copy.
+    if let Some(st) = &state {
+        let notes = crate::guarded::store::replica_states(st);
+        for e in &mut mine {
+            if let Some((digest, s)) = notes.get(&e.id)
+                && *digest == e.digest()
+            {
+                e.state = *s;
+            }
+        }
+    }
     crate::guarded::appliers::overlay(cfg, &own, &mine, state.as_ref());
 }
 

@@ -57,14 +57,31 @@ pub(crate) async fn wait_requested() {
 /// Asks the node to drain and exit with [`EXIT_CODE`]. A hard cap exits the process anyway if the
 /// drain does not finish (ADR-956 §4a, failure).
 pub(crate) fn request_exit() {
+    request_exit_with(DRAIN_CAP_SECS + 5, exit_now);
+}
+
+/// [`request_exit`] with the hard cap's length and what it does at the cap passed in (the tests'
+/// form: the real one ends the process).
+pub(crate) fn request_exit_with(cap_secs: u64, at_cap: impl FnOnce() + Send + 'static) {
     if REQUESTED.swap(true, Ordering::SeqCst) {
         return;
     }
     WAKE.notify_waiters();
-    std::thread::spawn(|| {
-        std::thread::sleep(std::time::Duration::from_secs(DRAIN_CAP_SECS + 5));
-        exit_now();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(cap_secs));
+        at_cap();
     });
+}
+
+/// The process's exit code after the node has stopped: [`EXIT_CODE`] for a requested restart, else 0.
+pub(crate) fn exit_status() -> u8 {
+    if requested() { EXIT_CODE } else { 0 }
+}
+
+/// Forgets a request (tests only: the flag is process-wide).
+#[cfg(test)]
+pub(crate) fn reset_for_tests() {
+    REQUESTED.store(false, Ordering::SeqCst);
 }
 
 /// The end of the process for a restart. The end-to-end build replaces it (so a test never kills
@@ -133,17 +150,26 @@ impl Engine {
                         .to_owned(),
                 );
             }
+            // A resolver of this node's own site that is up and serves DNS (a witness only votes,
+            // and another site's resolver doesn't answer this site's clients).
+            let site = self.host.site();
             let others_up = self
                 .host
                 .members()
                 .iter()
-                .filter(|m| m.up && m.name != self.node)
+                .filter(|m| {
+                    m.up && !m.witness && m.site == site && m.id != self.node && m.name != self.node
+                })
                 .count();
             if others_up == 0 {
-                warnings.push(
-                    "No other cluster member is up: DNS from this site stops until it is back."
-                        .to_owned(),
-                );
+                warnings.push(if site.is_empty() {
+                    "No other resolver in the cluster is up: DNS stops until this node is back."
+                        .to_owned()
+                } else {
+                    format!(
+                        "No other resolver in site `{site}` is up: DNS from this site stops until this node is back."
+                    )
+                });
             }
         }
         let window = u64::from(self.host.running_config().api.confirm_window_secs).max(180);

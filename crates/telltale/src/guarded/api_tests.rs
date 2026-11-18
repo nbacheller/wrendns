@@ -535,3 +535,123 @@ async fn api_902_restart_now_refuses_agents_and_tokens() {
         );
     }
 }
+
+// REQ: API-902 (ADR-956 §3) — cookies aren't scoped to a port: on a same-host address change the
+// browser also sends the old session's cookie. A confirmation that carries its `confirmToken` is
+// judged by the token alone, so a stale cookie (or a missing CSRF header) doesn't fail it.
+#[tokio::test(flavor = "multi_thread")]
+async fn api_902_confirm_token_is_not_failed_by_a_stale_cookie() {
+    let h = harness("");
+    let _n = install(&h);
+    let (_, p) = json_of(
+        &h,
+        session_req(
+            &h,
+            5,
+            "POST",
+            "/api/v1/guarded/t-win/preview",
+            Some(&json!({"value": {"port": 40_210}})),
+            None,
+        ),
+    )
+    .await;
+    let body =
+        json!({"previewId": p["previewId"], "confirm": p["phrase"], "value": {"port": 40_210}});
+    let (s, a) = json_of(
+        &h,
+        session_req(&h, 5, "POST", "/api/v1/guarded/t-win", Some(&body), None),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{a}");
+    let (pid, tok) = (
+        a["pendingId"].as_str().unwrap().to_owned(),
+        a["confirmToken"].as_str().unwrap().to_owned(),
+    );
+    let new: SocketAddr = a["newAddress"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .parse()
+        .unwrap();
+    let mut req = unauthenticated(
+        "POST",
+        &format!("/api/v1/guarded/pending/{pid}/confirm"),
+        Some(&json!({"confirmToken": tok})),
+        Some(new),
+    );
+    // The browser's cookie for this host from the old address: expired, and no CSRF header.
+    req.headers_mut().insert(
+        "cookie",
+        format!("{}=expired-or-stale", auth::routes::COOKIE)
+            .parse()
+            .unwrap(),
+    );
+    let (s, v) = json_of(&h, req).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["outcome"], "confirmed");
+}
+
+// REQ: API-902 (ADR-956 §3) — a `proxy_list` proof is a real one: the request has to pass under the
+// new list (its peer is one of the new proxies, and the client address it shows is not the peer's).
+// A request with no forwarded address, or from a peer outside the new list, proves nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn api_902_proxy_list_proof_needs_a_real_forwarded_client() {
+    let h = harness("");
+    let _n = install(&h);
+    let start = |list: Value| {
+        let h = &h;
+        async move {
+            let (_, p) = json_of(
+                h,
+                session_req(
+                    h,
+                    5,
+                    "POST",
+                    "/api/v1/guarded/t-proxy/preview",
+                    Some(&json!({"value": {"proxies": list}})),
+                    None,
+                ),
+            )
+            .await;
+            let body = json!({"previewId": p["previewId"], "confirm": p["phrase"], "value": {"proxies": list}});
+            let (s, a) = json_of(
+                h,
+                session_req(h, 5, "POST", "/api/v1/guarded/t-proxy", Some(&body), None),
+            )
+            .await;
+            assert_eq!(s, StatusCode::ACCEPTED, "{a}");
+            a["pendingId"].as_str().unwrap().to_owned()
+        }
+    };
+    let confirm = |pid: &str, xff: Option<&str>| {
+        let mut r = session_req(
+            &h,
+            5,
+            "POST",
+            &format!("/api/v1/guarded/pending/{pid}/confirm"),
+            Some(&json!({})),
+            None,
+        );
+        if let Some(x) = xff {
+            r.headers_mut()
+                .insert("x-forwarded-for", x.parse().unwrap());
+        }
+        r
+    };
+    // The test peer is 127.0.0.1. A list that names it, and a request that shows a client behind it.
+    let pid = start(json!(["127.0.0.1"])).await;
+    let (s, v) = json_of(&h, confirm(&pid, None)).await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "no forwarded address proves nothing: {v}"
+    );
+    let (s, v) = json_of(&h, confirm(&pid, Some("203.0.113.7"))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["seenClient"], "203.0.113.7");
+    // A list that doesn't name the peer: the request can't pass under it, whatever it claims.
+    let pid = start(json!(["198.51.100.1"])).await;
+    let (s, v) = json_of(&h, confirm(&pid, Some("203.0.113.7"))).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+}

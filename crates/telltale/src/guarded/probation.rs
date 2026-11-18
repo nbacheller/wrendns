@@ -1,4 +1,4 @@
-//! REQ: API-902, CLU-004, OPS-012 (T27.13; ADR-956 §4, ADR-957) — probation: what a node does at
+//! REQ: API-902, CLU-004, OPS-012 (T27.13; ADR-956 Â§4, ADR-957) â€” probation: what a node does at
 //! start with a staged or restored guarded entry.
 //!
 //! A `staged` entry is written at once and applied at the next start. That start marks it on
@@ -168,7 +168,10 @@ pub(crate) fn begin_for(
         }
         return out;
     };
-    let entries: Vec<Stored> = store::for_node(&state, &node);
+    // REQ: API-902 — on a replica the staged entry is the primary's, in the blob it applied.
+    let pairs = store::effective(cfg, &state, &node);
+    let entries: Vec<Stored> = pairs.iter().map(|(e, _)| e.clone()).collect();
+    let replicated = |id: &str| pairs.iter().any(|(e, r)| *r && e.id == id);
     let waiting: Vec<&Stored> = entries
         .iter()
         .filter(|e| matches!(e.state, EntryState::Staged | EntryState::Probation))
@@ -190,12 +193,20 @@ pub(crate) fn begin_for(
         // Two starts with these entries didn't become healthy: drop them and start from the file.
         for id in &listed {
             let dropped = entries.iter().find(|e| e.id == *id);
-            let replacement = dropped.and_then(|d| {
+            let replacement = dropped.filter(|d| !replicated(&d.id)).and_then(|d| {
                 defs.iter()
                     .find(|r| r.row.id == d.id)
                     .and_then(|r| r.applier.failed_start(d, &state))
             });
             match replacement {
+                None if dropped.is_some_and(|d| replicated(&d.id)) => {
+                    // The primary keeps the entry: this node ignores it until it changes.
+                    if let Some(d) = dropped
+                        && let Err(e) = store::drop_entry(&state, d, true)
+                    {
+                        warn!(id = %id, "a failed replicated guarded entry can't be suppressed: {e}");
+                    }
+                }
                 Some(r) => {
                     if let Err(e) = store::put(&state, &r, now, "system") {
                         warn!(id = %id, "the fallback entry can't be written: {e}");
@@ -244,12 +255,17 @@ pub(crate) fn begin_for(
         return out;
     }
     for e in waiting {
-        if e.state == EntryState::Staged {
-            let mut p = e.clone();
-            p.state = EntryState::Probation;
-            if let Err(err) = store::put(&state, &p, now, "system") {
-                warn!(id = %e.id, "can't mark an entry on probation: {err}");
-            }
+        if e.state == EntryState::Staged
+            && let Err(err) = store::transition(
+                &state,
+                e,
+                replicated(&e.id),
+                EntryState::Probation,
+                now,
+                "system",
+            )
+        {
+            warn!(id = %e.id, "can't mark an entry on probation: {err}");
         }
         out.on_probation.push(e.id.clone());
     }
@@ -280,24 +296,37 @@ impl Health {
 /// The node proved healthy: entries on probation become active, the counter is deleted and the
 /// outcome is recorded (`applied`).
 pub(crate) fn mark_healthy(state: &State, node: &str, data_dir: &Path, now: u64) -> Vec<String> {
+    let entries = store::for_node(state, node)
+        .into_iter()
+        .map(|e| (e, false))
+        .collect();
+    mark_healthy_of(state, node, data_dir, now, entries)
+}
+
+/// [`mark_healthy`] over `entries` (each with whether the primary replicated it).
+pub(crate) fn mark_healthy_of(
+    state: &State,
+    node: &str,
+    data_dir: &Path,
+    now: u64,
+    entries: Vec<(Stored, bool)>,
+) -> Vec<String> {
     let mut done = Vec::new();
-    for e in store::for_node(state, node) {
-        if e.state == EntryState::Probation {
-            let mut a = e.clone();
-            a.state = EntryState::Active;
-            if store::put(state, &a, now, "system").is_ok() {
-                store::record_outcome(
-                    state,
-                    GuardedOutcome {
-                        setting: e.id.clone(),
-                        node: node.to_owned(),
-                        outcome: "applied".to_owned(),
-                        reason: None,
-                        at: now,
-                    },
-                );
-                done.push(e.id);
-            }
+    for (e, replicated) in entries {
+        if e.state == EntryState::Probation
+            && store::transition(state, &e, replicated, EntryState::Active, now, "system").is_ok()
+        {
+            store::record_outcome(
+                state,
+                GuardedOutcome {
+                    setting: e.id.clone(),
+                    node: node.to_owned(),
+                    outcome: "applied".to_owned(),
+                    reason: None,
+                    at: now,
+                },
+            );
+            done.push(e.id);
         }
     }
     clear_sidecar(data_dir);
@@ -317,7 +346,7 @@ static FALLBACK: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 /// A confirmed guarded listener couldn't bind at this start (an interface that isn't up yet, a DHCP
 /// or VLAN address): the node runs on the file's value for this start only, with the health reason
 /// `guarded_bind_fallback` and an audit row (`failed_start`). The entry stays and is tried again at
-/// the next start (ADR-956 §4).
+/// the next start (ADR-956 Â§4).
 pub(crate) fn note_bind_fallback(state: Option<&State>, node: &str, id: &str, now: u64) {
     if let Ok(mut f) = FALLBACK.lock() {
         f.insert(id.to_owned());
@@ -345,6 +374,45 @@ pub(crate) fn note_bind_fallback(state: Option<&State>, node: &str, id: &str, no
             },
         );
     }
+}
+
+/// Whether a start-up failure is a listener that couldn't bind (an interface that isn't up yet, an
+/// address in use, a port the process may not open).
+pub(crate) fn is_bind_failure(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind::{AddrInUse, AddrNotAvailable, PermissionDenied};
+    matches!(e.kind(), AddrNotAvailable | AddrInUse | PermissionDenied)
+}
+
+/// REQ: API-902 (ADR-956 §4) — the node failed to start because a listener couldn't bind. Every
+/// confirmed (active) listener entry of this node (a `window` row whose proof is a new socket) is
+/// set aside for this start only ([`note_bind_fallback`]: audit row, outcome, health reason); the
+/// caller rebuilds the configuration (the overlay skips what fell back) and starts again. The
+/// entries stay, and the next start tries them again. Returns the settings that fell back.
+pub(crate) fn fall_back_after_bind_failure(
+    file_cfg: &Config,
+    defs: &[RowDef],
+    now: u64,
+) -> Vec<String> {
+    use telltale_config::guarded::{Mode, Proof};
+    if super::ignored() {
+        return Vec::new();
+    }
+    let node = super::this_node().unwrap_or_else(|| super::node_label(file_cfg));
+    let path = crate::managed::state_path(file_cfg);
+    let Ok(state) = State::open(&path) else {
+        return Vec::new();
+    };
+    let mut done = Vec::new();
+    for e in store::for_node(&state, &node) {
+        let listener = defs.iter().any(|d| {
+            d.row.id == e.id && d.row.mode == Mode::Window && d.row.proof == Some(Proof::NewSocket)
+        });
+        if e.state == EntryState::Active && listener && !fell_back(&e.id) {
+            note_bind_fallback(Some(&state), &node, &e.id, now);
+            done.push(e.id);
+        }
+    }
+    done
 }
 
 /// Whether `id` fell back for this start (the overlay skips it).
@@ -375,21 +443,22 @@ pub(crate) fn spawn_watch(
     state: Arc<State>,
     node: String,
     data_dir: PathBuf,
+    cfg: Config,
     deadline_secs: u64,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) {
-    let waiting = store::for_node(&state, &node)
+    let waiting = store::effective(&cfg, &state, &node)
         .iter()
-        .any(|e| e.state == EntryState::Probation);
+        .any(|(e, _)| e.state == EntryState::Probation);
     if !waiting {
         return;
     }
     tokio::spawn(async move {
         let started = std::time::Instant::now();
         loop {
-            let needs_key = store::for_node(&state, &node)
+            let needs_key = store::effective(&cfg, &state, &node)
                 .iter()
-                .any(|e| e.state == EntryState::Probation && e.id == "secrets-key");
+                .any(|(e, _)| e.state == EntryState::Probation && e.id == "secrets-key");
             let h = Health {
                 state_open: true,
                 api_bound: src.readiness.serving(),
@@ -406,7 +475,13 @@ pub(crate) fn spawn_watch(
                 ),
             };
             if h.healthy(needs_key) {
-                mark_healthy(&state, &node, &data_dir, super::now_secs());
+                mark_healthy_of(
+                    &state,
+                    &node,
+                    &data_dir,
+                    super::now_secs(),
+                    store::effective(&cfg, &state, &node),
+                );
                 return;
             }
             if started.elapsed().as_secs() >= deadline_secs {
