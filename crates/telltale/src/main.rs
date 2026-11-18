@@ -79,6 +79,7 @@ mod ship;
 mod simulate;
 mod sinks;
 mod smtp;
+mod snmp_cli;
 mod support;
 mod support_cli;
 mod support_log;
@@ -128,6 +129,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// REQ: DSC-003 (T25.4) — SNMP diagnostics for the network inventory (read-only).
+    Snmp {
+        #[command(subcommand)]
+        command: SnmpCommand,
+    },
     /// Run the resolver.
     Run {
         /// Config files, later ones overriding earlier ones. Defaults to `$TELLTALE_CONFIG`,
@@ -638,6 +644,24 @@ enum ListsCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum SnmpCommand {
+    /// Read one table from a configured SNMP agent and print its rows. Takes the agent's
+    /// configured name, never an address; the credential is read from its file and never
+    /// printed.
+    Walk {
+        /// The agent's name, from `[[discovery.snmp_agent]]`.
+        #[arg(long)]
+        agent: String,
+        /// Which table: the ARP table, interfaces, the bridge (FDB) table or LLDP neighbours.
+        #[arg(long, value_enum, default_value = "arp")]
+        table: snmp_cli::Table,
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum QlogCommand {
     /// Find logged queries. Filters combine (AND); prints newest first.
     Search {
@@ -764,6 +788,24 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Run { config } => run(config),
+        Command::Snmp {
+            command:
+                SnmpCommand::Walk {
+                    agent,
+                    table,
+                    config,
+                },
+        } => Ok(
+            server::load(&config_files(config)).map_or(ExitCode::FAILURE, |cfg| {
+                match snmp_cli::run_walk(&cfg, &agent, table, &mut io::stdout().lock()) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        ExitCode::FAILURE
+                    }
+                }
+            }),
+        ),
         Command::Config { command } => run_config(command),
         Command::Presets { command } => run_presets(command),
         Command::Services {

@@ -2802,6 +2802,7 @@ dependencies = [
  "telltale-net",
  "telltale-policy",
  "telltale-proto",
+ "telltale-snmp",
  "telltale-store",
  "telltale-support",
  "telltale-telemetry",

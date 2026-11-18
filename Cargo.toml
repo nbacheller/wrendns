@@ -67,6 +67,10 @@ opt-level = "s"
 [profile.release.package.telltale-git]
 opt-level = "s"
 
+# REQ: DSC-003 (ADR-908) — SNMP polling runs off the DNS path (in the discovery worker): size, not speed.
+[profile.release.package.telltale-snmp]
+opt-level = "s"
+
 [profile.release.package.telltale-cluster]
 opt-level = "s"
 
