@@ -156,12 +156,17 @@ admin_login() { # address
   [ -n "$COOKIE" ] && [ -n "$CSRF" ]
 }
 
-# An API call as the signed-in admin on a node: method path [json-body]. Prints the HTTP status.
-admin_api() { # address method path [json-body]
-  local args=(-s -o /dev/null -w '%{http_code}' -X "$2" -H "Cookie: $COOKIE" -H "X-CSRF-Token: $CSRF")
+# An API call as the signed-in admin on a node: address method path [json-body]. Prints the body, then
+# the HTTP status on the last line.
+admin_api() {
+  local args=(-s -w '\n%{http_code}' -X "$2" -H "Cookie: $COOKIE" -H "X-CSRF-Token: $CSRF")
   if [ -n "${4:-}" ]; then args+=(-H 'Content-Type: application/json' -d "$4"); fi
   docker run --rm --network "$NET" --entrypoint curl "$KA_IMAGE" "${args[@]}" "http://$1:8053$3" 2>/dev/null || true
 }
+
+# The HTTP status of an admin_api answer, and its body (the first 300 characters, for a failure message).
+api_status() { tail -n 1 <<<"$1"; }
+api_body() { head -n -1 <<<"$1" | head -c 300; }
 
 # 0 when the VIP answers as the wanted node, for up to budget_ms.
 vip_answers_as() { # budget_ms node
@@ -268,12 +273,13 @@ pass "the VIP is back on a; a is a replica, b the primary"
 
 step "e. maintenance on a hands the VIP to b, and ending it brings the VIP back"
 admin_login "$SUBNET.11" || bad "the admin can't sign in on node a"
-[ "$(admin_api "$SUBNET.11" POST /api/v1/nodes/local/maintenance '{"forSecs":300,"reason":"keepalived e2e"}')" = 200 ] \
-  || bad "could not start maintenance on node a"
+out=$(admin_api "$SUBNET.11" POST /api/v1/nodes/local/maintenance '{"forSecs":300,"reason":"keepalived e2e"}')
+[ "$(api_status "$out")" = 200 ] || bad "could not start maintenance on node a (HTTP $(api_status "$out"): $(api_body "$out"))"
 until_ok 30000 node_is "$VIP" telltale-b || bad "the VIP did not move to b while a is in maintenance (owner: '$(vip_owner)')"
 [ "$(vip_owner)" = b ] || bad "the VIP answers as telltale-b but is held by '$(vip_owner)'"
 [ "$(node_at "$SUBNET.11")" = telltale-a ] || bad "node a stopped answering on its own address during maintenance"
-[ "$(admin_api "$SUBNET.11" DELETE /api/v1/nodes/local/maintenance)" = 200 ] || bad "could not end maintenance on node a"
+out=$(admin_api "$SUBNET.11" DELETE /api/v1/nodes/local/maintenance)
+[ "$(api_status "$out")" = 200 ] || bad "could not end maintenance on node a (HTTP $(api_status "$out"): $(api_body "$out"))"
 vip_answers_as 60000 a || bad "the VIP did not come back to a after maintenance ended (owner: '$(vip_owner)')"
 pass "the VIP moved to b in maintenance and back to a after it, and a kept answering on its own address"
 
