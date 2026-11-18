@@ -815,7 +815,10 @@ async fn ha_get(
     let url = format!("{}/api/template", cfg.url.trim_end_matches('/'));
     let body = serde_json::json!({ "template": HA_ENTITYLESS_TEMPLATE }).to_string();
     let req = http::Request::post(url.as_str())
-        .header("authorization", format!("Bearer {token}"))
+        .header(
+            "authorization",
+            crate::routers::bearer_header(token).map_err(|e| Ended::Failed(e.to_string()))?,
+        )
         .header("content-type", "application/json")
         .header("accept", "text/plain, application/json")
         .body(body.into_bytes())

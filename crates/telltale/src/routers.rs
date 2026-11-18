@@ -914,7 +914,10 @@ async fn poll_home_assistant(
     let url = format!("{base}/api/template");
     let body = serde_json::json!({ "template": HA_TEMPLATE }).to_string();
     let req = http::Request::post(url.as_str())
-        .header("authorization", format!("Bearer {}", token.expose()))
+        .header(
+            "authorization",
+            bearer_header(token.expose()).map_err(|e| e.to_string())?,
+        )
         .header("content-type", "application/json")
         .header("accept", "text/plain, application/json")
         .body(body.into_bytes())
@@ -2257,3 +2260,14 @@ mod tests {
 #[cfg(test)]
 #[path = "routers_tests.rs"]
 mod routers_tests;
+
+/// Builds a `Bearer` header value marked sensitive (never shown by `Debug`), with the intermediate
+/// text held in a zeroizing buffer. REQ: DSC-009
+pub(crate) fn bearer_header(
+    token: &str,
+) -> Result<http::HeaderValue, http::header::InvalidHeaderValue> {
+    let text = zeroize::Zeroizing::new(format!("Bearer {token}"));
+    let mut v = http::HeaderValue::from_str(text.as_str())?;
+    v.set_sensitive(true);
+    Ok(v)
+}
