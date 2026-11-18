@@ -15,6 +15,7 @@
   let copied = $state(false);
   let armed = $state<'' | 'rotate' | 'revoke'>('');
   let maxText = $state('');
+  let node = $state('');
 
   async function load() {
     try {
@@ -26,6 +27,9 @@
     }
   }
   $effect(() => void load());
+  $effect(() => {
+    api.info().then((i) => (node = i.node)).catch(() => (node = ''));
+  });
 
   // The address Home Assistant and apps use: this page's own.
   const host = location.hostname;
@@ -100,6 +104,10 @@
     Lets tools that talk to Pi-hole (the Home Assistant Pi-hole integration, phone apps, dashboards) read TelltaleDNS's
     statistics and turn blocking off for a while and back on. Nothing else: lists, rules and settings are not reachable through
     it. It is off until you turn it on, and it needs the token made here.
+  </p>
+  <p class="small" data-testid="pihole-api-node">
+    This node{node ? ` (${node})` : ''} only: the setting and the token are not shared in a cluster. Point Home Assistant at this
+    node's own address, not at a cluster virtual IP.
   </p>
   <ErrorNote {error} />
   {#if status}

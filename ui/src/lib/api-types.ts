@@ -18,7 +18,7 @@ export interface paths {
          *     (`topItems=N`: the top permitted and blocked names), `enable`, and `disable` or
          *     `disable=<seconds>` (the same pause as `POST /api/v1/blocking/pause`; no number pauses for the
          *     longest allowed, default 60 minutes). `versions` needs no token. Without a valid token a read
-         *     answers `[]` and a write 401; the API being off is the ordinary 404. Prefer v6: v5 puts the
+         *     answers `[]` and a write 401; the API being off answers as any unknown page does. Prefer v6: v5 puts the
          *     token in the address, which proxies and logs may keep.
          */
         get: operations["v5"];

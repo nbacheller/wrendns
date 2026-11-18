@@ -40,6 +40,10 @@ const STATS_TTL: Duration = Duration::from_secs(10);
 const TOTAL_TTL: Duration = Duration::from_secs(600);
 /// `pihole_api.denied` entries: at most one per client address per minute.
 const DENIED_EVERY_SECS: u64 = 60;
+/// `pihole_api.denied` entries: at most this many in all per minute.
+const DENIED_MAX_PER_WINDOW: usize = 10;
+/// A v6 session ends this long after sign-in, however often it is used.
+const SESSION_MAX_SECS: u64 = 24 * 3600;
 /// The window every statistic covers.
 const WINDOW_SECS: u64 = 86_400;
 /// The most clients and names counted (what `top_range` is asked for).
@@ -72,6 +76,8 @@ struct Session {
     sid_hash: Vec<u8>,
     csrf: String,
     expires: u64,
+    /// Hard end (sign-in plus `SESSION_MAX_SECS`).
+    until: u64,
 }
 
 /// The statistics one 24 hour window gives (shared by the v6 and v5 summaries).
@@ -289,7 +295,7 @@ impl PiholeCompat {
     fn open_session(&self, now: u64) -> (String, String) {
         let (sid, csrf) = (crypto::random_secret(), crypto::random_secret());
         let mut s = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
-        s.retain(|x| x.expires > now);
+        s.retain(|x| x.expires > now && x.until > now);
         while s.len() >= MAX_SESSIONS {
             s.remove(0);
         }
@@ -297,6 +303,7 @@ impl PiholeCompat {
             sid_hash: crypto::secret_hash(&sid),
             csrf: csrf.clone(),
             expires: now + SESSION_SECS,
+            until: now + SESSION_MAX_SECS,
         });
         (sid, csrf)
     }
@@ -308,7 +315,7 @@ impl PiholeCompat {
         }
         let hash = crypto::secret_hash(sid);
         let mut s = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
-        s.retain(|x| x.expires > now);
+        s.retain(|x| x.expires > now && x.until > now);
         let Some(x) = s.iter_mut().find(|x| crypto::ct_eq(&x.sid_hash, &hash)) else {
             return false;
         };
@@ -327,19 +334,21 @@ impl PiholeCompat {
             .retain(|x| !crypto::ct_eq(&x.sid_hash, &hash));
     }
 
-    /// `true` once per client address per minute (so a scanner can't fill the audit log).
+    /// `true` once per client network per minute (an IPv6 client by its /64), and at most
+    /// `DENIED_MAX_PER_WINDOW` in all per minute, so no scanner can flood the audit log. The map
+    /// holds only the entries allowed in the last minute, so it never holds more than that cap.
     fn may_audit_denied(&self, ip: IpAddr, now: u64) -> bool {
+        let key = match ip {
+            IpAddr::V6(v6) => IpAddr::V6((u128::from(v6) & (u128::MAX << 64)).into()),
+            v4 @ IpAddr::V4(_) => v4,
+        };
         let mut m = self.denied.lock().unwrap_or_else(PoisonError::into_inner);
-        if m.len() > 1_024 {
-            m.retain(|_, t| now.saturating_sub(*t) < DENIED_EVERY_SECS);
+        m.retain(|_, t| now.saturating_sub(*t) < DENIED_EVERY_SECS);
+        if m.contains_key(&key) || m.len() >= DENIED_MAX_PER_WINDOW {
+            return false;
         }
-        match m.get(&ip) {
-            Some(t) if now.saturating_sub(*t) < DENIED_EVERY_SECS => false,
-            _ => {
-                m.insert(ip, now);
-                true
-            }
-        }
+        m.insert(key, now);
+        true
     }
 
     fn cached_stats(&self) -> Option<Arc<Stats>> {
@@ -530,6 +539,14 @@ pub(crate) async fn put_settings(
         a2.audit_ready()?;
         let before = a2.pihole().status();
         let now = unix_now();
+        // Validate the enable precondition before applying anything.
+        if req.enabled == Some(true) && !before.enabled && !before.token_set {
+            return Err(Problem::new(
+                Code::Conflict,
+                "the Pi-hole compatible API has no token yet",
+            )
+            .hint("Issue one first: POST /api/v1/pihole-api/token (Settings → Pi-hole)."));
+        }
         if let Some(m) = req.max_pause_minutes {
             a2.pihole().set_max_pause(m, now)?;
             a2.record(
@@ -706,33 +723,40 @@ fn check(
         return Err(Refusal::Absent);
     }
     let key = limiter_key(ip);
-    if let Some(wait) = auth.locked(&key, now) {
-        return Err(Refusal::Locked(wait));
-    }
+    // A correct credential (256 bits) goes through even from a locked address: another client
+    // behind the same address (NAT, a proxy, the Docker bridge) with a stale token must not
+    // lock the right one out. The lock applies to failures only.
     if ok(pc) {
         auth.succeed(&key);
         pc.touch(now);
-        Ok(())
-    } else {
-        auth.fail(&key, now);
-        Err(Refusal::Bad)
+        return Ok(());
     }
+    if let Some(wait) = auth.locked(&key, now) {
+        return Err(Refusal::Locked(wait));
+    }
+    auth.fail(&key, now);
+    Err(Refusal::Bad)
 }
 
-/// Audits a refused write (at most once a minute per address).
-fn audit_denied(auth: &Auth, ip: IpAddr, path: &str, why: &str, now: u64) {
+/// Audits a refused write (rate limited; never while the API is off). The database write runs
+/// off the async threads.
+fn audit_denied(auth: &Arc<Auth>, ip: IpAddr, path: &str, why: &str, now: u64) {
     if auth.pihole().may_audit_denied(ip, now) {
-        auth.record(
-            &Actor {
-                name: "pihole-api (no valid token)".into(),
-                kind: "token",
-                remote: Some(ip.to_string()),
-                reason: None,
-            },
-            "pihole_api.denied",
-            path,
-            &json!({ "why": why }),
-        );
+        let a = Arc::clone(auth);
+        let (path, why) = (path.to_owned(), why.to_owned());
+        drop(tokio::task::spawn_blocking(move || {
+            a.record(
+                &Actor {
+                    name: "pihole-api (no valid token)".into(),
+                    kind: "token",
+                    remote: Some(ip.to_string()),
+                    reason: None,
+                },
+                "pihole_api.denied",
+                &path,
+                &json!({ "why": why }),
+            );
+        }));
     }
 }
 
@@ -786,7 +810,7 @@ fn sid_of(headers: &HeaderMap, q: &HashMap<String, String>) -> Option<String> {
 /// Authenticates a v6 read or write by its session; `Ok(remote)` when it may go on.
 #[allow(clippy::result_large_err)] // the refusal is the response to send
 fn v6_gate(
-    auth: &Auth,
+    auth: &Arc<Auth>,
     ext: &axum::http::Extensions,
     headers: &HeaderMap,
     q: &HashMap<String, String>,
@@ -802,11 +826,10 @@ fn v6_gate(
     }) {
         Ok(()) => Ok(ip),
         Err(r) => {
-            if write {
+            if write && !matches!(r, Refusal::Absent) {
                 let why = match r {
-                    Refusal::Absent => "off",
                     Refusal::Locked(_) => "locked",
-                    Refusal::Bad => "no valid session",
+                    _ => "no valid session",
                 };
                 audit_denied(auth, ip, uri.path(), why, now);
             }
@@ -1354,7 +1377,7 @@ fn v5_denied(r: &Refusal, uri: &Uri, write: bool) -> Response {
 /// (`topItems=N`: the top permitted and blocked names), `enable`, and `disable` or
 /// `disable=<seconds>` (the same pause as `POST /api/v1/blocking/pause`; no number pauses for the
 /// longest allowed, default 60 minutes). `versions` needs no token. Without a valid token a read
-/// answers `[]` and a write 401; the API being off is the ordinary 404. Prefer v6: v5 puts the
+/// answers `[]` and a write 401; the API being off answers as any unknown page does. Prefer v6: v5 puts the
 /// token in the address, which proxies and logs may keep.
 #[utoipa::path(get, path = "/admin/api.php", tag = "pihole-compat", security(()),
     responses((status = 200, description = "Pi-hole v5's answer for the call."),
@@ -1371,10 +1394,8 @@ pub(crate) async fn v5(
     let now = unix_now();
     let has = |k: &str| q.contains_key(k);
     if !auth.pihole().serving() {
-        if has("enable") || has("disable") {
-            audit_denied(&auth, ip, uri.path(), "off", now);
-        }
-        return crate::not_found(&uri).into_response();
+        // Off: the same answer as any unknown path (the web UI), and nothing audited.
+        return crate::ui::serve(&axum::http::Method::GET, &uri, &headers);
     }
     // Version information needs no token in v5, and the Home Assistant integration asks for it
     // without one: it holds only our version.
@@ -1394,7 +1415,7 @@ pub(crate) async fn v5(
     let write = has("enable") || has("disable");
     let presented = q.get("auth").cloned().unwrap_or_default();
     if let Err(r) = check(&auth, ip, now, |pc| pc.token_ok(&presented)) {
-        if write {
+        if write && !matches!(r, Refusal::Absent) {
             let why = match r {
                 Refusal::Locked(_) => "locked",
                 _ => "no valid token",

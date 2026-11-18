@@ -5652,7 +5652,9 @@ test('api_005 pihole compatible api: off by default, a token shown once, v6 and 
   await expect(card.getByTestId('pihole-api-state')).toContainText('No token yet');
   // Off: Pi-hole's paths are the API's ordinary 404.
   expect((await r.post('/api/auth', { data: { password: 'x' } })).status()).toBe(404);
-  expect((await r.get('/admin/api.php?summaryRaw&auth=x')).status()).toBe(404);
+  // (v5's path answers as any unknown page does, the web UI, so it can't be told from one.)
+  expect((await r.get('/admin/api.php?summaryRaw&auth=x')).status()).toBe((await r.get('/admin/nothing.php')).status());
+  await expect(card.getByTestId('pihole-api-node')).toContainText('This node');
 
   // On: the token appears once.
   await toggle.check();
@@ -5715,7 +5717,15 @@ test('api_005 pihole compatible api: off by default, a token shown once, v6 and 
   await expect(card.getByTestId('pihole-api-max-save')).toBeDisabled();
   expect((await (await r.get('/api/v1/pihole-api')).json()).maxPauseMinutes).toBe(90);
 
-  // Off again: 404, and the audit log has the changes.
+  // Remove the token: two clicks, then it is off, and the paths are 404 again.
+  await card.getByTestId('pihole-api-revoke').click();
+  await card.getByTestId('pihole-api-revoke').click();
+  await expect(toggle).not.toBeChecked();
+  expect((await r.post('/api/auth', { data: { password: next } })).status()).toBe(404);
+  await expect(card.getByTestId('pihole-api-state')).toContainText('No token yet');
+  // On again (a new token), then off again: 404, and the audit log has the changes.
+  await toggle.check();
+  await expect(card.getByTestId('pihole-api-token')).toBeVisible();
   await toggle.uncheck();
   await expect(toggle).not.toBeChecked();
   expect((await r.post('/api/auth', { data: { password: next } })).status()).toBe(404);
@@ -5723,6 +5733,7 @@ test('api_005 pihole compatible api: off by default, a token shown once, v6 and 
   expect(audit).toContain('pihole_api.enable');
   expect(audit).toContain('pihole_api.disable');
   expect(audit).toContain('pihole_api.token_rotate');
+  expect(audit).toContain('pihole_api.token_revoke');
   expect(audit).not.toContain(next);
 });
 

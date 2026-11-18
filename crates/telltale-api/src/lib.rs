@@ -1403,7 +1403,7 @@ async fn fallback(
         (name = "queries", description = "The query log and explanations of decisions."),
         (name = "config", description = "Lists, groups, clients, and upstreams as running."),
         (name = "agents", description = "Changes AI agents planned through MCP, and their approval."),
-        (name = "pihole-compat", description = "REQ: API-005 (T24.10, ADR-961) — the part of             Pi-hole's v6 (`/api/...`) and v5 (`/admin/api.php`) interfaces that dashboards, phone             apps and the Home Assistant Pi-hole integration use. Off unless an admin turns it on             (Settings → Pi-hole); authenticated by its own token, not by the sign-in methods             below; it reads the statistics and turns blocking off for a while and on again, and             changes nothing else."),
+        (name = "pihole-compat", description = "REQ: API-005 (T24.10, ADR-961) - the part of Pi-hole's v6             (`/api/...`) and v5 (`/admin/api.php`) interfaces that dashboards, phone apps and the             Home Assistant Pi-hole integration use. Off unless an admin turns it on (Settings,             Pi-hole); authenticated by its own token, not by the sign-in methods under the auth             tag; it reads the statistics and turns blocking off for a while and on again, and             changes nothing else."),
         (name = "auth", description = "Sign-in, two-factor, API tokens, and users. Everything \
             else needs one of: the session cookie from POST /auth/login (plus X-CSRF-Token on \
             changes), Authorization: Bearer <token>, or HTTP Basic for users who allow it.")

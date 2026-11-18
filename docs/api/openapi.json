@@ -15,7 +15,7 @@
           "pihole-compat"
         ],
         "summary": "Pi-hole v5: `/admin/api.php`.",
-        "description": "Part of the Pi-hole compatible API. The query string picks the call, as in Pi-hole v5, with\nthe token as `auth`: `summaryRaw` and `summary` (the 24 hour totals), `status`, `topItems`\n(`topItems=N`: the top permitted and blocked names), `enable`, and `disable` or\n`disable=<seconds>` (the same pause as `POST /api/v1/blocking/pause`; no number pauses for the\nlongest allowed, default 60 minutes). `versions` needs no token. Without a valid token a read\nanswers `[]` and a write 401; the API being off is the ordinary 404. Prefer v6: v5 puts the\ntoken in the address, which proxies and logs may keep.",
+        "description": "Part of the Pi-hole compatible API. The query string picks the call, as in Pi-hole v5, with\nthe token as `auth`: `summaryRaw` and `summary` (the 24 hour totals), `status`, `topItems`\n(`topItems=N`: the top permitted and blocked names), `enable`, and `disable` or\n`disable=<seconds>` (the same pause as `POST /api/v1/blocking/pause`; no number pauses for the\nlongest allowed, default 60 minutes). `versions` needs no token. Without a valid token a read\nanswers `[]` and a write 401; the API being off answers as any unknown page does. Prefer v6: v5 puts the\ntoken in the address, which proxies and logs may keep.",
         "operationId": "v5",
         "responses": {
           "200": {
@@ -24129,7 +24129,7 @@
     },
     {
       "name": "pihole-compat",
-      "description": "REQ: API-005 (T24.10, ADR-961) — the part of             Pi-hole's v6 (`/api/...`) and v5 (`/admin/api.php`) interfaces that dashboards, phone             apps and the Home Assistant Pi-hole integration use. Off unless an admin turns it on             (Settings → Pi-hole); authenticated by its own token, not by the sign-in methods             below; it reads the statistics and turns blocking off for a while and on again, and             changes nothing else."
+      "description": "REQ: API-005 (T24.10, ADR-961) - the part of Pi-hole's v6             (`/api/...`) and v5 (`/admin/api.php`) interfaces that dashboards, phone apps and the             Home Assistant Pi-hole integration use. Off unless an admin turns it on (Settings,             Pi-hole); authenticated by its own token, not by the sign-in methods under the auth             tag; it reads the statistics and turns blocking off for a while and on again, and             changes nothing else."
     },
     {
       "name": "auth",
