@@ -45,7 +45,8 @@ pub struct OnBehalfOf(pub IpAddr);
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+        // A clock before 1970 fails closed: every token then reads as expired.
+        .map_or(u64::MAX, |d| d.as_secs())
 }
 
 async fn blocking<T: Send + 'static>(
@@ -1271,7 +1272,7 @@ pub(crate) async fn create_display(
         let networks: Vec<String> = nets.iter().map(|(n, l)| format!("{n}/{l}")).collect();
         let (id, secret) = (crypto::random_id(), crypto::random_secret());
         let now = now();
-        let expires = r.expires_in_days.map(|d| now + u64::from(d.max(1)) * 86_400);
+        let expires = r.expires_in_days.map(|d| now.saturating_add(u64::from(d.max(1)) * 86_400));
         auth.state()
             .create_token(
                 &id,
@@ -1757,7 +1758,9 @@ pub(crate) async fn create_token(
         }
         let (id, secret) = (crypto::random_id(), crypto::random_secret());
         let now = now();
-        let expires = r.expires_in_days.map(|d| now + u64::from(d) * 86_400);
+        let expires = r
+            .expires_in_days
+            .map(|d| now.saturating_add(u64::from(d) * 86_400));
         auth.state()
             .create_token(
                 &id,

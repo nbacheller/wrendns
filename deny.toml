@@ -5,18 +5,10 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = [
-    # RUSTSEC-2023-0071 (rsa, "Marvin attack"): timing side channel in RSA private-key
-    # operations (PKCS#1 v1.5 decryption, signing). `rsa` arrives through `openidconnect`
-    # (OIDC sign-in, API-004), where TelltaleDNS only *verifies* ID-token signatures with the
-    # provider's public keys: it holds no RSA private key to leak. No fixed version exists
-    # yet. Revisit when one does (ADR-034).
-    { id = "RUSTSEC-2023-0071", reason = "rsa is used for public-key signature verification only (OIDC ID tokens); no private keys" },
-    # RUSTSEC-2026-0543 (chrono, unmaintained): an "unmaintained" notice, not a vulnerability.
-    # `chrono` arrives through `openidconnect` and `oauth2` (OIDC sign-in, API-004); dropping
-    # it means replacing the OIDC library. Tracked in fork issue #17; revisit at each upstream sync.
-    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, not vulnerable; required by openidconnect (fork #17)" },
-]
+# REQ: API-004 (ADR-952) — no advisory is ignored. The two that the OIDC library brought in
+# (RUSTSEC-2023-0071 for rsa, RUSTSEC-2026-0543 for chrono) left the tree with the in-tree OIDC
+# verifier (ADR-951), so their ignores were removed rather than kept with stale reasons.
+ignore = []
 
 [licenses]
 version = 2

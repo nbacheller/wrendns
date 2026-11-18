@@ -227,7 +227,7 @@
       { "name": "axum", "crate": "axum", "why": "The REST API and the MCP endpoint." },
       { "name": "utoipa", "crate": "utoipa", "why": "OpenAPI generated from the handlers, so the docs and UI types can't drift." },
       { "name": "argon2 + totp-rs", "crate": "argon2", "why": "Password hashing and authenticator-app codes." },
-      { "name": "openidconnect", "crate": "openidconnect", "why": "Sign-in with Keycloak, Authentik, or any OIDC provider." },
+      { "name": "ring", "crate": "ring", "why": "Sign-in with Keycloak, Authentik, or any OIDC provider: the in-tree verifier checks ID-token and access-token signatures (RSA, ECDSA, Ed25519), ADR-951." },
       { "name": "rcgen + x509-parser", "crate": "rcgen", "why": "The cluster CA and node certificates." },
       { "name": "prost", "crate": "prost", "why": "Protobuf frames on the cluster channel, versioned for N/N-1." },
       { "name": "minisign-verify", "crate": "minisign-verify", "why": "Checks release signatures in self-update and the update check." },

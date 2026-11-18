@@ -1,137 +1,196 @@
-//! REQ: API-004 — the whole sign-in flow against an in-process fake identity provider:
-//! discovery, JWKS, the token endpoint, RS256-signed ID tokens with a nonce and groups.
+//! REQ: API-004 — the whole sign-in flow against in-process fake identity providers: discovery,
+//! the key set, the token endpoint, and ID tokens signed with each provider's keys (ring, ADR-951).
 
 // Short names (h, r, v) keep the request/response story readable.
 #![allow(clippy::many_single_char_names)]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{Request, StatusCode};
-use axum::response::Json;
+use axum::http::{HeaderMap, Request, StatusCode};
+use axum::response::{Json, Response};
 use axum::routing::{get, post};
-use openidconnect::core::{
-    CoreGenderClaim, CoreJsonWebKey, CoreJweContentEncryptionAlgorithm, CoreJwsSigningAlgorithm,
-    CoreProviderMetadata, CoreResponseType, CoreRsaPrivateSigningKey, CoreSubjectIdentifierType,
-};
-use openidconnect::{
-    AdditionalClaims, Audience, AuthUrl, EmptyAdditionalProviderMetadata, IdToken, IdTokenClaims,
-    IssuerUrl, JsonWebKeyId, JsonWebKeySetUrl, Nonce, PrivateSigningKey, ResponseTypes,
-    StandardClaims, SubjectIdentifier, TokenUrl,
-};
-use serde::{Deserialize, Serialize};
+use base64::Engine as _;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
+use super::jose::Alg;
+use super::testkit::{Signer, hs256_token, unsigned_token};
 use super::{Fetch, McpOAuth, Oidc, OidcSettings, ProviderSettings};
 use crate::auth::{Auth, Role, Settings};
 
 const ISSUER: &str = "https://idp.test";
-const PEM: &str = include_str!("test-key.pem");
+const OTHER: &str = "https://other.test";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Groups {
-    groups: Vec<String>,
-}
-impl AdditionalClaims for Groups {}
+/// The codes a provider issues: code -> the ID token its token endpoint returns for it.
+type Codes = Arc<Mutex<HashMap<String, String>>>;
 
-/// What the fake identity provider issues for a code: (subject, username, groups).
-type Codes = Arc<Mutex<HashMap<String, (String, String, Vec<String>, String)>>>;
-
+/// One fake identity provider: the key set it publishes, what its discovery advertises, the
+/// client secret its token endpoint requires (none: a public client), and its counters.
 #[derive(Clone)]
 struct Idp {
+    issuer: String,
+    keys: Arc<Mutex<Vec<Signer>>>,
+    /// `id_token_signing_alg_values_supported`, when advertised.
+    advertised: Option<Vec<String>>,
+    secret: Option<String>,
     codes: Codes,
-    key: Arc<CoreRsaPrivateSigningKey>,
+    /// Key-set requests served.
+    jwks_hits: Arc<AtomicUsize>,
+    /// When set, the key set answers HTTP 500.
+    jwks_broken: Arc<AtomicBool>,
+    /// When set, discovery names an HTTP token endpoint (a scheme downgrade).
+    downgrade: bool,
+    /// When set, the provider lists and expects `client_secret_post` (not Basic).
+    post_auth: bool,
 }
 
-fn key() -> CoreRsaPrivateSigningKey {
-    CoreRsaPrivateSigningKey::from_pem(PEM, Some(JsonWebKeyId::new("k1".into()))).unwrap()
+impl Idp {
+    fn new(issuer: &str, keys: Vec<Signer>, secret: Option<&str>) -> Self {
+        Self {
+            issuer: issuer.to_owned(),
+            keys: Arc::new(Mutex::new(keys)),
+            advertised: None,
+            secret: secret.map(str::to_owned),
+            codes: Arc::default(),
+            jwks_hits: Arc::default(),
+            jwks_broken: Arc::default(),
+            downgrade: false,
+            post_auth: false,
+        }
+    }
+
+    /// Signs `claims` with the published key `kid`.
+    fn sign(&self, kid: &str, claims: &Value) -> String {
+        let keys = self.keys.lock().unwrap();
+        let key = keys
+            .iter()
+            .find(|k| k.kid == kid)
+            .expect("the provider publishes this key");
+        key.token(&key.header(), claims)
+    }
+
+    /// Replaces the published key set (key rotation).
+    fn rotate(&self, keys: Vec<Signer>) {
+        *self.keys.lock().unwrap() = keys;
+    }
+
+    /// Key-set requests served so far.
+    fn hits(&self) -> usize {
+        self.jwks_hits.load(Ordering::SeqCst)
+    }
 }
 
-fn idp(codes: Codes) -> Router {
-    let state = Idp {
-        codes,
-        key: Arc::new(key()),
-    };
+fn router(idp: Idp) -> Router {
     Router::new()
         .route("/.well-known/openid-configuration", get(discovery))
         .route("/jwks", get(jwks))
         .route("/token", post(token))
-        .with_state(state)
+        .with_state(idp)
 }
 
-async fn discovery() -> Json<serde_json::Value> {
-    let m = CoreProviderMetadata::new(
-        IssuerUrl::new(ISSUER.into()).unwrap(),
-        AuthUrl::new(format!("{ISSUER}/authorize")).unwrap(),
-        JsonWebKeySetUrl::new(format!("{ISSUER}/jwks")).unwrap(),
-        vec![ResponseTypes::new(vec![CoreResponseType::Code])],
-        vec![CoreSubjectIdentifierType::Public],
-        vec![CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256],
-        EmptyAdditionalProviderMetadata {},
-    )
-    .set_token_endpoint(Some(TokenUrl::new(format!("{ISSUER}/token")).unwrap()));
-    let mut v = serde_json::to_value(&m).unwrap();
-    v["end_session_endpoint"] = format!("{ISSUER}/logout").into();
-    Json(v)
+async fn discovery(State(s): State<Idp>) -> Json<Value> {
+    let token_endpoint = if s.downgrade {
+        format!("http://{}/token", s.issuer.trim_start_matches("https://"))
+    } else {
+        format!("{}/token", s.issuer)
+    };
+    let mut doc = json!({
+        "issuer": s.issuer,
+        "authorization_endpoint": format!("{}/authorize", s.issuer),
+        "token_endpoint": token_endpoint,
+        "jwks_uri": format!("{}/jwks", s.issuer),
+        "end_session_endpoint": format!("{}/logout", s.issuer),
+        "response_types_supported": ["code"],
+        "subject_types_supported": ["public"],
+        "token_endpoint_auth_methods_supported": if s.post_auth {
+            json!(["client_secret_post"])
+        } else {
+            json!(["client_secret_basic"])
+        },
+    });
+    if let Some(algs) = &s.advertised {
+        doc["id_token_signing_alg_values_supported"] = json!(algs);
+    }
+    Json(doc)
 }
 
-async fn jwks(State(s): State<Idp>) -> Json<serde_json::Value> {
-    let k: CoreJsonWebKey = s.key.as_verification_key();
-    Json(serde_json::json!({ "keys": [k] }))
+async fn jwks(State(s): State<Idp>) -> Result<Json<Value>, StatusCode> {
+    s.jwks_hits.fetch_add(1, Ordering::SeqCst);
+    if s.jwks_broken.load(Ordering::SeqCst) {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    let keys: Vec<Value> = s.keys.lock().unwrap().iter().map(Signer::jwk).collect();
+    Ok(Json(json!({ "keys": keys })))
 }
 
-async fn token(State(s): State<Idp>, body: String) -> Result<Json<serde_json::Value>, StatusCode> {
+async fn token(
+    State(s): State<Idp>,
+    headers: HeaderMap,
+    body: String,
+) -> Result<Json<Value>, StatusCode> {
     let f: HashMap<String, String> = body
         .split('&')
         .filter_map(|kv| kv.split_once('='))
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
         .collect();
-    let code = f.get("code").ok_or(StatusCode::BAD_REQUEST)?;
     assert!(f.contains_key("code_verifier"), "PKCE verifier sent");
-    let (sub, name, groups, nonce) = s
+    // Client authentication: HTTP Basic with the form-encoded ID and secret, or the client ID
+    // in the body for a public client (ADR-951 decision 6).
+    let basic = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    match &s.secret {
+        Some(secret) if s.post_auth => {
+            let in_body = f.get("client_id").map(String::as_str) == Some("telltale")
+                && f.get("client_secret").map(String::as_str) == Some(secret.as_str());
+            if basic.is_some() || !in_body {
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+        }
+        Some(secret) => {
+            let want = format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(format!("telltale:{secret}"))
+            );
+            if basic.as_deref() != Some(want.as_str()) || f.contains_key("client_id") {
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+        }
+        None => {
+            if basic.is_some() || f.get("client_id").map(String::as_str) != Some("telltale") {
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+        }
+    }
+    let code = f.get("code").ok_or(StatusCode::BAD_REQUEST)?;
+    let id_token = s
         .codes
         .lock()
         .unwrap()
         .remove(code)
         .ok_or(StatusCode::BAD_REQUEST)?;
-    let now = chrono::Utc::now();
-    let claims = IdTokenClaims::new(
-        IssuerUrl::new(ISSUER.into()).unwrap(),
-        vec![Audience::new("telltale".into())],
-        now + chrono::Duration::minutes(5),
-        now,
-        StandardClaims::new(SubjectIdentifier::new(sub))
-            .set_preferred_username(Some(openidconnect::EndUserUsername::new(name))),
-        Groups { groups },
-    )
-    .set_nonce(Some(Nonce::new(nonce)));
-    let id: IdToken<
-        Groups,
-        CoreGenderClaim,
-        CoreJweContentEncryptionAlgorithm,
-        CoreJwsSigningAlgorithm,
-    > = IdToken::new(
-        claims,
-        s.key.as_ref(),
-        CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
-        None,
-        None,
-    )
-    .unwrap();
-    Ok(Json(serde_json::json!({
-        "access_token": "at", "token_type": "Bearer", "expires_in": 300, "id_token": id.to_string()
+    Ok(Json(json!({
+        "access_token": "at", "token_type": "Bearer", "expires_in": 300, "id_token": id_token
     })))
 }
 
-/// Fetch that hands requests to the fake identity provider router instead of the network.
-fn fetch(idp: Router) -> Fetch {
+/// Serves each provider's router to requests for its host, instead of the network.
+fn fetch(routes: HashMap<String, Router>) -> Fetch {
     Arc::new(move |req: Request<Vec<u8>>| {
-        let idp = idp.clone();
+        let routes = routes.clone();
         Box::pin(async move {
             let (parts, body) = req.into_parts();
+            let host = parts.uri.host().unwrap_or_default().to_owned();
+            let idp = routes
+                .get(&host)
+                .cloned()
+                .ok_or_else(|| format!("no fake provider at {host}"))?;
             let path = parts
                 .uri
                 .path_and_query()
@@ -208,45 +267,68 @@ impl crate::Backend for NoData {
 
 struct Harness {
     app: Router,
-    codes: Codes,
     auth: Arc<Auth>,
+    /// The fake providers by `id`.
+    idps: HashMap<String, Idp>,
 }
 
+/// One provider `fake` (RS256, a client secret), and MCP through it.
 fn harness(settings: Settings) -> Harness {
-    let codes: Codes = Arc::default();
+    let fake = Idp::new(ISSUER, vec![Signer::rsa("k1", Alg::Rs256)], Some("s3cret"));
+    build(
+        settings,
+        vec![(provider("fake", "Fake IdP", ISSUER, Some("s3cret")), fake)],
+    )
+}
+
+fn provider(id: &str, name: &str, issuer: &str, secret: Option<&str>) -> ProviderSettings {
+    ProviderSettings {
+        id: id.into(),
+        name: name.into(),
+        issuer: issuer.into(),
+        client_id: "telltale".into(),
+        client_secret: secret.map(str::to_owned),
+        scopes: vec!["openid".into(), "profile".into()],
+        username_claim: "preferred_username".into(),
+        groups_claim: "groups".into(),
+        roles: vec![
+            ("dns-admins".into(), Role::Admin),
+            ("family".into(), Role::Viewer),
+        ],
+        default_role: None,
+        require_verified_email: false,
+    }
+}
+
+/// An app with the given providers (each with its fake), MCP through `fake`, and one admin.
+fn build(settings: Settings, providers: Vec<(ProviderSettings, Idp)>) -> Harness {
     let state = Arc::new(telltale_store::state::State::in_memory().unwrap());
     let auth = Arc::new(Auth::new(state, settings));
+    let mut routes = HashMap::new();
+    let mut idps = HashMap::new();
+    let mut configured = Vec::new();
+    for (p, idp) in providers {
+        let host = idp.issuer.trim_start_matches("https://").to_owned();
+        routes.insert(host, router(idp.clone()));
+        idps.insert(p.id.clone(), idp);
+        configured.push(p);
+    }
     auth.set_oidc(Oidc::new(
         OidcSettings {
             public_url: "https://dns.test".into(),
-            providers: vec![ProviderSettings {
-                id: "fake".into(),
-                name: "Fake IdP".into(),
-                issuer: ISSUER.into(),
-                client_id: "telltale".into(),
-                client_secret: Some("s3cret".into()),
-                scopes: vec!["openid".into(), "profile".into()],
-                username_claim: "preferred_username".into(),
-                groups_claim: "groups".into(),
-                roles: vec![
-                    ("dns-admins".into(), Role::Admin),
-                    ("family".into(), Role::Viewer),
-                ],
-                default_role: None,
-                require_verified_email: false,
-            }],
+            providers: configured,
             mcp: Some(McpOAuth {
                 provider: "fake".into(),
                 audience: "https://dns.test/mcp".into(),
             }),
         },
-        fetch(idp(Arc::clone(&codes))),
+        fetch(routes),
     ));
     // Someone must exist so the UI isn't in first-run setup.
     auth.create_user("root", "correct horse battery", Role::Admin, false, 1)
         .unwrap();
     let app = crate::router(Arc::new(NoData), Arc::clone(&auth));
-    Harness { app, codes, auth }
+    Harness { app, auth, idps }
 }
 
 fn query_param(url: &str, k: &str) -> String {
@@ -265,6 +347,94 @@ fn set_cookie(r: &axum::http::Response<Body>, name: &str) -> Option<String> {
         .map(|c| c.split(';').next().unwrap_or_default().to_owned())
 }
 
+/// The claims a provider issues for a user: `aud` is `client_id` unless the test changes it.
+fn id_claims(sub: &str, name: &str, groups: &[&str], nonce: &str) -> Value {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    json!({
+        "iss": ISSUER, "aud": "telltale", "sub": sub, "exp": now + 300, "iat": now,
+        "nonce": nonce, "preferred_username": name, "groups": groups,
+    })
+}
+
+/// Starts a sign-in with provider `id`: the flow cookie, the `state` and the `nonce`.
+async fn start_flow(h: &Harness, id: &str) -> (String, String, String) {
+    let start = h
+        .app
+        .clone()
+        .oneshot(
+            Request::get(format!(
+                "/api/v1/auth/oidc/{id}/start?returnTo=/%23/queries"
+            ))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::FOUND);
+    let to = start.headers()["location"].to_str().unwrap().to_owned();
+    let authorize = format!("{}/authorize?", h.idps[id].issuer);
+    assert!(
+        to.starts_with(&authorize),
+        "{to} should start with {authorize}"
+    );
+    assert!(to.contains("code_challenge_method=S256"), "PKCE");
+    assert!(
+        to.contains(&format!(
+            "redirect_uri=https%3A%2F%2Fdns.test%2Fapi%2Fv1%2Fauth%2Foidc%2F{id}%2Fcallback"
+        )),
+        "{to}"
+    );
+    assert!(
+        start.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .contains("SameSite=Lax")
+    );
+    let flow = set_cookie(&start, "telltale_oidc").unwrap();
+    (flow, query_param(&to, "state"), query_param(&to, "nonce"))
+}
+
+/// The callback of provider `id` with `state`, from the browser holding `cookie`.
+async fn callback(h: &Harness, id: &str, state: &str, cookie: &str) -> Response<Body> {
+    h.app
+        .clone()
+        .oneshot(
+            Request::get(format!(
+                "/api/v1/auth/oidc/{id}/callback?code=code1&state={state}"
+            ))
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+/// Start → (the provider issues `id_token_for(nonce)` for the code) → callback. Returns the
+/// callback response. `tamper_cookie` sends a different browser's flow cookie.
+async fn sign_in_with(
+    h: &Harness,
+    id: &str,
+    id_token_for: impl FnOnce(&str) -> String,
+    tamper_cookie: bool,
+) -> Response<Body> {
+    let (flow, state, nonce) = start_flow(h, id).await;
+    let token = id_token_for(&nonce);
+    h.idps[id]
+        .codes
+        .lock()
+        .unwrap()
+        .insert("code1".into(), token);
+    let cookie = if tamper_cookie {
+        "telltale_oidc=someone-else".to_owned()
+    } else {
+        flow
+    };
+    callback(h, id, &state, &cookie).await
+}
+
 /// Start → (identity provider: issue code for these claims) → callback. Returns the callback response.
 async fn sign_in(
     h: &Harness,
@@ -273,60 +443,21 @@ async fn sign_in(
     groups: &[&str],
     tamper_cookie: bool,
 ) -> axum::http::Response<Body> {
-    let start = h
-        .app
-        .clone()
-        .oneshot(
-            Request::get("/api/v1/auth/oidc/fake/start?returnTo=/%23/queries")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(start.status(), StatusCode::FOUND);
-    let to = start.headers()["location"].to_str().unwrap().to_owned();
-    assert!(to.starts_with("https://idp.test/authorize?"), "{to}");
-    assert!(to.contains("code_challenge_method=S256"), "PKCE");
-    assert!(
-        to.contains(
-            "redirect_uri=https%3A%2F%2Fdns.test%2Fapi%2Fv1%2Fauth%2Foidc%2Ffake%2Fcallback"
-        ),
-        "{to}"
-    );
-    let flow = set_cookie(&start, "telltale_oidc").unwrap();
-    assert!(
-        start.headers()["set-cookie"]
-            .to_str()
-            .unwrap()
-            .contains("SameSite=Lax")
-    );
-    let (state, nonce) = (query_param(&to, "state"), query_param(&to, "nonce"));
-    h.codes.lock().unwrap().insert(
-        "code1".into(),
-        (
-            sub.into(),
-            name.into(),
-            groups.iter().map(|g| (*g).to_owned()).collect(),
-            nonce,
-        ),
-    );
-    let cookie = if tamper_cookie {
-        "telltale_oidc=someone-else".to_owned()
-    } else {
-        flow
-    };
-    h.app
-        .clone()
-        .oneshot(
-            Request::get(format!(
-                "/api/v1/auth/oidc/fake/callback?code=code1&state={state}"
-            ))
-            .header("cookie", cookie)
-            .body(Body::empty())
-            .unwrap(),
-        )
-        .await
-        .unwrap()
+    sign_in_with(
+        h,
+        "fake",
+        |nonce| h.idps["fake"].sign("k1", &id_claims(sub, name, groups, nonce)),
+        tamper_cookie,
+    )
+    .await
+}
+
+/// The location a refused sign-in redirects to, as text.
+fn refused_at(r: &Response<Body>) -> String {
+    r.headers()["location"]
+        .to_str()
+        .unwrap_or_default()
+        .to_owned()
 }
 
 async fn me(h: &Harness, session: &str) -> serde_json::Value {
@@ -605,26 +736,11 @@ async fn api_004_disable_local_login_keeps_a_break_glass_admin() {
     ));
 }
 
-/// An access token from the fake provider, signed with its key.
+/// An access token from the fake provider (the MCP provider), signed with its RSA key `k1`.
 fn access_token(claims: &serde_json::Value) -> String {
-    use base64::Engine as _;
-    let b64 = |v: &serde_json::Value| {
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(v).unwrap())
-    };
-    let msg = format!(
-        "{}.{}",
-        b64(&serde_json::json!({"alg": "RS256", "kid": "k1", "typ": "at+jwt"})),
-        b64(claims)
-    );
-    let sig = key()
-        .sign(
-            &CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
-            msg.as_bytes(),
-        )
-        .unwrap();
-    format!(
-        "{msg}.{}",
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig)
+    Signer::rsa("k1", Alg::Rs256).token(
+        &json!({"alg": "RS256", "kid": "k1", "typ": "at+jwt"}),
+        claims,
     )
 }
 
@@ -688,7 +804,9 @@ async fn agt_008_mcp_oauth_access_tokens() {
         "{www}"
     );
 
-    let now = chrono::Utc::now().timestamp().unsigned_abs();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     let claims = |aud: &str, exp: u64, sub: &str, scope: &str| serde_json::json!({"iss": ISSUER, "aud": aud, "exp": exp, "iat": now, "sub": sub, "azp": "claude-desktop", "scope": scope});
     // A user who has signed in to the UI with the provider before (an operator).
     h.auth
@@ -754,4 +872,556 @@ async fn agt_008_mcp_oauth_access_tokens() {
         .unwrap();
         assert!(body.contains(why), "{why}: {body}");
     }
+}
+
+/// Harness with four providers: `fake` (RS256, a client secret, the MCP provider), `other`
+/// (ES256 under `e1`), `ed` (`EdDSA` under `d1`) and `pub` (a public client, no secret).
+fn four_providers() -> Harness {
+    let fake = Idp::new(ISSUER, vec![Signer::rsa("k1", Alg::Rs256)], Some("s3cret"));
+    let other = Idp::new(
+        OTHER,
+        vec![Signer::generated("e1", Alg::Es256)],
+        Some("s3cret"),
+    );
+    let ed = Idp::new(
+        "https://ed.test",
+        vec![Signer::generated("d1", Alg::EdDsa)],
+        Some("s3cret"),
+    );
+    let public = Idp::new(
+        "https://pub.test",
+        vec![Signer::rsa("p1", Alg::Rs256)],
+        None,
+    );
+    build(
+        Settings::default(),
+        vec![
+            (provider("fake", "Fake IdP", ISSUER, Some("s3cret")), fake),
+            (provider("other", "Other IdP", OTHER, Some("s3cret")), other),
+            (
+                provider("ed", "Ed IdP", "https://ed.test", Some("s3cret")),
+                ed,
+            ),
+            (
+                provider("pub", "Public IdP", "https://pub.test", None),
+                public,
+            ),
+        ],
+    )
+}
+
+/// The refusal a sign-in gets: back to the sign-in page with the reason, and no session.
+fn assert_refused(r: &Response<Body>, why: &str) {
+    let to = refused_at(r);
+    assert!(to.starts_with("/#/?loginError="), "{why}: {to}");
+    assert!(to.contains(why), "{why}: {to}");
+    assert!(set_cookie(r, "telltale_session").is_none(), "{why}");
+}
+
+/// REQ: API-004 — a token must be for this provider and this client: a token signed with another
+/// provider's key is refused at this provider's callback.
+#[tokio::test]
+async fn api_004_a_token_from_another_provider_is_refused() {
+    let h = four_providers();
+    let other = &h.idps["other"];
+    let r = sign_in_with(
+        &h,
+        "fake",
+        |nonce| {
+            let mut c = id_claims("sub-1", "ana", &["family"], nonce);
+            c["iss"] = json!(OTHER);
+            // Signed by the other provider's key (e1), presented at fake's callback.
+            other.sign("e1", &c)
+        },
+        false,
+    )
+    .await;
+    assert_refused(&r, "fits");
+}
+
+/// REQ: API-004 — an audience other than this client is refused, even alongside it (ADR-951).
+#[tokio::test]
+async fn api_004_extra_untrusted_audience_rejected() {
+    let h = four_providers();
+    let r = sign_in_with(
+        &h,
+        "fake",
+        |nonce| {
+            let mut c = id_claims("sub-1", "ana", &["family"], nonce);
+            c["aud"] = json!(["telltale", "other-app"]);
+            c["azp"] = json!("telltale");
+            h.idps["fake"].sign("k1", &c)
+        },
+        false,
+    )
+    .await;
+    assert_refused(&r, "alone");
+    let r = sign_in_with(
+        &h,
+        "fake",
+        |nonce| {
+            let mut c = id_claims("sub-1", "ana", &["family"], nonce);
+            c["aud"] = json!("other-app");
+            h.idps["fake"].sign("k1", &c)
+        },
+        false,
+    )
+    .await;
+    assert_refused(&r, "alone");
+}
+
+/// REQ: API-004 — each claim the flow checks, tampered one at a time, is refused. The claims
+/// are built with the nonce of the flow being started.
+#[tokio::test]
+async fn api_004_tampered_claims_are_refused() {
+    let cases: Vec<(&str, Value, &str)> = vec![
+        ("iss", json!(42), "issuer"),
+        ("iss", json!("https://evil.test"), "another"),
+        ("exp", json!("9999999999"), "whole"),
+        ("nbf", json!("9999999999"), "whole"),
+        ("iat", Value::Null, "issue"),
+        ("nonce", json!("someone-else"), "nonce"),
+        ("sub", json!(""), "subject"),
+        ("azp", json!("other-app"), "azp"),
+    ];
+    for (name, value, why) in cases {
+        let h = four_providers();
+        let r = sign_in_with(
+            &h,
+            "fake",
+            |nonce| {
+                let mut c = id_claims("sub-x", "x", &["family"], nonce);
+                if value.is_null() {
+                    c.as_object_mut().expect("object").remove(name);
+                } else {
+                    c[name] = value.clone();
+                }
+                h.idps["fake"].sign("k1", &c)
+            },
+            false,
+        )
+        .await;
+        assert_refused(&r, why);
+    }
+    // An expired token, and a token not valid yet.
+    let h = four_providers();
+    let r = sign_in_with(
+        &h,
+        "fake",
+        |nonce| {
+            let mut c = id_claims("sub-x", "x", &["family"], nonce);
+            c["exp"] = json!(1_000_000u64);
+            h.idps["fake"].sign("k1", &c)
+        },
+        false,
+    )
+    .await;
+    assert_refused(&r, "expired");
+    let h = four_providers();
+    let r = sign_in_with(
+        &h,
+        "fake",
+        |nonce| {
+            let mut c = id_claims("sub-x", "x", &["family"], nonce);
+            c["nbf"] = json!(4_000_000_000u64);
+            h.idps["fake"].sign("k1", &c)
+        },
+        false,
+    )
+    .await;
+    assert_refused(&r, "not%20valid%20yet");
+}
+
+/// REQ: API-004 — the header rules: `alg=none`, HS256 with the public key as the secret, and an
+/// access token's `typ` (`at+jwt`) presented as an ID token.
+#[tokio::test]
+async fn api_004_forged_and_mistyped_headers_are_refused() {
+    let h = four_providers();
+    let claims = id_claims("sub-1", "ana", &["family"], "x");
+    let n = {
+        let keys = h.idps["fake"].keys.lock().unwrap();
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(keys[0].jwk()["n"].as_str().unwrap())
+            .unwrap()
+    };
+    let none = unsigned_token(&json!({"alg": "none", "kid": "k1"}), &claims);
+    let r = sign_in_with(&h, "fake", |_| none, false).await;
+    assert_refused(&r, "algorithm");
+    let hs = hs256_token(&n, &claims);
+    let r = sign_in_with(&h, "fake", |_| hs, false).await;
+    assert_refused(&r, "algorithm");
+    let r = sign_in_with(
+        &h,
+        "fake",
+        |nonce| {
+            let c = id_claims("sub-1", "ana", &["family"], nonce);
+            Signer::rsa("k1", Alg::Rs256)
+                .token(&json!({"alg": "RS256", "kid": "k1", "typ": "at+jwt"}), &c)
+        },
+        false,
+    )
+    .await;
+    assert_refused(&r, "type");
+}
+
+/// REQ: API-004 — a provider whose discovery lists only RS256 is never accepted with ES256.
+#[tokio::test]
+async fn api_004_the_provider_allow_list_is_enforced_in_the_flow() {
+    let mut fake = Idp::new(
+        ISSUER,
+        vec![
+            Signer::rsa("k1", Alg::Rs256),
+            Signer::generated("e1", Alg::Es256),
+        ],
+        Some("s3cret"),
+    );
+    fake.advertised = Some(vec!["RS256".into()]);
+    let h = build(
+        Settings::default(),
+        vec![(provider("fake", "Fake IdP", ISSUER, Some("s3cret")), fake)],
+    );
+    let r = sign_in_with(
+        &h,
+        "fake",
+        |nonce| h.idps["fake"].sign("e1", &id_claims("sub-1", "ana", &["family"], nonce)),
+        false,
+    )
+    .await;
+    assert_refused(&r, "algorithm");
+}
+
+/// REQ: API-004 — an unknown key ID refetches the key set once per provider per minute.
+#[tokio::test]
+async fn api_004_key_set_refetch_is_rate_limited_and_keeps_good_keys() {
+    let h = four_providers();
+    let fake = &h.idps["fake"];
+    let rogue = Signer::rsa("k9", Alg::Rs256);
+    let r = sign_in_with(
+        &h,
+        "fake",
+        |nonce| {
+            rogue.token(
+                &rogue.header(),
+                &id_claims("sub-1", "ana", &["family"], nonce),
+            )
+        },
+        false,
+    )
+    .await;
+    assert_refused(&r, "fits");
+    assert_eq!(
+        fake.hits(),
+        2,
+        "the discovery read, then one refetch for the unknown kid"
+    );
+    // A second unknown kid within a minute: no refetch.
+    let r = sign_in_with(
+        &h,
+        "fake",
+        |nonce| {
+            rogue.token(
+                &rogue.header(),
+                &id_claims("sub-1", "ana", &["family"], nonce),
+            )
+        },
+        false,
+    )
+    .await;
+    assert_refused(&r, "fits");
+    assert_eq!(fake.hits(), 2, "rate limited");
+    // The other provider has its own limit.
+    let other = &h.idps["other"];
+    let r = sign_in_with(
+        &h,
+        "other",
+        |nonce| {
+            let mut c = id_claims("sub-1", "ana", &["family"], nonce);
+            c["iss"] = json!(OTHER);
+            rogue.token(&rogue.header(), &c)
+        },
+        false,
+    )
+    .await;
+    assert_refused(&r, "fits");
+    assert_eq!(
+        other.hits(),
+        2,
+        "its own discovery read and refetch, per provider"
+    );
+}
+
+/// REQ: API-004 — a failed key-set refetch keeps the cached keys: the flow that found the unknown
+/// key is refused, and a token whose key is cached still signs in.
+#[tokio::test]
+async fn api_004_a_failed_key_set_refetch_keeps_the_cached_keys() {
+    let h = four_providers();
+    let fake = &h.idps["fake"];
+    // The first sign-in reads the discovery document and the key set.
+    let r = sign_in(&h, "sub-1", "ana", &["family"], false).await;
+    assert!(
+        set_cookie(&r, "telltale_session").is_some(),
+        "the first sign-in"
+    );
+    let before = fake.hits();
+    fake.jwks_broken.store(true, Ordering::SeqCst);
+    let rogue = Signer::rsa("k9", Alg::Rs256);
+    let r = sign_in_with(
+        &h,
+        "fake",
+        |nonce| {
+            rogue.token(
+                &rogue.header(),
+                &id_claims("sub-1", "ana", &["family"], nonce),
+            )
+        },
+        false,
+    )
+    .await;
+    assert_refused(&r, "fits");
+    assert_eq!(
+        fake.hits(),
+        before + 1,
+        "the refetch was attempted, and failed"
+    );
+    let r = sign_in(&h, "sub-1", "ana", &["family"], false).await;
+    assert!(
+        set_cookie(&r, "telltale_session").is_some(),
+        "the cached keys still verify"
+    );
+    fake.jwks_broken.store(false, Ordering::SeqCst);
+}
+
+/// REQ: API-004 — a rotated key is accepted after the key set is refetched (ADR-951, JWKS).
+#[tokio::test]
+async fn api_004_jwks_rotation_is_accepted_after_the_refetch() {
+    let h = four_providers();
+    let fake = &h.idps["fake"];
+    let r = sign_in_with(
+        &h,
+        "fake",
+        |nonce| {
+            // Rotate while the flow is in progress: the cache knows only k1, so the new key is
+            // found by the refetch that the unknown kid triggers.
+            let new = Signer::generated("k2", Alg::Es256);
+            let token = new.token(
+                &new.header(),
+                &id_claims("sub-1", "ana", &["family"], nonce),
+            );
+            fake.rotate(vec![Signer::rsa("k1", Alg::Rs256), new]);
+            token
+        },
+        false,
+    )
+    .await;
+    assert!(
+        set_cookie(&r, "telltale_session").is_some(),
+        "accepted after the refetch"
+    );
+}
+
+/// REQ: API-004 — discovery that downgrades an endpoint to HTTP for an HTTPS issuer is refused,
+/// and no flow starts.
+#[tokio::test]
+async fn api_004_scheme_downgrade_is_refused() {
+    let mut fake = Idp::new(ISSUER, vec![Signer::rsa("k1", Alg::Rs256)], Some("s3cret"));
+    fake.downgrade = true;
+    let h = build(
+        Settings::default(),
+        vec![(provider("fake", "Fake IdP", ISSUER, Some("s3cret")), fake)],
+    );
+    let start = h
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/auth/oidc/fake/start?returnTo=/%23/queries")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let to = refused_at(&start);
+    assert!(to.contains("HTTPS"), "{to}");
+    assert!(
+        set_cookie(&start, "telltale_oidc").is_none(),
+        "no flow started"
+    );
+}
+
+/// REQ: API-004 — a public client (no secret) signs in with its client ID in the token body.
+#[tokio::test]
+async fn api_004_public_client_signs_in_without_a_secret() {
+    let h = four_providers();
+    let r = sign_in_with(
+        &h,
+        "pub",
+        |nonce| {
+            let mut c = id_claims("sub-p", "pat", &["family"], nonce);
+            c["iss"] = json!("https://pub.test");
+            h.idps["pub"].sign("p1", &c)
+        },
+        false,
+    )
+    .await;
+    assert!(set_cookie(&r, "telltale_session").is_some(), "signed in");
+}
+
+/// REQ: API-004 — a provider that lists only `client_secret_post` gets the secret in the body.
+#[tokio::test]
+async fn api_004_client_secret_post_when_it_is_the_only_method() {
+    let mut fake = Idp::new(ISSUER, vec![Signer::rsa("k1", Alg::Rs256)], Some("s3cret"));
+    fake.post_auth = true;
+    let h = build(
+        Settings::default(),
+        vec![(provider("fake", "Fake IdP", ISSUER, Some("s3cret")), fake)],
+    );
+    let r = sign_in(&h, "sub-1", "ana", &["family"], false).await;
+    assert!(
+        set_cookie(&r, "telltale_session").is_some(),
+        "signed in with post"
+    );
+}
+
+/// REQ: API-004 — an ES256 provider and an `EdDSA` provider sign in, each with its own key.
+#[tokio::test]
+async fn api_004_es256_and_eddsa_providers_sign_in() {
+    let h = four_providers();
+    let r = sign_in_with(
+        &h,
+        "other",
+        |nonce| {
+            let mut c = id_claims("sub-o", "oscar", &["family"], nonce);
+            c["iss"] = json!(OTHER);
+            h.idps["other"].sign("e1", &c)
+        },
+        false,
+    )
+    .await;
+    assert!(set_cookie(&r, "telltale_session").is_some(), "ES256");
+    let r = sign_in_with(
+        &h,
+        "ed",
+        |nonce| {
+            let mut c = id_claims("sub-e", "edda", &["family"], nonce);
+            c["iss"] = json!("https://ed.test");
+            h.idps["ed"].sign("d1", &c)
+        },
+        false,
+    )
+    .await;
+    assert!(set_cookie(&r, "telltale_session").is_some(), "EdDSA");
+}
+
+/// REQ: AGT-008 — MCP access tokens: one signed by another provider's key, `alg=none`, HS256
+/// with the public key, an unknown `kid` (refetched once, then rate limited) are refused, and
+/// the MCP provider's own token still works.
+#[tokio::test]
+async fn agt_008_mcp_token_negatives() {
+    let h = four_providers();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    h.auth
+        .state()
+        .create_oidc_user("alice", "operator", "fake", "sub-alice", 1)
+        .unwrap();
+    let claims = json!({"iss": ISSUER, "aud": "https://dns.test/mcp", "exp": now + 300, "iat": now, "sub": "sub-alice", "azp": "claude-desktop", "scope": "openid analytics:read"});
+    let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+    // Another provider's key (e1, ES256) for a token that names this resource.
+    let mut foreign = claims.clone();
+    foreign["iss"] = json!(OTHER);
+    let token = h.idps["other"].sign("e1", &foreign);
+    let r = mcp_call(&h.app, &token, list.clone()).await;
+    assert_eq!(
+        r.status(),
+        StatusCode::UNAUTHORIZED,
+        "another provider's key"
+    );
+    // alg=none.
+    let token = unsigned_token(&json!({"alg": "none", "kid": "k1"}), &claims);
+    let r = mcp_call(&h.app, &token, list.clone()).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "alg=none");
+    // HS256 with the RSA public key as the secret.
+    let n = {
+        let keys = h.idps["fake"].keys.lock().unwrap();
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(keys[0].jwk()["n"].as_str().unwrap())
+            .unwrap()
+    };
+    let token = hs256_token(&n, &claims);
+    let r = mcp_call(&h.app, &token, list.clone()).await;
+    assert_eq!(
+        r.status(),
+        StatusCode::UNAUTHORIZED,
+        "HS256 with the public key"
+    );
+    // An unknown kid: refetched once, then refused, and not refetched again within a minute.
+    let fake = &h.idps["fake"];
+    let rogue = Signer::rsa("k9", Alg::Rs256);
+    let token = rogue.token(&rogue.header(), &claims);
+    // The foreign token above already refetched this provider's key set, so the window is open
+    // and neither unknown-kid request refetches again.
+    let before = fake.hits();
+    let r = mcp_call(&h.app, &token, list.clone()).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "unknown kid");
+    assert_eq!(fake.hits(), before, "rate limited");
+    let r = mcp_call(&h.app, &token, list.clone()).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(fake.hits(), before, "still rate limited");
+    // The MCP provider's own token still works.
+    let good = fake.sign("k1", &claims);
+    assert_eq!(
+        mcp_call(&h.app, &good, list.clone()).await.status(),
+        StatusCode::OK
+    );
+}
+
+/// REQ: API-004 — a state this browser didn't start is refused, the right state signs in once,
+/// and a replay of it is refused.
+#[tokio::test]
+async fn api_004_state_mismatch_and_replay_are_refused() {
+    let h = four_providers();
+    let fake = &h.idps["fake"];
+    let (flow, state, nonce) = start_flow(&h, "fake").await;
+    let token = fake.sign("k1", &id_claims("sub-1", "ana", &["family"], &nonce));
+    fake.codes
+        .lock()
+        .unwrap()
+        .insert("code1".into(), token.clone());
+    let r = callback(&h, "fake", "not-my-state", &flow).await;
+    assert_refused(&r, "expired");
+    let r = callback(&h, "fake", &state, &flow).await;
+    assert!(
+        set_cookie(&r, "telltale_session").is_some(),
+        "the right state signs in"
+    );
+    fake.codes.lock().unwrap().insert("code1".into(), token);
+    let r = callback(&h, "fake", &state, &flow).await;
+    assert_refused(&r, "expired");
+}
+
+/// REQ: API-004 — concurrent refetches for one provider collapse into one key-set fetch (ADR-951).
+#[tokio::test]
+async fn api_004_concurrent_refetches_collapse_into_one() {
+    let h = four_providers();
+    let fake = &h.idps["fake"];
+    let oidc = h.auth.oidc().expect("OIDC configured");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let claims = json!({"iss": ISSUER, "aud": "https://dns.test/mcp", "exp": now + 300, "iat": now, "sub": "sub-1"});
+    // Warm the cache: the discovery read.
+    let good = fake.sign("k1", &claims);
+    oidc.verify_access_token(&good, now)
+        .await
+        .expect("the cached key verifies");
+    let before = fake.hits();
+    let rogue = Signer::rsa("k9", Alg::Rs256);
+    let a = rogue.token(&rogue.header(), &claims);
+    let b = rogue.token(&rogue.header(), &claims);
+    let (ra, rb) = tokio::join!(
+        oidc.verify_access_token(&a, now),
+        oidc.verify_access_token(&b, now)
+    );
+    assert!(ra.is_err() && rb.is_err(), "both refused");
+    assert_eq!(fake.hits(), before + 1, "one fetch for both");
 }
