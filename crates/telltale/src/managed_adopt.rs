@@ -44,6 +44,7 @@ pub(crate) fn forget(state_path: &Path) {
     *held = None;
     if state_path.exists()
         && let Ok(state) = State::open(state_path)
+        && state.meta_get(SEEDED).is_ok_and(|m| m.is_some())
     {
         let _ = state.meta_set(SEEDED, None);
     }

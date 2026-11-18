@@ -5583,6 +5583,10 @@ fn served_not_stored(src: &Sources, kind: ManagedKind, name: &str, p: Problem) -
     if p.status != 404 {
         return p;
     }
+    // Only a node promoted from replica can hold served-but-not-stored entries of this kind.
+    if !crate::replication::promoted_primary(&src.file_config.load()) {
+        return p;
+    }
     let cfg = src.config.load();
     let served = match kind {
         ManagedKind::Upstream => cfg.upstream.iter().any(|u| u.name() == name),

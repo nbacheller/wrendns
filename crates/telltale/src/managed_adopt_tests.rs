@@ -450,3 +450,30 @@ fn clu_006_node_only_rows_stay_out_of_the_blob() {
     assert_eq!(shared.len(), 1);
     assert_eq!(shared[0].name, "shared");
 }
+
+/// REQ: CLU-006, CLU-015 (T24.37) — a node's own `node_only` row survives a failback: the blob
+/// never carried it, and adopting the blob must not delete it.
+#[tokio::test]
+async fn clu_006_node_only_row_survives_a_failback() {
+    let a = harness("");
+    fill(&a).await;
+    ok(
+        &a,
+        "PUT",
+        "/api/v1/upstreams/lan-only",
+        Some(json!({"url": "udp://10.0.0.9", "node_only": true})),
+    )
+    .await;
+    let (merged, blob) = published(&a);
+    // A follows another primary's version, then is promoted again.
+    let file = follow(&a, NodeRole::Replica, 2, &merged, &blob);
+    let _ = crate::replication::effective(&file);
+    crate::managed_adopt::forget(&crate::managed::state_path(&file));
+    promote(&a, 3);
+    let _ = crate::replication::effective(&file);
+    let rows = a.auth.state().managed("upstream").unwrap();
+    assert!(
+        rows.iter().any(|r| r.name == "lan-only"),
+        "node_only row lost on failback"
+    );
+}

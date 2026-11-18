@@ -275,6 +275,13 @@ pub(crate) fn managed_base(file: &Config) -> Option<Config> {
     adopt_shared(file, &m, &mut c).then_some(c)
 }
 
+/// Whether this node is a primary that was promoted from replica (it has applied a cluster
+/// version). Only such a node can serve entries it does not hold as its own.
+pub(crate) fn promoted_primary(file: &Config) -> bool {
+    identity(file).is_some_and(|id| matches!(id.meta.role, Some(node::Role::Primary)))
+        && last_applied(file).is_some()
+}
+
 /// Whether this node's own configuration comes from Git: rendered from a repository (the Helm
 /// chart under Argo CD), or fetched from a `[cluster.git]` source (ADR-048, ADR-049).
 pub(crate) fn gitops_capable(cfg: &Config) -> bool {

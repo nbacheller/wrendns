@@ -232,11 +232,19 @@ impl State {
         let current = version(&tx)?;
         let mut have: Vec<(String, String)> = Vec::new();
         {
-            let mut st = tx.prepare("SELECT kind, name FROM managed")?;
-            let all = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            let mut st = tx.prepare("SELECT kind, name, CASE WHEN json_valid(body) THEN COALESCE(json_extract(body, '$.node_only'), 0) ELSE 0 END FROM managed")?;
+            let all = st.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)? == 1,
+                ))
+            })?;
             for r in all {
-                let (k, n) = r?;
-                if kinds.contains(&k.as_str()) {
+                let (k, n, pinned) = r?;
+                // REQ: CLU-006 — a row pinned to this node (`node_only`) never travelled in the
+                // blob, so replacing the shared rows with it must not delete the row.
+                if kinds.contains(&k.as_str()) && !pinned {
                     have.push((k, n));
                 }
             }
