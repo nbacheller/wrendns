@@ -293,15 +293,43 @@ fn write_secret(path: &Path, token: &str) -> io::Result<()> {
     f.write_all(b"\n")
 }
 
+/// What start-up says about the break-glass password path: `(is_warning, text)`, or nothing when
+/// local login is on. REQ: API-004 (ADR-944, ADR-987).
+fn break_glass_notice(
+    disable_local_login: bool,
+    nets: Option<&[telltale_config::Cidr]>,
+) -> Option<(bool, String)> {
+    if !disable_local_login {
+        return None;
+    }
+    Some(match nets {
+        None => (
+            true,
+            "[auth.oidc] disable_local_login is on and allowed_admin_networks is not set: password sign-in is allowed only from loopback (127.0.0.1, ::1). A reverse proxy on this host must be listed in [api] trusted_proxies, a Docker port publish arrives from the bridge gateway (sign in with docker exec, or set allowed_admin_networks), and an explicit list replaces this default.".into(),
+        ),
+        Some([]) => (
+            true,
+            "[auth.oidc] disable_local_login is on and allowed_admin_networks is empty: nobody can sign in with a password, so only OIDC works.".into(),
+        ),
+        Some(list) => (
+            false,
+            format!(
+                "[auth.oidc] disable_local_login is on: password sign-in is allowed only from {} listed network(s) in allowed_admin_networks.",
+                list.len()
+            ),
+        ),
+    })
+}
+
 /// Opens the auth service for the server. Blocking (Argon2 for a bootstrap password).
 pub(crate) fn open(cfg: &Config, store: &crate::secrets::SecretStore) -> io::Result<Arc<Auth>> {
     let auth = Arc::new(Auth::new(Arc::new(open_state(cfg)?), settings(cfg)));
     // REQ: API-004 (ADR-944) — the break-glass default is loopback only; say so at startup.
     let o = &cfg.auth.oidc;
-    if o.disable_local_login && o.allowed_admin_networks.is_none() {
-        warn!(
-            "[auth.oidc] disable_local_login is on and allowed_admin_networks is not set: password sign-in is allowed only from loopback (127.0.0.1, ::1). A reverse proxy on this host must be listed in [api] trusted_proxies, a Docker port publish arrives from the bridge gateway (sign in with docker exec, or set allowed_admin_networks), and an explicit list replaces this default."
-        );
+    match break_glass_notice(o.disable_local_login, o.allowed_admin_networks.as_deref()) {
+        Some((true, msg)) => warn!("{msg}"),
+        Some((false, msg)) => info!("{msg}"),
+        None => {}
     }
     // A broken provider setup (say, a missing secret file) leaves password sign-in working.
     // REQ: API-016 (T23.10) — each provider on its own: one whose secret can't be read is left

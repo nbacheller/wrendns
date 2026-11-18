@@ -152,11 +152,14 @@ export type BackupResult = { blob: Blob; name: string; secrets: 'included' | 'om
 export type SupportManifest = {
   created: string;
   level: string;
-  files: { path: string; collector: string; bytes: number; status: 'ok' | 'truncated' | 'missing'; note?: string; redactions?: Record<string, number> }[];
+  files?: { path: string; collector: string; bytes: number; status: 'ok' | 'truncated' | 'missing'; note?: string; redactions?: Record<string, number> }[];
   redactions: Record<string, number>;
-  config_fields_removed: string[];
-  config_fields_unclassified: string[];
+  config_fields_removed?: string[];
+  config_fields_unclassified?: string[];
   notes: string[];
+  /** REQ: OPS-011 (ADR-172) — a cluster package's manifest lists the nodes (each with its own manifest in the archive), not files. */
+  kind?: 'cluster';
+  nodes?: { node: string; status: 'ok' | 'missing'; note?: string; files: number; bytes: number }[];
 };
 
 /** The package's `MANIFEST.json`, read from the archive itself: the first entry of the tar. */
