@@ -124,7 +124,25 @@ impl Options {
     }
 }
 
+/// Where the database in use came from, so a changed source is noticed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Source {
+    /// The publisher's monthly file.
+    Publisher,
+    /// The admin's `source_url`.
+    Custom(String),
+}
+
+impl Source {
+    fn of(g: &MapGeoipConfig) -> Self {
+        g.source_url
+            .as_ref()
+            .map_or(Self::Publisher, |u| Self::Custom(u.as_str().to_owned()))
+    }
+}
+
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)] // independent flags of one small state machine
 struct Inner {
     downloading: bool,
     last_error: Option<String>,
@@ -137,7 +155,7 @@ struct Inner {
     /// Whether the toggle was on at the last tick (so an off-to-on change is noticed).
     was_enabled: bool,
     /// The configured `source_url` the database in use came from (`None`: the publisher's).
-    fetched_from: Option<Option<String>>,
+    fetched_from: Option<Source>,
     /// The disk was looked at since the toggle went on.
     probed: bool,
 }
@@ -267,10 +285,7 @@ impl GeoIp {
             return Err(Unavailable::Off);
         }
         let db = self.current().ok_or(Unavailable::Missing)?;
-        Ok(ips
-            .iter()
-            .map(|ip| db.lookup(*ip).ok().flatten())
-            .collect())
+        Ok(ips.iter().map(|ip| db.lookup(*ip).ok().flatten()).collect())
     }
 
     /// "Update now": the task fetches at its next tick. False when a fetch is running.
@@ -299,6 +314,11 @@ impl GeoIp {
             Some(d) => ttgeo::remove_all(&d),
             None => Ok(()),
         }
+    }
+
+    /// Wakes the task (the settings changed: look at them now, not at the next tick).
+    pub(crate) fn poke(&self) {
+        self.wake.notify_one();
     }
 
     /// The status in the API's words.
@@ -387,15 +407,15 @@ impl GeoIp {
                 return;
             }
             let db = self.current();
-            let source_changed = i.fetched_from.as_ref().is_some_and(|f| {
-                *f != g.source_url.as_ref().map(|u| u.as_str().to_owned())
-            });
+            let source_changed = i.fetched_from.as_ref().is_some_and(|f| *f != Source::of(g));
             i.manual
                 || (!i.suppressed
                     && (source_changed
                         || match &db {
                             None => i.next_check.is_none_or(|t| now >= t),
-                            Some(d) => d.month < month_of(now) && i.next_check.is_none_or(|t| now >= t),
+                            Some(d) => {
+                                d.month < month_of(now) && i.next_check.is_none_or(|t| now >= t)
+                            }
                         }))
         };
         if want && !self.busy.swap(true, Ordering::AcqRel) {
@@ -432,7 +452,7 @@ impl GeoIp {
             i.downloading = true;
             i.manual = false;
             // A changed source is fetched once, not at every look; the backoff takes it from here.
-            i.fetched_from = Some(g.source_url.as_ref().map(|u| u.as_str().to_owned()));
+            i.fetched_from = Some(Source::of(g));
         }
         let result = self.fetch_and_build(g, dir, now).await;
         let mut i = self.inner();
@@ -451,7 +471,10 @@ impl GeoIp {
                 self.store(Some(Arc::new(db)));
             }
             Err(code) => {
-                warn!(code, "geoip: the download was not accepted; the old database is kept");
+                warn!(
+                    code,
+                    "geoip: the download was not accepted; the old database is kept"
+                );
                 i.failures = i.failures.saturating_add(1);
                 let back = BACKOFF_FIRST
                     .saturating_mul(1u64 << i.failures.saturating_sub(1).min(5))
@@ -521,7 +544,16 @@ impl GeoIp {
             .take();
         let previous = self.current().map(|d| u64::from(d.source_rows));
         tokio::task::spawn_blocking(move || {
-            build_and_publish(&body, pin.as_deref(), &limits, previous, &dir, month, now, crash)
+            build_and_publish(
+                &body,
+                pin.as_deref(),
+                &limits,
+                previous,
+                &dir,
+                month,
+                now,
+                crash,
+            )
         })
         .await
         .map_err(|_| "build_failed".to_owned())?
@@ -542,8 +574,7 @@ fn build_and_publish(
 ) -> Result<Db, String> {
     if let Some(want) = pin {
         let got = ring::digest::digest(&ring::digest::SHA256, body);
-        let hex: String = got.as_ref().iter().map(|b| format!("{b:02x}")).collect();
-        if hex != want {
+        if hex(got.as_ref()) != want {
             return Err(Reject::DigestMismatch.code().to_owned());
         }
     }
@@ -556,6 +587,15 @@ fn build_and_publish(
         .map_err(|_| "write_failed".to_owned())?;
     ttgeo::publish(dir, &tmp).map_err(|_| "write_failed".to_owned())?;
     Db::open(dir).map_err(|_| "write_failed".to_owned())
+}
+
+/// Lower-case hexadecimal.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::new(), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    })
 }
 
 /// A failure of the HTTP client as a stable code (never a response body).
@@ -600,7 +640,11 @@ pub(crate) fn month_of(secs: u64) -> u32 {
 /// The month before a `YYYYMM`.
 pub(crate) fn prev_month(ym: u32) -> u32 {
     let (y, m) = (ym / 100, ym % 100);
-    if m <= 1 { (y - 1) * 100 + 12 } else { y * 100 + m - 1 }
+    if m <= 1 {
+        (y - 1) * 100 + 12
+    } else {
+        y * 100 + m - 1
+    }
 }
 
 fn default_url(ym: u32) -> String {

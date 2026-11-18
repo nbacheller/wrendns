@@ -59,7 +59,9 @@ async fn obs_902_geoip_admin_only() {
     }
     let (s, _, _) = send(
         &app,
-        Request::get("/api/v1/map/geoip").body(Body::empty()).unwrap(),
+        Request::get("/api/v1/map/geoip")
+            .body(Body::empty())
+            .unwrap(),
     )
     .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
@@ -71,7 +73,13 @@ async fn obs_902_geoip_admin_only() {
         let (s, _, _) = send(&app, req("DELETE", "/api/v1/map/geoip", who)).await;
         assert_eq!(s, StatusCode::FORBIDDEN, "delete");
     }
-    assert!(fake.seen.lock().unwrap().iter().all(|l| !l.starts_with("geoip")));
+    assert!(
+        fake.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|l| !l.starts_with("geoip"))
+    );
 
     // Agents: the status is config:read; the actions have no scope at all, an admin's own token
     // minted for an agent included.
@@ -101,7 +109,13 @@ async fn obs_902_geoip_admin_only() {
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
     let (s, _, v) = send(&app, req("DELETE", "/api/v1/map/geoip", &agent)).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
-    assert!(fake.seen.lock().unwrap().iter().all(|l| !l.starts_with("geoip")));
+    assert!(
+        fake.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|l| !l.starts_with("geoip"))
+    );
 
     // An admin does both, each answered with the status and audited.
     let (s, _, v) = send(&app, req("POST", "/api/v1/map/geoip/update", &app.bearer)).await;
@@ -137,7 +151,10 @@ async fn obs_902_world_over_http() {
     *fake.geoip.lock().unwrap() = Some((status(false, "off"), Vec::new()));
     let (s, _, v) = get(&app, "/api/v1/map/world").await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!((v["available"].clone(), v["reason"].clone()), (false.into(), "geoip_off".into()));
+    assert_eq!(
+        (v["available"].clone(), v["reason"].clone()),
+        (false.into(), "geoip_off".into())
+    );
     // Missing.
     *fake.geoip.lock().unwrap() = Some((status(true, "missing"), Vec::new()));
     let (_, _, v) = get(&app, "/api/v1/map/world").await;

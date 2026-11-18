@@ -296,7 +296,9 @@ pub(crate) fn check_admin_fields(
         ManagedKind::Discovery => {
             "the network inventory reads the devices on the LAN, from one node"
         }
-        ManagedKind::Map => "it makes every node that serves the console download a database from the internet",
+        ManagedKind::Map => {
+            "it makes every node that serves the console download a database from the internet"
+        }
         _ => "it is one name for the whole cluster, tied to every node's certificates",
     };
     if agent.is_some() {

@@ -49,37 +49,34 @@ async fn source() -> Source {
         .with_single_cert(vec![der.clone()], key)
         .unwrap();
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg));
-    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = l.local_addr().unwrap().port();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
     let hits = Arc::new(AtomicUsize::new(0));
     let replies: Arc<Mutex<HashMap<String, Reply>>> = Arc::default();
-    let (h2, r2) = (Arc::clone(&hits), Arc::clone(&replies));
+    let (task_hits, task_replies) = (Arc::clone(&hits), Arc::clone(&replies));
     tokio::spawn(async move {
-        while let Ok((s, _)) = l.accept().await {
-            let (acceptor, h, r) = (acceptor.clone(), Arc::clone(&h2), Arc::clone(&r2));
+        while let Ok((sock, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let (counter, table) = (Arc::clone(&task_hits), Arc::clone(&task_replies));
             tokio::spawn(async move {
-                let Ok(mut tls) = acceptor.accept(s).await else {
+                let Ok(mut tls) = acceptor.accept(sock).await else {
                     return;
                 };
                 let mut buf = vec![0u8; 4096];
-                let n = tls.read(&mut buf).await.unwrap_or(0);
-                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
-                let path = head
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("/")
-                    .to_owned();
-                h.fetch_add(1, Ordering::SeqCst);
-                let reply = r.lock().unwrap().get(&path).cloned();
+                let got = tls.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..got]).into_owned();
+                let path = head.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                counter.fetch_add(1, Ordering::SeqCst);
+                let reply = table.lock().unwrap().get(&path).cloned();
                 let out: Vec<u8> = match reply {
-                    Some(Reply::Body(b)) => {
-                        let mut o = format!(
+                    Some(Reply::Body(payload)) => {
+                        let mut head = format!(
                             "HTTP/1.1 200 OK\r\ncontent-type: application/gzip\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                            b.len()
+                            payload.len()
                         )
                         .into_bytes();
-                        o.extend(b);
-                        o
+                        head.extend(payload);
+                        head
                     }
                     Some(Reply::Redirect(to)) => format!(
                         "HTTP/1.1 302 Found\r\nlocation: {to}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
@@ -174,7 +171,10 @@ async fn obs_902_geoip_download_and_build() {
     assert!(st.size_bytes > 40 && st.last_error.is_none());
     assert!(st.next_check_at.unwrap() >= NOW + 86_400);
     let found = g
-        .locate(&cfg.map.geoip, &[ip("8.8.8.8"), ip("2001:db8::7"), ip("10.0.0.1")])
+        .locate(
+            &cfg.map.geoip,
+            &[ip("8.8.8.8"), ip("2001:db8::7"), ip("10.0.0.1")],
+        )
         .unwrap();
     assert_eq!(found, vec![Some(*b"US"), Some(*b"NL"), None]);
     assert!(dir.path().join("geoip").join(ttgeo::FILE).exists());
@@ -191,7 +191,15 @@ async fn obs_902_geoip_download_and_build() {
     g2.tick(&cfg, NOW + 40 * 86_400).await;
     assert_eq!(s.hits.load(Ordering::SeqCst), 2);
     // Turning it off drops the handle (the file stays); turning it on finds it again.
-    let off = config(dir.path(), cfg.map.geoip.source_url.as_ref().map(|u| u.as_str().to_owned()), false);
+    let off = config(
+        dir.path(),
+        cfg.map
+            .geoip
+            .source_url
+            .as_ref()
+            .map(|u| u.as_str().to_owned()),
+        false,
+    );
     g2.tick(&off, NOW + 41 * 86_400).await;
     assert!(matches!(
         g2.locate(&off.map.geoip, &[ip("8.8.8.8")]),
@@ -260,7 +268,12 @@ async fn obs_902_geoip_verification_failures() {
     let overlap = gzip(format!("{}\n1.0.0.128,1.0.1.10,AU", csv()).as_bytes());
     let few = gzip(b"1.0.0.0,1.0.0.255,AU\n2001:db8::,2001:db8::ffff,NL\n");
     let cases: Vec<(&str, Reply, Option<&str>, &str)> = vec![
-        ("truncated", Reply::Body(good[..good.len() / 2].to_vec()), None, "corrupt_download"),
+        (
+            "truncated",
+            Reply::Body(good[..good.len() / 2].to_vec()),
+            None,
+            "corrupt_download",
+        ),
         ("overlap", Reply::Body(overlap), None, "overlapping_ranges"),
         ("few", Reply::Body(few), None, "too_few_rows"),
         (
@@ -269,7 +282,12 @@ async fn obs_902_geoip_verification_failures() {
             Some("0000000000000000000000000000000000000000000000000000000000000000"),
             "digest_mismatch",
         ),
-        ("toohttp", Reply::Redirect("http://127.0.0.1:9/x".into()), None, "redirect_refused"),
+        (
+            "toohttp",
+            Reply::Redirect("http://127.0.0.1:9/x".into()),
+            None,
+            "redirect_refused",
+        ),
         ("gone", Reply::Status(404), None, "not_found"),
         ("busy", Reply::Status(503), None, "http_error"),
     ];
@@ -290,15 +308,14 @@ async fn obs_902_geoip_verification_failures() {
             "{name}: the database changed"
         );
         assert!(g.locate(&cfg.map.geoip, &[ip("8.8.8.8")]).is_ok(), "{name}");
-        assert!(st.next_check_at.is_some_and(|t| t > now), "{name}: backs off");
+        assert!(
+            st.next_check_at.is_some_and(|t| t > now),
+            "{name}: backs off"
+        );
         now += 100;
     }
     // A good file after the failures is accepted (the pin matches the real digest).
-    let digest: String = ring::digest::digest(&ring::digest::SHA256, &good)
-        .as_ref()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let digest = hex(ring::digest::digest(&ring::digest::SHA256, &good).as_ref());
     cfg.map.geoip.source_url = Some(SafeString::new(url("good.csv.gz")).unwrap());
     cfg.map.geoip.sha256 = Some(SafeString::new(digest).unwrap());
     g.tick(&cfg, now).await;

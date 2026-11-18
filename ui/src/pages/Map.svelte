@@ -257,6 +257,7 @@
     <h1>Network map<HelpButton id="network-map" /></h1>
     <div class="row">
       <span class="small muted" data-testid="map-state" data-stream={mode} role="status">{stateWords[mode]}</span>
+      <a class="pill-link" href={href('/world')} data-testid="to-world-view">World view</a>
       <div class="seg" role="group" aria-label="View">
         <button type="button" aria-pressed={!tableView} onclick={() => setParams({ view: undefined })} data-testid="view-map">Map</button>
         <button type="button" aria-pressed={tableView} onclick={() => setParams({ view: 'table' })} data-testid="view-table">Table</button>

@@ -29,6 +29,8 @@
     traffic: 'M3 3h18v18H3zM11 3v18M11 12h10M3 14h8M16 12v9',
     // REQ: OBS-901 (T26.3) — the network map: nodes joined by flows.
     map: 'M5 5a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM19 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM19 17a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM12 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM5 9l5.3 2.4M13.8 11.2L17.4 6.2M13.8 12.8l3.8 4',
+    // REQ: OBS-902 (T26.5) — the world view: a globe.
+    world: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9S14.5 18.4 12 21c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z',
     heatmap: 'M3 3h5v5H3zM10 3h5v5h-5zM17 3h4v5h-4zM3 10h5v5H3zM10 10h5v5h-5zM17 10h4v5h-4zM3 17h5v4H3zM10 17h5v4h-5zM17 17h4v4h-4z',
     flow: 'M3 5h4c5 0 5 7 10 7h4M3 12h4c5 0 5-7 10-7h4M3 19h4c5 0 5-7 10-7',
     // REQ: OBS-035 — the wall display: a screen with panels.

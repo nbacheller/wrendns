@@ -26,8 +26,11 @@ struct Fake {
     map: Mutex<(Option<crate::map::MapSettings>, crate::map::MapParts)>,
     /// REQ: OBS-902 - the GeoIP database's status (`None`: this backend keeps none) and the
     /// countries it answers by address.
-    geoip: Mutex<Option<(crate::model::GeoipStatus, Vec<(std::net::IpAddr, String)>)>>,
+    geoip: Mutex<Option<FakeGeoip>>,
 }
+
+/// The GeoIP database the fake reports: its status and the country of each address prefix.
+type FakeGeoip = (crate::model::GeoipStatus, Vec<(std::net::IpAddr, String)>);
 
 /// The one finding the fake reports.
 fn fake_finding_id() -> String {

@@ -139,7 +139,8 @@ impl Crc {
     }
     pub(crate) fn update(&mut self, data: &[u8]) {
         for &b in data {
-            self.0 = CRC_TABLE[usize::from((self.0 as u8) ^ b)] ^ (self.0 >> 8);
+            let low = self.0.to_le_bytes()[0];
+            self.0 = CRC_TABLE[usize::from(low ^ b)] ^ (self.0 >> 8);
         }
     }
     pub(crate) fn finish(self) -> u32 {
@@ -170,41 +171,42 @@ impl Collector {
             return Ok(());
         }
         let mut it = line.split(',').map(|f| f.trim().trim_matches('"'));
-        let (Some(a), Some(b), Some(c), None) = (it.next(), it.next(), it.next(), it.next())
+        let (Some(first), Some(last), Some(code), None) =
+            (it.next(), it.next(), it.next(), it.next())
         else {
             return Err(bad);
         };
-        let (Ok(start), Ok(end)) = (a.parse::<IpAddr>(), b.parse::<IpAddr>()) else {
+        let (Ok(start), Ok(end)) = (first.parse::<IpAddr>(), last.parse::<IpAddr>()) else {
             return Err(bad);
         };
-        let cc = match c.as_bytes() {
-            [x, y] if x.is_ascii_alphabetic() && y.is_ascii_alphabetic() => {
-                pack([x.to_ascii_uppercase(), y.to_ascii_uppercase()])
+        let cc = match code.as_bytes() {
+            [c1, c2] if c1.is_ascii_alphabetic() && c2.is_ascii_alphabetic() => {
+                pack([c1.to_ascii_uppercase(), c2.to_ascii_uppercase()])
             }
             _ => return Err(bad),
         };
         match (start, end) {
-            (IpAddr::V4(s), IpAddr::V4(e)) => {
-                let (s, e) = (u32::from(s), u32::from(e));
-                if s > e {
+            (IpAddr::V4(lo), IpAddr::V4(hi)) => {
+                let (lo, hi) = (u32::from(lo), u32::from(hi));
+                if lo > hi {
                     return Err(bad);
                 }
-                self.v4.push((s, e, cc));
+                self.v4.push((lo, hi, cc));
             }
-            (IpAddr::V6(s), IpAddr::V6(e)) => {
+            (IpAddr::V6(lo), IpAddr::V6(hi)) => {
                 // A v4-mapped range is a v4 range.
-                if let (Some(s4), Some(e4)) = (s.to_ipv4_mapped(), e.to_ipv4_mapped()) {
-                    let (s4, e4) = (u32::from(s4), u32::from(e4));
-                    if s4 > e4 {
+                if let (Some(lo4), Some(hi4)) = (lo.to_ipv4_mapped(), hi.to_ipv4_mapped()) {
+                    let (lo4, hi4) = (u32::from(lo4), u32::from(hi4));
+                    if lo4 > hi4 {
                         return Err(bad);
                     }
-                    self.v4.push((s4, e4, cc));
+                    self.v4.push((lo4, hi4, cc));
                 } else {
-                    let (s, e) = (u128::from(s), u128::from(e));
-                    if s > e {
+                    let (lo, hi) = (u128::from(lo), u128::from(hi));
+                    if lo > hi {
                         return Err(bad);
                     }
-                    self.v6.push((s, e, cc));
+                    self.v6.push((lo, hi, cc));
                 }
             }
             _ => return Err(bad),
@@ -274,7 +276,7 @@ impl Collector {
             expect = u64::from(e) + 1;
             last = Some((expect, cc));
         }
-        if expect <= u64::from(u32::MAX) {
+        if u32::try_from(expect).is_ok() {
             t4.push((u32::try_from(expect).unwrap_or(u32::MAX), 0));
         }
         // IPv6: ranges are cut to /64 (conservative: a range's first and last /64 are wholly its
@@ -306,7 +308,7 @@ impl Collector {
             expect = e_hi + 1;
             last = Some((expect, cc));
         }
-        if expect <= u128::from(u64::MAX) {
+        if u64::try_from(expect).is_ok() {
             t6.push((u64::try_from(expect).unwrap_or(u64::MAX), 0));
         }
         Ok(Table {

@@ -6835,6 +6835,17 @@
         "summary": "Where answers point (world view).",
         "description": "Countries with the rate, count and slow share of the answers that point there, and a marker\nfor each upstream whose address has a country. `available: false` with a `reason` when\nanswers can't be placed: `geoip_off` or `geoip_missing` (the GeoIP database, `GET\n/map/geoip`), `address_not_recorded` (the lookup's answer address isn't kept yet, ADR-970: the\nupstream `markers` are then where the upstreams are, not where answers point) or `privacy`\n(level 3 keeps nothing per event). `unlocated` counts the answers with no place: failed,\nblocked and local ones, and prefixes with no country. Countries come from the database of the\nnode that answers.",
         "operationId": "get_world",
+        "parameters": [
+          {
+            "name": "node",
+            "in": "query",
+            "description": "Only this TelltaleDNS node (its pod, site or ID, as the Cluster page shows it).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "The world view's data, or why it is unavailable.",

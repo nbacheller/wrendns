@@ -1438,6 +1438,14 @@ fn total_weighted(parts: &MapParts) -> u64 {
         .sum()
 }
 
+/// One upstream across the nodes: its address, the worst breaker, and its counters.
+#[derive(Default)]
+struct WorldUp {
+    ip: Option<IpAddr>,
+    breaker: Option<Breaker>,
+    agg: Agg,
+}
+
 /// The world view from every node's part. `locate` is the answering node's GeoIP database
 /// (blocking: the caller runs this inside `blocking()`); it is asked once, for at most
 /// [`MAX_PREFIXES`] prefixes and the upstreams' addresses.
@@ -1445,12 +1453,41 @@ fn total_weighted(parts: &MapParts) -> u64 {
 /// Prefixes merge across nodes (the same prefix on two nodes adds). At privacy level 3 nothing
 /// per event is kept, so every answer is unlocated (`privacy`); levels 0 to 2 place answers,
 /// because an answer's address says nothing about a device (ADR-958 section 7).
+#[allow(clippy::too_many_lines)] // one pass: merge, ask the database once, then markers and regions
 pub fn world(
     parts: &MapParts,
     th: &Thresholds,
     now_unix_seconds: u64,
+    node: Option<&str>,
     locate: &dyn Fn(&[IpAddr]) -> GeoAnswer,
 ) -> MapWorld {
+    // `node` narrows the read to one TelltaleDNS node (its label, any case). The other map
+    // filters have nothing to narrow: a prefix is counted per node, not per device (ADR-1009).
+    let narrowed;
+    let parts = match node {
+        Some(n) => {
+            narrowed = MapParts {
+                parts: parts
+                    .parts
+                    .iter()
+                    .filter(|p| {
+                        let label = if p.node.is_empty() {
+                            "node"
+                        } else {
+                            p.node.as_str()
+                        };
+                        label.eq_ignore_ascii_case(n)
+                    })
+                    .cloned()
+                    .collect(),
+                missing: parts.missing.clone(),
+                unseen: parts.unseen.clone(),
+                pending: parts.pending.clone(),
+            };
+            &narrowed
+        }
+        None => parts,
+    };
     let total = total_weighted(parts);
     let window_secs = parts
         .parts
@@ -1498,13 +1535,7 @@ pub fn world(
     ranked.sort_by(|a, b| b.1.weighted.cmp(&a.1.weighted).then(a.0.cmp(&b.0)));
     ranked.truncate(MAX_PREFIXES);
 
-    #[derive(Default)]
-    struct Up {
-        ip: Option<IpAddr>,
-        breaker: Option<Breaker>,
-        agg: Agg,
-    }
-    let mut ups: BTreeMap<String, Up> = BTreeMap::new();
+    let mut ups: BTreeMap<String, WorldUp> = BTreeMap::new();
     for p in &parts.parts {
         for u in &p.upstreams {
             let e = ups.entry(u.name.clone()).or_default();

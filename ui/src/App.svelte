@@ -35,6 +35,8 @@
   import NetworkInventoryRoute from './pages/NetworkInventoryRoute.svelte';
   // REQ: OBS-901 (T26.3, ADR-958) — the live network map, a lazy chunk.
   import MapRoute from './pages/MapRoute.svelte';
+  // REQ: OBS-902 (T26.5, ADR-958) — the world view, a lazy chunk with its map data.
+  import WorldRoute from './pages/WorldRoute.svelte';
   import Anomalies from './pages/Anomalies.svelte';
   import Cluster from './pages/Cluster.svelte';
   import Cache from './pages/Cache.svelte';
@@ -51,6 +53,7 @@
     { path: '/', label: 'Dashboard', page: Dashboard, icon: 'dashboard', section: 'Monitor' },
     { path: '/traffic', label: 'Traffic map', page: Traffic, icon: 'traffic', section: 'Monitor' },
     { path: '/map', label: 'Network map', page: MapRoute, icon: 'map', section: 'Monitor' },
+    { path: '/world', label: 'World view', page: WorldRoute, icon: 'world', section: 'Monitor' },
     { path: '/heatmap', label: 'Heatmap', page: Heatmap, icon: 'heatmap', section: 'Monitor' },
     { path: '/flow', label: 'Flow', page: Flow, icon: 'flow', section: 'Monitor' },
     { path: '/queries', label: 'Query log', page: Queries, icon: 'queries', section: 'Monitor' },

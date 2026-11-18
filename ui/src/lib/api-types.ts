@@ -2512,6 +2512,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/map/geoip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The GeoIP database.
+         * @description This node's country database for the world view: `enabled`, `state` (`off`, `missing`,
+         *     `downloading`, `ready`, `failed`), the source's month, when it was built, its size, when the
+         *     next check is due and the last error's code. The database is never bundled and is downloaded
+         *     only after an admin turns `[map.geoip]` on; each node that serves the console keeps its own
+         *     copy. Change the settings with `PUT /map-settings/default` (admin), fetch now with `POST
+         *     /map/geoip/update`, remove it with `DELETE /map/geoip`.
+         */
+        get: operations["get_geoip"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete the GeoIP database.
+         * @description Removes this node's copy (and its `.prev`). While `[map.geoip]` stays on nothing is fetched
+         *     again until an admin presses Update now or turns it off and on; the world view says
+         *     `geoip_missing`. Admin only (never an agent); audited as `map.geoip.delete`.
+         */
+        delete: operations["delete_geoip"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/map/geoip/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fetch the GeoIP database now.
+         * @description Starts a download on this node, in the background, even when the day's check is not due (it
+         *     also lifts a "Delete database"). The status shows `downloading`, then `ready` or `failed` with
+         *     the error's code; a failed fetch keeps the old database. Admin only (never an agent); audited
+         *     as `map.geoip.update`. 409 `conflict` when a fetch is running or the toggle is off.
+         */
+        post: operations["update_geoip"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/map/health": {
         parameters: {
             query?: never;
@@ -2566,9 +2620,14 @@ export interface paths {
         };
         /**
          * Where answers point (world view).
-         * @description `available: false` with a `reason` when it can't be drawn: `geoip_off`, `geoip_missing`, or
-         *     `address_not_recorded`. A lookup's answer address isn't kept yet (ADR-970), so until it is every
-         *     lookup counts as `unlocated`.
+         * @description Countries with the rate, count and slow share of the answers that point there, and a marker
+         *     for each upstream whose address has a country. `available: false` with a `reason` when
+         *     answers can't be placed: `geoip_off` or `geoip_missing` (the GeoIP database, `GET
+         *     /map/geoip`), `address_not_recorded` (the lookup's answer address isn't kept yet, ADR-970: the
+         *     upstream `markers` are then where the upstreams are, not where answers point) or `privacy`
+         *     (level 3 keeps nothing per event). `unlocated` counts the answers with no place: failed,
+         *     blocked and local ones, and prefixes with no country. Countries come from the database of the
+         *     node that answers.
          */
         get: operations["get_world"];
         put?: never;
@@ -6195,6 +6254,42 @@ export interface components {
              */
             stub?: boolean;
         };
+        /**
+         * @description REQ: OBS-902 (T26.4, ADR-959 section 6) - this node's GeoIP database: whether it is on, what
+         *     it holds, and how the last fetch went. Everyone who can see the map sees it.
+         */
+        GeoipStatus: {
+            /** @description The attribution the database's licence (CC BY 4.0) asks for. */
+            attribution: string;
+            /** @description `[map.geoip] enabled`. */
+            enabled: boolean;
+            /**
+             * @description A stable code (`digest_mismatch`, `overlapping_ranges`, `not_found`, ...), never a
+             *     response body.
+             */
+            lastError?: string | null;
+            /** @description When the next check is due (a check runs at most once a day). */
+            nextCheckAt?: string | null;
+            /** @description The database is more than 90 days old (it still works). */
+            old: boolean;
+            /**
+             * Format: int64
+             * @description Rows of the source file.
+             */
+            rows: number;
+            /** Format: int64 */
+            sizeBytes: number;
+            /** @description The month of the database's source, `YYYY-MM`. */
+            sourceMonth?: string | null;
+            /**
+             * @description `off`, `missing` (on, with no database on this node yet), `downloading`, `ready` or
+             *     `failed` (the last attempt was not accepted: `lastError` says why, and the previous
+             *     database, if any, is kept).
+             */
+            state: string;
+            /** @description When this node built the database. */
+            updatedAt?: string | null;
+        };
         /** @description A client group. */
         GroupInfo: {
             blockAnswerIps: string[];
@@ -8222,15 +8317,26 @@ export interface components {
         /** @description `GET /api/v1/map/world`: where answers point. */
         MapWorld: {
             /**
-             * @description False when it can't be drawn; `reason` says why: `geoip_off`, `geoip_missing` or
-             *     `address_not_recorded` (the lookup's answer address isn't kept: ADR-970).
+             * @description True when answers are placed (`regions`). False when they can't be: `reason` says why
+             *     (`geoip_off`, `geoip_missing`, `address_not_recorded` or `privacy`). With
+             *     `address_not_recorded` the upstream `markers` are still there: they are where the
+             *     upstreams are, not where answers point (the lookup's answer address isn't kept: ADR-970).
              */
             available: boolean;
+            /** @description The country arcs start from (`[map.geoip] home_country`); unset: "Your network". */
+            homeCountry?: string | null;
             markers: components["schemas"]["WorldMarker"][];
             reason?: string | null;
             regions: components["schemas"]["WorldRegion"][];
             unlocated: components["schemas"]["WorldUnlocated"];
+            /**
+             * Format: int64
+             * @description Upstreams with no place on the map (a host name, or an address with no country).
+             */
+            unplacedUpstreams: number;
             updatedAt: string;
+            /** Format: double */
+            windowSecs: number;
         };
         /** @description Evidence that client IPs appear masked. */
         MaskedClients: {
@@ -10406,10 +10512,12 @@ export interface components {
         };
         /** @description One country of the world view. */
         WorldRegion: {
+            /** @description The two-letter country code. */
             cc: string;
             /** Format: int64 */
             count: number;
             health: components["schemas"]["MapHealth"];
+            /** @description The code again: the console writes the country's name. */
             name: string;
             /** Format: double */
             qps: number;
@@ -15459,6 +15567,84 @@ export interface operations {
             };
         };
     };
+    get_geoip: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The database's status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeoipStatus"];
+                };
+            };
+            /** @description This node has no GeoIP database (a resolver pod). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_geoip: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The status after the delete. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeoipStatus"];
+                };
+            };
+        };
+    };
+    update_geoip: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The fetch was started. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeoipStatus"];
+                };
+            };
+            /** @description A fetch is running already, or `[map.geoip]` is off. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     get_health: {
         parameters: {
             query?: {
@@ -15537,7 +15723,10 @@ export interface operations {
     };
     get_world: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Only this TelltaleDNS node (its pod, site or ID, as the Cluster page shows it). */
+                node?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;

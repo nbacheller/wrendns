@@ -1240,6 +1240,26 @@
       "docs": "network-map"
     },
     {
+      "id": "world-view",
+      "title": "Read the world view",
+      "term": "World view",
+      "summary": "A dot-grid world map with an arc from your network to each country the answers point at. A wider, denser pulse is more lookups a second; the colour and the shape at the country's end (OK, Warning, Failing, Idle) say how many of those answers were slow. Diamonds mark where your upstreams are.",
+      "when": "You want to see where your devices' answers lead, or whether one region is slow. The Table view is the same data as text.",
+      "example": "Most arcs end in your own country and one thick arc ends in the US with a Warning shape: a fifth of the answers there took longer than your latency objective.",
+      "caution": "Placing answers needs the GeoIP database (Settings, Query handling, GeoIP), which an admin turns on. TelltaleDNS does not yet record the address each answer points at, so until it does the view shows only where your upstreams are, labelled as that, not where answers point. Countries are a database's best guess: good for a picture, not for compliance. Failed, blocked and local answers have no location and are counted apart.",
+      "docs": "world-view"
+    },
+    {
+      "id": "geoip",
+      "title": "Turn on the country database",
+      "term": "GeoIP database",
+      "summary": "The world view needs a database that says which country an address is in. It is never bundled: an admin turns it on here, and each node that serves the console then downloads DB-IP's free IP to Country Lite file (about 5 MB, CC BY 4.0) in the background, at most once a day, verifies it and keeps it in the data directory. Nothing is fetched until you turn it on.",
+      "when": "You want the world view to place answers by country. Use your own HTTPS mirror as the source for a site with no internet access.",
+      "example": "Turn it on, press Update now: the state goes Downloading, then Ready with the month and size. A mirror at https://files.example.lan/dbip.csv.gz with its SHA-256 pinned makes the download exactly that file.",
+      "caution": "The checks (a size and row count, no overlaps, both address families, the gzip checksum and a pinned digest if you set one) guard against a truncated or tampered-with file; they don't prove who made it. A failed download keeps the old database and shows an error code. Delete database removes the file and nothing is fetched again until you press Update now. Only an admin changes this; everyone sees the status.",
+      "docs": "geoip-database"
+    },
+    {
       "id": "sinks",
       "title": "Send every query to your own log pipeline",
       "term": "Event sink",

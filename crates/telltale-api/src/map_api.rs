@@ -99,6 +99,15 @@ pub struct MapParams {
     pub node: Option<String>,
 }
 
+/// `GET /api/v1/map/world` filters. Answer prefixes are counted per node, not per device, so the
+/// network, group and device filters of the map have nothing to narrow here.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct WorldParams {
+    /// Only this TelltaleDNS node (its pod, site or ID, as the Cluster page shows it).
+    pub node: Option<String>,
+}
+
 impl MapParams {
     fn filter(&self) -> Filter {
         let t = |v: &Option<String>| {
@@ -250,13 +259,20 @@ pub(crate) async fn map_stream(
 /// (level 3 keeps nothing per event). `unlocated` counts the answers with no place: failed,
 /// blocked and local ones, and prefixes with no country. Countries come from the database of the
 /// node that answers.
-#[utoipa::path(get, path = "/api/v1/map/world", tag = "map",
+#[utoipa::path(get, path = "/api/v1/map/world", tag = "map", params(WorldParams),
     responses(
         (status = 200, body = map::MapWorld, description = "The world view's data, or why it is unavailable."),
         (status = 404, body = Problem, description = "`map_disabled`.")))]
-pub(crate) async fn get_world(State(s): State<MapState>) -> Result<Json<map::MapWorld>, Problem> {
+pub(crate) async fn get_world(
+    State(s): State<MapState>,
+    Query(p): Query<WorldParams>,
+) -> Result<Json<map::MapWorld>, Problem> {
     let b = s.backend;
     let _seat = s.hub.builds.acquire().await;
+    let node = p
+        .node
+        .map(|n| n.trim().to_owned())
+        .filter(|n| !n.is_empty());
     blocking(move || {
         let settings = settings(&*b)?;
         let parts = b.map_parts();
@@ -265,6 +281,7 @@ pub(crate) async fn get_world(State(s): State<MapState>) -> Result<Json<map::Map
             &parts,
             &settings.thresholds,
             b.now_unix_seconds(),
+            node.as_deref(),
             &locate,
         ))
     })

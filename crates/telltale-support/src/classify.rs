@@ -152,7 +152,7 @@ const TABLE: &[(&str, Class)] = &[
     ("local.device_domain", Scan),
     ("map.geoip.home_country", Plain),
     ("map.geoip.sha256", Plain),
-    ("map.geoip.source_url", Url),
+    ("map.geoip.source_url", Scan),
     ("node.data_dir", Scan),
     ("node.name", Name(C::Node)),
     ("node.secret_file_dirs[]", Scan),

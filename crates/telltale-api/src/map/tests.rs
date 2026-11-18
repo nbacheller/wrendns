@@ -973,7 +973,10 @@ fn geo(table: &'static [(&'static str, &'static str)]) -> impl Fn(&[IpAddr]) -> 
             .map(|ip| {
                 table
                     .iter()
-                    .find(|(p, _)| p.parse::<IpAddr>().is_ok_and(|p| prefix_of(p) == prefix_of(*ip)))
+                    .find(|(p, _)| {
+                        p.parse::<IpAddr>()
+                            .is_ok_and(|p| prefix_of(p) == prefix_of(*ip))
+                    })
                     .map(|(_, cc)| (*cc).to_owned())
             })
             .collect(),
@@ -1005,7 +1008,12 @@ fn world_parts(answers: Vec<Vec<AnswerPrefix>>) -> MapParts {
             .map(|(i, a)| {
                 let mut p = part(
                     &format!("pi{i}"),
-                    vec![entry(client(7), AnswerKind::Upstream, 1, counts(30, 300, 0, 0, 0))],
+                    vec![entry(
+                        client(7),
+                        AnswerKind::Upstream,
+                        1,
+                        counts(30, 300, 0, 0, 0),
+                    )],
                 );
                 p.answers_recorded = true;
                 p.answers = a;
@@ -1035,7 +1043,7 @@ fn obs_902_world_merges_prefixes_across_nodes() {
             answer("185.60.216.35", 20, 2, 0),
         ],
     ]);
-    let w = world(&parts, &th(), 1_791_072_000, &geo(TABLE));
+    let w = world(&parts, &th(), 1_791_072_000, None, &geo(TABLE));
     assert!(w.available, "{w:?}");
     assert_eq!(w.reason, None);
     assert_eq!(w.home_country.as_deref(), Some("NL"));
@@ -1050,30 +1058,63 @@ fn obs_902_world_merges_prefixes_across_nodes() {
     assert_eq!(w.regions[0].cc, "US");
     assert!((by["US"].qps - 3.83).abs() < 0.01, "{}", by["US"].qps);
     // 13 of the 230 US answers were slow: 5.7%, under the 10% line, so green.
-    assert!((by["US"].slow_pct - 5.7).abs() < 0.05, "{}", by["US"].slow_pct);
+    assert!(
+        (by["US"].slow_pct - 5.7).abs() < 0.05,
+        "{}",
+        by["US"].slow_pct
+    );
     assert_eq!(by["US"].health, MapHealth::Green);
     // The same prefixes on one node alone give the half of the sums.
-    let one = world(&world_parts(vec![vec![answer("93.184.216.34", 100, 20, 10)]]), &th(), 0, &geo(TABLE));
+    let one = world(
+        &world_parts(vec![vec![answer("93.184.216.34", 100, 20, 10)]]),
+        &th(),
+        0,
+        None,
+        &geo(TABLE),
+    );
     assert_eq!(one.regions[0].count, 100);
     // 10 of 100 slow is the line: yellow.
     assert_eq!(one.regions[0].health, MapHealth::Yellow);
     // Few real answers: idle, not green.
-    let thin = world(&world_parts(vec![vec![answer("1.1.1.9", 500, 2, 0)]]), &th(), 0, &geo(TABLE));
+    let thin = world(
+        &world_parts(vec![vec![answer("1.1.1.9", 500, 2, 0)]]),
+        &th(),
+        0,
+        None,
+        &geo(TABLE),
+    );
     assert_eq!(thin.regions[0].health, MapHealth::Idle);
     // The cap: more than 256 prefixes keep the busiest.
     let many: Vec<AnswerPrefix> = (0u32..300)
-        .map(|i| answer(&format!("{}.{}.7.1", 20 + i / 256, i % 256), 1000 - u64::from(i), 20, 0))
+        .map(|i| {
+            answer(
+                &format!("{}.{}.7.1", 20 + i / 256, i % 256),
+                1000 - u64::from(i),
+                20,
+                0,
+            )
+        })
         .collect();
     let seen = std::sync::Mutex::new(0usize);
-    let capped = world(&world_parts(vec![many]), &th(), 0, &|ips: &[IpAddr]| {
-        *seen.lock().unwrap() = ips.len();
-        GeoAnswer {
-            state: GeoState::Ready,
-            home: None,
-            countries: ips.iter().map(|_| Some("DE".to_owned())).collect(),
-        }
-    });
-    assert_eq!(*seen.lock().unwrap(), MAX_PREFIXES, "256 prefixes and no upstream address");
+    let capped = world(
+        &world_parts(vec![many]),
+        &th(),
+        0,
+        None,
+        &|ips: &[IpAddr]| {
+            *seen.lock().unwrap() = ips.len();
+            GeoAnswer {
+                state: GeoState::Ready,
+                home: None,
+                countries: ips.iter().map(|_| Some("DE".to_owned())).collect(),
+            }
+        },
+    );
+    assert_eq!(
+        *seen.lock().unwrap(),
+        MAX_PREFIXES,
+        "256 prefixes and no upstream address"
+    );
     assert_eq!(capped.regions[0].cc, "DE");
     assert_eq!(capped.regions[0].count, (1000 - 255..=1000).sum::<u64>());
 }
@@ -1091,15 +1132,18 @@ fn obs_902_world_excludes_private_levels() {
             asked.lock().unwrap().extend_from_slice(ips);
             geo(TABLE)(ips)
         };
-        let w = world(&parts, &th(), 0, &locate);
+        let w = world(&parts, &th(), 0, None, &locate);
         if level >= 3 {
             assert!(!w.available, "level {level}");
             assert_eq!(w.reason.as_deref(), Some("privacy"));
-            assert!(w.regions.is_empty());
+            assert_eq!(w.regions.len(), 0);
             assert_eq!(w.unlocated.count, 300);
             assert_eq!(w.unlocated.reason.as_deref(), Some("privacy"));
             assert!(
-                !asked.lock().unwrap().contains(&"93.184.216.34".parse().unwrap()),
+                !asked
+                    .lock()
+                    .unwrap()
+                    .contains(&"93.184.216.34".parse().unwrap()),
                 "no answer address is looked up at level {level}"
             );
         } else {
@@ -1119,9 +1163,12 @@ fn obs_902_world_states_and_markers() {
     parts.parts[0].upstreams[0].ip = Some("93.184.216.34".parse().unwrap());
     parts.parts[0].upstreams[1].ip = Some("10.0.0.53".parse().unwrap());
     // Off and missing: the state decides, nothing is placed, nothing is drawn.
-    for (state, reason) in [(GeoState::Off, "geoip_off"), (GeoState::Missing, "geoip_missing")] {
+    for (state, reason) in [
+        (GeoState::Off, "geoip_off"),
+        (GeoState::Missing, "geoip_missing"),
+    ] {
         let st = state.clone();
-        let w = world(&parts, &th(), 0, &move |_| GeoAnswer {
+        let w = world(&parts, &th(), 0, None, &move |_| GeoAnswer {
             state: st.clone(),
             ..GeoAnswer::default()
         });
@@ -1131,26 +1178,49 @@ fn obs_902_world_states_and_markers() {
         assert_eq!(w.unlocated.count, 300);
     }
     // Ready but the address is not recorded: markers only, unavailable for answers.
-    let w = world(&parts, &th(), 0, &geo(TABLE));
+    let w = world(&parts, &th(), 0, None, &geo(TABLE));
     assert!(!w.available);
     assert_eq!(w.reason.as_deref(), Some("address_not_recorded"));
     assert_eq!(w.markers.len(), 1, "{:?}", w.markers);
     assert_eq!(w.markers[0].name, "quad9");
     assert_eq!(w.markers[0].cc.as_deref(), Some("US"));
-    assert_eq!(w.unplaced_upstreams, 1, "the private address has no country");
-    assert!(w.regions.is_empty());
+    assert_eq!(
+        w.unplaced_upstreams, 1,
+        "the private address has no country"
+    );
+    assert_eq!(w.regions.len(), 0);
     assert_eq!(w.unlocated.count, 300);
     assert_eq!(w.unlocated.reason.as_deref(), Some("address_not_recorded"));
     // An open breaker makes the marker red.
     parts.parts[0].upstreams[0].breaker = "open".into();
-    let w = world(&parts, &th(), 0, &geo(TABLE));
+    let w = world(&parts, &th(), 0, None, &geo(TABLE));
     assert_eq!(w.markers[0].health, MapHealth::Red);
+}
+
+/// REQ: OBS-902 (T26.5) - `node` narrows the world view to one node's prefixes and upstreams.
+#[test]
+fn obs_902_world_node_filter() {
+    let parts = world_parts(vec![
+        vec![answer("93.184.216.34", 100, 20, 0)],
+        vec![answer("185.60.216.35", 40, 20, 0)],
+    ]);
+    let both = world(&parts, &th(), 0, None, &geo(TABLE));
+    assert_eq!(both.regions.len(), 2);
+    let one = world(&parts, &th(), 0, Some("PI1"), &geo(TABLE));
+    assert_eq!(one.regions.len(), 1, "{one:?}");
+    assert_eq!(one.regions[0].cc, "IE");
+    assert_eq!(one.unlocated.count, 300 - 40);
+    let none = world(&parts, &th(), 0, Some("nope"), &geo(TABLE));
+    assert_eq!(none.regions.len(), 0);
 }
 
 /// An address maps to its /24 or /48.
 #[test]
 fn obs_902_prefix_of() {
-    assert_eq!(prefix_of("93.184.216.34".parse().unwrap()), "93.184.216.0".parse::<IpAddr>().unwrap());
+    assert_eq!(
+        prefix_of("93.184.216.34".parse().unwrap()),
+        "93.184.216.0".parse::<IpAddr>().unwrap()
+    );
     assert_eq!(
         prefix_of("2606:4700:4700:1:2:3:4:1111".parse().unwrap()),
         "2606:4700:4700::".parse::<IpAddr>().unwrap()

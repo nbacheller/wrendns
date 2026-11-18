@@ -24,6 +24,8 @@
   const ICON_PREVIEW = ['www.netflix.com', 'cdn.example.org', 'nas.home.arpa'];
   import PiholeImport from '../lib/components/PiholeImport.svelte';
   import PiholeApi from '../lib/components/PiholeApi.svelte';
+  // REQ: OBS-902 (T26.4, ADR-959) — the GeoIP database for the world view: status for all, controls for admins.
+  import GeoipCard from '../lib/components/GeoipCard.svelte';
 
   const tabs = $derived<TabItem[]>(
     [
@@ -1035,6 +1037,8 @@
       A simulation replays the query log with and without a change and shows what would have been answered differently. It never
       touches DNS answers and runs at background priority; at query-log privacy level 1 or above names can't be replayed.
     </p>
+    <!-- REQ: OBS-902 (T26.4, ADR-959) — the GeoIP database: everyone sees its status, an admin controls it. -->
+    <GeoipCard />
   {/if}
   </TabPanel>
 </div>

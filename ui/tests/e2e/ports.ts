@@ -22,6 +22,7 @@ export const OFFSETS = {
   probeTarget: 12, // the probe target the System tab test shows (route-mocked)
   guardedNew: 13, // the guarded window test's new address (a temporary listener the node opens for the window)
   guardedRoll: 14, // the guarded rollback test's new address
+  geoipSource: 15, // the fake HTTPS source the GeoIP tests (obs_902) download the country database from
 } as const;
 
 export type PortName = keyof typeof OFFSETS;

@@ -1237,6 +1237,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // start-up reads what changed since the service was built.
     crate::auth_setup::run(Arc::clone(&sources), http_stopped.clone());
     sources.oidc_changed.notify_one();
+    // REQ: OBS-902 (T26.4) - a changed `[map.geoip]` is looked at now (a fetch starts, or stops).
+    sources.geoip.poke();
     // REQ: T8.2 — device names from the routers' DHCP; API-016 (T23.7) — the live list: a router
     // the API or UI changes is read again without a restart.
     tokio::spawn(crate::routers::run(

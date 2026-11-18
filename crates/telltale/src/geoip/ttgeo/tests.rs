@@ -49,6 +49,7 @@ fn ip(s: &str) -> IpAddr {
     s.parse().unwrap()
 }
 
+#[allow(clippy::unnecessary_wraps)] // compared with what `lookup` returns
 fn cc(s: &str) -> Option<[u8; 2]> {
     let b = s.as_bytes();
     Some([b[0], b[1]])
@@ -115,7 +116,10 @@ fn obs_902_geoip_lookup_not_resident() {
         let info = allocation_counter::measure(|| {
             let _ = db.lookup(a);
         });
-        assert_eq!(info.count_total, 0, "a lookup of {addr} allocated: {info:?}");
+        assert_eq!(
+            info.count_total, 0,
+            "a lookup of {addr} allocated: {info:?}"
+        );
     }
 }
 
@@ -130,7 +134,10 @@ fn obs_902_geoip_large_table_lookups() {
             continue;
         }
         let base = 0x0100_0000u32 + i * 256;
-        let (a, b) = (std::net::Ipv4Addr::from(base), std::net::Ipv4Addr::from(base + 255));
+        let (a, b) = (
+            std::net::Ipv4Addr::from(base),
+            std::net::Ipv4Addr::from(base + 255),
+        );
         lines.push(format!("{a},{b},{}", if i % 2 == 0 { "AA" } else { "BB" }));
     }
     lines.push("2001:db8::,2001:db8::ffff,NL".to_owned());
@@ -174,10 +181,7 @@ fn obs_902_geoip_atomic_write_after_crash() {
     // The half-written temporary file is never opened as the database, even if it is all there is.
     let only_tmp = tempfile::tempdir().unwrap();
     let _ = write_tmp(only_tmp.path(), &t, 202_612, 2_000, Some(20));
-    assert!(matches!(
-        Db::open(only_tmp.path()),
-        Err(OpenError::Missing)
-    ));
+    assert!(matches!(Db::open(only_tmp.path()), Err(OpenError::Missing)));
 
     // A crash after the temporary file is complete but before the rename: the old one stands.
     let tmp = write_tmp(dir.path(), &t, 202_612, 2_000, None).unwrap();
@@ -228,7 +232,10 @@ fn obs_902_geoip_verification_rules() {
         assert!(matches!(e, Reject::Malformed(_)), "{bad}: {e:?}");
     }
     // Too few rows and too few countries.
-    assert_eq!(table_of("1.0.0.0,1.0.0.255,AU").unwrap_err(), Reject::TooFewRows);
+    assert_eq!(
+        table_of("1.0.0.0,1.0.0.255,AU").unwrap_err(),
+        Reject::TooFewRows
+    );
     let one_country = (0..10)
         .map(|i| format!("1.0.{i}.0,1.0.{i}.255,AU"))
         .chain(["2001:db8::,2001:db8::ffff,AU".to_owned()])
@@ -237,7 +244,12 @@ fn obs_902_geoip_verification_rules() {
     assert_eq!(table_of(&one_country).unwrap_err(), Reject::TooFewCountries);
     // One family missing.
     let v4_only = (0..10)
-        .map(|i| format!("1.0.{i}.0,1.0.{i}.255,{}", if i % 2 == 0 { "AU" } else { "NZ" }))
+        .map(|i| {
+            format!(
+                "1.0.{i}.0,1.0.{i}.255,{}",
+                if i % 2 == 0 { "AU" } else { "NZ" }
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
     assert_eq!(table_of(&v4_only).unwrap_err(), Reject::MissingFamily);
@@ -280,8 +292,12 @@ fn obs_902_geoip_gzip_checks() {
         Reject::Corrupt
     );
     assert_eq!(
-        read_gzip_csv(b"not gzip at all, just text", &mut Collector::default(), 1 << 20)
-            .unwrap_err(),
+        read_gzip_csv(
+            b"not gzip at all, just text",
+            &mut Collector::default(),
+            1 << 20
+        )
+        .unwrap_err(),
         Reject::Corrupt
     );
     // Over the inflated limit (a small limit stands in for 96 MiB).
