@@ -178,13 +178,13 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "name": {"type": "string", "description": "Part of the queried name."},
-                "client": {"type": "string", "description": "Client IP or device name."},
+                "client": {"type": "string", "description": "A client IP, or several comma-separated (addresses, `hostname:<router name>`, Kubernetes workloads as namespace/kind/name; at most 100). With clientNot, every client except these."},
                 "group": {"type": "string", "description": "Client group."},
                 "status": {"type": "string", "description": "blocked, cached, forwarded, local, refused, error, ..."},
                 "qtype": {"type": "string", "description": "A, AAAA, HTTPS, ..."},
                 "rcode": {"type": "string", "description": "NOERROR, NXDOMAIN, SERVFAIL, ..."},
                 "nameNot": {"type": "boolean", "description": "Keep the queries whose name does NOT contain `name`. Needs `name`."},
-                "clientNot": {"type": "boolean", "description": "Keep the queries from every client except `client`. Needs `client`."},
+                "clientNot": {"type": "boolean", "description": "Keep the queries from every client except those in `client`. Needs `client`."},
                 "statusNot": {"type": "boolean", "description": "Keep the queries whose status is none of `status`. Needs `status`."},
                 "qtypeNot": {"type": "boolean", "description": "Keep the queries whose type is none of `qtype`. Needs `qtype`."},
                 "rcodeNot": {"type": "boolean", "description": "Keep the queries whose response code is none of `rcode` (queries with no response code are kept). Needs `rcode`."},
@@ -277,6 +277,13 @@ pub fn tools() -> Vec<Tool> {
                     ("devices".into(), "/api/v1/dhcp/leases".into()),
                 ])
             },
+        },
+        // REQ: UPS-004, AGT-001 (T24.36)
+        Tool {
+            name: "list_upstream_presets",
+            description: "Read-only. The public DNS resolvers TelltaleDNS knows by name (Cloudflare, Cloudflare for Families, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing and others): each variant's addresses (plain, DNS over TLS, DNS over HTTPS) and TLS name, what it filters, a line on its privacy, and whether the Upstreams page's simple view offers it; also whether this node has an IPv6 route (without one, IPv6 upstreams only time out). Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("presets".into(), "/api/v1/upstream-presets".into())]),
         },
         // REQ: API-015, AGT-001 (ADR-903 §5) — metadata only; setting a value is for people.
         Tool {

@@ -100,11 +100,11 @@
       "additionalProperties": false,
       "properties": {
         "client": {
-          "description": "Client IP or device name.",
+          "description": "A client IP, or several comma-separated (addresses, `hostname:<router name>`, Kubernetes workloads as namespace/kind/name; at most 100). With clientNot, every client except these.",
           "type": "string"
         },
         "clientNot": {
-          "description": "Keep the queries from every client except `client`. Needs `client`.",
+          "description": "Keep the queries from every client except those in `client`. Needs `client`.",
           "type": "boolean"
         },
         "cursor": {
@@ -254,6 +254,21 @@
       "type": "object"
     },
     "name": "list_networks"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. The public DNS resolvers TelltaleDNS knows by name (Cloudflare, Cloudflare for Families, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing and others): each variant's addresses (plain, DNS over TLS, DNS over HTTPS) and TLS name, what it filters, a line on its privacy, and whether the Upstreams page's simple view offers it; also whether this node has an IPv6 route (without one, IPv6 upstreams only time out). Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "list_upstream_presets"
   },
   {
     "annotations": {

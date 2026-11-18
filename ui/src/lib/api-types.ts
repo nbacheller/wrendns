@@ -4096,6 +4096,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/upstream-presets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The public DNS resolvers the simple upstream picker offers (UPS-004; T24.36).
+         * @description The built-in catalog (`presets/upstreams.toml`), one row per provider variant: its addresses
+         *     (plain, DNS over TLS, DNS over HTTPS), the TLS name, what it filters and a line on its
+         *     privacy, and whether this node has an IPv6 route (so the picker can grey IPv6 out). The
+         *     picker writes the upstreams and the `default` group through `PUT /api/v1/upstreams/{name}`
+         *     and `PUT /api/v1/upstream-groups/{name}`; this only reads. Presets that need a parameter (a
+         *     NextDNS profile) are listed with `simple` false.
+         */
+        get: operations["upstream_presets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/upstreams": {
         parameters: {
             query?: never;
@@ -10804,6 +10829,46 @@ export interface components {
             /** @description REQ: UPS-013 — set while this node no longer holds that address: its queries fail. */
             sourceProblem?: string | null;
         };
+        /** @description REQ: UPS-004 (T24.36) — a public resolver variant the simple picker offers. */
+        UpstreamPreset: {
+            dnssec: boolean;
+            endpoints: components["schemas"]["UpstreamPresetEndpoint"][];
+            /** @description `none`, `malware`, `family` or `ads`. */
+            filtering: string;
+            homepage: string;
+            id: string;
+            name: string;
+            /** @description One line: what it filters and what it does with your queries. */
+            note: string;
+            /** @description Placeholders in its addresses (a NextDNS profile); empty for every simple preset. */
+            params: string[];
+            /** @description The heading it is listed under (`Cloudflare`). */
+            provider: string;
+            /** @description Offered in the simple view (false: it needs a parameter, or is for the Advanced view). */
+            simple: boolean;
+            /** @description The choice under the heading (`Malware`). */
+            variant: string;
+        };
+        /** @description REQ: UPS-004 (T24.36) — one address a public resolver answers on. */
+        UpstreamPresetEndpoint: {
+            /** @description `v4` or `v6` for an address, `name` for a host name (which resolves to either). */
+            family: string;
+            /** @description `udp`, `tcp`, `tls`, `https` or `quic`. */
+            protocol: string;
+            /** @description The name on the server certificate, for a `tls://` address given by IP. */
+            tlsServerName?: string | null;
+            /** @description `tls://1.1.1.1`, `udp://[2606:4700:4700::1111]`, `https://cloudflare-dns.com/dns-query`. */
+            url: string;
+        };
+        /** @description REQ: UPS-004 (T24.36) — the catalog, and what this node can reach. */
+        UpstreamPresets: {
+            /**
+             * @description Whether this node has a usable IPv6 default route: without one, an IPv6 upstream only
+             *     times out. Unknown (another OS) reads true.
+             */
+            ipv6Route: boolean;
+            items: components["schemas"]["UpstreamPreset"][];
+        };
         /** @description REQ: OBS-019 — one upstream's answers since start. */
         UpstreamQuality: {
             /** Format: int64 */
@@ -17163,9 +17228,14 @@ export interface operations {
                  *     `name`. Default: false.
                  */
                 nameNot?: boolean;
-                /** @description Client IP address. */
+                /**
+                 * @description Client IP address, or several, comma-separated (REQ: OBS-003, ADR-1013): addresses,
+                 *     `hostname:<label>` (the addresses a router gave that name now) and Kubernetes workloads
+                 *     (`namespace/kind/name`). At most 100 entries and 256 addresses; `clientTruncated` says
+                 *     when a cap cut the set.
+                 */
                 client?: string;
-                /** @description Keep the rows from every client except `client`. Needs `client`. Default: false. */
+                /** @description Keep the rows from every client except `client` (all of them, when several). Needs `client`. Default: false. */
                 clientNot?: boolean;
                 /** @description Statuses, comma-separated (`blocked,forwarded`). */
                 status?: string;
@@ -17260,9 +17330,12 @@ export interface operations {
                  *     Needs `name`. Default: false.
                  */
                 nameNot?: boolean;
-                /** @description Client IP address. */
+                /**
+                 * @description Client IP address, or several, comma-separated (addresses, `hostname:<label>` and
+                 *     Kubernetes workloads; REQ: OBS-003, ADR-1013).
+                 */
                 client?: string;
-                /** @description Only queries from every client except `client`. Needs `client`. Default: false. */
+                /** @description Only queries from every client except `client` (all of them, when several). Needs `client`. Default: false. */
                 clientNot?: boolean;
                 /** @description The client's group (its highest-priority group). */
                 group?: string;
@@ -19535,6 +19608,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    upstream_presets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpstreamPresets"];
                 };
             };
         };

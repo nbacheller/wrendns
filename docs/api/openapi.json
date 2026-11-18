@@ -8074,7 +8074,7 @@
           {
             "name": "client",
             "in": "query",
-            "description": "Client IP address.",
+            "description": "Client IP address, or several, comma-separated (REQ: OBS-003, ADR-1013): addresses,\n`hostname:<label>` (the addresses a router gave that name now) and Kubernetes workloads\n(`namespace/kind/name`). At most 100 entries and 256 addresses; `clientTruncated` says\nwhen a cap cut the set.",
             "required": false,
             "schema": {
               "type": "string"
@@ -8083,7 +8083,7 @@
           {
             "name": "clientNot",
             "in": "query",
-            "description": "Keep the rows from every client except `client`. Needs `client`. Default: false.",
+            "description": "Keep the rows from every client except `client` (all of them, when several). Needs `client`. Default: false.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -8303,7 +8303,7 @@
           {
             "name": "client",
             "in": "query",
-            "description": "Client IP address.",
+            "description": "Client IP address, or several, comma-separated (addresses, `hostname:<label>` and\nKubernetes workloads; REQ: OBS-003, ADR-1013).",
             "required": false,
             "schema": {
               "type": "string"
@@ -8312,7 +8312,7 @@
           {
             "name": "clientNot",
             "in": "query",
-            "description": "Only queries from every client except `client`. Needs `client`. Default: false.",
+            "description": "Only queries from every client except `client` (all of them, when several). Needs `client`. Default: false.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -11547,6 +11547,28 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/upstream-presets": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The public DNS resolvers the simple upstream picker offers (UPS-004; T24.36).",
+        "description": "The built-in catalog (`presets/upstreams.toml`), one row per provider variant: its addresses\n(plain, DNS over TLS, DNS over HTTPS), the TLS name, what it filters and a line on its\nprivacy, and whether this node has an IPv6 route (so the picker can grey IPv6 out). The\npicker writes the upstreams and the `default` group through `PUT /api/v1/upstreams/{name}`\nand `PUT /api/v1/upstream-groups/{name}`; this only reads. Presets that need a parameter (a\nNextDNS profile) are listed with `simple` false.",
+        "operationId": "upstream_presets",
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpstreamPresets"
                 }
               }
             }
@@ -27708,6 +27730,120 @@
               "null"
             ],
             "description": "REQ: UPS-013 — set while this node no longer holds that address: its queries fail."
+          }
+        }
+      },
+      "UpstreamPreset": {
+        "type": "object",
+        "description": "REQ: UPS-004 (T24.36) — a public resolver variant the simple picker offers.",
+        "required": [
+          "id",
+          "name",
+          "provider",
+          "variant",
+          "note",
+          "homepage",
+          "filtering",
+          "dnssec",
+          "simple",
+          "params",
+          "endpoints"
+        ],
+        "properties": {
+          "dnssec": {
+            "type": "boolean"
+          },
+          "endpoints": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UpstreamPresetEndpoint"
+            }
+          },
+          "filtering": {
+            "type": "string",
+            "description": "`none`, `malware`, `family` or `ads`."
+          },
+          "homepage": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string",
+            "description": "One line: what it filters and what it does with your queries."
+          },
+          "params": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Placeholders in its addresses (a NextDNS profile); empty for every simple preset."
+          },
+          "provider": {
+            "type": "string",
+            "description": "The heading it is listed under (`Cloudflare`)."
+          },
+          "simple": {
+            "type": "boolean",
+            "description": "Offered in the simple view (false: it needs a parameter, or is for the Advanced view)."
+          },
+          "variant": {
+            "type": "string",
+            "description": "The choice under the heading (`Malware`)."
+          }
+        }
+      },
+      "UpstreamPresetEndpoint": {
+        "type": "object",
+        "description": "REQ: UPS-004 (T24.36) — one address a public resolver answers on.",
+        "required": [
+          "url",
+          "protocol",
+          "family"
+        ],
+        "properties": {
+          "family": {
+            "type": "string",
+            "description": "`v4` or `v6` for an address, `name` for a host name (which resolves to either)."
+          },
+          "protocol": {
+            "type": "string",
+            "description": "`udp`, `tcp`, `tls`, `https` or `quic`."
+          },
+          "tlsServerName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name on the server certificate, for a `tls://` address given by IP."
+          },
+          "url": {
+            "type": "string",
+            "description": "`tls://1.1.1.1`, `udp://[2606:4700:4700::1111]`, `https://cloudflare-dns.com/dns-query`."
+          }
+        }
+      },
+      "UpstreamPresets": {
+        "type": "object",
+        "description": "REQ: UPS-004 (T24.36) — the catalog, and what this node can reach.",
+        "required": [
+          "ipv6Route",
+          "items"
+        ],
+        "properties": {
+          "ipv6Route": {
+            "type": "boolean",
+            "description": "Whether this node has a usable IPv6 default route: without one, an IPv6 upstream only\ntimes out. Unknown (another OS) reads true."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UpstreamPreset"
+            }
           }
         }
       },

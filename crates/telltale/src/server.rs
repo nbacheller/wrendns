@@ -1217,7 +1217,13 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         lists: ArcSwapOption::empty(),
         qlog: qlog_stats,
         config: ArcSwap::from_pointee(cfg.clone()),
-        file_config: ArcSwap::from_pointee(load_files(&files).unwrap_or_else(|| cfg.clone())),
+        file_config: ArcSwap::from_pointee(load_files(&files).unwrap_or_else(|| {
+            // The origin labels (file / API) are only as good as this; say so loudly.
+            warn!(
+                "config: files alone failed to load; entry origins will read as file until they do"
+            );
+            cfg.clone()
+        })),
         config_files: files.clone(),
         update: Arc::new(std::sync::Mutex::new(crate::updates::initial(
             cfg.updates.check,

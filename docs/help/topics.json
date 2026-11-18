@@ -340,6 +340,16 @@
       "docs": "encrypted-upstreams"
     },
     {
+      "id": "upstream-picker",
+      "title": "Pick your upstream servers",
+      "term": "Upstream picker (simple view)",
+      "summary": "Tick the public DNS servers you want, choose encrypted or plain DNS and IPv4 and/or IPv6, and Save. TelltaleDNS asks the fastest of the servers you ticked. The Custom row takes an address of your own. The Advanced view is the technical list and forms.",
+      "when": "Setting up, or changing which public servers answer for you, without writing addresses by hand.",
+      "example": "Tick Quad9 and Cloudflare, leave Encrypted on, and Save: DNS over TLS to both, using whichever answers faster.",
+      "caution": "Every server you tick sees the names you look up, so read its note. Plain DNS isn't private. IPv6 is greyed out when this node has no IPv6 route. Servers set up another way (config files, an import, the Advanced view) are shown and left alone, and stay in the default group.",
+      "docs": "upstream-presets"
+    },
+    {
       "id": "upstream-route",
       "title": "\"This node has no IPv6 route\"",
       "term": "No route to an upstream",
@@ -1358,6 +1368,27 @@
       "example": "On Kubernetes, set TELLTALE_IGNORE_GUARDED=1 on the pod and let it restart: it ignores every stored guarded setting and uses its ConfigMap. Fix the setting, remove the variable, and restart again.",
       "caution": "telltale guarded clear needs the node stopped and only clears that node's entries. TELLTALE_IGNORE_GUARDED ignores entries without deleting them, and never ignores the file.",
       "docs": "recovering-from-a-guarded-change"
+    },
+    {
+      "id": "query-log-clients",
+      "title": "Show queries from several devices",
+      "term": "Client filter",
+      "summary": "Search by a device's name, or by its address, and pick as many devices as you like; the log shows the queries from all of them, and \"not\" shows every other device.",
+      "when": "You want one person's phone and laptop together, or everything except the server that asks the most.",
+      "example": "Type \"tv\", pick the living room and bedroom TVs, and the log lists both. Tick \"not\" to see everything else.",
+      "caution": "A device is found by the address it has now (a router name or a Kubernetes workload is followed to its addresses); at most 100 devices and 256 addresses per search.",
+      "docs": "groups-and-devices"
+    },
+    {
+      "id": "picker",
+      "title": "Choosing from a long list",
+      "term": "Search and multi-select",
+      "summary": "Type to narrow the list, click or press Enter to pick, Select all and Deselect all act on what the search shows, Backspace removes the last pick.",
+      "when": "A setting offers many devices, groups, lists or networks.",
+      "example": "In a group's networks, type \"10.20.2\" and Select all.",
+      "caution": "Escape closes the list without changing the choice.",
+      "general": true,
+      "docs": "groups-and-devices"
     },
     {
       "id": "list-too-large",
