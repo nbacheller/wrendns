@@ -1375,6 +1375,11 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Cost: about 6 KiB gzipped in the main chunk and the 51 KiB lazy chunk (the UI is 295.6 KiB of its 400 KiB budget); no server work.
 - Other pages (Clients, a device, Analyze, Explain, Flow, the Traffic map, the Wall) don't carry the mark yet.
 
+**Amended 2026-11-17 (the owner: "go on adding the bootstrap icons pack as well as long as it doesn't create too much overhead"):** a second pack, for the marks the first one dropped.
+- [Bootstrap Icons](https://icons.getbootstrap.com) 1.13.2 (MIT) is the second choice: when Simple Icons has none of a brand's candidate slugs, the generator takes the Bootstrap glyph named with a `bi:` prefix in the list. Eleven of the 25 missing brands have one: Microsoft (also used for Office, Azure, and Edge names, which have no mark of their own), Teams, Windows, Xbox, Bing, Skype, LinkedIn, Amazon, Slack, OpenAI, Nintendo. Disney+, Hulu, Minecraft, Adobe, the BBC, Walmart, and AWS are in neither pack and stay monograms. A glyph with no colour gets a brand colour chosen by hand in the generator (`BOOTSTRAP`), and its path sits on a 16 grid, so the data carries the grid size when it isn't 24 and the component reads it.
+- Overhead: none at run time, and the chunk is smaller. The generator now minifies path data with svgo to two decimals (a third of the bytes, under 1% difference at 16 and 20 px), which more than pays for the eleven added glyphs: the glyph data is 86.9 KiB raw and 35.4 KiB gzipped (it was about 118 and 51 for 107 glyphs). svgo, and both packs, are used only when the generator runs (`npm i --no-save`, pinned in the script, checked by it); nothing is added to `package.json`, to the build, or to the image.
+- `docs/third-party-notices.md` carries the Bootstrap Icons licence; the developer page `site/dev-icons.html` has the recipe for adding a brand or a pack.
+
 ## ADR-166 — UniFi: name offline clients from the console's client history and configured clients (Accepted)
 **Context:** T8.2, ADR-080 ("not done: UniFi's offline known clients"). `stat/sta` lists only connected clients, so a device that has since left (a phone off Wi-Fi, a laptop asleep) loses its name: its queries in the log and the top lists show a bare address, though UniFi still has its alias.
 **Decision (proposed):**
