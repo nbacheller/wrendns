@@ -28,6 +28,7 @@ parking_lot = "0.13.0"
 rand = "0.10.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1.0.229", features = ["derive"] }
+telltale-net = { version = "0.8.0", path = "../telltale-net" }
 telltale-config = { version = "0.8.0", path = "../telltale-config" }
 telltale-proto = { version = "0.8.0", path = "../telltale-proto" }
 # REQ: UPS-003 (T7.24) — DNSCrypt: libsodium's crypto_box (X25519 with XSalsa20- or
@@ -46,7 +47,6 @@ webpki-roots = "1.0.9"
 
 [dev-dependencies]
 # T7.8: the HTTP/3 upstream is tested against the real DoH3 listener.
-telltale-net = { version = "0.8.0", path = "../telltale-net" }
 rcgen = "0.14.10"
 # T9.24: the offline signed-zone DNSSEC test (RRSIG inception) and its anchors file.
 time = "0.3.55"

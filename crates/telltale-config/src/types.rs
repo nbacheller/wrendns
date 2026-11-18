@@ -245,6 +245,30 @@ impl Cidr {
         Ok(Self { addr, prefix })
     }
 
+    /// The network itself: the host bits cleared (`198.51.100.252/24` is `198.51.100.0/24`).
+    #[must_use]
+    pub fn network(&self) -> Self {
+        use std::net::IpAddr;
+        let addr = match self.addr {
+            IpAddr::V4(a) => {
+                let mask = u32::MAX
+                    .checked_shl(32 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                IpAddr::V4((u32::from(a) & mask).into())
+            }
+            IpAddr::V6(a) => {
+                let mask = u128::MAX
+                    .checked_shl(128 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                IpAddr::V6((u128::from(a) & mask).into())
+            }
+        };
+        Self {
+            addr,
+            prefix: self.prefix,
+        }
+    }
+
     /// True if `ip` is inside this network (IPv4-mapped IPv6 addresses count as IPv4).
     pub fn contains(&self, ip: std::net::IpAddr) -> bool {
         use std::net::IpAddr;
@@ -268,6 +292,48 @@ impl Cidr {
             _ => false,
         }
     }
+}
+
+/// REQ: UPS-013 (T24.31, ADR-997) — an upstream's `source`: the local address its sockets are
+/// bound to, or a network, meaning "the address this node holds in it".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceSpec {
+    /// One address (`198.51.100.252`, `198.51.100.252:0`, `[fd00::2]:0`).
+    Addr(std::net::IpAddr),
+    /// A network (`198.51.100.0/24`): the node's own address inside it.
+    Subnet(Cidr),
+}
+
+/// Reads an upstream's `source`. The port, if written, must be 0 (a fixed source port would let
+/// one query at a time through and give up RFC 5452's random port).
+pub fn parse_source(s: &str) -> Result<SourceSpec, String> {
+    let s = s.trim();
+    let bad = || {
+        format!(
+            "`{s}`: an address this node holds (198.51.100.252 or 198.51.100.252:0) or a network (198.51.100.0/24: the address this node holds in it)"
+        )
+    };
+    if s.contains('/') {
+        let c = Cidr::parse(s).map_err(|_| bad())?;
+        if c.addr.is_unspecified() || c.prefix == 0 {
+            return Err(bad());
+        }
+        return Ok(SourceSpec::Subnet(c));
+    }
+    let ip = if let Ok(sa) = s.parse::<std::net::SocketAddr>() {
+        if sa.port() != 0 {
+            return Err(format!(
+                "`{s}`: the source port must be 0 (a port is chosen at random for each query)"
+            ));
+        }
+        sa.ip()
+    } else {
+        s.parse::<std::net::IpAddr>().map_err(|_| bad())?
+    };
+    if ip.is_unspecified() || ip.is_multicast() {
+        return Err(bad());
+    }
+    Ok(SourceSpec::Addr(ip))
 }
 
 impl fmt::Debug for Cidr {

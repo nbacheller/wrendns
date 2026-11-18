@@ -841,6 +841,46 @@ args = ["--datacenter", "home"]
 - The plugin gets TelltaleDNS's environment except every `TELLTALE_*` variable but the two above: settings given through the environment can hold credentials (an upstream's headers, an OIDC `client_secret`), besides `TELLTALE_SECRETS_KEY`, `TELLTALE_SECRETS_PREVIOUS_KEY`, `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD`, `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH` and `TELLTALE_TOKEN` (the self-update's checks and restart don't get those five either). Its `args` are treated as credentials: the API and `telltale config check --print` show them as `<redacted>`.
 - A plugin can't hurt the resolver: it's another process, every exchange has the upstream's timeout, and a dead plugin is a failing upstream like any other (health, breaker, the group's other members).
 
+## Commercial filters behind TelltaleDNS
+*(REQ: UPS-013; ADR-997)* Devices ask TelltaleDNS (DHCP hands out its address), and TelltaleDNS asks a commercial filter for the names it doesn't answer itself. You keep TelltaleDNS's per-device policy and visibility, and the commercial categories apply on top.
+
+### With a gateway that filters traffic (UniFi content filtering, CyberSecure)
+A gateway's content filtering works on traffic (connections and the server name in the TLS handshake), at the IP level, **whatever DNS a device used**. It does not need TelltaleDNS, and nothing here is needed to make it apply. The two complement each other:
+- **TelltaleDNS** decides what a name resolves to, per device and group, and records who asked what.
+- **The gateway** blocks the connection itself, including for a device that skips DNS (a hard-coded resolver, DoH in an app) or reaches a site by IP.
+- A name TelltaleDNS blocks never gets as far as a connection. A name it allows may still be blocked by the gateway's category: the query log shows the lookup answered, the gateway's log shows the blocked connection.
+- Group devices in both places. TelltaleDNS groups are in **Groups**; UniFi's profiles are in its own console. They are not synchronised by this feature.
+
+### Commercial DoH and DoT filters, one per group
+Send a group's questions to a commercial resolver with [per-group upstreams](#upstream-servers-per-group): an `[[upstream]]` for the service, an `[[upstream_group]]` holding it, and `upstreams = "..."` on the group. Their privacy terms are theirs, and every one sees the names that group looks up. Forms below were checked against each provider's own pages on 2026-11-18.
+
+| Service | DoH form | Device name in the URL | Privacy, in one line |
+|---|---|---|---|
+| NextDNS | `https://dns.nextdns.io/<profile>` | Yes: `https://dns.nextdns.io/<profile>/<device-name>` (URL-encoded; DoT: `<device-name>-<profile>.dns.nextdns.io`, spaces as `--`; also a `device_name` query parameter and an `X-Device-Name` header) | Logs nothing unless you turn on a feature that needs it; you choose what, how long and where (nextdns.io/privacy). |
+| Control D | `https://dns.controld.com/<resolver-id>` | No: the resolver ID stands for one device in your account, so make one Control D device per TelltaleDNS group | Its policy names website data it collects; it states no DNS log retention, so ask Control D (controld.com/privacy). |
+| CleanBrowsing | `https://doh.cleanbrowsing.org/doh/family-filter/` (also `adult-filter`, `security-filter`) | No (the free filters are fixed; paid plans have their own endpoints) | Its filters page states no query logging terms: read its privacy policy before relying on it. |
+| Cloudflare for Families | `https://family.cloudflare-dns.com/dns-query` (malware only: `https://security.cloudflare-dns.com/dns-query`) | No profiles at all | The public resolver's logs and truncated IPs are deleted within 25 hours (developers.cloudflare.com/1.1.1.1/privacy). |
+
+The catalog has all of them as templates (`telltale presets list`; nothing is active until you add it): `nextdns`, `controld`, `controld-free`, `cleanbrowsing-family`, `cleanbrowsing-adult`, `cleanbrowsing-security`, `cloudflare-family`, `cloudflare-security`.
+```sh
+telltale presets show nextdns --param profile=abc123 --proto https --group kids >> telltale.toml
+```
+A device name in the NextDNS path: after `show`, append `/Kids-iPad` to that upstream's `url` (one upstream per name).
+
+### Sending a group's queries from a chosen address
+Some filters know a network by the address its queries come from, and a node on several networks (a VLAN, a second NIC) may need to pick one. Set `source` on the upstream (`udp://`, `tcp://`, `tls://`, `https://`; not with a `proxy`):
+```toml
+[[upstream]]
+name = "family-filter"
+url = "tls://family-filter-dns.cleanbrowsing.org"
+source = "198.51.100.0/24"      # or one address: "198.51.100.252" or "198.51.100.252:0"
+```
+- A network means *the address this node holds in it*, so one shared upstream works on every node even though their addresses differ (.11 on one, .12 on another). An address is for one node.
+- The address must be on an interface of the node (for another network to see it, a real interface such as a VLAN interface, not an alias). Start (and a configuration change) is refused for an address the node holds none of. If it disappears later, DNS keeps answering from the other upstreams; the upstream shows the problem on **Upstreams** and in the health icon, and recovers when the address is back.
+- The port, if written, must be 0: each query still uses a random source port.
+- **In the UI:** Upstreams → Add or Edit → Advanced → **Source address**; the node's own addresses and networks are offered.
+- This is not what makes a gateway's traffic filtering apply (see above).
+
 ## How a query is answered
 ```mermaid
 flowchart LR

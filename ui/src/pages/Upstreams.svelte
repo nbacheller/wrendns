@@ -78,14 +78,26 @@
     const args = (v: unknown) => (filled(v) ? JSON.stringify(v) : 'null');
     return String(saved.url ?? '').trim() !== String(d.url ?? '').trim() || args(saved.args) !== args(d.args);
   };
-  const upstreamFields: Field[] = [
+  // REQ: UPS-013 (T24.31, ADR-997) — this node's own addresses (and the networks they are in) for
+  // the `source` field. They differ per node, so a shared upstream names a network.
+  let nodeAddrs = $state<S['NodeAddress'][]>([]);
+  $effect(() => {
+    api.info().then((i) => (nodeAddrs = i.addresses ?? [])).catch(() => {});
+  });
+  const sourceSuggestions = $derived([
+    ...new Set([...nodeAddrs.map((a) => a.network), ...nodeAddrs.map((a) => a.address)]),
+  ]);
+  const upstreamFields = $derived<Field[]>([
     { key: 'url', label: 'Address', type: 'text', placeholder: 'tls://9.9.9.9 or https://dns.quad9.net/dns-query',
       help: 'udp://, tcp://, tls:// (DNS over TLS), https:// (DNS over HTTPS), or quic://. An exec:// or unix:// address runs a program: only an admin sets one.',
       admin: (d, r) => keepsCredential(d, r) || isProgram(d.url) },
     { key: 'tls_server_name', label: 'TLS server name', type: 'text', placeholder: 'dns.quad9.net', advanced: true,
       help: 'The name on the server certificate, for tls:// and quic:// addresses given by IP.', admin: keepsCredential },
+    { key: 'source', label: 'Source address', type: 'text', placeholder: '198.51.100.0/24 or 198.51.100.252', advanced: true,
+      suggest: sourceSuggestions, helpTopic: 'upstream-source',
+      help: 'Send the queries to this upstream from one of the addresses this node holds (udp://, tcp://, tls://, https://). A network, such as 198.51.100.0/24, means the address each node holds in it.' },
     { key: 'timeout_ms', label: 'Timeout (ms)', type: 'number', placeholder: '2000', advanced: true },
-  ];
+  ]);
   const names = $derived(upstreams.map((u) => u.name).filter((n) => !n.startsWith('forward:')));
   const groupFields = $derived<Field[]>([
     { key: 'members', label: 'Upstreams', type: 'multi', options: names },
@@ -140,7 +152,9 @@
           {#each upstreams as u (u.id)}
             {@const l = byKey.get(u.name)}
             <tr>
-              <td><strong>{u.name}</strong>{#if advanced}<div class="muted small mono">{u.endpoint}</div>{/if}</td>
+              <td><strong>{u.name}</strong>{#if advanced}<div class="muted small mono">{u.endpoint}</div>{/if}
+                {#if u.source}<div class="muted small" data-testid="upstream-source">from {u.source}</div>{/if}
+                {#if u.sourceProblem}<div class="small bad-text" data-testid="upstream-source-problem">{u.sourceProblem}</div>{/if}</td>
               <td>{u.groups.join(', ')}</td>
               <td><BreakerBadge value={u.breaker} /></td>
               <td class="num">{num(u.requests)}<ShareBar value={totalRequests ? (u.requests / totalRequests) * 100 : 0} color="--s-forwarded" label="share of all upstream requests" /></td>

@@ -5,6 +5,7 @@
 
 use std::io;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -12,7 +13,7 @@ use rustls::pki_types::ServerName;
 use telltale_proto::{
     EdnsOut, FlagBit, HEADER_LEN, NameBuf, build_query, header, opt, rcode, read_name, summarize,
 };
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 
 use crate::bootstrap::Bootstrap;
 use crate::conn::{BoxIo, ConnStats, Connector, Pool, counted};
@@ -302,6 +303,9 @@ pub struct UpstreamOptions {
     pub plugin_dir: Option<std::path::PathBuf>,
     /// REQ: UPS-011 (T9.9) — DoH over GET (`?dns=`) instead of POST.
     pub doh_get: bool,
+    /// REQ: UPS-013 (T24.31, ADR-997) — the local address (already resolved and checked) that
+    /// this upstream's UDP sockets and TCP connections are bound to before they connect.
+    pub source: Option<std::net::IpAddr>,
     /// REQ: OBS-020 (T11.3) — TelltaleDNS asking its own listener (a synthetic probe): the
     /// query carries no loop tag (the listener would drop it as a forwarding loop, `spec/04`
     /// §7) and isn't copied to the exchange observer (dnstap's forwarder messages).
@@ -329,6 +333,7 @@ impl Default for UpstreamOptions {
             plugin_dir: None,
             tls: crate::tls::UpstreamTls::default(),
             doh_get: false,
+            source: None,
             self_probe: false,
         }
     }
@@ -340,6 +345,56 @@ struct Target {
     host: Host,
     port: u16,
     bootstrap: Option<Arc<Bootstrap>>,
+    /// REQ: UPS-013 — the address sockets to this target are bound to.
+    source: Option<Source>,
+}
+
+/// REQ: UPS-013 (T24.31, ADR-997) — an upstream's source address, and whether binding it has
+/// failed since it last worked (the address left the interface): a warning once and a health
+/// reason, never a crash; the next query tries again, so it recovers by itself when the
+/// address is back.
+#[derive(Debug)]
+pub(crate) struct Source {
+    ip: std::net::IpAddr,
+    upstream: String,
+    lost: AtomicBool,
+}
+
+impl Source {
+    fn new(ip: std::net::IpAddr, upstream: &str) -> Self {
+        Self {
+            ip,
+            upstream: upstream.to_owned(),
+            lost: AtomicBool::new(false),
+        }
+    }
+
+    /// The local socket address to bind: this address, any port.
+    fn bind_addr(&self) -> SocketAddr {
+        SocketAddr::new(self.ip, 0)
+    }
+
+    /// Records how a bind went. The first failure for an address that isn't there warns.
+    fn note<T>(&self, r: io::Result<T>) -> io::Result<T> {
+        match &r {
+            Ok(_) => {
+                if self.lost.swap(false, Ordering::Relaxed) {
+                    tracing::info!(upstream = %self.upstream, source = %self.ip, "upstream source address is back");
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::AddrNotAvailable => {
+                if !self.lost.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        upstream = %self.upstream,
+                        source = %self.ip,
+                        "upstream source address is no longer held by this node: its queries fail until it is back"
+                    );
+                }
+            }
+            Err(_) => {}
+        }
+        r
+    }
 }
 
 impl Target {
@@ -434,7 +489,19 @@ async fn open_tcp(target: &Target, proxy: Option<&crate::proxy::Proxy>) -> io::R
         p.connect(&dest).await?
     } else {
         let addr = target.addr().await.map_err(io::Error::other)?;
-        TcpStream::connect(addr).await?
+        match &target.source {
+            // REQ: UPS-013 — bound before connect, so the connection leaves from that address.
+            Some(src) => {
+                let sock = if addr.is_ipv4() {
+                    TcpSocket::new_v4()?
+                } else {
+                    TcpSocket::new_v6()?
+                };
+                src.note(sock.bind(src.bind_addr()))?;
+                sock.connect(addr).await?
+            }
+            None => TcpStream::connect(addr).await?,
+        }
     };
     s.set_nodelay(true)?;
     Ok(s)
@@ -486,6 +553,23 @@ fn tls_connector(
 }
 
 impl Upstream {
+    /// REQ: UPS-013 — the source address sockets are bound to, if one is set.
+    pub fn source(&self) -> Option<std::net::IpAddr> {
+        self.target.source.as_ref().map(|s| s.ip)
+    }
+
+    /// REQ: UPS-013 — set while binding the source address fails because this node no longer
+    /// holds it (a health reason; cleared by the next successful bind).
+    pub fn source_problem(&self) -> Option<String> {
+        let s = self.target.source.as_ref()?;
+        s.lost.load(Ordering::Relaxed).then(|| {
+            format!(
+                "its source address {} is no longer held by this node: queries to it fail",
+                s.ip
+            )
+        })
+    }
+
     /// An upstream with default options apart from timeout and weight (tests, embedding).
     pub fn new(
         id: u16,
@@ -541,10 +625,31 @@ impl Upstream {
                 "upstream `{name}`: hostname URL needs bootstrap servers"
             ));
         }
+        // REQ: UPS-013 — a source address for the protocols that bind it, and one that fits the
+        // server's address family.
+        if let Some(ip) = opts.source {
+            if !matches!(
+                endpoint.protocol,
+                Protocol::Udp | Protocol::Tcp | Protocol::Tls | Protocol::Https
+            ) || opts.proxy.is_some()
+            {
+                return Err(format!(
+                    "upstream `{name}`: `source` works with udp://, tcp://, tls://, and https:// upstreams, without a proxy"
+                ));
+            }
+            if let Host::Ip(host) = &endpoint.host
+                && host.is_ipv4() != ip.is_ipv4()
+            {
+                return Err(format!(
+                    "upstream `{name}`: source {ip} and server {host} are not the same IP version"
+                ));
+            }
+        }
         let target = Arc::new(Target {
             host: endpoint.host.clone(),
             port: endpoint.port,
             bootstrap: opts.bootstrap.clone(),
+            source: opts.source.map(|ip| Source::new(ip, &name)),
         });
         // TLS name to verify: tls_server_name, else the URL host (DNS name or IP literal).
         let tls_name = match (&opts.tls_server_name, &endpoint.host) {
@@ -933,7 +1038,7 @@ impl Upstream {
                     let addr = self.target.addr().await?;
                     match relay {
                         Some(r) => r.exchange(addr, query, id).await,
-                        None => udp_exchange(addr, query, id).await,
+                        None => udp_exchange(addr, query, id, self.target.source.as_ref()).await,
                     }
                 };
                 let resp = timed(tokio::time::timeout(timeout, udp).await)?;
@@ -1018,14 +1123,24 @@ impl RelayPool {
     }
 }
 
-async fn udp_exchange(addr: SocketAddr, query: &[u8], id: u16) -> Result<Vec<u8>, ExchangeError> {
-    let bind: SocketAddr = if addr.is_ipv4() {
-        (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+async fn udp_exchange(
+    addr: SocketAddr,
+    query: &[u8],
+    id: u16,
+    source: Option<&Source>,
+) -> Result<Vec<u8>, ExchangeError> {
+    // A fresh socket per query gives a random source port (RFC 5452). REQ: UPS-013 — with a
+    // source address, the socket is bound to it (port 0: still random).
+    let sock = if let Some(src) = source {
+        src.note(UdpSocket::bind(src.bind_addr()).await)?
     } else {
-        (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+        let bind: SocketAddr = if addr.is_ipv4() {
+            (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+        } else {
+            (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+        };
+        UdpSocket::bind(bind).await?
     };
-    // A fresh socket per query gives a random source port (RFC 5452).
-    let sock = UdpSocket::bind(bind).await?;
     sock.connect(addr).await?;
     sock.send(query).await?;
     let mut buf = vec![0u8; 4096];
