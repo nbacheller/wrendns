@@ -126,6 +126,9 @@ pub(crate) struct Sources {
     pub(crate) discovery: Arc<crate::discovery::runtime::Runtime>,
     /// REQ: API-902 (T27.13) — the guarded-changes engine, once the API has opened `state.db`.
     pub(crate) guarded: crate::guarded::Slot,
+    /// REQ: OBS-902 (T26.4, ADR-959) - the GeoIP database on this node: fetched only when an
+    /// admin turned `[map.geoip]` on, never on the query path.
+    pub(crate) geoip: Arc<crate::geoip::GeoIp>,
 }
 
 impl Sources {

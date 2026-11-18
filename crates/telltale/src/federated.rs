@@ -2206,6 +2206,19 @@ impl Backend for Federated {
     fn map_part(&self) -> Option<telltale_api::map::MapPart> {
         self.local.map_part()
     }
+    // REQ: OBS-902 (T26.4) - the GeoIP database is each node's own: the answering node's.
+    fn geoip_status(&self) -> Option<telltale_api::model::GeoipStatus> {
+        self.local.geoip_status()
+    }
+    fn geoip_update(&self) -> Result<telltale_api::model::GeoipStatus, Problem> {
+        self.local.geoip_update()
+    }
+    fn geoip_delete(&self) -> Result<telltale_api::model::GeoipStatus, Problem> {
+        self.local.geoip_delete()
+    }
+    fn geoip_locate(&self, ips: &[std::net::IpAddr]) -> telltale_api::map::GeoAnswer {
+        self.local.geoip_locate(ips)
+    }
     // REQ: OBS-901 (ADR-958 section 6) — this node's part, and the peers' last good parts from
     // the cache. A read never waits on a peer: a separate task polls each one on its own
     // schedule with the deadline of every federated read and files the answer; a peer not heard

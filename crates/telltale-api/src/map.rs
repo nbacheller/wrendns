@@ -251,7 +251,27 @@ pub struct PartUpstream {
     pub name: String,
     /// `closed`, `open` or `half_open`.
     pub breaker: String,
+    /// The upstream's address when its endpoint is an IP literal (a name has none): the world
+    /// view places it with the GeoIP database (OBS-902, ADR-959).
+    #[serde(default)]
+    pub ip: Option<IpAddr>,
 }
+
+/// REQ: OBS-902 (T26.5, ADR-958 section 6) - answers pointing at one address prefix (a /24 for
+/// IPv4, a /48 for IPv6) in the window: the counts are the sample's estimates, like the map's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnswerPrefix {
+    /// An address in the prefix (the world view takes its /24 or /48).
+    pub addr: IpAddr,
+    pub weighted: u64,
+    pub sampled: u64,
+    pub slow: u64,
+}
+
+/// The most prefixes a node reports for the world view (ADR-958 section 6).
+pub const MAX_PREFIXES: usize = 256;
+/// The most countries the world view carries.
+pub const MAX_REGIONS: usize = 64;
 
 /// One node's part of the map: its window and what it knows of its own health.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -267,6 +287,15 @@ pub struct MapPart {
     pub groups: Vec<String>,
     /// Devices with an open anomaly finding nobody acknowledged (only at privacy level 0).
     pub anomalous: Vec<String>,
+    /// REQ: OBS-902 (T26.5) - whether this node records the address an answer points at. It does
+    /// not today (ADR-970: the ring record would grow), so `answers` is empty and the world
+    /// view shows the upstreams only.
+    #[serde(default)]
+    pub answers_recorded: bool,
+    /// The busiest answer prefixes of the window (at most [`MAX_PREFIXES`]); empty unless
+    /// `answers_recorded`.
+    #[serde(default)]
+    pub answers: Vec<AnswerPrefix>,
 }
 
 /// The parts a read has: every node that answered, and the labels of those that didn't.
@@ -1309,13 +1338,15 @@ pub fn network_health(s: &MapSnapshot) -> NetworkHealth {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The world view's answer until T26.5 (ADR-958 section 5, T26.2 step 1)
+// The world view (OBS-902, ADR-958 section 5, ADR-959)
 
 /// One country of the world view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorldRegion {
+    /// The two-letter country code.
     pub cc: String,
+    /// The code again: the console writes the country's name.
     pub name: String,
     pub qps: f64,
     pub count: u64,
@@ -1345,21 +1376,55 @@ pub struct WorldUnlocated {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MapWorld {
-    /// False when it can't be drawn; `reason` says why: `geoip_off`, `geoip_missing` or
-    /// `address_not_recorded` (the lookup's answer address isn't kept: ADR-970).
+    /// True when answers are placed (`regions`). False when they can't be: `reason` says why
+    /// (`geoip_off`, `geoip_missing`, `address_not_recorded` or `privacy`). With
+    /// `address_not_recorded` the upstream `markers` are still there: they are where the
+    /// upstreams are, not where answers point (the lookup's answer address isn't kept: ADR-970).
     pub available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub updated_at: String,
+    pub window_secs: f64,
+    /// The country arcs start from (`[map.geoip] home_country`); unset: "Your network".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_country: Option<String>,
     pub regions: Vec<WorldRegion>,
     pub markers: Vec<WorldMarker>,
+    /// Upstreams with no place on the map (a host name, or an address with no country).
+    pub unplaced_upstreams: u64,
     pub unlocated: WorldUnlocated,
 }
 
-/// The world view while the answer address isn't recorded: nothing can be placed, and every
-/// lookup counts as unlocated.
-pub fn world_unavailable(parts: &MapParts, now_unix_seconds: u64) -> MapWorld {
-    let total: u64 = parts
+/// What the answering node's GeoIP database says about some addresses.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum GeoState {
+    /// `[map.geoip] enabled` is off.
+    #[default]
+    Off,
+    /// On, with no usable database on this node.
+    Missing,
+    Ready,
+}
+
+/// The GeoIP lookup of a backend: its state, the home country, and one country per address
+/// asked (`None`: no country).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GeoAnswer {
+    pub state: GeoState,
+    pub home: Option<String>,
+    pub countries: Vec<Option<String>>,
+}
+
+/// The first address of the /24 (IPv4) or /48 (IPv6) containing `ip`.
+pub fn prefix_of(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(a) => IpAddr::V4((u32::from(a) & 0xffff_ff00).into()),
+        IpAddr::V6(a) => IpAddr::V6((u128::from(a) & !((1u128 << 80) - 1)).into()),
+    }
+}
+
+fn total_weighted(parts: &MapParts) -> u64 {
+    parts
         .parts
         .iter()
         .map(|p| {
@@ -1370,18 +1435,191 @@ pub fn world_unavailable(parts: &MapParts, now_unix_seconds: u64) -> MapWorld {
             }
             a.weighted
         })
-        .sum();
-    MapWorld {
-        available: false,
-        reason: Some("address_not_recorded".into()),
+        .sum()
+}
+
+/// The world view from every node's part. `locate` is the answering node's GeoIP database
+/// (blocking: the caller runs this inside `blocking()`); it is asked once, for at most
+/// [`MAX_PREFIXES`] prefixes and the upstreams' addresses.
+///
+/// Prefixes merge across nodes (the same prefix on two nodes adds). At privacy level 3 nothing
+/// per event is kept, so every answer is unlocated (`privacy`); levels 0 to 2 place answers,
+/// because an answer's address says nothing about a device (ADR-958 section 7).
+pub fn world(
+    parts: &MapParts,
+    th: &Thresholds,
+    now_unix_seconds: u64,
+    locate: &dyn Fn(&[IpAddr]) -> GeoAnswer,
+) -> MapWorld {
+    let total = total_weighted(parts);
+    let window_secs = parts
+        .parts
+        .iter()
+        .map(|p| p.window.window_secs)
+        .max()
+        .unwrap_or(telltale_telemetry::map::WINDOW_SECS);
+    let secs = f64::from(window_secs.max(1));
+    let privacy = parts
+        .parts
+        .iter()
+        .map(|p| p.window.privacy)
+        .max()
+        .unwrap_or(0);
+    let base = |available: bool, reason: Option<&str>, home: Option<String>| MapWorld {
+        available,
+        reason: reason.map(str::to_owned),
         updated_at: crate::time::format_us(now_unix_seconds.saturating_mul(1_000_000)),
+        window_secs: f64::from(window_secs),
+        home_country: home,
         regions: Vec::new(),
         markers: Vec::new(),
+        unplaced_upstreams: 0,
         unlocated: WorldUnlocated {
             count: total,
-            reason: Some("address_not_recorded".into()),
+            reason: reason.map(str::to_owned),
+        },
+    };
+
+    // Merge the prefixes and the upstreams' addresses, then ask once.
+    let mut merged: BTreeMap<IpAddr, Agg> = BTreeMap::new();
+    let recorded = parts.parts.iter().any(|p| p.answers_recorded);
+    if privacy < 3 {
+        for p in &parts.parts {
+            for a in &p.answers {
+                let e = merged.entry(prefix_of(a.addr)).or_default();
+                e.weighted += a.weighted;
+                e.sampled += a.sampled;
+                e.slow += a.slow;
+            }
+        }
+    }
+    // The busiest prefixes survive the merge cap.
+    let mut ranked: Vec<(IpAddr, Agg)> = merged.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.weighted.cmp(&a.1.weighted).then(a.0.cmp(&b.0)));
+    ranked.truncate(MAX_PREFIXES);
+
+    #[derive(Default)]
+    struct Up {
+        ip: Option<IpAddr>,
+        breaker: Option<Breaker>,
+        agg: Agg,
+    }
+    let mut ups: BTreeMap<String, Up> = BTreeMap::new();
+    for p in &parts.parts {
+        for u in &p.upstreams {
+            let e = ups.entry(u.name.clone()).or_default();
+            e.ip = e.ip.or(u.ip);
+            let b = Breaker::parse(&u.breaker);
+            e.breaker = Some(e.breaker.map_or(b, |x| x.max(b)));
+            for en in &p.window.entries {
+                if en.kind == AnswerKind::Upstream && en.upstream == u.id {
+                    e.agg.add(&en.c);
+                }
+            }
+        }
+    }
+    let mut addrs: Vec<IpAddr> = ranked.iter().map(|(a, _)| *a).collect();
+    let up_names: Vec<String> = ups
+        .iter()
+        .filter(|(_, u)| u.ip.is_some())
+        .map(|(n, _)| n.clone())
+        .collect();
+    addrs.extend(up_names.iter().filter_map(|n| ups[n].ip));
+    let geo = locate(&addrs);
+    match geo.state {
+        GeoState::Off => return base(false, Some("geoip_off"), None),
+        GeoState::Missing => return base(false, Some("geoip_missing"), geo.home),
+        GeoState::Ready => {}
+    }
+    let cc_of = |i: usize| {
+        geo.countries
+            .get(i)
+            .cloned()
+            .flatten()
+            .map(|c| c.to_ascii_uppercase())
+    };
+
+    // Markers: one per upstream that has a country.
+    let mut markers = Vec::new();
+    let mut unplaced = 0u64;
+    for (k, name) in up_names.iter().enumerate() {
+        let u = &ups[name];
+        if let Some(cc) = cc_of(ranked.len() + k) {
+            let facts = Facts {
+                breaker: u.breaker.unwrap_or(Breaker::Closed),
+                ..Facts::default()
+            };
+            let (health, _) = classify(&u.agg, th, Scope::Upstream, &facts);
+            markers.push(WorldMarker {
+                name: name.clone(),
+                cc: Some(cc),
+                qps: rate(u.agg.weighted, secs),
+                health,
+            });
+        } else {
+            unplaced += 1;
+        }
+    }
+    unplaced += (ups.len() - up_names.len()) as u64;
+
+    if privacy >= 3 {
+        let mut w = base(false, Some("privacy"), geo.home);
+        w.markers = markers;
+        w.unplaced_upstreams = unplaced;
+        return w;
+    }
+    if !recorded {
+        let mut w = base(false, Some("address_not_recorded"), geo.home);
+        w.markers = markers;
+        w.unplaced_upstreams = unplaced;
+        return w;
+    }
+
+    // Regions: the prefixes' counters added by country.
+    let mut by_cc: BTreeMap<String, Agg> = BTreeMap::new();
+    let mut located = 0u64;
+    for (i, (_, a)) in ranked.iter().enumerate() {
+        if let Some(cc) = cc_of(i) {
+            located += a.weighted;
+            by_cc.entry(cc).or_default().plus(a);
+        }
+    }
+    let mut regions: Vec<WorldRegion> = by_cc
+        .into_iter()
+        .map(|(cc, a)| {
+            let (health, _) = classify(&a, th, Scope::Edge, &Facts::default());
+            WorldRegion {
+                name: cc.clone(),
+                cc,
+                qps: rate(a.weighted, secs),
+                count: a.weighted,
+                slow_pct: Agg::pct(a.slow, a.weighted),
+                health,
+            }
+        })
+        .collect();
+    regions.sort_by(|a, b| b.count.cmp(&a.count).then(a.cc.cmp(&b.cc)));
+    regions.truncate(MAX_REGIONS);
+    MapWorld {
+        available: true,
+        reason: None,
+        updated_at: crate::time::format_us(now_unix_seconds.saturating_mul(1_000_000)),
+        window_secs: f64::from(window_secs),
+        home_country: geo.home,
+        regions,
+        markers,
+        unplaced_upstreams: unplaced,
+        unlocated: WorldUnlocated {
+            count: total.saturating_sub(located),
+            reason: None,
         },
     }
+}
+
+/// A rate from an estimate and a window.
+#[allow(clippy::cast_precision_loss)] // counts are far below 2^52
+fn rate(count: u64, secs: f64) -> f64 {
+    ((count as f64 / secs) * 100.0).round() / 100.0
 }
 
 /// The parts of every node merged for a reader that wants one window (the cluster read): the

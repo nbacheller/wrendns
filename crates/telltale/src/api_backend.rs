@@ -2445,6 +2445,80 @@ impl Backend for ApiBackend {
         })
     }
 
+    // REQ: OBS-902 (T26.4, ADR-959) - the GeoIP database of this node (resolver pods keep none).
+    fn geoip_status(&self) -> Option<telltale_api::model::GeoipStatus> {
+        let cfg = self.src.config.load();
+        (cfg.node.role != telltale_config::Role::Resolver).then(|| {
+            self.src
+                .geoip
+                .model(&cfg.map.geoip, crate::pipeline::unix_now())
+        })
+    }
+
+    fn geoip_update(&self) -> Result<telltale_api::model::GeoipStatus, Problem> {
+        let cfg = self.src.config.load();
+        if cfg.node.role == telltale_config::Role::Resolver {
+            return Err(Problem::not_found("this node keeps no GeoIP database"));
+        }
+        if !cfg.map.geoip.enabled {
+            return Err(
+                Problem::new(Code::Conflict, "GeoIP is off: turn on [map.geoip] first")
+                    .hint("Settings, Query handling, GeoIP: the toggle (an admin's)."),
+            );
+        }
+        if !self.src.geoip.request_update() {
+            return Err(Problem::new(
+                Code::Conflict,
+                "a GeoIP download is already running on this node",
+            ));
+        }
+        Ok(self
+            .src
+            .geoip
+            .model(&cfg.map.geoip, crate::pipeline::unix_now()))
+    }
+
+    fn geoip_delete(&self) -> Result<telltale_api::model::GeoipStatus, Problem> {
+        let cfg = self.src.config.load();
+        if cfg.node.role == telltale_config::Role::Resolver {
+            return Err(Problem::not_found("this node keeps no GeoIP database"));
+        }
+        self.src.geoip.delete().map_err(|e| {
+            Problem::internal(format!("the GeoIP database couldn't be removed: {e}"))
+        })?;
+        Ok(self
+            .src
+            .geoip
+            .model(&cfg.map.geoip, crate::pipeline::unix_now()))
+    }
+
+    fn geoip_locate(&self, ips: &[IpAddr]) -> telltale_api::map::GeoAnswer {
+        use telltale_api::map::{GeoAnswer, GeoState};
+        let cfg = self.src.config.load();
+        let home = cfg
+            .map
+            .geoip
+            .home_country
+            .as_ref()
+            .map(|c| c.as_str().to_ascii_uppercase());
+        match self.src.geoip.locate(&cfg.map.geoip, ips) {
+            Ok(found) => GeoAnswer {
+                state: GeoState::Ready,
+                home,
+                countries: found
+                    .into_iter()
+                    .map(|c| c.map(|c| String::from_utf8_lossy(&c).into_owned()))
+                    .collect(),
+            },
+            Err(crate::geoip::Unavailable::Off) => GeoAnswer::default(),
+            Err(crate::geoip::Unavailable::Missing) => GeoAnswer {
+                state: GeoState::Missing,
+                home,
+                countries: Vec::new(),
+            },
+        }
+    }
+
     // REQ: OBS-901 (T26.2, ADR-958 sections 2 and 6) — this node's window of sampled lookups
     // and what it knows of its own health. Reads the aggregator's window under its lock for a
     // moment; never touches a worker or a peer.
@@ -2460,6 +2534,7 @@ impl Backend for ApiBackend {
             .into_iter()
             .map(|u| telltale_api::map::PartUpstream {
                 id: u.id,
+                ip: endpoint_ip(&u.endpoint),
                 name: u.name,
                 breaker: u.breaker,
             })
@@ -2489,6 +2564,10 @@ impl Backend for ApiBackend {
             reasons,
             groups: cfg.group.iter().map(|g| g.name.to_string()).collect(),
             anomalous,
+            // REQ: OBS-902 (ADR-970) - the answer address isn't recorded (the ring record would
+            // grow), so the world view has upstream markers only.
+            answers_recorded: false,
+            answers: Vec::new(),
         })
     }
 
@@ -4136,6 +4215,18 @@ impl Backend for ApiBackend {
     }
 }
 
+/// REQ: OBS-902 (T26.5) - the address in an upstream's endpoint (`udp://1.1.1.1:53`,
+/// `https://[2606:4700::1111]:443/dns-query`) when it is an IP literal; a host name has none.
+fn endpoint_ip(endpoint: &str) -> Option<IpAddr> {
+    let rest = endpoint.split_once("://")?.1;
+    let authority = rest.split('/').next()?;
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split_once(']')?.0,
+        None => authority.rsplit_once(':').map_or(authority, |(h, _)| h),
+    };
+    host.parse().ok()
+}
+
 /// REQ: UPS-006, OBS-011 — the health tracker's per-kind counts (in `Outcome::FAILURES` order)
 /// as the API's named fields.
 fn failure_kinds(counts: [u64; telltale_upstream::health::FAILURE_KINDS]) -> FailureKinds {
@@ -5351,7 +5442,34 @@ fn plan_singleton(
     }
     let file = src.file_config.load_full();
     let mut entries = crate::managed::entries(state);
-    let change = singleton_change(w.kind, &file, &mut entries, w.body.as_ref())?;
+    // REQ: OBS-902 (T26.4, ADR-959 section 2) - a `[map]` body that leaves out `geoip` keeps the
+    // section in effect (it is an admin's, and a thresholds form doesn't carry it).
+    let kept;
+    let body = if w.kind == ManagedKind::Map
+        && let Some(b) = w.body.as_ref()
+        && b.is_object()
+        && b.get("geoip").is_none()
+    {
+        let now = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
+        let mut b = b.clone();
+        b["geoip"] = serde_json::to_value(&now.map.geoip).unwrap_or_default();
+        kept = b;
+        Some(&kept)
+    } else {
+        w.body.as_ref()
+    };
+    let change = singleton_change(w.kind, &file, &mut entries, body)?;
+    // REQ: OBS-902 (T26.4) - the GeoIP settings are admin-only (ADR-914): an operator's change
+    // to them is 403 naming the field, and an agent never makes it.
+    if w.kind == ManagedKind::Map {
+        crate::settings_kinds::check_admin_fields(
+            w.kind,
+            &change.before,
+            &change.after,
+            w.role,
+            w.agent.as_deref(),
+        )?;
+    }
     let warnings = telltale_config::validate_config(&change.merged).unwrap_or_default();
     let (recent_queries, impact) = managed_impact(src, w.kind, "default", change.body.is_some());
     Ok(ManagedPlan {

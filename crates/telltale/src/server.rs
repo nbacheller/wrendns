@@ -1129,6 +1129,10 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         secrets,
         discovery: Arc::default(),
         guarded: crate::guarded::Slot::new(),
+        geoip: Arc::new(crate::geoip::GeoIp::new(
+            crate::geoip::Options::from_env(),
+            crate::geoip::GeoIp::jitter_of(&crate::http::node_name(&cfg)),
+        )),
     });
     // REQ: DSC-001 (T25.2, ADR-907) — the network inventory starts here only if `[discovery]` is
     // on and this node is the designated one (ephemeral pods and witnesses never are).
@@ -1155,6 +1159,11 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     crate::maintenance::spawn_expiry(Arc::clone(&sources), http_stopped.clone());
     // REQ: OBS-020 (T11.3) — synthetic probes of every listener, off the DNS path.
     crate::probes::spawn(Arc::clone(&sources), http_stopped.clone());
+    // REQ: OBS-902 (T26.4, ADR-959) - the GeoIP database: fetched only after an admin's opt-in,
+    // in the background, on nodes that serve the console (a resolver pod never fetches).
+    if cfg.node.role != telltale_config::Role::Resolver {
+        tokio::spawn(Arc::clone(&sources.geoip).run(Arc::clone(&sources), http_stopped.clone()));
+    }
     // REQ: OPS-012 (ADR-163) — the watchdog: a thread outside the runtime that restarts a node
     // that stops answering, after a dump of why.
     crate::watchdog::spawn(
