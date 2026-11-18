@@ -43,13 +43,14 @@ fn v3_agent(priv_on: bool, user_name: Option<&str>, auth_file: &str) -> Agent {
         timeout: Duration::from_millis(1500),
         retries: 1,
     };
-    // Only the script's throwaway range or loopback is ever a target.
+    // Only the scripts' throwaway ranges (deploy/snmp-e2e.sh uses 251, v3-e2e.sh 247) or loopback is ever a target.
     let ip = addr.ip();
     let ok = ip.is_loopback()
-        || matches!(ip, std::net::IpAddr::V4(v4) if v4.octets().get(..3) == Some(&[172, 30, 247][..]));
+        || matches!(ip, std::net::IpAddr::V4(v4)
+            if matches!(v4.octets().get(..3), Some(&[172, 30, 247 | 251])));
     assert!(
         ok,
-        "TT_SNMPD_ADDR must be 172.30.247.0/24 or loopback: {addr}"
+        "TT_SNMPD_ADDR must be 172.30.247.0/24, 172.30.251.0/24 or loopback: {addr}"
     );
     Agent::new(addr, Security::V3 { user }, timing).unwrap_or_else(|e| panic!("{e:?}"))
 }

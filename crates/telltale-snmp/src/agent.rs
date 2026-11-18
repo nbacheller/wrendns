@@ -154,7 +154,7 @@ impl Agent {
                 .chain(user.privacy.iter().map(|(_, p)| p))
                 .any(|p| usm::check_password(p.expose()).is_err());
             if short {
-                return Err(AgentError::Usm(UsmError::EmptyPassword));
+                return Err(AgentError::Usm(UsmError::ShortPassword));
             }
         }
         let bind: SocketAddr = match target.ip() {
@@ -354,9 +354,17 @@ impl Agent {
             match got {
                 Ok(engine) => {
                     // REQ: DSC-003. An unauthenticated discovery may move the clock forward
-                    // (a reboot) but never back past what an authenticated message showed.
+                    // (a reboot) but never back past what an authenticated message showed. When
+                    // it is behind for the same engine, keep the trusted engine with its
+                    // estimated clock instead of failing: authenticated time Reports resync it.
                     if !usm::discovery_allowed(self.trusted.as_ref(), &engine, Instant::now()) {
-                        return Err(AgentError::Usm(UsmError::NotInTimeWindow));
+                        match self.trusted.clone() {
+                            Some(t) if t.id == engine.id => {
+                                self.engine = Some(t);
+                                return Ok(());
+                            }
+                            _ => return Err(AgentError::Usm(UsmError::NotInTimeWindow)),
+                        }
                     }
                     if self.trusted.as_ref().is_some_and(|t| t.id != engine.id) {
                         self.trusted = None;

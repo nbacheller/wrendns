@@ -26,8 +26,9 @@ IP=172.30.247.10
 NAME=tt-snmpv3-e2e-agent-$$
 MADE_NET=
 DEV=${TT_V3_DEV:-}
-# A hard kill (SIGKILL) skips the trap and leaves generated passwords here: clear old ones.
-rm -rf ./.v3e2e.* 2>/dev/null || true
+# A hard kill (SIGKILL) skips the trap and leaves generated passwords here: clear old ones, but
+# only those over an hour old, so a run still going in this checkout keeps its directory.
+find . -maxdepth 1 -name '.v3e2e.*' -type d -mmin +60 -exec rm -rf {} + 2>/dev/null || true
 WORK=$(mktemp -d ./.v3e2e.XXXXXX)
 cleanup() {
   if [ -n "$DEV" ]; then docker network disconnect "$NET" "$DEV" >/dev/null 2>&1 || true; fi

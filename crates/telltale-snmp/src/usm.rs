@@ -215,7 +215,7 @@ pub fn mac(alg: AuthProto, kul: &[u8], msg: &[u8]) -> Vec<u8> {
 pub enum UsmError {
     Decode(DecodeError),
     /// The password is under 8 octets, so there is no key.
-    EmptyPassword,
+    ShortPassword,
     /// The random source failed.
     Random,
     /// The authentication MAC does not match.
@@ -248,13 +248,13 @@ impl UsmUser {
         let (auth_alg, auth_ku) = match &self.auth {
             Some((alg, pw)) => (
                 Some(*alg),
-                Some(password_to_key(*alg, pw.expose()).ok_or(UsmError::EmptyPassword)?),
+                Some(password_to_key(*alg, pw.expose()).ok_or(UsmError::ShortPassword)?),
             ),
             None => (None, None),
         };
         let priv_ku = match (&self.privacy, auth_alg) {
             (Some((_, pw)), Some(alg)) => {
-                Some(password_to_key(alg, pw.expose()).ok_or(UsmError::EmptyPassword)?)
+                Some(password_to_key(alg, pw.expose()).ok_or(UsmError::ShortPassword)?)
             }
             (Some(_), None) => return Err(UsmError::BadSecurityParameters),
             _ => None,
