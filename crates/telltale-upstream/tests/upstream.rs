@@ -271,8 +271,8 @@ async fn ups_005_fastest_prefers_lower_latency() {
 /// that cap; the correct group returns in the time its own two socket setups take.
 #[tokio::test]
 async fn ups_005_parallel_races_and_first_answer_wins() {
-    // The slow member's own attempt timeout is longer than the budget, so only the group could
-    // stop waiting for it.
+    // The slow member's configured timeout (the budget, 5 s) is above its attempt cap (1 s), which
+    // is what ends its attempt. Only the group could stop waiting for it sooner.
     let budget = Duration::from_secs(5);
     let slow_addr = fake(Fake::Healthy {
         tag: 1,
