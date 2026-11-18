@@ -193,6 +193,56 @@ impl State {
         Ok(next)
     }
 
+    /// REQ: CLU-015 (T24.37, ADR-1016) — makes the entries of `kinds` exactly `rows`
+    /// (`(kind, name, body)`, each kind among `kinds`) in one transaction: the rows this node
+    /// holds that `rows` doesn't name are deleted, the others created or replaced. The version
+    /// moves once. A promoted primary adopts the cluster's last published entries this way.
+    pub fn replace_managed(
+        &self,
+        kinds: &[&str],
+        rows: &[(&str, &str, &str)],
+        now: u64,
+        by: &str,
+    ) -> std::result::Result<u64, ManagedError> {
+        let conn = self.lock();
+        let tx = conn.unchecked_transaction()?;
+        let current = version(&tx)?;
+        let mut have: Vec<(String, String)> = Vec::new();
+        {
+            let mut st = tx.prepare("SELECT kind, name FROM managed")?;
+            let all = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            for r in all {
+                let (k, n) = r?;
+                if kinds.contains(&k.as_str()) {
+                    have.push((k, n));
+                }
+            }
+        }
+        for (k, n) in &have {
+            if !rows.iter().any(|(rk, rn, _)| rk == k && rn == n) {
+                tx.execute(
+                    "DELETE FROM managed WHERE kind = ?1 AND name = ?2",
+                    params![k, n],
+                )?;
+            }
+        }
+        for (kind, name, body) in rows.iter().filter(|(k, _, _)| kinds.contains(k)) {
+            tx.execute(
+                "INSERT INTO managed (kind, name, body, updated, updated_by) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(kind, name) DO UPDATE SET body = excluded.body,
+                     updated = excluded.updated, updated_by = excluded.updated_by",
+                params![kind, name, body, i(now), by],
+            )?;
+        }
+        let next = current + 1;
+        tx.execute(
+            "UPDATE meta SET value = ?1 WHERE key = 'config_version'",
+            [next.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(next)
+    }
+
     /// Deletes `name` if the version is still `expect` (when given). Returns the new version.
     pub fn delete_managed(
         &self,

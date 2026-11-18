@@ -46,6 +46,9 @@ mod kubernetes;
 mod lists;
 mod maintenance;
 mod managed;
+mod managed_adopt;
+#[cfg(test)]
+mod managed_adopt_tests;
 mod masking;
 mod mcp_stdio;
 mod mdns;

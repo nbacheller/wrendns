@@ -2621,6 +2621,17 @@ for peers. The Helm chart's node alerts leave out a node whose last reported win
 A node that's really failing during its window stays quiet until the window ends: keep windows
 short.
 
+### Entries made through the API after a failover
+Upstreams, lists, groups, devices, local names, forwards, quick rules and the other entries made
+through the API or UI are stored on the primary that took the write and published with every
+version. A node that takes over as primary adopts them as its own (the primary's last published
+set, once per version it inherits), so afterwards you can edit or delete every one of them on
+the new primary, none comes back, and a node that returns with older entries of its own has them
+replaced by the cluster's. If the node that took over runs from a version published by an older
+primary (every node needs this release for its first hand-over), a change to an entry it serves
+but doesn't hold answers 409 with that reason instead of "not found": upgrade, then change it on
+the current primary.
+
 ## Failover drills
 Your router hands devices two DNS servers, say the Pi and a second machine. On a healthy network
 a device only ever uses its first one: most systems switch to the second only when the first stops

@@ -126,6 +126,9 @@ pub(crate) fn unpinned(file: &Config) -> Config {
             &crate::managed::state_path(file),
             &node::dir_of(data_dir(file)),
         );
+        // REQ: CLU-015 (T24.37, ADR-1016) — the same for the shared kinds: this node's rows are
+        // stale while it follows a primary, and the next promotion adopts the blob it inherits.
+        crate::managed_adopt::forget(&node::dir_of(data_dir(file)));
     }
     let m = match id.meta.role {
         Some(node::Role::Primary) if gitops_source => None,
@@ -144,7 +147,12 @@ pub(crate) fn unpinned(file: &Config) -> Config {
     match merged_with(file, &m, overlay) {
         // REQ: API-014 (review of T23.2) — the stored paths are judged against this node's own
         // files, not the version it builds on.
-        Ok(c) if with_managed => crate::managed::effective_on(&c, file),
+        Ok(mut c) if with_managed => {
+            // REQ: CLU-015 (T24.37, ADR-1016) — the entries the cluster last published are this
+            // node's rows now, and the version it builds on no longer carries them.
+            adopt_shared(file, &m, &mut c);
+            crate::managed::effective_on(&c, file)
+        }
         Ok(c) => c,
         Err(e) => {
             error!(
@@ -226,6 +234,47 @@ fn seed_node_managed(file: &Config, m: &ClusterManifest) -> bool {
         return false;
     };
     crate::node_managed::seed_once(&crate::managed::state_path(file), &cdir, &b.hash, &bytes)
+}
+
+/// REQ: CLU-015 (T24.37, ADR-1016) — a primary promoted from replica adopts the API entries of the
+/// version it inherited as its own rows (once per blob) and takes them out of `cfg`, the
+/// configuration it builds on. Returns whether it did; a blob without the rows, or a store it
+/// can't write, leaves `cfg` as it was.
+fn adopt_shared(file: &Config, m: &ClusterManifest, cfg: &mut Config) -> bool {
+    let Some(b) = &m.node_managed else {
+        return false;
+    };
+    let Ok(store) = BlobStore::open(data_dir(file)) else {
+        return false;
+    };
+    let Ok(bytes) = store.read(b) else {
+        return false;
+    };
+    let cdir = node::dir_of(data_dir(file));
+    match crate::managed_adopt::adopt(&crate::managed::state_path(file), &cdir, &b.hash, &bytes) {
+        Some(entries) => {
+            crate::managed_adopt::strip(cfg, &entries, file);
+            true
+        }
+        None => false,
+    }
+}
+
+/// REQ: CLU-015 (T24.37, ADR-1016) — what the API's entries are written onto on a primary promoted
+/// from replica: the cluster version it builds on, without the entries it adopted. `None` on any
+/// other node (the config files are the base), and when nothing was adopted.
+pub(crate) fn managed_base(file: &Config) -> Option<Config> {
+    let id = identity(file)?;
+    if !matches!(id.meta.role, Some(node::Role::Primary)) || file.cluster.git.is_some() {
+        return None;
+    }
+    if id.meta.config_authority == "gitops" && gitops_capable(file) {
+        return None;
+    }
+    let m = last_applied(file)?;
+    let overlay = !seed_node_managed(file, &m);
+    let mut c = merged_with(file, &m, overlay).ok()?;
+    adopt_shared(file, &m, &mut c).then_some(c)
 }
 
 /// Whether this node's own configuration comes from Git: rendered from a repository (the Helm
@@ -1278,6 +1327,9 @@ impl Primary {
         } else {
             if let Some(m) = inherited {
                 seed_node_managed(&cfg, m);
+                // REQ: CLU-015 (T24.37) — adopted before this node exports its own rows.
+                let mut scratch = Config::default();
+                adopt_shared(&cfg, m, &mut scratch);
             }
             let h = export_node_managed(&self.sources, &mut self.nm_cache)
                 .await
