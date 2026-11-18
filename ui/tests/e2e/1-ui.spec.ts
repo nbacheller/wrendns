@@ -612,6 +612,71 @@ test('api_005 upstream health reads in plain words', async () => {
   }
 });
 
+// REQ: UPS-013 (T24.31, ADR-997) — an upstream's source address: the Upstreams form offers this
+// node's own addresses and networks, and a source the node lost shows as a problem on its row.
+test('ups_013 upstream source address: suggestions and a lost-address problem', async () => {
+  const isUpstreams = (url: URL) => url.pathname === '/api/v1/upstreams';
+  const isInfo = (url: URL) => url.pathname === '/api/v1/system/info';
+  const upstreams = (route: Route) =>
+    route.fulfill({
+      json: {
+        items: [
+          { breaker: 'closed', endpoint: 'tls://192.0.2.1', failures: 0, failuresByKind: {}, groups: ['default'], id: 1, latencyEwmaMs: 5, name: 'from-vlan', requests: 3, source: '198.51.100.252' },
+          { breaker: 'closed', endpoint: 'tls://192.0.2.2', failures: 0, failuresByKind: {}, groups: ['default'], id: 2, latencyEwmaMs: 5, name: 'lost-src', requests: 3, source: '198.51.100.9', sourceProblem: 'its source address 198.51.100.9 is no longer held by this node: queries to it fail' },
+        ],
+      },
+    });
+  const info = async (route: Route) => {
+    const res = await route.fetch();
+    const body = await res.json();
+    body.addresses = [{ interface: 'eth0.100', address: '198.51.100.252', network: '198.51.100.0/24' }];
+    await route.fulfill({ response: res, json: body });
+  };
+  await page.route(isUpstreams, upstreams);
+  await page.route(isInfo, info);
+  try {
+    await page.goto('/#/upstreams');
+    await page.reload();
+    await expect(page.getByTestId('upstream-source').first()).toHaveText('from 198.51.100.252');
+    await expect(page.getByTestId('upstream-source-problem')).toContainText('no longer held by this node');
+    await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+    await page.getByRole('button', { name: 'Add upstream', exact: true }).click();
+    const field = page.getByRole('combobox', { name: 'Source address', exact: true });
+    await expect(field).toBeVisible();
+    const listId = await field.getAttribute('list');
+    expect(listId).toBeTruthy();
+    const opts = await page.locator(`datalist#${listId} option`).evaluateAll((o) => o.map((x) => (x as HTMLOptionElement).value));
+    expect(opts).toEqual(['198.51.100.0/24', '198.51.100.252']);
+  } finally {
+    await page.unroute(isUpstreams, upstreams);
+    await page.unroute(isInfo, info);
+  }
+});
+
+// REQ: UPS-013 (ADR-997 §4) — a real save of a `source` this node doesn't hold is refused with a
+// message that names the problem, on a dry run too, and nothing is stored.
+test('ups_013 a source this node does not hold is refused on save', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const body = { url: 'udp://192.0.2.1', source: '203.0.113.9' };
+  for (const q of ['?dryRun=true', '']) {
+    const put = await r.put(`/api/v1/upstreams/ups013-foreign${q}`, { headers: h, data: body });
+    expect(put.status(), await put.text()).toBe(422);
+    expect(await put.text()).toContain('holds no such address');
+  }
+  const list = await (await r.get('/api/v1/upstreams')).json();
+  expect(list.items.some((u: { name: string }) => u.name === 'ups013-foreign')).toBe(false);
+  // The loopback network is held by every node: saved, and shown on the row.
+  const ok = await r.put('/api/v1/upstreams/ups013-held', { headers: h, data: { url: 'udp://192.0.2.1', source: '127.0.0.0/8' } });
+  expect(ok.status(), await ok.text()).toBe(200);
+  try {
+    const row = (await (await r.get('/api/v1/upstreams')).json()).items.find((u: { name: string }) => u.name === 'ups013-held');
+    expect(row.source).toBe('127.0.0.1');
+  } finally {
+    await r.delete('/api/v1/upstreams/ups013-held', { headers: h });
+  }
+});
+
 // REQ: OBS-019 — the Upstreams page's Answer quality: second opinions off on the e2e server
 // (it says how to turn them on), then a stubbed filtering upstream with its EDE and a
 // disagreement.
@@ -1542,6 +1607,81 @@ test('clu_008 cluster topology', async () => {
   await expect(topo.getByTestId('topology-pod')).toHaveCount(6, { timeout: 10_000 });
   await expect(topo).toContainText('+3');
   await expect(topo).toContainText('node k3s-1 · 8 replica pods');
+  await page.unroute('**/api/v1/cluster');
+  await page.unroute('**/api/v1/cluster/rollout');
+  await page.unroute('**/api/v1/cluster/versions');
+});
+
+// REQ: CLU-009 (T24.33, ADR-1011) — a witness only votes. Its row says "witness, votes only" and
+// shows "not applicable" for configuration, secrets and DNS (whatever an older witness reports),
+// its vote state and real uptime; the topology draws it green; the Health tab counts only real
+// failures, and a witness that is down is red there and in the checks.
+test('clu_009 a witness is a voter, not a full node', async () => {
+  const node = (o: Record<string, unknown>) => ({
+    ephemeral: false, witness: false, protocol: 4, role: 'replica', thisNode: false, eligible: true, version: '0.9.0',
+    up: true, connected: true, link: 'inbound', lastSeenSecondsAgo: 1, rttMs: 3, configSeq: 14, configLag: 0, ready: true,
+    qps: 10, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, restarts: 0, ...o,
+  });
+  const view = (witnessUp: boolean) => ({
+    enabled: true, clusterId: 'c1', name: 'home', thisNode: 'id-pi1', newestConfigSeq: 14, events: [], conflicts: [],
+    authority: 'primary',
+    healthy: witnessUp,
+    checks: [
+      { id: 'peers_up', ok: witnessUp, summary: witnessUp ? 'All 3 nodes are up' : 'Not heard from in 15 s: id-pi3', fix: witnessUp ? null : 'Check the node.' },
+      { id: 'in_sync', ok: true, summary: 'Every reachable node runs configuration version 14' },
+    ],
+    failover: { mode: 'auto', active: true, voters: 3, reachableVoters: witnessUp ? 3 : 2, leaseHeld: true, leaseSecondsLeft: 12, votedEpoch: 7, votedFor: 'id-pi1' },
+    nodes: [
+      node({ nodeId: 'id-pi1', site: 'node-a', role: 'primary', thisNode: true, link: 'self', rttMs: null }),
+      node({ nodeId: 'id-pi2', site: 'node-b' }),
+      // The witness as an older build would report it: no configuration, "not ready", behind, no secrets.
+      node({
+        nodeId: 'id-pi3', site: 'node-c', witness: true, eligible: false, up: witnessUp, connected: witnessUp, ready: false,
+        configSeq: 0, configLag: 13, behindSeconds: 1920, qps: 0, uptimeSeconds: 7200, secrets: null,
+        vote: { lastReplySecondsAgo: 4, lastGrantSecondsAgo: 4, votedEpoch: 7 },
+      }),
+    ],
+  });
+  let current = view(true);
+  await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: current }));
+  await page.route('**/api/v1/cluster/rollout', (route) => route.fulfill({ json: { fromPrimary: true, canaries: [], bakeSecs: 300, stable: '1.9', stage: 'none', nodes: [] } }));
+  await page.route('**/api/v1/cluster/versions', (route) => route.fulfill({ json: { items: [], history: 20 } }));
+  // A fresh document, so the route's data is fetched even if the page is already on #/cluster.
+  await page.goto('about:blank');
+  await page.goto('/#/cluster');
+  const row = page.locator('#node-id-pi3');
+  await expect(row).toContainText('witness, votes only');
+  await expect(row.getByTestId('cluster-node-config-na')).toHaveText('not applicable');
+  await expect(row.getByTestId('cluster-node-secrets-na')).toHaveText('not applicable');
+  await expect(row.getByTestId('cluster-node-dns-na')).toHaveText('not applicable');
+  await expect(row.getByTestId('cluster-node-vote')).toContainText(/last vote .* ago.*epoch 7/);
+  await expect(row).not.toContainText('not ready');
+  await expect(row).not.toContainText('behind');
+  await expect(row).not.toContainText('not reported');
+  await expect(row).toContainText('2h'); // its real uptime, not 0s
+  await expect(row).toContainText('0.9.0');
+  // A full node still shows all three.
+  await expect(page.locator('#node-id-pi2')).toContainText('in sync');
+  await expect(page.locator('#node-id-pi2').getByTestId('cluster-node-dns-na')).toHaveCount(0);
+  // The topology: green while it is up, not amber.
+  const topo = page.getByTestId('cluster-topology');
+  await expect(topo.getByTestId('topology-node')).toHaveCount(3);
+  await expect(topo.locator('.chip.warn')).toHaveCount(0);
+  await expect(topo).toContainText('votes only');
+  await expect(topo.locator('.chip.bad')).toHaveCount(0);
+  // The help topic explains it.
+  await row.getByTestId('cluster-node-vote').getByRole('button').click();
+  await expect(page.getByTestId('help-panel')).toContainText('vote-only member');
+  await page.keyboard.press('Escape');
+  // The tabs count nothing for it: Health is clean.
+  await page.getByRole('tab', { name: /^Health/ }).click();
+  await expect(page.getByTestId('cluster-check').filter({ hasText: '✗' })).toHaveCount(0);
+  // Down: still a failing check (automatic failover needs its vote), and red in the topology.
+  current = view(false);
+  await expect(page.getByTestId('cluster-health')).toContainText('Needs attention', { timeout: 10_000 });
+  await expect(page.getByTestId('cluster-check').filter({ hasText: 'Not heard from' })).toHaveCount(1);
+  await page.getByRole('tab', { name: /^Nodes/ }).click();
+  await expect(page.getByTestId('cluster-topology').locator('.chip.bad')).toHaveCount(1);
   await page.unroute('**/api/v1/cluster');
   await page.unroute('**/api/v1/cluster/rollout');
   await page.unroute('**/api/v1/cluster/versions');
@@ -5590,6 +5730,7 @@ test('api_012 discovered devices name the type of their router', async () => {
 const NETWORKS = [
   { name: 'Home', subnet: '10.20.2.0/24', gateway: '10.20.2.1', dhcpStart: '10.20.2.100', dhcpEnd: '10.20.2.200', domain: 'home.arpa', purpose: 'corporate', source: 'router', router: 'udm', group: 'lab', addresses: 254, devices: 60, usedPercent: 24, outsidePool: 4 },
   { name: 'IoT', subnet: '192.168.20.0/24', vlan: 20, gateway: '192.168.20.1', dhcpStart: '192.168.20.100', dhcpEnd: '192.168.20.200', purpose: 'iot', source: 'router', router: 'udm', addresses: 254, devices: 42, usedPercent: 17, outsidePool: 4 },
+  { name: 'eth0.100', subnet: '198.51.100.0/24', vlan: 100, source: 'interface', addresses: 254, devices: 3, usedPercent: 1.2, outsidePool: 0 },
   { name: 'guests', subnet: '10.50.0.0/24', source: 'group', group: 'guests', addresses: 254, devices: 0, usedPercent: 0, outsidePool: 0 },
 ];
 const DEVICES_ON_NETWORKS = [
@@ -5611,6 +5752,12 @@ test('api_013 networks page lists router networks', async () => {
     await expect(iot.getByRole('img', { name: '17% used' })).toBeVisible();
     await expect(page.getByRole('row').filter({ hasText: '10.50.0.0/24' }).getByTestId('group-only')).toHaveText('group only');
     await expect(page.getByRole('row').filter({ hasText: '10.20.2.0/24' }).getByTestId('group-only')).toHaveCount(0);
+    // REQ: API-013 (T24.32) — a network this node is directly on (a tagged VLAN interface) is badged, with its VLAN ID.
+    const vlan = page.getByRole('row').filter({ hasText: '198.51.100.0/24' });
+    await expect(vlan.getByTestId('this-node')).toHaveText('this node');
+    await expect(vlan).toContainText('eth0.100');
+    await expect(vlan).toContainText('100');
+    await expect(page.getByRole('row').filter({ hasText: '192.168.20.0/24' }).getByTestId('this-node')).toHaveCount(0);
   } finally {
     await page.unroute('**/api/v1/networks');
     await page.unroute('**/api/v1/dhcp/leases');

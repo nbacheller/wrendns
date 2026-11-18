@@ -11,9 +11,11 @@
   export type Node = S['ClusterNode'];
   export type Health = 'ok' | 'warn' | 'bad';
 
+  // REQ: CLU-009 (T24.33) — a witness only votes: it has no configuration and no DNS, so it is
+  // green while it is up and red when it is down (automatic failover needs its vote).
   // REQ: OPS-010 — a node in maintenance is down or not ready on purpose: drawn hatched, not red.
   export const health = (n: Node): Health =>
-    n.maintenance ? 'ok' : !n.up ? 'bad' : !n.ready || n.configLag > 0 ? 'warn' : 'ok';
+    n.maintenance ? 'ok' : !n.up ? 'bad' : n.witness ? 'ok' : !n.ready || n.configLag > 0 ? 'warn' : 'ok';
   const worst = (hs: Health[]): Health => (hs.includes('bad') ? 'bad' : hs.includes('warn') ? 'warn' : 'ok');
   export const worstOf = (ns: Node[]): Health => worst(ns.map(health));
 
@@ -181,7 +183,7 @@
   const sub = (n: Node, px: number) => {
     const parts = [
       n.thisNode ? 'you' : '',
-      `${rate(n.qps)} q/s`,
+      n.witness ? 'votes only' : `${rate(n.qps)} q/s`,
       n.querySharePercent != null ? `${Math.round(n.querySharePercent)}%` : '',
       n.rttMs != null && !n.thisNode ? `${Math.round(n.rttMs)} ms` : '',
     ].filter(Boolean);
@@ -204,9 +206,9 @@
       `${n.pod ?? n.nodeId} (${n.site}, ${role(n)})`,
       n.kubeNode ? `on Kubernetes node ${n.kubeNode}` : '',
       n.maintenance ? `in maintenance (${n.maintenance.reason})` : '',
-      n.up ? (n.ready ? 'up, serving' : 'up, not ready') : 'down',
-      n.configLag ? `configuration ${n.configLag} behind` : 'in sync',
-      `${rate(n.qps)} q/s${n.querySharePercent != null ? `, ${n.querySharePercent}% of queries` : ''}`,
+      n.witness ? (n.up ? 'up, votes only' : 'down') : n.up ? (n.ready ? 'up, serving' : 'up, not ready') : 'down',
+      n.witness ? '' : n.configLag ? `configuration ${n.configLag} behind` : 'in sync',
+      n.witness ? '' : `${rate(n.qps)} q/s${n.querySharePercent != null ? `, ${n.querySharePercent}% of queries` : ''}`,
       n.cacheHitPercent != null ? `cache ${n.cacheHitPercent}% hits` : '',
       n.restarts ? `${n.restarts} restart${n.restarts === 1 ? '' : 's'}` : '',
     ]

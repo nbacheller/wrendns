@@ -15475,9 +15475,20 @@
           "version": {
             "type": "string"
           },
+          "vote": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClusterVote",
+                "description": "REQ: CLU-009 (T24.33) — for a witness: its vote state (absent for other nodes)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "witness": {
             "type": "boolean",
-            "description": "Votes in automatic failover only (ADR-056)."
+            "description": "Votes in automatic failover only (ADR-056). A witness has no configuration version, no\nsecrets and no DNS: `configSeq`, `configLag`, `secrets` and `ready` mean nothing for it\n(REQ: CLU-009, T24.33, ADR-1011), and the checks and alerts about them skip it."
           }
         }
       },
@@ -15964,6 +15975,39 @@
               "null"
             ],
             "description": "The node answering this request."
+          }
+        }
+      },
+      "ClusterVote": {
+        "type": "object",
+        "description": "REQ: CLU-009 (T24.33, ADR-1011) — a witness's part in the election, as this node sees it. A\nwitness only votes: it has no configuration, no secrets and no DNS.",
+        "properties": {
+          "lastGrantSecondsAgo": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Seconds since it last granted one.",
+            "minimum": 0
+          },
+          "lastReplySecondsAgo": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Seconds since it last answered a vote request or lease renewal from this node (absent: this\nnode hasn't asked it, as in manual failover or on a node that isn't the primary).",
+            "minimum": 0
+          },
+          "votedEpoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The epoch it reported in its last reply (the epoch it voted in).",
+            "minimum": 0
           }
         }
       },
@@ -20587,7 +20631,7 @@
                 },
                 "source": {
                   "type": "string",
-                  "description": "`router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry)."
+                  "description": "`router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example\non a tagged VLAN interface; it is named after the interface) or `group` (only a\n`[[group]] networks` entry)."
                 },
                 "subnet": {
                   "type": "string",
@@ -21632,6 +21676,20 @@
                   "type": "integer",
                   "format": "int64",
                   "minimum": 0
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the\nupstream sets a `source`."
+                },
+                "sourceProblem": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: UPS-013 — set while this node no longer holds that address: its queries fail."
                 }
               }
             }
@@ -23217,7 +23275,7 @@
           },
           "source": {
             "type": "string",
-            "description": "`router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry)."
+            "description": "`router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example\non a tagged VLAN interface; it is named after the interface) or `group` (only a\n`[[group]] networks` entry)."
           },
           "subnet": {
             "type": "string",
@@ -23308,6 +23366,29 @@
           "token": {
             "type": "string",
             "description": "The token, shown only now: send as `Authorization: Bearer <token>`."
+          }
+        }
+      },
+      "NodeAddress": {
+        "type": "object",
+        "description": "One address this node holds, for the Upstreams form's `source` suggestions.",
+        "required": [
+          "interface",
+          "address",
+          "network"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "`198.51.100.252`"
+          },
+          "interface": {
+            "type": "string",
+            "description": "The interface (`eth0`, `eth0.100`)."
+          },
+          "network": {
+            "type": "string",
+            "description": "The network it is in, which a shared upstream can name instead: `198.51.100.0/24`."
           }
         }
       },
@@ -26859,9 +26940,17 @@
           "queryLog",
           "filterNames",
           "build",
-          "update"
+          "update",
+          "addresses"
         ],
         "properties": {
+          "addresses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeAddress"
+            },
+            "description": "REQ: UPS-013 (T24.31, ADR-997) — this node's own interface addresses (loopback and\nlink-local left out), which an upstream's `source` can name. They differ per node."
+          },
           "build": {
             "$ref": "#/components/schemas/BuildInfo",
             "description": "Exactly which build this is (ADR-046)."
@@ -27710,6 +27799,20 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the\nupstream sets a `source`."
+          },
+          "sourceProblem": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: UPS-013 — set while this node no longer holds that address: its queries fail."
           }
         }
       },

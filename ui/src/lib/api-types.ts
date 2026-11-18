@@ -5436,7 +5436,12 @@ export interface components {
             /** Format: int64 */
             uptimeSeconds: number;
             version: string;
-            /** @description Votes in automatic failover only (ADR-056). */
+            vote?: components["schemas"]["ClusterVote"] | null;
+            /**
+             * @description Votes in automatic failover only (ADR-056). A witness has no configuration version, no
+             *     secrets and no DNS: `configSeq`, `configLag`, `secrets` and `ready` mean nothing for it
+             *     (REQ: CLU-009, T24.33, ADR-1011), and the checks and alerts about them skip it.
+             */
             witness: boolean;
         };
         /** @description A peer node, as last heard over the cluster channel. */
@@ -5612,6 +5617,28 @@ export interface components {
             source?: components["schemas"]["ClusterSource"] | null;
             /** @description The node answering this request. */
             thisNode?: string | null;
+        };
+        /**
+         * @description REQ: CLU-009 (T24.33, ADR-1011) — a witness's part in the election, as this node sees it. A
+         *     witness only votes: it has no configuration, no secrets and no DNS.
+         */
+        ClusterVote: {
+            /**
+             * Format: int64
+             * @description Seconds since it last granted one.
+             */
+            lastGrantSecondsAgo?: number | null;
+            /**
+             * Format: int64
+             * @description Seconds since it last answered a vote request or lease renewal from this node (absent: this
+             *     node hasn't asked it, as in manual failover or on a node that isn't the primary).
+             */
+            lastReplySecondsAgo?: number | null;
+            /**
+             * Format: int64
+             * @description The epoch it reported in its last reply (the epoch it voted in).
+             */
+            votedEpoch?: number | null;
         };
         /**
          * @description Stable error codes.
@@ -7489,7 +7516,11 @@ export interface components {
                 purpose?: string | null;
                 /** @description The `[[router]]` that reported it. */
                 router?: string | null;
-                /** @description `router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry). */
+                /**
+                 * @description `router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example
+                 *     on a tagged VLAN interface; it is named after the interface) or `group` (only a
+                 *     `[[group]] networks` entry).
+                 */
                 source: string;
                 /**
                  * @description The network in CIDR form.
@@ -7899,6 +7930,13 @@ export interface components {
                 name: string;
                 /** Format: int64 */
                 requests: number;
+                /**
+                 * @description REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the
+                 *     upstream sets a `source`.
+                 */
+                source?: string | null;
+                /** @description REQ: UPS-013 — set while this node no longer holds that address: its queries fail. */
+                sourceProblem?: string | null;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -8533,7 +8571,11 @@ export interface components {
             purpose?: string | null;
             /** @description The `[[router]]` that reported it. */
             router?: string | null;
-            /** @description `router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry). */
+            /**
+             * @description `router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example
+             *     on a tagged VLAN interface; it is named after the interface) or `group` (only a
+             *     `[[group]] networks` entry).
+             */
             source: string;
             /**
              * @description The network in CIDR form.
@@ -8577,6 +8619,15 @@ export interface components {
             info: components["schemas"]["TokenInfo"];
             /** @description The token, shown only now: send as `Authorization: Bearer <token>`. */
             token: string;
+        };
+        /** @description One address this node holds, for the Upstreams form's `source` suggestions. */
+        NodeAddress: {
+            /** @description `198.51.100.252` */
+            address: string;
+            /** @description The interface (`eth0`, `eth0.100`). */
+            interface: string;
+            /** @description The network it is in, which a shared upstream can name instead: `198.51.100.0/24`. */
+            network: string;
         };
         /** @description REQ: OBS-028 — every node side by side over one window. */
         NodeCompare: {
@@ -10086,6 +10137,11 @@ export interface components {
         };
         /** @description Node and build information. */
         SystemInfo: {
+            /**
+             * @description REQ: UPS-013 (T24.31, ADR-997) — this node's own interface addresses (loopback and
+             *     link-local left out), which an upstream's `source` can name. They differ per node.
+             */
+            addresses: components["schemas"]["NodeAddress"][];
             /** @description Exactly which build this is (ADR-046). */
             build: components["schemas"]["BuildInfo"];
             clientIpsMasked?: components["schemas"]["MaskedClients"] | null;
@@ -10426,6 +10482,13 @@ export interface components {
             name: string;
             /** Format: int64 */
             requests: number;
+            /**
+             * @description REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the
+             *     upstream sets a `source`.
+             */
+            source?: string | null;
+            /** @description REQ: UPS-013 — set while this node no longer holds that address: its queries fail. */
+            sourceProblem?: string | null;
         };
         /** @description REQ: OBS-019 — one upstream's answers since start. */
         UpstreamQuality: {
