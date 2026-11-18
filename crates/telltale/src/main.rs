@@ -308,6 +308,11 @@ enum Command {
         /// Make it from the config files and the log files, without asking a running node.
         #[arg(long)]
         offline: bool,
+        /// One package for the whole cluster: every reachable node redacts its own data before it
+        /// leaves the node, and a device has the same pseudonym on all of them. Asks a running
+        /// node (not with `--offline` or `--keep-map`).
+        #[arg(long)]
+        cluster: bool,
         /// The node's API address (default: from the config files' `[api] listen`).
         #[arg(long)]
         url: Option<String>,
@@ -740,6 +745,19 @@ enum QlogCommand {
         /// Query type, e.g. AAAA (repeatable).
         #[arg(short = 't', long)]
         qtype: Vec<String>,
+        /// Keep the queries whose name does NOT match (does not contain, is not, is not under,
+        /// ...). Needs a name.
+        #[arg(long)]
+        not_name: bool,
+        /// Keep the queries from every client except --client.
+        #[arg(long)]
+        not_client: bool,
+        /// Keep the queries whose status is none of --status.
+        #[arg(long)]
+        not_status: bool,
+        /// Keep the queries whose type is none of --qtype.
+        #[arg(long)]
+        not_qtype: bool,
         /// Only the last N seconds.
         #[arg(long)]
         since: Option<u64>,
@@ -881,6 +899,10 @@ fn main() -> ExitCode {
                     client,
                     status,
                     qtype,
+                    not_name,
+                    not_client,
+                    not_status,
+                    not_qtype,
                     since,
                     min_ms,
                     limit,
@@ -895,6 +917,13 @@ fn main() -> ExitCode {
                 client,
                 status,
                 qtype,
+                not: telltale_store::qlog::Not {
+                    name: not_name,
+                    client: not_client,
+                    status: not_status,
+                    qtype: not_qtype,
+                    rcode: false,
+                },
                 since_secs: since,
                 min_ms,
                 limit,
@@ -976,6 +1005,7 @@ fn main() -> ExitCode {
             list,
             output,
             offline,
+            cluster,
             url,
             ca_file,
             token_file,
@@ -989,6 +1019,7 @@ fn main() -> ExitCode {
                 list,
                 output,
                 offline,
+                cluster,
             },
             url,
             ca_file,
