@@ -4,11 +4,12 @@ Fork-only file. `nbacheller/telltaledns` is based on `paimonsoror/telltaledns`; 
 
 ## Last sync
 
-upstream-synced: 3868483
+upstream-synced: 095b77f
 
-- Upstream commit: `3868483` (upstream `main` at the last sync; `perf(image): ... ADR-167, 168, 169`).
-- Fork merge: `e3a00a7` on `feat/ipam-integrations`, 2026-11-17 (14 upstream commits: smaller image, UniFi offline clients, blobs from the primary, domain icons; ADR-942).
-- Fork point before that merge: `b989b20`. Upstream `main` is now `be28b04` (one commit past the last sync, ADR-170); it is not yet in the fork.
+- Upstream commit: `095b77f` (upstream `main` at the last sync; `test(cluster): wait for the member table ... [CLU-001]`).
+- Fork merge: `64ef498` on `feat/upstream-sync`, 2026-11-18 (9 upstream commits: the query log's "not" filters, a cluster-wide support package, Bootstrap Icons, the Developers docs, the two-factor code box; ADR-986, ADR-987). It reaches `feat/ipam-integrations` when the owner merges the branch.
+- Previous sync: `3868483`, merged as `e3a00a7` on `feat/ipam-integrations`, 2026-11-17 (14 upstream commits; ADR-942).
+- Conflicts at this sync and the side kept: `deny.toml` (fork: no advisory ignored), `auth_setup.rs`, `auth_setup_tests.rs`, `schema.rs`, `config-schema.json`, `running.md`, `spec/08` (fork: loopback break-glass, ADR-944; upstream's start-up notice and its test dropped, ADR-987), `Login.svelte` and `Settings.svelte` (fork: same fix, `{"[0-9]{6}"}`), `net_tests.rs` (fork's wait; the same fix as upstream's), `federated.rs` (both: fork's `block_in_place` helper and map read, upstream's support and negated reads), `Queries.svelte` (both: the router-name client box beside upstream's "not" checkboxes), `1-ui.spec.ts` (both tests kept), `api.ts` (clean 3-way: the fork already had the NUL fix), `spec/10` and `spec/11` (both; upstream's M24 renumbered to M30, T22.2 to T29.2, ADR-986).
 
 ### How to sync
 
@@ -16,7 +17,7 @@ The fork's procedure, used for the 2026-11-17 merge:
 
 1. `git fetch upstream main`. Read the upstream commits since the last sync: `git log --oneline upstream-synced..upstream/main`. The watch report lists them and flags the ones that touch a deviation below.
 2. Branch `feat/upstream-sync` from `feat/ipam-integrations`. Trial-merge with `git merge --no-commit --no-ff upstream/main`, and list the conflicts. Resolve them by keeping every fork deviation below; never take upstream's side of a deviation path without an ADR.
-3. Review. Upstream ADR numbers are kept as they are. Fork ADRs take 901 and up (ADR-906). If an upstream milestone or task ID collides with a fork one, rename the fork's: M22 and M23 became M28 and M29 in the 2026-11-17 merge. Record the rename in the merge message and in `spec/10`.
+3. Review. Upstream ADR numbers are kept as they are. Fork ADRs take 901 and up (ADR-906). If an upstream milestone or task ID collides with a fork one, the upstream one takes the next free fork number: upstream's M22 and M23 became M29 and M28 in the 2026-11-17 merge, and upstream's M24 became M30 (T24.x to T30.x) and its T22.2 became T29.2 in the 2026-11-18 merge (ADR-986). Fork task IDs are cited in code, tests and open branches, so they are not renamed. Record the rename in the merge message and in `spec/10`.
 4. Recheck. The gates are `cargo test`, `cargo clippy` clean, the Playwright e2e, the cargo-deny check, and the image gate (`deploy/image/size.py`, 25 MiB per architecture, ADR-916). Run `make bench-smoke` if a hot-path crate changed.
 5. Merge into `feat/ipam-integrations` with a merge commit that names the upstream SHA and the requirement IDs. Then update this file: the `upstream-synced:` line, the Last sync section, the `triaged` block, and any deviation that changed.
 
@@ -39,10 +40,10 @@ Each deviation is an intentional difference from upstream. Each name is the key 
 | offline-clients | ADR-942 | `offline_days` 0 keeps the DHCP reservations' names; offline clients are not a current answer for discovery, DNS or networks. | `crates/telltale/src/devices.rs`, `crates/telltale/src/routers*.rs` |
 | device-names-dns | ADR-901, ADR-902 | Device names answer in DNS (AAAA and PTR), built from the names TelltaleDNS already has, one label each; UniFi reservations and networks add naming sources. | `crates/telltale/src/device_dns.rs`, `ui/src/lib/components/DeviceNamesCard.svelte` |
 | support-classify | OPS-011 | The support package classifies the fork's `[discovery]` and secret-reference fields; each new fork section must be classified. | `crates/telltale-support/src/classify.rs`, `crates/telltale/src/support.rs` |
-| break-glass-loopback | #63 (a new fork ADR, 901+, pending) | Break-glass local login is loopback-only, and `disable_local_login` hides the form and refuses it. In branch `fix/auth-63-64`, not yet in the tree. | `crates/telltale/src/auth*.rs`, `crates/telltale/src/auth_setup*.rs`, `ui/src/pages/Login.svelte` |
+| break-glass-loopback | ADR-944, ADR-987 | Break-glass local login is loopback-only unless `allowed_admin_networks` is set (an `Option`, so absent differs from `[]`), a proxied request is never break-glass, and `disable_local_login` hides the form and refuses it. Upstream's answer to #63 keeps the private-network default and documents it; the fork's key descriptions, `docs/running.md`, the users guide and `spec/08` say loopback, and upstream's start-up notice is not taken. | `crates/telltale/src/auth*.rs`, `crates/telltale/src/auth_setup*.rs`, `ui/src/pages/Login.svelte`, `site/guide-users.html` |
 | home-assistant | M22, T22.x | The Home Assistant integration (a custom component and its tests), which upstream does not ship. | `integrations/home-assistant/**`, `.github/workflows/home-assistant.yml` |
 | docker-desktop | M22 (T22.x) | A Docker Desktop bundle for trying the fork. | `deploy/docker-desktop/**` |
-| milestone-renumbering | Sync 2026-11-17 (flagged as `numbering` by the watch, which covers spec/10 and spec/11) | Fork milestones M22/M23 became M28/M29 at the 2026-11-17 merge, where upstream's IDs took the old numbers. Fork tasks and ADRs use the fork's numbers. | `spec/10-roadmap-and-tasks.md`, `spec/11-decisions.md` |
+| milestone-renumbering | Sync 2026-11-17, ADR-986 (flagged as `numbering` by the watch, which covers spec/10 and spec/11) | Upstream's M22/M23 are M29/M28 here (2026-11-17), and upstream's M24 (T24.1, T24.2) is M30 (T30.1, T30.2) with upstream's T22.2 as T29.2 (2026-11-18), because the fork's M22 to M24 are its own. Fork tasks and ADRs use the fork's numbers. | `spec/10-roadmap-and-tasks.md`, `spec/11-decisions.md` |
 | settings-kinds | ADR-914, ADR-918 | The shared settings sections (`[special]`, `[local]`, `[clients]` with mdns only): files win field by field, a request may leave out a file-set field, some fields are read-only. Bulk changes are admin-only with a typed confirmation. | `crates/telltale/src/settings_kinds*.rs` |
 | problem-codes | ADR-927 | The UI maps the credential problem codes to sentences; the server's detail stays on the error. The file is the API client, shared with upstream, so an upstream change there can conflict. | `ui/src/lib/api.ts` |
 | special-names | ADR-904 | iCloud Private Relay names are blocked by default (`block_icloud_private_relay`), a behaviour change for Pi-hole parity. | `crates/telltale-policy/src/special.rs` |
@@ -58,11 +59,12 @@ Every upstream issue the fork has triaged. "Fork action" is what the fork does; 
 | # | Title | Upstream | Kind | Fork affected | Fork action | Upstream comment |
 |---|---|---|---|---|---|---|
 | [#7](https://github.com/paimonsoror/telltaledns/issues/7) | Process deadlocks: DNS, API, metrics and cluster port stop answering while the service stays active | open, `investigating` | bug | yes | Fixed in the fork (T21.4, ADR-946): `call_one` and `gather` run their wait under `block_in_place` on a multi-thread runtime, and the async handlers route federated reads through `blocking()` (`crates/telltale-api/src/lib.rs`, `config_api.rs`). Regression tests `clu_004_*` in `crates/telltale/src/federated_wedge_tests.rs`; the first hangs without the fix. No worker floor: the Pi RSS can't be measured here and the fix doesn't need it. Mitigation (watchdog, debug files, OPS-012) is in the fork. Requirements CLU-004, OPS-012. | [root-cause comment](https://github.com/paimonsoror/telltaledns/issues/7#issuecomment-6954567842), [fix follow-up](https://github.com/paimonsoror/telltaledns/issues/7#issuecomment-6959114097) |
-| [#64](https://github.com/paimonsoror/telltaledns/issues/64) | 2FA can't be enabled (pattern="[0-9]{6}" in Svelte) | open | bug | yes | Fix now in `fix/auth-63-64`: Svelte reads `{6}` as an expression. Sites: `Settings.svelte` and `Login.svelte`. Add a Playwright test. | [root-cause comment](https://github.com/paimonsoror/telltaledns/issues/64#issuecomment-6953817344) |
-| [#63](https://github.com/paimonsoror/telltaledns/issues/63) | disable_local_login is ignored | open | bug | yes | Fix now in `fix/auth-63-64`: break-glass is loopback only and honours `disable_local_login`. Add a test and a new fork ADR (901 and up). Post the upstream comment only after the fix is verified. | [root-cause comment](https://github.com/paimonsoror/telltaledns/issues/63#issuecomment-6954567296) |
+| [#64](https://github.com/paimonsoror/telltaledns/issues/64) | 2FA can't be enabled (pattern="[0-9]{6}" in Svelte) | closed 2026-11-18 (b334e0f) | bug | fixed in fork | None. Both sites use `pattern={"[0-9]{6}"}` (fork) and `{'[0-9]{6}'}` (upstream) alike; upstream's Playwright test and `6-markup.spec.ts` are in the fork beside `6-totp.spec.ts` (ADR-943, ADR-987). | [root-cause comment](https://github.com/paimonsoror/telltaledns/issues/64#issuecomment-6953817344) |
+| [#63](https://github.com/paimonsoror/telltaledns/issues/63) | disable_local_login is ignored | open (b334e0f documents the private-network default, refs #63) | bug | fixed in fork | None. The fork's loopback default (ADR-944) is kept over upstream's documentation-only answer (ADR-987). Post the upstream comment only after the fix is verified. | [root-cause comment](https://github.com/paimonsoror/telltaledns/issues/63#issuecomment-6954567296) |
 | [#65](https://github.com/paimonsoror/telltaledns/issues/65) | Clients: get names from external sources | open | enhancement | fixed in fork | None. T8.2 ([[router]] UniFi and OPNsense naming) is in the fork. Reply upstream with the config pointer once the owner agrees. | — (draft) |
-| [#55](https://github.com/paimonsoror/telltaledns/issues/55) | Support package: collect every node's section with --cluster | open | enhancement | yes | Track. Build after upstream settles the cluster-protocol design; the fork adds node-specific sections. | — (draft) |
-| [#58](https://github.com/paimonsoror/telltaledns/issues/58) | Query log search: add a negation option (does not contain) | open | enhancement | yes | Track. Wait for upstream's implementation, then add the fork's UI, API, MCP and federated forwarding checks. | — (draft) |
+| [#69](https://github.com/paimonsoror/telltaledns/issues/69) | Flaky UI e2e on the first attempt: obs_024 simulate a quick rule (again) and obs_035 wall | open | bug | yes | Upstream's cluster-test half (095b77f, the member-table wait) is in; the fork had the same fix. The two UI flakes are the fork's `feat/obs035-wall-flake` track (obs_024 was fork #11's second cause). | — |
+| [#55](https://github.com/paimonsoror/telltaledns/issues/55) | Support package: collect every node's section with --cluster | closed 2026-11-18 (60f108b, ADR-172) | enhancement | fixed in fork (merged) | Merged at this sync (T30.2). The fork's `[discovery]` and secret-reference classification (support-classify) is in each node's part; check a cluster package on a fork cluster once (not run here: needs the three-node bundle). | — |
+| [#58](https://github.com/paimonsoror/telltaledns/issues/58) | Query log search: add a negation option (does not contain) | closed 2026-11-18 (14b911c, 36ab36a, ADR-171) | enhancement | fixed in fork (merged) | Merged at this sync (T30.1). The fork's router-name client filter (`hostname:<label>`) negates through the same address set; the Queries page keeps both controls. Upstream's UI and API are in; MCP and federated forwarding come with the merge. | — |
 | [#12](https://github.com/paimonsoror/telltaledns/issues/12) | Explore: an OpenWrt package | open | explore | yes | Track. Not blocked on x86_64, aarch64 or arm; mips and mipsel lose discovery (seccomp fails closed). | — (draft) |
 | [#49](https://github.com/paimonsoror/telltaledns/issues/49) | Explore an OPNsense package (FreeBSD arm64/aarch64) | open | explore | yes | Track. DNS is not blocked; discovery would run unsandboxed without a Capsicum equivalent. | — (draft) |
 | [#59](https://github.com/paimonsoror/telltaledns/issues/59) | TelltaleDNSListStale fires for inline lists 48 hours after every config edit | closed 2026-11-16 (735491a) | bug | fixed in fork | None. Test that inline lists show no last-success time (optional). | — |
@@ -91,6 +93,9 @@ Open upstream PRs that touch a fork deviation, and what the fork does with them 
 | PR | Title | Touches | Fork plan | Upstream comment |
 |---|---|---|---|---|
 | [#66](https://github.com/paimonsoror/telltaledns/pull/66) | feat(routers): add and change routers in the UI, keys pasted and saved as files (ADR-171) | routers, secrets, managed kinds, agent scopes | The fork already ships this with a different design (ADR-903/917/919/921/922). If it merges as is: keep the fork's side in `routers.rs`, the router hunks of `api_backend.rs`, `server.rs`, `auth/agent.rs` (no `config:write:routers`), `managed.rs`, `forward.rs`, `config_api.rs`, `lib.rs`, `ConfigEditor.svelte`, `Clients.svelte`, OpenAPI and `api.ts`; keep ADR-171 verbatim with a fork ADR that supersedes it for the fork; adopt a binary-level e2e like `deploy/routers-ui-e2e.sh`, rewritten for `*_ref`. | [review](https://github.com/paimonsoror/telltaledns/pull/66#issuecomment-6960942714): API file paths can send any readable file to the router URL, a URL change reuses the saved key, write order, delete scope, keys lost on failover |
+| [#67](https://github.com/paimonsoror/telltaledns/pull/67) | Feat/Unraid template | `deploy/unraid/**`, `docs/running.md`, `site/start.html` | No deviation path. Take it as is when it merges; check the template's ports and image name against the fork's image and Docker Desktop bundle. | — |
+| [#68](https://github.com/paimonsoror/telltaledns/pull/68) | Feat/mikrotik router | routers, secrets, managed kinds, agent scopes, `config_api.rs`, `lib.rs`, `schema.rs`, `validate.rs` | Same family as #66: the fork's `[[router]]` design (ADR-903/917/919/921/922) wins in `routers.rs`, `router_secrets.rs`, `managed.rs`, `forward.rs`, `config_api.rs` and the shared files. A MikroTik source itself is worth taking as a router kind, rewritten for `*_ref`. | — |
+| [#70](https://github.com/paimonsoror/telltaledns/pull/70) | fix(helm): only alert on lists that are failing, not merely old [FLT-004] | `deploy/helm/templates/monitoring.yaml`, `deploy/helm/tests/alerts.test.yml`, `docs/running.md` | No deviation path. Take it when it merges. | — |
 
 ## Watch
 
@@ -145,7 +150,7 @@ pihole-import	crates/telltale/src/pihole*.rs,crates/telltale/src/pihole/**,crate
 offline-clients	crates/telltale/src/devices.rs,crates/telltale/src/routers*.rs
 device-names-dns	crates/telltale/src/device_dns.rs,ui/src/lib/components/DeviceNamesCard.svelte
 support-classify	crates/telltale-support/src/classify.rs,crates/telltale/src/support.rs
-break-glass-loopback	crates/telltale/src/auth*.rs,crates/telltale/src/auth_setup*.rs,ui/src/pages/Login.svelte
+break-glass-loopback	crates/telltale/src/auth*.rs,crates/telltale/src/auth_setup*.rs,ui/src/pages/Login.svelte,site/guide-users.html
 home-assistant	integrations/home-assistant/**,.github/workflows/home-assistant.yml
 docker-desktop	deploy/docker-desktop/**
 settings-kinds	crates/telltale/src/settings_kinds*.rs
@@ -163,7 +168,7 @@ fork-readme	README.md
 4	2026-11-15T00:15:39Z
 5	2026-11-15T04:03:01Z
 6	2026-11-14T21:39:57Z
-7	2026-11-17T16:45:10Z
+7	2026-11-17T19:50:06Z
 9	2026-11-15T02:06:50Z
 11	2026-11-15T15:45:32Z
 12	2026-11-15T00:20:10Z
@@ -174,12 +179,13 @@ fork-readme	README.md
 43	2026-11-17T02:42:24Z
 49	2026-11-15T15:43:39Z
 50	2026-11-16T12:47:42Z
-55	2026-11-16T12:47:15Z
+55	2026-11-18T02:42:04Z
 56	2026-11-16T13:02:55Z
 57	2026-11-16T13:36:48Z
-58	2026-11-16T12:50:54Z
+58	2026-11-18T01:53:51Z
 59	2026-11-16T21:34:23Z
-63	2026-11-17T16:45:09Z
-64	2026-11-17T16:17:05Z
-65	2026-11-17T10:32:06Z
+63	2026-11-18T01:54:15Z
+64	2026-11-18T01:54:00Z
+65	2026-11-18T02:42:20Z
+69	2026-11-18T12:05:15Z
 ```
