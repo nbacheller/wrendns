@@ -330,6 +330,16 @@
       "docs": "encrypted-upstreams"
     },
     {
+      "id": "upstream-picker",
+      "title": "Pick your upstream servers",
+      "term": "Upstream picker (simple view)",
+      "summary": "Tick the public DNS servers you want, choose encrypted or plain DNS and IPv4 and/or IPv6, and Save. TelltaleDNS asks the fastest of the servers you ticked. The Custom row takes an address of your own. The Advanced view is the technical list and forms.",
+      "when": "Setting up, or changing which public servers answer for you, without writing addresses by hand.",
+      "example": "Tick Quad9 and Cloudflare, leave Encrypted on, and Save: DNS over TLS to both, using whichever answers faster.",
+      "caution": "Every server you tick sees the names you look up, so read its note. Plain DNS isn't private. IPv6 is greyed out when this node has no IPv6 route. Servers set up another way (config files, an import, the Advanced view) are shown and left alone, and stay in the default group.",
+      "docs": "upstream-presets"
+    },
+    {
       "id": "upstream-source",
       "title": "Send an upstream's queries from one address",
       "term": "Source address (bind address)",

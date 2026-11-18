@@ -764,6 +764,11 @@ telltale presets show nextdns --param profile=abc123    # templated presets need
 ```
 `show` prints explicit `[[upstream]]` entries plus a `fastest` group. Your config always lists exactly what's used and never depends on the catalog, which only helps you write it. The catalog covers every Pi-hole preset plus the common encrypted resolvers; a nightly job checks that every entry still answers. That includes the DoQ (`quic://`) endpoints.
 
+### Choosing public upstreams in the UI
+The **Upstreams** page opens on a simple view, like Pi-hole's: tick the public resolvers you want (Cloudflare, Cloudflare for Families, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing, and others), each with a note on what it filters and what it does with your queries. Choose **Encrypted** (DNS over TLS, recommended; DNS over HTTPS where a provider has no TLS address) or **Plain**, and IPv4, IPv6 or both. IPv6 is greyed out, with the reason, when the node has no IPv6 route. The **Custom** row takes a bare IP (plain DNS), a `tls://` or `https://` address, or a `quic://` one; an IP-literal `tls://` address also needs the name on its certificate.
+
+Saving writes one upstream per address, named `pub-<provider>-<protocol>-<n>` (for example `pub-cloudflare-tls-1`), and sets the `default` upstream group to the `fastest` strategy over them. Entries the simple view didn't make (from your config files, a Pi-hole import, or the Advanced view) are listed under "Also set up" and left alone; they stay in the `default` group. **Advanced** is the technical list and forms, unchanged: the simple view's entries show there too, and switching views loses nothing. Each upstream on the page says where it is defined: the config file, the API or UI, or both. The catalog is `presets/upstreams.toml`; `GET /api/v1/upstream-presets` (and the MCP tool `list_upstream_presets`) read it with whether this node has an IPv6 route.
+
 ## Encrypted DNS for your devices (DoT, DoH, and DoQ)
 Phones, laptops, and browsers can reach TelltaleDNS over DNS over TLS (Android's "Private DNS", RFC 7858), DNS over HTTPS (browsers, iOS and macOS profiles, RFC 8484), or DNS over QUIC (RFC 9250; AdGuard and other apps, some routers), so nobody on the network path can read or change their lookups:
 ```toml

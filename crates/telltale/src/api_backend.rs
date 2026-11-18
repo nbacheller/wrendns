@@ -2780,6 +2780,11 @@ impl Backend for ApiBackend {
     ) -> BoxFuture<Result<telltale_api::model::RouterCertificate, Problem>> {
         Box::pin(async move { crate::router_cert::fetch(&url).await })
     }
+    // REQ: UPS-004, API-002 (T24.36) — the catalog is compiled in; the route check reads the kernel's
+    // table when asked, never from a query.
+    fn upstream_presets(&self) -> telltale_api::model::UpstreamPresets {
+        crate::upstream_presets::presets()
+    }
     #[allow(clippy::too_many_lines)] // one table, built in one pass
     fn networks(&self) -> Vec<telltale_api::model::NetworkInfo> {
         use std::net::{IpAddr, Ipv4Addr};

@@ -11,24 +11,35 @@
   import { href } from '../lib/router.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
   import LatencyHeatmap from '../lib/components/LatencyHeatmap.svelte';
+  import UpstreamPicker from '../lib/components/UpstreamPicker.svelte';
 
   let upstreams = $state<S['UpstreamInfo'][]>([]);
   let latency = $state<S['LatencyRow'][]>([]);
   // REQ: OBS-019 — what the upstreams' answers said, per node.
   let checks = $state<S['UpstreamChecks'][]>([]);
+  // REQ: API-002 (T24.36) — where each upstream is defined: the config files, the API or UI (the
+  // picker, the form, a Pi-hole import), or both (the API's overrides the file's).
+  let origins = $state<Map<string, string>>(new Map());
+  const originLabel: Record<string, string> = {
+    file: 'config file',
+    added: 'added through the API or UI',
+    override: 'API or UI, overriding the config file',
+  };
   let error = $state<unknown>(null);
 
   $effect(() =>
     poll(async () => {
       try {
-        const [u, l, c] = await Promise.all([
+        const [u, l, c, o] = await Promise.all([
           api.upstreams(),
           api.latency('upstream'),
           api.upstreamChecks().catch(() => ({ items: [] as S['UpstreamChecks'][] })),
+          api.configEntries('upstream').catch(() => ({ items: [] as S['ConfigEntry'][] })),
         ]);
         upstreams = u.items;
         latency = l.items;
         checks = c.items;
+        origins = new Map(o.items.map((e) => [e.name, e.source]));
         error = null;
       } catch (e) {
         error = e;
@@ -121,6 +132,7 @@
   const anyQuality = $derived(checks.some((c) => c.upstreams.length > 0));
   const reload = async () => {
     upstreams = (await api.upstreams()).items;
+    origins = new Map((await api.configEntries('upstream')).items.map((e) => [e.name, e.source]));
   };
   // REQ: API-002 (T9.12) — ask the draft upstream before saving it.
   const tryUpstream = {
@@ -134,11 +146,37 @@
   };
   // REQ: OBS-030 — the upstream whose answer times the heatmap shows.
   let latencyOf = $state('');
+  // REQ: UPS-004 (T24.36) — the page opens on the simple view (tick the providers); Advanced is the
+  // technical list and forms. Both stay mounted, so switching never drops what is typed in either.
+  type View = 'simple' | 'advanced';
+  const stored = (): View => {
+    try {
+      return localStorage.getItem('upstreams-view') === 'advanced' ? 'advanced' : 'simple';
+    } catch {
+      return 'simple';
+    }
+  };
+  let view = $state<View>(stored());
+  const setView = (v: View) => {
+    view = v;
+    try {
+      localStorage.setItem('upstreams-view', v);
+    } catch {
+      // The choice just isn't remembered.
+    }
+  };
 </script>
 
 <div class="page">
   <h1>Upstreams<HelpButton id="upstreams" /></h1>
+  <div class="seg" role="tablist" aria-label="Upstreams view">
+    <button role="tab" aria-selected={view === 'simple'} class:on={view === 'simple'} onclick={() => setView('simple')} data-testid="view-simple">Simple</button>
+    <button role="tab" aria-selected={view === 'advanced'} class:on={view === 'advanced'} onclick={() => setView('advanced')} data-testid="view-advanced">Advanced</button>
+  </div>
   <ErrorNote {error} />
+  <div hidden={view !== 'simple'} data-testid="upstreams-simple">
+    <UpstreamPicker onchanged={reload} onadvanced={() => setView('advanced')} />
+  </div>
   <section class="card">
     <div class="table-wrap">
       <table>
@@ -153,6 +191,7 @@
             {@const l = byKey.get(u.name)}
             <tr>
               <td><strong>{u.name}</strong>{#if advanced}<div class="muted small mono">{u.endpoint}</div>{/if}
+                {#if origins.get(u.name)}<div class="muted small" data-testid="upstream-origin">defined in: {originLabel[origins.get(u.name) ?? ''] ?? origins.get(u.name)}</div>{/if}
                 {#if u.source}<div class="muted small" data-testid="upstream-source">from {u.source}</div>{/if}
                 {#if u.sourceProblem}<div class="small bad-text" data-testid="upstream-source-problem">{u.sourceProblem}</div>{/if}</td>
               <td>{u.groups.join(', ')}</td>
@@ -246,11 +285,13 @@
       </ul>
     {/each}
   </section>
+  <div hidden={view !== 'advanced'} data-testid="upstreams-advanced">
   <ConfigEditor kind="upstream" path="upstreams" title="Upstream servers" noun="upstream" fields={upstreamFields}
     summary={(d) => String(d.url ?? '')} onchanged={reload} formAction={tryUpstream}
     adminOnly={(d, saved) => (programDraft(d, saved) ? 'Only an admin can set an address that runs a program (exec:// or unix://).' : null)} />
   <ConfigEditor kind="upstream_group" path="upstream-groups" title="Upstream groups" noun="upstream group" fields={groupFields}
     summary={(d) => `${String(d.strategy ?? 'failover')}: ${((d.members as string[]) ?? []).join(', ')}`} onchanged={reload} />
+  </div>
   <p class="muted small">
     To send one domain to a different server (a work network, your router), add a forwarded domain on the
     <a href={href('/local-dns')}>Names on my network</a> page.<HelpButton id="routes" />
@@ -258,6 +299,24 @@
 </div>
 
 <style>
+  .seg {
+    display: inline-flex;
+    gap: 0;
+    margin: 4px 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .seg button {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding: 6px 16px;
+  }
+  .seg button.on {
+    background: var(--accent);
+    color: var(--accent-text);
+  }
   .chip {
     display: inline-block;
     padding: 0 6px;
