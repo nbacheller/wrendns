@@ -127,7 +127,11 @@ pub fn answer(cluster: &Cluster, peer: &str, body: &[u8]) -> Result<Vec<u8>, Str
 /// lease, a vote from here could make a second primary. A pre-vote changes nothing, so it is
 /// still answered.
 fn decide_without_election(b: &mut Ballot, ask: &Ask, now: u64) -> Reply {
-    if ask.pre {
+    // A renewal (the epoch and candidate this node already voted for) is granted: it is what
+    // lets a primary that has just adopted `auto` get its lease, so it can publish the record
+    // that turns the replicas to `auto`. A vote for a higher epoch is refused.
+    let renewal = !b.candidate.is_empty() && ask.epoch == b.epoch && ask.candidate == b.candidate;
+    if ask.pre || renewal {
         b.decide(ask, now, (0, 0))
     } else {
         Reply {
@@ -463,6 +467,23 @@ mod tests {
         assert!(!r.granted);
         assert_eq!(b, Ballot::default(), "the ballot moved");
         assert!(decide_without_election(&mut b, &ask(true), 1_000).granted);
+        // A same-epoch renewal from the primary this node follows is granted; epoch + 1 is not.
+        let mut b = Ballot {
+            epoch: 1,
+            candidate: "a".into(),
+            lease_until_ms: 0,
+            clock: 0,
+        };
+        let mk = |epoch, candidate: &str| Ask {
+            epoch,
+            candidate: candidate.into(),
+            round: 1,
+            pre: false,
+            applied: (0, 0),
+        };
+        assert!(decide_without_election(&mut b, &mk(1, "a"), 1_000).granted);
+        assert!(!decide_without_election(&mut b, &mk(2, "a"), 1_000).granted);
+        assert!(!decide_without_election(&mut b, &mk(1, "c"), 1_000).granted);
     }
 
     // REQ: CLU-005 (ADR-960) — a primary resumes whatever its stored ballot says.
