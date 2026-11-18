@@ -62,6 +62,41 @@ impl State {
         self.with(version)
     }
 
+    /// REQ: API-902 (T27.13) — a node-local note in `meta` (the guarded framework's outcomes and
+    /// suppressions; never replicated, never part of the configuration version).
+    pub fn meta_get(&self, key: &str) -> Result<Option<String>> {
+        self.with(|c| {
+            c.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+                .optional()
+        })
+    }
+
+    /// Every node-local note whose key starts with `prefix` (key and value), by key.
+    pub fn meta_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT key, value FROM meta WHERE substr(key, 1, length(?1)) = ?1 ORDER BY key",
+            )?;
+            st.query_map([prefix], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect()
+        })
+    }
+
+    /// Sets (or, with `None`, removes) a node-local note in `meta`.
+    pub fn meta_set(&self, key: &str, value: Option<&str>) -> Result<()> {
+        self.with(|c| {
+            match value {
+                Some(v) => c.execute(
+                    "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    params![key, v],
+                ),
+                None => c.execute("DELETE FROM meta WHERE key = ?1", [key]),
+            }
+            .map(|_| ())
+        })
+    }
+
     /// Every entry of `kind`, by name.
     pub fn managed(&self, kind: &str) -> Result<Vec<Managed>> {
         self.with(|c| {

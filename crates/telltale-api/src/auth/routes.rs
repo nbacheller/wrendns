@@ -90,6 +90,37 @@ pub(crate) fn remote(auth: &Auth, req_ext: &axum::http::Extensions, headers: &He
         .unwrap_or(peer)
 }
 
+/// REQ: API-902 (ADR-956 §3) — [`remote`] under another proxy list: what the client address would
+/// be if `proxies` were `[api] trusted_proxies`. The confirm route of a guarded `trusted-proxies`
+/// change shows it, and nothing else reads it: break-glass networks, loopback-only checks, rate
+/// limits and the audit source all keep the list in force.
+pub(crate) fn remote_under(
+    auth: &Auth,
+    req_ext: &axum::http::Extensions,
+    headers: &HeaderMap,
+    proxies: &[(IpAddr, u8)],
+) -> IpAddr {
+    let trusted = |ip: IpAddr| proxies.iter().any(|(n, l)| super::in_network(ip, *n, *l));
+    let _ = auth;
+    let peer = req_ext
+        .get::<ConnectInfo<SocketAddr>>()
+        .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip());
+    if !trusted(peer) {
+        return peer;
+    }
+    headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .filter_map(|s| s.trim().parse::<IpAddr>().ok())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .find(|ip| !trusted(*ip))
+        .unwrap_or(peer)
+}
+
 /// `ip` is one of `[api] trusted_proxies`.
 fn is_trusted_proxy(auth: &Auth, ip: IpAddr) -> bool {
     auth.settings()
@@ -333,6 +364,24 @@ pub async fn authenticate(
     }
     req.extensions_mut().insert(principal);
     next.run(req).await
+}
+
+/// REQ: API-902 (ADR-956 §3) — [`authenticate`] for a request that may carry no credential at all:
+/// the confirm route of a guarded change, which the admin opens on the *new* address with a
+/// single-use token and no session (a new origin has none). A request that presents a cookie, a
+/// token or Basic credentials is authenticated exactly as everywhere else (and a wrong one is
+/// refused); one that presents none passes without a [`Principal`], and the handler then accepts
+/// only a valid confirmation token.
+pub async fn authenticate_optional(
+    State(auth): State<AuthState>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let (session, bearer, basic) = presented(req.headers());
+    if session.is_none() && bearer.is_none() && basic.is_none() {
+        return next.run(req).await;
+    }
+    authenticate(State(auth), req, next).await
 }
 
 /// REQ: AGT-008 (T7.4) — a 401 from `/mcp` tells MCP clients where to sign in (RFC 9728

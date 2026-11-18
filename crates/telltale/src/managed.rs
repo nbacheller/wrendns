@@ -192,6 +192,8 @@ pub(crate) struct Entries {
     pub(crate) clients_settings: Option<serde_json::Value>,
     /// REQ: DSC-001 (T25.2) — the stored `[discovery]` section, likewise.
     pub(crate) discovery: Option<serde_json::Value>,
+    /// REQ: API-902 (T27.13) — this node's guarded entries (the reserved kind `guarded`).
+    pub(crate) guarded: Vec<crate::guarded::store::Stored>,
 }
 
 impl Entries {
@@ -349,6 +351,7 @@ pub(crate) fn entries(state: &State) -> Entries {
             .into_iter()
             .next()
             .map(|(_, v)| v),
+        guarded: crate::guarded::store::all(state),
     }
 }
 
@@ -484,6 +487,8 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
     // apart from `[[auth.oidc.provider]]` (a node without `public_url` shows them as inactive
     // instead of failing the configuration), the files' ID wins, and a bad one is dropped alone.
     crate::node_managed::overlay_providers(&mut cfg, e.valid_oidc_providers());
+    // REQ: API-902 (T27.13, ADR-956 §2) — guarded values in force (the files' fields win).
+    crate::guarded::appliers::overlay(&mut cfg, own, &e.guarded, None);
     apply_ovr(&mut cfg.schedule, &e.schedules);
     apply_ovr(&mut cfg.anomaly_mute, &e.anomaly_mutes);
     apply_kubernetes_map(&mut cfg, &e.kubernetes_map);

@@ -371,6 +371,21 @@ pub(crate) fn rpc_handler(
             if kind == crate::forward::KIND {
                 return crate::forward::handle(src, local, cluster, peer, body).await;
             }
+            if kind == crate::guarded::prod::KIND_FORWARD
+                || kind == crate::guarded::prod::KIND_ENTRY
+            {
+                // REQ: API-902 (ADR-956 §5) — the primary forwards a guarded request for this node
+                // (checked again here), or a replica writes its own guarded entry through this
+                // node. An ephemeral member serves no UI and holds no authority.
+                if ephemeral {
+                    return Err("an ephemeral member can't take guarded requests".into());
+                }
+                return if kind == crate::guarded::prod::KIND_FORWARD {
+                    crate::guarded::prod::handle_forward(src, cluster, peer, body).await
+                } else {
+                    crate::guarded::prod::handle_entry(src, cluster, peer, body).await
+                };
+            }
             if kind == crate::secrets::sync::KIND_FETCH {
                 // REQ: CLU-015 (ADR-903 §6) — a full member reads this node's stored secrets (the
                 // primary's rows, or a replica's for the primary's reverse heal). Over mTLS only.
@@ -3033,6 +3048,46 @@ impl Backend for Federated {
     }
     fn secrets_over_http_allowed(&self) -> bool {
         self.local.secrets_over_http_allowed()
+    }
+    // REQ: API-902 (T27.13, ADR-956 §5) — guarded changes are node-local: the engine on this node
+    // forwards a request for another node itself (only the primary does), over the cluster
+    // channel with a signed assertion; nothing here gathers or fans out.
+    fn guarded_status(&self) -> BoxFuture<Result<telltale_api::guarded::GuardedStatus, Problem>> {
+        self.local.guarded_status()
+    }
+    fn guarded_preview(
+        &self,
+        caller: telltale_api::guarded::GuardedCaller,
+        id: String,
+        req: telltale_api::guarded::GuardedPreviewRequest,
+    ) -> BoxFuture<Result<telltale_api::guarded::GuardedPreview, Problem>> {
+        self.local.guarded_preview(caller, id, req)
+    }
+    fn guarded_apply(
+        &self,
+        caller: telltale_api::guarded::GuardedCaller,
+        id: String,
+        req: telltale_api::guarded::GuardedApplyRequest,
+    ) -> BoxFuture<Result<telltale_api::guarded::GuardedApplied, Problem>> {
+        self.local.guarded_apply(caller, id, req)
+    }
+    fn guarded_confirm(
+        &self,
+        caller: telltale_api::guarded::GuardedCaller,
+        id: String,
+        token: Option<String>,
+    ) -> BoxFuture<Result<telltale_api::guarded::GuardedResult, Problem>> {
+        self.local.guarded_confirm(caller, id, token)
+    }
+    fn guarded_cancel(
+        &self,
+        caller: telltale_api::guarded::GuardedCaller,
+        id: String,
+    ) -> BoxFuture<Result<telltale_api::guarded::GuardedResult, Problem>> {
+        self.local.guarded_cancel(caller, id)
+    }
+    fn guarded_pending_proxies(&self) -> Option<Vec<(std::net::IpAddr, u8)>> {
+        self.local.guarded_pending_proxies()
     }
 }
 

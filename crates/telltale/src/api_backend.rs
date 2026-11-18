@@ -3565,6 +3565,83 @@ impl Backend for ApiBackend {
         self.src.config.load().api.allow_secrets_over_http
     }
 
+    // REQ: API-902 (T27.13, ADR-956) — guarded changes: the node's engine does the work; the routes
+    // have checked who is asking.
+    fn guarded_status(
+        &self,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::guarded::GuardedStatus, Problem>> {
+        let src = Arc::clone(&self.src);
+        Box::pin(async move {
+            match src.guarded.get() {
+                Some(e) => Ok(e.status().await),
+                None => Err(guarded_unavailable()),
+            }
+        })
+    }
+
+    fn guarded_preview(
+        &self,
+        caller: telltale_api::guarded::GuardedCaller,
+        id: String,
+        req: telltale_api::guarded::GuardedPreviewRequest,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::guarded::GuardedPreview, Problem>> {
+        let src = Arc::clone(&self.src);
+        Box::pin(async move {
+            match src.guarded.get() {
+                Some(e) => e.preview(&caller, &id, req).await,
+                None => Err(guarded_unavailable()),
+            }
+        })
+    }
+
+    fn guarded_apply(
+        &self,
+        caller: telltale_api::guarded::GuardedCaller,
+        id: String,
+        req: telltale_api::guarded::GuardedApplyRequest,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::guarded::GuardedApplied, Problem>> {
+        let src = Arc::clone(&self.src);
+        Box::pin(async move {
+            match src.guarded.get() {
+                Some(e) => e.apply(&caller, &id, req).await,
+                None => Err(guarded_unavailable()),
+            }
+        })
+    }
+
+    fn guarded_confirm(
+        &self,
+        caller: telltale_api::guarded::GuardedCaller,
+        id: String,
+        token: Option<String>,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::guarded::GuardedResult, Problem>> {
+        let src = Arc::clone(&self.src);
+        Box::pin(async move {
+            match src.guarded.get() {
+                Some(e) => e.confirm(&caller, &id, token).await,
+                None => Err(guarded_unavailable()),
+            }
+        })
+    }
+
+    fn guarded_cancel(
+        &self,
+        caller: telltale_api::guarded::GuardedCaller,
+        id: String,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::guarded::GuardedResult, Problem>> {
+        let src = Arc::clone(&self.src);
+        Box::pin(async move {
+            match src.guarded.get() {
+                Some(e) => e.cancel(&caller, &id).await,
+                None => Err(guarded_unavailable()),
+            }
+        })
+    }
+
+    fn guarded_pending_proxies(&self) -> Option<Vec<(std::net::IpAddr, u8)>> {
+        self.src.guarded.get().and_then(|e| e.pending_proxies())
+    }
+
     // REQ: OPS-004 (ADR-046) — "Check now" in Settings.
     fn check_updates(
         &self,
@@ -7599,4 +7676,9 @@ fn busy_problem() -> Problem {
     )
     .retry_after(2)
     .hint("Try again in a few seconds: one key derivation runs at a time.")
+}
+
+/// REQ: API-902 — the engine isn't there (the API's `state.db` didn't open, or it is starting).
+fn guarded_unavailable() -> Problem {
+    Problem::unavailable("guarded settings aren't available on this node yet")
 }

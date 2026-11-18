@@ -16,6 +16,7 @@
 pub mod credentials;
 pub mod discovery;
 mod env;
+pub mod guarded;
 pub mod mute;
 pub mod safesearch;
 pub mod schedule;

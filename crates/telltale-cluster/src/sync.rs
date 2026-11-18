@@ -210,6 +210,24 @@ impl Signed {
     }
 }
 
+/// REQ: API-902 (T27.13, ADR-956 §5) — signs `bytes` with the CA key (the primary's), for what the
+/// primary vouches for besides manifests (a forwarded guarded request's assertion).
+pub fn sign_bytes(bytes: &[u8], ca_key_pem: &str) -> Result<Vec<u8>, String> {
+    Ok(ed25519_key(ca_key_pem)?.sign(bytes).as_ref().to_vec())
+}
+
+/// Whether `sig` over `bytes` verifies against any CA certificate of `ca_cert_pem` (a bundle,
+/// during a rotation).
+pub fn verify_bytes(bytes: &[u8], sig: &[u8], ca_cert_pem: &str) -> bool {
+    pki::certs_of(ca_cert_pem).iter().any(|ca| {
+        ca_public_key(ca).is_ok_and(|public| {
+            UnparsedPublicKey::new(&ED25519, &public)
+                .verify(bytes, sig)
+                .is_ok()
+        })
+    })
+}
+
 /// The raw Ed25519 public key in a certificate.
 pub fn ca_public_key(cert_pem: &str) -> Result<Vec<u8>, String> {
     let der = pki::der_of(cert_pem).map_err(|e| e.to_string())?;

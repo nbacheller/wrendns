@@ -27,7 +27,7 @@ pub(crate) const BLOB: &str = "node-managed.json";
 /// The document's version.
 const VERSION: u32 = 1;
 /// The kinds that are node-managed (the others are the shared configuration's).
-pub(crate) const KINDS: &[&str] = &[OIDC_PROVIDER];
+pub(crate) const KINDS: &[&str] = &[OIDC_PROVIDER, crate::guarded::KIND];
 /// The fields of a provider that hold or point at a secret outside the store. A blob never
 /// carries them: only `client_secret_ref` (a name) travels.
 const SECRET_FIELDS: &[&str] = &["client_secret", "client_secret_file"];
@@ -108,6 +108,11 @@ pub(crate) fn export(state: &State) -> Vec<u8> {
 /// version, is an `Err` (all of its entries are dropped); an entry of a kind this build doesn't
 /// know is skipped (a newer primary's), and one that carries a secret is refused.
 pub(crate) fn parse(bytes: &[u8]) -> Result<Vec<Entry>, String> {
+    parse_kinds(bytes, KINDS)
+}
+
+/// [`parse`] for a build that knows only `kinds` (the tests read a blob as an older node would).
+pub(crate) fn parse_kinds(bytes: &[u8], kinds: &[&str]) -> Result<Vec<Entry>, String> {
     let doc: Doc = serde_json::from_slice(bytes).map_err(|e| format!("not readable: {e}"))?;
     if doc.version > VERSION {
         return Err(format!(
@@ -118,7 +123,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Vec<Entry>, String> {
     Ok(doc
         .entries
         .into_iter()
-        .filter(|e| KINDS.contains(&e.kind.as_str()))
+        .filter(|e| kinds.contains(&e.kind.as_str()))
         .filter(|e| {
             let refused = carries_secret(&e.body);
             if refused {
@@ -218,6 +223,67 @@ pub(crate) fn overlay_blob(cfg: &mut Config, bytes: &[u8]) {
         warn_once("an entry", b);
     }
     overlay_providers(cfg, ok);
+    // REQ: API-902 (T27.13, ADR-956 §2) — this node's guarded entries, under its own files.
+    overlay_guarded(cfg, &entries);
+}
+
+/// REQ: API-902 (T27.13) — the guarded entries of `entries` that name this node, as stored
+/// values (an entry for another node, or one this build can't read, isn't this node's).
+pub(crate) fn guarded_of(entries: &[Entry], node: &str) -> Vec<crate::guarded::store::Stored> {
+    entries
+        .iter()
+        .filter(|e| e.kind == crate::guarded::KIND)
+        .filter_map(|e| {
+            let mut s: crate::guarded::store::Stored =
+                serde_json::from_value(e.body.clone()).ok()?;
+            let (n, id) = crate::guarded::split_name(&e.name)?;
+            s.node = n.to_owned();
+            s.id = id.to_owned();
+            (s.node == node).then_some(s)
+        })
+        .collect()
+}
+
+/// Puts this node's guarded values from a replicated blob into `cfg`: the file wins, an entry a
+/// local clear is suppressing (until the primary's copy changes) is skipped.
+fn overlay_guarded(cfg: &mut Config, entries: &[Entry]) {
+    let Some(me) = crate::guarded::this_node() else {
+        return;
+    };
+    let own = cfg.clone();
+    let mine = guarded_of(entries, &me);
+    if mine.is_empty() {
+        return;
+    }
+    let state = {
+        let p = crate::managed::state_path(&own);
+        if p.exists() {
+            State::open(&p).ok()
+        } else {
+            None
+        }
+    };
+    crate::guarded::appliers::overlay(cfg, &own, &mine, state.as_ref());
+}
+
+/// REQ: API-902 (ADR-957) — the guarded entries for `node` in the cluster version this node last
+/// applied (what a replica's offline clear has to suppress).
+pub(crate) fn applied_guarded(cfg: &Config, node: &str) -> Vec<crate::guarded::store::Stored> {
+    let Some(m) = crate::replication::last_applied(cfg) else {
+        return Vec::new();
+    };
+    let Some(b) = &m.node_managed else {
+        return Vec::new();
+    };
+    let Ok(store) =
+        telltale_cluster::sync::BlobStore::open(std::path::Path::new(cfg.node.data_dir.as_str()))
+    else {
+        return Vec::new();
+    };
+    match store.read(b).ok().and_then(|bytes| parse(&bytes).ok()) {
+        Some(entries) => guarded_of(&entries, node),
+        None => Vec::new(),
+    }
 }
 
 /// The rows of this node's own `state.db` for the node-managed kinds, as providers: what a

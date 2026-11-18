@@ -22,6 +22,8 @@ pub mod config_api;
 pub mod drill_api;
 pub mod federation;
 pub mod flow;
+pub mod guarded;
+pub mod guarded_api;
 pub mod heatmap;
 pub mod identify_api;
 pub mod kubernetes_api;
@@ -840,6 +842,65 @@ pub trait Backend: Send + Sync + 'static {
             "stored secrets aren't available on this node",
         ))
     }
+    /// REQ: API-902 (T27.13, ADR-956) — what is guarded on each node, what is pending.
+    fn guarded_status(&self) -> BoxFuture<Result<guarded::GuardedStatus, Problem>> {
+        Box::pin(std::future::ready(Err(Problem::unavailable(
+            "guarded settings aren't available here",
+        ))))
+    }
+    /// REQ: API-902 — the dry run of a guarded change on `node` (default: this one).
+    fn guarded_preview(
+        &self,
+        caller: guarded::GuardedCaller,
+        id: String,
+        req: guarded::GuardedPreviewRequest,
+    ) -> BoxFuture<Result<guarded::GuardedPreview, Problem>> {
+        let _ = (caller, id, req);
+        Box::pin(std::future::ready(Err(Problem::unavailable(
+            "guarded settings aren't available here",
+        ))))
+    }
+    /// REQ: API-902 — makes a guarded change (the routes have checked who is asking).
+    fn guarded_apply(
+        &self,
+        caller: guarded::GuardedCaller,
+        id: String,
+        req: guarded::GuardedApplyRequest,
+    ) -> BoxFuture<Result<guarded::GuardedApplied, Problem>> {
+        let _ = (caller, id, req);
+        Box::pin(std::future::ready(Err(Problem::unavailable(
+            "guarded settings aren't available here",
+        ))))
+    }
+    /// REQ: API-902 — confirms the pending window change `id` with the single-use token (or the
+    /// same admin's session).
+    fn guarded_confirm(
+        &self,
+        caller: guarded::GuardedCaller,
+        id: String,
+        token: Option<String>,
+    ) -> BoxFuture<Result<guarded::GuardedResult, Problem>> {
+        let _ = (caller, id, token);
+        Box::pin(std::future::ready(Err(Problem::unavailable(
+            "guarded settings aren't available here",
+        ))))
+    }
+    /// REQ: API-902 — cancels the pending window change `id`.
+    fn guarded_cancel(
+        &self,
+        caller: guarded::GuardedCaller,
+        id: String,
+    ) -> BoxFuture<Result<guarded::GuardedResult, Problem>> {
+        let _ = (caller, id);
+        Box::pin(std::future::ready(Err(Problem::unavailable(
+            "guarded settings aren't available here",
+        ))))
+    }
+    /// REQ: API-902 (ADR-956 §3) — the trusted-proxy list a pending `trusted-proxies` change
+    /// would put in force: only the confirm route's address evaluation uses it.
+    fn guarded_pending_proxies(&self) -> Option<Vec<(IpAddr, u8)>> {
+        None
+    }
     /// REQ: API-015 — `[api] allow_secrets_over_http`: secret values may come over plain HTTP.
     fn secrets_over_http_allowed(&self) -> bool {
         false
@@ -1270,6 +1331,8 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .merge(map_api::read_routes(Arc::clone(&backend)))
         // REQ: API-016 (T23.10) — OIDC providers and their status (admin-only, by the handler).
         .merge(oidc_providers_api::read_routes(Arc::clone(&backend)))
+        // REQ: API-902 (T27.13) — what is guarded and what is pending (no value, ever).
+        .merge(guarded_api::read_routes(Arc::clone(&backend)))
         .route_layer(from_fn(auth::routes::require_viewer));
     let protected = data
         .merge(auth::routes::self_service(Arc::clone(&auth)))
@@ -1377,6 +1440,12 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
             pihole_import_api::admin_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_admin)),
         )
+        // REQ: API-902 (T27.13, ADR-956) — guarded changes: admin sessions only (never agents,
+        // never another token); the handlers refuse those again.
+        .merge(
+            guarded_api::admin_routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_admin)),
+        )
         // REQ: API-015 (ADR-903 §4) — stored secrets: operators read metadata, admins set and
         // clear values (never agents); each route checks its own role.
         .merge(secrets_api::routes(Arc::clone(&backend), Arc::clone(&auth)))
@@ -1397,6 +1466,16 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
             Arc::clone(&backend),
             Arc::clone(&auth),
         ))
+        // REQ: API-902 (ADR-956 §3) — the confirm route of a guarded change: a session of the same
+        // admin, or the single-use token on the new address (no session exists there).
+        .merge(
+            guarded_api::confirm_routes(Arc::clone(&backend), Arc::clone(&auth)).layer(
+                axum::middleware::from_fn_with_state(
+                    Arc::clone(&auth),
+                    auth::routes::authenticate_optional,
+                ),
+            ),
+        )
         .merge(auth::routes::public(auth))
         .merge(protected)
         .fallback(fallback)
@@ -1438,10 +1517,11 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_map_settings, config_api::delete_map_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_discovery_settings, config_api::delete_discovery_settings, discovery_status, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, pihole_import_api::preview, pihole_import_api::apply, pihole_import_api::discard, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule, config_api::put_router, config_api::delete_router, routers_api::list_routers, routers_api::check_router, routers_api::check_router_certificate, oidc_providers_api::list_oidc_providers, config_api::put_oidc_provider, config_api::delete_oidc_provider,
+        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_map_settings, config_api::delete_map_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_discovery_settings, config_api::delete_discovery_settings, discovery_status, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, pihole_import_api::preview, pihole_import_api::apply, pihole_import_api::discard, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule, config_api::put_router, config_api::delete_router, routers_api::list_routers, routers_api::check_router, routers_api::check_router_certificate, oidc_providers_api::list_oidc_providers, config_api::put_oidc_provider, config_api::delete_oidc_provider, guarded_api::status, guarded_api::preview, guarded_api::apply, guarded_api::confirm, guarded_api::cancel,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
+        guarded::GuardedStatus, guarded::GuardedNodeStatus, guarded::GuardedSetting, guarded::GuardedPending, guarded::GuardedOutcome, guarded::Supervisor, guarded::GuardedPreviewRequest, guarded::GuardedPreview, guarded::GuardedCheck, guarded::GuardedApplyRequest, guarded::GuardedApplied, guarded::GuardedConfirmRequest, guarded::GuardedResult,
         map::MapSnapshot, map::MapNode, map::MapEdge, map::MapHealth, map::MapNodeKind, map::MapReason, map::MapRecent, map::MapCounts, map::MapWorld, map::WorldRegion, map::WorldMarker, map::WorldUnlocated, map::NetworkHealth, map::HealthProblem, map::HealthFlow,
         model::RouterEntry, model::RouterCredential, model::RouterStatus, model::RouterList, model::RouterCheck, model::RouterCertificate, model::OidcProviderEntry, model::OidcRoleRuleInfo, model::OidcProviderList,
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::ListsRefreshRequest, model::ListsRefreshResult, model::ListRefreshSkip, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, model::CredentialIssue, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, config_api::BackupRequest, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,

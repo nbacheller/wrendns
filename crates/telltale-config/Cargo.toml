@@ -27,3 +27,9 @@ toml = "1.1.6"
 # REQ: FLT-010 (T7.10) — schedule time zones from the system tz database (/usr/share/zoneinfo;
 # the image ships it). Small, no bundled tzdb.
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
+
+[features]
+# REQ: API-902 (T27.13, ADR-956 §3) — the guarded registry's test rows (`e2e-immediate`,
+# `e2e-window`, `e2e-staged`). Never in a release build: only the end-to-end server is built
+# with it (`ui/tests/e2e/server.mjs`).
+e2e = []

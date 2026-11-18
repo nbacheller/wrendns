@@ -117,6 +117,8 @@ pub(crate) struct Sources {
     /// REQ: DSC-001, DSC-002 (T25.2, T25.3) — the network inventory on this node: its thread and
     /// workers, started only where `[discovery]` says this node runs them.
     pub(crate) discovery: Arc<crate::discovery::runtime::Runtime>,
+    /// REQ: API-902 (T27.13) — the guarded-changes engine, once the API has opened `state.db`.
+    pub(crate) guarded: crate::guarded::Slot,
 }
 
 impl Sources {
