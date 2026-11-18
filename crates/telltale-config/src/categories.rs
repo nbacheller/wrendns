@@ -854,7 +854,8 @@ pub fn expand_lists(cfg: &Config) -> Config {
 }
 
 /// What a selection costs and whether this node may take it (ADR-994 item 5).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Budget {
     /// Distinct sources, each counted once.
     pub sources: Vec<String>,

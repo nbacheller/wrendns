@@ -155,6 +155,15 @@ pub enum Code {
     DataDirNotPersistent,
     /// REQ: API-902 (T27.13, ADR-956) — only the primary forwards a guarded request for another node (the detail names it).
     NotPrimary,
+    /// REQ: FLT-901 (T24.29, ADR-994) — a category list belongs to the catalog: it can be refreshed
+    /// and put in shadow mode, not edited or deleted.
+    OwnedByCategory,
+    /// REQ: FLT-901 (T24.29, ADR-994 item 5) — this node is too small for the selection (the detail
+    /// says what it would need).
+    BudgetRefused,
+    /// REQ: FLT-901 (T24.29, ADR-994 item 5) — a heavy selection (or one over `[filter]
+    /// entry_budget`) needs `confirm=true` after its cost is shown.
+    ConfirmRequired,
 }
 
 impl Code {
@@ -229,6 +238,9 @@ impl Code {
                 "https://telltaledns.dev/problems/data_dir_not_persistent"
             }
             Self::NotPrimary => "https://telltaledns.dev/problems/not_primary",
+            Self::OwnedByCategory => "https://telltaledns.dev/problems/owned_by_category",
+            Self::BudgetRefused => "https://telltaledns.dev/problems/budget_refused",
+            Self::ConfirmRequired => "https://telltaledns.dev/problems/confirm_required",
         }
     }
 
@@ -297,6 +309,9 @@ impl Code {
             Self::RotationIncomplete => "A key rotation isn't finished",
             Self::DataDirNotPersistent => "The directory isn't persistent",
             Self::NotPrimary => "Ask the primary",
+            Self::OwnedByCategory => "Owned by a category",
+            Self::BudgetRefused => "The node is too small for that selection",
+            Self::ConfirmRequired => "Confirm the cost",
         }
     }
 
@@ -344,6 +359,8 @@ impl Code {
             | Self::Restarting
             | Self::RotationIncomplete
             | Self::DataDirNotPersistent
+            | Self::OwnedByCategory
+            | Self::ConfirmRequired
             | Self::SecretInUse => StatusCode::CONFLICT,
             Self::NotPrimary => StatusCode::MISDIRECTED_REQUEST,
             Self::RateLimited | Self::MapStreamsBusy => StatusCode::TOO_MANY_REQUESTS,
@@ -359,6 +376,7 @@ impl Code {
             | Self::DrillTargets
             | Self::CredentialReentryRequired
             | Self::PathNotAllowed
+            | Self::BudgetRefused
             | Self::SecretMissing => StatusCode::UNPROCESSABLE_ENTITY,
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
         }

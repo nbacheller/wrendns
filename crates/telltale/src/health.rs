@@ -91,6 +91,9 @@ pub(crate) struct Local<'a> {
     /// REQ: FLT-017 — this node watches Kubernetes and its table is this many seconds old
     /// (`None`: it doesn't watch, or the table is fresh).
     pub(crate) kubernetes_stale_s: Option<u64>,
+    /// REQ: FLT-901 (ADR-994 item 7) — category IDs a group names that this version does not
+    /// know (a newer node wrote them): `(group, id)`. They are ignored, and reported.
+    pub(crate) unknown_categories: &'a [(String, String)],
 }
 
 /// REQ: OBS-020 (ADR-107) — listeners (or extra targets) that failed their probe twice in a
@@ -164,6 +167,7 @@ fn probe_reasons(l: &Local<'_>, out: &mut Vec<HealthReason>) {
 }
 
 /// One node's own conditions.
+#[allow(clippy::too_many_lines)] // one check after another
 pub(crate) fn local_reasons(l: &Local<'_>) -> Vec<HealthReason> {
     let mut out = Vec::new();
     if !l.serving {
@@ -237,6 +241,25 @@ pub(crate) fn local_reasons(l: &Local<'_>) -> Vec<HealthReason> {
                 "#/lists",
             ));
         }
+    }
+    // REQ: FLT-901 (ADR-994 item 7) — a category this version doesn't know is ignored, never an
+    // error: DNS keeps answering from the categories it does know.
+    if !l.unknown_categories.is_empty() {
+        let names: Vec<String> = l
+            .unknown_categories
+            .iter()
+            .map(|(g, c)| format!("{c} (group {g})"))
+            .collect();
+        out.push(reason(
+            DEGRADED,
+            "category_unknown",
+            format!(
+                "this version doesn't know the categor{} {}: ignored until the node is upgraded",
+                if names.len() == 1 { "y" } else { "ies" },
+                names.join(", ")
+            ),
+            "#/groups",
+        ));
     }
     // REQ: FLT-017 (ADR-150) — the API server unreachable for 15 minutes: pods keep their
     // last names, new pods are plain addresses until it's back. DNS is unaffected.
@@ -585,7 +608,31 @@ mod tests {
             probes: &[],
             cert_warn_days: 14,
             kubernetes_stale_s: None,
+            unknown_categories: &[],
         }
+    }
+
+    /// REQ: FLT-901 (ADR-994 item 7) — a category id this version doesn't know is reported as
+    /// degraded, naming the id and the group; nothing else changes.
+    #[test]
+    fn flt_901_unknown_category_ignored_and_reported() {
+        let (ups, recent) = (Vec::new(), Vec::new());
+        let unknown = [("kids".to_owned(), "from-the-future".to_owned())];
+        let l = Local {
+            unknown_categories: &unknown,
+            ..local(&ups, &recent)
+        };
+        let r = local_reasons(&l);
+        assert_eq!(r.len(), 1);
+        assert_eq!(
+            (r[0].level.as_str(), r[0].code.as_str()),
+            (DEGRADED, "category_unknown")
+        );
+        assert!(
+            r[0].summary.contains("from-the-future (group kids)"),
+            "{}",
+            r[0].summary
+        );
     }
 
     // REQ: UPS-006 — an upstream with no route and a closed breaker is a warning, as on the map.
@@ -1021,6 +1068,7 @@ mod tests {
             last_changed_unix_seconds: None,
             refreshing: false,
             stale_days: None,
+            owners: Vec::new(),
         };
         let stale = ListInfo {
             name: "old".into(),

@@ -21,6 +21,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
+use crate::problem::{Code, Problem};
+
 /// The protocol revision this server speaks.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 /// Older revisions clients may ask for; the answer is then in their terms.
@@ -420,6 +422,55 @@ pub fn tools() -> Vec<Tool> {
                     "policy".into(),
                     format!("/api/v1/clients/{}/policy", enc(&c)),
                 )])
+            },
+        },
+        // REQ: FLT-901, FLT-902, AGT-001 (T24.29): the category catalog and a group's content.
+        Tool {
+            name: "categories_list",
+            description: "Read-only. The content categories this node offers (adult content, gambling, malware, ad block, ...), grouped as the picker shows them, each with its description, tiers, entries and whether it is heavy; every source with its maintainer, licence (SPDX), format, size and what this node has downloaded; the presets (basic); the categories not offered and why; what each group selects now; and what all of them cost together against the node's memory limit. Use it before plan_set_group_content. Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![(
+                    "categories".into(),
+                    "/api/v1/categories?view=compact".into(),
+                )])
+            },
+        },
+        Tool {
+            name: "get_group_content",
+            description: "Read-only. One group's content filtering: the level (off, basic, enhanced), its categories and tiers, whether ad block is on, the sources they make the node download, and what that costs. With the optional proposal fields (level, categories, ads) it also says what the cost would be if the group were set that way, without changing anything. Needs config:read.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "group": {"type": "string", "description": "The group's name."},
+                "level": {"type": "string", "enum": ["off", "basic", "enhanced"], "description": "A proposal: price this level."},
+                "categories": {"type": "array", "items": {"type": "string"}, "description": "A proposal: price these category IDs."},
+                "ads": {"type": "boolean", "description": "A proposal: price ad block on or off."}
+            }, "required": ["group"], "additionalProperties": false})
+            },
+            calls: |a| {
+                let g = s(a, "group").ok_or("`group` is required")?;
+                let mut calls = vec![(
+                    "content".into(),
+                    format!("/api/v1/groups/{}/content", enc(&g)),
+                )];
+                if a.get("level").is_some()
+                    || a.get("categories").is_some()
+                    || a.get("ads").is_some()
+                {
+                    let mut q = format!("/api/v1/categories/budget?group={}", enc(&g));
+                    if let Some(l) = s(a, "level") {
+                        let _ = write!(q, "&level={}", enc(&l));
+                    }
+                    if a.get("categories").is_some() {
+                        let cats = strings(a, "categories");
+                        let _ = write!(q, "&categories={}", enc(&cats.join(",")));
+                    }
+                    if let Some(on) = a.get("ads").and_then(Value::as_bool) {
+                        let _ = write!(q, "&ads={on}");
+                    }
+                    calls.push(("proposal".into(), q));
+                }
+                Ok(calls)
             },
         },
         Tool {
@@ -1702,6 +1753,50 @@ pub fn write_tools() -> Vec<WriteTool> {
                 })
             },
         },
+        // REQ: FLT-901, AGT-007 (T24.29, ADR-994 item 8): a content change makes the server download
+        // lists, so it is a plan an operator approves, whatever `require_approval` says.
+        WriteTool {
+            name: "plan_set_group_content",
+            description: "Plans a change (nothing changes until apply_plan). **An operator must approve it first, whatever [agents] require_approval says**: choosing categories makes the node download lists (tens of megabytes a day), which an agent never starts on its own, so this tool only plans and apply_plan works after an operator approves the plan (Agent changes in the web UI); applying an unapproved plan answers 403 agent_not_allowed. Sets a group's content filtering: `level` (off, basic: adult content, malware, phishing and scam; enhanced: the `categories` you list), `categories` (IDs from categories_list), `tiers` (category to tier, such as gambling extended) and `ads` (ad block). Fields left out keep their current values. A heavy selection (newly registered domains, the full threat feed) or one over the entry budget is refused to an agent at planning time: the owner confirms that cost. Needs config:write:groups (and config:read).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "group": {"type": "string", "description": "The group (profile) to change."},
+                "level": {"type": "string", "enum": ["off", "basic", "enhanced"], "description": "Filtering level."},
+                "categories": {"type": "array", "items": {"type": "string"}, "description": "With enhanced: category IDs (replaces the current list)."},
+                "tiers": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Tier per category, for example gambling: extended."},
+                "ads": {"type": "boolean", "description": "Ad block."},
+                "reason": reason_schema()
+            }, "required": ["group", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let group = need(a, "group")?;
+                let body = pick(
+                    a,
+                    &[
+                        ("level", "level"),
+                        ("categories", "categories"),
+                        ("tiers", "tiers"),
+                        ("ads", "ads"),
+                    ],
+                );
+                if body.is_empty() {
+                    return Err("give at least one of level, categories, tiers or ads".into());
+                }
+                let what: Vec<&str> = body.keys().map(String::as_str).collect();
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/groups/{}/content", enc(&group)),
+                    summary: format!(
+                        "Set the content filtering of group {group} ({})",
+                        what.join(", ")
+                    ),
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
         WriteTool {
             name: "plan_update_upstreams",
             description: "Plans a change (nothing changes until apply_plan). Changes (or adds) an upstream server (`url`) or an upstream group (`members`, `strategy`: failover, round_robin, weighted, fastest, parallel). Fields left out keep their current values. Needs config:write:upstreams (and config:read to read the current entry). Moving an upstream that holds a credential (headers, a client key, a password in its URL) and exec:// or unix:// upstreams are an admin's in the UI: such a plan is refused (403).",
@@ -2323,6 +2418,10 @@ const SIMULATE_KINDS: &[&str] = &[
 /// REQ: CLU-013 — plans that need a person's approval: they change what every node serves.
 const APPROVAL_ONLY: &[&str] = &["plan_pin_version", "plan_unpin"];
 
+/// REQ: FLT-901: the plan tool whose plans are always pending and whose replay carries the
+/// approval.
+const CONTENT_PLAN: &str = "plan_set_group_content";
+
 /// A plan tool's schema with the `simulate` parameter.
 fn with_simulate(mut schema: Value) -> Value {
     if let Some(props) = schema.get_mut("properties").and_then(Value::as_object_mut) {
@@ -2563,7 +2662,28 @@ impl Mcp {
         client: Option<&str>,
         extra: &[(&str, String)],
     ) -> (StatusCode, Value) {
+        self.send_as(method, path, body, auth, client, extra, false)
+            .await
+    }
+
+    /// [`Self::send`], for the replay of a content plan an operator approved when
+    /// `approved_content` is set: the request then carries the marker that lets an agent token's
+    /// content write through (REQ: FLT-901; a request extension, so no client can send it).
+    #[allow(clippy::too_many_arguments)] // `send` plus one flag
+    async fn send_as(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        auth: &HeaderMap,
+        client: Option<&str>,
+        extra: &[(&str, String)],
+        approved_content: bool,
+    ) -> (StatusCode, Value) {
         let mut req = Request::builder().method(method).uri(path);
+        if approved_content {
+            req = req.extension(crate::categories_api::ApprovedContentPlan);
+        }
         for h in ["authorization", "cookie", "x-csrf-token", "x-forwarded-for"] {
             if let Some(v) = auth.get(h) {
                 req = req.header(h, v);
@@ -2759,7 +2879,9 @@ impl Mcp {
                 tool.name
             ));
         };
-        let needs_approval = self.auth.agents().require_approval();
+        // REQ: FLT-901 (ADR-994 item 8): a content plan is always `pending`: an operator approves
+        // it, whatever `[agents] require_approval` is (an exception to ADR-070).
+        let needs_approval = self.auth.agents().require_approval() || tool.name == CONTENT_PLAN;
         let now = crate::plans::now();
         let plan = self.auth.plans().add(crate::plans::Plan {
             id: format!("plan_{}", crate::auth::crypto::random_id()),
@@ -2908,6 +3030,20 @@ impl Mcp {
                 Err(e) => tool_result(serde_json::to_value(&e).unwrap_or_default(), true),
             };
         }
+        // REQ: FLT-901 (ADR-994 item 8): a content plan no operator has approved is refused with
+        // 403 `agent_not_allowed`, whatever `require_approval` is.
+        if let Some(p) = plans.get(&id)
+            && p.tool == CONTENT_PLAN
+            && p.owner == caller.owner
+            && p.state == "pending"
+        {
+            let e = Problem::new(
+                Code::AgentNotAllowed,
+                "this content plan needs an operator's approval before it can be applied",
+            )
+            .hint("An operator approves it in the web UI (Agent changes); then apply_plan works until it expires.");
+            return tool_result(serde_json::to_value(&e).unwrap_or_default(), true);
+        }
         let plan = match plans.transition(
             &id,
             &["ready", "approved"],
@@ -2918,6 +3054,7 @@ impl Mcp {
             Ok(p) => p,
             Err(e) => return tool_result(serde_json::to_value(&e).unwrap_or_default(), true),
         };
+        let approved_content = plan.tool == CONTENT_PLAN && plan.decided_by.is_some();
         // REQ: API-902 — a plan for a guarded path is never replayed (none is ever stored).
         if crate::guarded::is_guarded_path(&plan.path) {
             plans.finish(
@@ -2935,7 +3072,7 @@ impl Mcp {
             ("idempotency-key", plan.id.clone()),
         ];
         let (status, body) = self
-            .send(
+            .send_as(
                 &plan.method,
                 &plan.path,
                 // REQ: API-014 — the body as the agent gave it (`body` is shown redacted).
@@ -2943,6 +3080,7 @@ impl Mcp {
                 auth,
                 client,
                 &extra,
+                approved_content,
             )
             .await;
         let state = if status.is_success() {

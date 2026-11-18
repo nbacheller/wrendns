@@ -773,6 +773,38 @@ fn bad_cursor() -> Problem {
         .hint("Pass the nextCursor value from the previous page unchanged.")
 }
 
+impl ApiBackend {
+    /// REQ: FLT-902 (T24.29) - the profile list's columns: what the group filters by category, the
+    /// safe-search engines, and who it applies to.
+    fn with_profile_columns(
+        &self,
+        mut info: GroupInfo,
+        cfg: &telltale_config::Config,
+        networks: &[telltale_api::model::NetworkInfo],
+        identities: &std::collections::HashMap<String, telltale_api::model::DeviceIdentity>,
+    ) -> GroupInfo {
+        let managed = managed_names(&self.src);
+        info.filter_scope = telltale_config::categories::summary(
+            cfg.group
+                .iter()
+                .find(|g| g.name.as_str() == info.name)
+                .and_then(|g| g.content.as_ref()),
+        );
+        info.sources =
+            crate::profiles::group_sources(cfg, networks, identities, &info.name, &|n| {
+                Some(
+                    if managed.iter().any(|m| m == n) {
+                        "api"
+                    } else {
+                        "file"
+                    }
+                    .to_owned(),
+                )
+            });
+        info
+    }
+}
+
 impl Backend for ApiBackend {
     fn system_info(&self) -> SystemInfo {
         let cfg = self.src.config.load();
@@ -1867,9 +1899,19 @@ impl Backend for ApiBackend {
         // the cluster's (`list_hits`); a caller that reads this directly, like the support
         // package, still gets this node's.
         let decided = self.src.shadow.decided();
+        // REQ: FLT-901 (T24.29): the lists the groups' categories make (`cat-<source>`), shown
+        // beside the configured ones with the categories that own them. A bare `cat-` entry
+        // (only a mode) is the person's shadow setting, not a list of its own.
+        let cat_lists: Vec<telltale_config::FilterList> = telltale_config::categories::expand(&cfg)
+            .list
+            .into_iter()
+            .filter(|l| telltale_config::categories::is_category_list(l.name.as_str()))
+            .collect();
         let mut out = cfg
             .list
             .iter()
+            .filter(|l| !telltale_config::categories::is_category_list(l.name.as_str()))
+            .chain(cat_lists.iter())
             .map(|l| {
                 let meta = status.iter().find(|(n, _)| *n == *l.name).map(|(_, m)| m);
                 let id = compiled
@@ -1953,6 +1995,17 @@ impl Backend for ApiBackend {
                             .as_ref()
                             .is_some_and(|s| s.fetcher.is_refreshing(l.name.as_str())),
                     stale_days: stale_days(&cfg.filter, l, meta.and_then(|m| m.last_changed)),
+                    owners: telltale_config::categories::source_of_list(l.name.as_str())
+                        .map(|s| {
+                            telltale_config::categories::owners(&cfg, &s.id)
+                                .into_iter()
+                                .map(|c| telltale_api::model::ListOwner {
+                                    id: c.id.clone(),
+                                    name: c.name.clone(),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                 }
             })
             .collect::<Vec<_>>();
@@ -1976,6 +2029,16 @@ impl Backend for ApiBackend {
         let pauses = self.src.pipeline.pause.active(now);
         let global = pauses.iter().find(|(g, _)| g.is_none()).map(|(_, u)| *u);
         let policy = &self.src.pipeline.current().policy;
+        // REQ: FLT-902 (T24.29): the profile list's Source column needs the network names and
+        // the devices' icons.
+        let networks = self.networks();
+        let identities: std::collections::HashMap<String, telltale_api::model::DeviceIdentity> =
+            self.src
+                .identify
+                .list()
+                .into_iter()
+                .map(|i| (i.client.clone(), i))
+                .collect();
         // Last 24 hours from the minute series, per group: (queries, blocked).
         let agg = self.src.pipeline.telemetry.aggregates();
         let mut day = (Vec::<u64>::new(), Vec::<u64>::new());
@@ -2052,8 +2115,13 @@ impl Backend for ApiBackend {
                 dns64_prefix: None,
                 filter_aaaa: false,
                 upstreams: None,
+                content: None,
+                safe_search_engines: Vec::new(),
+                sources: Vec::new(),
+                filter_scope: String::new(),
             })
             .map(|info| with_group_config(info, &cfg))
+            .map(|info| self.with_profile_columns(info, &cfg, &networks, &identities))
             .collect()
     }
 
@@ -2686,6 +2754,7 @@ impl Backend for ApiBackend {
                 let k = &self.src.pipeline.kube;
                 k.stale(now).then(|| k.age_s(now).unwrap_or(0))
             },
+            unknown_categories: &telltale_config::categories::unknown_ids(&self.src.config.load()),
         });
         // REQ: DSC-002 (T25.3) — a discovery worker that is refused or keeps crashing: degraded.
         reasons.extend(crate::health::discovery_reasons(
@@ -2911,6 +2980,65 @@ impl Backend for ApiBackend {
         Box::pin(async move { crate::router_cert::fetch(&url).await })
     }
     #[allow(clippy::too_many_lines)] // one table, built in one pass
+    // REQ: FLT-901 (T24.29, ADR-994 item 5): what bounds a selection on this node.
+    fn category_env(&self) -> telltale_api::categories_api::CategoryEnv {
+        let cfg = self.src.config.load();
+        let host = self.src.host.latest();
+        // `TELLTALE_MEMORY_LIMIT` (bytes) wins: a test, or a measurement on a stand-in for a
+        // smaller node. Else the container's limit, else the machine's RAM.
+        let limit = std::env::var("TELLTALE_MEMORY_LIMIT")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .or_else(|| {
+                host.as_ref()
+                    .and_then(|h| h.cgroup_mem_limit.or(h.mem_total))
+            });
+        telltale_api::categories_api::CategoryEnv {
+            entry_budget: cfg.filter.entry_budget,
+            ads_tier: match cfg.filter.ads_tier {
+                telltale_config::AdsTier::Light => "light",
+                telltale_config::AdsTier::Pro => "pro",
+                telltale_config::AdsTier::ProPlus => "pro_plus",
+                telltale_config::AdsTier::Ultimate => "ultimate",
+            }
+            .to_owned(),
+            compile_memory_bytes: cfg.filter.compile_memory.bytes(),
+            memory_limit_bytes: limit,
+            process_rss_bytes: host.and_then(|h| h.process_rss),
+            node: None,
+        }
+    }
+
+    // REQ: FLT-902 (T24.29): the picker's networks and devices.
+    fn profile_devices(&self) -> telltale_api::categories_api::ProfileDevices {
+        let cfg = self.src.config.load();
+        let managed = managed_names(&self.src);
+        let identities: std::collections::HashMap<String, telltale_api::model::DeviceIdentity> =
+            self.src
+                .identify
+                .list()
+                .into_iter()
+                .map(|i| (i.client.clone(), i))
+                .collect();
+        crate::profiles::picker(
+            &cfg,
+            &self.networks(),
+            &self.dhcp_leases(),
+            &identities,
+            &|n: &str| {
+                Some(
+                    if managed.iter().any(|m| m == n) {
+                        "api"
+                    } else {
+                        "file"
+                    }
+                    .to_owned(),
+                )
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_lines)] // routers, interfaces and groups, merged into one list
     fn networks(&self) -> Vec<telltale_api::model::NetworkInfo> {
         use std::net::{IpAddr, Ipv4Addr};
         let state = self.src.pipeline.current();
@@ -3574,6 +3702,8 @@ impl Backend for ApiBackend {
             ),
             // REQ: DSC-001 (T25.2) — `[discovery]`.
             (ManagedKind::Discovery, "discovery", e.discovery.is_some()),
+            // REQ: FLT-901 (T24.29) — `[filter]` entry_budget and ads_tier.
+            (ManagedKind::Filter, "filter", e.filter_settings.is_some()),
         ] {
             if want(k) {
                 let sec = crate::settings_kinds::section(mk);
@@ -4388,6 +4518,14 @@ fn device_addresses(c: &telltale_config::ClientConfig) -> Vec<String> {
         .collect()
 }
 
+/// REQ: FLT-902 (T24.29) - [`effective_groups`] for the profile editor's plan.
+pub(crate) fn effective_groups_of(
+    clients: &telltale_policy::ClientTable,
+    c: &telltale_config::ClientConfig,
+) -> (Vec<String>, &'static str) {
+    effective_groups(clients, c)
+}
+
 /// The groups that apply to a configured device and where they come from (ADR-050): its
 /// own, else the network group of the first address or subnet it's matched by, else the
 /// default. A device known only by MAC or client ID gets its group from wherever it's seen.
@@ -4596,7 +4734,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Upstream => crate::managed::UPSTREAM,
         ManagedKind::UpstreamGroup => crate::managed::UPSTREAM_GROUP,
         ManagedKind::List => crate::managed::LIST,
-        ManagedKind::Group => crate::managed::GROUP,
+        ManagedKind::Group | ManagedKind::GroupSources => crate::managed::GROUP,
         ManagedKind::AlertDestination => crate::managed::ALERT_DESTINATION,
         ManagedKind::AlertRule => crate::managed::ALERT_RULE,
         ManagedKind::Schedule => crate::managed::SCHEDULE,
@@ -4609,6 +4747,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::KubernetesMap => crate::managed::KUBERNETES_MAP,
         ManagedKind::Special => crate::managed::SPECIAL,
         ManagedKind::Local => crate::managed::LOCAL,
+        ManagedKind::Filter => crate::managed::FILTER_SETTINGS,
         ManagedKind::Clients => crate::managed::CLIENTS,
         ManagedKind::Discovery => crate::managed::DISCOVERY,
         ManagedKind::Router => crate::managed::ROUTER,
@@ -5024,6 +5163,7 @@ fn forward_of(v: &serde_json::Value, name: &str) -> Result<crate::managed::Forwa
 
 /// AGT-002 impact of a local-name or forward change: recent queries for the name (or names
 /// under the domain), and a sentence.
+#[allow(clippy::too_many_lines)] // one sentence per kind of entry
 fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -> (u64, String) {
     let agg = src.pipeline.telemetry.aggregates();
     let under = format!(".{name}");
@@ -5072,6 +5212,9 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         }
         (ManagedKind::List, false) => "Its blocks stop when the lists are compiled again (seconds).".into(),
         (ManagedKind::Group, _) => "Applies to the group's devices on their next query.".into(),
+        (ManagedKind::GroupSources, _) => {
+            "Applies to the devices on their next query: the group and its devices change in one step.".into()
+        }
         (ManagedKind::Schedule, _) => {
             "Applies within 15 seconds to the groups that use it.".into()
         }
@@ -5115,9 +5258,14 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         (ManagedKind::Rollout, false) => {
             "The config file's rollout settings (or none: every change reaches every node at once) apply again.".into()
         }
-        (ManagedKind::Special | ManagedKind::Local | ManagedKind::Clients | ManagedKind::Discovery, put) => {
-            crate::settings_kinds::impact(kind, put)
-        }
+        (
+            ManagedKind::Special
+            | ManagedKind::Local
+            | ManagedKind::Clients
+            | ManagedKind::Discovery
+            | ManagedKind::Filter,
+            put,
+        ) => crate::settings_kinds::impact(kind, put),
         (ManagedKind::KubernetesMap, true) => {
             "The workloads it matches use the group from their next query, and on the other nodes within a few seconds (a pod or namespace label still wins).".into()
         }
@@ -5145,6 +5293,10 @@ fn plan_managed(
             | ManagedKind::Rollout
     ) {
         return plan_singleton(src, state, w);
+    }
+    // REQ: FLT-902 (T24.29) - who a group applies to: the group and its devices, one change.
+    if w.kind == ManagedKind::GroupSources {
+        return crate::group_sources::plan(src, state, w);
     }
     if crate::settings_kinds::is_settings(w.kind) {
         return plan_settings(src, state, w);
@@ -5687,7 +5839,7 @@ fn with_cascade(impact: String, groups: &[String]) -> String {
 }
 
 /// What a change stores besides its own entry: (kind, name, body).
-type AlsoStored = Vec<(&'static str, String, Option<String>)>;
+pub(crate) type AlsoStored = Vec<(&'static str, String, Option<String>)>;
 
 /// REQ: API-002 (T9.22) — removing upstream `name`: each upstream group that lists it, without
 /// it (stored before the upstream is hidden, so a stop halfway leaves a valid configuration),
@@ -5813,6 +5965,16 @@ fn with_group_config(mut info: GroupInfo, cfg: &telltale_config::Config) -> Grou
         info.dns64_prefix = c.dns64_prefix.as_ref().map(ToString::to_string);
         info.filter_aaaa = c.filter_aaaa;
         info.upstreams = c.upstreams.as_ref().map(ToString::to_string);
+        // REQ: FLT-902 (T24.29)
+        info.content = c
+            .content
+            .as_ref()
+            .map(telltale_api::categories_api::GroupContentInfo::from_config);
+        info.safe_search_engines = c
+            .safe_search_engines
+            .iter()
+            .map(ToString::to_string)
+            .collect();
     }
     info
 }
@@ -6703,6 +6865,18 @@ impl ApiBackend {
                     // REQ: API-002 (T9.22) — what the change also needs, first; the version
                     // check applies to the first write.
                     let mut expect = w.expect;
+                    // REQ: FLT-902 (T24.29): a group and its devices go in one transaction, so
+                    // the version moves once and nothing is half-applied.
+                    if w.kind == ManagedKind::GroupSources {
+                        let mut rows: Vec<(&str, &str, &str)> = also
+                            .iter()
+                            .filter_map(|(k, n, b)| Some((*k, n.as_str(), b.as_deref()?)))
+                            .collect();
+                        if let Some(b) = &body {
+                            rows.push((kind, name.as_str(), b.as_str()));
+                        }
+                        return state.put_managed_batch(&rows, expect, now, &w.by);
+                    }
                     for (k, n, b) in &also {
                         let r = match b {
                             Some(b) => state.put_managed(k, n, b, None, expect, now, &w.by),
@@ -6843,7 +7017,7 @@ fn keep_in_git(
         ManagedKind::Upstream => "upstream",
         ManagedKind::UpstreamGroup => "upstream_group",
         ManagedKind::List => "list",
-        ManagedKind::Group => "group",
+        ManagedKind::Group | ManagedKind::GroupSources => "group",
         ManagedKind::AlertDestination => "alerts.destination",
         ManagedKind::AlertRule => "alerts.rule",
         ManagedKind::Router => "router",
@@ -6862,6 +7036,7 @@ fn keep_in_git(
         ManagedKind::Local => "local",
         ManagedKind::Clients => "clients",
         ManagedKind::Discovery => "discovery",
+        ManagedKind::Filter => "filter",
     };
     let head = "# Add to the configuration in Git (with the Helm chart: under `config:`).\n";
     // REQ: FLT-017 — a map rule: `[[kubernetes.map]]`, or a label on the namespace or pod.
@@ -6898,6 +7073,7 @@ fn keep_in_git(
             | ManagedKind::Local
             | ManagedKind::Clients
             | ManagedKind::Discovery
+            | ManagedKind::Filter
     ) {
         return singleton_in_git(head, section, body.is_some(), after);
     }

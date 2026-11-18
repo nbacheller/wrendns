@@ -54,6 +54,8 @@ pub(crate) const KUBERNETES_MAP: &str = "kubernetes_map";
 /// REQ: DNS-019 (T24.12, ADR-904, ADR-914) — `[special]`: one entry, `default`, whose fields
 /// the files win over (see `settings_kinds`).
 pub(crate) const SPECIAL: &str = "special";
+/// REQ: FLT-901 (T24.29) — `[filter]`'s `entry_budget` and `ads_tier`: one entry, `default`.
+pub(crate) const FILTER_SETTINGS: &str = "filter_settings";
 /// REQ: DNS-023 (T24.13, ADR-901, ADR-914) — `[local]` without `hosts_files`.
 pub(crate) const LOCAL: &str = "local";
 /// REQ: DNS-023 (T24.13, ADR-914) — `[clients]`, which takes only `mdns` in M24.
@@ -198,6 +200,8 @@ pub(crate) struct Entries {
     /// REQ: DNS-019 (T24.12) — the stored `[special]` section (every editable key), if the API
     /// or UI set one. The files' fields win over it (ADR-914).
     pub(crate) special: Option<serde_json::Value>,
+    /// REQ: FLT-901 (T24.29) — the stored `entry_budget` and `ads_tier`, if the API or UI set them.
+    pub(crate) filter_settings: Option<serde_json::Value>,
     /// REQ: DNS-023 (T24.13) — the stored `[local]` fields, likewise.
     pub(crate) local: Option<serde_json::Value>,
     /// REQ: DNS-023 (T24.13) — the stored `[clients]` fields (`mdns`), likewise.
@@ -417,6 +421,10 @@ pub(crate) fn entries(state: &State) -> Entries {
             .into_iter()
             .next()
             .map(|(_, v)| v),
+        filter_settings: decode::<serde_json::Value>(state, FILTER_SETTINGS)
+            .into_iter()
+            .next()
+            .map(|(_, v)| v),
         local: decode::<serde_json::Value>(state, LOCAL)
             .into_iter()
             .next()
@@ -540,6 +548,7 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
 /// (a promoted primary's, ADR-051): `own` decides which stored paths are the files' and the path
 /// rules (REQ: API-014, review of T23.2), so a path an older primary published as the API's is
 /// judged, not taken for the files'.
+#[allow(clippy::too_many_lines)] // one kind of entry after another
 pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     let mut cfg = file.clone();
     // ADR-069 — upstreams, upstream groups, lists, and groups made through the API override
@@ -1227,6 +1236,6 @@ url = \"{PRO}\"
             telltale_config::categories::expand(&c).list.is_empty(),
             "nothing downloads"
         );
-        assert!(telltale_config::categories::used_sources(&c).is_empty());
+        assert_eq!(telltale_config::categories::used_sources(&c).len(), 0);
     }
 }

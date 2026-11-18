@@ -63,6 +63,10 @@ const RESERVED: &[&str] = &[
     "SIM_SCHEDULES",
     "SIM_SEED",
     "TEST_WALK",
+    // REQ: FLT-901 (T24.29) - the memory limit a category selection is checked against, in bytes,
+    // when the cgroup and the machine's RAM are not what the node should plan with (a test, or a
+    // measurement on a stand-in for a smaller node).
+    "MEMORY_LIMIT",
 ];
 
 /// REQ: OPS-014, API-014 (ADR-903 §3) — variables a process this one starts (an `exec://`

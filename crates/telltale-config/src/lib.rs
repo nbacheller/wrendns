@@ -184,6 +184,16 @@ fn explicit_keys(root: &Table) -> Vec<String> {
             keys.extend(t.keys().map(|k| format!("{section}.{k}")));
         }
     }
+    // REQ: FLT-901 (T24.29) - only two of `[filter]`'s keys are the API's: the category budget and
+    // the ad block size.
+    if let Some(Value::Table(t)) = root.get("filter") {
+        keys.extend(
+            ["entry_budget", "ads_tier"]
+                .into_iter()
+                .filter(|k| t.contains_key(*k))
+                .map(|k| format!("filter.{k}")),
+        );
+    }
     // REQ: API-902 (T27.13, ADR-956 §2) — the guarded settings a file sets: the file wins over a
     // guarded entry, and the control is locked.
     keys.extend(guarded::explicit_paths(root));

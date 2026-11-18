@@ -120,6 +120,10 @@ const TABLE: &[(&str, Class)] = &[
     ("group[].block_ips[]", Scan),
     ("group[].blocked_services[]", Plain),
     ("group[].color", Plain),
+    // REQ: FLT-901, FLT-902 (T24.29) - catalog IDs and engine names: public words, no names of people.
+    ("group[].content.categories[]", Plain),
+    ("group[].content.tiers.{}", Plain),
+    ("group[].safe_search_engines[]", Plain),
     ("group[].dns64_exclude[]", Scan),
     ("group[].dns64_prefix", Scan),
     ("group[].lists[]", Plain),

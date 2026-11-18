@@ -204,6 +204,10 @@ enum Read {
     Lists,
     /// REQ: OBS-009 — the peer's own hits per list (older peers don't know it).
     ListHits,
+    /// REQ: FLT-901 (T24.29, ADR-994 item 10) — the primary's limits for a category selection: it
+    /// fetches and compiles, so its memory decides (older peers don't know it: the replica's own
+    /// numbers are used).
+    CategoryEnv,
     /// REQ: API-015 (ADR-903 §4) — the primary's stored secrets (metadata only), for a replica's
     /// `GET /api/v1/secrets` (older peers don't know it).
     SecretsStatus,
@@ -412,6 +416,7 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::WorkloadCounts => serde_json::to_vec(&b.workload_counts()),
         Read::Lists => serde_json::to_vec(&b.lists()),
         Read::ListHits => serde_json::to_vec(&b.list_hits()),
+        Read::CategoryEnv => serde_json::to_vec(&b.category_env()),
         Read::SecretsStatus => serde_json::to_vec(&b.secrets_status().map_err(text)?),
         Read::SecretRefs => serde_json::to_vec(&b.secret_refs()),
         Read::MapPart => serde_json::to_vec(&b.map_part()),
@@ -3168,6 +3173,26 @@ impl Backend for Federated {
             return v;
         }
         self.local.config_entries(kind)
+    }
+    // REQ: FLT-901 (T24.29, ADR-994 item 10) - a category selection is checked against the primary,
+    // which fetches and compiles (a replica never downloads a category list); without a reachable
+    // primary, this node's own numbers.
+    fn category_env(&self) -> telltale_api::categories_api::CategoryEnv {
+        if !self.cluster.is_primary()
+            && let Some(primary) = self.cluster.reachable_primary()
+            && let Some(Ok(body)) = self.call_one(&primary, &Read::CategoryEnv, DEADLINE)
+            && let Ok(mut env) =
+                serde_json::from_slice::<telltale_api::categories_api::CategoryEnv>(&body)
+        {
+            env.node = Some(self.label_of(&primary));
+            return env;
+        }
+        self.local.category_env()
+    }
+    // REQ: FLT-902 (T24.29) - the picker reads this node's own view (devices are seen by the node
+    // that answers them; the networks come from the routers it reads).
+    fn profile_devices(&self) -> telltale_api::categories_api::ProfileDevices {
+        self.local.profile_devices()
     }
     // REQ: API-014 — the keyed hash is this node's (the entry node keeps the record).
     fn idempotency_request(

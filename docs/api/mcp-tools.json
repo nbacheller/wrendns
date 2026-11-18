@@ -463,6 +463,64 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. The content categories this node offers (adult content, gambling, malware, ad block, ...), grouped as the picker shows them, each with its description, tiers, entries and whether it is heavy; every source with its maintainer, licence (SPDX), format, size and what this node has downloaded; the presets (basic); the categories not offered and why; what each group selects now; and what all of them cost together against the node's memory limit. Use it before plan_set_group_content. Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "categories_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. One group's content filtering: the level (off, basic, enhanced), its categories and tiers, whether ad block is on, the sources they make the node download, and what that costs. With the optional proposal fields (level, categories, ads) it also says what the cost would be if the group were set that way, without changing anything. Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "ads": {
+          "description": "A proposal: price ad block on or off.",
+          "type": "boolean"
+        },
+        "categories": {
+          "description": "A proposal: price these category IDs.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "group": {
+          "description": "The group's name.",
+          "type": "string"
+        },
+        "level": {
+          "description": "A proposal: price this level.",
+          "enum": [
+            "off",
+            "basic",
+            "enhanced"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "group"
+      ],
+      "type": "object"
+    },
+    "name": "get_group_content"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. Latency percentiles (p50/p90/p99/p99.9/max in ms) broken down by pipeline stage, upstream, client, or query type, for the current or previous hour. Find where time goes. With histogram: true, also the last hour's answers per latency bucket per minute (boundsUs, per path or per upstream when by is upstream), to see a tail's shape.",
     "inputSchema": {
       "additionalProperties": false,
@@ -2153,6 +2211,65 @@
       "type": "object"
     },
     "name": "plan_update_group"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). **An operator must approve it first, whatever [agents] require_approval says**: choosing categories makes the node download lists (tens of megabytes a day), which an agent never starts on its own, so this tool only plans and apply_plan works after an operator approves the plan (Agent changes in the web UI); applying an unapproved plan answers 403 agent_not_allowed. Sets a group's content filtering: `level` (off, basic: adult content, malware, phishing and scam; enhanced: the `categories` you list), `categories` (IDs from categories_list), `tiers` (category to tier, such as gambling extended) and `ads` (ad block). Fields left out keep their current values. A heavy selection (newly registered domains, the full threat feed) or one over the entry budget is refused to an agent at planning time: the owner confirms that cost. Needs config:write:groups (and config:read).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "ads": {
+          "description": "Ad block.",
+          "type": "boolean"
+        },
+        "categories": {
+          "description": "With enhanced: category IDs (replaces the current list).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "group": {
+          "description": "The group (profile) to change.",
+          "type": "string"
+        },
+        "level": {
+          "description": "Filtering level.",
+          "enum": [
+            "off",
+            "basic",
+            "enhanced"
+          ],
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
+        },
+        "tiers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Tier per category, for example gambling: extended.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "group",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_set_group_content"
   },
   {
     "annotations": {

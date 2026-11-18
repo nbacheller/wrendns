@@ -842,6 +842,21 @@ pub struct ListInfo {
     /// `stale_after_days`: the source may be abandoned while still answering.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale_days: Option<u64>,
+    /// REQ: FLT-901 (T24.29) — the categories that use this list. A list with owners is a category
+    /// list: it takes its source from the catalog and can be refreshed and put in shadow mode, not
+    /// edited or deleted (409 `owned_by_category`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owners: Vec<ListOwner>,
+}
+
+/// REQ: FLT-901 — a category that uses a list.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListOwner {
+    /// The category's ID (`adult`).
+    pub id: String,
+    /// Its name (`Adult content`).
+    pub name: String,
 }
 
 /// REQ: FLT-004 — which lists to download again now (`POST /api/v1/lists/refresh`).
@@ -938,6 +953,19 @@ pub struct GroupInfo {
     /// or wherever `[[route]]` entries send them).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upstreams: Option<String>,
+    /// REQ: FLT-902 (T24.29) — what the group filters by category (absent: nothing set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<crate::categories_api::GroupContentInfo>,
+    /// REQ: FLT-902 — the engines safe search covers (empty with `safeSearch`: every engine).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub safe_search_engines: Vec<String>,
+    /// REQ: FLT-902 — who the group applies to: its networks, router names and devices, for the
+    /// profile list's Source column.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<crate::categories_api::ProfileSource>,
+    /// REQ: FLT-902 — "Off", "Basic", "Enhanced (3 of 21)" and "Ad block", for the Filter Scope column.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub filter_scope: String,
 }
 
 /// A group's rewrite: `domain` (or `*.domain`) answered with `answer`.

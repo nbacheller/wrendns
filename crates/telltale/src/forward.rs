@@ -238,6 +238,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                 ManagedKind::UpstreamGroup => "upstream_group",
                 ManagedKind::List => "list",
                 ManagedKind::Group => "group",
+                ManagedKind::GroupSources => "group_sources",
                 ManagedKind::AlertDestination => "alert_destination",
                 ManagedKind::AlertRule => "alert_rule",
                 ManagedKind::Router => "router",
@@ -254,6 +255,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                 ManagedKind::KubernetesMap => "kubernetes_map",
                 ManagedKind::Special => "special",
                 ManagedKind::Local => "local",
+                ManagedKind::Filter => "filter_settings",
                 ManagedKind::Clients => "clients",
                 ManagedKind::Discovery => "discovery",
             };
@@ -557,6 +559,7 @@ fn settings_kinds_understood(
             | ManagedKind::Clients
             | ManagedKind::Discovery
             | ManagedKind::Map
+            | ManagedKind::Filter
     ) {
         return Ok(());
     }

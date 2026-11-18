@@ -35,6 +35,9 @@ pub struct Group {
     /// REQ: FLT-901 (T24.29) — the lists this group wants because of its categories and ad
     /// block: `cat-<source>` names, or the name of a list that provides the source already.
     pub cat_lists: Vec<Box<str>>,
+    /// REQ: FLT-902 — what the group filters by category, in words ("Off", "Basic",
+    /// "Enhanced (3 of 20), Ad block"), for the device policy panel.
+    pub content_summary: Box<str>,
     /// REQ: FLT-015 (T7.20) — which answer addresses are refused.
     pub answers: Option<AnswerFilter>,
     /// REQ: FLT-014 (T7.20) — rewrites.
@@ -491,6 +494,7 @@ impl Group {
                 .then_some(g.youtube_restrict),
             safe_search_engines: effective_engines(g),
             cat_lists: Vec::new(),
+            content_summary: telltale_config::categories::summary(g.content.as_ref()).into(),
             answers: (g.rebinding_protection || !g.block_answer_ips.is_empty()).then(|| {
                 AnswerFilter {
                     private: g.rebinding_protection,
@@ -565,6 +569,7 @@ impl ClientTable {
                 safe_search: None,
                 safe_search_engines: Vec::new(),
                 cat_lists: Vec::new(),
+                content_summary: "Off".into(),
                 answers: None,
                 rewrites: Vec::new(),
                 dns64: None,

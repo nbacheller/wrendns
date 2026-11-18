@@ -88,11 +88,17 @@ fn setup_with(extra: &str) -> (Arc<Pipeline>, HashMap<String, Vec<u8>>) {
         Policy::from_config(&cfg, local),
     );
     let mut sources = HashMap::new();
-    let inputs = cfg
-        .list
+    // REQ: FLT-901 - the lists the groups' categories make are in the compile too, each with one
+    // rule `||<source>.example^`.
+    let all_lists = telltale_config::categories::expand(&cfg).list;
+    let inputs = all_lists
         .iter()
         .map(|l| {
-            let text: String = l.rules.iter().flat_map(|r| [r.as_str(), "\n"]).collect();
+            let text: String = if telltale_config::categories::is_category_list(l.name.as_str()) {
+                format!("||{}.example^\n", l.name.trim_start_matches("cat-"))
+            } else {
+                l.rules.iter().flat_map(|r| [r.as_str(), "\n"]).collect()
+            };
             sources.insert(l.name.to_string(), text.clone().into_bytes());
             ListInput {
                 name: l.name.to_string(),
@@ -875,6 +881,7 @@ fn flt_006_policy_sections_show_the_groups_settings() {
         [
             "block",
             "lists",
+            "categories",
             "services",
             "safe_search",
             "answers",
@@ -1120,4 +1127,64 @@ fn flt_006_policy_observed_without_mac_ignores_local_neighbors() {
     let seen =
         p.with_explain_state(|st| crate::policy_view::build(st, &cfg, &subject, 1_795_035_600));
     assert_ne!(seen.identified_by, "neighbor_mac", "{seen:?}");
+}
+
+/// REQ: FLT-901, FLT-902 (T24.29, ADR-996 section 4) - a group's categories block for its devices
+/// and say so: Explain names the category the list stands for, the policy panel has a Categories
+/// section for the device (and an empty one for a group that selects none).
+#[test]
+fn flt_901_explain_names_category() {
+    let (p, sources) = setup_with(
+        r#"
+[[group]]
+name = "teens"
+networks = ["10.6.0.0/16"]
+content = { level = "enhanced", categories = ["adult"] }
+"#,
+    );
+    let e = ask(&p, &sources, "x.hagezi-nsfw.example", "10.6.1.1");
+    assert_eq!(e.outcome, Outcome::Blocked);
+    let list = e.block.as_ref().unwrap().list.clone();
+    assert_eq!(list, "cat-hagezi-nsfw");
+    assert_eq!(
+        telltale_config::categories::label_of_list(&list).as_deref(),
+        Some("Adult content")
+    );
+    // The same name for a device in a group that selects nothing is not blocked.
+    let other = ask(&p, &sources, "x.hagezi-nsfw.example", "10.0.0.9");
+    assert_ne!(other.outcome, Outcome::Blocked);
+    // The policy panel: a Categories section with the category, from the group.
+    let pol = policy_of(&p, "10.6.1.1", None, None, 1_795_035_000);
+    let cats = section(&pol, "categories");
+    assert_eq!(cats.items.len(), 1, "{cats:?}");
+    assert_eq!(cats.items[0].label, "Adult content");
+    assert!(
+        cats.items[0]
+            .from
+            .as_deref()
+            .unwrap()
+            .starts_with("group teens")
+    );
+    assert!(
+        cats.summary.contains("filters by category"),
+        "{}",
+        cats.summary
+    );
+    let none = policy_of(&p, "10.0.0.9", None, None, 1_795_035_000);
+    let cats = section(&none, "categories");
+    assert_eq!(cats.items.len(), 0);
+    assert!(
+        cats.summary.contains("blocks no content category"),
+        "{}",
+        cats.summary
+    );
+    // The Lists section does not show the category's list as a list of its own.
+    assert!(
+        !section(&pol, "lists")
+            .items
+            .iter()
+            .any(|i| i.label.starts_with("cat-")),
+        "{:?}",
+        section(&pol, "lists")
+    );
 }

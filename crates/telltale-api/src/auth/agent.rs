@@ -216,6 +216,10 @@ pub fn required(method: &Method, path: &str) -> Need {
             // REQ: FLT-004 (T24.28) - which lists add little, and the plan (a read).
             | "/api/v1/lists/overlap"
             | "/api/v1/lists/prune-plan"
+            // REQ: FLT-901, FLT-902 (T24.29) - the category catalog, its cost, and the picker.
+            | "/api/v1/categories"
+            | "/api/v1/categories/budget"
+            | "/api/v1/profiles/devices"
             | "/api/v1/services"
             | "/api/v1/groups"
             | "/api/v1/clients"
@@ -251,6 +255,8 @@ pub fn required(method: &Method, path: &str) -> Need {
             _ if secret_path(p) => return Need::Scope("config:read"),
             // REQ: FLT-006, API-010 (T24.30) — a device's effective policy is configuration.
             _ if policy_path(p) => return Need::Scope("config:read"),
+            // REQ: FLT-902 (T24.29) - a group's content.
+            _ if content_path(p) => return Need::Scope("config:read"),
             _ if under("/api/v1/stats") || under("/api/v1/analytics") => {
                 return Need::Scope("analytics:read");
             }
@@ -371,9 +377,15 @@ pub fn never_for_agents(method: &Method, path: &str) -> bool {
     let guarded = p == "/api/v1/guarded" || p.starts_with("/api/v1/guarded/");
     // REQ: FLT-004 (T24.28, ADR-992) - turning lists off in bulk: a person confirms the preview.
     let prune = p == "/api/v1/lists/prune";
+    // REQ: FLT-902 (T24.29) - who a profile applies to moves devices between groups: a person's.
+    let sources = p
+        .strip_prefix("/api/v1/groups/")
+        .and_then(|r| r.strip_suffix("/sources"))
+        .is_some_and(|g| !g.is_empty() && !g.contains('/'));
     ((secret || pihole) && write)
         || (guarded && *method != Method::GET && *method != Method::HEAD)
         || (prune && write)
+        || (sources && write)
         || (*method == Method::POST
             && (p == "/api/v1/backup" || p.starts_with("/api/v1/checks/router")))
 }
@@ -382,6 +394,13 @@ pub fn never_for_agents(method: &Method, path: &str) -> bool {
 fn timeline_path(p: &str) -> bool {
     p.strip_prefix("/api/v1/clients/")
         .and_then(|r| r.strip_suffix("/timeline"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// REQ: FLT-902 (T24.29) - `/api/v1/groups/{name}/content`.
+fn content_path(p: &str) -> bool {
+    p.strip_prefix("/api/v1/groups/")
+        .and_then(|r| r.strip_suffix("/content"))
         .is_some_and(|id| !id.is_empty() && !id.contains('/'))
 }
 

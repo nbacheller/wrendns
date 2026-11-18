@@ -295,6 +295,7 @@ pub(crate) fn unix_now() -> u64 {
 }
 
 impl FilterState {
+    #[allow(clippy::too_many_lines)] // the masks of every group, one pass
     pub(crate) fn new(
         matcher: Arc<Matcher>,
         clients: Arc<ClientTable>,

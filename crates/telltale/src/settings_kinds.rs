@@ -24,15 +24,20 @@ pub(crate) fn section(kind: ManagedKind) -> &'static str {
         ManagedKind::Special => "special",
         ManagedKind::Local => "local",
         ManagedKind::Discovery => "discovery",
+        ManagedKind::Filter => "filter",
         _ => "clients",
     }
 }
 
-/// True for the three kinds in this module.
+/// True for the kinds in this module.
 pub(crate) fn is_settings(kind: ManagedKind) -> bool {
     matches!(
         kind,
-        ManagedKind::Special | ManagedKind::Local | ManagedKind::Clients | ManagedKind::Discovery
+        ManagedKind::Special
+            | ManagedKind::Local
+            | ManagedKind::Clients
+            | ManagedKind::Discovery
+            | ManagedKind::Filter
     )
 }
 
@@ -59,6 +64,8 @@ pub(crate) fn keys(kind: ManagedKind) -> &'static [&'static str] {
             "default_ttl",
         ],
         ManagedKind::Discovery => DISCOVERY_KEYS,
+        // REQ: FLT-901 (T24.29) - the two `[filter]` fields that bound the category selection.
+        ManagedKind::Filter => &["entry_budget", "ads_tier"],
         _ => &["mdns"],
     }
 }
@@ -82,6 +89,7 @@ pub(crate) fn section_json(kind: ManagedKind, cfg: &Config) -> Value {
         ManagedKind::Special => serde_json::to_value(&cfg.special),
         ManagedKind::Local => serde_json::to_value(&cfg.local),
         ManagedKind::Discovery => serde_json::to_value(&cfg.discovery),
+        ManagedKind::Filter => serde_json::to_value(&cfg.filter),
         _ => serde_json::to_value(&cfg.clients),
     }
     .unwrap_or(Value::Null);
@@ -113,6 +121,42 @@ fn normalize(kind: ManagedKind, body: &Value) -> Result<Value, Problem> {
         }
         ManagedKind::Discovery => {
             cfg.discovery = serde_json::from_value::<DiscoveryConfig>(body.clone()).map_err(bad)?;
+        }
+        ManagedKind::Filter => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields, default)]
+            struct FilterOnly {
+                entry_budget: u64,
+                ads_tier: telltale_config::AdsTier,
+            }
+            impl Default for FilterOnly {
+                fn default() -> Self {
+                    let f = telltale_config::FilterConfig::default();
+                    Self {
+                        entry_budget: f.entry_budget,
+                        ads_tier: f.ads_tier,
+                    }
+                }
+            }
+            let f = serde_json::from_value::<FilterOnly>(body.clone()).map_err(|e| {
+                let text = e.to_string();
+                if text.contains("unknown field") {
+                    Problem::invalid(format!(
+                        "{text}: only `entry_budget` and `ads_tier` can be changed here"
+                    ))
+                    .hint("The other `[filter]` settings are in the configuration file.")
+                } else {
+                    bad(e)
+                }
+            })?;
+            if f.entry_budget == 0 {
+                return Err(Problem::new(
+                    Code::InvalidConfig,
+                    "`entry_budget` must be at least 1",
+                ));
+            }
+            cfg.filter.entry_budget = f.entry_budget;
+            cfg.filter.ads_tier = f.ads_tier;
         }
         ManagedKind::Local => {
             if body.get("hosts_files").is_some() {
@@ -208,6 +252,7 @@ pub(crate) fn apply_stored(cfg: &mut Config, own: &Config, e: &Entries) -> Vec<S
         (ManagedKind::Local, &e.local),
         (ManagedKind::Clients, &e.clients_settings),
         (ManagedKind::Discovery, &e.discovery),
+        (ManagedKind::Filter, &e.filter_settings),
     ] {
         let Some(stored) = stored else { continue };
         if let Err(why) = overlay(cfg, own, kind, stored) {
@@ -241,6 +286,15 @@ fn overlay(
         ManagedKind::Discovery => {
             cfg.discovery = serde_json::from_value(cur).map_err(|e| e.to_string())?;
         }
+        ManagedKind::Filter => {
+            if let Some(n) = cur.get("entry_budget").and_then(Value::as_u64) {
+                cfg.filter.entry_budget = n;
+            }
+            if let Some(t) = cur.get("ads_tier") {
+                cfg.filter.ads_tier =
+                    serde_json::from_value(t.clone()).map_err(|e| e.to_string())?;
+            }
+        }
         ManagedKind::Local => {
             let mut lj = serde_json::to_value(&cfg.local).map_err(|e| e.to_string())?;
             if let (Value::Object(l), Value::Object(c)) = (&mut lj, &cur) {
@@ -273,6 +327,14 @@ pub(crate) fn check_admin_fields(
             "no agent can change `[clients]` (mdns turns on multicast listening on every node)",
         )
         .hint("Ask an admin to make this change in the UI."));
+    }
+    // REQ: FLT-901 (T24.29) — the budget decides what a node will download and hold.
+    if kind == ManagedKind::Filter && agent.is_some() {
+        return Err(Problem::new(
+            Code::AgentNotAllowed,
+            "no agent can change `[filter]` entry_budget or ads_tier: they decide what the node downloads and holds",
+        )
+        .hint("Ask an operator to make this change in the UI (Settings, Filtering)."));
     }
     // REQ: DSC-001 (T25.2, ADR-907) — no agent writes the network inventory's settings.
     if kind == ManagedKind::Discovery && agent.is_some() {
@@ -356,6 +418,7 @@ pub(crate) fn none_stored(entries: &Entries, kind: ManagedKind) -> bool {
         ManagedKind::Special => entries.special.is_none(),
         ManagedKind::Local => entries.local.is_none(),
         ManagedKind::Discovery => entries.discovery.is_none(),
+        ManagedKind::Filter => entries.filter_settings.is_none(),
         _ => entries.clients_settings.is_none(),
     }
 }
@@ -366,6 +429,7 @@ pub(crate) fn set_stored(entries: &mut Entries, kind: ManagedKind, v: Option<Val
         ManagedKind::Special => entries.special = v,
         ManagedKind::Local => entries.local = v,
         ManagedKind::Discovery => entries.discovery = v,
+        ManagedKind::Filter => entries.filter_settings = v,
         _ => entries.clients_settings = v,
     }
 }
@@ -376,6 +440,7 @@ pub(crate) fn noun(kind: ManagedKind) -> &'static str {
         ManagedKind::Special => "special names",
         ManagedKind::Local => "device-name settings",
         ManagedKind::Discovery => "network inventory settings",
+        ManagedKind::Filter => "category settings",
         _ => "clients settings",
     }
 }
@@ -388,6 +453,8 @@ pub(crate) fn impact(kind: ManagedKind, put: bool) -> String {
         // REQ: DSC-001 (T25.2) — the inventory starts or stops on the designated node at the reload.
         (ManagedKind::Discovery, true) => "Applies on the designated node within a few seconds, with no restart: the network inventory starts or stops there. Other nodes change nothing, and no device is read until it is on.".into(),
         (ManagedKind::Discovery, false) => "The config file's network inventory settings (or the defaults: off) apply again on the designated node within a few seconds.".into(),
+        (ManagedKind::Filter, true) => "Applies within a few seconds on every node: the entry budget is what the Categories view warns against, and a new ad block size makes the primary download that list and compile it in the background.".into(),
+        (ManagedKind::Filter, false) => "The config file's [filter] entry_budget and ads_tier (or the defaults: 1,000,000 and pro) apply again.".into(),
         (ManagedKind::Local, true) => "Device names in DNS change within about 10 seconds on every node, with no restart.".into(),
         (ManagedKind::Local, false) => "The config file's device-name settings (or the defaults) apply again within about 10 seconds.".into(),
         // REQ: DNS-023 (H1) — the mDNS listener starts once, at start-up (`restart_only_changes`):
@@ -652,6 +719,85 @@ mod tests {
         assert!(
             check_admin_fields(ManagedKind::Clients, &before, &after, None, Some("bot")).is_err(),
             "no agent scope writes mdns"
+        );
+    }
+    /// REQ: FLT-901 (T24.29) - `[filter]` `entry_budget` and `ads_tier`: stored as one section, laid over
+    /// the files' values field by field, a field the files set can't be changed (409), a zero budget
+    /// or another `[filter]` key is refused, and no agent changes it.
+    #[test]
+    fn flt_901_filter_settings_overlay_and_refusals() {
+        let own = cfg(
+            "[filter]
+ads_tier = \"light\"
+",
+            "t.toml",
+        );
+        let file = section_json(ManagedKind::Filter, &own);
+        assert_eq!(file["entry_budget"], 1_000_000);
+        // A body that leaves `ads_tier` out keeps the file's; one that changes it is refused.
+        let ok = prepare(
+            ManagedKind::Filter,
+            &serde_json::json!({"entry_budget": 3_000_000}),
+            &file,
+            &own,
+        )
+        .unwrap();
+        assert_eq!(ok["entry_budget"], 3_000_000);
+        assert_eq!(ok["ads_tier"], "light");
+        let e = prepare(
+            ManagedKind::Filter,
+            &serde_json::json!({"entry_budget": 3_000_000, "ads_tier": "ultimate"}),
+            &file,
+            &own,
+        )
+        .unwrap_err();
+        assert_eq!(e.code, Code::SetByFile);
+        // Laid over the files: the budget changes, the file's tier stays.
+        let mut c = own.clone();
+        overlay(&mut c, &own, ManagedKind::Filter, &ok).unwrap();
+        assert_eq!(c.filter.entry_budget, 3_000_000);
+        assert_eq!(c.filter.ads_tier, telltale_config::AdsTier::Light);
+        // Refusals.
+        let plain = Config::default();
+        let none = section_json(ManagedKind::Filter, &plain);
+        let zero = prepare(
+            ManagedKind::Filter,
+            &serde_json::json!({"entry_budget": 0}),
+            &none,
+            &plain,
+        )
+        .unwrap_err();
+        assert!(zero.detail.contains("at least 1"), "{}", zero.detail);
+        let other = prepare(
+            ManagedKind::Filter,
+            &serde_json::json!({"refresh_secs": 5}),
+            &none,
+            &plain,
+        )
+        .unwrap_err();
+        assert!(other.detail.contains("entry_budget"), "{}", other.detail);
+        let tier = prepare(
+            ManagedKind::Filter,
+            &serde_json::json!({"ads_tier": "huge"}),
+            &none,
+            &plain,
+        )
+        .unwrap_err();
+        assert_eq!(
+            tier.code_status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let e = check_admin_fields(
+            ManagedKind::Filter,
+            &none,
+            &ok,
+            Some(Role::Operator),
+            Some("bot"),
+        )
+        .unwrap_err();
+        assert_eq!(e.code, Code::AgentNotAllowed);
+        assert!(
+            check_admin_fields(ManagedKind::Filter, &none, &ok, Some(Role::Operator), None).is_ok()
         );
     }
 }

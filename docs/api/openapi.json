@@ -2385,6 +2385,128 @@
         }
       }
     },
+    "/api/v1/categories": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The content categories catalog (REQ: FLT-901).",
+        "description": "Every category the catalog offers, grouped as the picker shows them, with its description,\ntiers, entry counts and weight; every source with its maintainer, licence (an SPDX\nidentifier and a link), format, size and cadence, and what this node has done with it\n(downloaded or not, how big, any error); the presets (`basic`); the categories not offered\nand why; what each group selects now and what all of them cost together (distinct sources\ncounted once), against the node's memory limit and `[filter] entry_budget`. In a cluster the\nnumbers are the primary's, which downloads and compiles. Needs `config:read` for an agent.",
+        "operationId": "categories",
+        "parameters": [
+          {
+            "name": "view",
+            "in": "query",
+            "description": "`compact`: IDs, names, tiers, sizes and licences without the prose and the links (for agents).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The catalog and this node's state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategoriesView"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/categories/budget": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "What a selection costs.",
+        "description": "Entries, an estimate of the snapshot and compile memory, the daily download, and whether this\nnode may take it, for a proposed selection of one group (`group`, with `level`, `categories`\n(comma separated), `tiers` (`gambling:extended,malware:full`) and `ads`; fields left out keep\nthe group's current value) or, with no `group`, for what the groups select now. Distinct\nsources count once, across all groups. Nothing changes.",
+        "operationId": "categories_budget",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "query",
+            "description": "The group the proposal is for.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "description": "`off`, `basic` or `enhanced`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "categories",
+            "in": "query",
+            "description": "Category IDs, comma separated.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tiers",
+            "in": "query",
+            "description": "`category:tier` pairs, comma separated.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ads",
+            "in": "query",
+            "description": "Ad block.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The cost.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BudgetView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such group.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The proposal names something the catalog doesn't have.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/checks/list": {
       "post": {
         "tags": [
@@ -4678,6 +4800,156 @@
         }
       }
     },
+    "/api/v1/filter-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set the filter's category settings (FLT-901, T24.29).",
+        "description": "`entry_budget` is the most distinct blocklist entries the selected categories may add before\nthe Categories view warns (default 1,000,000; a node too small for a selection refuses it\nwhatever this says), and `ads_tier` is the size of the Ad Block category (`light`, `pro`,\n`pro_plus`, `ultimate`). A field the config files set can't be changed here (409\n`set_by_file`). Applies within a few seconds on every node; changing `ads_tier` makes the\nprimary download the other list. No agent can change it.",
+        "operationId": "put_filter_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`set_by_file`: the config files set that field, and they win.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong or unknown, or the configuration wouldn't be valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Go back to the config file's category settings (FLT-901).",
+        "description": "Removes what the API or UI stored: `entry_budget` and `ads_tier` take the file's values (or the\ndefaults) again. Needs the operator role.",
+        "operationId": "delete_filter_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing was changed through the API: the file's settings are in effect already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/forwards": {
       "get": {
         "tags": [
@@ -4929,6 +5201,15 @@
             }
           },
           {
+            "name": "confirm",
+            "in": "query",
+            "description": "Accept the cost of a heavy `content` selection (see `PUT /groups/{name}/content`).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "dryRun",
             "in": "query",
             "description": "Validate and report the change without applying it.",
@@ -5077,6 +5358,296 @@
           },
           "422": {
             "description": "Something still uses it: problem+json says what.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{name}/content": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "A group's content (REQ: FLT-902).",
+        "description": "The level, the categories, the tiers and the ad block switch of one group, which sources they\nmake the node use, and what that costs. A group with no content is `off` with nothing\nselected. Needs `config:read` for an agent.",
+        "operationId": "get_group_content",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The group.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The group's content.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupContentView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such group.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set a group's content (REQ: FLT-902).",
+        "description": "Changes the level, the categories, the tiers or the ad block of a group; fields left out keep\ntheir current value. Checked against the catalog and what the node can hold: a selection the\nnode is too small for is refused (422 `budget_refused`, with the reason), and a heavy one, or\none over `[filter] entry_budget`, needs `?confirm=true` after the cost is shown (409\n`confirm_required`; a dry run reports `confirmationRequired` instead). The node downloads\neach source once however many groups select it and deletes it when the last one stops.\nOperators change it; **an agent token is refused (403 `agent_not_allowed`) except for a\ndry run, and `apply_plan` replays only a plan an operator approved**. A group whose config\nfile sets `content` is read-only here (409 `set_by_file`). In a cluster the primary stores it,\ndownloads and compiles. Supports `dryRun`, `If-Match` and `Idempotency-Key`.",
+        "operationId": "put_group_content",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The group.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "confirm",
+            "in": "query",
+            "description": "Accept the cost of a heavy selection.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContentInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change); `budget` and `confirmationRequired` say what it costs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "An agent token (`agent_not_allowed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such group.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`confirm_required` (heavy), or `set_by_file`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The catalog doesn't have it (`invalid_config`), or this node is too small (`budget_refused`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{name}/sources": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set who a group applies to (REQ: FLT-902, API-010).",
+        "description": "The group's networks (CIDRs) and router names, and the devices in it, as one change: a device\nin `devices` is a named device (created if new, with its `match` keys) whose groups include\nthis one; a device that was a member and is not listed leaves the group. Fields left out are\nnot changed. The group and the devices are stored in one transaction under one configuration\nversion. The dry run says what moves (\"3 devices move from Default to Kids\") and what a device\nthat is also in another profile means (the lists are the union, the settings come from the\nhigher priority). A device a config file defines can't be moved (409 `set_by_file`). Operators\nonly; agent tokens are refused (403 `agent_not_allowed`). Supports `dryRun`, `If-Match` and\n`Idempotency-Key`.",
+        "operationId": "put_group_sources",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The group.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change): `impact` says what moves.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "An agent token (`agent_not_allowed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such group.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A device is defined in a config file (`set_by_file`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A network, name or key is wrong.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7933,6 +8504,28 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/profiles/devices": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The picker's networks and devices (REQ: FLT-902).",
+        "description": "The networks the Networks page names and the devices the Clients page knows (configured ones\nand ones only seen), each with an icon (a device class), the keys it can be recognized by, a\nflag on a MAC that is a private Wi-Fi address (it can change, so a profile may stop following\nit), and the group it is in now. Needs `config:read` for an agent.",
+        "operationId": "profile_devices",
+        "responses": {
+          "200": {
+            "description": "The picker's data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileDevices"
                 }
               }
             }
@@ -13044,6 +13637,64 @@
         },
         "additionalProperties": false
       },
+      "BudgetView": {
+        "type": "object",
+        "description": "What a proposed selection costs.",
+        "required": [
+          "total",
+          "added",
+          "heavyAdded",
+          "heavyDailyDownloadBytes",
+          "confirmationRequired",
+          "node"
+        ],
+        "properties": {
+          "added": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Sources the proposal adds that no group had selected."
+          },
+          "confirmationRequired": {
+            "type": "boolean"
+          },
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The group the proposal is for, when there is one."
+          },
+          "groupOnly": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The proposal's group alone."
+          },
+          "heavyAdded": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Heavy sources among `added`: they ask for a confirmation that states the daily download."
+          },
+          "heavyDailyDownloadBytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The daily download of `heavyAdded`, in bytes.",
+            "minimum": 0
+          },
+          "node": {
+            "$ref": "#/components/schemas/CategoryEnv"
+          },
+          "total": {
+            "type": "object",
+            "description": "All groups' sources together, with the proposal in place."
+          }
+        }
+      },
       "BuildInfo": {
         "type": "object",
         "description": "The build identity (REQ: OPS-004, ADR-046): the same on every architecture of one commit.",
@@ -13787,6 +14438,242 @@
               "null"
             ],
             "description": "Why nothing was loaded (no dump, a dump from other upstreams, ...)."
+          }
+        }
+      },
+      "CategoriesView": {
+        "type": "object",
+        "description": "The catalog and this node's state (REQ: FLT-901).",
+        "required": [
+          "catalogVersion",
+          "groups",
+          "sources",
+          "presets",
+          "notOffered",
+          "attributions",
+          "selections",
+          "total",
+          "node"
+        ],
+        "properties": {
+          "attributions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The attribution lines to show (CC BY-SA sources)."
+          },
+          "catalogVersion": {
+            "type": "string"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CategoryGroupView"
+            }
+          },
+          "node": {
+            "$ref": "#/components/schemas/CategoryEnv"
+          },
+          "notOffered": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotOfferedView"
+            }
+          },
+          "presets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PresetView"
+            }
+          },
+          "selections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GroupSelection"
+            },
+            "description": "What each group selects now."
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceView"
+            }
+          },
+          "total": {
+            "type": "object",
+            "description": "What all of them cost together (distinct sources)."
+          }
+        }
+      },
+      "CategoryEnv": {
+        "type": "object",
+        "description": "What the node knows that bounds a selection (read from the primary in a cluster: it fetches\nand compiles, ADR-994 item 10).",
+        "required": [
+          "entryBudget",
+          "adsTier",
+          "compileMemoryBytes"
+        ],
+        "properties": {
+          "adsTier": {
+            "type": "string",
+            "description": "`[filter] ads_tier`: `light`, `pro`, `pro_plus` or `ultimate`."
+          },
+          "compileMemoryBytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`[filter] compile_memory`, the merge budget before it is scaled to the node.",
+            "minimum": 0
+          },
+          "entryBudget": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`[filter] entry_budget`.",
+            "minimum": 0
+          },
+          "memoryLimitBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The node's memory limit (its cgroup, else its RAM), when known.",
+            "minimum": 0
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Which node these numbers are from."
+          },
+          "processRssBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "This process's resident memory now, when known.",
+            "minimum": 0
+          }
+        }
+      },
+      "CategoryGroupView": {
+        "type": "object",
+        "description": "A group of categories in the picker.",
+        "required": [
+          "id",
+          "name",
+          "categories"
+        ],
+        "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CategoryView"
+            }
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "CategoryView": {
+        "type": "object",
+        "description": "One category.",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "kind",
+          "sources",
+          "tiers",
+          "services",
+          "entries",
+          "heavy",
+          "groups"
+        ],
+        "properties": {
+          "defaultTier": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "description": "One line for the info icon."
+          },
+          "entries": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Entries with the default tier (distinct sources).",
+            "minimum": 0
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Groups that select it now."
+          },
+          "heavy": {
+            "type": "boolean",
+            "description": "Any source it can use is heavy."
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`list` (a maintained list behind it) or `service` (a bundle turned on with `blockedServices`)."
+          },
+          "name": {
+            "type": "string"
+          },
+          "services": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "For a service category: the FLT-012 service IDs to put in `blockedServices`."
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The sources always in use."
+          },
+          "tierFrom": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`adsTier`: the size is the `[filter] ads_tier` setting, not a per-profile choice."
+          },
+          "tierKind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`exclusive` or `additive`, when it has tiers."
+          },
+          "tiers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TierView"
+            }
+          },
+          "warn": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A warning the confirmation repeats (a category that blocks whole top-level domains)."
           }
         }
       },
@@ -15291,7 +16178,10 @@
           "restarting",
           "rotation_incomplete",
           "data_dir_not_persistent",
-          "not_primary"
+          "not_primary",
+          "owned_by_category",
+          "budget_refused",
+          "confirm_required"
         ]
       },
       "ConfigChange": {
@@ -15422,6 +16312,50 @@
             "description": "`file` (the config files), `added` (made through the UI or API), `override` (replaces\nthe files' entry of that name), or `hidden` (the files' entry is left out)."
           }
         }
+      },
+      "ContentInput": {
+        "type": "object",
+        "description": "What to change in a group's content: fields left out keep their current value.",
+        "properties": {
+          "ads": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Ad block on or off."
+          },
+          "categories": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Category IDs (`GET /api/v1/categories`); replaces the current list."
+          },
+          "level": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`off`, `basic` or `enhanced`."
+          },
+          "tiers": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "A tier per category (`gambling` = `extended`); replaces the current tiers.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "CreateDisplay": {
         "type": "object",
@@ -16634,6 +17568,13 @@
           "edeCode"
         ],
         "properties": {
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: FLT-901 — the category (or categories) a `cat-` list stands for, for example \"Adult\ncontent\"; absent for any other list."
+          },
           "edeCode": {
             "type": "integer",
             "format": "int32",
@@ -17148,6 +18089,69 @@
         },
         "additionalProperties": false
       },
+      "GroupContentInfo": {
+        "type": "object",
+        "description": "A group's content as the API shows it.",
+        "required": [
+          "level"
+        ],
+        "properties": {
+          "ads": {
+            "type": "boolean",
+            "description": "Ad block."
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Category IDs (kept when the level is `off`)."
+          },
+          "level": {
+            "type": "string",
+            "description": "`off`, `basic` or `enhanced`."
+          },
+          "tiers": {
+            "type": "object",
+            "description": "A tier per category.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "GroupContentView": {
+        "type": "object",
+        "description": "A group's content, and what it makes the node do.",
+        "required": [
+          "group",
+          "content",
+          "selection",
+          "summary",
+          "budget"
+        ],
+        "properties": {
+          "budget": {
+            "type": "object"
+          },
+          "content": {
+            "$ref": "#/components/schemas/GroupContentInfo"
+          },
+          "group": {
+            "type": "string"
+          },
+          "selection": {
+            "$ref": "#/components/schemas/GroupSelection"
+          },
+          "summary": {
+            "type": "string",
+            "description": "\"Off\", \"Basic\", \"Enhanced (3 of 21)\", with \"Ad block\" when on."
+          }
+        }
+      },
       "GroupInfo": {
         "type": "object",
         "description": "A client group.",
@@ -17204,6 +18208,17 @@
             "type": "string",
             "description": "`#rrggbb` for charts and chips (configured, or a stable pick)."
           },
+          "content": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GroupContentInfo",
+                "description": "REQ: FLT-902 (T24.29) — what the group filters by category (absent: nothing set)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "devicesThisHour": {
             "type": "integer",
             "format": "int64",
@@ -17223,6 +18238,10 @@
           "filterAaaa": {
             "type": "boolean",
             "description": "REQ: FLT-016 (T12.5) — AAAA questions get no data (the group's devices use IPv4)."
+          },
+          "filterScope": {
+            "type": "string",
+            "description": "REQ: FLT-902 — \"Off\", \"Basic\", \"Enhanced (3 of 21)\" and \"Ad block\", for the Filter Scope column."
           },
           "lists": {
             "type": [
@@ -17278,6 +18297,13 @@
             "type": "boolean",
             "description": "REQ: FLT-011 (T7.11) — safe search, and YouTube's restriction: `strict`, `moderate`,\nor `off` (absent when safe search is off)."
           },
+          "safeSearchEngines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "REQ: FLT-902 — the engines safe search covers (empty with `safeSearch`: every engine)."
+          },
           "schedules": {
             "type": "array",
             "items": {
@@ -17291,6 +18317,13 @@
               "type": "string"
             }
           },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProfileSource"
+            },
+            "description": "REQ: FLT-902 — who the group applies to: its networks, router names and devices, for the\nprofile list's Source column."
+          },
           "upstreams": {
             "type": [
               "string",
@@ -17303,6 +18336,46 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "GroupSelection": {
+        "type": "object",
+        "description": "What one group selects.",
+        "required": [
+          "group",
+          "content",
+          "categories",
+          "sources",
+          "unknown"
+        ],
+        "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The categories in effect (the level's, plus ads), catalog order."
+          },
+          "content": {
+            "$ref": "#/components/schemas/GroupContentInfo"
+          },
+          "group": {
+            "type": "string"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The sources they use."
+          },
+          "unknown": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "IDs this version does not know: ignored, and reported."
           }
         }
       },
@@ -19408,6 +20481,17 @@
                   "type": "string",
                   "description": "`#rrggbb` for charts and chips (configured, or a stable pick)."
                 },
+                "content": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/GroupContentInfo",
+                      "description": "REQ: FLT-902 (T24.29) — what the group filters by category (absent: nothing set)."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "devicesThisHour": {
                   "type": "integer",
                   "format": "int64",
@@ -19427,6 +20511,10 @@
                 "filterAaaa": {
                   "type": "boolean",
                   "description": "REQ: FLT-016 (T12.5) — AAAA questions get no data (the group's devices use IPv4)."
+                },
+                "filterScope": {
+                  "type": "string",
+                  "description": "REQ: FLT-902 — \"Off\", \"Basic\", \"Enhanced (3 of 21)\" and \"Ad block\", for the Filter Scope column."
                 },
                 "lists": {
                   "type": [
@@ -19482,6 +20570,13 @@
                   "type": "boolean",
                   "description": "REQ: FLT-011 (T7.11) — safe search, and YouTube's restriction: `strict`, `moderate`,\nor `off` (absent when safe search is off)."
                 },
+                "safeSearchEngines": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "REQ: FLT-902 — the engines safe search covers (empty with `safeSearch`: every engine)."
+                },
                 "schedules": {
                   "type": "array",
                   "items": {
@@ -19494,6 +20589,13 @@
                   "items": {
                     "type": "string"
                   }
+                },
+                "sources": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProfileSource"
+                  },
+                  "description": "REQ: FLT-902 — who the group applies to: its networks, router names and devices, for the\nprofile list's Source column."
                 },
                 "upstreams": {
                   "type": [
@@ -19686,6 +20788,13 @@
                     "$ref": "#/components/schemas/ListShare"
                   },
                   "description": "Lists it shares names with, most shared first."
+                },
+                "owners": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ListOwner"
+                  },
+                  "description": "REQ: FLT-901 (T24.29) — the categories that use this list. A list with owners is a category\nlist: it takes its source from the catalog and can be refreshed and put in shadow mode, not\nedited or deleted (409 `owned_by_category`)."
                 },
                 "refreshing": {
                   "type": "boolean",
@@ -21477,6 +22586,13 @@
             },
             "description": "Lists it shares names with, most shared first."
           },
+          "owners": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListOwner"
+            },
+            "description": "REQ: FLT-901 (T24.29) — the categories that use this list. A list with owners is a category\nlist: it takes its source from the catalog and can be refreshed and put in shadow mode, not\nedited or deleted (409 `owned_by_category`)."
+          },
           "refreshing": {
             "type": "boolean",
             "description": "REQ: FLT-004 — a refresh asked for (`POST /api/v1/lists/refresh`) is waiting to start\nor downloading this list now (also true during a scheduled download). It clears when\nthe download ends; the snapshot follows within seconds if the content changed."
@@ -21580,6 +22696,24 @@
             "format": "int64",
             "description": "Names no other list of its kind has: what turning it off would lose.",
             "minimum": 0
+          }
+        }
+      },
+      "ListOwner": {
+        "type": "object",
+        "description": "REQ: FLT-901 — a category that uses a list.",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The category's ID (`adult`)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its name (`Adult content`)."
           }
         }
       },
@@ -23436,6 +24570,32 @@
           }
         }
       },
+      "NotOfferedView": {
+        "type": "object",
+        "description": "A category the catalog does not offer, and why.",
+        "required": [
+          "name",
+          "group",
+          "reason"
+        ],
+        "properties": {
+          "alternative": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
       "NoteRequest": {
         "type": "object",
         "description": "REQ: OBS-033 — `POST /api/v1/annotations`: a note on every time chart.",
@@ -24163,6 +25323,33 @@
           }
         }
       },
+      "PresetView": {
+        "type": "object",
+        "description": "A preset (`basic`).",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "categories"
+        ],
+        "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "ProbeResult": {
         "type": "object",
         "description": "REQ: OBS-020 (ADR-107) — one synthetic probe: a DNS listener asked through its own\nprotocol, or an extra target, from one node, and the listener's certificate.",
@@ -24343,6 +25530,103 @@
           "status": 400,
           "title": "Invalid parameter",
           "type": "https://telltaledns.dev/problems/invalid_parameter"
+        }
+      },
+      "ProfileDevices": {
+        "type": "object",
+        "description": "The picker's data.",
+        "required": [
+          "networks",
+          "devices"
+        ],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProfileSource"
+            }
+          },
+          "networks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProfileSource"
+            }
+          }
+        }
+      },
+      "ProfileKey": {
+        "type": "object",
+        "description": "One way to recognize a device.",
+        "required": [
+          "kind",
+          "value"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "`mac`, `ip`, `name` (a router name), or `id` (a client ID)."
+          },
+          "randomized": {
+            "type": "boolean",
+            "description": "A MAC with the locally administered bit (a private Wi-Fi address, ADR-910): it may change."
+          },
+          "value": {
+            "type": "string",
+            "description": "As a `[[client]] match` key is written (`aa:bb:..`, `192.168.1.5`, `hostname:tv`)."
+          }
+        }
+      },
+      "ProfileSource": {
+        "type": "object",
+        "description": "A network or a device the picker offers (REQ: FLT-902).",
+        "required": [
+          "kind",
+          "label",
+          "id",
+          "icon"
+        ],
+        "properties": {
+          "configured": {
+            "type": "boolean",
+            "description": "A configured device (a `[[client]]`), as opposed to one only seen."
+          },
+          "definedIn": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the device is defined: `file` (read-only) or `api`."
+          },
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The group a device is in now (its effective group), or the group that holds a network."
+          },
+          "icon": {
+            "type": "string",
+            "description": "A device class (`phone`, `tv`, ...), or `network`."
+          },
+          "id": {
+            "type": "string",
+            "description": "What to write: a CIDR for a network, a configured device's name, or a seen device's address."
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProfileKey"
+            },
+            "description": "The keys the device can be selected by."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`network` or `device`."
+          },
+          "label": {
+            "type": "string",
+            "description": "The name to show: a network's name, a device's name or its address."
+          }
         }
       },
       "PromotePlan": {
@@ -26469,6 +27753,160 @@
           }
         }
       },
+      "SourceState": {
+        "type": "object",
+        "description": "Where a source stands on this node.",
+        "required": [
+          "list",
+          "downloaded",
+          "state",
+          "bytes",
+          "lines"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "downloaded": {
+            "type": "boolean",
+            "description": "False until a group uses it and it has downloaded."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastChangedUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "lines": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "list": {
+            "type": "string",
+            "description": "The list the node keeps it in (`cat-<id>`, or a file's list with the same URL)."
+          },
+          "providedBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A list the config files define has this source's URL, so nothing is downloaded twice and\nthe checkbox says \"provided by list X, set by file\"."
+          },
+          "state": {
+            "type": "string",
+            "description": "`unused` (no group selects it), `pending`, `ok` or `failed`."
+          }
+        }
+      },
+      "SourceView": {
+        "type": "object",
+        "description": "One source, with its licence and size.",
+        "required": [
+          "id",
+          "name",
+          "maintainer",
+          "url",
+          "format",
+          "licence",
+          "licenceUrl",
+          "homepage",
+          "cadence",
+          "entries",
+          "bytes",
+          "weight",
+          "refreshSeconds",
+          "checked",
+          "pushed",
+          "categories",
+          "state"
+        ],
+        "properties": {
+          "attribution": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A line shown next to the checkbox (CC BY-SA sources)."
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cadence": {
+            "type": "string"
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Categories that can use it."
+          },
+          "checked": {
+            "type": "string",
+            "description": "The catalog's check date and the maintainer's last push on it."
+          },
+          "entries": {
+            "type": "integer",
+            "format": "int64",
+            "description": "From the file's header when the catalog was built.",
+            "minimum": 0
+          },
+          "format": {
+            "type": "string"
+          },
+          "homepage": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "licence": {
+            "type": "string",
+            "description": "SPDX identifier."
+          },
+          "licenceUrl": {
+            "type": "string"
+          },
+          "maintainer": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pushed": {
+            "type": "string"
+          },
+          "refreshSeconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How often this node refreshes it.",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/SourceState"
+          },
+          "url": {
+            "type": "string"
+          },
+          "weight": {
+            "type": "string",
+            "description": "`light` or `heavy`."
+          }
+        }
+      },
       "Step": {
         "type": "string",
         "description": "Time-bucket size for [`TimeseriesParams`].",
@@ -26775,6 +28213,30 @@
           "reason": {
             "type": "string",
             "description": "`rate`: over this subscriber's `rate`; `lag`: the subscriber fell behind."
+          }
+        }
+      },
+      "TierView": {
+        "type": "object",
+        "description": "A tier of a category.",
+        "required": [
+          "id",
+          "name",
+          "sources"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The sources this tier adds or switches to."
           }
         }
       },

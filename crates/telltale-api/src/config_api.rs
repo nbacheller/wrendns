@@ -82,6 +82,7 @@ pub(crate) fn expected_version(headers: &HeaderMap) -> Result<Option<u64>, Probl
         })
 }
 
+#[allow(clippy::too_many_lines)] // the route table
 pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
     use axum::routing::put;
     Router::new()
@@ -109,6 +110,11 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
         )
         .route("/api/v1/lists/{name}", put(put_list).delete(delete_list))
         .route("/api/v1/groups/{name}", put(put_group).delete(delete_group))
+        // REQ: FLT-901 (T24.29) - the category budget and the ad block size.
+        .route(
+            "/api/v1/filter-settings/default",
+            put(put_filter_settings).delete(delete_filter_settings),
+        )
         // REQ: OBS-010 (T9.6)
         .route(
             "/api/v1/alerts/destinations/{name}",
@@ -375,6 +381,19 @@ pub(crate) async fn put_list(
         Ok(i) => i,
         Err(p) => return p.into_response(),
     };
+    // REQ: FLT-901 (ADR-994 item 9) — a category list takes its source from the catalog: only
+    // its mode can be set (refreshing and shadow stay), anything else is refused.
+    if telltale_config::categories::is_category_list(&name)
+        && let Some(o) = input.as_object()
+        && let Some(k) = o.keys().find(|k| !matches!(k.as_str(), "mode" | "name"))
+    {
+        return Problem::new(
+            Code::OwnedByCategory,
+            format!("`{name}` is a category list: `{k}` comes from the catalog and can't be changed here"),
+        )
+        .hint("Change which categories a group uses (Groups, Categories); a category list can be refreshed and put in shadow mode.")
+        .into_response();
+    }
     let request = format!("PUT /lists/{name} {}", json_of(&input));
     write(
         backend,
@@ -409,6 +428,28 @@ pub(crate) async fn delete_list(
     headers: HeaderMap,
     ext: axum::http::Extensions,
 ) -> Response {
+    // REQ: FLT-901 — a category list goes when no group uses it; only a mode override of one
+    // (shadow) can be deleted.
+    if telltale_config::categories::is_category_list(&name) {
+        let bk = Arc::clone(&backend);
+        let n = name.clone();
+        let override_exists = blocking(move || {
+            Ok(bk
+                .config_entries(Some("list"))
+                .iter()
+                .any(|e| e.name == n && e.source != "file"))
+        })
+        .await
+        .unwrap_or(false);
+        if !override_exists {
+            return Problem::new(
+                Code::OwnedByCategory,
+                format!("`{name}` is a category list: it goes when no group uses its category"),
+            )
+            .hint("Stop selecting its category in the groups that do (Groups, Categories).")
+            .into_response();
+        }
+    }
     let request = format!("DELETE /lists/{name}");
     write(
         backend,
@@ -431,7 +472,9 @@ pub(crate) async fn delete_list(
 /// configuration is checked before anything is stored. On a node whose configuration comes from
 /// Git, the response's `toml` says what to add to the repository to keep the change.
 #[utoipa::path(put, path = "/api/v1/groups/{name}", tag = "config",
-    params(("name" = String, Path, description = "The name."), DryRun),
+    params(("name" = String, Path, description = "The name."),
+        ("confirm" = Option<bool>, Query, description = "Accept the cost of a heavy `content` selection (see `PUT /groups/{name}/content`)."),
+        DryRun),
     request_body = Object,
     responses(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
@@ -442,11 +485,28 @@ pub(crate) async fn put_group(
     State((backend, auth)): State<Ctx>,
     Path(name): Path<String>,
     Query(q): Query<DryRun>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
     headers: HeaderMap,
     ext: axum::http::Extensions,
     b: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Response {
     let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    // REQ: FLT-901, FLT-902 (T24.29) — a change to the group's `content` is checked against the
+    // catalog and the node's budget, is a person's (an agent token is refused), and a group
+    // that leaves `content` out keeps the one it has.
+    let input = match crate::categories_api::guard_group_put(
+        &backend,
+        &ext,
+        &name,
+        input,
+        q.dry_run.unwrap_or(false),
+        raw.as_deref(),
+    )
+    .await
+    {
         Ok(i) => i,
         Err(p) => return p.into_response(),
     };
@@ -2197,6 +2257,71 @@ pub(crate) async fn delete_local(
     .await
 }
 
+/// Set the filter's category settings (FLT-901, T24.29).
+///
+/// `entry_budget` is the most distinct blocklist entries the selected categories may add before
+/// the Categories view warns (default 1,000,000; a node too small for a selection refuses it
+/// whatever this says), and `ads_tier` is the size of the Ad Block category (`light`, `pro`,
+/// `pro_plus`, `ultimate`). A field the config files set can't be changed here (409
+/// `set_by_file`). Applies within a few seconds on every node; changing `ads_tier` makes the
+/// primary download the other list. No agent can change it.
+#[utoipa::path(put, path = "/api/v1/filter-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files set that field, and they win."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A field is wrong or unknown, or the configuration wouldn't be valid."),
+    ))]
+pub(crate) async fn put_filter_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::Filter,
+        "/filter-settings/default",
+    )
+    .await
+}
+
+/// Go back to the config file's category settings (FLT-901).
+///
+/// Removes what the API or UI stored: `entry_budget` and `ads_tier` take the file's values (or the
+/// defaults) again. Needs the operator role.
+#[utoipa::path(delete, path = "/api/v1/filter-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+    ))]
+pub(crate) async fn delete_filter_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::Filter,
+        "DELETE /filter-settings/default",
+    )
+    .await
+}
+
 /// Set the `[clients]` setting this API changes (DNS-023, T24.13, ADR-914).
 ///
 /// Only `mdns` is here: when on, TelltaleDNS listens for mDNS announcements on every node, which
@@ -2377,6 +2502,63 @@ async fn delete_settings(
     .await
 }
 
+/// REQ: FLT-901 — the options of a write with `dry_run` decided by the caller.
+pub(crate) fn write_opts(q: &DryRun, dry_run: bool) -> WriteOpts {
+    let mut o = dry(q);
+    o.dry_run = dry_run;
+    o
+}
+
+/// REQ: FLT-902 — writes who a group applies to (`PUT /groups/{name}/sources`) as one change.
+#[allow(clippy::too_many_arguments)] // the inputs of `write`
+pub(crate) async fn write_group_sources(
+    backend: Arc<dyn Backend>,
+    auth: Arc<Auth>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    dry: WriteOpts,
+    request: String,
+    name: String,
+    body: serde_json::Value,
+) -> Response {
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry,
+        request,
+        name,
+        Op::Managed(ManagedKind::GroupSources, Some(body)),
+    )
+    .await
+}
+
+/// REQ: FLT-901 — writes a group entry (the whole definition) like `PUT /groups/{name}`.
+#[allow(clippy::too_many_arguments)] // the inputs of `write`
+pub(crate) async fn write_group_entry(
+    backend: Arc<dyn Backend>,
+    auth: Arc<Auth>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    dry: WriteOpts,
+    request: String,
+    name: String,
+    body: serde_json::Value,
+) -> Response {
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry,
+        request,
+        name,
+        Op::Managed(ManagedKind::Group, Some(body)),
+    )
+    .await
+}
+
 /// What a write changes.
 enum Op {
     Client(Option<ClientInput>),
@@ -2394,6 +2576,7 @@ impl Op {
             Self::Managed(ManagedKind::UpstreamGroup, _) => "upstream_group",
             Self::Managed(ManagedKind::List, _) => "list",
             Self::Managed(ManagedKind::Group, _) => "group",
+            Self::Managed(ManagedKind::GroupSources, _) => "group_sources",
             Self::Managed(ManagedKind::AlertDestination, _) => "alert_destination",
             Self::Managed(ManagedKind::AlertRule, _) => "alert_rule",
             Self::Managed(ManagedKind::Router, _) => "router",
@@ -2410,6 +2593,7 @@ impl Op {
             Self::Managed(ManagedKind::KubernetesMap, _) => "kubernetes_map",
             Self::Managed(ManagedKind::Special, _) => "special",
             Self::Managed(ManagedKind::Local, _) => "local",
+            Self::Managed(ManagedKind::Filter, _) => "filter_settings",
             // LOW 5: not one letter from the device writes' `client.put`.
             Self::Managed(ManagedKind::Clients, _) => "clients_settings",
             Self::Managed(ManagedKind::Discovery, _) => "discovery",

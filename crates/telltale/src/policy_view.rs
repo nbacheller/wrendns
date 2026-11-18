@@ -202,6 +202,7 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
 
     // Lists: what the filter enforces for this device (the same mask a query is checked against).
     let mut lists = Vec::new();
+    let mut categories: Vec<PolicyItem> = Vec::new();
     // REQ: FLT-006 — services a schedule turns on now are blocked services too.
     let mut scheduled_services: Vec<PolicyItem> = Vec::new();
     if let Some(f) = st.filter {
@@ -229,6 +230,19 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
                             ..PolicyItem::default()
                         });
                     }
+                    continue;
+                }
+                // REQ: FLT-901 — a category list is shown in the Categories section, by the
+                // category it stands for.
+                if let Some(label) = telltale_config::categories::label_of_list(&l.name) {
+                    categories.push(PolicyItem {
+                        label,
+                        detail: Some(format!("list {}", l.name)),
+                        state: Some("on".into()),
+                        from: Some(format!("group {} ({})", group.name, group.content_summary)),
+                        link: link("/lists", "list", &l.name),
+                        ..PolicyItem::default()
+                    });
                     continue;
                 }
                 lists.push(PolicyItem {
@@ -260,6 +274,19 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
     }
     // Shadow lists are counted, never enforced (OBS-018): say which ones this device would meet.
     for n in &policy.shadow_lists {
+        if let Some(label) = telltale_config::categories::label_of_list(n) {
+            if group.cat_lists.iter().any(|x| **x == **n) {
+                categories.push(PolicyItem {
+                    label,
+                    detail: Some(format!("list {n}: counted, never enforced")),
+                    state: Some("shadow".into()),
+                    from: Some(format!("group {}", group.name)),
+                    link: link("/lists", "list", n),
+                    ..PolicyItem::default()
+                });
+            }
+            continue;
+        }
         let uses = group
             .lists
             .as_ref()
@@ -285,6 +312,25 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
         },
         items: lists,
         link: plain_link("/lists"),
+    });
+    // REQ: FLT-901, FLT-902 (T24.29, ADR-996 section 4) — the group's content categories: the
+    // extension point the policy panel was built with.
+    sections.push(PolicySection {
+        id: "categories".into(),
+        title: "Categories".into(),
+        summary: if categories.is_empty() {
+            format!(
+                "Group {} blocks no content category ({}).",
+                group.name, group.content_summary
+            )
+        } else {
+            format!(
+                "Group {} filters by category: {}.",
+                group.name, group.content_summary
+            )
+        },
+        items: categories,
+        link: group_link(&group.name),
     });
 
     // Blocked services, from every group the device is in.

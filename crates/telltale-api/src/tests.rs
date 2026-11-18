@@ -7,6 +7,7 @@ use tower::ServiceExt;
 
 use super::*;
 
+mod flt_901_content;
 mod obs_901_map;
 
 /// Records what it was asked for; returns fixed data.
@@ -25,6 +26,10 @@ struct Fake {
     map: Mutex<(Option<crate::map::MapSettings>, crate::map::MapParts)>,
     /// REQ: FLT-004 (T24.28) - lists where `quiet` nearly duplicates `ads`, for the prune tests.
     prunable: std::sync::atomic::AtomicBool,
+    /// REQ: FLT-901 (T24.29) - the groups the category tests read, and the memory limit the node
+    /// reports (0: unknown). Group writes succeed while there are groups.
+    cat_groups: Mutex<Vec<GroupInfo>>,
+    cat_memory: std::sync::atomic::AtomicU64,
 }
 
 /// The one finding the fake reports.
@@ -119,6 +124,22 @@ impl Backend for Fake {
             w.expect
                 .map_or_else(String::new, |v| format!(" expect={v}"))
         ));
+        if w.kind == crate::ManagedKind::Group && !self.cat_groups.lock().unwrap().is_empty() {
+            let applied = !w.dry_run;
+            return Box::pin(async move {
+                Ok(crate::model::ConfigChange {
+                    applied,
+                    config_version: 7,
+                    before: None,
+                    after: None,
+                    recent_queries: 0,
+                    impact: String::new(),
+                    warnings: Vec::new(),
+                    keep_in_git: None,
+                    simulation: None,
+                })
+            });
+        }
         if w.kind == crate::ManagedKind::List
             && self.prunable.load(std::sync::atomic::Ordering::SeqCst)
         {
@@ -441,6 +462,7 @@ impl Backend for Fake {
             stale_days: None,
             last_success_unix_seconds: None,
             refreshing: false,
+            owners: Vec::new(),
         };
         if self.prunable.load(std::sync::atomic::Ordering::SeqCst) {
             let share = |n: &str, names| crate::model::ListShare {
@@ -506,7 +528,15 @@ impl Backend for Fake {
         Ok(self.blocking_state())
     }
     fn groups(&self) -> Vec<GroupInfo> {
-        Vec::new()
+        self.cat_groups.lock().unwrap().clone()
+    }
+    // REQ: FLT-901 - the memory limit the test sets.
+    fn category_env(&self) -> crate::categories_api::CategoryEnv {
+        let m = self.cat_memory.load(std::sync::atomic::Ordering::SeqCst);
+        crate::categories_api::CategoryEnv {
+            memory_limit_bytes: (m > 0).then_some(m),
+            ..crate::categories_api::CategoryEnv::default()
+        }
     }
     fn clients(&self) -> Vec<ClientInfo> {
         Vec::new()
@@ -1870,8 +1900,10 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // /otlp/default (T23.11); 158 with API-902's /guarded, /guarded/{id},
     // /guarded/{id}/preview, /guarded/pending/{id}/confirm and /guarded/pending/{id}/cancel (T27.13);
     // 161 with FLT-004's /lists/overlap, /lists/prune-plan and /lists/prune (T24.28);
-    // 162 with FLT-006's /clients/{id}/policy (T24.30).
-    assert_eq!(paths.len(), 162);
+    // 162 with FLT-006's /clients/{id}/policy (T24.30); 168 with FLT-901's /categories,
+    // /categories/budget, /groups/{name}/content, /filter-settings/default and FLT-902's
+    // /groups/{name}/sources and /profiles/devices (T24.29).
+    assert_eq!(paths.len(), 168);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
