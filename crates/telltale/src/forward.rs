@@ -943,6 +943,62 @@ mod tests {
         assert_eq!(e.code, Code::ListsNotHere);
     }
 
+    // REQ: DSC-004 (ADR-1002), CLU-003 - an SNMP test crosses the channel intact (who, which agent, dry
+    // run, why), the designated node's answer comes back as the same result, and a refusal keeps its
+    // code (a node that isn't designated answers 409, a cooldown 429).
+    #[test]
+    fn dsc_004_snmp_test_round_trips() {
+        let w = Write::SnmpTest(SnmpTestWrite {
+            agent: "gateway".into(),
+            dry_run: true,
+            by: "alice".into(),
+            reason: Some("the gateway was replaced".into()),
+        });
+        let back: Write = serde_json::from_slice(&serde_json::to_vec(&w).unwrap()).unwrap();
+        let Write::SnmpTest(r) = back else {
+            panic!("expected an SNMP test")
+        };
+        assert_eq!(
+            (
+                r.agent.as_str(),
+                r.dry_run,
+                r.by.as_str(),
+                r.reason.as_deref()
+            ),
+            ("gateway", true, "alice", Some("the gateway was replaced"))
+        );
+        let res = telltale_api::model::SnmpTestResult {
+            agent: "gateway".into(),
+            dry_run: false,
+            ok: true,
+            oids: Vec::new(),
+            capability: Some(telltale_api::model::AgentCapability {
+                probed_unix: 5,
+                level: "authPriv".into(),
+                ..Default::default()
+            }),
+            error: None,
+            duration_ms: Some(40),
+            node: Some("primary".into()),
+            note: "n".into(),
+        };
+        let wire = encode_answer(Ok(res)).unwrap();
+        let got: telltale_api::model::SnmpTestResult = decode_answer(&wire).unwrap();
+        assert_eq!(
+            (got.node.as_deref(), got.capability.map(|c| c.level)),
+            (Some("primary"), Some("authPriv".to_owned()))
+        );
+        let wire = encode_answer::<()>(Err(telltale_api::discovery_api::not_here(
+            true,
+            Some("pi-a"),
+        )))
+        .unwrap();
+        let e = decode_answer::<()>(&wire).unwrap_err();
+        assert_eq!(e.code, Code::DiscoveryNotHere);
+        // The debug form of a forwarded write names no secret (there is none in it).
+        assert!(format!("{w:?}").contains("gateway"));
+    }
+
     // REQ: FLT-004, CLU-003, AGT-005 — the primary queues a forwarded refresh on its own
     // fetcher and audits it as "<user> via <entry site>", with the entry node and the reason;
     // a dry run queues nothing and isn't audited.

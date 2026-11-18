@@ -202,7 +202,7 @@ impl AltId {
     }
 }
 
-const ALL_ALTS: [AltId; 11] = [
+pub(crate) const ALL_ALTS: [AltId; 11] = [
     AltId::ArpPhysical,
     AltId::ArpMedia,
     AltId::IfTable,

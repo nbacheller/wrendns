@@ -4230,12 +4230,12 @@
       "description": "REQ: DSC-003 — the SNMP version of a credential.",
       "oneOf": [
         {
-          "description": "SNMPv2c: the community travels in clear text.",
+          "description": "`SNMPv2c`: the community travels in clear text.",
           "type": "string",
           "const": "v2c"
         },
         {
-          "description": "SNMPv3 USM at authNoPriv or authPriv.",
+          "description": "`SNMPv3` USM at authNoPriv or authPriv.",
           "type": "string",
           "const": "v3"
         }

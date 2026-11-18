@@ -130,6 +130,12 @@ impl Runtime {
         Arc::clone(&self.board)
     }
 
+    /// The agents' board, for tests.
+    #[cfg(test)]
+    pub(crate) fn agents_for_tests(&self) -> Arc<AgentsBoard> {
+        Arc::clone(&self.agents)
+    }
+
     /// Sets the runtime up as a designated node that runs the poller's side, without starting the
     /// thread or a worker: a test stands in for the worker and answers the queue (T25.6).
     #[cfg(test)]
@@ -379,6 +385,12 @@ impl Runtime {
                     t.rows.unwrap_or(0),
                 );
             }
+        }
+        if agents
+            .iter()
+            .all(|a| a.tables.iter().all(|t| t.state == "unprobed"))
+        {
+            return;
         }
         w.family(
             "telltale_discovery_agent_table_answered",

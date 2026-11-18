@@ -3,6 +3,7 @@
 //! cooldown. No packet is sent: a task answers the queued jobs the way the SNMP worker would.
 
 #![allow(
+    clippy::cast_possible_truncation,
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
     clippy::unwrap_used,
@@ -436,4 +437,172 @@ async fn dsc_004_snmp_test_dry_run_and_cooldown() {
     assert!(rt.snmp_test(write("gateway", true)).await.is_ok());
     answerer.abort();
     rt.stop();
+}
+
+/// REQ: DSC-004 (ADR-908 "one missed poll doesn't drop a host") — an agent's ARP binding is dropped when
+/// no poll has refreshed it for twice the slowest agent's interval (15 minutes at least), and it is
+/// refreshed by the next poll. With no agent configured the limit is 15 minutes.
+#[test]
+fn dsc_004_arp_bindings_expire_after_twice_the_interval() {
+    use super::super::inventory::{Inventory, Key};
+    use super::super::sources::parse_mac;
+    use super::super::thread::{self, Providers, SnmpSetup};
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config(
+        dir.path(),
+        &format!(
+            "{}interval_secs = 3600\n",
+            agent_toml("gateway", "192.0.2.1", "v2")
+        ),
+    );
+    let ctx = Arc::new(PollerCtx::of(&cfg));
+    assert_eq!(ctx.arp_max_age_secs(), 7_200);
+    assert_eq!(PollerCtx::default().arp_max_age_secs(), 900);
+    let providers = Providers {
+        snmp: Some(SnmpSetup {
+            ctx,
+            board: Arc::new(AgentsBoard::default()),
+        }),
+        ..Providers::default()
+    };
+    let now = 1_800_000_000u64;
+    let mut inv = Inventory::new(now - 10 * 86_400);
+    let mut o = Observation::new(super::super::inventory::Source::SnmpArp, now);
+    let mac = parse_mac("3c:22:fb:01:00:01").unwrap();
+    o.mac = Some(mac);
+    o.ip = Some("192.0.2.10".parse().unwrap());
+    inv.apply(&[o], now);
+    thread::tick(&mut inv, &providers, now + 7_000);
+    assert!(inv.get(&Key::Mac(mac)).unwrap().snmp_eligible());
+    thread::tick(&mut inv, &providers, now + 7_201);
+    assert!(
+        !inv.get(&Key::Mac(mac))
+            .is_some_and(super::super::inventory::Entry::snmp_eligible),
+        "no poll refreshed it for two intervals"
+    );
+}
+
+/// REQ: DSC-014 (`telltale_discovery_*` metrics) — each agent has its up, poll, failure, last-success,
+/// duration and per-table series; a table that was never probed has no `answered` sample.
+#[test]
+fn dsc_014_agent_metrics_name_each_agent_and_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config(dir.path(), &agent_toml("gateway", "192.0.2.1", "v2"));
+    let rt = Runtime::default();
+    rt.designate_for_tests(&cfg);
+    let mut w = telltale_telemetry::prom::PromWriter::new();
+    rt.render_metrics(&mut w);
+    let out = w.finish();
+    assert!(
+        out.contains("telltale_discovery_agent_up{agent=\"gateway\"} 0"),
+        "{out}"
+    );
+    assert!(out.contains("telltale_discovery_agent_polls_total{agent=\"gateway\"} 0"));
+    assert!(
+        !out.contains("telltale_discovery_agent_table_answered"),
+        "{out}"
+    );
+    let result = SnmpResult {
+        elapsed_ms: 1_500,
+        capability: Some(Capability {
+            level: "v2c".into(),
+            engine_id: None,
+            sys_object_id: None,
+            choices: vec![Choice {
+                part: "arp".into(),
+                alt: Some("ipNetToPhysicalTable".into()),
+            }],
+        }),
+        walks: vec![WalkStat {
+            part: "arp".into(),
+            alt: "ipNetToPhysicalTable".into(),
+            rows: 98,
+            stop: "end".into(),
+            error: None,
+        }],
+        ..SnmpResult::default()
+    };
+    rt.agents_for_tests().record_success(
+        "gateway",
+        &result,
+        Interpreted::default(),
+        vec![],
+        1_800_000_000,
+    );
+    let mut w = telltale_telemetry::prom::PromWriter::new();
+    rt.render_metrics(&mut w);
+    let out = w.finish();
+    for want in [
+        "telltale_discovery_agent_up{agent=\"gateway\"} 1",
+        "telltale_discovery_agent_polls_total{agent=\"gateway\"} 1",
+        "telltale_discovery_agent_poll_failures_total{agent=\"gateway\"} 0",
+        "telltale_discovery_agent_last_success_timestamp_seconds{agent=\"gateway\"} 1800000000",
+        "telltale_discovery_agent_poll_duration_seconds{agent=\"gateway\"} 1.5",
+        "telltale_discovery_agent_table_rows{agent=\"gateway\",table=\"arp\"} 98",
+        "telltale_discovery_agent_table_answered{agent=\"gateway\",table=\"arp\"} 1",
+        "telltale_discovery_agent_table_answered{agent=\"gateway\",table=\"bridge\"} 0",
+    ] {
+        assert!(out.contains(want), "{want}\n{out}");
+    }
+}
+
+/// REQ: DSC-004, DSC-015 (ADR-908 "the codec is panic-free") — the table parsers take whatever a device
+/// sends: rows of the wrong type, the wrong shape, absurd indexes and oversized text, under every
+/// root of every alternative. None panics, every row is bounded, and device text is cleaned.
+#[test]
+fn dsc_004_parsers_survive_hostile_rows() {
+    use super::super::snmp_tables::{self, ALL_ALTS};
+    use telltale_snmp::oid::Oid;
+    use telltale_snmp::pdu::{Value, VarBind};
+    // A small seeded generator: no dependency, the same rows every run.
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    for alt in ALL_ALTS {
+        let walks: Vec<Vec<VarBind>> = alt
+            .columns()
+            .iter()
+            .map(|root| {
+                let base = Oid::parse(root).unwrap();
+                (0..400)
+                    .filter_map(|_| {
+                        let mut oid = base.clone();
+                        for _ in 0..(next() % 9) {
+                            // Mostly small arcs, sometimes the largest one.
+                            let arc = if next() % 7 == 0 {
+                                u32::MAX
+                            } else {
+                                (next() % 300) as u32
+                            };
+                            oid = oid.child(arc)?;
+                        }
+                        let value = match next() % 8 {
+                            0 => Value::Integer(i64::MIN),
+                            1 => Value::Integer((next() % 20).cast_signed() - 3),
+                            2 => Value::OctetString(vec![0x1b; (next() % 400) as usize]),
+                            3 => Value::OctetString((0..(next() % 9) as u8).collect()),
+                            4 => Value::Null,
+                            5 => Value::EndOfMibView,
+                            6 => Value::Gauge32(u32::MAX),
+                            _ => Value::OctetString(vec![b'a'; 6]),
+                        };
+                        Some(VarBind { oid, value })
+                    })
+                    .collect()
+            })
+            .collect();
+        let parsed = snmp_tables::parse(alt, &walks);
+        // Bounded by the input, and every text field is cut and has no control character.
+        let total: usize = walks.iter().map(Vec::len).sum();
+        assert!(parsed.rows.len() <= total, "{alt:?}");
+        let text = format!("{:?}", parsed.rows);
+        assert!(
+            !text.contains("\\u{1b}"),
+            "{alt:?}: control characters in device text"
+        );
+    }
 }
