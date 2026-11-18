@@ -295,7 +295,7 @@
       {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Address</th><th>Name it gave</th><th>DNS name</th><th>From</th><th>MAC</th><th>In TelltaleDNS</th></tr></thead>
+            <thead><tr><th>Address</th><th>Name it gave</th><th>DNS name</th><th>IPv6<HelpButton id="device-ipv6" /></th><th>From</th><th>MAC</th><th>In TelltaleDNS</th></tr></thead>
             <tbody>
               {#each found as l (l.ip)}
                 <tr>
@@ -308,6 +308,11 @@
                       {l.dnsName}
                       <button type="button" class="link small copy-btn" aria-label={'Copy ' + l.dnsName} onclick={() => copyName(l.ip, l.dnsName ?? '')}>Copy</button>
                       <span class="small muted" role="status" aria-live="polite" data-testid="copy-status">{copied?.ip === l.ip ? (copied.ok ? 'Copied' : 'Select to copy') : ''}</span>
+                    {:else}<span class="muted">none</span>{/if}
+                  </td>
+                  <td class="mono small" data-testid="ipv6">
+                    {#if l.ipv6?.length}
+                      {#each l.ipv6 as a (a)}<div>{a}</div>{/each}
                     {:else}<span class="muted">none</span>{/if}
                   </td>
                   <td><span class="badge info" data-testid="named-by">{sourceLabel(l)}</span></td>

@@ -31,7 +31,7 @@
 )]
 
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -113,6 +113,9 @@ struct Polled {
     /// address in the query log, but they aren't "seen", so device identification doesn't
     /// count them.
     offline: Seen,
+    /// REQ: DNS-023 (T24.8, ADR-983) — the connected clients' usable IPv6 addresses, by MAC
+    /// (UniFi's `ipv6_addresses`). They ride on the lease of the same MAC (see [`rebuild`]).
+    v6: Vec<(String, Ipv6Addr)>,
 }
 
 impl Polled {
@@ -227,6 +230,32 @@ pub(crate) fn unifi_clients(v: &Value) -> Seen {
             Some((mac, ip, name))
         })
         .collect()
+}
+
+/// REQ: DNS-023 (T24.8, ADR-983) — the IPv6 addresses UniFi reports for its connected clients
+/// (`ipv6_addresses` in a `stat/sta` row), by MAC: usable addresses only (`usable_ipv6`: no
+/// link-local), however many the row lists.
+pub(crate) fn unifi_ipv6(v: &Value) -> Vec<(String, Ipv6Addr)> {
+    let Some(data) = v.get("data").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for c in data {
+        let Some(mac) = c.get("mac").and_then(Value::as_str).map(mac_key) else {
+            continue;
+        };
+        let Some(list) = c.get("ipv6_addresses").and_then(Value::as_array) else {
+            continue;
+        };
+        for a in list.iter().filter_map(Value::as_str) {
+            if let Ok(ip) = a.trim().parse::<Ipv6Addr>()
+                && crate::devices::usable_ipv6(&ip)
+            {
+                out.push((mac.clone(), ip));
+            }
+        }
+    }
+    out
 }
 
 /// REQ: T22.2 — UniFi's known clients that have a fixed IP (a DHCP reservation), from a
@@ -466,6 +495,7 @@ async fn read_unifi(
         return Err(format!("{url}: HTTP {status}"));
     }
     let active = unifi_clients(&v);
+    let v6 = unifi_ipv6(&v);
     let mut notes = Vec::new();
     let mut optional =
         |what: &str, r: Result<(http::StatusCode, http::HeaderMap, Value), String>| match r {
@@ -520,6 +550,7 @@ async fn read_unifi(
         networks,
         notes,
         offline,
+        v6,
         ..Polled::routed(seen)
     })
 }
@@ -787,6 +818,7 @@ fn rebuild(order: &[String], parts: &HashMap<String, Polled>, view: &ArcSwap<Lea
                         expires: 0,
                         router: Some(router.to_owned()),
                         offline: false,
+                        ipv6: Vec::new(),
                     },
                 );
             }
@@ -796,6 +828,25 @@ fn rebuild(order: &[String], parts: &HashMap<String, Polled>, view: &ArcSwap<Lea
                 l.router = Some(router.to_owned());
             }
             Some(_) => {}
+        }
+    }
+    // REQ: DNS-023 (T24.8, ADR-983) — a connected device's IPv6 addresses, from any router's
+    // answer for its MAC (a Home Assistant name takes the addresses UniFi reports). Sorted and
+    // capped, so the same input always gives the same table.
+    let mut v6: HashMap<&str, Vec<Ipv6Addr>> = HashMap::new();
+    for name in order {
+        for (mac, ip) in parts.get(name).map_or(&[][..], |p| p.v6.as_slice()) {
+            v6.entry(mac.as_str()).or_default().push(*ip);
+        }
+    }
+    if !v6.is_empty() {
+        for l in m.values_mut() {
+            if let Some(list) = v6.get_mut(mac_key(&l.mac).as_str()) {
+                list.sort_unstable();
+                list.dedup();
+                list.truncate(crate::devices::MAX_IPV6);
+                l.ipv6.clone_from(list);
+            }
         }
     }
     // REQ: T8.2 (ADR-166) — an offline client only names an address no router reports as
@@ -813,6 +864,7 @@ fn rebuild(order: &[String], parts: &HashMap<String, Polled>, view: &ArcSwap<Lea
                 expires: 0,
                 router: Some(name.clone()),
                 offline: true,
+                ipv6: Vec::new(),
             });
         }
     }
@@ -1704,6 +1756,86 @@ mod tests {
         );
         assert_eq!(name(3).as_deref(), Some("nas"), "a name beats no name");
         assert_eq!(via(3).as_deref(), Some("opn"));
+    }
+
+    /// REQ: DNS-023 (T24.8, ADR-983) — UniFi's `ipv6_addresses`: usable ones only (no
+    /// link-local), by MAC; a row without the field, or with junk in it, gives none.
+    #[test]
+    fn dns_023_unifi_reports_ipv6_addresses() {
+        let v = serde_json::json!({"data": [
+            {"mac": "AA:BB:CC:00:00:01", "ip": "192.168.1.20", "ipv6_addresses":
+                ["fe80::1", "2001:db8:1::20", "fd00:1::20", "not an address", "::1"]},
+            {"mac": "aa:bb:cc:00:00:02", "ip": "192.168.1.21"},
+            {"mac": "aa:bb:cc:00:00:03", "ip": "192.168.1.22", "ipv6_addresses": "oops"}
+        ]});
+        let got = unifi_ipv6(&v);
+        let a = |s: &str| s.parse::<Ipv6Addr>().unwrap();
+        assert_eq!(
+            got,
+            vec![
+                ("aa:bb:cc:00:00:01".to_owned(), a("2001:db8:1::20")),
+                ("aa:bb:cc:00:00:01".to_owned(), a("fd00:1::20")),
+            ]
+        );
+    }
+
+    /// REQ: DNS-023 (T24.8, ADR-983) — a device's IPv6 addresses ride on the lease with its MAC,
+    /// whichever router named it (a Home Assistant name takes UniFi's addresses), sorted and
+    /// capped; an offline client gets none.
+    #[test]
+    fn dns_023_ipv6_addresses_ride_on_the_lease() {
+        let a = |s: &str| s.parse::<Ipv6Addr>().unwrap();
+        let mac = |n: u8| format!("aa:bb:cc:00:00:{n:02x}");
+        let ip = |n: u8| Ipv4Addr::new(192, 168, 1, n);
+        let order = vec!["udm".to_owned(), "ha".to_owned()];
+        let mut parts: HashMap<String, Polled> = HashMap::new();
+        parts.insert(
+            "udm".to_owned(),
+            Polled {
+                seen: vec![
+                    (RANK_ROUTER, (mac(1), ip(1), Some("tablet".into()))),
+                    (RANK_ROUTER, (mac(2), ip(2), None)),
+                ],
+                offline: vec![(mac(3), ip(3), Some("old-phone".into()))],
+                v6: vec![
+                    (mac(1), a("2001:db8::9")),
+                    (mac(1), a("2001:db8::1")),
+                    (mac(1), a("2001:db8::1")),
+                    (mac(2), a("fd00::2")),
+                    (mac(2), a("fd00::3")),
+                    (mac(2), a("fd00::4")),
+                    (mac(2), a("fd00::5")),
+                    (mac(2), a("fd00::6")),
+                    (mac(3), a("fd00::7")),
+                ],
+                ..Polled::default()
+            },
+        );
+        parts.insert(
+            "ha".to_owned(),
+            Polled {
+                seen: vec![(RANK_CURATED, (mac(2), ip(2), Some("Porch light".into())))],
+                ..Polled::default()
+            },
+        );
+        let view = ArcSwap::from_pointee(Leases::new());
+        rebuild(&order, &parts, &view);
+        let v = view.load();
+        assert_eq!(
+            v[&ip(1)].ipv6,
+            vec![a("2001:db8::1"), a("2001:db8::9")],
+            "sorted, once each"
+        );
+        assert_eq!(v[&ip(2)].hostname.as_deref(), Some("Porch light"));
+        assert_eq!(
+            v[&ip(2)].ipv6,
+            vec![a("fd00::2"), a("fd00::3"), a("fd00::4"), a("fd00::5")],
+            "the HA-named device takes UniFi's addresses, capped at four"
+        );
+        assert!(
+            v[&ip(3)].offline && v[&ip(3)].ipv6.is_empty(),
+            "offline: none"
+        );
     }
 
     /// REQ: T8.2 (ADR-166) — UniFi's offline known clients keep their names: the history (a bare

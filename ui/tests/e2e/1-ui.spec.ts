@@ -5152,6 +5152,39 @@ test('dns_023 discovered devices show their DNS name', async () => {
   }
 });
 
+// REQ: DNS-023 (T24.8, ADR-983) — a discovered device shows the IPv6 addresses its router reported (they answer AAAA and
+// ip6.arpa PTR under its DNS name); a device without any says none; a network's device list shows them too.
+test('dns_023 discovered device shows its ipv6 address', async () => {
+  const items = [
+    { ip: '10.20.2.41', mac: 'aa:bb:cc:dd:ee:41', hostname: 'kitchen-tablet', dnsName: 'kitchen-tablet.home.arpa', source: 'router', router: 'udm', expiresUnixSeconds: 0, ipv6: ['2001:db8:1::41', 'fd00:2::41'] },
+    { ip: '10.20.2.42', mac: 'aa:bb:cc:dd:ee:42', hostname: 'printer', dnsName: 'printer.home.arpa', source: 'router', router: 'udm', expiresUnixSeconds: 0 },
+  ];
+  await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items } }));
+  await page.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: NETWORKS } }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/clients?tab=discovered');
+    const row = page.getByRole('row').filter({ hasText: '10.20.2.41' });
+    await expect(row.getByTestId('dns-name')).toContainText('kitchen-tablet.home.arpa');
+    await expect(row.getByTestId('ipv6')).toContainText('2001:db8:1::41');
+    await expect(row.getByTestId('ipv6')).toContainText('fd00:2::41');
+    await expect(page.getByRole('row').filter({ hasText: '10.20.2.42' }).getByTestId('ipv6')).toContainText('none');
+    // The help topic opens from the column header.
+    await page.getByRole('button', { name: "Help: See a device's IPv6 addresses" }).click();
+    await expect(page.getByTestId('help-panel')).toContainText('ip6.arpa reverse name');
+    await page.keyboard.press('Escape');
+    // A network's device list shows them as well.
+    await page.goto('/#/');
+    await page.goto('/#/networks');
+    await page.getByRole('row').filter({ hasText: '10.20.2.0/24' }).getByTestId('network-open').click();
+    const dev = page.getByTestId('network-devices').getByRole('row').filter({ hasText: '10.20.2.41' });
+    await expect(dev.getByTestId('network-ipv6')).toContainText('2001:db8:1::41, fd00:2::41');
+  } finally {
+    await page.unroute('**/api/v1/dhcp/leases');
+    await page.unroute('**/api/v1/networks');
+  }
+});
+
 // REQ: DNS-023 (T24.14) — without a clipboard (plain HTTP on the LAN) the Copy button says the name is selectable.
 test('dns_023 copy falls back to select-to-copy when the clipboard is refused', async () => {
   const items = [{ ip: '10.20.2.33', mac: 'aa:bb:cc:dd:ee:33', hostname: 'hall', dnsName: 'hall.home.arpa', source: 'mdns', expiresUnixSeconds: 0 }];

@@ -2655,6 +2655,9 @@ impl Backend for ApiBackend {
                 router: l.router.clone(),
                 dns_name: if l.offline { None } else { dns_name(&l.ip) },
                 offline: l.offline,
+                // REQ: DNS-023 (T24.8) — the addresses the router reports; an offline client
+                // has none (it isn't on the network now).
+                ipv6: l.ipv6.iter().map(ToString::to_string).collect(),
             })
             .collect();
         // REQ: T8.3, T8.6 — and the names devices announce over mDNS (routers win). An offline
@@ -2678,6 +2681,7 @@ impl Backend for ApiBackend {
                 router: None,
                 dns_name: dns_name(&l.ip),
                 offline: false,
+                ipv6: Vec::new(),
             });
         }
         v.sort_by_key(|l| l.ip.parse::<std::net::Ipv4Addr>().map_or(0, u32::from));
@@ -7201,6 +7205,7 @@ mod top_client_name_tests {
             expires: 0,
             router: None,
             offline: false,
+            ipv6: Vec::new(),
         }
     }
 
@@ -7564,6 +7569,7 @@ mod dhcp_lease_tests {
             expires: 0,
             router: None,
             offline: true,
+            ipv6: Vec::new(),
         };
         src.pipeline
             .router_leases
@@ -7575,6 +7581,7 @@ mod dhcp_lease_tests {
             expires: 0,
             router: None,
             offline: false,
+            ipv6: Vec::new(),
         };
         src.pipeline
             .mdns_names

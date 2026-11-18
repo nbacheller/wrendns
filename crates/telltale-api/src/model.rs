@@ -1947,6 +1947,11 @@ pub struct DhcpLease {
     /// offline clients). It is listed so the admin can see it, but it names no DNS name, gives
     /// no discovery binding and isn't counted in a network's devices.
     pub offline: bool,
+    /// REQ: DNS-023 (T24.8, ADR-983) — the IPv6 addresses the router reports for the device
+    /// (global and unique-local, never link-local), up to 4. With `[local] device_domain` set,
+    /// each answers AAAA and an `ip6.arpa` PTR under `dnsName`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ipv6: Vec<String>,
 }
 
 /// REQ: API-013 (T22.2) — a network: a LAN or VLAN a router reported, or a client group's
@@ -3807,6 +3812,7 @@ mod dhcp_lease_tests {
             router: Some("udm".into()),
             dns_name: None,
             offline,
+            ipv6: Vec::new(),
         };
         let on = serde_json::to_value(lease(true)).expect("serializes");
         let off = serde_json::to_value(lease(false)).expect("serializes");

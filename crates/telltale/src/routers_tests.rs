@@ -1062,3 +1062,51 @@ token_ref = \"home_assistant.fresh3.api_key\"
     // The check saved nothing.
     assert_eq!(h.src.config.load().router.len(), 1);
 }
+
+/// REQ: DNS-023 (T24.8, ADR-983) — against a fake UniFi (answering every path with one client
+/// that has IPv6 addresses): the poll puts the usable addresses on the lease, the device-name
+/// table answers AAAA for them under the router's name, and `GET /dhcp/leases` lists them. The
+/// link-local address is dropped. Nothing here reaches a real console.
+#[tokio::test]
+async fn dns_023_fake_unifi_ipv6_names_reach_the_api_and_the_table() {
+    const UNIFI: &str = r#"{"data":[{"mac":"AA:BB:CC:00:00:20","ip":"192.168.1.20","name":"Kitchen Tablet","ipv6_addresses":["fe80::20","2001:db8:1::20","fd00:1::20"]}]}"#;
+    let addr = fake_router(UNIFI).await;
+    let h = with_secret("[local]\ndevice_domain = \"home.arpa\"\n");
+    let body = json!({"type": "unifi", "url": format!("http://{addr}"), "api_key_ref": "ha", "interval_secs": 60});
+    let (s, _, answer) = h.call("PUT", "/api/v1/routers/udm", Some(&body)).await;
+    assert_eq!(s, StatusCode::OK, "{answer}");
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(super::run(Arc::clone(&h.src), stop_rx));
+    h.src.routers_changed.notify_one();
+    let ip = Ipv4Addr::new(192, 168, 1, 20);
+    assert!(
+        eventually(|| leased(&h, ip).is_some()).await,
+        "the fake UniFi was not read"
+    );
+    let want: Vec<std::net::Ipv6Addr> = vec![
+        "2001:db8:1::20".parse().unwrap(),
+        "fd00:1::20".parse().unwrap(),
+    ];
+    assert_eq!(h.src.pipeline.router_leases.load()[&ip].ipv6, want);
+    // The table the DNS path answers from.
+    let state = h.src.pipeline.current();
+    let routers = h.src.pipeline.router_leases.load();
+    let empty = crate::devices::Leases::new();
+    let inputs = crate::device_dns::Inputs {
+        clients: &state.policy.clients,
+        routers: [&routers, &empty],
+        mdns: [&empty, &empty],
+    };
+    let (names, _) = crate::device_dns::names(&inputs, "home.arpa");
+    assert_eq!(names.len(), 1);
+    assert_eq!(names[0].name, "kitchen-tablet.home.arpa");
+    assert_eq!(names[0].v6, want);
+    // The API lists the addresses beside the device.
+    let (s, _, leases) = h.call("GET", "/api/v1/dhcp/leases", None).await;
+    assert_eq!(s, StatusCode::OK, "{leases}");
+    assert_eq!(
+        leases["items"][0]["ipv6"],
+        json!(["2001:db8:1::20", "fd00:1::20"])
+    );
+    let _ = stop_tx.send(true);
+}

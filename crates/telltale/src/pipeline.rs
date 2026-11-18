@@ -3679,6 +3679,77 @@ groups = ["kids"]
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn named(name: &str, ip: [u8; 4]) -> crate::device_dns::Named {
+        crate::device_dns::Named {
+            name: name.to_owned(),
+            ip: Ipv4Addr::from(ip),
+            v6: Vec::new(),
+        }
+    }
+
+    /// REQ: DNS-023 (T24.8, ADR-983) — a device with IPv6 addresses answers AAAA for each and
+    /// an `ip6.arpa` PTR for each (a unique-local one too: the device name answers before the
+    /// private-reverse special names), its A is unchanged, and a device without one stays
+    /// NODATA for AAAA.
+    #[test]
+    fn dns_023_device_names_ipv6_in_dns() {
+        let cfg_toml = format!("{UPSTREAM}[local]\ndevice_domain = \"home.arpa\"\n");
+        let cfg: telltale_config::Config = telltale_config::Loader::new()
+            .toml_str("t.toml", &cfg_toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, _) = LocalData::from_config(&cfg);
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy::from_config(&cfg, local),
+        );
+        install_filter(
+            &p,
+            "||nothing.example^\n",
+            telltale_filter::matcher::Lookup::Indexed,
+        );
+        let gua: std::net::Ipv6Addr = "2001:db8:1::21".parse().unwrap();
+        let ula: std::net::Ipv6Addr = "fd00:10::21".parse().unwrap();
+        let mut tablet = named("kitchen-tablet.home.arpa", [192, 0, 2, 21]);
+        tablet.v6 = vec![gua, ula];
+        p.device_names
+            .store(Arc::new(crate::device_dns::build(&[tablet], 60)));
+        let r = ask_from(&p, "10.0.0.5", "kitchen-tablet.home.arpa", rtype::AAAA);
+        let s = summarize(&r).unwrap();
+        assert!(s.header.flags.aa() && s.rcode == rcode::NOERROR);
+        assert!(
+            contains(&r, &gua.octets()) && contains(&r, &ula.octets()),
+            "both AAAA"
+        );
+        let a = ask_from(&p, "10.0.0.5", "kitchen-tablet.home.arpa", rtype::A);
+        assert!(contains(&a, &[192, 0, 2, 21]), "the A is unchanged");
+        let rev = |ip: std::net::Ipv6Addr| {
+            let nibbles: Vec<String> = ip
+                .octets()
+                .iter()
+                .flat_map(|b| [b >> 4, b & 15])
+                .rev()
+                .map(|x| format!("{x:x}"))
+                .collect();
+            format!("{}.ip6.arpa", nibbles.join("."))
+        };
+        let name = NameBuf::from_presentation("kitchen-tablet.home.arpa").unwrap();
+        for ip in [gua, ula] {
+            let ptr = ask_from(&p, "10.0.0.5", &rev(ip), rtype::PTR);
+            assert!(contains(&ptr, name.as_wire()), "PTR for {ip}");
+        }
+        p.device_names.store(Arc::new(crate::device_dns::build(
+            &[named("nas.home.arpa", [192, 0, 2, 5])],
+            60,
+        )));
+        let r = ask_from(&p, "10.0.0.5", "nas.home.arpa", rtype::AAAA);
+        assert_eq!(summarize(&r).unwrap().rcode, rcode::NOERROR, "NODATA");
+    }
+
     /// REQ: DNS-023 (T22.1) — device names answer A and PTR, authoritatively; a configured
     /// record and a zone's own record win; inside a zone a device name answers before the
     /// zone's NXDOMAIN; with the feature off the table is ignored.
@@ -3710,13 +3781,10 @@ groups = ["kids"]
         );
         p.device_names.store(Arc::new(crate::device_dns::build(
             &[
-                (
-                    "kitchen-tablet.home.arpa".to_owned(),
-                    Ipv4Addr::new(192, 0, 2, 21),
-                ),
-                ("nas.home.arpa".to_owned(), Ipv4Addr::new(192, 0, 2, 5)),
-                ("web.lab.example".to_owned(), Ipv4Addr::new(10, 1, 1, 1)),
-                ("printer.lab.example".to_owned(), Ipv4Addr::new(10, 1, 1, 2)),
+                named("kitchen-tablet.home.arpa", [192, 0, 2, 21]),
+                named("nas.home.arpa", [192, 0, 2, 5]),
+                named("web.lab.example", [10, 1, 1, 1]),
+                named("printer.lab.example", [10, 1, 1, 2]),
             ],
             60,
         )));
@@ -3768,10 +3836,7 @@ groups = ["kids"]
             telltale_filter::matcher::Lookup::Indexed,
         );
         off.device_names.store(Arc::new(crate::device_dns::build(
-            &[(
-                "kitchen-tablet.home.arpa".to_owned(),
-                Ipv4Addr::new(192, 0, 2, 21),
-            )],
+            &[named("kitchen-tablet.home.arpa", [192, 0, 2, 21])],
             60,
         )));
         let r = ask_from(&off, "10.0.0.5", "kitchen-tablet.home.arpa", rtype::A);

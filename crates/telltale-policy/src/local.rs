@@ -287,16 +287,18 @@ impl LocalData {
         }
     }
 
-    /// REQ: DNS-023 (T22.1) — an A record for each device name (a full DNS name, made with
-    /// [`device_label`]) and a PTR for each address. The caller settles collisions: at most
-    /// one name per address and one address per name. A name that doesn't parse is skipped.
+    /// REQ: DNS-023 (T22.1, T24.8) — an A or AAAA record for each device address (the name is a
+    /// full DNS name, made with [`device_label`]) and a PTR (`in-addr.arpa` or `ip6.arpa`) for
+    /// each address. The caller settles collisions: at most one name per address and one device
+    /// per name; a name may list several addresses. A name that doesn't parse is skipped.
     pub fn from_device_names<'a>(
-        names: impl IntoIterator<Item = (&'a str, Ipv4Addr)>,
+        names: impl IntoIterator<Item = (&'a str, IpAddr)>,
         ttl: u32,
     ) -> Self {
         let mut d = Self::default();
         for (name, ip) in names {
-            let _ = d.add(name, "A", &ip.to_string(), ttl);
+            let rt = if ip.is_ipv4() { "A" } else { "AAAA" };
+            let _ = d.add(name, rt, &ip.to_string(), ttl);
         }
         d.generate_ptrs(ttl);
         d
@@ -476,8 +478,14 @@ mod tests {
     fn dns_023_device_names_answer() {
         let d = LocalData::from_device_names(
             [
-                ("kitchen-tablet.home.arpa", Ipv4Addr::new(192, 0, 2, 21)),
-                ("porch-light.home.arpa", Ipv4Addr::new(192, 0, 2, 22)),
+                (
+                    "kitchen-tablet.home.arpa",
+                    IpAddr::V4(Ipv4Addr::new(192, 0, 2, 21)),
+                ),
+                (
+                    "porch-light.home.arpa",
+                    IpAddr::V4(Ipv4Addr::new(192, 0, 2, 22)),
+                ),
             ],
             60,
         );
@@ -497,6 +505,45 @@ mod tests {
         assert!(ans.is_empty(), "NODATA for AAAA");
         assert!(ask(&d, "nas.home.arpa", rtype::A).is_none());
         assert!(LocalData::from_device_names([], 60).is_empty());
+    }
+
+    /// REQ: DNS-023 (T24.8) — a device's IPv6 address answers AAAA, its `ip6.arpa` PTR names the
+    /// device, and the device's A record is unaffected (NODATA for the other family).
+    #[test]
+    fn dns_023_device_names_ipv6() {
+        let v6: Ipv6Addr = "fd00:1234::21".parse().unwrap();
+        let d = LocalData::from_device_names(
+            [
+                (
+                    "kitchen-tablet.home.arpa",
+                    IpAddr::V4(Ipv4Addr::new(192, 0, 2, 21)),
+                ),
+                ("kitchen-tablet.home.arpa", IpAddr::V6(v6)),
+            ],
+            60,
+        );
+        // A, AAAA, and one PTR for each address.
+        assert_eq!(d.len(), 4);
+        let (rc, ans, aa) = ask(&d, "kitchen-tablet.home.arpa", rtype::AAAA).unwrap();
+        assert_eq!((rc, aa), (rcode::NOERROR, true));
+        assert_eq!(ans, vec![(rtype::AAAA, v6.octets().to_vec())]);
+        let (_, ans, _) = ask(&d, "kitchen-tablet.home.arpa", rtype::A).unwrap();
+        assert_eq!(ans, vec![(rtype::A, vec![192, 0, 2, 21])]);
+        let nibbles: Vec<String> = v6
+            .octets()
+            .iter()
+            .flat_map(|b| [b >> 4, b & 15])
+            .rev()
+            .map(|n| format!("{n:x}"))
+            .collect();
+        let rev = format!("{}.ip6.arpa", nibbles.join("."));
+        let (_, ans, _) = ask(&d, &rev, rtype::PTR).unwrap();
+        assert_eq!(
+            ans[0].1,
+            NameBuf::from_presentation("kitchen-tablet.home.arpa")
+                .unwrap()
+                .as_wire()
+        );
     }
 
     #[test]
