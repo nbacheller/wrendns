@@ -5029,7 +5029,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Owner decision (2026-11-18).** Accepted. The exposure in Q11 is accepted only with the read direction shipped first.
 
-## ADR-1011 — A witness is a voter: the cluster view says so and the checks skip it for configuration, secrets and DNS (Proposed 2026-11-18)
+## ADR-1011 — A witness is a voter: the cluster view says so and the checks skip it for configuration, secrets and DNS (Accepted 2026-11-18)
 **Context:** A witness (ADR-056, `telltale cluster witness`) runs the cluster channel and the election only: no configuration, no secrets, no DNS. The cluster view built every member the same way, so a witness showed "version 0, 13 behind", secrets "not reported", "not ready", uptime 0, an amber topology box, and counted in the Health and Compare tabs. An unreachable witness mattered, though: with three voters, losing one leaves two, and automatic failover needs a majority.
 **Decision:**
 1. The view keeps `witness: true` as the marker (the role string stays `replica`, so no consumer of `role` changes) and clears the fields that mean nothing for it (`configSeq`, `configLag`, `behindSeconds`, `secrets`, `ready`, load and cache). It adds `vote` (`lastReplySecondsAgo`, `lastGrantSecondsAgo`, `votedEpoch`), taken from the last reply the witness gave this node's vote request or lease renewal; absent times mean this node has not asked it (manual failover, or a node that is not the primary).
