@@ -15,6 +15,7 @@
   import GuardedCard from '../lib/components/GuardedCard.svelte';
   import SupportPackage from '../lib/components/SupportPackage.svelte';
   import SecretsPanel from '../lib/components/SecretsPanel.svelte';
+  import MapSettingsCard from '../lib/components/MapSettingsCard.svelte';
   import OidcProviders from '../lib/components/OidcProviders.svelte';
   import TelemetryOutputs from '../lib/components/TelemetryOutputs.svelte';
   import DomainIcon from '../lib/icons/DomainIcon.svelte';
@@ -1035,6 +1036,8 @@
       A simulation replays the query log with and without a change and shows what would have been answered differently. It never
       touches DNS answers and runs at background priority; at query-log privacy level 1 or above names can't be replayed.
     </p>
+    <!-- REQ: OBS-901 (T26.6, ADR-958) — the live network map's sampling and thresholds. -->
+    <MapSettingsCard />
   {/if}
   </TabPanel>
 </div>

@@ -218,6 +218,7 @@ telltale ctl secrets clear unifi                              # refused while a 
       <tr><td>Special names (iCloud Private Relay, one-label names, DDR)</td><td>Settings → Query handling (the DDR name is an admin's)</td><td><code>[special]</code></td><td><code>/api/v1/special-names/default</code></td></tr>
       <tr><td>Device names in DNS</td><td>Local DNS → Device names in DNS</td><td><code>[local]</code></td><td><code>/api/v1/local-settings/default</code></td></tr>
       <tr><td>Listening for mDNS announcements (an admin's)</td><td>Local DNS → Listen for mDNS announcements</td><td><code>[clients] mdns</code></td><td><code>/api/v1/clients-settings/default</code></td></tr>
+      <tr><td>Network map (sampling and thresholds)</td><td>Settings → Query handling → Network map</td><td><code>[map]</code></td><td><code>/api/v1/map-settings/default</code></td></tr>
       <tr><td>Alerts</td><td>Alerts</td><td><code>[[alerts.destination]]</code>, <code>[[alerts.rule]]</code></td><td><code>/api/v1/alerts/destinations/{name}</code>, <code>/api/v1/alerts/rules/{name}</code></td></tr>
       <tr><td>Staged rollouts</td><td>Settings → Cluster</td><td><code>[cluster.rollout]</code></td><td><code>/api/v1/cluster/rollout-settings/default</code></td></tr>
       <tr><td>Listeners, the API, sign-in, telemetry, cache, the node</td><td>(config file only)</td><td><code>[[listen]]</code>, <code>[api]</code>, <code>[auth]</code>, <code>[telemetry]</code>, <code>[cache]</code>, <code>[node]</code></td><td>(config file only)</td></tr>
