@@ -147,7 +147,12 @@ fn compile_pending(lists: &[ListInfo]) -> bool {
         .iter()
         .filter(|l| l.enabled)
         .flat_map(|l| l.overlap.iter())
-        .any(|s| !lists.iter().any(|y| y.enabled && y.name == s.list))
+        .any(|s| {
+            // A service's synthetic list (`svc-<id>`, from a blocked service) is in the compile
+            // but has no row here; it covers only its group, so it never makes the plan pending.
+            !s.list.starts_with(telltale_config::services::PREFIX)
+                && !lists.iter().any(|y| y.enabled && y.name == s.list)
+        })
 }
 
 /// What turning a list off could lose that is certain to be lost or can't be shown covered:
@@ -757,6 +762,16 @@ mod tests {
         let b = list("b", 100, 0, &[("a", 100)]);
         let p = plan(&[a, b], &[], 1.0, 100);
         assert!(p.candidates.is_empty() && !p.compile_pending, "{p:?}");
+    }
+
+    // REQ: FLT-004 (T24.28) - an overlap naming a service's synthetic `svc-` list is not a stale
+    // compile: the list has no row, and it covers nothing for the plan.
+    #[test]
+    fn flt_004_prune_plan_not_pending_for_service_lists() {
+        let a = list("a", 100, 0, &[("svc-tiktok", 10)]);
+        let p = plan(&[a], &[], 1.0, 100);
+        assert!(!p.compile_pending, "{p:?}");
+        assert!(p.candidates.is_empty(), "{p:?}");
     }
 
     // REQ: FLT-004 (T24.28) - the first check is exact, so a list just over the threshold is kept
