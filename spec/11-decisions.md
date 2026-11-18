@@ -4515,6 +4515,6 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - A macvlan network in `compose.yaml`: it ties the example to one LAN. The runbook covers the LAN.
 - Multicast VRRP in the example: Docker bridges don't reliably carry it, and unicast is what is tested.
 
-**Test plan:** `deploy/keepalived/e2e.sh` on the isolated bridge, run locally (two complete runs with the same checks: takeover 5.4 to 6.3 s with one probe lost, promotion to epoch 2, the VIP back on the primary, and the maintenance hand-over), and the `keepalived` CI workflow on every change to the example, the sources or the Dockerfile.
+**Test plan:** `deploy/keepalived/e2e.sh` on the isolated bridge, run locally (five complete local runs with the final checks, and the hosted runs, with the same checks: the takeover took 3.2 to 6.8 s, with 0 to 2 probes lost before the first answer; the promotion to epoch 2, the VIP back on the primary, and the maintenance hand-over all passed), and the `keepalived` CI workflow on every change to the example, the sources or the Dockerfile.
 
 **Consequences:** an operator who wants a VIP runs keepalived beside TelltaleDNS (or in the example's sidecar), and restarts them together. No code, dependency or hot-path change, so no image delta. The example's keepalived image is a separate 33 MB image, used only by the example and its checks.

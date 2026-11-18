@@ -154,7 +154,7 @@ To drain a node for maintenance, start a maintenance window on it (`telltale ctl
 Caveats:
 - In a container, keepalived and the node share a network namespace (the example does this). Restart them together (`docker compose restart keepalived-a telltale-a`): a restarted keepalived leaves the node listening in a namespace that no longer carries the VIP. A host install has no such pair.
 - VRRP here isn't authenticated. Keep it on the LAN interface, and don't route it out of the LAN.
-- A move takes a few seconds. In the Docker example a killed master's VIP was answered by its peer about 5 seconds later, with one probe lost; a client with a second DNS server fails over the same way.
+- A move takes a few seconds. In the Docker example, the peer answered for a killed master's VIP after 3 to 7 seconds across the test runs, with up to two probes lost; a client with a second DNS server fails over the same way.
 
 ## Pi-hole compatible API
 Tools that already talk to Pi-hole (the Home Assistant Pi-hole integration, phone apps, dashboards) can talk to TelltaleDNS instead. TelltaleDNS answers the part of Pi-hole's API they use: the **statistics** (queries and blocked today, the percentage, cached and forwarded, clients, the top domains and clients, the upstreams, the version) and **blocking on or off** (off for a number of seconds, then back on by itself). Nothing else is reachable through it: lists, rules, groups and settings stay on [the API](#api).
