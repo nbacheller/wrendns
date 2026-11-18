@@ -219,7 +219,9 @@ pub fn required(method: &Method, path: &str) -> Need {
             // REQ: API-015, AGT-001 (ADR-903 §5) — stored secrets' metadata, never a value.
             // REQ: API-016 (T23.7) — router settings and status (secrets as names only).
             | "/api/v1/routers"
-            | "/api/v1/secrets" => {
+            | "/api/v1/secrets"
+            // REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API's status (no token).
+            | "/api/v1/pihole-api" => {
                 return Need::Scope("config:read");
             }
             // REQ: OBS-034 — a device's names bin by bin reads like its query log.
@@ -327,7 +329,9 @@ pub fn never_for_agents(method: &Method, path: &str) -> bool {
     let p = path.trim_end_matches('/');
     let secret = p == "/api/v1/secrets" || secret_path(p);
     let write = *method == Method::PUT || *method == Method::DELETE || *method == Method::POST;
-    (secret && write)
+    // REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API's settings and token.
+    let pihole = p == "/api/v1/pihole-api" || p == "/api/v1/pihole-api/token";
+    ((secret || pihole) && write)
         || (*method == Method::POST
             && (p == "/api/v1/backup" || p.starts_with("/api/v1/checks/router")))
 }
@@ -735,6 +739,26 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    /// REQ: API-005, AGT-004 (T24.10, ADR-961 §7) — an agent with `config:read` reads the Pi-hole
+    /// compatible API's status; nothing writes it, and no scope can (the token is a credential).
+    #[test]
+    fn api_005_agent_pihole_api_routes() {
+        use Need::{Forbidden, Scope};
+        assert_eq!(
+            required(&Method::GET, "/api/v1/pihole-api"),
+            Scope("config:read")
+        );
+        for (m, p) in [
+            (Method::PUT, "/api/v1/pihole-api"),
+            (Method::POST, "/api/v1/pihole-api/token"),
+            (Method::DELETE, "/api/v1/pihole-api/token"),
+        ] {
+            assert_eq!(required(&m, p), Forbidden, "{m} {p}");
+            assert!(never_for_agents(&m, p), "{m} {p}");
+        }
+        assert!(!never_for_agents(&Method::GET, "/api/v1/pihole-api"));
     }
 
     /// REQ: AGT-004 (T6.12) — quick rules: reading needs `config:read`, changing needs

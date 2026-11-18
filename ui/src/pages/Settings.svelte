@@ -19,6 +19,7 @@
   // OBS-039 — what the Domain icons card previews: a brand, an ordinary name, a name of the network.
   const ICON_PREVIEW = ['www.netflix.com', 'cdn.example.org', 'nas.home.arpa'];
   import PiholeImport from '../lib/components/PiholeImport.svelte';
+  import PiholeApi from '../lib/components/PiholeApi.svelte';
 
   const tabs = $derived<TabItem[]>(
     [
@@ -27,8 +28,9 @@
       // REQ: API-015 (T23.6) — stored secrets: operators see them, admins set them.
       ...(can('operator') ? [{ id: 'secrets', label: 'Integrations & secrets' }] : []),
       ...(can('admin') ? [{ id: 'users', label: 'Users' }, { id: 'audit', label: 'Audit log' }] : []),
-      // REQ: API-007 (T24.18) — importing a Pi-hole export is an admin's (never an agent's).
-      ...(can('admin') ? [{ id: 'pihole', label: 'Import from Pi-hole' }] : []),
+      // REQ: API-007 (T24.18) — importing a Pi-hole export is an admin's (never an agent's); REQ: API-005
+      // (T24.10) — so is the Pi-hole compatible API (statistics and blocking on/off for Pi-hole clients).
+      ...(can('admin') ? [{ id: 'pihole', label: 'Pi-hole' }] : []),
       { id: 'system', label: 'System' },
       // REQ: API-005 (ADR-121) — how queries are handled (cache, rate limit, what's kept out of
       // the log, simulation), apart from the node's own housekeeping.
@@ -666,7 +668,9 @@
     </section>
     <SecretsPanel />
   {:else if tab === 'pihole' && can('admin')}
-    <!-- REQ: API-007 (T24.18, ADR-940) — the Import from Pi-hole tab (admins only). -->
+    <!-- REQ: API-007 (T24.18, ADR-940) — the Pi-hole tab (admins only): the import, and (REQ: API-005,
+         T24.10, ADR-961) the Pi-hole compatible API. -->
+    <PiholeApi />
     <PiholeImport />
   {:else if tab === 'users' && can('admin')}
     <section class="card">

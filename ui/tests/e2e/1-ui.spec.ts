@@ -5658,7 +5658,7 @@ test('api_007 operator cannot see the import page', async () => {
   try {
     await op.p.goto('/#/settings?tab=pihole');
     await expect(op.p.getByRole('tab', { name: 'Users' })).toHaveCount(0);
-    await expect(op.p.getByRole('tab', { name: 'Import from Pi-hole' })).toHaveCount(0);
+    await expect(op.p.getByRole('tab', { name: 'Pi-hole' })).toHaveCount(0);
     await expect(op.p.getByTestId('pihole-import')).toHaveCount(0);
     // The API says the same: an operator's upload is refused (admins only).
     // The request runs in the operator's page, so it carries the operator's session cookie.
@@ -5677,6 +5677,106 @@ test('api_007 operator cannot see the import page', async () => {
   } finally {
     await op.close();
   }
+});
+
+// REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API: off until an admin turns it on in
+// Settings → Pi-hole; turning it on makes a token that is shown once; with it, a Pi-hole v6 client
+// signs in, reads the summary and turns blocking off and on; v5 answers too; a new token ends the old
+// one; turning it off makes the paths 404 again.
+test('api_005 pihole compatible api: off by default, a token shown once, v6 and v5, rotation', async () => {
+  const r = page.request;
+  await page.goto('/');
+  await page.goto('/#/settings?tab=pihole');
+  const card = page.getByTestId('pihole-api');
+  await expect(card).toBeVisible({ timeout: 20_000 });
+  const toggle = card.getByTestId('pihole-api-toggle');
+  await expect(toggle).not.toBeChecked();
+  await expect(card.getByTestId('pihole-api-state')).toContainText('No token yet');
+  // Off: Pi-hole's paths are the API's ordinary 404.
+  expect((await r.post('/api/auth', { data: { password: 'x' } })).status()).toBe(404);
+  // (v5's path answers as any unknown page does, the web UI, so it can't be told from one.)
+  expect((await r.get('/admin/api.php?summaryRaw&auth=x')).status()).toBe((await r.get('/admin/nothing.php')).status());
+  await expect(card.getByTestId('pihole-api-node')).toContainText('This node');
+
+  // On: the token appears once.
+  await toggle.check();
+  await expect(card.getByTestId('pihole-api-token')).toBeVisible();
+  const token = ((await card.getByTestId('pihole-api-token-text').textContent()) ?? '').trim();
+  expect(token.length).toBeGreaterThan(30);
+  await expect(toggle).toBeChecked();
+  await expect(card.getByTestId('pihole-api-how')).toContainText('location');
+  expect(await page.content()).not.toContain('"tokenHash"');
+
+  // A v6 client: sign in with the token, read the summary, switch blocking off and on.
+  const bad = await r.post('/api/auth', { data: { password: 'wrong' } });
+  expect(bad.status()).toBe(401);
+  const login = await r.post('/api/auth', { data: { password: token } });
+  expect(login.status()).toBe(200);
+  const sid = (await login.json()).session.sid as string;
+  const h = { 'x-ftl-sid': sid };
+  const sum = await r.get('/api/stats/summary', { headers: h });
+  expect(sum.status()).toBe(200);
+  expect(typeof (await sum.json()).queries.total).toBe('number');
+  expect((await r.get('/api/stats/summary')).status()).toBe(401);
+  const off = await r.post('/api/dns/blocking', { headers: h, data: { blocking: false, timer: 120 } });
+  expect(off.status()).toBe(200);
+  expect(await off.json()).toMatchObject({ blocking: 'disabled' });
+  const ours = await (await r.get('/api/v1/blocking')).json();
+  expect(ours.items[0].pauses[0].group ?? null).toBeNull();
+  // The same pause shows in the UI (the pause pill) ...
+  await page.goto('/#/');
+  await page.reload();
+  await expect(page.getByTestId('blocking-paused')).toContainText(/Blocking paused · [12] min left/, { timeout: 20_000 });
+  const on = await r.post('/api/dns/blocking', { headers: h, data: { blocking: true } });
+  expect(await on.json()).toMatchObject({ blocking: 'enabled' });
+  await page.reload();
+  await expect(page.getByTestId('blocking-paused')).toHaveCount(0);
+  // ... and in the audit log, by the token's name.
+  const paused = JSON.stringify(await (await r.get('/api/v1/audit?action=blocking.')).json());
+  expect(paused).toContain('token:pihole-api');
+  await page.goto('/#/settings?tab=pihole');
+  await expect(card).toBeVisible();
+  // v5: a wrong token reads [], the right one reads the totals.
+  expect(await (await r.get('/admin/api.php?summaryRaw&auth=wrong')).json()).toEqual([]);
+  const v5 = await r.get(`/admin/api.php?summaryRaw&auth=${encodeURIComponent(token)}`);
+  expect(typeof (await v5.json()).dns_queries_today).toBe('number');
+
+  // A new token ends the old one, and it is shown once (not after a reload).
+  await card.getByTestId('pihole-api-rotate').click();
+  await card.getByTestId('pihole-api-rotate').click();
+  await expect(card.getByTestId('pihole-api-token-text')).not.toHaveText(token);
+  const next = ((await card.getByTestId('pihole-api-token-text').textContent()) ?? '').trim();
+  expect((await r.post('/api/auth', { data: { password: token } })).status()).toBe(401);
+  expect((await r.get('/api/stats/summary', { headers: h })).status()).toBe(401);
+  expect((await r.post('/api/auth', { data: { password: next } })).status()).toBe(200);
+  await page.reload();
+  await expect(card.getByTestId('pihole-api-token')).toHaveCount(0);
+  await expect(card.getByTestId('pihole-api-state')).toContainText('Token made');
+
+  // The longest pause is a setting.
+  await card.getByTestId('pihole-api-max').fill('90');
+  await card.getByTestId('pihole-api-max-save').click();
+  await expect(card.getByTestId('pihole-api-max-save')).toBeDisabled();
+  expect((await (await r.get('/api/v1/pihole-api')).json()).maxPauseMinutes).toBe(90);
+
+  // Remove the token: two clicks, then it is off, and the paths are 404 again.
+  await card.getByTestId('pihole-api-revoke').click();
+  await card.getByTestId('pihole-api-revoke').click();
+  await expect(toggle).not.toBeChecked();
+  expect((await r.post('/api/auth', { data: { password: next } })).status()).toBe(404);
+  await expect(card.getByTestId('pihole-api-state')).toContainText('No token yet');
+  // On again (a new token), then off again: 404, and the audit log has the changes.
+  await toggle.check();
+  await expect(card.getByTestId('pihole-api-token')).toBeVisible();
+  await toggle.uncheck();
+  await expect(toggle).not.toBeChecked();
+  expect((await r.post('/api/auth', { data: { password: next } })).status()).toBe(404);
+  const audit = JSON.stringify(await (await r.get('/api/v1/audit?action=pihole_api.')).json());
+  expect(audit).toContain('pihole_api.enable');
+  expect(audit).toContain('pihole_api.disable');
+  expect(audit).toContain('pihole_api.token_rotate');
+  expect(audit).toContain('pihole_api.token_revoke');
+  expect(audit).not.toContain(next);
 });
 
 // REQ: API-007 (ADR-941) — the comparison's result, with the Pi-hole address given; the answers are mocked

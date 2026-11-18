@@ -32,6 +32,15 @@ What it does, in order:
    `config:read`), then checks its sensors: known devices (3, all with DNS names, from
    `home-assistant`), health, the problem sensor (on only when health isn't healthy), queries and
    version.
+7. Sets up Home Assistant's own **Pi-hole** integration (`pi_hole`) against the node's Pi-hole
+   compatible API (T24.10, ADR-961). First checks that the API answers 404 while it is off (the
+   default). Then an admin turns it on and makes its token (kept in the temporary file, never
+   printed); the integration is added with the node's address, location `admin` and the token as
+   the API key, and it reads the summary: its status sensor is on and its query count covers the
+   lookups of step 5. The integration's switch is turned off, which pauses blocking on the node
+   (a pause with no timer lasts the longest pause, 60 minutes, not forever), and on, which resumes
+   it; the `pi_hole.disable` service with a 5 minute duration makes a 5 minute pause. The audit log
+   shows each change by `token:pihole-api` and never holds the token. A rotated token is refused.
 
 A trap always removes the node container, the Home Assistant containers and volumes, and the
 temporary directory, also when a step fails. The failure output shows the last lines of the node's

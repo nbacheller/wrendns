@@ -59,6 +59,7 @@ Implement with the official Rust MCP SDK (`rmcp`) or a minimal compliant impleme
 | `drill_report` | Failover drills, newest first (coverage, verdict counts), or one report: per device followed / stuck / quiet / elsewhere, unanswered queries, time to failover, returned or sticky; queries per node (CLU-014) |
 | `get_config` | Config section (secrets redacted) + current version |
 | `secrets_status` | Stored secrets' metadata (name, kind, stamp, who set it when, `usedBy`, per-node readability), the node's store state and key ID, and every credential field with its source; never a value (API-015, ADR-903 §5; `config:read`) |
+| `pihole_api_status` | Whether the Pi-hole compatible API (T24.10, ADR-961) is on, whether a token has been made and when, when it was last used, and the longest pause it may start; never the token. There is no tool to turn it on or to make or rotate its token (`config:read`). |
 | `test_resolution` | Resolve a name through a given upstream/group *without* caching or logging, to diagnose |
 
 ### 3.2 Write (P1, plan/apply)

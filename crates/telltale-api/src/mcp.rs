@@ -275,6 +275,14 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("secrets".into(), "/api/v1/secrets".into())]),
         },
+        // REQ: API-005, AGT-001 (T24.10, ADR-961 §7) — the status only; the token is a credential,
+        // so no tool issues, rotates or reads one, and none turns the API on.
+        Tool {
+            name: "pihole_api_status",
+            description: "Read-only. Whether the Pi-hole compatible API is on (the part of Pi-hole's v6 and v5 interfaces that dashboards, phone apps and the Home Assistant Pi-hole integration use: statistics, and turning blocking off for a while and on again), whether a token has been issued and when, when it was last used, and the longest pause it may start (`maxPauseMinutes`). Never the token. There is no tool to turn it on or to issue or rotate its token: an admin does that in Settings → Pi-hole. Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("piholeApi".into(), "/api/v1/pihole-api".into())]),
+        },
         // REQ: API-016 (T23.7, ADR-903 §5) — router settings and status, secrets by name only; no
         // tool sets a router (admin-only, no agent scope).
         Tool {
