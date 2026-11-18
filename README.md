@@ -38,6 +38,7 @@
 > - **Test harnesses:** a throwaway Home Assistant in Docker for the Home Assistant source ([`deploy/ha-test`](deploy/ha-test/README.md), in CI).
 > - **M27, UI for everything (in progress, [ADR-956](spec/11-decisions.md)):** a UI control for every older setting too, with guarded admin controls for listeners, TLS, keys and cluster setup ([ADR-914](spec/11-decisions.md)). In so far: the guarded-changes framework (staged change, typed confirmation, a rollback countdown, Restart now under a supervisor; T27.13), every alert condition in the Alerts form (T27.1), and group rewrites (T27.4).
 > - **M31, CMDB (planned, [fork #21](https://github.com/nbacheller/telltaledns/issues/21)):** one configuration item per device from every source, each source's record linked, a definitive source per attribute, and MACD lifecycle.
+> - **M32, away from home (planned, [fork #28](https://github.com/nbacheller/telltaledns/issues/28)):** a cloud-hosted resolver on a free or low-cost Azure tier, with DoH/DoT setup generated per device for Windows, macOS, iOS and Android, and the same policy at home and away.
 >
 > **Every feature gets a UI control**, not only config, API or MCP. Fork issues are tracked [here](https://github.com/nbacheller/telltaledns/issues). Changes from upstream are merged regularly.
 >

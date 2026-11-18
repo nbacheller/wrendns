@@ -699,6 +699,47 @@ Two tasks from the design session of 2026-10-18, built in order T15.1 → T15.2 
   - *Done 2026-11-16:* (1) the e2e suite (74 tests) passes on the VM and in CI, with the tests that found cards by class moved to the new hooks; (2)–(4) `SmoothChart`, `TopList` and `names.ts` as in ADR-157, looked at on the demo network and on the live cluster's name shapes (read-only); (5) the e2e test `api_005 the previous dashboard is reachable and remembered`; (6) `npm run check` clean, bundle 229.9 KiB gzipped. The contributor's #31 (per-device status split, issue #30, ADR-159), #34 (lists follow the range, ADR-160), #36 (legend width) and #42 (rolling last hour, ADR-158) were ported onto it (the split also rides on range reads), and the PRs closed with a note.
   - *Open:* the owner's acceptance of ADR-157 to ADR-160; when to remove the previous dashboard; a server-side option to fold pods' search suffixes in the top lists; the rolling hour (ADR-158) has no per-device status split.
 
+## M32 — Cloud-hosted resolver and roaming-device clients (owner request 2026-11-18) [fork #28]
+
+A TelltaleDNS that devices use when they're away from home, hosted on a free or nearly free Azure tier, with native DoH or DoT setup for Windows, macOS, iOS and Android, and the same per-device policy at home and away. Research (2026-11-18, in fork #28) found:
+- **Azure:**
+  - Container Apps serves DoH on 443 with a free managed certificate. One always-on replica costs about $4–14 a month above the free grant, or it's free if it scales to zero, with a 10–30 s cold start.
+  - DoT and UDP 53 are not available there without a paid VNet environment, about $25 a month.
+  - The free-account VMs serve every protocol, but only for 12 months.
+- **Clients:** Windows 11, macOS 11+ and iOS 14+ take a DoH template with a per-device path. Android's built-in Private DNS is DoT only, by hostname. Windows 10 has no native DoH.
+
+**Owner decisions needed first** (asked together at the start, with "accept all recommendations"): hosting (Container Apps, the 12-month VM, or both templates); Android (DoT or an app); client apps (build or document permissive third-party ones); the domain and the DNS provider for DNS-01; how the cloud node shares the home policy (cluster member or Git); the query log's retention and location in the cloud.
+
+- [ ] **T32.1 A public listener is never an open resolver.** *(new DNS-901; spec/08 §6; ADR)*
+  - **Known-ID gate:** a per-listener `require_client_id` setting. Queries are refused (REFUSED + EDE) unless the DoH path or SNI carries a known device ID or token. The check runs off the allocation-free path, in the same place as `allowed_networks`; bench-smoke.
+  - **Unknown IDs:** refused without saying whether the ID exists, and rate limited per address and per ID.
+  - **Startup warning:** the missing check from spec/08:114 (a listener bound to a public IP without the gate).
+  - **Ships with:** UI on the listener settings, a help topic, and Playwright.
+- [ ] **T32.2 A stateless cloud profile.** *(new OPS-902; ADR)*
+  - **Storage:** runs on ephemeral storage, so SQLite never sits on SMB or NFS (Azure Files). Startup warns when the data dir is a network file system.
+  - **Config:** from Git (the existing Git source) or the home cluster (T32.8).
+  - **Query log:** kept locally with a short retention, or sent to a sink.
+  - **Startup and size:** cold start measured in a 0.25 vCPU / 0.5 GiB container; the RSS budgets hold.
+- [ ] **T32.3 Azure Container Apps template.** After T32.1–T32.2.
+  - **Template:** Bicep (plus `azd`), with the image from GHCR, DoH on 443, a custom domain and a managed certificate.
+  - **Scaling and probes:** the min-replicas choice with its cost table (free with scale to zero, or about $4–14 a month always on); `/readyz` probes.
+  - **Deploy check:** a test that the deploy works (what-if or a throwaway resource group, documented); docs with a cost and limits table.
+- [ ] **T32.4 Azure VM template (free-account B1s/B2pts v2, 12 months).**
+  - **Setup:** cloud-init with the native systemd install, serving DoH, DoT and DoQ (UDP 53 off by default), with the firewall rules and unattended upgrades.
+  - **Docs:** the 12-month limit and what it costs after, the static-IP cost, and the egress allowance (100 GB a month free).
+- [ ] **T32.5 Certificates.** Decide in an ADR: built-in ACME, a vetted permissive crate (cargo-deny, image delta) or a certbot sidecar. The wildcard certificate for SNI device IDs needs DNS-01, so pick the provider APIs. The certificate hot-reload exists already.
+- [ ] **T32.6 Device onboarding.** Per-device tokens: create, rotate and revoke, audited, and agent-safe (plan-only for agents). An "Add a device away from home" page generates the setup:
+  - **Apple:** a `.mobileconfig` (DoH ServerURL with the path token, or DoT ServerName, with OnDemand rules for home Wi-Fi), plus the declarative `com.apple.configuration.network.dns-settings` for OS 27. Optional signing.
+  - **Windows 11:** a PowerShell/`netsh` script, and Group Policy/Intune notes.
+  - **Android:** the Private DNS hostname (DoT) and Chrome's Secure DNS template.
+  - **Delivery:** a QR code. A setup link expires and is single use. API, MCP and help topics; Playwright.
+- [ ] **T32.7 Client apps (decision first).** Either document permissive third-party clients (Rethink DNS, Apache-2.0, for Android DoH; dnscrypt-proxy, ISC, for Windows 10) and generate their configs in T32.6, or build our own apps (VpnService on Android with the Play declaration; NEDNSSettingsManager on Apple with the dns-settings entitlement). Record the choice in an ADR.
+- [ ] **T32.8 One policy at home and away.** A device keeps its identity and group on both resolvers (`id:<device>` matches at home and in the cloud). The cloud node either joins the home cluster (which link direction, given NAT, and secrets handover) or shares its config through Git; ADR. The device policy panel (T24.30) shows which resolver a device is using.
+- [ ] **T32.9 Closing.**
+  - **Docs:** docs/running.md "Away from home", the site page, and the README fork block.
+  - **Tests:** an e2e with a fake public listener (the gate refuses an unknown ID, a known ID resolves); an image size check.
+  - **Live check:** the owner's devices on the cloud instance, only with the owner's go-ahead.
+
 ## M31 — CMDB: configuration items from many sources (owner request 2026-11-18) [fork #21]
 
 One configuration item (CI) per real thing on the network, built from every source that reports on it: UniFi, Home Assistant, SNMP, imported scans, Pi-hole imports, DHCP leases, query attribution and Kubernetes. Each source's record is kept and linked to its CI, the owner declares the definitive source per attribute, and changes go through a MACD lifecycle (move, add, change, delete). It builds on M25's inventory (T25.1, keyed by MAC, ADR-910) and keeps M25's rules: read-only towards devices, off the DNS path, bounded storage, privacy levels respected, one management plane in a cluster. The standing rule applies: every setting and action ships with a UI control, a help topic and a Playwright test.
