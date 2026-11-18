@@ -45,7 +45,8 @@ pub struct OnBehalfOf(pub IpAddr);
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+        // A clock before 1970 fails closed: every token then reads as expired.
+        .map_or(u64::MAX, |d| d.as_secs())
 }
 
 async fn blocking<T: Send + 'static>(

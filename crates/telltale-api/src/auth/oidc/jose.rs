@@ -99,6 +99,15 @@ impl Key {
         if jwk.get("use").is_some_and(|u| u.as_str() != Some("sig")) {
             return None;
         }
+        // `key_ops`, when present, must allow verification.
+        if let Some(ops) = jwk.get("key_ops") {
+            let ok = ops
+                .as_array()
+                .is_some_and(|a| a.iter().any(|o| o.as_str() == Some("verify")));
+            if !ok {
+                return None;
+            }
+        }
         let kid = match jwk.get("kid") {
             None => None,
             Some(v) => Some(v.as_str()?.to_owned()),
@@ -335,9 +344,12 @@ fn check_header(header: &Value, kind: Kind) -> Result<(), Failure> {
     Ok(())
 }
 
-/// URL-safe base64 without padding (a trailing `=` is tolerated).
+/// URL-safe base64 without padding; any `=` is refused (RFC 7515 section 2).
 fn b64(text: &str) -> Option<Vec<u8>> {
-    URL_SAFE_NO_PAD.decode(text.trim_end_matches('=')).ok()
+    if text.contains('=') {
+        return None;
+    }
+    URL_SAFE_NO_PAD.decode(text).ok()
 }
 
 /// The big-endian integer without its leading zero bytes.

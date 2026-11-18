@@ -437,3 +437,21 @@ async fn api_004_an_oversized_provider_response_is_refused() {
     let err = super::send(&big, req).await.expect_err("refused");
     assert!(err.contains("too large"), "{err}");
 }
+
+#[test]
+fn api_004_padding_and_key_ops_are_refused() {
+    let signer = Signer::rsa("k1", Alg::Rs256);
+    let keys = keys_of(&[&signer]);
+    let token = signer.token(&signer.header(), &id_claims());
+    assert!(jose::verify(&token, &keys, &ALL, Kind::IdToken).is_ok());
+    let padded = format!("{token}==");
+    assert!(
+        jose::verify(&padded, &keys, &ALL, Kind::IdToken).is_err(),
+        "a padded signature"
+    );
+    let mut jwk = signer.jwk();
+    jwk["key_ops"] = json!(["encrypt"]);
+    assert!(Key::from_jwk(&jwk).is_none(), "key_ops without verify");
+    jwk["key_ops"] = json!(["verify"]);
+    assert!(Key::from_jwk(&jwk).is_some());
+}

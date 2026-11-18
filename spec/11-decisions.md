@@ -1307,12 +1307,12 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Maintenance. Health and the alert both leave out a replica in a maintenance window (the health filter checks the node's maintenance field directly; `exclude_maintenance` also drops its reasons).
 
 **Consequences:** one optional heartbeat field and one `ClusterNode` field; no new configuration key (the threshold is the rule's own). The UI shows the condition in the Alerts form (threshold, in seconds, is the field's help), the replica flag on the Cluster page with the `primary-unreachable` help topic, and the health reason. The timing is unit-tested at the boundary (`obs_010_t24_5_*`), and `clu_004` is the Playwright test.
-## ADR-952 — The chrono and rsa advisories under the OIDC change (Accepted 2026-11-17, owner decision)
+## ADR-952 — The chrono and rsa advisories under the OIDC change (Proposed; acceptance needs the owner's own confirmation)
 **Context:** `deny.toml` ignored RUSTSEC-2026-0543 (chrono, unmaintained) and RUSTSEC-2023-0071 (rsa, timing side channel). Both arrived only through `openidconnect` (ADR-951 Context).
 
 **Decision:** ADR-951 chose (b-ring), so neither crate is in the tree. Both ignores are removed in the same change: `deny.toml` now has `ignore = []` with a comment saying why. `cargo tree -i chrono`, `-i rsa` and `-i openidconnect` print nothing, and `cargo deny check` passes (advisories, bans, licenses and sources). The owner accepted this on 2026-11-17.
 
-## ADR-951 — OIDC without chrono: an in-tree verifier on `ring`, replacing openidconnect and oauth2 (Accepted 2026-11-17, owner decision)
+## ADR-951 — OIDC without chrono: an in-tree verifier on `ring`, replacing openidconnect and oauth2 (Proposed; acceptance needs the owner's own confirmation)
 **Context:** `openidconnect` 4.x and `oauth2` 5.x pull `chrono` (RUSTSEC-2026-0543, unmaintained, no patched version), which `deny.toml` ignored (fork #17, T24.23). `cargo tree -i chrono` showed `chrono` arriving only through `oauth2 v5.0.0` and `openidconnect v4.1.0`, and `openidconnect` only through `telltale-api`. `rsa v0.9.10` (RUSTSEC-2023-0071, ignored) also arrived only through `openidconnect`. `telltale-api` had its own `chrono` dev-dependency (`flow_tests.rs`). `ring 0.17.14` is already a normal dependency (via `rustls`, `rcgen`, `hickory-proto` and others), so the in-tree verifier adds no crate.
 
 **Current behaviour** (`crates/telltale-api/src/auth/oidc.rs` before this change) that the replacement keeps:

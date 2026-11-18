@@ -45,6 +45,8 @@ const MAX_FLOWS: usize = 1000;
 const DISCOVERY_TTL: Duration = Duration::from_secs(3600);
 /// A key set is refetched when a token's key isn't in it or its signature fails, at most once
 /// per provider in this interval (ADR-951, "JWKS").
+/// After a failed discovery reload, the cached copy is served this long before trying again.
+const RELOAD_BACKOFF: Duration = Duration::from_secs(60);
 const JWKS_MIN_INTERVAL: Duration = Duration::from_secs(60);
 /// The largest discovery document or key set read from a provider.
 const MAX_RESPONSE: usize = 1 << 20;
@@ -114,6 +116,8 @@ pub struct Oidc {
     /// Per provider: when its key set was last fetched. Held across a fetch, so concurrent
     /// refetches for one provider collapse into one.
     jwks_gate: HashMap<String, tokio::sync::Mutex<Option<Instant>>>,
+    /// One discovery reload at a time per provider; holds the time of the last failed reload.
+    reload_gate: HashMap<String, tokio::sync::Mutex<Option<Instant>>>,
 }
 
 impl std::fmt::Debug for Oidc {
@@ -242,12 +246,18 @@ impl Oidc {
             .iter()
             .map(|p| (p.id.clone(), tokio::sync::Mutex::new(None)))
             .collect();
+        let reload_gate = settings
+            .providers
+            .iter()
+            .map(|p| (p.id.clone(), tokio::sync::Mutex::new(None)))
+            .collect();
         Self {
             settings,
             fetch,
             discovered: Mutex::new(HashMap::new()),
             flows: Mutex::new(HashMap::new()),
             jwks_gate,
+            reload_gate,
         }
     }
 
@@ -321,9 +331,41 @@ impl Oidc {
         {
             return Ok(d);
         }
-        let d = Arc::new(self.load(p).await.map_err(|e| provider_down(&p.id, e))?);
-        self.store(&p.id, Arc::clone(&d));
-        Ok(d)
+        let Some(gate) = self.reload_gate.get(&p.id) else {
+            let d = Arc::new(self.load(p).await.map_err(|e| provider_down(&p.id, e))?);
+            self.store(&p.id, Arc::clone(&d));
+            return Ok(d);
+        };
+        // One reload at a time per provider; a request that waited uses what the first stored.
+        let mut failed_at = gate.lock().await;
+        let stale = self.cached(&p.id);
+        if let Some(d) = stale.as_ref().filter(|d| d.at.elapsed() < DISCOVERY_TTL) {
+            return Ok(Arc::clone(d));
+        }
+        // After a failed reload the stale entry is served for `RELOAD_BACKOFF`.
+        if let Some(d) = &stale
+            && failed_at.is_some_and(|at: Instant| at.elapsed() < RELOAD_BACKOFF)
+        {
+            return Ok(Arc::clone(d));
+        }
+        match self.load(p).await {
+            Ok(d) => {
+                let d = Arc::new(d);
+                self.store(&p.id, Arc::clone(&d));
+                *failed_at = None;
+                Ok(d)
+            }
+            Err(e) => {
+                *failed_at = Some(Instant::now());
+                match stale {
+                    Some(d) => {
+                        tracing::warn!(provider = %p.id, error = %e, "OIDC discovery reload failed; serving the cached copy");
+                        Ok(d)
+                    }
+                    None => Err(provider_down(&p.id, e)),
+                }
+            }
+        }
     }
 
     /// The keys to try after `seen` failed to verify a token: the key set is refetched once
@@ -676,7 +718,12 @@ pub fn identity(claims: &Value, username_claim: &str, groups_claim: &str) -> Ide
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
     };
-    let subject = text("sub").unwrap_or_default();
+    // The subject is kept exact (not trimmed), as MCP looks users up by the exact `sub`.
+    let subject = claims
+        .get("sub")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     let username = text(username_claim)
         .or_else(|| text("email"))
         .unwrap_or_else(|| subject.clone());
