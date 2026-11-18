@@ -121,6 +121,15 @@ pub trait Backend: Send + Sync + 'static {
             "support packages aren't available on this node",
         ))
     }
+    /// REQ: OPS-011 (ADR-172) — this node's part of a cluster support package, made and redacted
+    /// here under the asking node's key: gzip-compressed JSON that fits one cluster answer
+    /// (about a mebibyte). May take a few seconds; called on a blocking thread.
+    fn support_part(&self, req: &model::SupportCollectRequest) -> Result<Vec<u8>, Problem> {
+        let _ = req;
+        Err(Problem::unavailable(
+            "support packages aren't available on this node",
+        ))
+    }
     /// REQ: OPS-011 — the pseudonym map of the package `id`, once, if it is still held.
     fn support_map(&self, id: &str) -> Option<String> {
         let _ = id;

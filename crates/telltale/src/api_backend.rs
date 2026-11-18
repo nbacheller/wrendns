@@ -864,7 +864,21 @@ impl Backend for ApiBackend {
         req: &telltale_api::model::SupportPackageRequest,
         dry_run: bool,
     ) -> Result<telltale_api::SupportPackageOutput, Problem> {
+        if req.cluster {
+            return Err(
+                Problem::invalid("`cluster`: this node isn't part of a cluster")
+                    .hint("Leave `cluster` out to make this node's own package."),
+            );
+        }
         crate::support::build(self, req, dry_run)
+    }
+
+    // REQ: OPS-011 (ADR-172) — this node's part of a cluster package, for the node that asked.
+    fn support_part(
+        &self,
+        req: &telltale_api::model::SupportCollectRequest,
+    ) -> Result<Vec<u8>, Problem> {
+        crate::support::part(self, req)
     }
 
     fn support_map(&self, id: &str) -> Option<String> {

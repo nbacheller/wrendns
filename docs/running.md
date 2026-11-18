@@ -230,14 +230,22 @@ When something goes wrong, the most useful thing to attach to an issue is a **su
 - In the web UI: **Settings → System → Support package** (admins). **Preview what it holds** lists every file with its size and what would be replaced; **Make the package** downloads it.
 - From a shell: `telltale support-package` (it asks the running node, with an admin's API token in `TELLTALE_TOKEN` or `--token-file`). Add `--list` to see what it would hold and write nothing.
 - With no token, or with `--offline`, it is made from the configuration files and the log files instead, without asking a running node: use that when the node won't start. It has no live state (no cluster, health, upstreams, or metrics), and says so.
-- Over the API: `POST /api/v1/system/support-package` with `{"level": "strict"}` (admin; `?dryRun=true` answers with the manifest only). It isn't an MCP tool and no agent scope covers it.
+- Over the API: `POST /api/v1/system/support-package` with `{"level": "strict"}` (admin; `?dryRun=true` answers with the manifest only; `"cluster": true` for every node's part). It isn't an MCP tool and no agent scope covers it.
 
 ```sh
 telltale support-package                               # strict (the default): ./telltale-support-<node>-<time>.tar.gz
 telltale support-package --level standard --query-sample 200 --reveal pi
 telltale support-package --keep-map map.txt            # also write what each pseudonym stands for (keep it private)
 telltale support-package --offline -c /etc/telltale/telltale.toml
+telltale support-package --cluster                     # every node's part, in one package
 ```
+
+**A package for the whole cluster** (`--cluster`, or "Every node in the cluster" on the page)
+- The node you ask makes a key for this one package and sends it to every reachable node over the cluster's own authenticated connection (it is never stored). **Each node makes and redacts its own part**, so no real name or address crosses the network, and sends it back compressed. The package holds `nodes/<node>/` for each, laid out like a package from that one node, and a `MANIFEST.json` that lists every node and whether it answered.
+- A device, group, or host has **the same pseudonym on every node** (`device-a3f9c2e1`: a few bytes of a keyed hash, so the nodes agree without comparing notes), and addresses are permuted the same way everywhere. A single-node package numbers its names instead (`device-3`).
+- A node that doesn't answer in 45 seconds, is older than this feature, is busy making another package, or has no open connection is listed as missing, with a fixed reason; the rest of the package is complete. Ephemeral members (pods that come and go) are asked like the others but can't ask.
+- The 20 MiB cap is shared: each node's part gets an equal share, the largest files are cut first, and a part is also cut to fit what the cluster connection carries (about a mebibyte compressed). The manifest says what was cut.
+- Not with `--keep-map` (there is no map: the names never leave their nodes), and not with `--offline`.
 
 **Levels** (`--level`, or the choice on the page)
 | Level | What it does |

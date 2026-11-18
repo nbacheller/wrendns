@@ -2652,6 +2652,11 @@ export interface paths {
          *     With `keepMap`, the answer carries `X-Support-Package-Id`, and `GET
          *     /system/support-package/{id}/map` returns the pseudonyms and the real values behind them once,
          *     within ten minutes: it is not for attaching. `?dryRun=true` answers with the manifest only.
+         *
+         *     With **`cluster`**, the package covers every reachable node: each makes and redacts its own part
+         *     under one key made for this package (sent over the cluster channel, never stored), so a device
+         *     has the same pseudonym in every node's files and no real value crosses the network. The
+         *     manifest lists each node and whether it answered; the size cap is shared. Not with `keepMap`.
          *     Free text is redacted by pattern, which is best effort: look the package over before you
          *     attach it. Admin only; audit-logged as `support.package`. Not an MCP tool.
          */
@@ -7496,6 +7501,14 @@ export interface components {
         };
         /** @description REQ: OPS-011 (ADR-156) — `POST /system/support-package`: what the package should hold. */
         SupportPackageRequest: {
+            /**
+             * @description REQ: OPS-011 (ADR-172) — one package for the whole cluster: every reachable node makes and
+             *     redacts its own part under one key made for this package, so a device has the same
+             *     pseudonym on every node and no real name or address leaves the node it is on. Not with
+             *     `keepMap` (the names never leave their nodes, so there is no map). A node that doesn't
+             *     answer, or is older than this feature, is listed in the manifest.
+             */
+            cluster?: boolean;
             /** @description Keep the pseudonym map in memory for one download (`GET /system/support-package/{id}/map`). */
             keepMap?: boolean;
             /**

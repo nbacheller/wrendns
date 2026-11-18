@@ -769,6 +769,26 @@ test('ops_011 support package', async () => {
   await expect(card.getByTestId('support-map')).toBeDisabled();
 });
 
+// REQ: OPS-011 (ADR-172) — "Every node in the cluster": the request carries `cluster`, the pseudonym map
+// is switched off with it (the names never leave their nodes), and a node that is on its own says so
+// instead of making a package. (The cluster itself is `deploy/cluster/e2e.sh`.)
+test('ops_011 support package for the whole cluster', async () => {
+  await page.goto('/#/settings?tab=system');
+  const card = page.getByTestId('support-package');
+  await card.getByTestId('keep-map').check();
+  await card.getByTestId('cluster').check();
+  await expect(card.getByTestId('keep-map')).toBeDisabled();
+  await expect(card.getByTestId('keep-map')).not.toBeChecked();
+  const asked = page.waitForRequest((r) => r.url().includes('/system/support-package') && r.method() === 'POST');
+  await card.getByTestId('support-preview').click();
+  expect(JSON.parse((await asked).postData() ?? '{}').cluster).toBe(true);
+  await expect(card.getByRole('alert')).toContainText("isn't part of a cluster");
+  // The refusal is a 400, which the browser logs as a console error the suite would count: expected here.
+  problems.splice(0, problems.length, ...problems.filter((m) => !/status of 400/.test(m)));
+  await card.getByTestId('cluster').uncheck();
+  await expect(card.getByTestId('keep-map')).toBeEnabled();
+});
+
 // The header's icon buttons match: the pause button (its own component) is the same round,
 // borderless button as the theme toggle, on the same line (owner report 2026-10-06).
 test('header icon buttons are the same size and aligned', async () => {

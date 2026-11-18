@@ -26,6 +26,9 @@ use telltale_cluster::net::{Cluster, RpcHandler};
 const KIND: &str = "api.read";
 /// How long a read waits for peers (CLU-002: a dead node costs at most this).
 const DEADLINE: Duration = Duration::from_secs(2);
+#[path = "federated_support.rs"]
+mod support_cluster;
+
 /// How long a replica waits for the primary's configuration version before using its own.
 const VERSION_DEADLINE: Duration = Duration::from_secs(1);
 
@@ -186,6 +189,12 @@ enum Read {
     WorkloadCounts,
     /// REQ: OBS-009 — the peer's own hits per list (older peers don't know it).
     ListHits,
+    /// REQ: OPS-011 (ADR-172) — this node's part of a cluster support package, made and redacted
+    /// here under the key the asking node made for it. The answer is gzip-compressed JSON, not a
+    /// plain JSON value. Older peers don't know the read and are listed as missing.
+    SupportCollect {
+        req: Box<telltale_api::model::SupportCollectRequest>,
+    },
 }
 
 /// The reads that change the answering node: operational actions a user asked for on the
@@ -288,6 +297,8 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::Overblocking { limit } => serde_json::to_vec(&b.overblocking(limit)),
         Read::WorkloadCounts => serde_json::to_vec(&b.workload_counts()),
         Read::ListHits => serde_json::to_vec(&b.list_hits()),
+        // REQ: OPS-011 (ADR-172) — already compressed bytes, not a JSON value.
+        Read::SupportCollect { req } => return b.support_part(&req).map_err(text),
     }
     .map_err(|e| e.to_string())
 }
@@ -441,6 +452,11 @@ pub(crate) fn rpc_handler(
             let read: Read = serde_json::from_slice(&body).map_err(|e| format!("bad read: {e}"))?;
             if ephemeral && changes_state(&read) {
                 return Err("an ephemeral member can't change this node's state".into());
+            }
+            if ephemeral && matches!(read, Read::SupportCollect { .. }) {
+                // REQ: OPS-011 (ADR-172) — a part is redacted under the asker's key, which lets the
+                // asker undo the address permutation: only a member we trust to ask may have one.
+                return Err("an ephemeral member can't ask for a support package".into());
             }
             tokio::task::spawn_blocking(move || answer(local.as_ref(), read))
                 .await
@@ -1140,13 +1156,24 @@ impl Backend for Federated {
         self.local.backup()
     }
     // REQ: OPS-011 (ADR-156) — a support package is of this node: its own log and state, redacted on
-    // it (a `--cluster` package, asking each node, is a later phase).
+    // it. With `cluster` (ADR-172) every reachable node makes and redacts its own part under one key
+    // made here, and this node puts them together.
     fn support_package(
         &self,
         req: &telltale_api::model::SupportPackageRequest,
         dry_run: bool,
     ) -> Result<telltale_api::SupportPackageOutput, Problem> {
+        if req.cluster {
+            return self.cluster_support(req, dry_run);
+        }
         self.local.support_package(req, dry_run)
+    }
+    // REQ: OPS-011 (ADR-172) — this node's part, for the node that is putting a package together.
+    fn support_part(
+        &self,
+        req: &telltale_api::model::SupportCollectRequest,
+    ) -> Result<Vec<u8>, Problem> {
+        self.local.support_part(req)
     }
     fn support_map(&self, id: &str) -> Option<String> {
         self.local.support_map(id)

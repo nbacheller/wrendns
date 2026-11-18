@@ -256,6 +256,11 @@ enum Command {
         /// Make it from the config files and the log files, without asking a running node.
         #[arg(long)]
         offline: bool,
+        /// One package for the whole cluster: every reachable node redacts its own data before it
+        /// leaves the node, and a device has the same pseudonym on all of them. Asks a running
+        /// node (not with `--offline` or `--keep-map`).
+        #[arg(long)]
+        cluster: bool,
         /// The node's API address (default: from the config files' `[api] listen`).
         #[arg(long)]
         url: Option<String>,
@@ -808,6 +813,7 @@ fn main() -> ExitCode {
             list,
             output,
             offline,
+            cluster,
             url,
             ca_file,
             token_file,
@@ -821,6 +827,7 @@ fn main() -> ExitCode {
                 list,
                 output,
                 offline,
+                cluster,
             },
             url,
             ca_file,

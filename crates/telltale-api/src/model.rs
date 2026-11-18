@@ -2037,6 +2037,41 @@ pub struct SupportPackageRequest {
     /// Keep the pseudonym map in memory for one download (`GET /system/support-package/{id}/map`).
     #[serde(default)]
     pub keep_map: bool,
+    /// REQ: OPS-011 (ADR-172) — one package for the whole cluster: every reachable node makes and
+    /// redacts its own part under one key made for this package, so a device has the same
+    /// pseudonym on every node and no real name or address leaves the node it is on. Not with
+    /// `keepMap` (the names never leave their nodes, so there is no map). A node that doesn't
+    /// answer, or is older than this feature, is listed in the manifest.
+    #[serde(default)]
+    pub cluster: bool,
+}
+
+/// REQ: OPS-011 (ADR-172) — what a node is asked for when a cluster package is made. It goes over
+/// the cluster channel only (never as an API request body), with the key of this one package.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SupportCollectRequest {
+    /// `strict`, `standard`, or `none`, as in [`SupportPackageRequest`].
+    pub level: Option<String>,
+    pub reveal: Vec<String>,
+    pub query_sample: u32,
+    /// The package's key: 64 hex digits, held in memory for the call and never stored.
+    pub key: String,
+    /// The most bytes of file content this node's part may hold (its share of the cap).
+    pub max_bytes: usize,
+}
+
+// The key is the one secret of the request: whatever prints a read (a debug log, a panic message)
+// must not print it.
+impl std::fmt::Debug for SupportCollectRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SupportCollectRequest")
+            .field("level", &self.level)
+            .field("reveal", &self.reveal.len())
+            .field("query_sample", &self.query_sample)
+            .field("key", &"<hidden>")
+            .field("max_bytes", &self.max_bytes)
+            .finish()
+    }
 }
 
 /// REQ: OBS-014 (ADR-103) — a finding's stable ID: its window start (Unix seconds, 8 hex
