@@ -196,7 +196,9 @@ fn warn_once(what: &str, why: &str) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if *last != msg {
-        warn!("node-managed entries from the primary are ignored (the shared configuration is applied): {msg}");
+        warn!(
+            "node-managed entries from the primary are ignored (the shared configuration is applied): {msg}"
+        );
         last.clone_from(&msg);
     }
 }
@@ -350,7 +352,7 @@ mod tests {
             }],
         })
         .unwrap();
-        assert!(parse(&forged).unwrap().is_empty());
+        assert_eq!(parse(&forged).unwrap().len(), 0);
     }
 
     /// REQ: CLU-004 — a bad blob, or a bad entry, drops only itself.

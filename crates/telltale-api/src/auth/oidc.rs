@@ -128,7 +128,10 @@ impl Shared {
         self.discovered
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .retain(|k, _| keep.iter().any(|(id, issuer)| *k == discovery_key(id, issuer)));
+            .retain(|k, _| {
+                keep.iter()
+                    .any(|(id, issuer)| *k == discovery_key(id, issuer))
+            });
         self.flows
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -152,8 +155,10 @@ impl Shared {
 }
 
 fn discovery_key(id: &str, issuer: &str) -> String {
-    format!("{id}
-{issuer}")
+    format!(
+        "{id}
+{issuer}"
+    )
 }
 
 /// The OIDC service: one set of providers. A change of providers builds a new one that shares
@@ -377,10 +382,7 @@ impl Oidc {
 
     /// The discovery of `p`, from the cache while it's fresh.
     async fn discover(&self, p: &ProviderSettings) -> Result<Arc<Discovered>, Problem> {
-        if let Some(d) = self
-            .cached(p)
-            .filter(|d| d.at.elapsed() < DISCOVERY_TTL)
-        {
+        if let Some(d) = self.cached(p).filter(|d| d.at.elapsed() < DISCOVERY_TTL) {
             return Ok(d);
         }
         let Some(gate) = self.reload_gate.get(&p.id) else {
@@ -504,7 +506,11 @@ impl Oidc {
         };
         let url = format!("{}{sep}{query}", d.meta.authorization_endpoint);
         let browser = crypto::random_secret();
-        let mut flows = self.shared.flows.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut flows = self
+            .shared
+            .flows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         flows.retain(|_, f| f.started.elapsed() < FLOW_TTL);
         if flows.len() >= MAX_FLOWS {
             return Err(Problem::new(

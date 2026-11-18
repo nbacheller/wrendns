@@ -1040,6 +1040,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         routers: Arc::default(),
         routers_changed: Arc::default(),
         oidc_changed: Arc::default(),
+        oidc_fetch: crate::auth_setup::FetchSlot::default(),
         reload: reload_tx,
         config_writes: tokio::sync::Mutex::new(()),
         probes: Arc::default(),

@@ -33,7 +33,7 @@ use crate::rollout;
 
 /// How often the primary looks for a changed configuration or snapshot.
 const PUBLISH_EVERY: Duration = Duration::from_millis(500);
-const APPLIED: &str = "applied.json";
+pub(crate) const APPLIED: &str = "applied.json";
 const PUBLISHED: &str = "published.json";
 
 fn data_dir(cfg: &Config) -> &Path {
@@ -190,7 +190,9 @@ fn merged_with(file: &Config, m: &ClusterManifest, node_managed: bool) -> Result
     if node_managed && let Some(b) = &m.node_managed {
         match store.read(b) {
             Ok(bytes) => crate::node_managed::overlay_blob(&mut cfg, &bytes),
-            Err(e) => warn!("cluster: the version's node-managed entries can't be read ({e}); the shared configuration is applied without them"),
+            Err(e) => warn!(
+                "cluster: the version's node-managed entries can't be read ({e}); the shared configuration is applied without them"
+            ),
         }
     }
     Ok(cfg)

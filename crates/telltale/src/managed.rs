@@ -235,6 +235,26 @@ fn decode<T: for<'de> Deserialize<'de>>(state: &State, kind: &str) -> Vec<(Strin
         .collect()
 }
 
+/// REQ: API-016 (T23.10) — the stored OIDC providers: the row's name is the provider's ID, whatever
+/// the body says (a row seeded from a replicated blob names it only by the row).
+fn decode_oidc_providers(state: &State) -> Vec<(String, telltale_config::OidcProvider)> {
+    decode::<serde_json::Value>(state, OIDC_PROVIDER)
+        .into_iter()
+        .filter_map(|(name, mut v)| {
+            if let Some(o) = v.as_object_mut() {
+                o.insert("id".into(), serde_json::Value::String(name.clone()));
+            }
+            match serde_json::from_value::<telltale_config::OidcProvider>(v) {
+                Ok(p) => Some((name, p)),
+                Err(e) => {
+                    warn!(kind = OIDC_PROVIDER, %name, "skipping a stored entry: {e}");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
 /// Entries of a kind that can override the files: a definition, or `{"hidden":true}`.
 fn decode_ovr<T: for<'de> Deserialize<'de>>(state: &State, kind: &str) -> Vec<(String, Ovr<T>)> {
     decode::<serde_json::Value>(state, kind)
@@ -285,7 +305,7 @@ pub(crate) fn entries(state: &State) -> Entries {
         alert_destinations: decode_ovr(state, ALERT_DESTINATION),
         alert_rules: decode_ovr(state, ALERT_RULE),
         routers: decode_ovr(state, ROUTER),
-        oidc_providers: decode(state, OIDC_PROVIDER),
+        oidc_providers: decode_oidc_providers(state),
         schedules: decode_ovr(state, SCHEDULE),
         anomaly_mutes: decode_ovr(state, ANOMALY_MUTE),
         ratelimit: decode::<telltale_config::RateLimitConfig>(state, RATELIMIT)

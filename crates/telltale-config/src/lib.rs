@@ -35,7 +35,10 @@ pub use discovery::{DiscoveryConfig, DiscoverySubnet};
 pub use env::{ENV_PREFIX, NEVER_INHERITED};
 pub use schema::*;
 pub use types::{ByteSize, Cidr, SafeString, parse_rfc3339};
-pub use validate::{MAX_LISTS, MatchKey, provider_errors as oidc_provider_errors, UPSTREAM_SCHEMES, probe_target, valid_list_name};
+pub use validate::{
+    MAX_LISTS, MatchKey, UPSTREAM_SCHEMES, probe_target, provider_errors as oidc_provider_errors,
+    valid_list_name,
+};
 
 /// A config problem located by its key path (e.g. `upstream[1].url`, `cache.bogus`).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

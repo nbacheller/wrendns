@@ -246,11 +246,7 @@ pub async fn authenticate(
         (Some(t), Some(o))
             if o.mcp().is_some() && !t.starts_with("tt_") && t.split('.').count() == 3 =>
         {
-            Some(
-                o.verify_access_token(t, now())
-                    .await
-                    .map(|c| (o, c)),
-            )
+            Some(o.verify_access_token(t, now()).await.map(|c| (o, c)))
         }
         _ => None,
     };

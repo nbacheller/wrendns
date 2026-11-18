@@ -57,6 +57,33 @@ fn role(r: UserRole) -> Role {
     }
 }
 
+/// Where a test puts the fake issuer it wants OIDC providers reached through; unset, the real
+/// HTTPS client is used.
+#[derive(Default)]
+pub(crate) struct FetchSlot(std::sync::OnceLock<telltale_api::auth::oidc::Fetch>);
+
+impl std::fmt::Debug for FetchSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FetchSlot")
+            .field("set", &self.0.get().is_some())
+            .finish()
+    }
+}
+
+impl FetchSlot {
+    #[cfg(test)]
+    pub(crate) fn set(
+        &self,
+        f: telltale_api::auth::oidc::Fetch,
+    ) -> Result<(), telltale_api::auth::oidc::Fetch> {
+        self.0.set(f)
+    }
+
+    fn get(&self) -> Option<telltale_api::auth::oidc::Fetch> {
+        self.0.get().cloned()
+    }
+}
+
 /// REQ: API-004 — the HTTPS client OIDC providers are reached with: the same as list downloads
 /// (system resolver, Mozilla roots, no redirects, 1 MiB, 15 s). Built once.
 fn oidc_fetch() -> io::Result<telltale_api::auth::oidc::Fetch> {
@@ -118,11 +145,14 @@ pub(crate) fn oidc_inputs(
                 // REQ: CLU-009 (ADR-120) — a resolver pod has the chart's configuration but not its
                 // secrets, by design: nobody signs in there.
                 if cfg.cluster.ephemeral {
-                    info!("OIDC provider `{}` isn't set up on this resolver pod (people sign in elsewhere): {e}", p.id);
+                    info!(
+                        "OIDC provider `{}` isn't set up on this resolver pod (people sign in elsewhere): {e}",
+                        p.id
+                    );
                 } else {
                     warn!("OIDC provider `{}` is not set up: {e}", p.id);
                 }
-                skipped.push(ProviderStatus::inactive(p.id.to_string(), e.to_string()));
+                skipped.push(ProviderStatus::inactive(p.id.to_string(), e.clone()));
                 continue;
             }
         };
@@ -189,7 +219,7 @@ pub(crate) async fn reapply(src: &crate::http::Sources) -> bool {
     let Ok((settings, skipped)) = inputs else {
         return false;
     };
-    let fetch = match oidc_fetch() {
+    let fetch = match src.oidc_fetch.get().map_or_else(oidc_fetch, Ok) {
         Ok(f) => f,
         Err(e) => {
             error!("OIDC providers can't be applied: {e}");
@@ -199,9 +229,11 @@ pub(crate) async fn reapply(src: &crate::http::Sources) -> bool {
     match auth.reload_oidc(settings, skipped, fetch).await {
         // The ones whose discovery failed (the ones that lack `public_url` or a secret change
         // only when the configuration or a secret does, which wakes the applier).
-        Reloaded::Applied(status) => status
-            .iter()
-            .any(|s| s.reason.as_deref().is_some_and(|r| r.contains("couldn't be read"))),
+        Reloaded::Applied(status) => status.iter().any(|s| {
+            s.reason
+                .as_deref()
+                .is_some_and(|r| r.contains("couldn't be read"))
+        }),
         // A newer pass overtook this one and applies the newer settings itself.
         Reloaded::Discarded => false,
     }

@@ -192,10 +192,10 @@ impl Auth {
             .map(|s| s.id)
             .filter(|id| !wanted.contains(&id.as_str()))
             .collect();
-        *self
-            .oidc_status
+        self.oidc_status
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = status.clone();
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone_from(&status);
         for id in gone {
             let state = Arc::clone(&self.state);
             let removed = id.clone();

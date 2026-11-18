@@ -194,15 +194,14 @@ fn role_name(r: telltale_config::UserRole) -> &'static str {
 pub(crate) fn list(src: &Sources) -> OidcProviderList {
     let cfg = src.config.load_full();
     let o = &cfg.auth.oidc;
-    let status = src
-        .auth
-        .get()
-        .map(|a| a.oidc_status())
-        .unwrap_or_default();
+    let status = src.auth.get().map(|a| a.oidc_status()).unwrap_or_default();
     let public_url = o.public_url.as_str().trim_end_matches('/').to_owned();
     let entry = |p: &OidcProvider, from_file: bool| -> OidcProviderEntry {
         let (secret_source, secret) = if p.client_secret_ref.is_some() {
-            ("stored", p.client_secret_ref.as_ref().map(|s| s.to_string()))
+            (
+                "stored",
+                p.client_secret_ref.as_ref().map(ToString::to_string),
+            )
         } else if p.client_secret_file.is_some() {
             ("file", None)
         } else if p.client_secret.is_some() {
@@ -211,9 +210,7 @@ pub(crate) fn list(src: &Sources) -> OidcProviderList {
             ("none", None)
         };
         let secret_readable = match secret_source {
-            "stored" => secret
-                .as_deref()
-                .map(|n| src.secrets.readable(n).is_ok()),
+            "stored" => secret.as_deref().map(|n| src.secrets.readable(n).is_ok()),
             "file" | "inline" => Some(
                 crate::secrets::Credential::of(
                     p.client_secret_file.as_ref(),
@@ -266,8 +263,7 @@ pub(crate) fn list(src: &Sources) -> OidcProviderList {
                 .then(|| format!("{public_url}/api/v1/auth/oidc/{}/callback", p.id)),
         }
     };
-    let mut items: Vec<OidcProviderEntry> =
-        o.provider.iter().map(|p| entry(p, true)).collect();
+    let mut items: Vec<OidcProviderEntry> = o.provider.iter().map(|p| entry(p, true)).collect();
     items.extend(o.managed_provider.iter().map(|p| entry(p, false)));
     OidcProviderList {
         items,
