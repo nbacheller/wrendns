@@ -15,7 +15,8 @@
 //! applies and an entry it deletes stays deleted. A blob from a build that does not publish the
 //! rows changes nothing.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use telltale_config::Config;
 use telltale_store::state::State;
@@ -24,18 +25,28 @@ use tracing::{info, warn};
 use crate::managed::{self, Named};
 use crate::node_managed::{Entry, SHARED_KINDS, parse_shared};
 
-/// The marker a primary keeps once it adopted the rows of an inherited blob (its hash).
+/// The `meta` key holding the hash of the blob this node adopted the rows of. It is written in
+/// the same transaction as the rows, so the rows and the record of them never part.
 const SEEDED: &str = "managed-seeded";
 
-/// Whether the adoption of the blob with `hash` is recorded.
-pub(crate) fn adopted(cluster_dir: &Path, hash: &str) -> bool {
-    std::fs::read_to_string(cluster_dir.join(SEEDED)).is_ok_and(|h| h.trim() == hash)
-}
+/// The blob adopted in this process: (state path, hash, entries). A call for the same blob
+/// answers from here without reading the blob or the store (the publish loop calls every 500 ms).
+/// The lock is held for a whole adoption, so a write plan, a reload and the publish loop never
+/// adopt at once, and none sees the rows half replaced.
+static ADOPTED: Mutex<Option<(PathBuf, String, Vec<Entry>)>> = Mutex::new(None);
 
 /// Forgets the adoption: this node follows a primary, so its rows (from an earlier time as
 /// primary) are stale, and the next promotion adopts the blob it inherits whatever its hash.
-pub(crate) fn forget(cluster_dir: &Path) {
-    let _ = std::fs::remove_file(cluster_dir.join(SEEDED));
+pub(crate) fn forget(state_path: &Path) {
+    let mut held = ADOPTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *held = None;
+    if state_path.exists()
+        && let Ok(state) = State::open(state_path)
+    {
+        let _ = state.meta_set(SEEDED, None);
+    }
 }
 
 fn now_secs() -> u64 {
@@ -44,18 +55,28 @@ fn now_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// Adopts the shared rows of the inherited blob (`bytes`, with `hash`) into this node's
+/// Adopts the shared rows of the inherited blob (`hash`, read with `read`) into this node's
 /// `state.db`, once, replacing what it holds. Returns the entries the node's rows now are the
 /// source of (to be [`strip`]ped from the configuration it builds on), or `None` when nothing was
 /// adopted: a blob without the rows, one that can't be read, or a store that can't be written
-/// (the node then keeps building on the inherited configuration as it always did).
+/// (the node then keeps building on the inherited configuration as it always did). The check of
+/// the record, the replacement and the record are one transaction, under a process-wide lock.
 pub(crate) fn adopt(
     state_path: &Path,
-    cluster_dir: &Path,
     hash: &str,
-    bytes: &[u8],
+    read: impl FnOnce() -> Option<Vec<u8>>,
 ) -> Option<Vec<Entry>> {
-    let entries = match parse_shared(bytes) {
+    let mut held = ADOPTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((p, h, entries)) = held.as_ref()
+        && p == state_path
+        && h == hash
+    {
+        return Some(entries.clone());
+    }
+    let bytes = read()?;
+    let entries = match parse_shared(&bytes) {
         Ok(Some(e)) => e,
         Ok(None) => return None,
         Err(why) => {
@@ -63,9 +84,6 @@ pub(crate) fn adopt(
             return None;
         }
     };
-    if adopted(cluster_dir, hash) {
-        return Some(entries);
-    }
     let state = match State::open(state_path) {
         Ok(s) => s,
         Err(e) => {
@@ -87,20 +105,25 @@ pub(crate) fn adopt(
         .iter()
         .map(|(k, n, b)| (k.as_str(), n.as_str(), b.as_str()))
         .collect();
-    if let Err(e) = state.replace_managed(SHARED_KINDS, &refs, now_secs(), "promotion") {
-        warn!("the inherited cluster entries can't be adopted: {e}");
-        return None;
+    match state.replace_managed_noted(
+        SHARED_KINDS,
+        &refs,
+        now_secs(),
+        "promotion",
+        Some((SEEDED, hash)),
+    ) {
+        Ok(Some(_)) => info!(
+            entries = entries.len(),
+            "this node was promoted: it adopted the cluster's last published API entries as its own"
+        ),
+        // Adopted by an earlier run of this node: its rows are the source, keep them.
+        Ok(None) => {}
+        Err(e) => {
+            warn!("the inherited cluster entries can't be adopted: {e}");
+            return None;
+        }
     }
-    if let Err(e) = std::fs::write(cluster_dir.join(SEEDED), hash) {
-        // The rows are in; without the marker the next start would adopt the blob again and drop
-        // what was changed since, so say it and do not strip.
-        warn!("can't record the adoption of the inherited cluster entries: {e}");
-        return None;
-    }
-    info!(
-        entries = entries.len(),
-        "this node was promoted: it adopted the cluster's last published API entries as its own"
-    );
+    *held = Some((state_path.to_path_buf(), hash.to_owned(), entries.clone()));
     Some(entries)
 }
 

@@ -204,8 +204,31 @@ impl State {
         now: u64,
         by: &str,
     ) -> std::result::Result<u64, ManagedError> {
+        self.replace_managed_noted(kinds, rows, now, by, None)
+            .map(Option::unwrap_or_default)
+    }
+
+    /// [`Self::replace_managed`] that also records `note` (a `meta` key and value) in the same
+    /// transaction, and does nothing (`Ok(None)`) when `meta` already holds that value for the
+    /// key: the check, the replacement and the record are one step. REQ: CLU-015 (T24.37).
+    pub fn replace_managed_noted(
+        &self,
+        kinds: &[&str],
+        rows: &[(&str, &str, &str)],
+        now: u64,
+        by: &str,
+        note: Option<(&str, &str)>,
+    ) -> std::result::Result<Option<u64>, ManagedError> {
         let conn = self.lock();
         let tx = conn.unchecked_transaction()?;
+        if let Some((key, value)) = note {
+            let held: Option<String> = tx
+                .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+                .optional()?;
+            if held.as_deref() == Some(value) {
+                return Ok(None);
+            }
+        }
         let current = version(&tx)?;
         let mut have: Vec<(String, String)> = Vec::new();
         {
@@ -234,13 +257,20 @@ impl State {
                 params![kind, name, body, i(now), by],
             )?;
         }
+        if let Some((key, value)) = note {
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )?;
+        }
         let next = current + 1;
         tx.execute(
             "UPDATE meta SET value = ?1 WHERE key = 'config_version'",
             [next.to_string()],
         )?;
         tx.commit()?;
-        Ok(next)
+        Ok(Some(next))
     }
 
     /// Deletes `name` if the version is still `expect` (when given). Returns the new version.

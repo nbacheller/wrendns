@@ -389,3 +389,64 @@ async fn clu_015_the_blob_carries_the_shared_rows() {
     // The node-managed readers don't see them.
     assert_eq!(crate::node_managed::parse(&blob).unwrap().len(), 0);
 }
+
+/// REQ: CLU-015 (T24.37) — the record of an adoption lives in `state.db` with the rows, so a
+/// second adoption of the same blob (the publish loop, a reload, a write plan) changes nothing,
+/// an edit made since survives it, and a node that followed a primary adopts the next blob again.
+#[tokio::test]
+async fn clu_015_adoption_is_recorded_with_the_rows_and_runs_once() {
+    let (a, b) = (harness(""), harness(""));
+    fill(&a).await;
+    let (merged, blob) = published(&a);
+    let file = follow(&b, NodeRole::Replica, 1, &merged, &blob);
+    promote(&b, 2);
+    let _ = crate::replication::effective(&file);
+    ok(
+        &b,
+        "PUT",
+        "/api/v1/upstreams/pihole-4",
+        Some(json!({"url": "udp://192.0.2.44"})),
+    )
+    .await;
+    let version = b.auth.state().config_version().unwrap();
+    // The same blob again, as every later tick and reload does.
+    for _ in 0..3 {
+        let _ = crate::replication::effective(&file);
+    }
+    assert_eq!(b.auth.state().config_version().unwrap(), version);
+    let rows = b.auth.state().managed("upstream").unwrap();
+    assert!(
+        rows.iter().any(|r| r.body.contains("192.0.2.44")),
+        "the edit survived a second adoption"
+    );
+    // Following a primary again forgets it: the next promotion adopts afresh.
+    let state_path = crate::managed::state_path(&file);
+    crate::managed_adopt::forget(&state_path);
+    assert_eq!(
+        b.auth.state().meta_get("managed-seeded").unwrap(),
+        None,
+        "the record is dropped"
+    );
+}
+
+/// REQ: CLU-006, CLU-015 (T24.37) — a row pinned to its node (`node_only`) never leaves it: the
+/// blob does not carry it, as the shared configuration does not.
+#[test]
+fn clu_006_node_only_rows_stay_out_of_the_blob() {
+    let rows = vec![
+        (
+            "upstream".to_owned(),
+            "lan-only".to_owned(),
+            json!({"name": "lan-only", "url": "udp://10.0.0.9", "node_only": true}).to_string(),
+        ),
+        (
+            "upstream".to_owned(),
+            "shared".to_owned(),
+            json!({"name": "shared", "url": "udp://192.0.2.1"}).to_string(),
+        ),
+    ];
+    let blob = crate::node_managed::encode(&rows);
+    let shared = crate::node_managed::parse_shared(&blob).unwrap().unwrap();
+    assert_eq!(shared.len(), 1);
+    assert_eq!(shared[0].name, "shared");
+}

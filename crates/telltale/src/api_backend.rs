@@ -5196,7 +5196,13 @@ fn plan_managed(
             Code::Conflict,
             format!("`{name}` is defined in the config files"),
         )
-        .hint("Change it in the config file."));
+        // REQ: CLU-015 (T24.37) — on a promoted primary the base is the cluster version, whose
+        // files are another node's.
+        .hint(if Arc::ptr_eq(&file, &src.file_config.load_full()) {
+            "Change it in the config file."
+        } else {
+            "It comes from the cluster's configuration (the config file of the node that was primary): change it there, or on the node whose file defines it."
+        }));
     }
     let mut entries = crate::managed::entries(state);
     let (before, after) = match w.kind {
@@ -5271,9 +5277,12 @@ fn plan_managed(
         _ => return Err(Problem::internal("handled by plan_override")),
     };
     if w.body.is_none() && before.is_none() {
-        return Err(Problem::not_found(format!(
-            "`{name}` wasn't created through the API"
-        )));
+        return Err(served_not_stored(
+            src,
+            w.kind,
+            &name,
+            Problem::not_found(format!("`{name}` wasn't created through the API")),
+        ));
     }
     let merged = crate::managed::merge(&file, &entries)
         .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
@@ -5575,6 +5584,20 @@ fn served_not_stored(src: &Sources, kind: ManagedKind, name: &str, p: Problem) -
         ManagedKind::UpstreamGroup => cfg.upstream_group.iter().any(|u| u.name() == name),
         ManagedKind::List => cfg.list.iter().any(|u| u.name() == name),
         ManagedKind::Group => cfg.group.iter().any(|u| u.name() == name),
+        ManagedKind::AlertDestination => cfg.alerts.destination.iter().any(|u| u.name() == name),
+        ManagedKind::AlertRule => cfg.alerts.rule.iter().any(|u| u.name() == name),
+        ManagedKind::Schedule => cfg.schedule.iter().any(|u| u.name() == name),
+        ManagedKind::AnomalyMute => cfg.anomaly_mute.iter().any(|u| u.name() == name),
+        ManagedKind::KubernetesMap => cfg.kubernetes.map.iter().any(|r| r.key() == name),
+        ManagedKind::Record => cfg
+            .record
+            .iter()
+            .any(|r| r.name.as_str().eq_ignore_ascii_case(name)),
+        ManagedKind::Forward => cfg
+            .route
+            .iter()
+            .any(|r| r.upstream_group.as_str() == crate::managed::forward_group(name)),
+        ManagedKind::Rule => cfg.rule.iter().any(|r| r.id.as_str() == name),
         _ => false,
     };
     if !served {

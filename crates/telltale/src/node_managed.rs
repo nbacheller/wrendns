@@ -114,6 +114,13 @@ pub(crate) fn encode(rows: &[(String, String, String)]) -> Vec<u8> {
         .filter(|(k, _, _)| KINDS.contains(&k.as_str()) || SHARED_KINDS.contains(&k.as_str()))
         .filter_map(|(kind, name, body)| {
             let mut body: Value = serde_json::from_str(body).ok()?;
+            // REQ: CLU-006 — a row the operator pinned to this node stays here: the shared
+            // configuration keeps such entries on their node, and so does the blob.
+            if SHARED_KINDS.contains(&kind.as_str())
+                && body.get("node_only") == Some(&Value::Bool(true))
+            {
+                return None;
+            }
             // The shared kinds travel whole, as the shared configuration does.
             if KINDS.contains(&kind.as_str())
                 && let Some(o) = body.as_object_mut()

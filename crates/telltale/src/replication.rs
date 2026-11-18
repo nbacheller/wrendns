@@ -128,7 +128,7 @@ pub(crate) fn unpinned(file: &Config) -> Config {
         );
         // REQ: CLU-015 (T24.37, ADR-1016) — the same for the shared kinds: this node's rows are
         // stale while it follows a primary, and the next promotion adopts the blob it inherits.
-        crate::managed_adopt::forget(&node::dir_of(data_dir(file)));
+        crate::managed_adopt::forget(&crate::managed::state_path(file));
     }
     let m = match id.meta.role {
         Some(node::Role::Primary) if gitops_source => None,
@@ -244,14 +244,12 @@ fn adopt_shared(file: &Config, m: &ClusterManifest, cfg: &mut Config) -> bool {
     let Some(b) = &m.node_managed else {
         return false;
     };
-    let Ok(store) = BlobStore::open(data_dir(file)) else {
-        return false;
-    };
-    let Ok(bytes) = store.read(b) else {
-        return false;
-    };
-    let cdir = node::dir_of(data_dir(file));
-    match crate::managed_adopt::adopt(&crate::managed::state_path(file), &cdir, &b.hash, &bytes) {
+    let adopted = crate::managed_adopt::adopt(&crate::managed::state_path(file), &b.hash, || {
+        BlobStore::open(data_dir(file))
+            .ok()
+            .and_then(|store| store.read(b).ok())
+    });
+    match adopted {
         Some(entries) => {
             crate::managed_adopt::strip(cfg, &entries, file);
             true
