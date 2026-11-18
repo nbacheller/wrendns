@@ -84,21 +84,23 @@
 
   const dhcp = (n: Net) => (n.dhcpStart && n.dhcpEnd ? `${n.dhcpStart} – ${n.dhcpEnd}` : 'none');
   const groupOnly = (n: Net) => n.source === 'group';
+  const thisNode = (n: Net) => n.source === 'interface';
 </script>
 
 <div class="page">
   <h1>Networks<HelpButton id="networks" /></h1>
   <ErrorNote {error} />
   <p class="muted small">
-    The LANs and VLANs your routers report, and any client group's networks no router reported. Each shows the group that covers
-    it and how many devices are in it, so you can see which networks are filling up.
+    The LANs and VLANs your routers report, the networks this node is directly on (its own LAN and any tagged VLAN
+    interfaces), and any client group's networks nothing reported. Each shows the group that covers it and how many devices
+    are in it, so you can see which networks are filling up.
   </p>
 
   <section class="card">
     {#if loaded && networks.length === 0 && !error}
       <p class="empty" data-testid="networks-empty">
         No networks yet. They come from the routers you connect (a <code>[[router]]</code> in the config file: UniFi, OPNsense or
-        Home Assistant) and from the networks of your client groups.
+        Home Assistant), from the networks this node is on, and from the networks of your client groups.
       </p>
     {:else if networks.length}
       <div class="table-wrap">
@@ -124,7 +126,10 @@
           <tbody>
             {#each networks as n (n.subnet + n.source + (n.router ?? ''))}
               <tr data-testid="network-row">
-                <td><button type="button" class="link" onclick={() => show(n)} data-testid="network-open">{n.name}</button></td>
+                <td>
+                  <button type="button" class="link" onclick={() => show(n)} data-testid="network-open">{n.name}</button>
+                  {#if thisNode(n)}<span class="badge info" data-testid="this-node">this node</span>{/if}
+                </td>
                 <td class="small wide">{n.purpose ?? '–'}</td>
                 <td class="mono">{n.subnet}</td>
                 <td class="num">{n.vlan ?? '–'}</td>

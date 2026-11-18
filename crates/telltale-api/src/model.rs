@@ -44,6 +44,21 @@ pub struct SystemInfo {
     pub update: UpdateStatus,
     /// REQ: OPS-010 — this node's maintenance window, while it's in maintenance.
     pub maintenance: Option<NodeMaintenance>,
+    /// REQ: UPS-013 (T24.31, ADR-997) — this node's own interface addresses (loopback and
+    /// link-local left out), which an upstream's `source` can name. They differ per node.
+    pub addresses: Vec<NodeAddress>,
+}
+
+/// One address this node holds, for the Upstreams form's `source` suggestions.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeAddress {
+    /// The interface (`eth0`, `eth0.100`).
+    pub interface: String,
+    /// `198.51.100.252`
+    pub address: String,
+    /// The network it is in, which a shared upstream can name instead: `198.51.100.0/24`.
+    pub network: String,
 }
 
 /// The build identity (REQ: OPS-004, ADR-046): the same on every architecture of one commit.
@@ -1154,6 +1169,13 @@ pub struct UpstreamInfo {
     /// route` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route_problem: Option<String>,
+    /// REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the
+    /// upstream sets a `source`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// REQ: UPS-013 — set while this node no longer holds that address: its queries fail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_problem: Option<String>,
 }
 
 /// Failed attempts by kind (their sum is `failures`).
@@ -2035,7 +2057,9 @@ pub struct NetworkInfo {
     /// The router's own word for it (UniFi: `corporate`, `guest`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
-    /// `router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry).
+    /// `router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example
+    /// on a tagged VLAN interface; it is named after the interface) or `group` (only a
+    /// `[[group]] networks` entry).
     pub source: String,
     /// The `[[router]]` that reported it.
     #[serde(skip_serializing_if = "Option::is_none")]
