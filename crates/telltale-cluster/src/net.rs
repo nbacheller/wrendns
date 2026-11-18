@@ -816,6 +816,8 @@ pub struct Cluster {
     pub(crate) election: Mutex<Option<crate::election::Elector>>,
     /// Whether this node may publish: a primary holding a valid lease (always, in manual mode).
     lease_ok: std::sync::atomic::AtomicBool,
+    /// REQ: CLU-005 (T24.26) — when this primary's lease lapsed, until a majority renews it.
+    lease_lapsed_at: Mutex<Option<std::time::Instant>>,
     failover_view: Mutex<crate::failover::FailoverView>,
     /// Bumped when this node's certificate is renewed: TLS settings are rebuilt (T5.4c).
     cert_gen: AtomicU64,
@@ -930,6 +932,7 @@ impl Cluster {
             election: Mutex::new(None),
             // ADR-056 — a primary in automatic failover waits for its first renewal.
             lease_ok: std::sync::atomic::AtomicBool::new(!wait_for_lease),
+            lease_lapsed_at: Mutex::new(None),
             failover_view: Mutex::new(crate::failover::FailoverView::default()),
             cert_gen: AtomicU64::new(0),
             bootstrap: std::sync::OnceLock::new(),
@@ -1154,6 +1157,9 @@ impl Cluster {
 
     pub(crate) fn set_lease_ok(&self, ok: bool) {
         let was = self.lease_ok.swap(ok, std::sync::atomic::Ordering::AcqRel);
+        if ok && !was {
+            self.note_lease_renewed();
+        }
         if was && !ok && self.is_primary() && self.stepping_down() {
             // REQ: OPS-010, CLU-005 (ADR-154) — expected: the lease ran out on purpose, for
             // maintenance or because a Git-managed node asked this emergency primary to hand over.
@@ -1171,6 +1177,10 @@ impl Cluster {
                 format!("handing over for {why}"),
             );
         } else if was && !ok && self.is_primary() {
+            *self
+                .lease_lapsed_at
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(std::time::Instant::now());
             warn!(
                 "cluster: this primary's lease lapsed; publishing paused until a majority renews it"
             );
@@ -1178,6 +1188,28 @@ impl Cluster {
                 "lease_lost",
                 &self.identity.meta.node_id.clone(),
                 "publishing paused",
+            );
+        }
+    }
+
+    /// REQ: CLU-005 (T24.26) — said once when a lapsed lease is renewed again, with how long
+    /// publishing was paused.
+    fn note_lease_renewed(&self) {
+        let lapsed = self
+            .lease_lapsed_at
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(at) = lapsed {
+            let paused_ms = u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            info!(
+                paused_ms,
+                "cluster: this primary's lease is renewed again; publishing resumes"
+            );
+            self.event(
+                "lease_renewed",
+                &self.identity.meta.node_id.clone(),
+                format!("publishing resumed after {paused_ms} ms"),
             );
         }
     }
