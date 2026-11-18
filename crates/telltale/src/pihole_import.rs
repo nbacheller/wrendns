@@ -958,7 +958,7 @@ pub(crate) async fn preview(src: Arc<Sources>, req: PiholeImportRequest) -> Resu
         .get()
         .map(|a| Arc::clone(a.state()))
         .ok_or_else(|| Problem::unavailable("the state database isn't open yet"))?;
-    let file = src.file_config.load_full();
+    let file = crate::api_backend::plan_files(&src);
     let at = now();
     let plan = build(&file, &state, wire, compare_json, at, &by)?;
     let out = preview_json(&plan);
@@ -1034,7 +1034,7 @@ pub(crate) async fn apply(src: Arc<Sources>, id: String, by: String) -> Result<V
         .get()
         .map(|a| Arc::clone(a.state()))
         .ok_or_else(|| Problem::unavailable("the state database isn't open yet"))?;
-    let file = src.file_config.load_full();
+    let file = crate::api_backend::plan_files(&src);
     let version = {
         let state = Arc::clone(&state);
         let file = Arc::clone(&file);

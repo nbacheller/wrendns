@@ -5183,7 +5183,7 @@ fn plan_managed(
     if name.is_empty() {
         return Err(Problem::invalid("the name is empty"));
     }
-    let file = src.file_config.load_full();
+    let file = plan_files(src);
     let in_files = match w.kind {
         ManagedKind::Record => file
             .record
@@ -5201,7 +5201,13 @@ fn plan_managed(
             Code::Conflict,
             format!("`{name}` is defined in the config files"),
         )
-        .hint("Change it in the config file."));
+        // REQ: CLU-015 (T24.37) — on a promoted primary the base is the cluster version, whose
+        // files are another node's.
+        .hint(if Arc::ptr_eq(&file, &src.file_config.load_full()) {
+            "Change it in the config file."
+        } else {
+            "It comes from the cluster's configuration (the config file of the node that was primary): change it there, or on the node whose file defines it."
+        }));
     }
     let mut entries = crate::managed::entries(state);
     let (before, after) = match w.kind {
@@ -5276,9 +5282,12 @@ fn plan_managed(
         _ => return Err(Problem::internal("handled by plan_override")),
     };
     if w.body.is_none() && before.is_none() {
-        return Err(Problem::not_found(format!(
-            "`{name}` wasn't created through the API"
-        )));
+        return Err(served_not_stored(
+            src,
+            w.kind,
+            &name,
+            Problem::not_found(format!("`{name}` wasn't created through the API")),
+        ));
     }
     let merged = crate::managed::merge(&file, &entries)
         .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
@@ -5458,7 +5467,7 @@ fn plan_settings(
             "there is one {noun}, named `default`"
         )));
     }
-    let file = src.file_config.load_full();
+    let file = plan_files(src);
     let mut entries = crate::managed::entries(state);
     // REQ: DSC-001 (T25.2, ADR-907, CLU-010) — the first write of `[discovery]` waits until no member
     // runs an older version: an older member can't read the section.
@@ -5536,7 +5545,7 @@ fn plan_singleton(
             singleton_noun(w.kind)
         )));
     }
-    let file = src.file_config.load_full();
+    let file = plan_files(src);
     let mut entries = crate::managed::entries(state);
     let change = singleton_change(w.kind, &file, &mut entries, w.body.as_ref())?;
     let warnings = telltale_config::validate_config(&change.merged).unwrap_or_default();
@@ -5553,6 +5562,63 @@ fn plan_singleton(
         candidate: change.merged,
         redirect: None,
     })
+}
+
+/// REQ: CLU-015 (T24.37, ADR-1016) — what a write's entries are merged onto: the config files, or,
+/// on a primary promoted from replica, the cluster version it builds on without the entries it
+/// adopted as its own rows, so every entry the cluster serves can be edited or deleted here.
+pub(crate) fn plan_files(src: &Sources) -> Arc<telltale_config::Config> {
+    let file = src.file_config.load_full();
+    match crate::replication::managed_base(&file) {
+        Some(base) => Arc::new(base),
+        None => file,
+    }
+}
+
+/// REQ: CLU-015 (T24.37, ADR-1016) — a write that finds no entry of that name to change, where
+/// the node serves one: it came from a cluster version whose primary did not hand its API entries
+/// over (an older version), so say that instead of a bare 404.
+fn served_not_stored(src: &Sources, kind: ManagedKind, name: &str, p: Problem) -> Problem {
+    use crate::managed::Named;
+    if p.status != 404 {
+        return p;
+    }
+    // Only a node promoted from replica can hold served-but-not-stored entries of this kind.
+    if !crate::replication::promoted_primary(&src.file_config.load()) {
+        return p;
+    }
+    let cfg = src.config.load();
+    let served = match kind {
+        ManagedKind::Upstream => cfg.upstream.iter().any(|u| u.name() == name),
+        ManagedKind::UpstreamGroup => cfg.upstream_group.iter().any(|u| u.name() == name),
+        ManagedKind::List => cfg.list.iter().any(|u| u.name() == name),
+        ManagedKind::Group => cfg.group.iter().any(|u| u.name() == name),
+        ManagedKind::AlertDestination => cfg.alerts.destination.iter().any(|u| u.name() == name),
+        ManagedKind::AlertRule => cfg.alerts.rule.iter().any(|u| u.name() == name),
+        ManagedKind::Schedule => cfg.schedule.iter().any(|u| u.name() == name),
+        ManagedKind::AnomalyMute => cfg.anomaly_mute.iter().any(|u| u.name() == name),
+        ManagedKind::KubernetesMap => cfg.kubernetes.map.iter().any(|r| r.key() == name),
+        ManagedKind::Record => cfg
+            .record
+            .iter()
+            .any(|r| r.name.as_str().eq_ignore_ascii_case(name)),
+        ManagedKind::Forward => cfg
+            .route
+            .iter()
+            .any(|r| r.upstream_group.as_str() == crate::managed::forward_group(name)),
+        ManagedKind::Rule => cfg.rule.iter().any(|r| r.id.as_str() == name),
+        _ => false,
+    };
+    if !served {
+        return p;
+    }
+    Problem::new(
+        Code::Conflict,
+        format!(
+            "`{name}` is in the cluster's configuration, but this node doesn't hold it as its own entry: it took over from a primary that didn't hand its API entries over (an older version)"
+        ),
+    )
+    .hint("Upgrade every node, then change it on the current primary; or change it in the config file.")
 }
 
 /// ADR-069 — one kind's change: returns (the entry before, the body to store).
@@ -5879,7 +5945,7 @@ fn plan_override(
     if name.is_empty() {
         return Err(Problem::invalid("the name is empty"));
     }
-    let file = src.file_config.load_full();
+    let file = plan_files(src);
     let mut entries = crate::managed::entries(state);
     let before_cfg = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
     // REQ: API-014 (ADR-903 §4, the marker rule) — `<redacted>` sent back keeps the value in
@@ -5920,71 +5986,74 @@ fn plan_override(
         upstream_group_in_use(&name, &file, &entries, &before_cfg)?;
     }
 
-    let (before, body) = match w.kind {
-        ManagedKind::Upstream => override_step(
-            &name,
-            body_in,
-            file.upstream.iter().any(|u| u.name() == name),
-            before_cfg.upstream.iter().find(|u| u.name() == name),
-            &mut entries.upstreams,
-        )?,
-        ManagedKind::UpstreamGroup => override_step(
-            &name,
-            body_in,
-            file.upstream_group.iter().any(|u| u.name() == name),
-            before_cfg.upstream_group.iter().find(|u| u.name() == name),
-            &mut entries.upstream_groups,
-        )?,
-        ManagedKind::List => override_step(
-            &name,
-            body_in,
-            file.list.iter().any(|u| u.name() == name),
-            before_cfg.list.iter().find(|u| u.name() == name),
-            &mut entries.lists,
-        )?,
-        ManagedKind::AlertDestination => override_step(
-            &name,
-            body_in,
-            file.alerts.destination.iter().any(|u| u.name() == name),
-            before_cfg
-                .alerts
-                .destination
-                .iter()
-                .find(|u| u.name() == name),
-            &mut entries.alert_destinations,
-        )?,
-        ManagedKind::AlertRule => override_step(
-            &name,
-            body_in,
-            file.alerts.rule.iter().any(|u| u.name() == name),
-            before_cfg.alerts.rule.iter().find(|u| u.name() == name),
-            &mut entries.alert_rules,
-        )?,
-        ManagedKind::Schedule => override_step(
-            &name,
-            body_in,
-            file.schedule.iter().any(|u| u.name() == name),
-            before_cfg.schedule.iter().find(|u| u.name() == name),
-            &mut entries.schedules,
-        )?,
-        ManagedKind::AnomalyMute => override_step(
-            &name,
-            body_in,
-            file.anomaly_mute.iter().any(|u| u.name() == name),
-            before_cfg.anomaly_mute.iter().find(|u| u.name() == name),
-            &mut entries.anomaly_mutes,
-        )?,
-        ManagedKind::KubernetesMap => {
-            kubernetes_map_step(&name, body_in, &file, &before_cfg, &mut entries)?
-        }
-        _ => override_step(
-            &name,
-            body_in,
-            file.group.iter().any(|u| u.name() == name),
-            before_cfg.group.iter().find(|u| u.name() == name),
-            &mut entries.groups,
-        )?,
-    };
+    let step = (|| -> Result<_, Problem> {
+        Ok(match w.kind {
+            ManagedKind::Upstream => override_step(
+                &name,
+                body_in,
+                file.upstream.iter().any(|u| u.name() == name),
+                before_cfg.upstream.iter().find(|u| u.name() == name),
+                &mut entries.upstreams,
+            )?,
+            ManagedKind::UpstreamGroup => override_step(
+                &name,
+                body_in,
+                file.upstream_group.iter().any(|u| u.name() == name),
+                before_cfg.upstream_group.iter().find(|u| u.name() == name),
+                &mut entries.upstream_groups,
+            )?,
+            ManagedKind::List => override_step(
+                &name,
+                body_in,
+                file.list.iter().any(|u| u.name() == name),
+                before_cfg.list.iter().find(|u| u.name() == name),
+                &mut entries.lists,
+            )?,
+            ManagedKind::AlertDestination => override_step(
+                &name,
+                body_in,
+                file.alerts.destination.iter().any(|u| u.name() == name),
+                before_cfg
+                    .alerts
+                    .destination
+                    .iter()
+                    .find(|u| u.name() == name),
+                &mut entries.alert_destinations,
+            )?,
+            ManagedKind::AlertRule => override_step(
+                &name,
+                body_in,
+                file.alerts.rule.iter().any(|u| u.name() == name),
+                before_cfg.alerts.rule.iter().find(|u| u.name() == name),
+                &mut entries.alert_rules,
+            )?,
+            ManagedKind::Schedule => override_step(
+                &name,
+                body_in,
+                file.schedule.iter().any(|u| u.name() == name),
+                before_cfg.schedule.iter().find(|u| u.name() == name),
+                &mut entries.schedules,
+            )?,
+            ManagedKind::AnomalyMute => override_step(
+                &name,
+                body_in,
+                file.anomaly_mute.iter().any(|u| u.name() == name),
+                before_cfg.anomaly_mute.iter().find(|u| u.name() == name),
+                &mut entries.anomaly_mutes,
+            )?,
+            ManagedKind::KubernetesMap => {
+                kubernetes_map_step(&name, body_in, &file, &before_cfg, &mut entries)?
+            }
+            _ => override_step(
+                &name,
+                body_in,
+                file.group.iter().any(|u| u.name() == name),
+                before_cfg.group.iter().find(|u| u.name() == name),
+                &mut entries.groups,
+            )?,
+        })
+    })();
+    let (before, body) = step.map_err(|p| served_not_stored(src, w.kind, &name, p))?;
     let merged = crate::managed::merge(&file, &entries)
         .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
     let after = match w.kind {
@@ -6679,11 +6748,8 @@ impl ApiBackend {
                 drop(one_at_a_time);
                 if let Some(opts) = &w.simulate {
                     let baseline = Arc::new(
-                        crate::managed::merge(
-                            &src.file_config.load_full(),
-                            &crate::managed::entries(&state),
-                        )
-                        .map_err(|errs| Problem::internal(errs.join("; ")))?,
+                        crate::managed::merge(&plan_files(&src), &crate::managed::entries(&state))
+                            .map_err(|errs| Problem::internal(errs.join("; ")))?,
                     );
                     let candidate = Arc::new(plan.candidate.clone());
                     out.simulation =
