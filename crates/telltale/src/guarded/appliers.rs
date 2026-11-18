@@ -35,7 +35,7 @@ fn applier_for(id: &str) -> Option<Arc<dyn Applier>> {
     match id {
         guarded::RESTART_NOW => Some(Arc::new(NoOp)),
         #[cfg(feature = "e2e")]
-        "e2e-immediate" => Some(Arc::new(test::Immediate)),
+        "e2e-immediate" | "e2e-file" => Some(Arc::new(test::Immediate)),
         #[cfg(feature = "e2e")]
         "e2e-window" => Some(Arc::new(test::Window)),
         #[cfg(feature = "e2e")]

@@ -24,6 +24,8 @@ pub mod federation;
 pub mod flow;
 pub mod guarded;
 pub mod guarded_api;
+#[cfg(test)]
+mod guarded_tests;
 pub mod heatmap;
 pub mod identify_api;
 pub mod kubernetes_api;
@@ -1517,7 +1519,7 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_map_settings, config_api::delete_map_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_discovery_settings, config_api::delete_discovery_settings, discovery_status, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, pihole_import_api::preview, pihole_import_api::apply, pihole_import_api::discard, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule, config_api::put_router, config_api::delete_router, routers_api::list_routers, routers_api::check_router, routers_api::check_router_certificate, oidc_providers_api::list_oidc_providers, config_api::put_oidc_provider, config_api::delete_oidc_provider, guarded_api::status, guarded_api::preview, guarded_api::apply, guarded_api::confirm, guarded_api::cancel,
+        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_map_settings, config_api::delete_map_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_discovery_settings, config_api::delete_discovery_settings, discovery_status, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, pihole_import_api::preview, pihole_import_api::apply, pihole_import_api::discard, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule, config_api::put_router, config_api::delete_router, routers_api::list_routers, routers_api::check_router, routers_api::check_router_certificate, oidc_providers_api::list_oidc_providers, config_api::put_oidc_provider, config_api::delete_oidc_provider, guarded_api::guarded_status, guarded_api::guarded_preview, guarded_api::guarded_apply, guarded_api::guarded_confirm, guarded_api::guarded_cancel,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
@@ -2521,6 +2523,15 @@ async fn config_entries(
     State(b): State<Shared>,
     Query(q): Query<EntriesQuery>,
 ) -> Result<Json<Items<ConfigEntry>>, Problem> {
+    // REQ: API-902 (ADR-956 §2) — the reserved kind `guarded` is read and written only through
+    // `/api/v1/guarded`: the generic kind routes refuse it.
+    if q.kind.as_deref() == Some("guarded") {
+        return Err(Problem::new(
+            crate::problem::Code::GuardedOnly,
+            "`guarded` is a reserved kind: guarded settings are changed only through /api/v1/guarded",
+        )
+        .hint("GET /api/v1/guarded lists what is guarded and what is pending."));
+    }
     // A replica's entries come from its primary (CLU-002): the read waits on the cluster.
     let bk = Arc::clone(&b);
     let items = blocking(move || Ok(bk.config_entries(q.kind.as_deref()))).await?;

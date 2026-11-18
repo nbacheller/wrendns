@@ -127,6 +127,17 @@ static REAL: &[Row] = &[
 /// (the e2e server is built with it, the release binary is not).
 #[cfg(feature = "e2e")]
 static TEST: &[Row] = &[
+    // A row whose path the end-to-end server's file sets (`[telemetry.metrics] listen`): the control
+    // is locked and shows "set by file" (ADR-040, ADR-956 §2).
+    Row {
+        id: "e2e-file",
+        label: "Test setting (set by file)",
+        paths: &["telemetry.metrics.listen"],
+        mode: Mode::Immediate,
+        proof: None,
+        weakens: never,
+        test_only: true,
+    },
     Row {
         id: "e2e-immediate",
         label: "Test setting (immediate)",
@@ -311,6 +322,36 @@ pub fn covering(path: &str) -> Option<&'static str> {
         .iter()
         .find(|p| p.paths.iter().any(|x| hit(x)))
         .map(|p| p.id)
+}
+
+/// REQ: API-902 (ADR-956 §2, ADR-040) — which of the guarded paths the configuration files (and the
+/// environment layered over them) set, from the merged TOML tables: each present path, dotted. A
+/// field a file sets wins over a guarded entry, and its control is locked. A path inside an array of
+/// tables (`zone.file`) counts when any element has it.
+pub fn explicit_paths(root: &toml::Table) -> Vec<String> {
+    fn present(v: &toml::Value, segs: &[&str]) -> bool {
+        let Some((first, rest)) = segs.split_first() else {
+            return true;
+        };
+        match v {
+            toml::Value::Table(t) => t.get(*first).is_some_and(|c| present(c, rest)),
+            toml::Value::Array(a) => a.iter().any(|e| present(e, segs)),
+            _ => false,
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    let all = rows()
+        .into_iter()
+        .flat_map(|r| r.paths.iter().copied())
+        .chain(PLANNED.iter().flat_map(|p| p.paths.iter().copied()));
+    for path in all {
+        let segs: Vec<&str> = path.split('.').collect();
+        let hit = root.get(segs[0]).is_some_and(|v| present(v, &segs[1..]));
+        if hit && !out.iter().any(|o| o == path) {
+            out.push(path.to_owned());
+        }
+    }
+    out
 }
 
 /// The phrase an admin types to confirm a change to `id` on `node` (ADR-914: the node ID and the
@@ -507,6 +548,33 @@ mod tests {
         }
     }
 
+    // REQ: API-902 (ADR-040) — the paths a file sets are found in the merged tables, nested and in
+    // arrays of tables, so a guarded control can show "set by file".
+    #[test]
+    fn api_902_explicit_paths_from_the_files() {
+        let t: toml::Table = toml::from_str(
+            "[node]
+data_dir = \"/x\"
+[api]
+listen = \"127.0.0.1:1\"
+[[zone]]
+name = \"a\"
+file = \"z.zone\"
+[[listen]]
+proto = \"udp\"
+addr = \"127.0.0.1:5\"
+",
+        )
+        .unwrap();
+        let p = explicit_paths(&t);
+        for want in ["node.data_dir", "api.listen", "zone.file", "listen"] {
+            assert!(p.iter().any(|x| x == want), "{want} in {p:?}");
+        }
+        for not in ["api.tls", "node.secrets_key_file", "watchdog"] {
+            assert!(!p.iter().any(|x| x == not), "{not} in {p:?}");
+        }
+    }
+
     // REQ: API-902 (ADR-956 §1(b)) — the two sign-in lockout settings are file-only.
     #[test]
     fn api_902_lockout_settings_are_file_only() {
@@ -656,7 +724,7 @@ mod tests {
     #[test]
     fn api_902_test_rows_are_marked() {
         assert!(TEST_ROWS_COMPILED);
-        assert!(rows().iter().filter(|r| r.test_only).count() == 3);
+        assert!(rows().iter().filter(|r| r.test_only).count() == 4);
         let w = row("e2e-window").unwrap_or_else(|| unreachable!());
         assert_eq!(w.proof, Some(Proof::NewSocket));
     }

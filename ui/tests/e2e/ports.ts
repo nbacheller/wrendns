@@ -20,6 +20,8 @@ export const OFFSETS = {
   haDelete: 10, // a Home Assistant address for the delete test (not listened on)
   haMoved: 11, // a Home Assistant address for the moved-credential check (route-mocked)
   probeTarget: 12, // the probe target the System tab test shows (route-mocked)
+  guardedNew: 13, // the guarded window test's new address (a temporary listener the node opens for the window)
+  guardedRoll: 14, // the guarded rollback test's new address
 } as const;
 
 export type PortName = keyof typeof OFFSETS;

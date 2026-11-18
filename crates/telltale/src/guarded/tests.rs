@@ -252,6 +252,8 @@ struct Fake {
     next_port: AtomicUsize,
     /// A replica forwards nothing and signs nothing; the primary does.
     can_sign: bool,
+    /// Also write each audit record to `state.db` (the API tests read it from there).
+    audit_to_state: AtomicBool,
 }
 
 fn key_of(node: &str) -> [u8; 32] {
@@ -365,6 +367,21 @@ impl Host for Fake {
         if !self.audit_ok.load(Ordering::SeqCst) {
             return Err("the audit log is full".to_owned());
         }
+        if self.audit_to_state.load(Ordering::SeqCst) {
+            let d = detail.to_string();
+            self.state
+                .audit_append(&telltale_store::state::NewAudit {
+                    ts: now(),
+                    actor: &actor.name,
+                    actor_kind: actor.kind,
+                    remote: actor.remote.as_deref(),
+                    action,
+                    target,
+                    detail: &d,
+                    reason: actor.reason.as_deref(),
+                })
+                .map_err(|e| e.to_string())?;
+        }
         self.audits.lock().unwrap().push((
             format!("{}|{}", actor.name, actor.kind),
             format!("{action}|{target}"),
@@ -394,8 +411,8 @@ impl Host for Fake {
     }
 }
 
-struct Node {
-    engine: Arc<Engine>,
+pub(super) struct Node {
+    pub(super) engine: Arc<Engine>,
     host: Arc<Fake>,
 }
 
@@ -446,6 +463,7 @@ fn node_on(
         sockets: Mutex::default(),
         next_port: AtomicUsize::new(0),
         can_sign,
+        audit_to_state: AtomicBool::new(false),
     });
     let engine = Engine::new(
         name.to_owned(),
@@ -462,6 +480,18 @@ fn node_on(
         .unwrap()
         .insert(name.to_owned(), Arc::downgrade(&engine));
     Node { engine, host }
+}
+
+/// A node for the API tests: the harness node's own `state.db`, audit records written to it, a
+/// systemd supervisor, and the engine installed in its `Sources` (the routes find it there).
+pub(super) fn install(h: &crate::credential_tests::Harness) -> Node {
+    let net = Arc::new(Net::default());
+    let n = node_on("pi-a", &net, Arc::clone(h.auth.state()), "systemd", true);
+    n.host.audit_to_state.store(true, Ordering::SeqCst);
+    n.engine.set_window_secs(60);
+    super::set_this_node("pi-a");
+    assert!(h.src.guarded.set(Arc::clone(&n.engine)).is_ok());
+    n
 }
 
 /// One standalone node under a systemd supervisor.
@@ -1680,6 +1710,23 @@ fn api_902_probation_counter_survives_unopenable_state() {
             .mode();
         assert_eq!(mode & 0o777, 0o600);
     }
+}
+
+// REQ: API-902 (ADR-956 §4) — a restore marks the archive's guarded entries staged, so the first
+// start puts them on probation and two failed starts drop them.
+#[test]
+fn api_902_restored_entries_start_on_probation() {
+    let (dir, cfg) = dir_with(&[("t-win", json!({"port": 9}), EntryState::Active)]);
+    let n = store::mark_restored(&crate::managed::state_path(&cfg));
+    assert_eq!(n, 1);
+    assert_eq!(entries_of(&cfg)[0].state, EntryState::Staged);
+    let b = begin(&cfg);
+    assert_eq!(b.on_probation, vec!["t-win".to_owned()]);
+    assert_eq!(probation::read_sidecar(dir.path()).unwrap().attempts, 1);
+    // A database that won't open marks nothing.
+    let junk = dir.path().join("junk.db");
+    std::fs::write(&junk, b"nope").unwrap();
+    assert_eq!(store::mark_restored(&junk), 0);
 }
 
 // REQ: API-902 (ADR-956 §4) — once any row was re-encrypted under a new key, dropping the entry

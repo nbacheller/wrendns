@@ -204,3 +204,22 @@ pub(crate) fn set_suppressed(
         .meta_set(SUPPRESSED, Some(&t))
         .map_err(|e| e.to_string())
 }
+
+/// A restore brought the guarded entries of the archive back: every one is marked `staged`, so the
+/// first start with them puts them on probation (ADR-956 §4) and two failed starts drop them.
+/// Returns how many were marked. A database that won't open marks nothing.
+pub(crate) fn mark_restored(db: &std::path::Path) -> usize {
+    let Ok(state) = State::open(db) else {
+        return 0;
+    };
+    let mut n = 0;
+    for mut e in all(&state) {
+        if e.state != EntryState::Staged {
+            e.state = EntryState::Staged;
+            if put(&state, &e, e.at, "restore").is_ok() {
+                n += 1;
+            }
+        }
+    }
+    n
+}

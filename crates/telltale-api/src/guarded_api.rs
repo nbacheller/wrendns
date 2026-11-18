@@ -39,16 +39,16 @@ type Ctx = (Arc<dyn Backend>, Arc<Auth>);
 /// The read route (viewers; agents with `config:read`).
 pub(crate) fn read_routes(backend: Arc<dyn Backend>) -> Router {
     Router::new()
-        .route("/api/v1/guarded", get(status))
+        .route("/api/v1/guarded", get(guarded_status))
         .with_state(backend)
 }
 
 /// Preview, apply and cancel: admins only (the handlers check again, and refuse every token).
 pub(crate) fn admin_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
     Router::new()
-        .route("/api/v1/guarded/{id}/preview", post(preview))
-        .route("/api/v1/guarded/{id}", post(apply))
-        .route("/api/v1/guarded/pending/{id}/cancel", post(cancel))
+        .route("/api/v1/guarded/{id}/preview", post(guarded_preview))
+        .route("/api/v1/guarded/{id}", post(guarded_apply))
+        .route("/api/v1/guarded/pending/{id}/cancel", post(guarded_cancel))
         .with_state((backend, auth))
 }
 
@@ -56,7 +56,10 @@ pub(crate) fn admin_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router
 /// with no credentials through; the handler then needs the token).
 pub(crate) fn confirm_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
     Router::new()
-        .route("/api/v1/guarded/pending/{id}/confirm", post(confirm))
+        .route(
+            "/api/v1/guarded/pending/{id}/confirm",
+            post(guarded_confirm),
+        )
         .with_state((backend, auth))
 }
 
@@ -138,7 +141,7 @@ fn body<T>(b: Result<Json<T>, JsonRejection>) -> Result<T, Problem> {
 /// setting and the seconds left. `config:read` is enough, agent tokens included.
 #[utoipa::path(get, path = "/api/v1/guarded", tag = "config",
     responses((status = 200, body = GuardedStatus, description = "Each node's guarded settings.")))]
-pub(crate) async fn status(
+pub(crate) async fn guarded_status(
     State(b): State<Arc<dyn Backend>>,
 ) -> Result<Json<GuardedStatus>, Problem> {
     b.guarded_status().await.map(Json)
@@ -160,7 +163,7 @@ pub(crate) async fn status(
         (status = 421, body = Problem, description = "Ask the primary: only it forwards a request for another node."),
         (status = 429, body = Problem, description = "Too many requests, or too many failed confirmations from this session."),
     ))]
-pub(crate) async fn preview(
+pub(crate) async fn guarded_preview(
     State((backend, auth)): State<Ctx>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -195,7 +198,7 @@ pub(crate) async fn preview(
         (status = 421, body = Problem, description = "Ask the primary."),
         (status = 429, body = Problem, description = "Too many requests, or too many failed confirmations from this session."),
     ))]
-pub(crate) async fn apply(
+pub(crate) async fn guarded_apply(
     State((backend, auth)): State<Ctx>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -232,7 +235,7 @@ pub(crate) async fn apply(
         (status = 409, body = Problem, description = "primary_unreachable: the node couldn't record the change."),
         (status = 429, body = Problem, description = "Too many failed confirmations."),
     ))]
-pub(crate) async fn confirm(
+pub(crate) async fn guarded_confirm(
     State((backend, auth)): State<Ctx>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -285,8 +288,11 @@ pub(crate) async fn confirm(
         .map(Json)
 }
 
-/// Cancels a pending window change: the new sockets close, nothing is kept, and the rollback is
-/// audited (`cancelled`). The admin who made it, or any admin session.
+/// Cancels a pending window change.
+///
+/// The new sockets close, nothing is kept (the old ones were never touched), and the rollback is
+/// audited as `settings.guarded_rolled_back` with the reason `cancelled`. The admin who made it, or
+/// any admin session, can cancel; an agent token never can.
 #[utoipa::path(post, path = "/api/v1/guarded/pending/{id}/cancel", tag = "config",
     params(("id" = String, Path, description = "The pending change's ID.")),
     responses(
@@ -294,7 +300,7 @@ pub(crate) async fn confirm(
         (status = 403, body = Problem, description = "Not an admin session, or an agent token."),
         (status = 404, body = Problem, description = "Nothing is pending under that ID."),
     ))]
-pub(crate) async fn cancel(
+pub(crate) async fn guarded_cancel(
     State((backend, auth)): State<Ctx>,
     Path(id): Path<String>,
     headers: HeaderMap,

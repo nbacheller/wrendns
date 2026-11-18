@@ -194,6 +194,9 @@ fn merged_with(file: &Config, m: &ClusterManifest, node_managed: bool) -> Result
             .collect::<Vec<_>>()
             .join("; ")
     })?;
+    // REQ: API-902 (T27.13) — the merge loses the files' marks; the guarded overlay needs them so a
+    // field this node's file sets still wins over a replicated guarded value.
+    cfg.file_set.clone_from(&file.file_set);
     if node_managed && let Some(b) = &m.node_managed {
         match store.read(b) {
             Ok(bytes) => crate::node_managed::overlay_blob(&mut cfg, &bytes),

@@ -38,6 +38,14 @@ pub struct GuardedCaller {
     pub tls: bool,
 }
 
+/// REQ: API-902 (ADR-956 §7) — whether a REST path is one of the guarded framework's
+/// (`/api/v1/guarded...`). Agents' plans refuse it (ADR-070's plan store never stores or replays
+/// one), the MCP catalog names none, and the agent route policy refuses every change to it.
+pub fn is_guarded_path(path: &str) -> bool {
+    let p = path.split('?').next().unwrap_or(path).trim_end_matches('/');
+    p == "/api/v1/guarded" || p.starts_with("/api/v1/guarded/")
+}
+
 /// What the request arrived on, when it wasn't the main API listener: the confirmation window's
 /// temporary listener tags every request it serves with this (an extension), so the confirm route
 /// can tell which socket the admin reached the node through. Nothing a client sends can set it.

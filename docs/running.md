@@ -3104,6 +3104,7 @@ Rules watch:
 | `chatty_loop` | a device asks a domain at a steady rhythm faster than every 30 s (an informational finding the `anomaly` rule leaves out; see [Device anomalies](#device-anomalies)) | finding |
 | `drill_report` | a [failover drill](#failover-drills)'s report is ready, scheduled or started by hand: followed, stuck, quiet, coverage | drill |
 | `credential_redirected` | an admin changed where an entry's credential is sent (an upstream's URL or TLS name, an alert destination's URL; see [Who may point a credential somewhere](#who-may-point-a-credential-somewhere)) | change |
+| `guarded_setting_changed` | an admin changed a [guarded setting](#guarded-changes) (a listener, the API address, TLS, proxies, secret keys, cluster, restart): once when it is applied or staged and again on its outcome (confirmed, rolled back with the reason, restarting); never the value (read from the audit log of the node that applied it, for an hour) | change |
 | `secrets_exported` | a backup with the stored secrets was made through the API (`backup.create` with `secretsIncluded`; once per backup, naming who and how many; read from the audit log of the node that made it, for an hour). See [Stored secrets in a backup](#stored-secrets-in-a-backup) | backup |
 
 - **Nodes in maintenance** are left out of the per-node conditions, and an alert about one that was firing resolves with "(maintenance)". When the window ends, `for_secs` counts from zero. The Alerts page says whose alerts are paused, until when.

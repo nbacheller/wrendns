@@ -844,6 +844,11 @@
           "description": "REQ: API-007 (T23.9, ADR-903 §8) — a backup with the stored secrets was made (through the\nAPI; once per backup, from the audit log's `backup.create` records): the secrets left the\nnode, under a passphrase.",
           "type": "string",
           "const": "secrets_exported"
+        },
+        {
+          "description": "REQ: API-902 (T27.13, ADR-956 §6) — an admin changed a guarded setting (a listener, the API\naddress, TLS, proxies, secret keys, cluster, restart): once when it is applied or staged and\nagain on its outcome (confirmed, rolled back with the reason, restarting), from the audit\nlog's `settings.guarded*` records, so a second channel sees what an attacker with an admin\nsession does.",
+          "type": "string",
+          "const": "guarded_setting_changed"
         }
       ]
     },

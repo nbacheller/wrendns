@@ -1108,6 +1108,26 @@
       "example": "A worker is refused because it was built from a different version than this node. Upgrade the node so both match, and the worker starts again.",
       "caution": "A worker that keeps crashing is a sign of a fault in the inventory or in a device's reply. DNS keeps answering while it is down.",
       "docs": "network-inventory-devices-that-never-ask-dns"
+    },
+    {
+      "id": "guarded-settings",
+      "title": "Guarded settings",
+      "term": "Guarded change",
+      "summary": "Some settings can lock every admin out, put passwords on the wire, re-encrypt your stored secrets or replace a node's configuration. They are changed in two steps: a review that says what the change does and gives a phrase, then the change itself once you type that phrase. A change to an address, a certificate or the trusted proxies is applied as pending and kept only if you confirm it through the new address within the window (120 seconds by default); otherwise it rolls back by itself. A change that weakens security also needs a sign-in from the last 10 minutes and is marked in red.",
+      "when": "Before changing a listener, the API address, TLS, trusted proxies, the secrets key or the cluster from the UI.",
+      "example": "You move the API from port 8053 to 9000. The node opens 9000 beside 8053, gives you a link to the new address, and keeps the change only if you open it and press Confirm. If the new address is unreachable, do nothing: it rolls back and you are still where you were.",
+      "caution": "Admins only, never AI agents or API tokens. A value set in the configuration file wins over the UI and locks the control (\"set by file\"). Restart now exists only where the node declares a supervisor that starts it again.",
+      "docs": "guarded-changes"
+    },
+    {
+      "id": "guarded-recovery",
+      "title": "Getting back after a guarded change",
+      "term": "Guarded recovery",
+      "summary": "If a guarded change leaves a node unreachable, the way back never needs the UI: set the value in the configuration file and restart (a file always wins), run telltale guarded list and telltale guarded clear on the stopped node, or start it once with TELLTALE_IGNORE_GUARDED=1 so it runs on its files alone. Two failed starts after a staged change also drop it automatically.",
+      "when": "The UI is unreachable after an address, certificate or proxy change, DNS stopped after a listener change, you cannot sign in behind a proxy, the secret store is locked after a key change, or a Restart now did not bring the node back.",
+      "example": "On Kubernetes, set TELLTALE_IGNORE_GUARDED=1 on the pod and let it restart: it ignores every stored guarded setting and uses its ConfigMap. Fix the setting, remove the variable, and restart again.",
+      "caution": "telltale guarded clear needs the node stopped and only clears that node's entries. TELLTALE_IGNORE_GUARDED ignores entries without deleting them, and never ignores the file.",
+      "docs": "recovering-from-a-guarded-change"
     }
   ]
 }

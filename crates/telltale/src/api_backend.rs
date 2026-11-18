@@ -2516,6 +2516,9 @@ impl Backend for ApiBackend {
         reasons.extend(crate::secrets::store::health_reasons(
             &self.src.secrets.status(),
         ));
+        // REQ: API-902 (ADR-956 §4, ADR-957) — guarded entries ignored by the environment switch,
+        // or a confirmed listener that fell back at this start: degraded, DNS unaffected.
+        reasons.extend(crate::guarded::health_reasons());
         // REQ: OPS-010 — a standalone node in maintenance leaves its own conditions out (in a
         // cluster, the federated health does it from every node's heartbeats).
         let mut maintenance = Vec::new();

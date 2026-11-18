@@ -1560,6 +1560,12 @@ pub enum AlertWhen {
     /// API; once per backup, from the audit log's `backup.create` records): the secrets left the
     /// node, under a passphrase.
     SecretsExported,
+    /// REQ: API-902 (T27.13, ADR-956 §6) — an admin changed a guarded setting (a listener, the API
+    /// address, TLS, proxies, secret keys, cluster, restart): once when it is applied or staged and
+    /// again on its outcome (confirmed, rolled back with the reason, restarting), from the audit
+    /// log's `settings.guarded*` records, so a second channel sees what an attacker with an admin
+    /// session does.
+    GuardedSettingChanged,
 }
 
 /// REQ: FLT-014 (T7.20) — one rewrite.

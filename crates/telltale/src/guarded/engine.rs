@@ -224,6 +224,20 @@ impl std::fmt::Debug for Engine {
     }
 }
 
+/// REQ: API-902 — the end-to-end build's window, from `TT_E2E_CONFIRM_WINDOW_SECS` (compiled only
+/// under the cargo feature `e2e`).
+#[cfg(feature = "e2e")]
+fn e2e_window() -> Option<u64> {
+    std::env::var("TT_E2E_CONFIRM_WINDOW_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+}
+
+#[cfg(not(feature = "e2e"))]
+const fn e2e_window() -> Option<u64> {
+    None
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -302,7 +316,9 @@ impl Engine {
             rows,
             supervisor,
             inner: Mutex::new(Inner::default()),
-            window_override: Mutex::new(None),
+            // The end-to-end build shortens the window so a test can watch a rollback (a release
+            // build has no such code: `[api] confirm_window_secs` is the only source).
+            window_override: Mutex::new(e2e_window()),
             now: super::now_secs,
         })
     }

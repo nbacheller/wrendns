@@ -212,7 +212,17 @@ stub.bind(PORTS.upstream, '127.0.0.1');
 const bin = process.env.TELLTALE_BIN ?? resolve(here, '../../../target/debug/telltale');
 const child = spawn(bin, ['run', '-c', cfg], {
   stdio: 'inherit',
-  env: { ...process.env, TELLTALE_KUBERNETES_FIXTURE: fixture },
+  env: {
+    ...process.env,
+    TELLTALE_KUBERNETES_FIXTURE: fixture,
+    // REQ: API-902 (T27.13, ADR-956 §3, §4a) - the guarded framework's end-to-end hooks, which exist only
+    // in a server built with the cargo feature `e2e` (`cargo build -p telltale --features e2e`): a
+    // declared supervisor (so "Restart now" is offered), the simulated restart (the test never kills its
+    // own server), and a short confirmation window (a rollback can be watched).
+    TELLTALE_SUPERVISOR: 'systemd',
+    TT_E2E_RESTART_HOOK: '1',
+    TT_E2E_CONFIRM_WINDOW_SECS: '15',
+  },
 });
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => child.kill('SIGTERM'));
 child.on('exit', (code) => process.exit(code ?? 0));

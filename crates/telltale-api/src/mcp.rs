@@ -2649,6 +2649,14 @@ impl Mcp {
             Ok(w) => w,
             Err(e) => return tool_error(format!("{}: {e}", tool.name)),
         };
+        // REQ: API-902 (ADR-956 §7) — no tool plans or makes a guarded change: the plan store
+        // refuses guarded paths, so `apply_plan` can't replay one.
+        if crate::guarded::is_guarded_path(&w.path) {
+            return tool_error(format!(
+                "{}: guarded settings are for people; no plan can change them",
+                tool.name
+            ));
+        }
         if let Err(e) = self.merge(&mut w, auth, client).await {
             return tool_error(format!("{}: {e}", tool.name));
         }
@@ -2839,6 +2847,15 @@ impl Mcp {
             Ok(p) => p,
             Err(e) => return tool_result(serde_json::to_value(&e).unwrap_or_default(), true),
         };
+        // REQ: API-902 — a plan for a guarded path is never replayed (none is ever stored).
+        if crate::guarded::is_guarded_path(&plan.path) {
+            plans.finish(
+                &id,
+                "failed",
+                json!({"error": "guarded settings are for people; a plan can't change them"}),
+            );
+            return tool_error("guarded settings are for people; a plan can't change them");
+        }
         // The write as planned: refused (412) if the configuration changed since; the plan ID
         // makes a retry return the first answer.
         let extra = [

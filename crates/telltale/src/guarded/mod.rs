@@ -31,6 +31,8 @@ pub(crate) mod restart;
 pub(crate) mod store;
 
 #[cfg(test)]
+mod api_tests;
+#[cfg(test)]
 mod tests;
 
 pub(crate) use engine::{Engine, RowDef};
@@ -131,4 +133,35 @@ pub(crate) fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// REQ: API-902 (ADR-956 §4, ADR-957) — the guarded framework's health reasons for this node:
+/// `guarded_ignored` while `TELLTALE_IGNORE_GUARDED=1` has the node on its files alone (the UI
+/// shows it until the variable is removed), and `guarded_bind_fallback` for a confirmed listener
+/// that couldn't bind at this start. Both degraded: DNS answers.
+pub(crate) fn health_reasons() -> Vec<telltale_api::model::HealthReason> {
+    let mut out = Vec::new();
+    if ignored() {
+        out.push(telltale_api::model::HealthReason {
+            level: "degraded".to_owned(),
+            code: "guarded_ignored".to_owned(),
+            summary: format!(
+                "{IGNORE_ENV}=1 is set: this node ignores every guarded entry stored in the UI and runs on its configuration files (nothing is deleted)"
+            ),
+            node: None,
+            link: Some("#/settings?tab=system".to_owned()),
+        });
+    }
+    for id in probation::fallbacks() {
+        out.push(telltale_api::model::HealthReason {
+            level: "degraded".to_owned(),
+            code: "guarded_bind_fallback".to_owned(),
+            summary: format!(
+                "the confirmed `{id}` setting couldn't bind at this start, so the node runs on the file's value until the next start tries again"
+            ),
+            node: None,
+            link: Some("#/settings?tab=system".to_owned()),
+        });
+    }
+    out
 }

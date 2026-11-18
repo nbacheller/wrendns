@@ -18,6 +18,7 @@
   import { navigate } from './lib/router.svelte';
   import { currentMode, loadMode, setMode } from './lib/mode.svelte';
   import { loadIconPrefs } from './lib/icons/prefs.svelte';
+  import GuardedConfirm from './pages/GuardedConfirm.svelte';
   import Login from './pages/Login.svelte';
   import Setup from './pages/Setup.svelte';
   import Dashboard from './pages/Dashboard.svelte';
@@ -196,6 +197,10 @@
 {:else if route.path === '/display'}
   <!-- REQ: OBS-035 (T14.13) — a wall display's link, signed in or not. -->
   <Display />
+{:else if route.path === '/guarded-confirm'}
+  <!-- REQ: API-902 (T27.13) - a guarded window change's confirm step, opened on the new address: the
+       single-use token in the fragment stands in for a session there. -->
+  <GuardedConfirm />
 {:else if session.setupRequired}
   <Setup />
 {:else if !session.user}
