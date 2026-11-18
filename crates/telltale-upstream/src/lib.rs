@@ -40,8 +40,9 @@ pub use group::{Answer, Group, ResolveError, Strategy};
 pub use router::{Router, Selection, parse_qtype};
 pub use tls::{TlsOptions, UpstreamTls, spki_pin, tbs_hash};
 pub use upstream::{
-    Exchange, ExchangeError, ExchangeObserver, Question, Upstream, UpstreamOptions, client_subnet,
-    encode_query, is_own_loop_tag, matches_query, set_exchange_observer, set_node_tag,
+    Exchange, ExchangeError, ExchangeObserver, Question, RouteState, Upstream, UpstreamOptions,
+    client_subnet, encode_query, is_own_loop_tag, matches_query, route_to, set_exchange_observer,
+    set_node_tag,
 };
 
 /// Total time budget per client query (`spec/02` §8.3).
@@ -57,7 +58,12 @@ pub async fn active_health_checks(upstreams: Vec<Arc<Upstream>>, interval: Durat
     let mut tick = tokio::time::interval(interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
+        // REQ: UPS-006 — the first tick fires at once (the check at start), then every interval:
+        // a UDP connect() picks a route and sends nothing.
         tick.tick().await;
+        for up in &upstreams {
+            up.check_route();
+        }
         let now = Instant::now();
         for up in &upstreams {
             let idle = up

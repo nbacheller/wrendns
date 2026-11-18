@@ -908,6 +908,13 @@ impl<'a> Builder<'a> {
                 toml_str(&name),
                 toml_str(&url)
             );
+            // REQ: UPS-006 (fork #25) — an IPv6 upstream fails, and turns the map yellow, on a
+            // host with no IPv6 route.
+            if url.contains('[') {
+                self.notes.push(format!(
+                    "Upstream {u} is an IPv6 address. If the hosts running TelltaleDNS have no IPv6 route, it will fail on every query; drop `{name}` (and its name in the `default` group's members) and the upstream's page will say \"this node has no IPv6 route\" if it applies."
+                ));
+            }
             if local {
                 self.notes.push(format!(
                     "Upstream {u} runs on the Pi-hole machine itself (often unbound): keep it running next to TelltaleDNS, which reaches it at the same address when they share a machine. Or let TelltaleDNS resolve from the root servers itself: `url = \"recursive://\"` (`docs/running.md`, Recursive resolution)."

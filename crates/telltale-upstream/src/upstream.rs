@@ -5,6 +5,7 @@
 
 use std::io;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -421,6 +422,46 @@ pub struct Upstream {
     self_probe: bool,
     /// REQ: UPS-008 — connections opened and closed (TCP, DoT, DoH, and UDP's TCP fallback).
     conns: Arc<ConnStats>,
+    /// REQ: UPS-006 (fork #25) — whether this node has a route to the address: 0 = not known (a
+    /// hostname, or not yet checked), 1 = routed, 2 = the family has no route. Set by
+    /// [`Self::check_route`], off the DNS path.
+    route: AtomicU8,
+}
+
+/// REQ: UPS-006 — whether this node can route to an upstream's address (fork #25).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteState {
+    /// A hostname, a local socket, or not checked yet.
+    Unknown,
+    Routed,
+    /// No route for the address family: the reason is [`RouteState::reason`].
+    NoRoute {
+        v6: bool,
+    },
+}
+
+impl RouteState {
+    /// What the UI and the map say; `None` when there is nothing to say.
+    pub fn reason(self) -> Option<&'static str> {
+        match self {
+            Self::NoRoute { v6: true } => Some("this node has no IPv6 route"),
+            Self::NoRoute { v6: false } => Some("this node has no IPv4 route"),
+            _ => None,
+        }
+    }
+}
+
+/// REQ: UPS-006 — `connect()` on a UDP socket picks a route and sends nothing, so it answers
+/// "does this host have a route to `ip`" without any traffic. An error (no route, no network,
+/// the family disabled) means no route.
+pub fn route_to(ip: std::net::IpAddr) -> bool {
+    let local = match ip {
+        std::net::IpAddr::V4(_) => std::net::SocketAddr::from(([0u8; 4], 0)),
+        std::net::IpAddr::V6(_) => std::net::SocketAddr::from(([0u16; 8], 0)),
+    };
+    std::net::UdpSocket::bind(local)
+        .and_then(|s| s.connect(SocketAddr::new(ip, 53)))
+        .is_ok()
 }
 
 /// A TCP stream to the target: directly, or through the proxy (REQ: UPS-010), which gets a
@@ -718,7 +759,28 @@ impl Upstream {
             ecs_client: opts.ecs_client,
             self_probe: opts.self_probe,
             conns,
+            route: AtomicU8::new(0),
         })
+    }
+
+    /// REQ: UPS-006 — re-checks the route to a literal address (a cheap syscall, no traffic).
+    /// Called at start and on a timer by the node, never on the query path.
+    pub fn check_route(&self) {
+        if let Host::Ip(ip) = &self.endpoint.host
+            && !matches!(self.endpoint.protocol, Protocol::Unix | Protocol::Exec)
+        {
+            self.route
+                .store(if route_to(*ip) { 1 } else { 2 }, Ordering::Relaxed);
+        }
+    }
+
+    /// REQ: UPS-006 — the last route check.
+    pub fn route_state(&self) -> RouteState {
+        match (self.route.load(Ordering::Relaxed), &self.endpoint.host) {
+            (1, _) => RouteState::Routed,
+            (2, Host::Ip(ip)) => RouteState::NoRoute { v6: ip.is_ipv6() },
+            _ => RouteState::Unknown,
+        }
     }
 
     /// REQ: UPS-008 — this upstream's connection counters.
@@ -1139,5 +1201,36 @@ mod tests {
         assert!(!is_own_loop_tag(
             &telltale_proto::parse_query(&buf[..len]).unwrap()
         ));
+    }
+
+    /// REQ: UPS-006 (fork #25) — the route check is a `connect()` with no traffic: loopback is
+    /// routed, a hostname is not checked, and the reasons name the family.
+    #[test]
+    fn ups_006_route_check() {
+        assert!(route_to("127.0.0.1".parse().unwrap()));
+        let ep = Endpoint::parse("udp://127.0.0.1").unwrap();
+        let u = Upstream::new(1, "lo", ep, Duration::from_secs(1), 1).unwrap();
+        assert_eq!(u.route_state(), RouteState::Unknown, "not checked yet");
+        u.check_route();
+        assert_eq!(u.route_state(), RouteState::Routed);
+        let ep = Endpoint::parse("tls://dns.example.net").unwrap();
+        let named = Upstream::new(2, "n", ep, Duration::from_secs(1), 1);
+        if let Ok(n) = named {
+            n.check_route();
+            assert_eq!(
+                n.route_state(),
+                RouteState::Unknown,
+                "a hostname is never checked"
+            );
+        }
+        assert_eq!(
+            RouteState::NoRoute { v6: true }.reason(),
+            Some("this node has no IPv6 route")
+        );
+        assert_eq!(
+            RouteState::NoRoute { v6: false }.reason(),
+            Some("this node has no IPv4 route")
+        );
+        assert_eq!(RouteState::Routed.reason(), None);
     }
 }

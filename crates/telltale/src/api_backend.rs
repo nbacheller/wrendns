@@ -2462,6 +2462,8 @@ impl Backend for ApiBackend {
                 id: u.id,
                 name: u.name,
                 breaker: u.breaker,
+                groups: u.groups,
+                route_problem: u.route_problem,
             })
             .collect();
         let health = self.health();
@@ -4130,6 +4132,7 @@ impl Backend for ApiBackend {
                     latency_ewma_ms: h.ewma.map_or(0.0, |d| {
                         ms(u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
                     }),
+                    route_problem: u.route_state().reason().map(str::to_owned),
                 }
             })
             .collect()

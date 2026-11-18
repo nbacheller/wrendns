@@ -228,6 +228,10 @@ test('obs_901 layout shows gateway networks devices nodes upstreams', async ({ b
   await expect(o.page.locator('svg[role="img"], figure[role="img"]')).toHaveCount(0);
   // The summary figure's flow lines: one per edge with a rate.
   await expect(o.page.locator('[data-flow]')).toHaveCount(10);
+  // Fork #25: a node's reasons are its tooltip (an upstream with no route says why there); a node
+  // with none has no tooltip.
+  await expect(o.page.locator('[data-node="up:google"] title')).toContainText('40% of 50 answers failed');
+  await expect(o.page.locator('[data-node="up:cloudflare"] title')).toHaveCount(0);
   expect(o.problems).toEqual([]);
   await o.ctx.close();
 });
@@ -253,6 +257,14 @@ test('obs_901 colour states have shape and words', async ({ browser }) => {
   expect(shapes.size).toBe(4);
   // The legend names the four, with their shapes.
   for (const w of Object.values(want)) await expect(o.page.getByLabel('Legend')).toContainText(w.word);
+  // Fork #25: no legend icon is giant (an unscoped `svg` rule once sized them like the map).
+  const icons = o.page.getByLabel('Legend').locator('svg');
+  expect(await icons.count()).toBe(4);
+  for (const box of await icons.evaluateAll((els) => els.map((e) => e.getBoundingClientRect().toJSON()))) {
+    expect(box.width, 'legend icon width').toBeGreaterThan(0);
+    expect(box.width, 'legend icon width').toBeLessThan(24);
+    expect(box.height, 'legend icon height').toBeLessThan(24);
+  }
   expect(o.problems).toEqual([]);
   await o.ctx.close();
 });

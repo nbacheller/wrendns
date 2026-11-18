@@ -91,6 +91,18 @@ fn load(toml: &str) -> telltale_config::Config {
     }
 }
 
+// REQ: UPS-006 (fork #25) — the preview notes an IPv6 upstream, with the hint to drop it when the
+// hosts have no IPv6, and says nothing of the IPv4 ones.
+#[test]
+fn ups_006_pihole_import_notes_ipv6_upstreams() {
+    let src = Source::from_entries(v5_entries()).unwrap();
+    let im = convert(&src, "teleporter.tar.gz").unwrap();
+    let v6: Vec<&String> = im.notes.iter().filter(|n| n.contains("IPv6")).collect();
+    assert_eq!(v6.len(), 1, "{:?}", im.notes);
+    assert!(v6[0].contains("2620:fe::fe") && v6[0].contains("no IPv6 route"));
+    assert!(v6[0].contains("pihole-3"), "{}", v6[0]);
+}
+
 // REQ: API-007 — a v5 Teleporter archive becomes a configuration that loads, with groups,
 // clients, lists, records, upstreams, and conditional forwarding carried over.
 #[test]

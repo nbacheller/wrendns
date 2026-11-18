@@ -7713,6 +7713,11 @@ export interface components {
                 name: string;
                 /** Format: int64 */
                 requests: number;
+                /**
+                 * @description REQ: UPS-006 — why this node can't reach it, when it can say: `this node has no IPv6
+                 *     route` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing.
+                 */
+                routeProblem?: string | null;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -8170,7 +8175,7 @@ export interface components {
             /**
              * @description Stable: `error_rate`, `slow`, `rate_limited`, `high_blocked`, `anomaly`, `breaker_open`,
              *     `breaker_half_open`, `unreachable`, `severe`, `degraded`, `router_error`,
-             *     `not_configured`, `few_samples`, `children`.
+             *     `not_configured`, `few_samples`, `children`, `member_down`, `no_route`.
              */
             code: string;
             summary: string;
@@ -10213,6 +10218,11 @@ export interface components {
             name: string;
             /** Format: int64 */
             requests: number;
+            /**
+             * @description REQ: UPS-006 — why this node can't reach it, when it can say: `this node has no IPv6
+             *     route` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing.
+             */
+            routeProblem?: string | null;
         };
         /** @description REQ: OBS-019 — one upstream's answers since start. */
         UpstreamQuality: {

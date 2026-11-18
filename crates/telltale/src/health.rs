@@ -299,9 +299,14 @@ fn upstream_reasons(upstreams: &[UpstreamInfo], out: &mut Vec<HealthReason>) {
             DEGRADED,
             "upstream_down",
             format!(
-                "upstream {} isn't answering (its circuit breaker is {}); the rest of its group answers",
+                "upstream {} isn't answering (its circuit breaker is {}{}); the rest of its group answers",
                 u.name,
-                u.breaker.replace('_', "-")
+                u.breaker.replace('_', "-"),
+                // REQ: UPS-006 — say why when it is the route.
+                u.route_problem
+                    .as_deref()
+                    .map(|p| format!(": {p}"))
+                    .unwrap_or_default()
             ),
             "#/upstreams",
         ));
@@ -538,6 +543,7 @@ mod tests {
             failures: 0,
             failures_by_kind: FailureKinds::default(),
             latency_ewma_ms: 0.0,
+            route_problem: None,
         }
     }
 
