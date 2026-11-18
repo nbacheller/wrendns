@@ -132,3 +132,19 @@ fn api_003_reset_password_refuses_a_missing_state() {
     );
     assert!(!dir.exists(), "no directory is created for a wrong path");
 }
+
+// REQ: API-004 (ADR-987) — start-up says what the break-glass path leaves open.
+#[test]
+fn api_004_break_glass_notice_covers_unset_empty_and_listed() {
+    let net = telltale_config::Cidr {
+        addr: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        prefix: 8,
+    };
+    assert!(break_glass_notice(false, None).is_none());
+    let (warn, text) = break_glass_notice(true, None).unwrap();
+    assert!(warn && text.contains("loopback"));
+    let (warn, text) = break_glass_notice(true, Some(&[])).unwrap();
+    assert!(warn && text.contains("empty"));
+    let (warn, text) = break_glass_notice(true, Some(&[net])).unwrap();
+    assert!(!warn && text.contains("1 listed"));
+}

@@ -502,7 +502,6 @@ async fn pair(version: &str, replica_version: &str) -> Pair {
     let primary = Cluster::new(pid, version);
     let (stop_tx, stop) = tokio::sync::watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
-    tokio::time::sleep(Duration::from_millis(100)).await;
     let key = telltale_cluster::pki::new_node_key().unwrap();
     let req = JoinRequest {
         witness: false,
@@ -514,7 +513,15 @@ async fn pair(version: &str, replica_version: &str) -> Pair {
         eligible: true,
         version: replica_version.into(),
     };
-    let resp = join(&token, &req).await.unwrap();
+    // Poll until the listener is up, with a deadline, instead of a fixed sleep (flaky under load).
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let resp = loop {
+        match join(&token, &req).await {
+            Ok(r) => break r,
+            Err(e) if std::time::Instant::now() >= deadline => panic!("join: {e:?}"),
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    };
     let rid = Identity::save_joined(rdir.path(), &key.key_pem, &resp, "pi", true, vec![]).unwrap();
     let replica = Cluster::new(rid, replica_version);
     tokio::spawn(dial(Arc::clone(&replica), stop));

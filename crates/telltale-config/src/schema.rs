@@ -2902,7 +2902,11 @@ pub struct OidcConfig {
     /// after sign-out the provider returns to `<public_url>/`; register both with it.
     pub public_url: SafeString,
     /// Turn off password sign-in (and HTTP Basic) except for admins signing in from
-    /// `allowed_admin_networks` (break-glass, for when the provider is down).
+    /// `allowed_admin_networks` (break-glass, for when the provider is down). Unless you set that
+    /// list, it is loopback only (ADR-944), so the sign-in form is hidden from the rest of your
+    /// network; set it to your LAN to keep a password way in from other devices, or to `[]` to turn
+    /// password sign-in off for everyone (then nobody can sign in with a password while the
+    /// provider is down).
     pub disable_local_login: bool,
     /// Where break-glass admin sign-in is allowed. Absent: loopback only (`127.0.0.0/8`,
     /// `::1`), so a reverse proxy or a Docker port publish on this host needs its own entry

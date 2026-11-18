@@ -20,7 +20,7 @@
       "summary": "A searchable history of each lookup: which device asked, for what, and what happened (answered, blocked, from memory).",
       "when": "A site or app is broken, or you want to know what a device talks to.",
       "example": "Filter by the smart plug's address to see it contacting a dozen servers every hour.",
-      "caution": "The log shows names, not page contents. How long it's kept is set by [telemetry.qlog] retention_days.",
+      "caution": "Each filter has a \"not\" box that flips it to everything except the match (no rcode on Live). The log shows names, not page contents. How long it's kept is set by [telemetry.qlog] retention_days.",
       "docs": "query-log"
     },
     {
@@ -537,7 +537,7 @@
       "id": "support-package",
       "title": "Share what's wrong without sharing yourself",
       "term": "Support package",
-      "summary": "One file for a bug report: build facts, your settings without secrets, cluster and health, upstreams, a metrics snapshot, and this node's recent log. At the default level, addresses and names become pseudonyms (device-1, 10.4.7.9) that stay consistent inside the file, and nothing is uploaded: you look it over and attach it yourself.",
+      "summary": "One file for a bug report: build facts, your settings without secrets, cluster and health, upstreams, a metrics snapshot, and this node's recent log (tick \"Every node in the cluster\" for each node's own part: every node redacts its own log, and the key map is turned off). At the default level, addresses and names become pseudonyms (device-1, 10.4.7.9) that stay consistent inside the file, and nothing is uploaded: you look it over and attach it yourself.",
       "when": "Something broke and a maintainer asks for logs and settings.",
       "example": "A node won't talk to its upstream: the package shows the upstream's state, the warnings from the log, and the settings, with your addresses replaced.",
       "caution": "Log lines are redacted by pattern, which is best effort: read the file before you attach it. The pseudonym map holds your real names; keep it to yourself.",

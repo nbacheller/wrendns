@@ -2861,7 +2861,7 @@
           }
         },
         "disable_local_login": {
-          "description": "Turn off password sign-in (and HTTP Basic) except for admins signing in from\n`allowed_admin_networks` (break-glass, for when the provider is down).",
+          "description": "Turn off password sign-in (and HTTP Basic) except for admins signing in from\n`allowed_admin_networks` (break-glass, for when the provider is down). Unless you set that\nlist, it is loopback only (ADR-944), so the sign-in form is hidden from the rest of your\nnetwork; set it to your LAN to keep a password way in from other devices, or to `[]` to turn\npassword sign-in off for everyone (then nobody can sign in with a password while the\nprovider is down).",
           "type": "boolean",
           "default": false
         },
