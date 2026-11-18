@@ -1214,7 +1214,12 @@ impl Federated {
                 for (l, v) in answered {
                     out.extend(label(v, &l));
                 }
-                for m in self.cluster.members().into_iter().filter(|m| m.connected) {
+                for m in self
+                    .cluster
+                    .members()
+                    .into_iter()
+                    .filter(|m| m.connected && !self.cluster.is_witness(&m.node_id))
+                {
                     let l = self.label_of(&m.node_id);
                     if !names.contains(&l) {
                         out.push(failed(
@@ -2880,7 +2885,12 @@ impl Backend for Federated {
                 }
                 // Labelled like the answers (pods by pod name, T6.14), so a pod that answered
                 // isn't also listed as unreachable.
-                for m in self.cluster.members() {
+                for m in self
+                    .cluster
+                    .members()
+                    .into_iter()
+                    .filter(|m| !self.cluster.is_witness(&m.node_id))
+                {
                     let l = self.label_of(&m.node_id);
                     if !names.contains(&l) {
                         out.push(CacheFlushNode {
@@ -2974,7 +2984,12 @@ impl Backend for Federated {
                 for (l, v) in answered {
                     out.extend(label(v, &l));
                 }
-                for m in self.cluster.members().into_iter().filter(|m| m.connected) {
+                for m in self
+                    .cluster
+                    .members()
+                    .into_iter()
+                    .filter(|m| m.connected && !self.cluster.is_witness(&m.node_id))
+                {
                     let l = self.label_of(&m.node_id);
                     if !names.contains(&l) {
                         out.push(failed(

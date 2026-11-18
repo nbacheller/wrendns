@@ -543,6 +543,35 @@ fn peer_maintenance_metrics(
     }
 }
 
+/// REQ: CLU-009 (T24.33) — each peer's configuration lag; a witness holds no configuration, so it
+/// has none.
+fn peer_config_lag_metrics(
+    c: &telltale_cluster::net::Cluster,
+    peers: &[telltale_cluster::net::Member],
+    newest: u64,
+    w: &mut PromWriter,
+) {
+    w.family(
+        "telltale_cluster_peer_config_lag",
+        "gauge",
+        "Configuration versions the peer is behind the newest known.",
+    );
+    let witnesses: Vec<String> = c
+        .identity
+        .registry()
+        .into_iter()
+        .filter(|n| n.witness)
+        .map(|n| n.node_id)
+        .collect();
+    for p in peers.iter().filter(|p| !witnesses.contains(&p.node_id)) {
+        w.sample(
+            "telltale_cluster_peer_config_lag",
+            &[("node", &p.node_id), ("site", &p.site)],
+            newest.saturating_sub(p.stable_seq()),
+        );
+    }
+}
+
 fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
     if let Some(c) = &src.cluster {
         let now = std::time::SystemTime::now()
@@ -591,18 +620,7 @@ fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
         }
         peer_detail_metrics(&peers, w);
         peer_maintenance_metrics(&peers, now, w);
-        w.family(
-            "telltale_cluster_peer_config_lag",
-            "gauge",
-            "Configuration versions the peer is behind the newest known.",
-        );
-        for p in &peers {
-            w.sample(
-                "telltale_cluster_peer_config_lag",
-                &[("node", &p.node_id), ("site", &p.site)],
-                newest.saturating_sub(p.stable_seq()),
-            );
-        }
+        peer_config_lag_metrics(c, &peers, newest, w);
         let local = c.local_state();
         w.family(
             "telltale_cluster_config_seq",
