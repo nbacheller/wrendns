@@ -956,6 +956,7 @@ impl Federated {
                 .map(|m| telltale_api::map_api::PeerRef {
                     label: member_label(&m),
                     connected: m.connected,
+                    relayed_up: false,
                     id: m.node_id,
                 })
                 .collect()
@@ -2140,8 +2141,16 @@ impl Backend for Federated {
             out.parts.push(p);
         }
         if self.map.demand.touch(std::time::Instant::now()) {
+            // The grace of a peer not heard from starts now (the cache may be long idle).
+            self.map.cache.restart(std::time::Instant::now());
             self.start_map_gather();
         }
+        let relayed: std::collections::HashSet<String> = self
+            .cluster
+            .relayed_members()
+            .into_iter()
+            .map(|r| r.node_id)
+            .collect();
         let peers: Vec<PeerRef> = self
             .cluster
             .members()
@@ -2150,6 +2159,7 @@ impl Backend for Federated {
             .map(|m| PeerRef {
                 label: member_label(&m),
                 connected: m.connected,
+                relayed_up: relayed.contains(&m.node_id),
                 id: m.node_id,
             })
             .collect();

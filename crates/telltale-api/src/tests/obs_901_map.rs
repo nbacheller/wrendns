@@ -68,6 +68,7 @@ fn setup(fake: &Fake, enabled: bool) {
         MapParts {
             parts: vec![part("pi1")],
             missing: Vec::new(),
+            unseen: Vec::new(),
         },
     );
 }
@@ -336,11 +337,16 @@ async fn obs_901_stream_cap_and_stop() {
     let (app, fake) = app();
     setup(&fake, true);
     let mut open = Vec::new();
+    // Each viewer may hold 2 streams: four viewers fill the node's 8 seats.
+    let viewers: Vec<String> = (0..4)
+        .map(|i| bearer_for(&app, &format!("v{i}"), auth::Role::Viewer, "read"))
+        .collect();
+    let third = bearer_for(&app, "extra", auth::Role::Viewer, "read");
     for i in 0..crate::map_api::MAX_STREAMS {
         let resp = app
             .router
             .clone()
-            .oneshot(get_with("/api/v1/map/stream", &app.bearer))
+            .oneshot(get_with("/api/v1/map/stream", &viewers[i / 2]))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK, "stream {i}");
@@ -350,7 +356,7 @@ async fn obs_901_stream_cap_and_stop() {
     let resp = app
         .router
         .clone()
-        .oneshot(get_with("/api/v1/map/stream", &app.bearer))
+        .oneshot(get_with("/api/v1/map/stream", &third))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS, "the ninth");
@@ -365,10 +371,23 @@ async fn obs_901_stream_cap_and_stop() {
     let resp = app
         .router
         .clone()
-        .oneshot(get_with("/api/v1/map/stream", &app.bearer))
+        .oneshot(get_with("/api/v1/map/stream", &third))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "a seat is free again");
+    // One viewer's third stream is refused although seats are free elsewhere.
+    drop(open.pop());
+    let resp = app
+        .router
+        .clone()
+        .oneshot(get_with("/api/v1/map/stream", &viewers[0]))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "a third stream of one user"
+    );
 }
 
 /// One ticker serves every subscriber, builds one unfiltered snapshot per interval, and is idle
@@ -483,16 +502,19 @@ async fn obs_901_dead_peer_keeps_tick() {
             id: "dead".into(),
             label: "pi-dead".into(),
             connected: true,
+            relayed_up: false,
         },
         PeerRef {
             id: "live".into(),
             label: "pi-live".into(),
             connected: true,
+            relayed_up: false,
         },
         PeerRef {
             id: "gone".into(),
             label: "pi-gone".into(),
             connected: false,
+            relayed_up: false,
         },
     ];
     let backend = Arc::new(Clustered {
@@ -576,16 +598,19 @@ fn obs_901_peer_cache_rules() {
             id: "a".into(),
             label: "pi-a".into(),
             connected: true,
+            relayed_up: false,
         },
         PeerRef {
             id: "b".into(),
             label: "pi-b".into(),
             connected: true,
+            relayed_up: false,
         },
         PeerRef {
             id: "c".into(),
             label: "pi-c".into(),
             connected: false,
+            relayed_up: false,
         },
     ];
     c.put("a", part("whatever"), t0);
@@ -603,4 +628,79 @@ fn obs_901_peer_cache_rules() {
     assert!(!c.begin("a"), "one poll at a time per peer");
     c.end("a");
     assert!(c.begin("a"));
+}
+
+/// REQ: OBS-901 (review fix) — a cache made long before the first demand gives its peers a
+/// fresh grace when the gather starts: nobody is red on the first read after an idle spell, and
+/// a member the relay reports up is idle, not red (ADR-971).
+#[test]
+fn obs_901_grace_restarts_with_the_gather_and_relayed_members_are_unseen() {
+    use crate::map_api::{PeerCache, PeerRef};
+    let t0 = Instant::now();
+    let c = PeerCache::with_stale(t0, Duration::from_secs(6));
+    let peer = |id: &str, connected: bool, relayed_up: bool| PeerRef {
+        id: id.into(),
+        label: format!("pi-{id}"),
+        connected,
+        relayed_up,
+    };
+    let peers = [
+        peer("a", true, false),
+        peer("b", true, false),
+        peer("r", false, true),
+    ];
+    c.put("a", part("old"), t0);
+    let late = t0 + Duration::from_secs(60);
+    c.restart(late);
+    let v = c.view(&peers, late + Duration::from_secs(1));
+    assert_eq!(v.parts.len(), 0);
+    assert!(
+        v.missing.is_empty(),
+        "pending, not missing: {:?}",
+        v.missing
+    );
+    assert_eq!(v.unseen, ["pi-r"]);
+    let v = c.view(&peers, late + Duration::from_secs(7));
+    assert_eq!(v.missing, ["pi-a", "pi-b"]);
+    assert_eq!(v.unseen, ["pi-r"]);
+}
+
+/// REQ: OBS-901 (review fix) — one user or token holds at most 2 streams, and the seat comes
+/// back when a stream ends.
+#[tokio::test]
+async fn obs_901_one_owner_holds_two_streams() {
+    let fake = Arc::new(Fake::default());
+    setup(&fake, true);
+    let hub = crate::map_api::MapHub::new(Arc::clone(&fake) as Shared, Duration::from_millis(40));
+    let a = hub.subscribe_as("token:1").unwrap();
+    let _b = hub.subscribe_as("token:1").unwrap();
+    let err = hub.subscribe_as("token:1").unwrap_err();
+    assert_eq!(err.code, crate::problem::Code::MapStreamsBusy);
+    let _other = hub.subscribe_as("token:2").unwrap();
+    assert_eq!(hub.subscribers(), 3, "the refused one took no seat");
+    drop(a);
+    assert!(hub.subscribe_as("token:1").is_ok());
+}
+
+/// REQ: OBS-901 (review fix) — turning the map off while a stream is open tells it so.
+#[tokio::test]
+async fn obs_901_stream_is_told_when_the_map_goes_off() {
+    let fake = Arc::new(Fake::default());
+    setup(&fake, true);
+    let hub = crate::map_api::MapHub::new(Arc::clone(&fake) as Shared, Duration::from_millis(40));
+    let mut a = hub.subscribe().unwrap();
+    assert!(!a.next(true).await.unwrap().is_empty());
+    setup(&fake, false);
+    let mut saw_off = false;
+    for _ in 0..20 {
+        let t = tokio::time::timeout(Duration::from_millis(500), a.next(false))
+            .await
+            .unwrap()
+            .unwrap();
+        if t.is_empty() {
+            saw_off = true;
+            break;
+        }
+    }
+    assert!(saw_off, "an empty text is the end-of-stream marker");
 }

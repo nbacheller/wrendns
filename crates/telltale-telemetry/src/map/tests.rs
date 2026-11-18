@@ -118,10 +118,13 @@ fn now_s() -> u64 {
 fn obs_901_sampler_unbiased() {
     // 2,000/s cap = 500 kept per tick; 10,000/s is 5x. (At a cap of 200 an edge's sampling
     // noise alone is about 2%; a window this full brings it under 1%, so 5% tests bias.)
-    let mut s = Sampler::new(Settings {
-        event_rate: 2000,
-        slow_us: 250_000,
-    });
+    let mut s = Sampler::new(
+        Settings {
+            event_rate: 2000,
+            slow_us: 250_000,
+        },
+        0,
+    );
     let truth = run(&mut s, 60, 10_000, 0, 7);
     let w = s.window(now_s());
     assert_eq!(s.sample_rate(), 5, "1 in 5 at 5x the cap");
@@ -154,7 +157,7 @@ fn obs_901_sampler_unbiased() {
 #[test]
 fn obs_901_sampler_is_deterministic() {
     let go = || {
-        let mut s = Sampler::new(Settings::default());
+        let mut s = Sampler::new(Settings::default(), 0);
         run(&mut s, 20, 1000, 0, 3);
         let mut w = s.window(1_700_000_019);
         w.entries.sort_by_key(|e| (e.client, e.kind, e.upstream));
@@ -167,10 +170,13 @@ fn obs_901_sampler_is_deterministic() {
 /// bias it down: 20% lost before the sampler, estimates still within 5% of the whole stream.
 #[test]
 fn obs_901_sampler_overload() {
-    let mut s = Sampler::new(Settings {
-        event_rate: 2000,
-        slow_us: 250_000,
-    });
+    let mut s = Sampler::new(
+        Settings {
+            event_rate: 2000,
+            slow_us: 250_000,
+        },
+        0,
+    );
     let truth = run(&mut s, 60, 10_000, 20, 11);
     let w = s.window(now_s());
     assert!(w.dropped > 0, "the drops are reported");
@@ -194,10 +200,13 @@ fn obs_901_sampler_overload() {
 /// `other`: nothing is lost from the totals and the memory estimate stays at or under 1 MiB.
 #[test]
 fn obs_901_sampler_bounded() {
-    let mut s = Sampler::new(Settings {
-        event_rate: 2000,
-        slow_us: 250_000,
-    });
+    let mut s = Sampler::new(
+        Settings {
+            event_rate: 2000,
+            slow_us: 250_000,
+        },
+        0,
+    );
     let base_s = 1_700_000_000u64;
     let mut offered = 0u64;
     let mut n = 0u32;
@@ -248,10 +257,13 @@ fn obs_901_sampler_bounded() {
 /// but is one event for `min_sample`.
 #[test]
 fn obs_901_sampler_counts_real_events() {
-    let mut s = Sampler::new(Settings {
-        event_rate: 200,
-        slow_us: 250_000,
-    });
+    let mut s = Sampler::new(
+        Settings {
+            event_rate: 200,
+            slow_us: 250_000,
+        },
+        0,
+    );
     // 1,000 lookups per tick at a cap of 50 gives N = 20 from the second tick on.
     let base = 1_700_000_000_000_000u64;
     for t in 0..8u64 {
@@ -282,7 +294,7 @@ fn obs_901_sampler_counts_real_events() {
 #[test]
 fn obs_901_sampler_privacy_levels() {
     for level in [2u8, 3] {
-        let mut s = Sampler::new(Settings::default());
+        let mut s = Sampler::new(Settings::default(), 0);
         s.set_privacy(level);
         for i in 0..200u64 {
             s.offer(&ev(
@@ -314,7 +326,7 @@ fn obs_901_sampler_privacy_levels() {
         assert!(w.entries.iter().all(|e| e.client.is_hidden()));
     }
     // Level 1 and below keep the address.
-    let mut s = Sampler::new(Settings::default());
+    let mut s = Sampler::new(Settings::default(), 0);
     s.set_privacy(1);
     s.offer(&ev(1_700_000_000_000_000, 7, Status::Cached, 0, 10));
     let w = s.window(1_700_000_000);
@@ -325,7 +337,7 @@ fn obs_901_sampler_privacy_levels() {
 /// Old slots leave the window; a late event older than the window is ignored.
 #[test]
 fn obs_901_sampler_window_rolls() {
-    let mut s = Sampler::new(Settings::default());
+    let mut s = Sampler::new(Settings::default(), 0);
     let t0 = 1_700_000_000u64;
     s.offer(&ev(t0 * 1_000_000, 1, Status::Cached, 0, 10));
     assert_eq!(s.window(t0 + 10).entries.len(), 1);
@@ -344,10 +356,13 @@ fn obs_901_sampler_window_rolls() {
 /// threshold, error for SERVFAIL, blocked, rate limited; never-answered ones are not kept.
 #[test]
 fn obs_901_sampler_counts_fields() {
-    let mut s = Sampler::new(Settings {
-        event_rate: 200,
-        slow_us: 100_000,
-    });
+    let mut s = Sampler::new(
+        Settings {
+            event_rate: 200,
+            slow_us: 100_000,
+        },
+        0,
+    );
     let t = 1_700_000_000_000_000u64;
     s.offer(&ev(t, 1, Status::Forwarded, 3, 150_000));
     s.offer(&ev(t, 1, Status::ServFail, 3, 10));
@@ -373,7 +388,7 @@ fn obs_901_sampler_counts_fields() {
 /// A window part crosses the cluster channel as JSON and comes back the same.
 #[test]
 fn obs_901_window_round_trips_as_json() {
-    let mut s = Sampler::new(Settings::default());
+    let mut s = Sampler::new(Settings::default(), 0);
     s.offer(&ev(1_700_000_000_000_000, 7, Status::Forwarded, 2, 90_000));
     let w = s.window(1_700_000_000);
     let text = serde_json::to_string(&w).unwrap();
@@ -433,6 +448,12 @@ fn obs_901_hub_feeds_and_stops_the_sampler() {
         w.entries.iter().all(|e| e.client.0[15] != 8),
         "the level-2 lookup has no client key"
     );
+    // REQ: OBS-901 (review fix) — raising the level purges the real client keys already kept.
+    assert!(
+        w.entries.iter().all(|e| e.client.is_hidden()),
+        "no device key survives the switch to level 2"
+    );
+    assert!(w.recent.iter().all(|r| r.client.is_hidden()));
     hub.set_map(None);
     assert!(hub.map_window(1_700_000_000).is_none());
 }
@@ -445,6 +466,25 @@ fn obs_901_hub_feeds_and_stops_the_sampler() {
 #[test]
 #[ignore = "a benchmark: run it with --release and --ignored"]
 fn obs_901_sampler_throughput_ab() {
+    throughput_ab(4, Settings::default());
+}
+
+/// REQ: OBS-901 (review fix) — the worst case of the same comparison: every lookup from one of
+/// 60,000 distinct clients at `event_rate = 2000`, so the slots fill and each kept event scans
+/// up to 1,024 rows.
+#[test]
+#[ignore = "a benchmark: run it with --release and --ignored"]
+fn obs_901_sampler_throughput_ab_unique_clients() {
+    throughput_ab(
+        60_000,
+        Settings {
+            event_rate: 2000,
+            ..Settings::default()
+        },
+    );
+}
+
+fn throughput_ab(clients: u64, settings: Settings) {
     use std::time::{Duration, Instant};
     let names: Vec<Vec<u8>> = (0..2000)
         .map(|i| {
@@ -457,7 +497,7 @@ fn obs_901_sampler_throughput_ab() {
         .collect();
     let run = |on: bool| -> f64 {
         let hub = crate::Hub::new(16 << 20);
-        hub.set_map(on.then(Settings::default));
+        hub.set_map(on.then_some(settings));
         let mut d = hub.drainer();
         let mut rng = Lcg(5);
         let base_us = 1_700_000_000_000_000u64;
@@ -471,7 +511,9 @@ fn obs_901_sampler_throughput_ab() {
                 let (c, st, up) = pick(&mut rng);
                 let name = &names[usize::try_from(rng.next() % 2000).unwrap_or(0)];
                 let mut e = ev(base_us + seq, c, st, up, 1_000);
-                e.client_ip[14] = u8::try_from(rng.next() % 4).unwrap_or(0);
+                let c = rng.next() % clients;
+                e.client_ip[13] = u8::try_from((c >> 8) & 0xff).unwrap_or(0);
+                e.client_ip[14] = u8::try_from(c & 0xff).unwrap_or(0);
                 hub.emit_query(&e, name);
             }
             let t = Instant::now();
@@ -512,4 +554,17 @@ fn obs_901_sampler_throughput_ab() {
         mn >= mo * 0.95,
         "the sampler costs more than 5%: {mn} vs {mo}"
     );
+}
+
+/// REQ: OBS-901 (review fix) — a sampler made after the rings dropped events does not count
+/// that history as its first tick's drops.
+#[test]
+fn obs_901_new_sampler_ignores_earlier_ring_drops() {
+    let mut s = Sampler::new(Settings::default(), 5_000_000);
+    s.offer(&ev(1_700_000_000_000_000, 7, Status::Cached, 0, 20));
+    s.tick(1_000, 5_000_000);
+    s.offer(&ev(1_700_000_000_000_001, 7, Status::Cached, 0, 20));
+    let w = s.window(1_700_000_000);
+    assert_eq!(w.dropped, 0);
+    assert!(w.entries.iter().all(|e| e.c.weighted < 100));
 }

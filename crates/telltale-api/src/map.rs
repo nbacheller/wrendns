@@ -274,6 +274,9 @@ pub struct MapPart {
 pub struct MapParts {
     pub parts: Vec<MapPart>,
     pub missing: Vec<String>,
+    /// Members this node has no stream to but the cluster's health relay reports up (a replica
+    /// in manual failover sees only the primary): shown idle, not red (ADR-971).
+    pub unseen: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -680,7 +683,7 @@ pub fn build(parts: &MapParts, ctx: &Context<'_>, filter: &Filter) -> MapSnapsho
             }
             if let Some(q) = &filter.device {
                 // A hidden device has no name or address to match.
-                if e.client.is_hidden() {
+                if hidden || e.client.is_hidden() {
                     continue;
                 }
                 let ip = client_ip(&e.client);
@@ -693,7 +696,7 @@ pub fn build(parts: &MapParts, ctx: &Context<'_>, filter: &Filter) -> MapSnapsho
                 }
             }
             if let Some(net) = &filter.network {
-                let n = if e.client.is_hidden() {
+                let n = if hidden || e.client.is_hidden() {
                     None
                 } else {
                     network_of(&ctx.networks, client_ip(&e.client))
@@ -703,7 +706,9 @@ pub fn build(parts: &MapParts, ctx: &Context<'_>, filter: &Filter) -> MapSnapsho
                 }
             }
             res_total.entry(i).or_default().add(&e.c);
-            let d = devs.entry(e.client).or_default();
+            // REQ: OBS-901 — at privacy 2+ every key is hidden, whatever the part holds.
+            let client = if hidden { ClientKey::HIDDEN } else { e.client };
+            let d = devs.entry(client).or_default();
             d.agg.add(&e.c);
             d.group = e.group;
             d.by_node.entry(i).or_default().add(&e.c);
@@ -1071,6 +1076,35 @@ pub fn build(parts: &MapParts, ctx: &Context<'_>, filter: &Filter) -> MapSnapsho
             reasons: vec![reason(
                 "unreachable",
                 "this node didn't answer the read (its part of the map is missing)",
+            )],
+            qps: 0.0,
+            count: 0,
+            sampled: 0,
+            address: None,
+            network: None,
+            group: None,
+            node: Some(m.clone()),
+            folded: None,
+        });
+    }
+
+    // REQ: OBS-901 (ADR-971) — a member this node can't reach but the relay says is up is idle
+    // here, with a reason of its own; it doesn't make the map partial.
+    let mut unseen = parts.unseen.clone();
+    unseen.sort();
+    unseen.dedup();
+    for m in unseen.iter().filter(|m| !missing.contains(m)) {
+        if filter.node.as_deref().is_some_and(|n| !ci_eq(n, m)) {
+            continue;
+        }
+        nodes.push(MapNode {
+            id: format!("res:{m}"),
+            kind: MapNodeKind::Resolver,
+            label: m.clone(),
+            health: MapHealth::Idle,
+            reasons: vec![reason(
+                "not_reachable_from_here",
+                "this node has no direct link to it; the cluster's health relay reports it up",
             )],
             qps: 0.0,
             count: 0,

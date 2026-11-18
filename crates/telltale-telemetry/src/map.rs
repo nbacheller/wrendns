@@ -279,7 +279,9 @@ pub struct Sampler {
 }
 
 impl Sampler {
-    pub fn new(settings: Settings) -> Self {
+    /// `dropped_now` is the rings' running drop total at creation: drops before the sampler
+    /// existed are not this tick's (REQ: OBS-901, review fix).
+    pub fn new(settings: Settings, dropped_now: u64) -> Self {
         Self {
             settings,
             n: 1,
@@ -287,7 +289,7 @@ impl Sampler {
             tick_seen: 0,
             tick_kept: 0,
             last_tick_ms: 0,
-            last_dropped: 0,
+            last_dropped: dropped_now,
             drop_scale: 1 << 16,
             carry: 0,
             slots: (0..SLOTS).map(|_| Slot::default()).collect(),
@@ -308,7 +310,18 @@ impl Sampler {
     }
 
     /// The privacy level from the next event on.
+    ///
+    /// Rising to 2 or more purges what was kept with real client keys (the slots, the overflow
+    /// counts and the recent lookups), so a level change never leaves a device behind (ADR-970).
     pub fn set_privacy(&mut self, level: u8) {
+        if level >= 2 && self.privacy < 2 {
+            for s in &mut self.slots {
+                s.rows = Vec::new();
+                s.other = Counts::default();
+            }
+            self.entries = 0;
+            self.recent.clear();
+        }
         self.privacy = level;
     }
 
@@ -444,10 +457,15 @@ impl Sampler {
         }
     }
 
+    /// Whether a 250 ms tick is due (so the caller reads the drop total only then).
+    pub fn tick_due(&self, now_ms: u64) -> bool {
+        now_ms.saturating_sub(self.last_tick_ms) >= TICK_MS
+    }
+
     /// Called after each drain with a millisecond clock and the worker rings' running total of
     /// dropped events: at the end of a tick it works out the next N and the drop scale.
     pub fn tick(&mut self, now_ms: u64, dropped_total: u64) {
-        if now_ms.saturating_sub(self.last_tick_ms) < TICK_MS {
+        if !self.tick_due(now_ms) {
             return;
         }
         self.last_tick_ms = now_ms;
@@ -491,18 +509,59 @@ impl Sampler {
     /// The window as of `now_s` (Unix seconds): the slots from the last 60 seconds, summed per
     /// key; the busiest [`PART_KEYS`] keys, the rest in `other`.
     pub fn window(&self, now_s: u64) -> Window {
+        self.freeze(now_s).window()
+    }
+
+    /// A copy of the slots in the window (a few memcpys, no hashing or sorting) so a reader can
+    /// release the aggregator's lock before it sums and sorts them ([`Frozen::window`]).
+    pub fn freeze(&self, now_s: u64) -> Frozen {
         let newest = now_s / SLOT_SECS;
         let oldest = newest.saturating_sub(SLOTS_U64 - 1);
+        let slots = self
+            .slots
+            .iter()
+            .filter(|s| {
+                s.start >= oldest && s.start <= newest && !(s.rows.is_empty() && s.other.is_empty())
+            })
+            .map(|s| (s.rows.clone(), s.other, s.dropped))
+            .collect();
+        let oldest_us = oldest.saturating_mul(SLOT_SECS).saturating_mul(1_000_000);
+        Frozen {
+            slots,
+            sample_rate: self.n,
+            privacy: self.privacy,
+            recent: self
+                .recent
+                .iter()
+                .filter(|r| r.ts_us >= oldest_us)
+                .copied()
+                .collect(),
+        }
+    }
+}
+
+/// One slot's rows, overflow counts and dropped events.
+type FrozenSlot = (Vec<(Key, Counts)>, Counts, u64);
+
+/// The slots of one window, copied out of the sampler (see [`Sampler::freeze`]).
+#[derive(Debug)]
+pub struct Frozen {
+    slots: Vec<FrozenSlot>,
+    sample_rate: u32,
+    privacy: u8,
+    recent: Vec<Recent>,
+}
+
+impl Frozen {
+    /// Sums the slots per key and keeps the busiest [`PART_KEYS`]; the rest go to `other`.
+    pub fn window(self) -> Window {
         let mut sum: HashMap<Key, Counts> = HashMap::new();
         let mut other = Counts::default();
         let mut dropped = 0u64;
-        for s in &self.slots {
-            if s.start < oldest || s.start > newest || (s.rows.is_empty() && s.other.is_empty()) {
-                continue;
-            }
-            dropped = dropped.saturating_add(s.dropped);
-            other.add(&s.other);
-            for (k, c) in &s.rows {
+        for (rows, o, d) in &self.slots {
+            dropped = dropped.saturating_add(*d);
+            other.add(o);
+            for (k, c) in rows {
                 sum.entry(*k).or_default().add(c);
             }
         }
@@ -527,20 +586,14 @@ impl Sampler {
                 c,
             })
             .collect();
-        let oldest_us = oldest.saturating_mul(SLOT_SECS).saturating_mul(1_000_000);
         Window {
             window_secs: WINDOW_SECS,
-            sample_rate: self.n,
+            sample_rate: self.sample_rate,
             dropped,
             privacy: self.privacy,
             entries,
             other,
-            recent: self
-                .recent
-                .iter()
-                .filter(|r| r.ts_us >= oldest_us)
-                .copied()
-                .collect(),
+            recent: self.recent,
         }
     }
 }

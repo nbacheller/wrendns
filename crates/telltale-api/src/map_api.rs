@@ -33,6 +33,12 @@ use crate::{Backend, Shared, blocking};
 pub const MAX_STREAMS: usize = 8;
 /// How often the ticker builds a snapshot.
 pub const TICK: Duration = Duration::from_secs(2);
+/// Streams one user or token may hold.
+pub const MAX_PER_OWNER: usize = 2;
+/// An unfiltered read is served from the ticker's snapshot when it is younger than this.
+pub const FRESH: Duration = Duration::from_secs(2);
+/// Snapshot builds the routes run at once (the rest wait).
+pub const MAX_BUILDS: usize = 4;
 /// A peer whose last good answer is older than this is missing (three intervals).
 pub const PEER_STALE: Duration = Duration::from_secs(6);
 
@@ -170,9 +176,8 @@ pub(crate) async fn get_map(
     State(s): State<MapState>,
     Query(p): Query<MapParams>,
 ) -> Result<Json<MapSnapshot>, Problem> {
-    let b = s.backend;
     let filter = p.filter();
-    blocking(move || snapshot(&*b, &filter)).await.map(Json)
+    s.hub.read(&filter).await.map(|m| Json((*m).clone()))
 }
 
 /// Live map stream.
@@ -180,22 +185,38 @@ pub(crate) async fn get_map(
 /// Server-Sent Events: one `snapshot` event every 2 seconds (the same body as `GET /api/v1/map`,
 /// unfiltered: filter it on your side) and a `ping` event every 15 seconds. One ticker builds the
 /// snapshot for every subscriber and stops when the last one leaves. At most 8 streams per node
-/// (`429 map_streams_busy`). Close it when the page is hidden.
+/// (`429 map_streams_busy`) and at most 2 per user or token. When the map is turned off the stream sends a `map_disabled` event and ends. Close it when the page is hidden.
 #[utoipa::path(get, path = "/api/v1/map/stream", tag = "map",
     responses(
         (status = 200, description = "`text/event-stream` of `snapshot` (MapSnapshot) events.",
             content_type = "text/event-stream", body = String),
         (status = 404, body = Problem, description = "`map_disabled`."),
         (status = 429, body = Problem, description = "`map_streams_busy`: 8 streams are open on this node.")))]
-pub(crate) async fn map_stream(State(s): State<MapState>) -> Result<Response, Problem> {
+pub(crate) async fn map_stream(
+    State(s): State<MapState>,
+    principal: Option<axum::Extension<crate::auth::Principal>>,
+) -> Result<Response, Problem> {
     use axum::response::sse::{Event, KeepAlive, Sse};
     settings(&*s.backend)?;
-    let sub = s.hub.subscribe()?;
-    let stream = futures_util::stream::unfold((sub, true), |(mut sub, first)| async move {
-        let text = sub.next(first).await?;
-        let event = Event::default().event("snapshot").data(text.as_str());
-        Some((Ok::<_, std::convert::Infallible>(event), (sub, false)))
-    });
+    let owner = principal.map_or_else(String::new, |p| crate::plans::owner_key(&p.0));
+    let sub = s.hub.subscribe_as(&owner)?;
+    // An empty text is the ticker saying the map was turned off: the stream says so and ends.
+    let stream =
+        futures_util::stream::unfold((sub, true, false), |(mut sub, first, done)| async move {
+            if done {
+                return None;
+            }
+            let text = sub.next(first).await?;
+            if text.is_empty() {
+                let event = Event::default().event("map_disabled").data("");
+                return Some((Ok::<_, std::convert::Infallible>(event), (sub, false, true)));
+            }
+            let event = Event::default().event("snapshot").data(text.as_str());
+            Some((
+                Ok::<_, std::convert::Infallible>(event),
+                (sub, false, false),
+            ))
+        });
     Ok(Sse::new(stream)
         .keep_alive(
             KeepAlive::new()
@@ -216,6 +237,7 @@ pub(crate) async fn map_stream(State(s): State<MapState>) -> Result<Response, Pr
         (status = 404, body = Problem, description = "`map_disabled`.")))]
 pub(crate) async fn get_world(State(s): State<MapState>) -> Result<Json<map::MapWorld>, Problem> {
     let b = s.backend;
+    let _seat = s.hub.builds.acquire().await;
     blocking(move || {
         settings(&*b)?;
         let parts = b.map_parts();
@@ -261,11 +283,11 @@ pub(crate) async fn get_health(
     State(s): State<MapState>,
     Query(p): Query<MapParams>,
 ) -> Result<Json<map::NetworkHealth>, Problem> {
-    let b = s.backend;
     let filter = p.filter();
-    blocking(move || snapshot(&*b, &filter).map(|s| map::network_health(&s)))
+    s.hub
+        .read(&filter)
         .await
-        .map(Json)
+        .map(|m| Json(map::network_health(&m)))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -280,6 +302,13 @@ pub struct MapHub {
     running: AtomicBool,
     ticks: AtomicU64,
     tx: watch::Sender<Option<Arc<String>>>,
+    /// Streams open per user or token ([`MAX_PER_OWNER`]).
+    owners: Mutex<HashMap<String, usize>>,
+    /// The newest unfiltered snapshot and when it was built: reads of it within [`FRESH`] are
+    /// served from here.
+    last: Mutex<Option<(Instant, Arc<MapSnapshot>)>>,
+    /// Snapshot builds running at once for the routes ([`MAX_BUILDS`]).
+    builds: tokio::sync::Semaphore,
 }
 
 impl std::fmt::Debug for MapHub {
@@ -296,6 +325,7 @@ impl std::fmt::Debug for MapHub {
 #[derive(Debug)]
 pub struct Subscription {
     hub: Arc<MapHub>,
+    owner: String,
     rx: watch::Receiver<Option<Arc<String>>>,
 }
 
@@ -317,6 +347,7 @@ impl Subscription {
 
 impl Drop for Subscription {
     fn drop(&mut self) {
+        self.hub.release_owner(&self.owner);
         self.hub.subs.fetch_sub(1, Ordering::AcqRel);
     }
 }
@@ -330,17 +361,79 @@ impl MapHub {
             running: AtomicBool::new(false),
             ticks: AtomicU64::new(0),
             tx: watch::channel(None).0,
+            owners: Mutex::new(HashMap::new()),
+            last: Mutex::new(None),
+            builds: tokio::sync::Semaphore::new(MAX_BUILDS),
         })
+    }
+
+    fn release_owner(&self, owner: &str) {
+        if owner.is_empty() {
+            return;
+        }
+        let mut o = self.owners.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(n) = o.get_mut(owner) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                o.remove(owner);
+            }
+        }
+    }
+
+    /// A snapshot for a route: the ticker's own when the filter is empty and it is younger than
+    /// [`FRESH`]; else a build, at most [`MAX_BUILDS`] at a time. A build copies the sampler's
+    /// window out and sums it outside the sampler's lock, so it never stalls the aggregator.
+    pub async fn read(&self, filter: &Filter) -> Result<Arc<MapSnapshot>, Problem> {
+        let plain = *filter == Filter::default();
+        if plain
+            && let Some((at, m)) = self
+                .last
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+            && at.elapsed() < FRESH
+        {
+            return Ok(Arc::clone(m));
+        }
+        let _seat = self.builds.acquire().await;
+        let (b, f) = (Arc::clone(&self.backend), filter.clone());
+        let m = Arc::new(blocking(move || snapshot(&*b, &f)).await?);
+        if plain {
+            *self.last.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some((Instant::now(), Arc::clone(&m)));
+        }
+        Ok(m)
     }
 
     /// Takes a seat (`429 map_streams_busy` when [`MAX_STREAMS`] are taken) and makes sure the
     /// ticker runs. Needs a tokio runtime.
     pub fn subscribe(self: &Arc<Self>) -> Result<Subscription, Problem> {
+        self.subscribe_as("")
+    }
+
+    /// As [`Self::subscribe`] for `owner` (a user or token), who may hold at most
+    /// [`MAX_PER_OWNER`] seats; an empty owner is not counted.
+    pub fn subscribe_as(self: &Arc<Self>, owner: &str) -> Result<Subscription, Problem> {
+        if !owner.is_empty() {
+            let mut o = self.owners.lock().unwrap_or_else(PoisonError::into_inner);
+            let n = o.entry(owner.to_owned()).or_insert(0);
+            if *n >= MAX_PER_OWNER {
+                let mut p = Problem::new(
+                    Code::MapStreamsBusy,
+                    format!("this user or token already holds {MAX_PER_OWNER} map streams"),
+                )
+                .hint("Close another map page, or poll GET /api/v1/map instead.");
+                p.retry_after = Some(5);
+                return Err(p);
+            }
+            *n += 1;
+        }
         self.subs
             .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < MAX_STREAMS).then_some(n + 1)
             })
             .map_err(|_| {
+                self.release_owner(owner);
                 let mut p = Problem::new(
                     Code::MapStreamsBusy,
                     format!("{MAX_STREAMS} map streams are already open on this node"),
@@ -351,6 +444,7 @@ impl MapHub {
             })?;
         let sub = Subscription {
             hub: Arc::clone(self),
+            owner: owner.to_owned(),
             rx: self.tx.subscribe(),
         };
         if self
@@ -383,11 +477,21 @@ impl MapHub {
             let b = Arc::clone(&self.backend);
             let built =
                 tokio::task::spawn_blocking(move || snapshot(&*b, &Filter::default())).await;
-            if let Ok(Ok(s)) = built
-                && let Ok(text) = serde_json::to_string(&s)
-            {
-                // Nobody listening is fine: the value waits for the next subscriber.
-                let _ = self.tx.send(Some(Arc::new(text)));
+            match built {
+                Ok(Ok(s)) => {
+                    if let Ok(text) = serde_json::to_string(&s) {
+                        // Nobody listening is fine: the value waits for the next subscriber.
+                        let _ = self.tx.send(Some(Arc::new(text)));
+                    }
+                    *self.last.lock().unwrap_or_else(PoisonError::into_inner) =
+                        Some((Instant::now(), Arc::new(s)));
+                }
+                // The map was turned off: an empty text tells every stream to end.
+                Ok(Err(e)) if e.code == Code::MapDisabled => {
+                    *self.last.lock().unwrap_or_else(PoisonError::into_inner) = None;
+                    let _ = self.tx.send(Some(Arc::new(String::new())));
+                }
+                _ => {}
             }
             self.ticks.fetch_add(1, Ordering::AcqRel);
             tokio::time::sleep(self.interval).await;
@@ -415,6 +519,8 @@ impl MapHub {
 
 #[derive(Debug, Default)]
 struct PeerInner {
+    /// When the grace of peers not heard from began (restarted with each gather start).
+    since: Option<Instant>,
     parts: HashMap<String, (Instant, MapPart)>,
     in_flight: HashSet<String>,
 }
@@ -434,6 +540,8 @@ pub struct PeerRef {
     pub id: String,
     pub label: String,
     pub connected: bool,
+    /// Not connected to this node, but the cluster's health relay reports it up (ADR-971).
+    pub relayed_up: bool,
 }
 
 impl PeerCache {
@@ -448,6 +556,15 @@ impl PeerCache {
             started: now,
             stale,
         }
+    }
+
+    /// A gather task is starting at `now`: peers are given their grace from here, not from when
+    /// the cache was made (the first read after an idle spell finds the cache old).
+    pub fn restart(&self, now: Instant) {
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .since = Some(now);
     }
 
     pub fn put(&self, peer: &str, part: MapPart, at: Instant) {
@@ -491,9 +608,15 @@ impl PeerCache {
     pub fn view(&self, peers: &[PeerRef], now: Instant) -> MapParts {
         let g = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let mut out = MapParts::default();
+        let since = g.since.unwrap_or(self.started);
+        let grace = now.saturating_duration_since(since) < self.stale;
         for p in peers {
             if !p.connected {
-                out.missing.push(p.label.clone());
+                if p.relayed_up {
+                    out.unseen.push(p.label.clone());
+                } else {
+                    out.missing.push(p.label.clone());
+                }
                 continue;
             }
             match g.parts.get(&p.id) {
@@ -502,11 +625,9 @@ impl PeerCache {
                     part.node.clone_from(&p.label);
                     out.parts.push(part);
                 }
-                Some(_) => out.missing.push(p.label.clone()),
-                None if now.saturating_duration_since(self.started) >= self.stale => {
-                    out.missing.push(p.label.clone());
-                }
-                None => {}
+                // An old part or none: pending while the gather's first round may still land.
+                _ if grace => {}
+                _ => out.missing.push(p.label.clone()),
             }
         }
         out

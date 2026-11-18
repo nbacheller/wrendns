@@ -150,6 +150,15 @@ impl Hub {
     /// and no client addresses (2+). The query log, tail, and sinks apply it themselves.
     pub fn set_privacy(&self, level: u8) {
         self.privacy.store(level, Ordering::Relaxed);
+        // REQ: OBS-901 — the map's sampler follows at once (and purges client keys at 2+).
+        if let Some(m) = self
+            .map
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        {
+            m.set_privacy(level);
+        }
     }
 
     /// REQ: OBS-022 (T12.1) — from the next drain on, queries these match are left out of the
@@ -180,7 +189,11 @@ impl Hub {
         match (settings, g.as_mut()) {
             (None, _) => *g = None,
             (Some(s), Some(m)) => m.configure(s),
-            (Some(s), None) => *g = Some(crate::map::Sampler::new(s)),
+            (Some(s), None) => {
+                let mut m = crate::map::Sampler::new(s, self.dropped_total());
+                m.set_privacy(self.privacy.load(Ordering::Relaxed));
+                *g = Some(m);
+            }
         }
     }
 
@@ -188,10 +201,14 @@ impl Hub {
     /// `None` while the map is off.
     pub fn map_window(&self, now_s: u64) -> Option<crate::map::Window> {
         let level = self.privacy.load(Ordering::Relaxed);
-        let mut g = self.map.lock().unwrap_or_else(PoisonError::into_inner);
-        let m = g.as_mut()?;
-        m.set_privacy(level);
-        Some(m.window(now_s))
+        // Copy under the lock, sum and sort outside it: the aggregator never waits on a reader.
+        let frozen = {
+            let mut g = self.map.lock().unwrap_or_else(PoisonError::into_inner);
+            let m = g.as_mut()?;
+            m.set_privacy(level);
+            m.freeze(now_s)
+        };
+        Some(frozen.window())
     }
 
     /// Events every ring has dropped so far (a plain sum of the rings' counters).
@@ -393,7 +410,9 @@ impl Hub {
                         if let Some(m) = map.as_mut() {
                             let ms = u64::try_from(hub.epoch_at.elapsed().as_millis())
                                 .unwrap_or(u64::MAX);
-                            m.tick(ms, hub.dropped_total());
+                            if m.tick_due(ms) {
+                                m.tick(ms, hub.dropped_total());
+                            }
                         }
                     }
                     if let Some(s) = sink.as_mut() {

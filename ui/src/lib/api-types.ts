@@ -2406,7 +2406,7 @@ export interface paths {
          * @description Server-Sent Events: one `snapshot` event every 2 seconds (the same body as `GET /api/v1/map`,
          *     unfiltered: filter it on your side) and a `ping` event every 15 seconds. One ticker builds the
          *     snapshot for every subscriber and stops when the last one leaves. At most 8 streams per node
-         *     (`429 map_streams_busy`). Close it when the page is hidden.
+         *     (`429 map_streams_busy`) and at most 2 per user or token. When the map is turned off the stream sends a `map_disabled` event and ends. Close it when the page is hidden.
          */
         get: operations["map_stream"];
         put?: never;
