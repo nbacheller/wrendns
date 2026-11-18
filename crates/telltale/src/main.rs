@@ -55,6 +55,7 @@ mod node_managed_tests;
 mod node_removal;
 mod oidc_settings;
 mod otlp;
+mod own_networks;
 mod pihole;
 mod pihole_import;
 mod pipeline;

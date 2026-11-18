@@ -14,3 +14,7 @@ docker compose exec telltale telltale auth setup-token   # then open http://<hos
 
 Port 53 busy, running unprivileged, SD-card tips: see "Raspberry Pi and Linux" in
 [docs/running.md](../../docs/running.md#raspberry-pi-and-linux).
+
+## Networks and VLANs
+
+The bundle sets `TELLTALE_HOST_NETWORK=1` because it runs on the host network: the Networks page then lists the Pi's own networks (its LAN and any tagged VLAN interface) as "this node". Docker marks every container with `/.dockerenv`, and without the variable TelltaleDNS would treat the container as bridged and list none. Keep the variable if you copy the `network_mode: host` setup into your own file.
