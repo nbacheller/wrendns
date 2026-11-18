@@ -38,6 +38,24 @@ fn cfg() -> TcpConfig {
     TcpConfig::new("127.0.0.1:0".parse().unwrap())
 }
 
+// REQ: DNS-001, CLU-004 (T24.32) — a listener on the wildcard accepts on every local address (the
+// 127/8 range stands in for VLAN interface addresses and a VIP).
+#[tokio::test]
+async fn dns_001_tcp_wildcard_accepts_on_every_local_address() {
+    let server =
+        TcpServer::bind(TcpConfig::new("0.0.0.0:0".parse().unwrap()), Arc::new(echo)).unwrap();
+    let port = server.local_addr().port();
+    for last in [1u8, 2, 3] {
+        let mut s = TcpStream::connect(format!("127.0.0.{last}:{port}"))
+            .await
+            .unwrap();
+        s.write_all(&frame(u16::from(last))).await.unwrap();
+        let r = read_frame(&mut s).await.unwrap();
+        assert_eq!(r[1], last);
+    }
+    server.shutdown().await;
+}
+
 #[tokio::test]
 async fn dns_001_tcp_pipelined_queries() {
     let server = TcpServer::bind(cfg(), Arc::new(echo)).unwrap();

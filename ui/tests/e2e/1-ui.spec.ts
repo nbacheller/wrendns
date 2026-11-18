@@ -5590,6 +5590,7 @@ test('api_012 discovered devices name the type of their router', async () => {
 const NETWORKS = [
   { name: 'Home', subnet: '10.20.2.0/24', gateway: '10.20.2.1', dhcpStart: '10.20.2.100', dhcpEnd: '10.20.2.200', domain: 'home.arpa', purpose: 'corporate', source: 'router', router: 'udm', group: 'lab', addresses: 254, devices: 60, usedPercent: 24, outsidePool: 4 },
   { name: 'IoT', subnet: '192.168.20.0/24', vlan: 20, gateway: '192.168.20.1', dhcpStart: '192.168.20.100', dhcpEnd: '192.168.20.200', purpose: 'iot', source: 'router', router: 'udm', addresses: 254, devices: 42, usedPercent: 17, outsidePool: 4 },
+  { name: 'eth0.100', subnet: '198.51.100.0/24', vlan: 100, source: 'interface', addresses: 254, devices: 3, usedPercent: 1.2, outsidePool: 0 },
   { name: 'guests', subnet: '10.50.0.0/24', source: 'group', group: 'guests', addresses: 254, devices: 0, usedPercent: 0, outsidePool: 0 },
 ];
 const DEVICES_ON_NETWORKS = [
@@ -5611,6 +5612,12 @@ test('api_013 networks page lists router networks', async () => {
     await expect(iot.getByRole('img', { name: '17% used' })).toBeVisible();
     await expect(page.getByRole('row').filter({ hasText: '10.50.0.0/24' }).getByTestId('group-only')).toHaveText('group only');
     await expect(page.getByRole('row').filter({ hasText: '10.20.2.0/24' }).getByTestId('group-only')).toHaveCount(0);
+    // REQ: API-013 (T24.32) — a network this node is directly on (a tagged VLAN interface) is badged, with its VLAN ID.
+    const vlan = page.getByRole('row').filter({ hasText: '198.51.100.0/24' });
+    await expect(vlan.getByTestId('this-node')).toHaveText('this node');
+    await expect(vlan).toContainText('eth0.100');
+    await expect(vlan).toContainText('100');
+    await expect(page.getByRole('row').filter({ hasText: '192.168.20.0/24' }).getByTestId('this-node')).toHaveCount(0);
   } finally {
     await page.unroute('**/api/v1/networks');
     await page.unroute('**/api/v1/dhcp/leases');
