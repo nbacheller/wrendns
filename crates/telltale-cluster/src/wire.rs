@@ -211,6 +211,25 @@ pub struct Heartbeat {
     /// the flag a peer already holds stays.
     #[prost(bool, optional, tag = "39")]
     pub primary: Option<bool>,
+    /// REQ: CLU-001 (ADR-960) — the members the sender has heard from within the `up` window, and
+    /// how long ago. A replica in manual failover has a stream only to its primary, so this is how
+    /// it learns that the other replicas are up. Absent from older nodes, which ignore the tag.
+    #[prost(message, repeated, tag = "41")]
+    pub peers: Vec<PeerHealth>,
+}
+
+/// REQ: CLU-001 (ADR-960) — what a node tells its peers about another member it hears from.
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct PeerHealth {
+    #[prost(string, tag = "1")]
+    pub node_id: String,
+    /// How long ago the sender last heard it, in milliseconds.
+    #[prost(uint64, tag = "2")]
+    pub age_ms: u64,
+    #[prost(bool, tag = "3")]
+    pub ready: bool,
+    #[prost(uint64, tag = "4")]
+    pub applied_seq: u64,
 }
 
 /// REQ: CLU-015 (ADR-903 §6) — a secrets head on the wire: the highest stamp and the BLAKE3

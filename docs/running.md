@@ -2030,15 +2030,17 @@ router, or small VM.
 # The token from `telltale cluster token create --witness` on the primary.
 telltale cluster join <token> --witness --advertise https://witness.lan:8443 -c witness.toml
 telltale cluster witness -c witness.toml      # run it as a service
-# On the primary, before the replicas join (or while the whole cluster is stopped), then start it:
+# On the primary (a running one adopts it with no restart):
 telltale cluster set-failover auto
 ```
-- **Turn it on before the replicas join.** The replicas adopt `auto` from the signed records as
-  soon as the primary publishes it, but a primary still in manual mode renews no lease, so a
-  replica can elect a new primary within seconds and depose the healthy one. The CLI prints a
-  warning when you run `set-failover auto`. If you have to change it under a running cluster,
-  restart the primary straight after the change: a replica waits one lease period (15 s) before it
-  can stand, and a restarted primary stands at once and takes its lease.
+- **Turning it on needs no restart, and the order doesn't matter.** Run `set-failover auto` on
+  the primary of a running cluster at any time: the primary takes the mode up within a second,
+  signs it into its next record, and renews its lease at once, in the epoch it already has. A
+  replica stands for election only after it has seen a lease from the primary and that lease has
+  lapsed, so a primary that has just adopted `auto` is not deposed, and a replica that has never
+  seen a lease (the cluster has only just turned `auto` on) waits for one. A replica that sees no
+  lease at all (for example `auto` was set while the primary was already down) doesn't stand; promote
+  one by hand with `set-failover manual`, `promote`, then `set-failover auto` again.
 - **How it decides:** every eligible node and witness is a voter. The primary renews a 15 s
   *lease* with a majority every 5 s, and publishes only while the lease holds. If it disappears,
   the eligible nodes wait for the lease to run out, and one is elected by a majority vote in a

@@ -186,19 +186,32 @@ pub async fn run(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
     let mut tick = tokio::time::interval(TICK);
     let mut id = cluster.identity.reload();
     let mut reloaded = tokio::time::Instant::now();
+    let mut stamp = meta_stamp(&cluster);
     loop {
         let reply = tokio::select! {
             _ = stop.changed() => return,
             _ = tick.tick() => None,
             Some(r) = rx.recv() => Some(r),
         };
-        if reloaded.elapsed() >= RELOAD {
+        // REQ: CLU-005 (ADR-960) — a change to `cluster.json` (`set-failover`, a signed record
+        // adopted from the primary) is taken up on this tick, not at the next reload: a running
+        // primary starts renewing its lease within one tick of the mode turning `auto`.
+        let now_stamp = meta_stamp(&cluster);
+        if reloaded.elapsed() >= RELOAD || now_stamp != stamp {
             id = cluster.identity.reload();
             reloaded = tokio::time::Instant::now();
+            stamp = now_stamp;
         }
         let outs = step(&cluster, &id, reply, now_ms());
         dispatch(&cluster, &id, outs, &tx);
     }
+}
+
+/// When `cluster.json` last changed (one `stat` per tick, on the cluster task).
+fn meta_stamp(cluster: &Cluster) -> Option<std::time::SystemTime> {
+    std::fs::metadata(cluster.identity.dir.join("cluster.json"))
+        .and_then(|m| m.modified())
+        .ok()
 }
 
 /// One turn of the election, under its lock: returns what to send and do.
@@ -234,13 +247,23 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
         if !cluster.is_primary() {
             el.defer_first_try(now + LEASE_MS);
         }
-        // A primary that restarts resumes its epoch if its own ballot is for it.
+        // REQ: CLU-005 (ADR-960) — a node stands only after it has seen a lease from another
+        // primary lapse. A primary that never held a lease under `auto` is never deposed.
+        el.stand_only_after_a_lease();
+        // A primary resumes its epoch whenever its election starts: after a restart, and when
+        // `auto` is turned on under it while it runs. It renews at once and writes again once a
+        // majority grants it. A primary that is stale (a newer epoch exists) is refused by the
+        // voters and steps down, as in any election.
         let (role, epoch) = cluster.role();
-        if role == Role::Primary
-            && el.ballot.epoch == epoch
-            && el.ballot.candidate == id.meta.node_id
-        {
+        if matches!(role, Role::Primary | Role::Emergency) && epoch > 0 && can_lead {
             el.resume(epoch);
+            // The primary was writing in manual mode; it pauses for the first round (a lease it
+            // never held can't be assumed) and says so once, not as a lost lease.
+            cluster.begin_lease();
+            info!(
+                epoch,
+                "cluster: this primary adopts automatic failover and renews its lease"
+            );
         }
         info!(voters = el.voters.len(), can_lead, "automatic failover on");
         *guard = Some(el);

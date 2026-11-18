@@ -784,6 +784,46 @@ pub struct Cluster {
     /// (Unix ms; 0: none yet). Kept after the primary leaves the member list, so a silence counts
     /// from when the primary was last heard, not from process start. See `primary_silent_secs`.
     primary_heard_ms: AtomicU64,
+    /// REQ: CLU-001 (ADR-960) — members this node has no stream to, as its peers last reported them.
+    relayed: Mutex<HashMap<String, RelayedMember>>,
+}
+
+/// REQ: CLU-001 (ADR-960) — a member another node hears from and this one doesn't (a replica in
+/// manual failover has a stream only to its primary): when a peer last heard it, on this node's
+/// wall clock (Unix ms), and what that peer said of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayedMember {
+    pub node_id: String,
+    pub heard_ms: u64,
+    pub ready: bool,
+    pub applied_seq: u64,
+}
+
+impl RelayedMember {
+    /// Up when it was heard from within three heartbeats, like [`Member::up`].
+    pub fn up(&self, now_ms: u64) -> bool {
+        now_ms.saturating_sub(self.heard_ms)
+            <= 3 * u64::try_from(HEARTBEAT.as_millis()).unwrap_or(15_000)
+    }
+}
+
+/// The most members a heartbeat relays (a cluster is a handful of nodes; this bounds the frame).
+const MAX_RELAYED: usize = 64;
+
+/// REQ: CLU-001 (ADR-960) — the members to name in a heartbeat: those heard within the `up` window,
+/// with how long ago. Pure, so the rule is tested without a network.
+pub(crate) fn peer_health(members: &[Member], now_ms: u64) -> Vec<crate::wire::PeerHealth> {
+    members
+        .iter()
+        .filter(|m| m.up(now_ms))
+        .take(MAX_RELAYED)
+        .map(|m| crate::wire::PeerHealth {
+            node_id: m.node_id.clone(),
+            age_ms: now_ms.saturating_sub(m.last_seen_ms),
+            ready: m.ready,
+            applied_seq: m.applied_seq,
+        })
+        .collect()
 }
 
 /// What this node has applied from the primary (replica) or published (primary).
@@ -847,6 +887,7 @@ impl Cluster {
             handover_since_ms: AtomicU64::new(0),
             defer_since_ms: AtomicU64::new(0),
             primary_heard_ms: AtomicU64::new(0),
+            relayed: Mutex::new(HashMap::new()),
         })
     }
 
@@ -1051,6 +1092,14 @@ impl Cluster {
     /// primary whose lease holds.
     pub fn may_publish(&self) -> bool {
         self.lease_ok.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// REQ: CLU-005 (ADR-960) — a running primary that adopts automatic failover waits for its
+    /// first lease: publishing pauses without the "lease lapsed" warning and event, which are for a
+    /// lease that was held and lost.
+    pub(crate) fn begin_lease(&self) {
+        self.lease_ok
+            .store(false, std::sync::atomic::Ordering::Release);
     }
 
     pub(crate) fn set_lease_ok(&self, ok: bool) {
@@ -2010,6 +2059,50 @@ impl Cluster {
             .collect()
     }
 
+    /// REQ: CLU-001 (ADR-960) — members this node has no stream to, as its peers report them,
+    /// those heard from within the `up` window. A member this node is connected to is never here:
+    /// its own heartbeats are the better evidence.
+    pub fn relayed_members(&self) -> Vec<RelayedMember> {
+        let now = now_ms();
+        let members = self.members.lock().unwrap_or_else(PoisonError::into_inner);
+        let relayed = self.relayed.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut out: Vec<RelayedMember> = relayed
+            .values()
+            .filter(|r| r.up(now) && !members.get(&r.node_id).is_some_and(|m| m.up(now)))
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        out
+    }
+
+    /// REQ: CLU-001 (ADR-960) — notes what `from` reports of the members it hears, keeping for
+    /// each the newest report. This node's own entry and `from` itself are left out.
+    pub(crate) fn note_relayed(&self, from: &str, peers: &[crate::wire::PeerHealth], now_ms: u64) {
+        let me = self.identity.meta.node_id.clone();
+        let mut relayed = self.relayed.lock().unwrap_or_else(PoisonError::into_inner);
+        for p in peers.iter().take(MAX_RELAYED) {
+            if p.node_id == me || p.node_id == from {
+                continue;
+            }
+            let heard_ms = now_ms.saturating_sub(p.age_ms);
+            if relayed
+                .get(&p.node_id)
+                .is_some_and(|r| r.heard_ms >= heard_ms)
+            {
+                continue;
+            }
+            relayed.insert(
+                p.node_id.clone(),
+                RelayedMember {
+                    node_id: p.node_id.clone(),
+                    heard_ms,
+                    ready: p.ready,
+                    applied_seq: p.applied_seq,
+                },
+            );
+        }
+    }
+
     /// A peer's recent host samples, oldest first (T6.11).
     pub fn host_history(&self, node_id: &str) -> Vec<crate::wire::HostStats> {
         self.host_history
@@ -2151,6 +2244,7 @@ impl Cluster {
                 drill_since_ms: l.drill.as_ref().map_or(0, |d| d.since_ms),
                 drill_until_ms: l.drill.as_ref().map_or(0, |d| d.until_ms),
                 primary_silent_s: self.primary_silent_secs(now_ms()),
+                peers: peer_health(&self.members(), now_ms()),
                 secrets_head: head_to_wire(l.secrets.head.as_ref()),
                 secrets_applied: head_to_wire(l.secrets.applied.as_ref()),
                 secrets_unreadable: l.secrets.unreadable,
@@ -2395,6 +2489,7 @@ impl Cluster {
                     };
                     self.event(kind, &id, detail);
                 }
+                self.note_relayed(&id, &hb.peers, now);
                 self.observe_epoch(hb.epoch, &id);
                 return Ok(());
             }

@@ -18,7 +18,11 @@
 #      40 s later, the other follows, DNS on both survivors keeps answering (0 SERVFAIL), an edit on
 #      the new primary reaches the other survivor, and the killed node, started again, steps down;
 #   i. a rolling restart of each node in turn keeps at least two nodes answering DNS throughout.
-# Automatic failover is on from the bring-up (before the replicas join; see docs/running.md).
+# And, between a and b, a2: in manual failover each replica reports the other as up (relayed by the
+# primary), then `set-failover auto` on the running primary is adopted with no restart: it holds a
+# lease, keeps its role and its epoch, and no replica stands for 45 s.
+# Automatic failover is turned on after the replicas join, under the running cluster (a2): the
+# primary adopts it without a restart and no replica deposes it (T21.7, ADR-960).
 #
 # It never touches the single-node bundle (deploy/docker-desktop): its own compose project
 # (telltale-cluster3), its own volumes, and host ports 2153-2353 (DNS), 8153-8353 (API), 9163-9363
@@ -166,17 +170,6 @@ step "bring-up: build the image and start the primary"
 "${COMPOSE[@]}" up -d --build --wait primary >"$E/up.log" 2>&1 || { cat "$E/up.log"; bad "the primary didn't come up healthy"; }
 pass
 
-step "bring-up: automatic failover on, before the replicas join (restart the primary to run it)"
-# The replicas adopt the mode from the signed records at once, but a primary still in manual mode
-# renews no lease, so turning it on under a running cluster lets a replica be elected within seconds
-# (the CLI warns about it). Here it is on before any replica exists; the restart makes the running
-# primary use it.
-"${COMPOSE[@]}" exec -T primary /usr/local/bin/telltale cluster set-failover auto -c /etc/telltale/telltale.toml >/dev/null \
-  || bad "couldn't turn automatic failover on"
-"${COMPOSE[@]}" restart primary >/dev/null 2>&1 || bad "the primary didn't restart"
-"${COMPOSE[@]}" up -d --wait primary >/dev/null 2>&1 || bad "the primary didn't come back healthy after the restart"
-pass
-
 step "a. the three nodes join; the primary lists three connected nodes"
 TOKEN=$(join_token)
 [ -n "$TOKEN" ] || bad "no join token from the primary"
@@ -199,6 +192,48 @@ for n in replica-a replica-b; do
 done
 [ "$(connected_count primary)" = 3 ] || bad "the primary doesn't list three connected nodes"
 pass "$(connected_count primary) connected nodes"
+
+step "a2. automatic failover is turned on under the running cluster: no restart, no deposition"
+# Manual mode first: a replica has a stream only to its primary, and reports the other replica up
+# from the heartbeats the primary relays (T21.5 open (1)).
+for n in replica-a replica-b; do
+  ok=
+  for _ in $(seq 60); do
+    call "$n" GET /api/v1/cluster
+    [ "$(jget 'next((str(c["ok"]) for c in d["checks"] if c["id"] == "peers_up"), "")')" = True ]       && [ "$(jget 'sum(1 for x in d["nodes"] if x["up"])')" = 3 ] && { ok=1; break; }
+    sleep 1
+  done
+  [ -n "$ok" ] || bad "$n doesn't report all three nodes up in manual mode: $(jget '[(x["site"], x["up"], x["link"]) for x in d["nodes"]]')"
+done
+epoch0=$(metric "${MET[primary]}" telltale_cluster_epoch)
+[ "$(metric "${MET[primary]}" telltale_cluster_primary)" = 1 ] || bad "the primary isn't primary before the switch"
+"${COMPOSE[@]}" exec -T primary /usr/local/bin/telltale cluster set-failover auto -c /etc/telltale/telltale.toml >/dev/null   || bad "couldn't turn automatic failover on"
+for n in "${NODES[@]}"; do
+  ok=
+  for _ in $(seq 60); do
+    [ "$(metric "${MET[$n]}" telltale_cluster_failover_auto)" = 1 ] && { ok=1; break; }
+    sleep 0.5
+  done
+  [ -n "$ok" ] || bad "$n never adopted automatic failover"
+done
+ok=
+for _ in $(seq 40); do
+  [ "$(metric "${MET[primary]}" telltale_cluster_lease_held)" = 1 ] && { ok=1; break; }
+  sleep 0.5
+done
+[ -n "$ok" ] || bad "the running primary never held a lease after the switch"
+# 45 s: longer than a replica's wait (15 s) plus a lease (15 s). The primary stays primary, in the
+# same epoch, with its lease; the replicas never become primary.
+for i in $(seq 45); do
+  [ "$(metric "${MET[primary]}" telltale_cluster_primary)" = 1 ] || bad "the primary was deposed ($i s after the switch)"
+  [ "$(metric "${MET[primary]}" telltale_cluster_epoch)" = "$epoch0" ] || bad "the epoch moved ($i s after the switch)"
+  for n in replica-a replica-b; do
+    [ "$(metric "${MET[$n]}" telltale_cluster_primary)" = 0 ] || bad "$n stood for election ($i s after the switch)"
+  done
+  sleep 1
+done
+[ "$(metric "${MET[primary]}" telltale_cluster_lease_held)" = 1 ] || bad "the primary's lease isn't held after 45 s"
+pass "epoch $epoch0 kept; the primary holds its lease"
 
 step "b. a config edit on the primary answers on all three nodes' DNS within 5 s"
 put_json rec-ok.json '{"records":[{"type":"A","value":"10.0.0.1"}]}'
