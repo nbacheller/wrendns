@@ -146,6 +146,8 @@ impl Runtime {
     /// REQ: DSC-001 (ADR-928) — reconciles run one at a time, and a reconcile whose `generation` is
     /// older than the newest applied one is skipped: two quick reloads (on, then off) can't leave
     /// the inventory running when the configuration says off.
+    // REQ: DSC-009 - `shared` is the one new input: the router poll's hand-over to the reads.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn reconcile(
         &self,
         generation: u64,

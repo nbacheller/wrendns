@@ -68,6 +68,8 @@ pub(crate) const HA_ENTITYLESS_TEMPLATE: &str = r"{%- set ns = namespace(devices
 {{ {'devices': ns.devices} | tojson }}";
 
 /// What the thread reads, from `[discovery]`.
+// The four flags are the four settings, not a state machine.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReadsConfig {
     pub(crate) client_fields: bool,
@@ -90,7 +92,7 @@ impl ReadsConfig {
     }
 
     /// Whether any UniFi read beyond the poll is on.
-    pub(crate) fn any_unifi(&self) -> bool {
+    pub(crate) fn any_unifi(self) -> bool {
         self.client_fields || self.all_users || self.devices
     }
 }
@@ -110,6 +112,8 @@ pub(crate) struct ReadsInput {
 // -- parsing (pure) --------------------------------------------------------------------------
 
 /// A JSON number, or a string holding one.
+// The float arm is guarded (finite and not negative), and a whole-number float is all a console sends.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn num(v: &Value, key: &str) -> Option<u64> {
     let x = v.get(key)?;
     x.as_u64()
@@ -142,8 +146,10 @@ fn v4_of(row: &Value, keys: &[&str]) -> Option<Ipv4Addr> {
 }
 
 fn mac_text(m: [u8; 6]) -> String {
-    let [a, b, c, d, e, f] = m;
-    format!("{a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{f:02x}")
+    m.iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// What one read produced.
@@ -346,9 +352,9 @@ pub(crate) fn devices(v: &Value, router: &str, now: u64) -> Parsed {
         }
     }
     // A stable order, so the same answer gives the same observations.
-    let mut placed: Vec<([u8; 6], Place)> = places.into_iter().collect();
-    placed.sort_by_key(|(m, _)| *m);
-    for (mac, place) in placed {
+    let mut ordered: Vec<([u8; 6], Place)> = places.into_iter().collect();
+    ordered.sort_by_key(|(m, _)| *m);
+    for (mac, place) in ordered {
         let mut o = Observation::new(Source::Router, place.seen);
         o.mac = Some(mac);
         o.port = Some(place.port);

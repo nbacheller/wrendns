@@ -2,6 +2,7 @@
 //! are in the test names (`dsc_009_...`). The console is an in-process fake that speaks HTTP on
 //! 127.0.0.1; nothing here reaches a real device.
 #![allow(
+    clippy::similar_names,
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
     clippy::panic,
@@ -111,7 +112,7 @@ fn dsc_009_alluser_history_never_current() {
     let mut again = Inventory::new(0);
     again.apply(&p.observations, NOW);
     again.expire_source(Source::History, NOW + 1, 0);
-    assert!(entry(&again, B).addrs.is_empty());
+    assert_eq!(entry(&again, B).addrs.len(), 0);
 }
 
 /// REQ: DSC-009 (`dsc_009_device_mac_table_locations`) — `stat/device`: the devices as infrastructure
