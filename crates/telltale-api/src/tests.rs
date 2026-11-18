@@ -8,6 +8,7 @@ use tower::ServiceExt;
 use super::*;
 
 mod obs_901_map;
+mod obs_902_geoip;
 
 /// Records what it was asked for; returns fixed data.
 #[derive(Default)]
@@ -23,6 +24,9 @@ struct Fake {
     paused: Mutex<Option<u32>>,
     /// REQ: OBS-901 — the map's settings (`None`: no map) and what every node reports.
     map: Mutex<(Option<crate::map::MapSettings>, crate::map::MapParts)>,
+    /// REQ: OBS-902 - the GeoIP database's status (`None`: this backend keeps none) and the
+    /// countries it answers by address.
+    geoip: Mutex<Option<(crate::model::GeoipStatus, Vec<(std::net::IpAddr, String)>)>>,
 }
 
 /// The one finding the fake reports.
@@ -60,6 +64,48 @@ impl Backend for Fake {
     }
     fn map_parts(&self) -> crate::map::MapParts {
         self.map.lock().unwrap().1.clone()
+    }
+    // REQ: OBS-902 (T26.4) - the GeoIP database the test sets up.
+    fn geoip_status(&self) -> Option<crate::model::GeoipStatus> {
+        self.geoip.lock().unwrap().as_ref().map(|g| g.0.clone())
+    }
+    fn geoip_update(&self) -> Result<crate::model::GeoipStatus, Problem> {
+        self.seen.lock().unwrap().push("geoip update".into());
+        self.geoip_status()
+            .ok_or_else(|| Problem::not_found("no database"))
+    }
+    fn geoip_delete(&self) -> Result<crate::model::GeoipStatus, Problem> {
+        self.seen.lock().unwrap().push("geoip delete".into());
+        self.geoip_status()
+            .ok_or_else(|| Problem::not_found("no database"))
+    }
+    fn geoip_locate(&self, ips: &[std::net::IpAddr]) -> crate::map::GeoAnswer {
+        let g = self.geoip.lock().unwrap();
+        let Some((status, table)) = g.as_ref() else {
+            return crate::map::GeoAnswer::default();
+        };
+        if !status.enabled {
+            return crate::map::GeoAnswer::default();
+        }
+        if status.state != "ready" {
+            return crate::map::GeoAnswer {
+                state: crate::map::GeoState::Missing,
+                ..crate::map::GeoAnswer::default()
+            };
+        }
+        crate::map::GeoAnswer {
+            state: crate::map::GeoState::Ready,
+            home: Some("NL".into()),
+            countries: ips
+                .iter()
+                .map(|ip| {
+                    table
+                        .iter()
+                        .find(|(a, _)| crate::map::prefix_of(*a) == crate::map::prefix_of(*ip))
+                        .map(|(_, c)| c.clone())
+                })
+                .collect(),
+        }
     }
     // REQ: API-007 (T24.18) — the test backend discards any plan (a real one answers 404 for a plan
     // it doesn't hold; the idempotency test needs a first answer that succeeds).
@@ -1738,8 +1784,9 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // /map/health and /map-settings/default (T26.2); 149 with API-016's /oidc-providers and
     // /oidc-providers/{id} (T23.10); 153 with API-016's /sinks, /sinks/{name}, /otlp and
     // /otlp/default (T23.11); 158 with API-902's /guarded, /guarded/{id},
-    // /guarded/{id}/preview, /guarded/pending/{id}/confirm and /guarded/pending/{id}/cancel (T27.13).
-    assert_eq!(paths.len(), 158);
+    // /guarded/{id}/preview, /guarded/pending/{id}/confirm and /guarded/pending/{id}/cancel (T27.13);
+    // 160 with OBS-902's /map/geoip and /map/geoip/update (T26.4).
+    assert_eq!(paths.len(), 160);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

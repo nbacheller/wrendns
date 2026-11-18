@@ -6631,6 +6631,90 @@
         }
       }
     },
+    "/api/v1/map/geoip": {
+      "get": {
+        "tags": [
+          "map"
+        ],
+        "summary": "The GeoIP database.",
+        "description": "This node's country database for the world view: `enabled`, `state` (`off`, `missing`,\n`downloading`, `ready`, `failed`), the source's month, when it was built, its size, when the\nnext check is due and the last error's code. The database is never bundled and is downloaded\nonly after an admin turns `[map.geoip]` on; each node that serves the console keeps its own\ncopy. Change the settings with `PUT /map-settings/default` (admin), fetch now with `POST\n/map/geoip/update`, remove it with `DELETE /map/geoip`.",
+        "operationId": "get_geoip",
+        "responses": {
+          "200": {
+            "description": "The database's status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeoipStatus"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "This node has no GeoIP database (a resolver pod).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "map"
+        ],
+        "summary": "Delete the GeoIP database.",
+        "description": "Removes this node's copy (and its `.prev`). While `[map.geoip]` stays on nothing is fetched\nagain until an admin presses Update now or turns it off and on; the world view says\n`geoip_missing`. Admin only (never an agent); audited as `map.geoip.delete`.",
+        "operationId": "delete_geoip",
+        "responses": {
+          "200": {
+            "description": "The status after the delete.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeoipStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/map/geoip/update": {
+      "post": {
+        "tags": [
+          "map"
+        ],
+        "summary": "Fetch the GeoIP database now.",
+        "description": "Starts a download on this node, in the background, even when the day's check is not due (it\nalso lifts a \"Delete database\"). The status shows `downloading`, then `ready` or `failed` with\nthe error's code; a failed fetch keeps the old database. Admin only (never an agent); audited\nas `map.geoip.update`. 409 `conflict` when a fetch is running or the toggle is off.",
+        "operationId": "update_geoip",
+        "responses": {
+          "202": {
+            "description": "The fetch was started.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeoipStatus"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A fetch is running already, or `[map.geoip]` is off.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/map/health": {
       "get": {
         "tags": [
@@ -6749,7 +6833,7 @@
           "map"
         ],
         "summary": "Where answers point (world view).",
-        "description": "`available: false` with a `reason` when it can't be drawn: `geoip_off`, `geoip_missing`, or\n`address_not_recorded`. A lookup's answer address isn't kept yet (ADR-970), so until it is every\nlookup counts as `unlocated`.",
+        "description": "Countries with the rate, count and slow share of the answers that point there, and a marker\nfor each upstream whose address has a country. `available: false` with a `reason` when\nanswers can't be placed: `geoip_off` or `geoip_missing` (the GeoIP database, `GET\n/map/geoip`), `address_not_recorded` (the lookup's answer address isn't kept yet, ADR-970: the\nupstream `markers` are then where the upstreams are, not where answers point) or `privacy`\n(level 3 keeps nothing per event). `unlocated` counts the answers with no place: failed,\nblocked and local ones, and prefixes with no country. Countries come from the database of the\nnode that answers.",
         "operationId": "get_world",
         "responses": {
           "200": {
@@ -16797,6 +16881,75 @@
         },
         "additionalProperties": false
       },
+      "GeoipStatus": {
+        "type": "object",
+        "description": "REQ: OBS-902 (T26.4, ADR-959 section 6) - this node's GeoIP database: whether it is on, what\nit holds, and how the last fetch went. Everyone who can see the map sees it.",
+        "required": [
+          "enabled",
+          "state",
+          "rows",
+          "sizeBytes",
+          "old",
+          "attribution"
+        ],
+        "properties": {
+          "attribution": {
+            "type": "string",
+            "description": "The attribution the database's licence (CC BY 4.0) asks for."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "`[map.geoip] enabled`."
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A stable code (`digest_mismatch`, `overlapping_ranges`, `not_found`, ...), never a\nresponse body."
+          },
+          "nextCheckAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the next check is due (a check runs at most once a day)."
+          },
+          "old": {
+            "type": "boolean",
+            "description": "The database is more than 90 days old (it still works)."
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Rows of the source file.",
+            "minimum": 0
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sourceMonth": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The month of the database's source, `YYYY-MM`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`off`, `missing` (on, with no database on this node yet), `downloading`, `ready` or\n`failed` (the last attempt was not accepted: `lastError` says why, and the previous\ndatabase, if any, is kept)."
+          },
+          "updatedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When this node built the database."
+          }
+        }
+      },
       "GroupInfo": {
         "type": "object",
         "description": "A client group.",
@@ -21837,14 +21990,23 @@
         "required": [
           "available",
           "updatedAt",
+          "windowSecs",
           "regions",
           "markers",
+          "unplacedUpstreams",
           "unlocated"
         ],
         "properties": {
           "available": {
             "type": "boolean",
-            "description": "False when it can't be drawn; `reason` says why: `geoip_off`, `geoip_missing` or\n`address_not_recorded` (the lookup's answer address isn't kept: ADR-970)."
+            "description": "True when answers are placed (`regions`). False when they can't be: `reason` says why\n(`geoip_off`, `geoip_missing`, `address_not_recorded` or `privacy`). With\n`address_not_recorded` the upstream `markers` are still there: they are where the\nupstreams are, not where answers point (the lookup's answer address isn't kept: ADR-970)."
+          },
+          "homeCountry": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The country arcs start from (`[map.geoip] home_country`); unset: \"Your network\"."
           },
           "markers": {
             "type": "array",
@@ -21867,8 +22029,18 @@
           "unlocated": {
             "$ref": "#/components/schemas/WorldUnlocated"
           },
+          "unplacedUpstreams": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Upstreams with no place on the map (a host name, or an address with no country).",
+            "minimum": 0
+          },
           "updatedAt": {
             "type": "string"
+          },
+          "windowSecs": {
+            "type": "number",
+            "format": "double"
           }
         }
       },
@@ -27044,7 +27216,8 @@
         ],
         "properties": {
           "cc": {
-            "type": "string"
+            "type": "string",
+            "description": "The two-letter country code."
           },
           "count": {
             "type": "integer",
@@ -27055,7 +27228,8 @@
             "$ref": "#/components/schemas/MapHealth"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "The code again: the console writes the country's name."
           },
           "qps": {
             "type": "number",

@@ -293,17 +293,21 @@ fn part(node: &str, entries: Vec<Entry>) -> MapPart {
                 id: 1,
                 name: "quad9".into(),
                 breaker: "closed".into(),
+                ip: None,
             },
             PartUpstream {
                 id: 2,
                 name: "cloudflare".into(),
                 breaker: "closed".into(),
+                ip: None,
             },
         ],
         level: "healthy".into(),
         reasons: Vec::new(),
         groups: vec!["default".into(), "kids".into()],
         anomalous: Vec::new(),
+        answers_recorded: false,
+        answers: Vec::new(),
     }
 }
 
@@ -955,29 +959,202 @@ fn obs_901_network_health_summary() {
     );
 }
 
-/// Until the answer address is recorded, the world view says so and counts every lookup as
-/// unlocated.
-#[test]
-fn obs_901_world_is_unavailable_without_addresses() {
-    let parts = MapParts {
-        parts: vec![part(
-            "pi1",
-            vec![entry(
-                client(7),
-                AnswerKind::Cache,
-                0,
-                counts(30, 300, 0, 0, 0),
-            )],
-        )],
+// ---------------------------------------------------------------------------------------------
+// The world view (OBS-902, T26.5)
+
+/// A GeoIP lookup from a table of /24 and /48 prefixes: `prefix -> country`; the markers' addresses
+/// are looked up by their own address.
+fn geo(table: &'static [(&'static str, &'static str)]) -> impl Fn(&[IpAddr]) -> GeoAnswer {
+    move |ips: &[IpAddr]| GeoAnswer {
+        state: GeoState::Ready,
+        home: Some("NL".into()),
+        countries: ips
+            .iter()
+            .map(|ip| {
+                table
+                    .iter()
+                    .find(|(p, _)| p.parse::<IpAddr>().is_ok_and(|p| prefix_of(p) == prefix_of(*ip)))
+                    .map(|(_, cc)| (*cc).to_owned())
+            })
+            .collect(),
+    }
+}
+
+const TABLE: &[(&str, &str)] = &[
+    ("93.184.216.0", "us"),
+    ("151.101.1.0", "US"),
+    ("2606:4700::", "US"),
+    ("185.60.216.0", "IE"),
+    ("1.1.1.0", "AU"),
+];
+
+fn answer(addr: &str, weighted: u64, sampled: u64, slow: u64) -> AnswerPrefix {
+    AnswerPrefix {
+        addr: addr.parse().unwrap(),
+        weighted,
+        sampled,
+        slow,
+    }
+}
+
+fn world_parts(answers: Vec<Vec<AnswerPrefix>>) -> MapParts {
+    MapParts {
+        parts: answers
+            .into_iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let mut p = part(
+                    &format!("pi{i}"),
+                    vec![entry(client(7), AnswerKind::Upstream, 1, counts(30, 300, 0, 0, 0))],
+                );
+                p.answers_recorded = true;
+                p.answers = a;
+                p
+            })
+            .collect(),
         missing: vec![],
         unseen: Vec::new(),
         pending: Vec::new(),
-    };
-    let w = world_unavailable(&parts, 1_791_072_000);
+    }
+}
+
+/// REQ: OBS-902 (T26.5, ADR-958 section 6) - the same prefix on two nodes adds, a /24 and an address
+/// in it are one prefix, countries add up across prefixes, and the answering node's lookup places
+/// them (uppercased). What no country knows is unlocated.
+#[test]
+fn obs_902_world_merges_prefixes_across_nodes() {
+    let parts = world_parts(vec![
+        vec![
+            answer("93.184.216.34", 100, 10, 10),
+            answer("151.101.1.69", 60, 6, 0),
+            answer("10.9.9.9", 5, 1, 0),
+        ],
+        vec![
+            answer("93.184.216.99", 40, 4, 0),
+            answer("2606:4700::1111", 30, 3, 3),
+            answer("185.60.216.35", 20, 2, 0),
+        ],
+    ]);
+    let w = world(&parts, &th(), 1_791_072_000, &geo(TABLE));
+    assert!(w.available, "{w:?}");
+    assert_eq!(w.reason, None);
+    assert_eq!(w.home_country.as_deref(), Some("NL"));
+    let by: BTreeMap<&str, &WorldRegion> = w.regions.iter().map(|r| (r.cc.as_str(), r)).collect();
+    // 93.184.216.0/24 (100 + 40), 151.101.1.0/24 (60) and 2606:4700::/48 (30) are all the US.
+    assert_eq!(by["US"].count, 230);
+    assert_eq!(by["IE"].count, 20);
+    assert!(!by.contains_key("AU"), "no answer pointed there");
+    // 600 lookups sampled over the two nodes (300 each); 250 placed, 5 + 345 not.
+    assert_eq!(w.unlocated.count, 600 - 250);
+    // Ranked busiest first; the rate is per second over the 60 s window.
+    assert_eq!(w.regions[0].cc, "US");
+    assert!((by["US"].qps - 3.83).abs() < 0.01, "{}", by["US"].qps);
+    // 13 of the 230 US answers were slow: 5.7%, under the 10% line, so green.
+    assert!((by["US"].slow_pct - 5.7).abs() < 0.05, "{}", by["US"].slow_pct);
+    assert_eq!(by["US"].health, MapHealth::Green);
+    // The same prefixes on one node alone give the half of the sums.
+    let one = world(&world_parts(vec![vec![answer("93.184.216.34", 100, 20, 10)]]), &th(), 0, &geo(TABLE));
+    assert_eq!(one.regions[0].count, 100);
+    // 10 of 100 slow is the line: yellow.
+    assert_eq!(one.regions[0].health, MapHealth::Yellow);
+    // Few real answers: idle, not green.
+    let thin = world(&world_parts(vec![vec![answer("1.1.1.9", 500, 2, 0)]]), &th(), 0, &geo(TABLE));
+    assert_eq!(thin.regions[0].health, MapHealth::Idle);
+    // The cap: more than 256 prefixes keep the busiest.
+    let many: Vec<AnswerPrefix> = (0u32..300)
+        .map(|i| answer(&format!("{}.{}.7.1", 20 + i / 256, i % 256), 1000 - u64::from(i), 20, 0))
+        .collect();
+    let seen = std::sync::Mutex::new(0usize);
+    let capped = world(&world_parts(vec![many]), &th(), 0, &|ips: &[IpAddr]| {
+        *seen.lock().unwrap() = ips.len();
+        GeoAnswer {
+            state: GeoState::Ready,
+            home: None,
+            countries: ips.iter().map(|_| Some("DE".to_owned())).collect(),
+        }
+    });
+    assert_eq!(*seen.lock().unwrap(), MAX_PREFIXES, "256 prefixes and no upstream address");
+    assert_eq!(capped.regions[0].cc, "DE");
+    assert_eq!(capped.regions[0].count, (1000 - 255..=1000).sum::<u64>());
+}
+
+/// REQ: OBS-902 (T26.5, ADR-958 section 7) - at privacy level 3 nothing per event is kept, so every
+/// answer is unlocated (`privacy`) and the addresses are not even looked up; levels 0 to 2 place
+/// answers (an address says nothing about a device).
+#[test]
+fn obs_902_world_excludes_private_levels() {
+    for level in 0u8..=3 {
+        let mut parts = world_parts(vec![vec![answer("93.184.216.34", 100, 10, 0)]]);
+        parts.parts[0].window.privacy = level;
+        let asked = std::sync::Mutex::new(Vec::new());
+        let locate = |ips: &[IpAddr]| {
+            asked.lock().unwrap().extend_from_slice(ips);
+            geo(TABLE)(ips)
+        };
+        let w = world(&parts, &th(), 0, &locate);
+        if level >= 3 {
+            assert!(!w.available, "level {level}");
+            assert_eq!(w.reason.as_deref(), Some("privacy"));
+            assert!(w.regions.is_empty());
+            assert_eq!(w.unlocated.count, 300);
+            assert_eq!(w.unlocated.reason.as_deref(), Some("privacy"));
+            assert!(
+                !asked.lock().unwrap().contains(&"93.184.216.34".parse().unwrap()),
+                "no answer address is looked up at level {level}"
+            );
+        } else {
+            assert!(w.available, "level {level}: {w:?}");
+            assert_eq!(w.regions[0].cc, "US");
+        }
+    }
+}
+
+/// REQ: OBS-902 (T26.5) - without a database the view says why: off, or missing; and it asks the
+/// database nothing it cannot answer. While the answer address isn't recorded (ADR-970) it says
+/// `address_not_recorded` and still has the upstream markers.
+#[test]
+fn obs_902_world_states_and_markers() {
+    let mut parts = world_parts(vec![vec![]]);
+    parts.parts[0].answers_recorded = false;
+    parts.parts[0].upstreams[0].ip = Some("93.184.216.34".parse().unwrap());
+    parts.parts[0].upstreams[1].ip = Some("10.0.0.53".parse().unwrap());
+    // Off and missing: the state decides, nothing is placed, nothing is drawn.
+    for (state, reason) in [(GeoState::Off, "geoip_off"), (GeoState::Missing, "geoip_missing")] {
+        let st = state.clone();
+        let w = world(&parts, &th(), 0, &move |_| GeoAnswer {
+            state: st.clone(),
+            ..GeoAnswer::default()
+        });
+        assert!(!w.available);
+        assert_eq!(w.reason.as_deref(), Some(reason));
+        assert!(w.markers.is_empty() && w.regions.is_empty());
+        assert_eq!(w.unlocated.count, 300);
+    }
+    // Ready but the address is not recorded: markers only, unavailable for answers.
+    let w = world(&parts, &th(), 0, &geo(TABLE));
     assert!(!w.available);
     assert_eq!(w.reason.as_deref(), Some("address_not_recorded"));
+    assert_eq!(w.markers.len(), 1, "{:?}", w.markers);
+    assert_eq!(w.markers[0].name, "quad9");
+    assert_eq!(w.markers[0].cc.as_deref(), Some("US"));
+    assert_eq!(w.unplaced_upstreams, 1, "the private address has no country");
+    assert!(w.regions.is_empty());
     assert_eq!(w.unlocated.count, 300);
-    assert!(w.regions.is_empty() && w.markers.is_empty());
+    assert_eq!(w.unlocated.reason.as_deref(), Some("address_not_recorded"));
+    // An open breaker makes the marker red.
+    parts.parts[0].upstreams[0].breaker = "open".into();
+    let w = world(&parts, &th(), 0, &geo(TABLE));
+    assert_eq!(w.markers[0].health, MapHealth::Red);
+}
+
+/// An address maps to its /24 or /48.
+#[test]
+fn obs_902_prefix_of() {
+    assert_eq!(prefix_of("93.184.216.34".parse().unwrap()), "93.184.216.0".parse::<IpAddr>().unwrap());
+    assert_eq!(
+        prefix_of("2606:4700:4700:1:2:3:4:1111".parse().unwrap()),
+        "2606:4700:4700::".parse::<IpAddr>().unwrap()
+    );
 }
 
 /// REQ: OBS-901 (ADR-971) — a member the relay reports up but this node can't reach is an idle

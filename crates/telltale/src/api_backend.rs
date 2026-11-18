@@ -5444,20 +5444,14 @@ fn plan_singleton(
     let mut entries = crate::managed::entries(state);
     // REQ: OBS-902 (T26.4, ADR-959 section 2) - a `[map]` body that leaves out `geoip` keeps the
     // section in effect (it is an admin's, and a thresholds form doesn't carry it).
-    let kept;
-    let body = if w.kind == ManagedKind::Map
-        && let Some(b) = w.body.as_ref()
-        && b.is_object()
-        && b.get("geoip").is_none()
-    {
-        let now = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
-        let mut b = b.clone();
-        b["geoip"] = serde_json::to_value(&now.map.geoip).unwrap_or_default();
-        kept = b;
-        Some(&kept)
-    } else {
-        w.body.as_ref()
-    };
+    let kept = (w.kind == ManagedKind::Map)
+        .then(|| w.body.as_ref())
+        .flatten()
+        .and_then(|b| {
+            let now = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
+            map_body_keeping_geoip(b, &now.map.geoip)
+        });
+    let body = kept.as_ref().or(w.body.as_ref());
     let change = singleton_change(w.kind, &file, &mut entries, body)?;
     // REQ: OBS-902 (T26.4) - the GeoIP settings are admin-only (ADR-914): an operator's change
     // to them is 403 naming the field, and an agent never makes it.
@@ -5484,6 +5478,20 @@ fn plan_singleton(
         candidate: change.merged,
         redirect: None,
     })
+}
+
+/// REQ: OBS-902 (T26.4, ADR-959 section 2) - a `[map]` body without `geoip`, with the section in
+/// effect put in; `None` when the body names it (or is not an object).
+fn map_body_keeping_geoip(
+    body: &serde_json::Value,
+    current: &telltale_config::MapGeoipConfig,
+) -> Option<serde_json::Value> {
+    if !body.is_object() || body.get("geoip").is_some() {
+        return None;
+    }
+    let mut b = body.clone();
+    b["geoip"] = serde_json::to_value(current).unwrap_or_default();
+    Some(b)
 }
 
 /// ADR-069 — one kind's change: returns (the entry before, the body to store).
@@ -7450,6 +7458,85 @@ mod ratelimit_tests {
         let toml = keep_in_git(ManagedKind::Map, "default", Some(&after), Some(&after));
         let parsed: toml::Table = toml::from_str(&toml).unwrap();
         assert_eq!(parsed["map"]["event_rate"].as_integer(), Some(300));
+    }
+
+    /// REQ: OBS-902 (T26.4, ADR-959 section 2) - `[map.geoip]` is checked at the edge: the source
+    /// is HTTPS, a pin is a SHA-256, the home country is two letters; a body that leaves the section
+    /// out keeps the one in effect; and the section is kept in Git as a `[map.geoip]` table.
+    #[test]
+    fn obs_902_geoip_settings_validate_keep_and_render() {
+        let f = file("[map]
+event_rate = 300
+");
+        let mut entries = crate::managed::Entries::default();
+        for (bad, field) in [
+            (serde_json::json!({ "geoip": { "source_url": "http://mirror.lan/x.gz" } }), "map.geoip.source_url"),
+            (serde_json::json!({ "geoip": { "source_url": "https://user:pw@mirror.lan/x.gz" } }), "map.geoip.source_url"),
+            (serde_json::json!({ "geoip": { "source_url": "ftp://mirror.lan/x.gz" } }), "map.geoip.source_url"),
+            (serde_json::json!({ "geoip": { "sha256": "abc" } }), "map.geoip.sha256"),
+            (serde_json::json!({ "geoip": { "home_country": "NLD" } }), "map.geoip.home_country"),
+            (serde_json::json!({ "geoip": { "home_country": "N1" } }), "map.geoip.home_country"),
+            (serde_json::json!({ "geoip": { "turbo": true } }), "turbo"),
+        ] {
+            let e = singleton_change(ManagedKind::Map, &f, &mut entries, Some(&bad)).unwrap_err();
+            assert!(e.detail.contains(field), "{bad}: {}", e.detail);
+        }
+        let digest = "ab".repeat(32);
+        let on = singleton_change(
+            ManagedKind::Map,
+            &f,
+            &mut entries,
+            Some(&serde_json::json!({ "geoip": {
+                "enabled": true,
+                "source_url": "https://mirror.lan/geo.csv.gz",
+                "sha256": digest,
+                "home_country": "nl"
+            } })),
+        )
+        .unwrap();
+        let g = &on.merged.map.geoip;
+        assert!(g.enabled);
+        assert_eq!(g.source_url.as_ref().map(|u| u.as_str()), Some("https://mirror.lan/geo.csv.gz"));
+        assert_eq!(on.after["geoip"]["enabled"], true);
+        assert_eq!(on.before["geoip"]["enabled"], false);
+        // A body that leaves `geoip` out keeps the section in effect; one that names it does not.
+        let body = serde_json::json!({ "event_rate": 400 });
+        let kept = map_body_keeping_geoip(&body, g).unwrap();
+        assert_eq!(kept["geoip"]["source_url"], "https://mirror.lan/geo.csv.gz");
+        assert_eq!(kept["event_rate"], 400);
+        assert!(map_body_keeping_geoip(&serde_json::json!({ "geoip": {} }), g).is_none());
+        assert!(map_body_keeping_geoip(&serde_json::json!([1]), g).is_none());
+        // Kept in Git as the nested table.
+        let toml = keep_in_git(ManagedKind::Map, "default", Some(&on.after), Some(&on.after));
+        let parsed: toml::Table = toml::from_str(&toml).unwrap();
+        assert_eq!(parsed["map"]["geoip"]["enabled"].as_bool(), Some(true), "{toml}");
+        assert_eq!(parsed["map"]["geoip"]["home_country"].as_str(), Some("nl"));
+    }
+
+    /// REQ: OBS-902 (T26.4, ADR-914) - an operator changing thresholds is fine; the same request
+    /// that changes `geoip` is 403 naming it; an agent never changes it; a node too old to say who
+    /// asked refuses it.
+    #[test]
+    fn obs_902_geoip_settings_are_admin_only() {
+        use telltale_api::auth::Role;
+        let before = serde_json::json!({ "event_rate": 200, "geoip": { "enabled": false } });
+        let same_geoip = serde_json::json!({ "event_rate": 500, "geoip": { "enabled": false } });
+        let changed = serde_json::json!({ "event_rate": 200, "geoip": { "enabled": true } });
+        let check = |after: &serde_json::Value, role, agent: Option<&str>| {
+            crate::settings_kinds::check_admin_fields(ManagedKind::Map, &before, after, role, agent)
+        };
+        for role in [Role::Viewer, Role::Operator, Role::Admin] {
+            assert!(check(&same_geoip, Some(role), None).is_ok(), "{role:?}: thresholds are the ordinary role's");
+        }
+        assert!(check(&same_geoip, Some(Role::Operator), Some("bot")).is_ok(), "an agent may write the thresholds");
+        let e = check(&changed, Some(Role::Operator), None).unwrap_err();
+        assert_eq!(e.status, 403);
+        assert!(e.detail.contains("geoip"), "{}", e.detail);
+        assert!(check(&changed, Some(Role::Admin), None).is_ok());
+        let e = check(&changed, Some(Role::Admin), Some("bot")).unwrap_err();
+        assert!(e.detail.contains("agents can't change"), "{}", e.detail);
+        let e = check(&changed, None, None).unwrap_err();
+        assert_eq!(e.status, 409);
     }
 }
 

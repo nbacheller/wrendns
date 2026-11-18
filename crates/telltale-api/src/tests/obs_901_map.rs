@@ -21,7 +21,7 @@ fn settings(enabled: bool) -> MapSettings {
     }
 }
 
-fn part(node: &str) -> MapPart {
+pub(super) fn part(node: &str) -> MapPart {
     let mut ip = [0u8; 16];
     ip[10] = 0xff;
     ip[11] = 0xff;
@@ -54,15 +54,18 @@ fn part(node: &str) -> MapPart {
             id: 1,
             name: "quad9".into(),
             breaker: "closed".into(),
+            ip: None,
         }],
         level: "healthy".into(),
         reasons: Vec::new(),
         groups: vec!["default".into()],
         anomalous: Vec::new(),
+        answers_recorded: false,
+        answers: Vec::new(),
     }
 }
 
-fn setup(fake: &Fake, enabled: bool) {
+pub(super) fn setup(fake: &Fake, enabled: bool) {
     *fake.map.lock().unwrap() = (
         Some(settings(enabled)),
         MapParts {
@@ -74,7 +77,7 @@ fn setup(fake: &Fake, enabled: bool) {
     );
 }
 
-fn bearer_for(app: &TestApp, name: &str, role: auth::Role, level: &str) -> String {
+pub(super) fn bearer_for(app: &TestApp, name: &str, role: auth::Role, level: &str) -> String {
     let u = app
         .auth
         .create_user(name, "a long enough password", role, false, NOW)
@@ -95,7 +98,7 @@ fn bearer_for(app: &TestApp, name: &str, role: auth::Role, level: &str) -> Strin
     format!("tt_{tid}_{secret}")
 }
 
-fn get_with(uri: &str, bearer: &str) -> Request<Body> {
+pub(super) fn get_with(uri: &str, bearer: &str) -> Request<Body> {
     Request::get(uri)
         .header("authorization", format!("Bearer {bearer}"))
         .body(Body::empty())
@@ -187,7 +190,8 @@ async fn obs_901_snapshot_over_http() {
     let (s, _, v) = get(&app, "/api/v1/map/world").await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["available"], false);
-    assert_eq!(v["reason"], "address_not_recorded");
+    // The test backend has no GeoIP database: off (T26.4); the address (ADR-970) is T26.5's.
+    assert_eq!(v["reason"], "geoip_off");
     assert_eq!(v["unlocated"]["count"], 300);
 }
 
