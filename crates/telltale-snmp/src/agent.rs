@@ -106,6 +106,9 @@ pub struct Agent {
     next_msg_id: i32,
     next_req_id: i32,
     engine: Option<Engine>,
+    /// The engine as last seen in an authenticated message. Rediscovery may not move it back
+    /// (RFC 3414 §3.2.7b; a spoofed discovery Report is unauthenticated).
+    trusted: Option<Engine>,
     gate: ResyncGate,
     keys: Option<RoundKeys>,
 }
@@ -142,6 +145,18 @@ impl Agent {
         if matches!(&security, Security::V3 { user } if user.auth.is_none()) {
             return Err(AgentError::BadRequest);
         }
+        // REQ: DSC-003. RFC 3414 §11.2: passwords under 8 octets are refused up front.
+        if let Security::V3 { user } = &security {
+            let short = user
+                .auth
+                .iter()
+                .map(|(_, p)| p)
+                .chain(user.privacy.iter().map(|(_, p)| p))
+                .any(|p| usm::check_password(p.expose()).is_err());
+            if short {
+                return Err(AgentError::Usm(UsmError::ShortPassword));
+            }
+        }
         let bind: SocketAddr = match target.ip() {
             IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
             IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 0),
@@ -159,6 +174,7 @@ impl Agent {
             next_msg_id: random_start(),
             next_req_id: random_start(),
             engine: None,
+            trusted: None,
             gate: ResyncGate::default(),
             keys: None,
         })
@@ -171,6 +187,21 @@ impl Agent {
     /// The engine learned so far (v3), for the capability record.
     pub fn engine(&self) -> Option<&Engine> {
         self.engine.as_ref()
+    }
+
+    /// Moves the learned engine's clock origin back by `by`, as if that much local time had
+    /// passed without a reply: the estimate then runs ahead of a slow or paused agent. For
+    /// tests of the time-window recovery (DSC-003); it has no use in a poller.
+    #[doc(hidden)]
+    pub fn age_engine_estimate(&mut self, by: Duration) {
+        for e in [self.engine.as_mut(), self.trusted.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(t) = e.learned.checked_sub(by) {
+                e.learned = t;
+            }
+        }
     }
 
     /// Derives the round's keys once, before a walk or a poll round (ADR-908).
@@ -301,8 +332,12 @@ impl Agent {
             };
             let got = self.wait_for(|this, bytes| this.accept_v3(bytes, &expect, Instant::now()));
             match got {
-                Ok(Outcome::Answer(resp)) => return Ok(resp),
-                Ok(Outcome::Resend) | Err(AgentError::Timeout) => {}
+                Ok(Outcome::Answer(resp)) => {
+                    self.trusted = self.engine.clone();
+                    return Ok(resp);
+                }
+                Ok(Outcome::Resend) => self.trusted = self.engine.clone(),
+                Err(AgentError::Timeout) => {}
                 Err(e) => return Err(e),
             }
         }
@@ -333,6 +368,22 @@ impl Agent {
                 .wait_for(|_this, bytes| accept_discovery(bytes, msg_id, req_id, Instant::now()));
             match got {
                 Ok(engine) => {
+                    // REQ: DSC-003. An unauthenticated discovery may move the clock forward
+                    // (a reboot) but never back past what an authenticated message showed. When
+                    // it is behind for the same engine, keep the trusted engine with its
+                    // estimated clock instead of failing: authenticated time Reports resync it.
+                    if !usm::discovery_allowed(self.trusted.as_ref(), &engine, Instant::now()) {
+                        match self.trusted.clone() {
+                            Some(t) if t.id == engine.id => {
+                                self.engine = Some(t);
+                                return Ok(());
+                            }
+                            _ => return Err(AgentError::Usm(UsmError::NotInTimeWindow)),
+                        }
+                    }
+                    if self.trusted.as_ref().is_some_and(|t| t.id != engine.id) {
+                        self.trusted = None;
+                    }
                     self.engine = Some(engine);
                     return Ok(());
                 }
@@ -393,8 +444,22 @@ impl Agent {
                 .iter()
                 .any(|vb| vb.oid.to_string() == usm::USM_STATS_NOT_IN_TIME_WINDOW);
             if not_in_window && self.gate.allow(now) {
-                if let Some(e) = self.engine.as_mut() {
-                    e.resync(reply.boots, reply.time, now);
+                // RFC 3414 §3.2.7b: the clock only moves forward, and boots at the maximum
+                // are never taken. A Report that would move it back is refused.
+                match window {
+                    Window::Resync => {
+                        if let Some(e) = self.engine.as_mut() {
+                            e.resync(reply.boots, reply.time, now);
+                        }
+                    }
+                    Window::Accept => {
+                        if let Some(e) = self.engine.as_mut() {
+                            e.note_received(reply.boots, reply.time);
+                        }
+                    }
+                    Window::Stale => {
+                        return Some(Err(AgentError::Usm(UsmError::NotInTimeWindow)));
+                    }
                 }
                 return Some(Ok(Outcome::Resend));
             }
@@ -405,7 +470,11 @@ impl Agent {
             return None;
         }
         match window {
-            Window::Accept => {}
+            Window::Accept => {
+                if let Some(e) = self.engine.as_mut() {
+                    e.note_received(reply.boots, reply.time);
+                }
+            }
             Window::Resync => {
                 if let Some(e) = self.engine.as_mut() {
                     e.resync(reply.boots, reply.time, now);
@@ -510,6 +579,7 @@ fn accept_discovery(
         boots: reply.boots,
         time: reply.time,
         learned: now,
+        latest: None,
     }))
 }
 

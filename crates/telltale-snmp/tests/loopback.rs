@@ -130,12 +130,17 @@ enum Mode {
     TimeReportOnce { boots: u32, time: u32 },
     /// After the time Report: answer only requests whose boots and time are inside the window.
     InWindowOnly,
+    /// Drop every authenticated request (a transient outage); discovery still answers.
+    Silent,
 }
 
 struct FakeV3 {
     boots: u32,
     time: u32,
     mode: Mode,
+    /// Boots and time the discovery Report carries, when they differ from the real clock
+    /// (RFC 3414 section 4 lets an agent send 0 and 0 there).
+    discovery_clock: Option<(u32, u32)>,
 }
 
 /// Starts a fake v3 agent. `state` is shared so a test can change the boots while it runs.
@@ -172,6 +177,9 @@ fn fake_v3(
             {
                 continue;
             }
+            if matches!(mode, Mode::Silent) && reply.flags & usm::LEVEL_MASK != 0 {
+                continue;
+            }
             if reply.flags & usm::LEVEL_MASK == 0 {
                 // Engine discovery: a noAuthNoPriv Report that names the engine.
                 let Ok(scoped_in) = ber::expect_tag(&reply.scoped, 0x30) else {
@@ -191,11 +199,16 @@ fn fake_v3(
                 let Ok(pdu_out) = pdu::encode_response(TAG_REPORT, id, 0, &vbs) else {
                     continue;
                 };
+                let (d_boots, d_time) = state
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.discovery_clock)
+                    .unwrap_or((boots, time));
                 let out = Outgoing {
                     msg_id: reply.msg_id,
                     engine_id: &ENGINE,
-                    boots,
-                    time,
+                    boots: d_boots,
+                    time: d_time,
                     user: &[],
                     reportable: true,
                 };
@@ -289,7 +302,12 @@ fn scoped_response(engine: &[u8], pdu_bytes: &[u8]) -> Vec<u8> {
 }
 
 fn state(boots: u32, time: u32, mode: Mode) -> Arc<std::sync::Mutex<FakeV3>> {
-    Arc::new(std::sync::Mutex::new(FakeV3 { boots, time, mode }))
+    Arc::new(std::sync::Mutex::new(FakeV3 {
+        boots,
+        time,
+        mode,
+        discovery_clock: None,
+    }))
 }
 
 fn sys_name(resp: &telltale_snmp::pdu::Response) -> Option<Vec<u8>> {
@@ -468,6 +486,38 @@ fn dsc_003_v3_stale_boots_are_refused() {
 }
 
 #[test]
+fn dsc_003_authenticated_time_report_never_moves_the_clock_back() {
+    // An authenticated notInTimeWindow Report with lower boots is refused and the cached
+    // clock stays (RFC 3414 §3.2.7b).
+    let stop = Arc::new(AtomicBool::new(false));
+    let st = state(
+        5,
+        1000,
+        Mode::TimeReportOnce {
+            boots: 4,
+            time: 1200,
+        },
+    );
+    let addr = fake_v3(false, st.clone(), stop.clone());
+    let mut agent = Agent::new(
+        addr,
+        Security::V3 {
+            user: v3_user(false),
+        },
+        timing(),
+    )
+    .unwrap_or_else(|e| panic!("{e:?}"));
+    let got = agent.request(RequestKind::Get, &[oid(SYS_NAME)], 0);
+    assert!(
+        matches!(got, Err(AgentError::Usm(UsmError::NotInTimeWindow))),
+        "{got:?}"
+    );
+    // A failed exchange drops the cached engine; it is never the Report's older clock.
+    assert_ne!(agent.engine().map(|e| e.boots), Some(4));
+    stop.store(true, Ordering::Relaxed);
+}
+
+#[test]
 fn dsc_003_authenticated_time_report_resends_once() {
     time_report_resends_once(false);
 }
@@ -517,4 +567,103 @@ fn dsc_003_v3_user_without_auth_is_refused() {
     let addr: SocketAddr = "127.0.0.1:9".parse().unwrap_or_else(|_| panic!("addr"));
     let got = Agent::new(addr, Security::V3 { user }, timing());
     assert!(matches!(got, Err(AgentError::BadRequest)));
+}
+
+#[test]
+fn dsc_003_rediscovery_behind_the_trusted_clock_still_recovers() {
+    // The agent reports 0 and 0 in its discovery Report but real boots and time in
+    // authenticated replies. After one timeout the engine is rediscovered; that clock is
+    // behind the trusted one, so the agent keeps the trusted clock instead of being locked out.
+    let stop = Arc::new(AtomicBool::new(false));
+    let st = state(5, 1000, Mode::Normal);
+    if let Ok(mut s) = st.lock() {
+        s.discovery_clock = Some((0, 0));
+    }
+    let addr = fake_v3(false, st.clone(), stop.clone());
+    let mut agent = Agent::new(
+        addr,
+        Security::V3 {
+            user: v3_user(false),
+        },
+        timing(),
+    )
+    .unwrap_or_else(|e| panic!("{e:?}"));
+    let first = agent.request(RequestKind::Get, &[oid(SYS_NAME)], 0);
+    assert!(first.is_ok(), "{first:?}");
+    if let Ok(mut s) = st.lock() {
+        s.mode = Mode::Silent;
+    }
+    let second = agent.request(RequestKind::Get, &[oid(SYS_NAME)], 0);
+    assert!(matches!(second, Err(AgentError::Timeout)), "{second:?}");
+    if let Ok(mut s) = st.lock() {
+        s.mode = Mode::Normal;
+    }
+    let third = agent.request(RequestKind::Get, &[oid(SYS_NAME)], 0);
+    assert!(third.is_ok(), "{third:?}");
+    // The clock never went back to the discovery Report's 0.
+    assert_eq!(agent.engine().map(|e| e.boots), Some(5));
+    stop.store(true, Ordering::Relaxed);
+}
+
+/// The agent's clock runs behind the client's estimate by more than the 150 s window (a slow
+/// clock or a paused VM). The estimate is aged by 400 s; the agent still reports `agent_time`.
+fn slow_agent(agent_time: u32) -> (Result<(), AgentError>, Option<u32>) {
+    let stop = Arc::new(AtomicBool::new(false));
+    let st = state(
+        5,
+        1000,
+        Mode::TimeReportOnce {
+            boots: 5,
+            time: agent_time,
+        },
+    );
+    // The first request is answered normally; the Report is armed after it.
+    if let Ok(mut s) = st.lock() {
+        s.mode = Mode::Normal;
+    }
+    let addr = fake_v3(false, st.clone(), stop.clone());
+    let mut agent = Agent::new(
+        addr,
+        Security::V3 {
+            user: v3_user(false),
+        },
+        timing(),
+    )
+    .unwrap_or_else(|e| panic!("{e:?}"));
+    assert!(agent.request(RequestKind::Get, &[oid(SYS_NAME)], 0).is_ok());
+    agent.age_engine_estimate(Duration::from_secs(400));
+    if let Ok(mut s) = st.lock() {
+        s.mode = Mode::TimeReportOnce {
+            boots: 5,
+            time: agent_time,
+        };
+    }
+    let got = agent
+        .request(RequestKind::Get, &[oid(SYS_NAME)], 0)
+        .map(|_| ());
+    let time = agent.engine().map(|e| e.time);
+    stop.store(true, Ordering::Relaxed);
+    (got, time)
+}
+
+#[test]
+fn dsc_003_agent_clock_behind_the_estimate_recovers() {
+    // Last authenticated time was 1000; the agent is at 1010, the estimate at about 1400. The
+    // authenticated Report is later than the last authenticated value, so the clock is taken
+    // and the request is answered.
+    let (got, time) = slow_agent(1010);
+    assert!(got.is_ok(), "{got:?}");
+    assert!(time.is_some_and(|t| t >= 1010), "{time:?}");
+}
+
+#[test]
+fn dsc_003_agent_clock_never_goes_back_past_the_last_authenticated_value() {
+    // The agent reports 990, older than the 1000 already received: refused, and the cached
+    // clock is not that value.
+    let (got, time) = slow_agent(990);
+    assert!(
+        matches!(got, Err(AgentError::Usm(UsmError::NotInTimeWindow))),
+        "{got:?}"
+    );
+    assert!(time.is_none_or(|t| t >= 1000), "{time:?}");
 }

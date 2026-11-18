@@ -65,6 +65,8 @@ pub enum Refused {
     Aes192,
     Aes256,
     NoAuthNoPriv,
+    /// A password under 8 octets (RFC 3414 §11.2).
+    ShortPassword,
     Unknown,
 }
 
@@ -85,6 +87,9 @@ impl Refused {
             Self::Aes256 => "AES-256 is refused: RFC 3826 defines only AES-128 for SNMPv3.",
             Self::NoAuthNoPriv => {
                 "noAuthNoPriv is refused: a v3 user must authenticate. Use v2c only where the device has no v3."
+            }
+            Self::ShortPassword => {
+                "The password is refused: RFC 3414 §11.2 asks for at least 8 characters."
             }
             Self::Unknown => "This protocol is not known to TelltaleDNS, so it is refused.",
         }
@@ -147,10 +152,23 @@ impl PrivProto {
     }
 }
 
+/// The shortest password accepted (RFC 3414 §11.2).
+pub const MIN_PASSWORD: usize = 8;
+
+/// Checks a password at config and credential validation, with the reason to show.
+pub fn check_password(password: &[u8]) -> Result<(), Refused> {
+    if password.len() < MIN_PASSWORD {
+        Err(Refused::ShortPassword)
+    } else {
+        Ok(())
+    }
+}
+
 /// The password-to-key expansion (RFC 3414 A.2): the password repeated to 1 MiB, hashed.
-/// Returns `None` for an empty password, which would never end the expansion.
+/// Returns `None` for a password under `MIN_PASSWORD` octets (an empty one would never end the
+/// expansion).
 pub fn password_to_key(alg: AuthProto, password: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
-    if password.is_empty() {
+    if password.len() < MIN_PASSWORD {
         return None;
     }
     let mut ctx = digest::Context::new(alg.digest());
@@ -196,8 +214,8 @@ pub fn mac(alg: AuthProto, kul: &[u8], msg: &[u8]) -> Vec<u8> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsmError {
     Decode(DecodeError),
-    /// The password is empty, so there is no key.
-    EmptyPassword,
+    /// The password is under 8 octets, so there is no key.
+    ShortPassword,
     /// The random source failed.
     Random,
     /// The authentication MAC does not match.
@@ -230,13 +248,13 @@ impl UsmUser {
         let (auth_alg, auth_ku) = match &self.auth {
             Some((alg, pw)) => (
                 Some(*alg),
-                Some(password_to_key(*alg, pw.expose()).ok_or(UsmError::EmptyPassword)?),
+                Some(password_to_key(*alg, pw.expose()).ok_or(UsmError::ShortPassword)?),
             ),
             None => (None, None),
         };
         let priv_ku = match (&self.privacy, auth_alg) {
             (Some((_, pw)), Some(alg)) => {
-                Some(password_to_key(alg, pw.expose()).ok_or(UsmError::EmptyPassword)?)
+                Some(password_to_key(alg, pw.expose()).ok_or(UsmError::ShortPassword)?)
             }
             (Some(_), None) => return Err(UsmError::BadSecurityParameters),
             _ => None,
@@ -277,6 +295,10 @@ pub struct Engine {
     pub boots: u32,
     pub time: u32,
     pub learned: Instant,
+    /// The boots and time of the last authenticated message received from the agent
+    /// (RFC 3414 latestReceivedEngineTime). `None` until one verifies: discovery is
+    /// unauthenticated and never sets it.
+    pub latest: Option<(u32, u32)>,
 }
 
 /// What a message's boots and time mean for our copy of the agent's clock (RFC 3414 §3.2.7b).
@@ -318,7 +340,14 @@ impl Engine {
             return Window::Resync;
         }
         if local.saturating_sub(time) > TIME_WINDOW {
-            return Window::Stale;
+            // REQ: DSC-003. Behind our estimate, but the estimate only runs ahead of an agent
+            // whose clock is slow or was paused. RFC 3414 §3.2.7b updates the clock when the
+            // time is later than latestReceivedEngineTime, not when it is later than the
+            // projected estimate; an older authenticated message (a replay) stays stale.
+            return match self.latest {
+                Some((b, t)) if b == boots && time > t => Window::Resync,
+                _ => Window::Stale,
+            };
         }
         Window::Accept
     }
@@ -328,6 +357,25 @@ impl Engine {
         self.boots = boots;
         self.time = time;
         self.learned = now;
+        self.latest = Some((boots, time));
+    }
+
+    /// Records an authenticated message that was inside the window, so the latest received
+    /// time only moves forward.
+    pub fn note_received(&mut self, boots: u32, time: u32) {
+        match self.latest {
+            Some((b, t)) if b > boots || (b == boots && t >= time) => {}
+            _ => self.latest = Some((boots, time)),
+        }
+    }
+}
+
+/// Whether a discovered (unauthenticated) engine may replace the cached one: not when it is the
+/// same engine and its clock is behind what an authenticated message showed.
+pub fn discovery_allowed(trusted: Option<&Engine>, found: &Engine, now: Instant) -> bool {
+    match trusted {
+        Some(t) if t.id == found.id => t.window(found.boots, found.time, now) != Window::Stale,
+        _ => found.boots < MAX_BOOTS,
     }
 }
 
@@ -740,8 +788,67 @@ mod tests {
     }
 
     #[test]
+    fn dsc_003_rfc3414_sha256_key_vector() {
+        // The A.3 method with SHA-256 and SHA-512 (RFC 7860): password "maplesyrup", engineID
+        // 00..02. Computed by hashlib's SHA-256/512 over the A.2 stream (the same procedure that
+        // reproduces the RFC's SHA-1 values), independent of this crate.
+        let engine = hex("000000000000000000000002");
+        for (alg, ku, kul) in [
+            (
+                AuthProto::Sha256,
+                "ab51014d1e077f6017df2b12bee5f5aa72993177e9bb569c4dff5a4ca0b4afac",
+                "8982e0e549e866db361a6b625d84cccc11162d453ee8ce3a6445c2d6776f0f8b",
+            ),
+            (
+                AuthProto::Sha512,
+                "7e4396de5aadc77be853819b98c9406265b3a9c37cc3176569847a4e4f6fba63dd3a73d04924d31a63f95a601f9385af6be4ed1b37f87d040f7c6ed6f8d38a91",
+                "22a5a36cedfcc085807a128d7bc6c2382167ad6c0dbc5fdff856740f3d84c099ad1ea87a8db096714d9788bd544047c9021e4229ce27e4c0a69250adfcffbb0b",
+            ),
+        ] {
+            let k = password_to_key(alg, b"maplesyrup").unwrap_or_default();
+            assert_eq!(k.as_slice(), hex(ku).as_slice());
+            assert_eq!(localize(alg, &k, &engine).as_slice(), hex(kul).as_slice());
+        }
+    }
+
+    #[test]
+    fn dsc_003_rediscovery_cannot_move_the_clock_back() {
+        let now = Instant::now();
+        let t = Engine {
+            id: vec![1, 2],
+            boots: 5,
+            time: 1000,
+            learned: now,
+            latest: None,
+        };
+        let found = |boots, time| Engine {
+            id: vec![1, 2],
+            boots,
+            time,
+            learned: now,
+            latest: None,
+        };
+        assert!(!discovery_allowed(Some(&t), &found(4, 9999), now));
+        assert!(!discovery_allowed(Some(&t), &found(5, 100), now));
+        assert!(discovery_allowed(Some(&t), &found(5, 1000), now));
+        assert!(discovery_allowed(Some(&t), &found(6, 3), now));
+        let other = Engine {
+            id: vec![9],
+            boots: 1,
+            time: 1,
+            learned: now,
+            latest: None,
+        };
+        assert!(discovery_allowed(Some(&t), &other, now));
+    }
+
+    #[test]
     fn dsc_003_empty_password_has_no_key() {
         assert!(password_to_key(AuthProto::Sha256, b"").is_none());
+        assert!(password_to_key(AuthProto::Sha256, b"short77").is_none());
+        assert!(password_to_key(AuthProto::Sha256, b"eight888").is_some());
+        assert_eq!(check_password(b"short77"), Err(Refused::ShortPassword));
+        assert!(check_password(b"eight888").is_ok());
     }
 
     #[test]
@@ -769,6 +876,7 @@ mod tests {
             boots: 5,
             time: 1000,
             learned: t0,
+            latest: None,
         };
         // Same boots, time within 150 s either way: accepted.
         assert_eq!(e.window(5, 1000, t0), Window::Accept);
@@ -790,6 +898,32 @@ mod tests {
         e.resync(6, 50, t0);
         assert_eq!(e.boots, 6);
         assert_eq!(e.time, 50);
+    }
+
+    #[test]
+    fn dsc_003_slow_agent_clock_resyncs_but_never_below_the_latest_received() {
+        let t0 = Instant::now();
+        let mut e = Engine {
+            id: vec![1],
+            boots: 5,
+            time: 1000,
+            learned: t0,
+            latest: None,
+        };
+        // No authenticated message yet: behind the estimate is stale, as before.
+        let later = t0 + Duration::from_secs(400);
+        assert_eq!(e.window(5, 1010, later), Window::Stale);
+        e.note_received(5, 1000);
+        // The estimate (1400) ran ahead of a slow agent (1010): later than the latest received.
+        assert_eq!(e.window(5, 1010, later), Window::Resync);
+        // Not later than the latest received (a replay, or a clock that went back): stale.
+        assert_eq!(e.window(5, 1000, later), Window::Stale);
+        assert_eq!(e.window(5, 990, later), Window::Stale);
+        // note_received only moves forward.
+        e.note_received(5, 900);
+        assert_eq!(e.latest, Some((5, 1000)));
+        e.resync(5, 1010, later);
+        assert_eq!(e.latest, Some((5, 1010)));
     }
 
     #[test]
