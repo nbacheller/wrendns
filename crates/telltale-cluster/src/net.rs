@@ -2127,6 +2127,16 @@ impl Cluster {
         result
     }
 
+    /// Whether `node` is a witness in the registry (REQ: CLU-009): a voter that serves no DNS,
+    /// holds no configuration and has no drill, flush or pause handlers, so the fan-out readers
+    /// leave it out rather than list it as a node that "didn't answer".
+    pub fn is_witness(&self, node: &str) -> bool {
+        self.identity
+            .registry()
+            .iter()
+            .any(|n| n.witness && n.node_id == node)
+    }
+
     /// Peers, by node ID.
     pub fn members(&self) -> Vec<Member> {
         self.members

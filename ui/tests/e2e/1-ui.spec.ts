@@ -1581,6 +1581,8 @@ test('clu_009 a witness is a voter, not a full node', async () => {
   await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: current }));
   await page.route('**/api/v1/cluster/rollout', (route) => route.fulfill({ json: { fromPrimary: true, canaries: [], bakeSecs: 300, stable: '1.9', stage: 'none', nodes: [] } }));
   await page.route('**/api/v1/cluster/versions', (route) => route.fulfill({ json: { items: [], history: 20 } }));
+  // A fresh document, so the route's data is fetched even if the page is already on #/cluster.
+  await page.goto('about:blank');
   await page.goto('/#/cluster');
   const row = page.locator('#node-id-pi3');
   await expect(row).toContainText('witness, votes only');
