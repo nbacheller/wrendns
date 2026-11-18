@@ -213,6 +213,9 @@ pub fn required(method: &Method, path: &str) -> Need {
                 return Need::Scope("querylog:read");
             }
             "/api/v1/lists"
+            // REQ: FLT-004 (T24.28) - which lists add little, and the plan (a read).
+            | "/api/v1/lists/overlap"
+            | "/api/v1/lists/prune-plan"
             | "/api/v1/services"
             | "/api/v1/groups"
             | "/api/v1/clients"
@@ -364,8 +367,11 @@ pub fn never_for_agents(method: &Method, path: &str) -> bool {
     // REQ: API-902 (T27.13, ADR-956 §7) — guarded changes: no tool, plan or scope; an agent token
     // gets `agent_not_allowed` on preview, apply, confirm and cancel.
     let guarded = p == "/api/v1/guarded" || p.starts_with("/api/v1/guarded/");
+    // REQ: FLT-004 (T24.28, ADR-992) - turning lists off in bulk: a person confirms the preview.
+    let prune = p == "/api/v1/lists/prune";
     ((secret || pihole) && write)
         || (guarded && *method != Method::GET && *method != Method::HEAD)
+        || (prune && write)
         || (*method == Method::POST
             && (p == "/api/v1/backup" || p.starts_with("/api/v1/checks/router")))
 }

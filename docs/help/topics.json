@@ -980,10 +980,20 @@
       "id": "list-overlap",
       "title": "Unique names and overlap",
       "term": "List overlap",
-      "summary": "Unique names are the ones no other list has. When almost everything in a list is also in another, the list adds little.",
+      "summary": "Unique names are the ones no other list of the same side (block or allow) has, so an exception list never makes a block list look covered. When almost everything in a list is also in another, the list adds little.",
       "when": "Deciding which lists to drop to save memory and compile time.",
       "example": "\"97% also in hagezi-pro\": removing this list would lose only its unique names.",
       "caution": "Hits count since each node started (every node's added up), so a list with no hits after a restart may just be new.",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "list-prune",
+      "title": "Prune lists",
+      "term": "Prune",
+      "summary": "Previews the block lists that add less than a threshold of their own entries (names no other list has, plus their regexes), and turns them off after you confirm. They stay in the configuration; Undo turns them on again.",
+      "when": "Several big lists overlap and you want fewer lists to download and compile.",
+      "example": "At 1%, a list where 99.5% of the names are also in hagezi-pro is proposed; turning it off could stop blocking at most the 0.5%.",
+      "caution": "Allow lists, shadow lists and lists a group names are never proposed. Overlap is by name, so a regex or a wildcard another list covers isn't seen: the plan only errs toward keeping a list.",
       "docs": "filter-lists"
     },
     {

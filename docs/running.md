@@ -1232,6 +1232,19 @@ telltale lists compile -c telltale.toml     # compile now and show per-list numb
 
 The **Lists** page and `GET /api/v1/lists` show the same per list: `unique`, `hits` (queries it decided since each node started; in a cluster, every node's added up), and `overlap` (the lists it shares names with, and how many). A list that's 95% or more inside another is marked, and one with no hits is marked "none yet".
 
+#### Finding lists that add little (prune)
+Overlap is counted by name, while the lists are compiled (once per compile, never on a query). A name a block list and an allow list both have is not "shared": they do opposite things, so a block list is only compared with other block lists. Regexes and modifier rules can't be compared, so they count as the list's own (`rules`), and wildcard coverage (`||example.com^` already blocks `ads.example.com`) isn't seen, which only makes a list look more useful than it is. `GET /api/v1/lists/overlap` has, per enabled list, `unique`, `rules`, `addsPercent` (unique names plus rules, as a share of its entries), `coveredBy` (the lists with the rest of it) and `groups` (the groups that name it).
+
+**Prune…** on the Lists page (operators) previews the lists to turn off: you set the threshold (default 1, 0 to 50), and a block list in enforce mode is proposed when it adds at most that percent of its own entries. The list is a plan: lists are added least-adding first, and each has to keep the whole set within the threshold, so two lists that mirror each other are never both proposed. Never proposed: allow lists, shadow lists, lists not compiled yet, and lists a group names in its own `lists` (that group may not use the lists that cover them); the preview says why each stays. "Could lose" is an upper bound on the names that would stop being blocked. A list whose covering list was just turned off, or whose cover isn't blocking now, is not judged covered; while a compile is pending after a change the plan proposes nothing and says so. After you confirm, the lists are written back with `enabled = false`; they stay in the configuration, and **Undo** on the notice (or turning one on in **Manage lists**) brings them back. If the configuration or the compiled lists changed between the preview and the confirmation, nothing is turned off (409): preview again. A cluster replica reads the primary's numbers and its writes go to the primary, like any list edit.
+
+```sh
+curl -s 'http://127.0.0.1:8053/api/v1/lists/prune-plan?thresholdPercent=1' -H "Authorization: Bearer $TOKEN"   # the plan; changes nothing
+curl -s -X POST http://127.0.0.1:8053/api/v1/lists/prune -H "Authorization: Bearer $TOKEN"   -d '{"thresholdPercent": 1, "names": ["oisd-small"], "snapshotVersion": 7, "configVersion": 12}'   # the plan's versions; a person's: agent tokens get agent_not_allowed
+```
+Agents read the plan (`config:read`; the MCP tool `list_overlap`) and propose it; they can't apply it. A prune is audit-logged as `lists.prune`, and each list's own change as `list.put`.
+
+Cost: the overlap is a table of counters per pair of lists (a few KiB for 40 lists, at most 64 KiB; more than 128 lists use a map of the pairs that share a name) updated while the compile merges the lists. With 40 lists and 2 million names it adds no measurable time to the compile and no memory (peak 146 MiB with or without it, on one thread); see ADR-992.
+
 ### Blocking
 A query is checked against the filter after local records and before the cache, so a blocked name never reaches an upstream:
 ```
@@ -3628,6 +3641,7 @@ For agents that start their tools as a subprocess, use the stdio transport. It r
 | `health` | healthy, degraded, or severe, and why (start here when something seems wrong) |
 | `upstream_health` | upstream health (healthy, benched, probing), latency |
 | `list_effectiveness` | list sizes, updates, errors, hits, unique names, and overlap |
+| `list_overlap` | which lists add little: each list's unique names and who covers the rest, and the plan that would turn the least-adding lists off (read-only; a person applies it in **Lists**) |
 | `find_anomalies` | device anomalies from every node with evidence (including NXDOMAIN storms and DGA-like names), optionally only the unacknowledged ones, or with `muted` also the ones a mute matched |
 | `list_anomaly_mutes` | the [anomaly mutes](#muting-a-kind-of-finding-for-a-device): devices or groups, kinds, end time, note (needs `config:read`) |
 | `acknowledge_anomalies` | marks findings as seen on every node, or takes it back with `undo` (needs `ops:anomalies`; changes at once, audited) |
