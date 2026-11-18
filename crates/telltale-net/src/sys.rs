@@ -66,6 +66,43 @@ pub(crate) fn idle_thread() -> io::Result<()> {
     }
 }
 
+/// REQ: DSC-002, DSC-003 (ADR-908, ADR-1001) - a UDP socket connected to `target`, made without a
+/// `bind` call. A discovery worker's seccomp filter refuses `bind` (so it can't share the DNS port),
+/// and `UdpSocket::bind` is the only way std makes a UDP socket; `connect(2)` on a datagram socket
+/// binds it to an ephemeral port itself. The SNMP client takes this socket for its agent.
+pub(crate) fn connect_udp(target: SocketAddr) -> io::Result<std::net::UdpSocket> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    let family = match target {
+        SocketAddr::V4(_) => libc::AF_INET,
+        SocketAddr::V6(_) => libc::AF_INET6,
+    };
+    // SAFETY: plain socket(2) call with constant arguments; the result is checked below.
+    let fd = unsafe { libc::socket(family, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a freshly created, valid descriptor that nothing else owns; the OwnedFd closes
+    // it on the error paths below.
+    let sock = unsafe { OwnedFd::from_raw_fd(fd) };
+    // SAFETY: all-zero is a valid sockaddr_storage.
+    let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+    let len = std_to_sockaddr(target, &mut storage);
+    // SAFETY: `storage` holds a sockaddr of `len` bytes and lives through the call; the fd is a
+    // valid datagram socket.
+    let rc = unsafe {
+        libc::connect(
+            sock.as_raw_fd(),
+            ptr::addr_of!(storage).cast::<libc::sockaddr>(),
+            len,
+        )
+    };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(std::net::UdpSocket::from(sock))
+}
+
 /// Dumps the kernel neighbor table over rtnetlink (FLT-006). Parsing is safe code in
 /// `neigh`; this function only owns the socket.
 pub(crate) fn neighbor_dump() -> io::Result<Vec<crate::neigh::Neighbor>> {

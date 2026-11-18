@@ -414,7 +414,12 @@ pub(crate) fn run_real(req: &SnmpRequest, probe_only: bool) -> Result<Outcome, S
         }
     };
     let target = std::net::SocketAddr::new(std::net::IpAddr::V4(req.address), req.port);
-    let mut agent = Agent::new(target, security, Timing::default()).map_err(|e| error_text(&e))?;
+    // REQ: DSC-002, DSC-003 (ADR-1001) - the worker's seccomp filter refuses `bind`, so the socket is
+    // made with `socket` and `connect` alone (the kernel picks the source port).
+    let socket = telltale_net::worker::connected_udp_socket(target)
+        .map_err(|e| format!("socket error ({:?})", e.kind()))?;
+    let mut agent = Agent::with_socket(target, socket, security, Timing::default())
+        .map_err(|e| error_text(&e))?;
     let mut pacer = SystemPacer;
     Ok(run(&mut agent, &mut pacer, req, probe_only))
 }

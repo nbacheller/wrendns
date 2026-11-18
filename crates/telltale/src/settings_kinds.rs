@@ -37,7 +37,15 @@ pub(crate) fn is_settings(kind: ManagedKind) -> bool {
 }
 
 /// REQ: DSC-001 (T25.2, ADR-907) — the fields of `[discovery]` a kind's entry carries.
-const DISCOVERY_KEYS: &[&str] = &["enabled", "node", "worker_memory_mib", "subnet"];
+const DISCOVERY_KEYS: &[&str] = &[
+    "enabled",
+    "node",
+    "worker_memory_mib",
+    "subnet",
+    // REQ: DSC-004 (T25.6) - the SNMP agents and the credentials they name.
+    "snmp_agent",
+    "snmp_credential",
+];
 
 /// The fields a kind's API entry carries (what the UI edits).
 pub(crate) fn keys(kind: ManagedKind) -> &'static [&'static str] {
@@ -87,10 +95,14 @@ pub(crate) fn section_json(kind: ManagedKind, cfg: &Config) -> Value {
     .unwrap_or(Value::Null);
     let mut out = Map::new();
     for k in keys(kind) {
-        out.insert(
-            (*k).to_owned(),
-            full.get(*k).cloned().unwrap_or(Value::Null),
-        );
+        // REQ: DSC-004 - the two lists are left out of a serialization while empty (a node that never
+        // set them sends nothing new, CLU-010); the entry shows them as empty lists.
+        let missing = if matches!(*k, "snmp_agent" | "snmp_credential") {
+            Value::Array(Vec::new())
+        } else {
+            Value::Null
+        };
+        out.insert((*k).to_owned(), full.get(*k).cloned().unwrap_or(missing));
     }
     Value::Object(out)
 }
