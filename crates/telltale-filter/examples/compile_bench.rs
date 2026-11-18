@@ -1,7 +1,7 @@
 //! T2.3 acceptance measurement: bytes per name and compile time (`spec/10` T2.3,
 //! `00` §5: ≤ 12 B/domain, ≤ 8 s on a Pi 4 for 1.5–2M domains).
 //!
-//!   `cargo run --profile bench-fast -p telltale-filter --example compile_bench -- synthetic 1500000 [threads]`
+//!   `cargo run --profile bench-fast -p telltale-filter --example compile_bench -- synthetic 1500000 [threads] [lists]`
 //!   `cargo run --profile bench-fast -p telltale-filter --example compile_bench -- dir bench/lists [threads]`
 //!
 //! `synthetic` generates three overlapping lists with realistic name shapes (seeded, so runs
@@ -69,17 +69,20 @@ fn name(rng: &mut Rng, out: &mut String) {
     out.push_str(TLDS[rng.below(TLDS.len() as u64) as usize]);
 }
 
-fn synthetic(total: usize) -> Vec<ListInput> {
-    // Three lists sharing ~30% of their names, like HaGeZi/OISD/StevenBlack overlap.
+fn synthetic(total: usize, count: usize) -> Vec<ListInput> {
+    // `count` lists (default three) sharing ~30% of their names, like HaGeZi/OISD/StevenBlack
+    // overlap. REQ: FLT-004 (T24.28) - with 40 lists this is the overlap measurement: every
+    // shared name makes each pair of its lists count, so more lists cost more per name.
+    let count = count.max(2);
     let mut rng = Rng(0x7E11_7A1E);
-    let mut lists = vec![String::new(), String::new(), String::new()];
+    let mut lists = vec![String::new(); count];
     let mut n = String::new();
     for i in 0..total {
         name(&mut rng, &mut n);
-        let target = i % 3;
+        let target = i % count;
         let _ = writeln!(lists[target], "{n}");
         if rng.below(10) < 3 {
-            let other = (target + 1 + rng.below(2) as usize) % 3;
+            let other = (target + 1 + rng.below(count as u64 - 1) as usize) % count;
             let _ = writeln!(lists[other], "||{n}^");
         }
     }
@@ -135,6 +138,7 @@ fn main() {
             args.get(2)
                 .and_then(|n| n.parse().ok())
                 .unwrap_or(1_500_000),
+            args.get(4).and_then(|n| n.parse().ok()).unwrap_or(3),
         ),
         Some("dir") => from_dir(Path::new(args.get(2).map_or("bench/lists", String::as_str))),
         _ => {

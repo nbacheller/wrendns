@@ -487,6 +487,8 @@ impl Identity {
     /// Stores the ballot durably before any vote is answered (a vote must survive a crash).
     pub fn save_ballot(&self, b: &crate::election::Ballot) -> Result<(), String> {
         let bytes = serde_json::to_vec(b).map_err(|e| e.to_string())?;
+        let started = std::time::Instant::now();
+        let _slow = SlowStore(started);
         let path = self.dir.join("ballot.json");
         let tmp = path.with_extension("tmp");
         let e = |e: std::io::Error| e.to_string();
@@ -821,6 +823,40 @@ impl Identity {
 /// Compares secrets in time independent of where they differ.
 pub(crate) fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// REQ: CLU-005 (T24.26) — warns when a ballot takes long to store: an fsync of seconds on a
+/// slow card holds a vote answer past the asker's deadline, and is the first thing to look at when
+/// a primary's lease lapses.
+struct SlowStore(std::time::Instant);
+
+impl Drop for SlowStore {
+    fn drop(&mut self) {
+        let took = self.0.elapsed();
+        if took >= std::time::Duration::from_millis(500) {
+            // At most one warning a minute, counting the ones held back.
+            static LAST_S: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            static HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            use std::sync::atomic::Ordering::Relaxed;
+            let now_s = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let last = LAST_S.load(Relaxed);
+            if now_s.saturating_sub(last) < 60
+                || LAST_S
+                    .compare_exchange(last, now_s, Relaxed, Relaxed)
+                    .is_err()
+            {
+                HELD.fetch_add(1, Relaxed);
+                return;
+            }
+            tracing::warn!(
+                took_ms = u64::try_from(took.as_millis()).unwrap_or(u64::MAX),
+                held_back = HELD.swap(0, Relaxed),
+                "cluster: storing the election ballot was slow (disk); votes wait for it"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

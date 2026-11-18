@@ -363,14 +363,15 @@ impl Client {
         }
         refuse_compressed(header(http::header::CONTENT_ENCODING))?;
         let (etag, last_modified) = (header(ETAG), header(LAST_MODIFIED));
-        if let Some(len) = resp
+        let announced = resp
             .headers()
             .get(http::header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+        if let Some(len) = announced
             && len > max_bytes
         {
-            return Err(HttpError::fatal(too_big(max_bytes)));
+            return Err(HttpError::fatal(too_big(max_bytes, Some(len))));
         }
         let mut body = resp.into_body();
         let mut data = Vec::new();
@@ -378,7 +379,7 @@ impl Client {
             let frame = frame.map_err(|e| HttpError::retry(format!("reading body: {e}")))?;
             if let Some(chunk) = frame.data_ref() {
                 if data.len() as u64 + chunk.len() as u64 > max_bytes {
-                    return Err(HttpError::fatal(too_big(max_bytes)));
+                    return Err(HttpError::fatal(too_big(max_bytes, announced)));
                 }
                 data.extend_from_slice(chunk);
             }
@@ -558,8 +559,15 @@ fn refuse_compressed(encoding: Option<String>) -> Result<(), HttpError> {
     }
 }
 
-fn too_big(max: u64) -> String {
-    format!("larger than the {max}-byte limit (raise max_bytes for this list)")
+/// REQ: T24.27 — the Lists page reads `larger than the N-byte limit` and, when the server
+/// announced it, `the server says it is M bytes`, to offer a raised limit for the list.
+fn too_big(max: u64, announced: Option<u64>) -> String {
+    match announced {
+        Some(len) => format!(
+            "larger than the {max}-byte limit (the server says it is {len} bytes; raise max_bytes for this list)"
+        ),
+        None => format!("larger than the {max}-byte limit (raise max_bytes for this list)"),
+    }
 }
 
 /// Absolute or relative `Location` against the current URI.
