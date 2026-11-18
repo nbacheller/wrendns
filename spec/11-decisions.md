@@ -5146,3 +5146,12 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** a node on several networks hears mDNS on each, lists each, and matches MAC-keyed clients behind a router. No new dependency (`libc` is already in `telltale-net`), no image delta beyond a few hundred bytes of code.
 
+## ADR-1013 — One picker, and `client` takes several (Proposed 2026-11-18, T24.34)
+**Context:** Owner request (fork #26): the Query log's client filter takes one address; the UI's list selections are a mix of checkbox lists. `GET /queries` read `client` as one value; axum's query extractor does not take a repeated key.
+**Decision:**
+1. **One component** (`Picker.svelte`) with a windowed list for every list selection; checkbox lists that choose from a growing list are replaced, short fixed lists with codes beside them (agent-token scopes) are not.
+2. **`client` lists several, comma-separated,** as `status` and `qtype` do (not a repeated key): addresses, `hostname:<label>` (ADR-973) and workloads (FLT-017). The server resolves them to addresses off the DNS path and searches `client_any`; at most 100 entries and 256 addresses (`clientTruncated`), 64 per router name or workload. `clientNot` keeps every other client, as for one. An unresolvable entry is a 400. The live stream takes the same list, resolved when the stream opens. A negated workload search no longer applies the pod-address history post-filter (it would drop every row).
+3. **A device is all its addresses (revised after review).** A named device with several addresses (IPv4 and IPv6, or a MAC holding more than one lease) is one picker item whose value lists them comma-separated, so picking it finds every address it queries from and `clientNot` leaves none of them behind; a link that carries them one by one is regrouped into the device when the list loads. An address no list knows (a MAC-only device's IPv6 that never leased) is still not found: choosing by name server-side (`device:<name>`) stays out, since names may contain commas and change.
+**Alternatives rejected:** a repeated `client` key (needs a custom extractor and breaks peers on older nodes); `client` as a JSON array (unreadable URLs).
+**Consequences:** a read to an older cluster peer with several clients is answered by it as an invalid address (400) and listed as not reached. **Test plan:** `ui_901_*`, `kubernetes::tests::flt_017_a_deployment_is_one_device`, `tail::tests::obs_008_negated_filters`.
+

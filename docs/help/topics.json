@@ -1340,6 +1340,27 @@
       "docs": "recovering-from-a-guarded-change"
     },
     {
+      "id": "query-log-clients",
+      "title": "Show queries from several devices",
+      "term": "Client filter",
+      "summary": "Search by a device's name, or by its address, and pick as many devices as you like; the log shows the queries from all of them, and \"not\" shows every other device.",
+      "when": "You want one person's phone and laptop together, or everything except the server that asks the most.",
+      "example": "Type \"tv\", pick the living room and bedroom TVs, and the log lists both. Tick \"not\" to see everything else.",
+      "caution": "A device is found by the address it has now (a router name or a Kubernetes workload is followed to its addresses); at most 100 devices and 256 addresses per search.",
+      "docs": "groups-and-devices"
+    },
+    {
+      "id": "picker",
+      "title": "Choosing from a long list",
+      "term": "Search and multi-select",
+      "summary": "Type to narrow the list, click or press Enter to pick, Select all and Deselect all act on what the search shows, Backspace removes the last pick.",
+      "when": "A setting offers many devices, groups, lists or networks.",
+      "example": "In a group's networks, type \"10.20.2\" and Select all.",
+      "caution": "Escape closes the list without changing the choice.",
+      "general": true,
+      "docs": "groups-and-devices"
+    },
+    {
       "id": "list-too-large",
       "title": "A list is over its size limit",
       "term": "List size limit",
