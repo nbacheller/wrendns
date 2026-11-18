@@ -40,9 +40,12 @@ pub(crate) struct Limits {
     pub(crate) max_download: u64,
     /// Uncompressed bytes parsed.
     pub(crate) max_inflated: u64,
-    /// Source rows kept while parsing (about 3 times the real file): the heap is bounded by this,
+    /// Source rows kept while parsing (about 2 times the real file): the heap is bounded by this,
     /// not by the byte limit, because a short IPv6 line is about 11 bytes and 48 bytes of heap.
     pub(crate) max_rows: u64,
+    /// IPv6 rows kept while parsing: each is 48 bytes of heap, so this bounds the largest table
+    /// (700,000 rows = 32 MiB) on its own, below the total cap's worst case.
+    pub(crate) max_rows_v6: u64,
 }
 
 impl Limits {
@@ -52,7 +55,8 @@ impl Limits {
         max_change_pct: 30,
         max_download: 32 * 1024 * 1024,
         max_inflated: 96 * 1024 * 1024,
-        max_rows: 1_800_000,
+        max_rows: 1_200_000,
+        max_rows_v6: 700_000,
     };
     /// A fake source in a test serves a handful of rows.
     pub(crate) const TEST: Self = Self {
@@ -61,7 +65,8 @@ impl Limits {
         max_change_pct: 30,
         max_download: 32 * 1024 * 1024,
         max_inflated: 96 * 1024 * 1024,
-        max_rows: 1_800_000,
+        max_rows: 1_200_000,
+        max_rows_v6: 700_000,
     };
 }
 
@@ -165,13 +170,25 @@ pub(crate) struct Collector {
     lines: u64,
     /// 0 means no cap (tests of the parser alone).
     max_rows: u64,
+    /// 0 means no cap.
+    max_rows_v6: u64,
 }
+
+/// Tables grow in steps of this many rows, not by doubling: a doubled Vec of 48-byte rows
+/// would hold up to twice the rows it needs, and old and new buffers together while it grows.
+const GROW_STEP: usize = 65_536;
 
 impl Collector {
     /// A collector that rejects the file at the first row over `max_rows` (`too_large`).
     pub(crate) fn with_max_rows(max_rows: u64) -> Self {
+        Self::with_limits(max_rows, 0)
+    }
+
+    /// As `with_max_rows`, with a separate cap on the IPv6 rows.
+    pub(crate) fn with_limits(max_rows: u64, max_rows_v6: u64) -> Self {
         Self {
             max_rows,
+            max_rows_v6,
             ..Self::default()
         }
     }
@@ -206,6 +223,9 @@ impl Collector {
                 if lo > hi {
                     return Err(bad);
                 }
+                if self.v4.len() == self.v4.capacity() {
+                    self.v4.reserve_exact(GROW_STEP);
+                }
                 self.v4.push((lo, hi, cc));
             }
             (IpAddr::V6(lo), IpAddr::V6(hi)) => {
@@ -215,11 +235,20 @@ impl Collector {
                     if lo4 > hi4 {
                         return Err(bad);
                     }
+                    if self.v4.len() == self.v4.capacity() {
+                        self.v4.reserve_exact(GROW_STEP);
+                    }
                     self.v4.push((lo4, hi4, cc));
                 } else {
                     let (lo, hi) = (u128::from(lo), u128::from(hi));
                     if lo > hi {
                         return Err(bad);
+                    }
+                    if self.max_rows_v6 > 0 && self.v6.len() as u64 >= self.max_rows_v6 {
+                        return Err(Reject::TooLarge);
+                    }
+                    if self.v6.len() == self.v6.capacity() {
+                        self.v6.reserve_exact(GROW_STEP);
                     }
                     self.v6.push((lo, hi, cc));
                 }

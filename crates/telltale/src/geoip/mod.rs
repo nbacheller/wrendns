@@ -594,7 +594,7 @@ fn build_and_publish(
             return Err(Reject::DigestMismatch.code().to_owned());
         }
     }
-    let mut c = Collector::with_max_rows(limits.max_rows);
+    let mut c = Collector::with_limits(limits.max_rows, limits.max_rows_v6);
     ttgeo::read_gzip_csv(&body, &mut c, limits.max_inflated).map_err(|r| r.code().to_owned())?;
     // The compressed body is not needed again: free it before the tables are built.
     drop(body);

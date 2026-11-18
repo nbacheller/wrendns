@@ -473,5 +473,71 @@ fn obs_902_geoip_row_cap() {
         c.push_line("1.0.3.0,1.0.3.255,AU").unwrap_err(),
         Reject::TooLarge
     );
-    const { assert!(Limits::PRODUCTION.max_rows >= 3 * 600_000) };
+    const { assert!(Limits::PRODUCTION.max_rows >= 2 * 600_000) };
+}
+
+/// REQ: OBS-902 (T26.4 review, M2) - IPv6 rows have their own cap, and the table grows in steps.
+#[test]
+fn obs_902_geoip_v6_row_cap() {
+    let mut c = Collector::with_limits(100, 2);
+    c.push_line("2001:db8::,2001:db8:0:ffff:ffff:ffff:ffff:ffff,AU")
+        .unwrap();
+    c.push_line("2001:db9::,2001:db9:0:ffff:ffff:ffff:ffff:ffff,AU")
+        .unwrap();
+    assert_eq!(
+        c.push_line("2001:dba::,2001:dba:0:ffff:ffff:ffff:ffff:ffff,AU")
+            .unwrap_err(),
+        Reject::TooLarge
+    );
+    const { assert!(Limits::PRODUCTION.max_rows_v6 * 48 <= 40 * 1024 * 1024) };
+}
+
+/// REQ: OBS-902 (T26.4 review, M2) - peak resident memory of the parse and build for a
+/// production-sized file (300,000 IPv4 and 300,000 IPv6 rows) and for the v6 cap. Run by hand:
+/// `cargo test -p telltale --bin telltale obs_902_geoip_build_memory -- --ignored --nocapture`.
+#[test]
+#[ignore = "reads /proc: run by hand"]
+fn obs_902_geoip_build_memory() {
+    fn status(key: &str) -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with(key))
+                    .and_then(|l| l.split_whitespace().nth(1)?.parse().ok())
+            })
+            .unwrap_or(0)
+    }
+    let run = |v4: u32, v6: u128| {
+        let mut c = Collector::with_limits(
+            Limits::PRODUCTION.max_rows,
+            Limits::PRODUCTION.max_rows_v6,
+        );
+        for i in 0..v4 {
+            let a = IpAddr::from((i * 4 + 0x0100_0000).to_be_bytes());
+            let b = IpAddr::from((i * 4 + 3 + 0x0100_0000).to_be_bytes());
+            let code = [b'A' + (i % 13) as u8, b'A' + (i % 17) as u8];
+            c.push_line(&format!("{a},{b},{}", std::str::from_utf8(&code).unwrap_or("AA")))
+                .unwrap();
+        }
+        for i in 0..v6 {
+            let a = std::net::Ipv6Addr::from((0x2001_0db8u128 << 96) + (i << 70));
+            let b = std::net::Ipv6Addr::from((0x2001_0db8u128 << 96) + (i << 70) + (1u128 << 64));
+            let code = [b'A' + (i % 13) as u8, b'A' + (i % 17) as u8];
+            c.push_line(&format!("{a},{b},{}", std::str::from_utf8(&code).unwrap_or("AA")))
+                .unwrap();
+        }
+        let before = status("VmRSS:");
+        let t = c.finish(&Limits::TEST, None);
+        println!(
+            "v4={v4} v6={v6}: RSS before finish {} KiB, after {} KiB, peak {} KiB, build ok={}",
+            before,
+            status("VmRSS:"),
+            status("VmHWM:"),
+            t.is_ok()
+        );
+    };
+    println!("baseline RSS {} KiB", status("VmRSS:"));
+    run(300_000, 300_000);
+    run(500_000, 700_000 - 1);
 }

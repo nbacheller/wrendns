@@ -7735,6 +7735,14 @@ event_rate = 300
                 "map.geoip.source_url",
             ),
             (
+                serde_json::json!({ "geoip": { "source_url": "https://mirror.lan/x.gz?token=abc" } }),
+                "map.geoip.source_url",
+            ),
+            (
+                serde_json::json!({ "geoip": { "source_url": "https://mirror.lan/x.gz#frag" } }),
+                "map.geoip.source_url",
+            ),
+            (
                 serde_json::json!({ "geoip": { "sha256": "abc" } }),
                 "map.geoip.sha256",
             ),
