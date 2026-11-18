@@ -4201,10 +4201,15 @@ test('obs_035 wall', async () => {
   // Every panel renders.
   // One at a time (`layout=single`): every panel renders in turn.
   await page.goto('/#/wall?layout=single');
-  for (const id of ['map', 'flow', 'slo', 'latency', 'heat', 'kpi']) {
+  // Wait for the first measure of the area before moving, then assert the panel after each key.
+  await expect.poll(async () => (await page.getByTestId('wall-area').boundingBox())?.height ?? 0).toBeGreaterThan(0);
+  const order = ['map', 'flow', 'slo', 'latency', 'heat', 'kpi'];
+  for (const [i, id] of order.entries()) {
+    await expect(page.getByTestId('wall-slot')).toHaveAttribute('data-panel', id);
     await expect(page.getByTestId(`wall-panel-${id}`)).toBeVisible();
     await expect(page.getByTestId(`wall-${id}`)).toBeAttached();
     await page.keyboard.press('ArrowRight');
+    await expect(page.getByTestId('wall-slot')).toHaveAttribute('data-panel', order[(i + 1) % order.length]);
   }
   await expect(page.getByTestId('wall-panel-map')).toBeVisible();
   // The latency heatmap's controls are hidden on the wall.
