@@ -179,6 +179,45 @@ endpoint = [
 ]
 
 [[preset]]
+id = "cleanbrowsing-family"
+name = "CleanBrowsing Family (malware + adult + proxies, safe search)"
+homepage = "https://cleanbrowsing.org/filters"
+sources = []
+filtering = "family"
+dnssec = false
+ecs = false
+endpoint = [
+  { url = "tls://family-filter-dns.cleanbrowsing.org" },
+  { url = "https://doh.cleanbrowsing.org/doh/family-filter/" },
+]
+
+[[preset]]
+id = "cleanbrowsing-adult"
+name = "CleanBrowsing Adult (malware + adult)"
+homepage = "https://cleanbrowsing.org/filters"
+sources = []
+filtering = "family"
+dnssec = false
+ecs = false
+endpoint = [
+  { url = "tls://adult-filter-dns.cleanbrowsing.org" },
+  { url = "https://doh.cleanbrowsing.org/doh/adult-filter/" },
+]
+
+[[preset]]
+id = "cleanbrowsing-security"
+name = "CleanBrowsing Security (malware and phishing only)"
+homepage = "https://cleanbrowsing.org/filters"
+sources = []
+filtering = "malware"
+dnssec = false
+ecs = false
+endpoint = [
+  { url = "tls://security-filter-dns.cleanbrowsing.org" },
+  { url = "https://doh.cleanbrowsing.org/doh/security-filter/" },
+]
+
+[[preset]]
 id = "adguard"
 name = "AdGuard DNS (ads + trackers)"
 homepage = "https://adguard-dns.io/en/public-dns.html"

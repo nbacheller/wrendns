@@ -19518,7 +19518,7 @@
                 },
                 "source": {
                   "type": "string",
-                  "description": "`router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry)."
+                  "description": "`router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example\non a tagged VLAN interface; it is named after the interface) or `group` (only a\n`[[group]] networks` entry)."
                 },
                 "subnet": {
                   "type": "string",
@@ -20563,6 +20563,20 @@
                   "type": "integer",
                   "format": "int64",
                   "minimum": 0
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the\nupstream sets a `source`."
+                },
+                "sourceProblem": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: UPS-013 — set while this node no longer holds that address: its queries fail."
                 }
               }
             }
@@ -22148,7 +22162,7 @@
           },
           "source": {
             "type": "string",
-            "description": "`router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry)."
+            "description": "`router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example\non a tagged VLAN interface; it is named after the interface) or `group` (only a\n`[[group]] networks` entry)."
           },
           "subnet": {
             "type": "string",
@@ -22239,6 +22253,29 @@
           "token": {
             "type": "string",
             "description": "The token, shown only now: send as `Authorization: Bearer <token>`."
+          }
+        }
+      },
+      "NodeAddress": {
+        "type": "object",
+        "description": "One address this node holds, for the Upstreams form's `source` suggestions.",
+        "required": [
+          "interface",
+          "address",
+          "network"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "`198.51.100.252`"
+          },
+          "interface": {
+            "type": "string",
+            "description": "The interface (`eth0`, `eth0.100`)."
+          },
+          "network": {
+            "type": "string",
+            "description": "The network it is in, which a shared upstream can name instead: `198.51.100.0/24`."
           }
         }
       },
@@ -25729,9 +25766,17 @@
           "queryLog",
           "filterNames",
           "build",
-          "update"
+          "update",
+          "addresses"
         ],
         "properties": {
+          "addresses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeAddress"
+            },
+            "description": "REQ: UPS-013 (T24.31, ADR-997) — this node's own interface addresses (loopback and\nlink-local left out), which an upstream's `source` can name. They differ per node."
+          },
           "build": {
             "$ref": "#/components/schemas/BuildInfo",
             "description": "Exactly which build this is (ADR-046)."
@@ -26580,6 +26625,20 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the\nupstream sets a `source`."
+          },
+          "sourceProblem": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: UPS-013 — set while this node no longer holds that address: its queries fail."
           }
         }
       },
