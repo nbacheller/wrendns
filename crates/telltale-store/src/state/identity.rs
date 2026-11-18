@@ -41,6 +41,9 @@ pub struct IdUser {
     pub oidc_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oidc_subject: Option<String>,
+    /// REQ: API-016 — the issuer the link was made at (an older primary sends none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oidc_issuer: Option<String>,
 }
 
 /// A recovery code as replicated (its owner by the primary's user ID).
@@ -129,7 +132,7 @@ impl State {
         self.with(|c| {
             let mut st = c.prepare(
                 "SELECT id, username, password_hash, role, totp_secret, totp_enabled, totp_last_step,
-                        allow_basic_api, disabled, created, password_changed, oidc_provider, oidc_subject
+                        allow_basic_api, disabled, created, password_changed, oidc_provider, oidc_subject, oidc_issuer
                  FROM users ORDER BY id",
             )?;
             let users = st
@@ -148,6 +151,7 @@ impl State {
                         password_changed: u(r.get(10)?),
                         oidc_provider: r.get(11)?,
                         oidc_subject: r.get(12)?,
+                        oidc_issuer: r.get(13)?,
                     })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -232,7 +236,7 @@ impl State {
                 tx.execute(
                     "UPDATE users SET password_hash = ?2, role = ?3, totp_secret = ?4, totp_enabled = ?5,
                          totp_last_step = ?6, allow_basic_api = ?7, disabled = ?8, created = ?9,
-                         password_changed = ?10, oidc_provider = ?11, oidc_subject = ?12,
+                         password_changed = ?10, oidc_provider = ?11, oidc_subject = ?12, oidc_issuer = ?13,
                          origin = 'cluster'
                      WHERE id = ?1",
                     params![
@@ -247,7 +251,8 @@ impl State {
                         i(p.created),
                         i(p.password_changed),
                         p.oidc_provider,
-                        p.oidc_subject
+                        p.oidc_subject,
+                        p.oidc_issuer
                     ],
                 )?;
                 rep.users_updated += 1;
@@ -262,8 +267,8 @@ impl State {
                 tx.execute(
                     "INSERT INTO users (username, password_hash, role, totp_secret, totp_enabled,
                          totp_last_step, allow_basic_api, disabled, created, password_changed,
-                         oidc_provider, oidc_subject, origin)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'cluster')",
+                         oidc_provider, oidc_subject, oidc_issuer, origin)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'cluster')",
                     params![
                         p.username,
                         p.password_hash,
@@ -276,7 +281,8 @@ impl State {
                         i(p.created),
                         i(p.password_changed),
                         p.oidc_provider,
-                        p.oidc_subject
+                        p.oidc_subject,
+                        p.oidc_issuer
                     ],
                 )?;
                 rep.users_added += 1;

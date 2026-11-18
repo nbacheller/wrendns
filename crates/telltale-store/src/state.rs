@@ -197,6 +197,11 @@ const MIGRATIONS: &[&str] = &[
         changed INTEGER NOT NULL DEFAULT 0
     );
     INSERT INTO pihole_api (id) VALUES (1);",
+    // 15: REQ: API-016 (T23.10, ADR-967 point 7) — the issuer a user is linked at and a session
+    // was opened through, so a provider repointed to another issuer neither keeps the old
+    // issuer's sessions nor maps its subjects onto existing users. NULL: made before this.
+    "ALTER TABLE users ADD COLUMN oidc_issuer TEXT;
+    ALTER TABLE sessions ADD COLUMN oidc_issuer TEXT;",
 ];
 
 /// REQ: API-014 — the migration that purges the old idempotency records.
@@ -275,6 +280,8 @@ pub struct User {
     pub password_changed: u64,
     /// The OIDC provider this user signs in with (no local password), if any.
     pub oidc_provider: Option<String>,
+    /// The issuer that link was made at (`None`: made before issuers were recorded).
+    pub oidc_issuer: Option<String>,
 }
 
 /// A session row (the session ID itself is never stored, only its hash).
@@ -550,7 +557,7 @@ impl State {
     }
 
     const USER_COLS: &'static str = "id, username, password_hash, role, totp_secret, totp_enabled, \
-        totp_last_step, allow_basic_api, disabled, created, password_changed, oidc_provider";
+        totp_last_step, allow_basic_api, disabled, created, password_changed, oidc_provider, oidc_issuer";
 
     fn row_user(r: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
         Ok(User {
@@ -566,6 +573,7 @@ impl State {
             created: u(r.get(9)?),
             password_changed: u(r.get(10)?),
             oidc_provider: r.get(11)?,
+            oidc_issuer: r.get(12)?,
         })
     }
 
@@ -794,11 +802,11 @@ impl State {
     }
 
     /// Marks a session as started through an OIDC provider.
-    pub fn set_session_provider(&self, id_hash: &[u8], provider: &str) -> Result<()> {
+    pub fn set_session_provider(&self, id_hash: &[u8], provider: &str, issuer: &str) -> Result<()> {
         self.with(|c| {
             c.execute(
-                "UPDATE sessions SET oidc_provider = ?2 WHERE id_hash = ?1",
-                params![id_hash, provider],
+                "UPDATE sessions SET oidc_provider = ?2, oidc_issuer = ?3 WHERE id_hash = ?1",
+                params![id_hash, provider, issuer],
             )
             .map(|_| ())
         })
@@ -840,6 +848,30 @@ impl State {
     pub fn delete_provider_sessions(&self, provider: &str) -> Result<u64> {
         self.with(|c| c.execute("DELETE FROM sessions WHERE oidc_provider = ?1", [provider]))
             .map(|n| n as u64)
+    }
+
+    /// REQ: API-016 — ends the sessions of `provider` that were opened at another issuer than
+    /// `issuer` (the provider was repointed). Sessions from before issuers were recorded stay.
+    pub fn delete_provider_sessions_not_at(&self, provider: &str, issuer: &str) -> Result<u64> {
+        self.with(|c| {
+            c.execute(
+                "DELETE FROM sessions WHERE oidc_provider = ?1
+                   AND oidc_issuer IS NOT NULL AND oidc_issuer != ?2",
+                [provider, issuer],
+            )
+        })
+        .map(|n| n as u64)
+    }
+
+    /// REQ: API-016 — records the issuer a user's OIDC link was made at.
+    pub fn set_user_issuer(&self, id: i64, issuer: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE users SET oidc_issuer = ?2 WHERE id = ?1",
+                params![id, issuer],
+            )
+            .map(|_| ())
+        })
     }
 
     /// Deletes sessions that expired or were idle since before `idle_before`.

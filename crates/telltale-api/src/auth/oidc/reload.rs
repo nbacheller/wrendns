@@ -23,6 +23,10 @@ pub struct ProviderStatus {
     pub active: bool,
     /// Why it isn't active, or what went wrong the last time it was read.
     pub reason: Option<String>,
+    /// Whether the reason is a provider that couldn't be read just now (worth trying again
+    /// soon), not a setting that has to change.
+    #[serde(skip)]
+    pub retry: bool,
 }
 
 impl ProviderStatus {
@@ -31,6 +35,7 @@ impl ProviderStatus {
             id: id.into(),
             active: true,
             reason: None,
+            retry: false,
         }
     }
 
@@ -39,6 +44,15 @@ impl ProviderStatus {
             id: id.into(),
             active: false,
             reason: Some(reason.into()),
+            retry: false,
+        }
+    }
+
+    /// A provider that couldn't be read now (`retry`).
+    pub fn unreadable(id: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            retry: true,
+            ..Self::inactive(id, reason)
         }
     }
 }
@@ -87,6 +101,22 @@ impl Auth {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = status;
     }
 
+    /// REQ: API-016 — whether this node's configuration names provider `id` (served or not).
+    /// Kept in memory by the rebuilds; a user of a provider that isn't named can't sign in with
+    /// a session or a token.
+    pub fn oidc_provider_named(&self, id: &str) -> bool {
+        self.oidc
+            .load()
+            .as_ref()
+            .is_some_and(|o| o.settings.providers.iter().any(|p| p.id == id))
+            || self
+                .oidc_status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|s| s.id == id)
+    }
+
     /// The status of every provider the configuration names, as of the last rebuild.
     pub fn oidc_status(&self) -> Vec<ProviderStatus> {
         self.oidc_status
@@ -130,10 +160,14 @@ impl Auth {
                 }
                 Err(e) => {
                     tracing::warn!(provider = %p.id, error = %e, "OIDC discovery failed on reload");
-                    match previous
-                        .as_ref()
-                        .and_then(|o| o.settings.providers.iter().find(|q| q.id == p.id))
-                    {
+                    // Only the same issuer keeps its previous settings (the provider is down
+                    // just now); a changed issuer fails closed: the old one isn't trusted on.
+                    match previous.as_ref().and_then(|o| {
+                        o.settings
+                            .providers
+                            .iter()
+                            .find(|q| q.id == p.id && q.issuer == p.issuer)
+                    }) {
                         Some(old) => {
                             serve.push(old.clone());
                             status.push(ProviderStatus {
@@ -142,9 +176,10 @@ impl Auth {
                                 reason: Some(format!(
                                     "the new settings aren't applied yet, because the provider couldn't be read: {e}"
                                 )),
+                                retry: true,
                             });
                         }
-                        None => status.push(ProviderStatus::inactive(
+                        None => status.push(ProviderStatus::unreadable(
                             p.id.clone(),
                             format!("the provider couldn't be read: {e}"),
                         )),
@@ -196,6 +231,28 @@ impl Auth {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone_from(&status);
+        // REQ: API-016 — a provider repointed to another issuer ends the sessions opened at the
+        // old one, whether or not the new one can be read yet.
+        for p in &settings.providers {
+            let state = Arc::clone(&self.state);
+            let (id, issuer) = (p.id.clone(), p.issuer.clone());
+            match tokio::task::spawn_blocking(move || {
+                state.delete_provider_sessions_not_at(&id, &issuer)
+            })
+            .await
+            {
+                Ok(Ok(n)) if n > 0 => {
+                    tracing::info!(provider = %p.id, sessions = n, "OIDC provider repointed: the old issuer's sessions ended");
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => {
+                    tracing::error!(provider = %p.id, error = %e, "can't end a repointed provider's sessions");
+                }
+                Err(e) => {
+                    tracing::error!(provider = %p.id, error = %e, "can't end a repointed provider's sessions");
+                }
+            }
+        }
         for id in gone {
             let state = Arc::clone(&self.state);
             let removed = id.clone();

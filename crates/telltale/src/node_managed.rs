@@ -239,7 +239,8 @@ pub(crate) fn overlay_own(cfg: &mut Config, state_path: &Path) {
 
 /// A promoted primary's seeding (ADR-903 §6): the entries of the blob it inherited that it has no
 /// row for become its own rows, once per inherited blob (a marker keeps the hash), so that they
-/// can be changed here and are published from here. Its own rows win. Returns whether this node's
+/// can be changed here and are published from here. A node's rows from an earlier time as
+/// primary were cleared when it became a replica ([`clear_stale`]), so the blob wins. Returns whether this node's
 /// rows are the source now: when it is, the inherited blob is no longer overlaid (a deleted entry
 /// must not come back from a stale copy).
 pub(crate) fn seed_once(state_path: &Path, cluster_dir: &Path, hash: &str, bytes: &[u8]) -> bool {
@@ -294,6 +295,25 @@ pub(crate) fn seed_once(state_path: &Path, cluster_dir: &Path, hash: &str, bytes
         return false;
     }
     true
+}
+
+/// REQ: CLU-015, API-016 (ADR-968 point 4) — a replica never writes node-managed rows (writes
+/// are forwarded to the primary), so any it holds are left from an earlier time as primary. They
+/// are deleted, and the seeding marker with them, so that a later promotion starts from the
+/// blob it inherits and not from a stale copy (a provider the cluster removed must not come back).
+pub(crate) fn clear_stale(state_path: &Path, cluster_dir: &Path) {
+    if state_path.exists()
+        && let Ok(state) = State::open(state_path)
+    {
+        for kind in KINDS {
+            for m in state.managed(kind).unwrap_or_default() {
+                if let Err(e) = state.delete_managed(&m.kind, &m.name, None) {
+                    warn!(kind = %m.kind, name = %m.name, "can't clear a stale node-managed row on a replica: {e}");
+                }
+            }
+        }
+    }
+    let _ = std::fs::remove_file(cluster_dir.join(SEEDED));
 }
 
 /// Whether the seeding of the blob with `hash` is recorded.

@@ -963,11 +963,23 @@ impl Auth {
     }
 
     fn active_user(&self, id: i64) -> Result<User, Problem> {
-        self.state
+        let user = self
+            .state
             .user(id)
             .map_err(db)?
             .filter(|u| !u.disabled)
-            .ok_or_else(|| Problem::new(Code::Unauthorized, "this account is disabled or gone"))
+            .ok_or_else(|| Problem::new(Code::Unauthorized, "this account is disabled or gone"))?;
+        // REQ: API-016 (ADR-967 point 7) — a user of a provider this node no longer names
+        // can't use a session or a token, whether or not the removal's sweep ran here.
+        if let Some(p) = &user.oidc_provider
+            && !self.oidc_provider_named(p)
+        {
+            return Err(Problem::new(
+                Code::Unauthorized,
+                "this account's sign-in provider was removed",
+            ));
+        }
+        Ok(user)
     }
 
     fn by_session(

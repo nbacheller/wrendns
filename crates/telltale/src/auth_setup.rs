@@ -229,11 +229,7 @@ pub(crate) async fn reapply(src: &crate::http::Sources) -> bool {
     match auth.reload_oidc(settings, skipped, fetch).await {
         // The ones whose discovery failed (the ones that lack `public_url` or a secret change
         // only when the configuration or a secret does, which wakes the applier).
-        Reloaded::Applied(status) => status.iter().any(|s| {
-            s.reason
-                .as_deref()
-                .is_some_and(|r| r.contains("couldn't be read"))
-        }),
+        Reloaded::Applied(status) => status.iter().any(|s| s.retry),
         // A newer pass overtook this one and applies the newer settings itself.
         Reloaded::Discarded => false,
     }

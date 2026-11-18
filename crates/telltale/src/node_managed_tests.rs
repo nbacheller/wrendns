@@ -144,7 +144,10 @@ async fn api_016_oidc_put_applies_live_and_delete_ends_sessions() {
     let ip = "127.0.0.1".parse().unwrap();
     let session = h.auth.start_session(&user, ip, now).unwrap();
     let hash = telltale_api::auth::crypto::secret_hash(&session.cookie);
-    h.auth.state().set_session_provider(&hash, "lab").unwrap();
+    h.auth
+        .state()
+        .set_session_provider(&hash, "lab", "https://idp.test")
+        .unwrap();
     assert!(h.auth.state().session(&hash).unwrap().is_some());
 
     let (s, _, out) = h.call("DELETE", &format!("{PROVIDERS}/lab"), None).await;
@@ -377,6 +380,32 @@ async fn clu_015_node_managed_survives_promotion() {
     );
     let published = crate::node_managed::export(h.auth.state());
     assert!(!String::from_utf8(published).unwrap().contains("\"sso\""));
+}
+
+/// REQ: CLU-015 (ADR-968 point 4) — rows left from an earlier time as primary are cleared when the
+/// node is a replica, so a provider the cluster removed meanwhile does not come back on a later
+/// promotion.
+#[tokio::test]
+async fn clu_015_stale_rows_cleared_on_replica() {
+    let h = harness("");
+    let stale = serde_json::to_string(&body("https://old.test")).unwrap();
+    h.auth
+        .state()
+        .put_managed_batch(&[(OIDC_PROVIDER, "corp", stale.as_str())], None, 1, "test")
+        .unwrap();
+    // The cluster's current blob has no `corp`.
+    let b = blob(&[("sso", body("https://idp.test"))]);
+    let file = follow(&h, NodeRole::Replica, Some(&b));
+    assert_eq!(ids(&crate::replication::effective(&file)), ["sso"]);
+    assert_eq!(h.auth.state().managed(OIDC_PROVIDER).unwrap().len(), 0);
+    // Promoted again: seeded from the blob alone.
+    let dir = data_dir(&h);
+    let mut id = Identity::load(&dir).unwrap().unwrap();
+    id.save_role(NodeRole::Primary, 3).unwrap();
+    assert_eq!(ids(&crate::replication::effective(&file)), ["sso"]);
+    let rows = h.auth.state().managed(OIDC_PROVIDER).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name, "sso");
 }
 
 /// REQ: CLU-004 (T23.10) — a bad node-managed blob drops only those entries: the shared part of the

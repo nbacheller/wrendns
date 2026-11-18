@@ -148,7 +148,27 @@ test.describe('api_016 OIDC providers in the UI', () => {
   test('api_016 provider without public_url shows inactive', async ({ browser }) => {
     const page = await adminPage(browser);
     try {
-      // This server has no public_url: the provider added above is stored, shown, and inactive.
+      // A node without public_url: the provider is stored, shown, and inactive. The list is
+      // mocked, because a run with real providers (OIDC_E2E) gives the server a public_url.
+      await page.route('**/api/v1/oidc-providers', (route) =>
+        route.request().method() === 'GET'
+          ? route.fulfill({
+              json: {
+                publicUrl: '',
+                items: [
+                  {
+                    id: 'lab-sso', name: 'Lab SSO', issuer: 'https://lab.example', clientId: 'telltale', source: 'api',
+                    scopes: ['openid'], usernameClaim: 'preferred_username', groupsClaim: 'groups', roles: [],
+                    requireVerifiedEmail: false, secretSource: 'stored', secret: 'oidc.lab-sso.client_secret',
+                    secretReadable: true, active: false,
+                    reason: 'this node has no public_url, so it cannot give the provider a redirect URI',
+                    redirectUri: '',
+                  },
+                ],
+              },
+            })
+          : route.continue(),
+      );
       await page.goto('/#/settings?tab=signin');
       await page.reload();
       await expect(page.getByTestId('oidc-no-public-url')).toContainText('public_url');

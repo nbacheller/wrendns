@@ -1486,11 +1486,12 @@ pub(crate) async fn oidc_callback(
     let https = is_https(&auth, &req_ext, &headers);
     let ttl = auth.settings().session_ttl_secs;
     let pid = id.clone();
+    let issuer = oidc.issuer(&id).unwrap_or_default().to_owned();
     let signed_in = blocking(move || {
         let user = auth.oidc_user(&oidc, &pid, &who, ip, now())?;
         let sess = auth.start_session(&user, ip, now())?;
         auth.state()
-            .set_session_provider(&crypto::secret_hash(&sess.cookie), &pid)
+            .set_session_provider(&crypto::secret_hash(&sess.cookie), &pid, &issuer)
             .map_err(db)?;
         Ok(sess)
     })

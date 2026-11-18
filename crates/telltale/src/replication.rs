@@ -120,6 +120,13 @@ pub(crate) fn unpinned(file: &Config) -> Config {
         return file.clone();
     }
     let gitops_source = id.meta.config_authority == "gitops" && gitops_capable(file);
+    // REQ: CLU-015 (ADR-968 point 4) — a replica holds no node-managed rows of its own.
+    if matches!(id.meta.role, Some(node::Role::Replica)) {
+        crate::node_managed::clear_stale(
+            &crate::managed::state_path(file),
+            &node::dir_of(data_dir(file)),
+        );
+    }
     let m = match id.meta.role {
         Some(node::Role::Primary) if gitops_source => None,
         Some(node::Role::Primary) => base.map(|m| (m, true)),

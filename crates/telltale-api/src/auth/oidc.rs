@@ -103,6 +103,8 @@ struct Discovered {
 #[derive(Debug)]
 struct Flow {
     provider: String,
+    /// The issuer the provider had when this sign-in started.
+    issuer: String,
     verifier: String,
     nonce: String,
     return_to: String,
@@ -135,7 +137,10 @@ impl Shared {
         self.flows
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .retain(|_, f| keep.iter().any(|(id, _)| *id == f.provider));
+            .retain(|_, f| {
+                keep.iter()
+                    .any(|(id, issuer)| *id == f.provider && *issuer == f.issuer)
+            });
     }
 
     fn cached(&self, id: &str, issuer: &str) -> Option<Arc<Discovered>> {
@@ -351,6 +356,11 @@ impl Oidc {
             .collect()
     }
 
+    /// REQ: API-016 — the issuer provider `id` is configured with.
+    pub fn issuer(&self, id: &str) -> Option<&str> {
+        self.provider(id).ok().map(|p| p.issuer.as_str())
+    }
+
     fn provider(&self, id: &str) -> Result<&ProviderSettings, Problem> {
         self.settings
             .providers
@@ -512,6 +522,7 @@ impl Oidc {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         flows.retain(|_, f| f.started.elapsed() < FLOW_TTL);
+        let issuer = self.provider(id)?.issuer.clone();
         if flows.len() >= MAX_FLOWS {
             return Err(Problem::new(
                 Code::RateLimited,
@@ -522,6 +533,7 @@ impl Oidc {
             state,
             Flow {
                 provider: id.to_owned(),
+                issuer,
                 verifier,
                 nonce,
                 return_to: return_to.to_owned(),
@@ -631,6 +643,13 @@ impl Oidc {
             .hint("Start again from the sign-in page in this browser."));
         }
         let p = self.provider(id)?;
+        if p.issuer != flow.issuer {
+            return Err(Problem::new(
+                Code::Unauthorized,
+                "this sign-in provider changed while you were signing in",
+            )
+            .hint("Start again from the sign-in page."));
+        }
         let d = self.discover(p).await?;
         let id_token = self.exchange(p, &d.meta, code, &flow.verifier).await?;
         let allowed = id_token_algs(&d.meta)?;
@@ -885,6 +904,8 @@ impl Auth {
             .user_by_oidc(&provider, sub)
             .map_err(super::db)?
             .filter(|_| !sub.is_empty())
+            .map(|u| self.check_link(oidc, &provider, u))
+            .transpose()?
             .ok_or_else(|| {
                 Problem::new(
                     Code::Unauthorized,
@@ -949,6 +970,33 @@ impl Auth {
         })
     }
 
+    /// REQ: API-016 — a `sub` is unique only within one issuer, so a user linked at another
+    /// issuer than the provider has now isn't mapped (an admin deletes the user to let the
+    /// person sign in again as a new one). A user from before issuers were recorded adopts the
+    /// current one.
+    fn check_link(&self, oidc: &Oidc, id: &str, u: User) -> Result<User, Problem> {
+        let Some(now) = oidc.issuer(id) else {
+            return Ok(u);
+        };
+        match u.oidc_issuer.as_deref() {
+            Some(was) if was != now => Err(Problem::new(
+                Code::Forbidden,
+                "this account was linked to another issuer of this provider",
+            )
+            .hint("The provider's issuer changed. An admin can delete the user so the person signs in as a new one.")),
+            Some(_) => Ok(u),
+            None => {
+                self.state()
+                    .set_user_issuer(u.id, now)
+                    .map_err(super::db)?;
+                Ok(User {
+                    oidc_issuer: Some(now.to_owned()),
+                    ..u
+                })
+            }
+        }
+    }
+
     /// Signs in (and on first sign-in creates) the user `who` from provider `id`, updating
     /// their role from their groups. Blocking.
     pub fn oidc_user(
@@ -978,6 +1026,7 @@ impl Auth {
             .map_err(super::db)?;
         let user = if let Some(u) = existing {
             {
+                let u = self.check_link(oidc, id, u)?;
                 if u.disabled {
                     return Err(Problem::new(
                         Code::Forbidden,
@@ -1006,6 +1055,11 @@ impl Auth {
                     .state()
                     .create_oidc_user(&name, role.as_str(), id, &who.subject, now)
                     .map_err(super::db)?;
+                if let Some(issuer) = oidc.issuer(id) {
+                    self.state()
+                        .set_user_issuer(u.id, issuer)
+                        .map_err(super::db)?;
+                }
                 self.record(
                     &actor(&u),
                     "user.create",
