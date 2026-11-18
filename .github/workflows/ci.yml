@@ -2,11 +2,18 @@
 name: ci
 on:
   push:
-    # The fork's feature branches get CI too (nbacheller/telltaledns, owner decision 2026-11-16).
-    branches: [main, 'feat/**']
+    # The fork's integration branch gets CI on every push (nbacheller/telltaledns). Track branches don't
+    # (owner decision 2026-11-17): their agents run the same checks locally, and a run on one is started
+    # by hand with `gh workflow run ci.yml --ref <branch>` when it needs the hosted arm64 runner.
+    branches: [main, 'feat/ipam-integrations']
   pull_request:
   # The release workflow starts CI for the commit it pushes to main (T9.26).
   workflow_dispatch:
+# A newer push to the same branch supersedes a run still in progress (it would only spend minutes and
+# the shared GitHub API limit); runs on main are never cancelled, the release workflow waits on them.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Least privilege: every job reads the repository and nothing more (the repository's default is
 # read-only already; CodeQL's actions/missing-workflow-permissions asks for it to be explicit).
