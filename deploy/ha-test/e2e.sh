@@ -146,6 +146,10 @@ listen = "0.0.0.0:8053"
 listen = "127.0.0.1:9153"
 [local]
 device_domain = "home.arpa"
+[discovery]
+enabled = true
+[[discovery.subnet]]
+cidr = "192.0.2.0/24"
 [[router]]
 name = "home-assistant"
 type = "home_assistant"
@@ -368,6 +372,36 @@ curl -sf -b "$JAR" -H "x-csrf-token: $CSRF" -H 'content-type: application/json' 
   "$API/api/v1/pihole-api/token" >/dev/null || fail "rotating the Pi-hole API token"
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d "{\"password\":\"$PIT\"}" "$API/api/auth")" = 401 ] \
   || fail "the old Pi-hole API token should be refused"
+echo ok
+
+echo "== 8. the inventory: Home Assistant's devices, with and without entities (T25.10, DSC-009)"
+# The inventory is saved when the node stops: stop it gracefully, copy the file out, and read it.
+docker stop -t 20 "$NODE" >/dev/null
+docker cp "$NODE:/var/lib/telltale/inventory.json" "$(hostpath "$E/inventory.json")" || fail "the node saved no inventory.json"
+"$PY" - "$(hostpath "$E/inventory.json")" <<'PYCHECK' || fail "the saved inventory"
+import json, sys
+inv = json.load(open(sys.argv[1]))
+def mac(b):
+    return ":".join("%02x" % x for x in b)
+by = {mac(e["key"]["value"]): e for e in inv["entries"] if e["key"]["kind"] == "mac"}
+# The devices with entities: the poll's own feed (names; the tracker's address is a claim, never current).
+want = {"aa:bb:cc:00:00:01": "Porch Light", "aa:bb:cc:00:00:02": "Living Room TV", "aa:bb:cc:00:00:03": "Kitchen Tablet"}
+for m, name in want.items():
+    e = by.get(m)
+    assert e is not None, "no inventory entry for %s: %s" % (m, sorted(by))
+    assert e["names"][0]["label"] == name, e
+    assert all(a["source"] == "home_assistant" for a in e["addrs"]), e
+# A name a person gave ranks as ha_user; an integration's own is ha_integration.
+assert by["aa:bb:cc:00:00:03"]["names"][0]["kind"] == "ha_user", by["aa:bb:cc:00:00:03"]
+assert by["aa:bb:cc:00:00:02"]["names"][0]["kind"] == "ha_integration", by["aa:bb:cc:00:00:02"]
+# The device with no entity, in an area: read by the second template, with no address.
+hub = by.get("aa:bb:cc:00:00:05")
+assert hub is not None, "the entity-less device in an area was not read: %s" % sorted(by)
+assert hub["names"][0]["label"] == "Hall Hub" and hub["names"][0]["kind"] == "ha_user" and hub["addrs"] == [], hub
+# The one in no area and with no label can't be listed by a template: absent (the documented limit).
+assert "aa:bb:cc:00:00:06" not in by, "a device no template can reach was read"
+print("inventory: 3 devices with entities, the entity-less device in the Hall area named Hall Hub, none for the one in no area")
+PYCHECK
 echo ok
 
 echo PASS
