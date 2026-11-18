@@ -1217,8 +1217,10 @@ pub(crate) async fn v6_blocking(
 pub struct BlockingBody {
     /// `true` ends every pause, `false` pauses blocking for everyone.
     pub blocking: Option<bool>,
-    /// Seconds to stay off (rounded up to whole minutes; none: the longest allowed).
-    pub timer: Option<f64>,
+    /// Seconds to stay off (rounded up to whole minutes; none: the longest allowed). Anything but
+    /// a number counts as none: the Home Assistant integration sends `true` for "no timer".
+    #[schema(value_type = Option<f64>)]
+    pub timer: Option<Value>,
 }
 
 /// Seconds as whole minutes, rounded up, between 1 and `max` (no timer: `max`).
@@ -1295,10 +1297,10 @@ pub(crate) async fn v6_set_blocking(
         Ok(ip) => ip,
         Err(r) => return r,
     };
-    let Some(enable) = body
-        .ok()
-        .and_then(|Json(b)| b.blocking.map(|e| (e, b.timer)))
-    else {
+    let Some(enable) = body.ok().and_then(|Json(b)| {
+        b.blocking
+            .map(|e| (e, b.timer.as_ref().and_then(Value::as_f64)))
+    }) else {
         return v6_error(
             StatusCode::BAD_REQUEST,
             "bad_request",

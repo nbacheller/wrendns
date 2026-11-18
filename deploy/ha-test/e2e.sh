@@ -5,6 +5,9 @@
 # with fake devices (fixtures/telltale_seed). A TelltaleDNS node runs in a throwaway container on
 # the same network. The script checks the device names and addresses the node reports, the names
 # it answers in DNS, and the TelltaleDNS integration's sensors inside Home Assistant.
+# T24.10 (API-005, ADR-961): the same node also answers Pi-hole's API, and the real Home Assistant
+# Pi-hole integration (`pi_hole`) is configured against it: it reads the summary and switches
+# blocking off and on through the node.
 # Everything is torn down by a trap; no token is printed or left behind.
 #
 # Usage: deploy/ha-test/e2e.sh [path/to/telltale]        (default: target/debug/telltale)
@@ -261,6 +264,110 @@ one("queries_24_h")
 one("version")
 print("known devices 3 (source home-assistant, 3 with DNS names), health " + health["state"])
 ' || fail "the integration's sensors"
+echo ok
+
+echo "== 7. the Home Assistant Pi-hole integration against the node's Pi-hole compatible API (T24.10)"
+# Off by default: the integration can't use it until an admin turns it on.
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{"password":"x"}' "$API/api/auth")" = 404 ] \
+  || fail "the Pi-hole API should answer 404 while it is off"
+[ "$(curl -sf -b "$JAR" "$API/api/v1/pihole-api" | field 'd["enabled"]')" = False ] || fail "the Pi-hole API should be off by default"
+# An admin makes the token (shown once, kept in a file here) and turns it on.
+curl -sf -b "$JAR" -H "x-csrf-token: $CSRF" -H 'content-type: application/json' -d '{}' \
+  "$API/api/v1/pihole-api/token" | field 'd["token"]' > "$E/pihole-token" || fail "making the Pi-hole API token"
+[ -s "$E/pihole-token" ] || fail "the Pi-hole API token is empty"
+PIT=$(cat "$E/pihole-token")
+[ "$(curl -sf -b "$JAR" -H "x-csrf-token: $CSRF" -X PUT -H 'content-type: application/json' -d '{"enabled":true}' \
+  "$API/api/v1/pihole-api" | field 'd["enabled"]')" = True ] || fail "turning the Pi-hole API on"
+# Home Assistant's own flow: host, port, location, the token as the API key (it tries v6 first).
+FLOW=$(curl -s -H "authorization: Bearer $LLT" -H 'content-type: application/json' \
+  -d '{"handler":"pi_hole","show_advanced_options":false}' "$HA/api/config/config_entries/flow" \
+  | field 'd["flow_id"]') || fail "starting the Pi-hole flow"
+RES=$(curl -s -H "authorization: Bearer $LLT" -H 'content-type: application/json' \
+  -d "{\"host\":\"$NODE\",\"port\":8053,\"location\":\"admin\",\"api_key\":\"$PIT\",\"ssl\":false,\"verify_ssl\":true}" \
+  "$HA/api/config/config_entries/flow/$FLOW")
+[ "$(printf '%s' "$RES" | field 'd["type"]')" = create_entry ] \
+  || fail "the Pi-hole integration's setup: $(printf '%s' "$RES" | field 'd.get("errors", d.get("reason"))')"
+# The integration read the node: its entities, the status on, the query count from step 5's lookups.
+pihole_states() {
+  ha_get /api/states | "$PY" -c '
+import json, sys
+want = sys.argv[1]
+out = {}
+for s in json.load(sys.stdin):
+    e = s["entity_id"]
+    if "pi_hole" in e and e.startswith(want):
+        out[e] = s["state"]
+print(json.dumps(out))' "$1"
+}
+SWITCH=""
+for _ in $(seq 120); do
+  SWITCH=$(pihole_states switch. | field 'next(iter(d), "")')
+  [ -n "$SWITCH" ] && [ "$(ha_get "/api/states/$SWITCH" | field 'd.get("state")')" = on ] && break
+  sleep 1
+done
+[ -n "$SWITCH" ] || fail "the Pi-hole integration made no switch: $(ha_get /api/states | field '[s["entity_id"] for s in d if "pi_hole" in s["entity_id"]]')"
+[ "$(pihole_states binary_sensor. | field 'list(d.values())')" = "['on']" ] || fail "the Pi-hole status sensor: $(pihole_states binary_sensor.)"
+pihole_states sensor. | "$PY" -c '
+import json, sys
+sensors = json.load(sys.stdin)
+def num(suffix):
+    m = [v for e, v in sensors.items() if e.endswith(suffix)]
+    if len(m) != 1:
+        sys.exit(f"expected one {suffix} sensor, found {len(m)}: {sorted(sensors)}")
+    return float(m[0])
+queries = num("dns_queries")
+if queries < 3:
+    sys.exit(f"dns queries {queries}, expected at least the 3 lookups of step 5")
+num("ads_blocked")
+num("domains_blocked")
+print("the Pi-hole integration read the summary: %d queries" % queries)
+' || fail "the Pi-hole integration's sensors"
+# The switch drives blocking through the node: off (HA's v6 call is POST /api/dns/blocking) ...
+ha_post() { curl -s -o /dev/null -w '%{http_code}' -H "authorization: Bearer $LLT" -H 'content-type: application/json' -d "$2" "$HA$1"; }
+paused() { curl -sf "${AUTHZ[@]}" "$API/api/v1/blocking" | field 'len([p for n in d["items"] for p in n["pauses"] if p.get("group") is None])'; }
+[ "$(paused)" = 0 ] || fail "blocking should start on"
+code=$(ha_post /api/services/switch/turn_off "{\"entity_id\":\"$SWITCH\"}")
+[ "$code" = 200 ] || fail "turning the Pi-hole switch off: HTTP $code"
+for _ in $(seq 30); do [ "$(paused)" != 0 ] && break; sleep 1; done
+[ "$(paused)" != 0 ] || fail "the Pi-hole switch did not pause blocking on the node"
+for _ in $(seq 30); do [ "$(ha_get "/api/states/$SWITCH" | field 'd.get("state")')" = off ] && break; sleep 1; done
+[ "$(ha_get "/api/states/$SWITCH" | field 'd.get("state")')" = off ] || fail "the switch should read off"
+# ... "off with no timer" is the longest pause (60 minutes by default), never forever ...
+curl -sf "${AUTHZ[@]}" "$API/api/v1/blocking" | "$PY" -c '
+import json, sys
+left = [p["secondsLeft"] for n in json.load(sys.stdin)["items"] for p in n["pauses"] if p.get("group") is None]
+if not left or not (3500 <= max(left) <= 3600):
+    sys.exit(f"expected about 3600 s left, got {left}")' || fail "a pause with no timer should last the longest pause"
+# ... and on again.
+[ "$(ha_post /api/services/switch/turn_on "{\"entity_id\":\"$SWITCH\"}")" = 200 ] || fail "turning the Pi-hole switch on"
+for _ in $(seq 30); do [ "$(paused)" = 0 ] && break; sleep 1; done
+[ "$(paused)" = 0 ] || fail "the Pi-hole switch did not resume blocking on the node"
+# Home Assistant's own timed disable: a duration of 5 minutes is a 5 minute pause.
+[ "$(ha_post /api/services/pi_hole/disable "{\"entity_id\":\"$SWITCH\",\"duration\":\"00:05:00\"}")" = 200 ] || fail "pi_hole.disable"
+for _ in $(seq 30); do [ "$(paused)" != 0 ] && break; sleep 1; done
+curl -sf "${AUTHZ[@]}" "$API/api/v1/blocking" | "$PY" -c '
+import json, sys
+left = [p["secondsLeft"] for n in json.load(sys.stdin)["items"] for p in n["pauses"] if p.get("group") is None]
+if not left or not (200 <= max(left) <= 300):
+    sys.exit(f"expected about 300 s left, got {left}")' || fail "pi_hole.disable for 5 minutes"
+[ "$(ha_post /api/services/switch/turn_on "{\"entity_id\":\"$SWITCH\"}")" = 200 ] || fail "turning the Pi-hole switch on again"
+for _ in $(seq 30); do [ "$(paused)" = 0 ] && break; sleep 1; done
+# Every change is in the audit log as the Pi-hole API's token, and none holds the token.
+AUD=$(curl -sf -b "$JAR" "$API/api/v1/audit?action=blocking.&limit=20") || fail "reading the audit log"
+printf '%s' "$AUD" | PIT="$PIT" "$PY" -c '
+import json, os, sys
+text = sys.stdin.read()
+items = json.loads(text)["items"]
+acts = sorted({i["action"] for i in items if i["actor"] == "token:pihole-api"})
+if acts != ["blocking.pause", "blocking.resume"]:
+    sys.exit(f"audit actions by the Pi-hole token: {acts}")
+if os.environ["PIT"] in text:
+    sys.exit("the audit log holds the token")' || fail "the audit log of the Pi-hole API's changes"
+# A rotated token locks the integration out: the node answers 401 to the old one.
+curl -sf -b "$JAR" -H "x-csrf-token: $CSRF" -H 'content-type: application/json' -d '{}' \
+  "$API/api/v1/pihole-api/token" >/dev/null || fail "rotating the Pi-hole API token"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d "{\"password\":\"$PIT\"}" "$API/api/auth")" = 401 ] \
+  || fail "the old Pi-hole API token should be refused"
 echo ok
 
 echo PASS

@@ -4230,6 +4230,23 @@ async fn api_005_pihole_v6_reads_and_switches_blocking() {
     )
     .await;
     assert_eq!(v["timer"], 3_600, "no timer: the cap, not forever");
+    // Home Assistant's "turn off" sends `"timer": true` (its library passes its `True` duration
+    // through): no timer, so the cap, and not a refusal.
+    let (s, _, v) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/dns/blocking",
+            &hs,
+            Some(serde_json::json!({"blocking": false, "timer": true})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, v["timer"].as_u64()),
+        (StatusCode::OK, Some(3_600)),
+        "{v}"
+    );
     // The admin raises the cap.
     pi_admin(
         &app,

@@ -3,9 +3,9 @@
 name: home-assistant
 on:
   push:
-    paths: ["integrations/home-assistant/**", "crates/telltale/src/routers.rs", "crates/telltale/src/device_dns.rs", "deploy/ha-test/**", ".github/workflows/home-assistant.yml"]
+    paths: ["integrations/home-assistant/**", "crates/telltale/src/routers.rs", "crates/telltale/src/device_dns.rs", "deploy/ha-test/**", "crates/telltale-api/src/pihole_api.rs", ".github/workflows/home-assistant.yml"]
   pull_request:
-    paths: ["integrations/home-assistant/**", "crates/telltale/src/routers.rs", "crates/telltale/src/device_dns.rs", "deploy/ha-test/**", ".github/workflows/home-assistant.yml"]
+    paths: ["integrations/home-assistant/**", "crates/telltale/src/routers.rs", "crates/telltale/src/device_dns.rs", "deploy/ha-test/**", "crates/telltale-api/src/pihole_api.rs", ".github/workflows/home-assistant.yml"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -29,7 +29,8 @@ jobs:
         working-directory: integrations/home-assistant
         run: pytest -q -p no:cacheprovider
   # REQ: T24.21 — the TelltaleDNS Home Assistant source and integration against a throwaway
-  # Home Assistant (deploy/ha-test): devices named and addressed, the names in DNS, the sensors.
+  # Home Assistant (deploy/ha-test): devices named and addressed, the names in DNS, the sensors;
+  # T24.10: and the Home Assistant Pi-hole integration against the Pi-hole compatible API.
   ha-test:
     runs-on: ubuntu-latest
     timeout-minutes: 20

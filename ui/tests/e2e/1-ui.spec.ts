@@ -5677,10 +5677,21 @@ test('api_005 pihole compatible api: off by default, a token shown once, v6 and 
   const off = await r.post('/api/dns/blocking', { headers: h, data: { blocking: false, timer: 120 } });
   expect(off.status()).toBe(200);
   expect(await off.json()).toMatchObject({ blocking: 'disabled' });
-  const ours = await r.get('/api/v1/blocking');
-  expect(JSON.stringify(await ours.json())).toContain('pauses');
+  const ours = await (await r.get('/api/v1/blocking')).json();
+  expect(ours.items[0].pauses[0].group ?? null).toBeNull();
+  // The same pause shows in the UI (the pause pill) ...
+  await page.goto('/#/');
+  await page.reload();
+  await expect(page.getByTestId('blocking-paused')).toContainText(/Blocking paused · [12] min left/, { timeout: 20_000 });
   const on = await r.post('/api/dns/blocking', { headers: h, data: { blocking: true } });
   expect(await on.json()).toMatchObject({ blocking: 'enabled' });
+  await page.reload();
+  await expect(page.getByTestId('blocking-paused')).toHaveCount(0);
+  // ... and in the audit log, by the token's name.
+  const paused = JSON.stringify(await (await r.get('/api/v1/audit?action=blocking.')).json());
+  expect(paused).toContain('token:pihole-api');
+  await page.goto('/#/settings?tab=pihole');
+  await expect(card).toBeVisible();
   // v5: a wrong token reads [], the right one reads the totals.
   expect(await (await r.get('/admin/api.php?summaryRaw&auth=wrong')).json()).toEqual([]);
   const v5 = await r.get(`/admin/api.php?summaryRaw&auth=${encodeURIComponent(token)}`);

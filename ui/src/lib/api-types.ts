@@ -124,7 +124,7 @@ export interface paths {
         /**
          * Pi-hole v6: the summary.
          * @description Part of the Pi-hole compatible API (needs a v6 session). The last 24 hours: `queries` (total,
-         *     blocked, percent_blocked, cached, forwarded, unique_domains, types, status, replies),
+         *     blocked, `percent_blocked`, cached, forwarded, `unique_domains`, types, status, replies),
          *     `clients` (active, total) and `gravity.domains_being_blocked`, in Pi-hole's shape.
          */
         get: operations["v6_summary"];
@@ -4086,7 +4086,8 @@ export interface components {
             blocking?: boolean | null;
             /**
              * Format: double
-             * @description Seconds to stay off (rounded up to whole minutes; none: the longest allowed).
+             * @description Seconds to stay off (rounded up to whole minutes; none: the longest allowed). Anything but
+             *     a number counts as none: the Home Assistant integration sends `true` for "no timer".
              */
             timer?: number | null;
         };
