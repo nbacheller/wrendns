@@ -39,6 +39,11 @@
     }
   }
   $effect(() => poll(load, 10_000));
+  // A change reaches this node's service within a second or so: read the status again then, so the card
+  // doesn't say "not applied yet" until the next poll.
+  const reloadSoon = () => {
+    setTimeout(() => void load(), 1_500);
+  };
 
   // ---- the editor: one provider, a new one or the one being changed
   type Form = {
@@ -165,6 +170,7 @@
       notice = `Saved ${id}. It applies on every node within seconds, with no restart.`;
       closeForm();
       await load();
+      reloadSoon();
     } catch (e) {
       formError = e instanceof ApiError ? e.message : 'The provider could not be saved.';
     } finally {
@@ -179,6 +185,7 @@
       notice = `Removed ${id}. Its sign-in button is gone, and the sessions it opened have ended.`;
       confirmDelete = null;
       await load();
+      reloadSoon();
     } catch (e) {
       notice = e instanceof ApiError ? e.message : 'The provider could not be removed.';
     } finally {
