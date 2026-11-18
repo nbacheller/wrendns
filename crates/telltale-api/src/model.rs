@@ -2035,7 +2035,9 @@ pub struct NetworkInfo {
     /// The router's own word for it (UniFi: `corporate`, `guest`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
-    /// `router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry).
+    /// `router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example
+    /// on a tagged VLAN interface; it is named after the interface) or `group` (only a
+    /// `[[group]] networks` entry).
     pub source: String,
     /// The `[[router]]` that reported it.
     #[serde(skip_serializing_if = "Option::is_none")]

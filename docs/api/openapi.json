@@ -19736,7 +19736,7 @@
                 },
                 "source": {
                   "type": "string",
-                  "description": "`router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry)."
+                  "description": "`router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example\non a tagged VLAN interface; it is named after the interface) or `group` (only a\n`[[group]] networks` entry)."
                 },
                 "subnet": {
                   "type": "string",
@@ -22658,7 +22658,7 @@
           },
           "source": {
             "type": "string",
-            "description": "`router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry)."
+            "description": "`router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example\non a tagged VLAN interface; it is named after the interface) or `group` (only a\n`[[group]] networks` entry)."
           },
           "subnet": {
             "type": "string",

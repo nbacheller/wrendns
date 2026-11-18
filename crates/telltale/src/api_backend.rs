@@ -2755,6 +2755,7 @@ impl Backend for ApiBackend {
     ) -> BoxFuture<Result<telltale_api::model::RouterCertificate, Problem>> {
         Box::pin(async move { crate::router_cert::fetch(&url).await })
     }
+    #[allow(clippy::too_many_lines)] // one table, built in one pass
     fn networks(&self) -> Vec<telltale_api::model::NetworkInfo> {
         use std::net::{IpAddr, Ipv4Addr};
         let state = self.src.pipeline.current();
@@ -2801,7 +2802,8 @@ impl Backend for ApiBackend {
                         net: Ipv4Addr,
                         prefix: u8,
                         source: &str,
-                        r: Option<&crate::routers::Network>| {
+                        r: Option<&crate::routers::Network>,
+                        own_vlan: Option<u16>| {
             let in_net: Vec<Ipv4Addr> = known
                 .iter()
                 .copied()
@@ -2823,7 +2825,7 @@ impl Backend for ApiBackend {
             out.push(telltale_api::model::NetworkInfo {
                 name,
                 subnet: format!("{net}/{prefix}"),
-                vlan: r.and_then(|r| r.vlan),
+                vlan: r.and_then(|r| r.vlan).or(own_vlan),
                 gateway: r.and_then(|r| r.gateway).map(|g| g.to_string()),
                 dhcp_start: r.and_then(|r| r.dhcp_start).map(|a| a.to_string()),
                 dhcp_end: r.and_then(|r| r.dhcp_stop).map(|a| a.to_string()),
@@ -2840,16 +2842,35 @@ impl Backend for ApiBackend {
         };
         let nets = self.src.pipeline.router_networks.load();
         for n in nets.iter() {
-            info(n.name.clone(), n.subnet, n.prefix, "router", Some(n));
+            info(n.name.clone(), n.subnet, n.prefix, "router", Some(n), None);
+        }
+        // REQ: API-013 (T24.32) — the networks this node is directly on (tagged VLAN interfaces,
+        // or its own LAN), unless a router already reported the same subnet.
+        let own = crate::own_networks::current();
+        for n in own.iter().filter(|n| {
+            !nets
+                .iter()
+                .any(|r| r.subnet == n.subnet && r.prefix == n.prefix)
+        }) {
+            info(
+                n.name.clone(),
+                n.subnet,
+                n.prefix,
+                "interface",
+                None,
+                n.vlan,
+            );
         }
         for g in clients.groups() {
             for c in &g.networks {
                 let IpAddr::V4(a) = c.addr else { continue };
                 let net = Ipv4Addr::from(u32::from(a) & mask(c.prefix));
-                if nets.iter().any(|n| n.subnet == net && n.prefix == c.prefix) {
+                if nets.iter().any(|n| n.subnet == net && n.prefix == c.prefix)
+                    || own.iter().any(|n| n.subnet == net && n.prefix == c.prefix)
+                {
                     continue;
                 }
-                info(g.name.to_string(), net, c.prefix, "group", None);
+                info(g.name.to_string(), net, c.prefix, "group", None, None);
             }
         }
         out
