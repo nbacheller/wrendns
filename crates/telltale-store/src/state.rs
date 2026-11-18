@@ -835,6 +835,13 @@ impl State {
         .map(|n| n as u64)
     }
 
+    /// REQ: API-016 (T23.10) — ends every session that was opened through OIDC provider
+    /// `provider` (it was removed). The users stay.
+    pub fn delete_provider_sessions(&self, provider: &str) -> Result<u64> {
+        self.with(|c| c.execute("DELETE FROM sessions WHERE oidc_provider = ?1", [provider]))
+            .map(|n| n as u64)
+    }
+
     /// Deletes sessions that expired or were idle since before `idle_before`.
     pub fn purge_sessions(&self, now: u64, idle_before: u64) -> Result<u64> {
         self.with(|c| {

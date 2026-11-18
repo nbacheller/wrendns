@@ -2544,6 +2544,11 @@ impl Backend for ApiBackend {
             .map(|r| router_entry(&self.src, r, &file, status.get(r.name.as_str())))
             .collect()
     }
+    // REQ: API-016 (T23.10) — the providers (settings are the node-managed entries every member
+    // holds; the status is this node's).
+    fn oidc_provider_entries(&self) -> telltale_api::model::OidcProviderList {
+        crate::oidc_settings::list(&self.src)
+    }
     // REQ: API-016 (T23.8) — one read of a draft, without saving it (admin; see the route).
     fn check_router(
         &self,
@@ -4132,6 +4137,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Clients => crate::managed::CLIENTS,
         ManagedKind::Discovery => crate::managed::DISCOVERY,
         ManagedKind::Router => crate::managed::ROUTER,
+        ManagedKind::OidcProvider => crate::managed::OIDC_PROVIDER,
     }
 }
 
@@ -4569,6 +4575,9 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
             "Names under `{name}` go back to the default upstreams; {recent_queries} queries for them in the last two hours (at least)."
         ),
         (ManagedKind::Rule, _) => String::new(), // rule_impact says it better
+        (ManagedKind::OidcProvider, _) => {
+            "Applied on every node within seconds, without a restart: its sign-in button appears or goes (a node without public_url shows it as inactive), and the sessions of a removed provider end.".into()
+        }
         (ManagedKind::Router, _) => {
             "Polled by this node at its interval (by the primary, for a stored credential); the names it reports reach DNS after the next poll.".into()
         }
@@ -4653,6 +4662,10 @@ fn plan_managed(
     // REQ: API-016 (T23.7, ADR-921) — routers have their own plan (admin-only, file-read-only).
     if w.kind == ManagedKind::Router {
         return crate::router_settings::plan(src, state, w);
+    }
+    // REQ: API-016 (T23.10, ADR-967) — OIDC providers: admin-only, node-managed, files win.
+    if w.kind == ManagedKind::OidcProvider {
+        return crate::oidc_settings::plan(src, state, w);
     }
     if matches!(
         w.kind,
@@ -5619,10 +5632,19 @@ pub(crate) fn secret_references(
     let kind = match w.kind {
         ManagedKind::AlertDestination => "alert_destination",
         ManagedKind::Router => "router",
+        ManagedKind::OidcProvider => "oidc_provider",
         _ => return Ok(None),
     };
     let before = match w.kind {
         ManagedKind::Router => named_json(&current.router, name),
+        ManagedKind::OidcProvider => current
+            .auth
+            .oidc
+            .provider
+            .iter()
+            .chain(&current.auth.oidc.managed_provider)
+            .find(|p| p.id.as_str() == name)
+            .and_then(|p| serde_json::to_value(p).ok()),
         _ => named_json(&current.alerts.destination, name),
     };
     let used = telltale_config::secret_refs::references(current);
@@ -6161,6 +6183,7 @@ fn keep_in_git(
         ManagedKind::AlertDestination => "alerts.destination",
         ManagedKind::AlertRule => "alerts.rule",
         ManagedKind::Router => "router",
+        ManagedKind::OidcProvider => "auth.oidc.provider",
         ManagedKind::Schedule => "schedule",
         ManagedKind::AnomalyMute => "anomaly_mute",
         ManagedKind::RateLimit => "ratelimit",

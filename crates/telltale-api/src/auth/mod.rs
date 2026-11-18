@@ -318,7 +318,16 @@ pub struct Auth {
     basic_cache: Mutex<HashMap<Vec<u8>, (i64, u64)>>,
     basic_salt: [u8; 16],
     /// OIDC providers, when configured (API-004).
-    oidc: std::sync::OnceLock<Arc<oidc::Oidc>>,
+    oidc: arc_swap::ArcSwapOption<oidc::Oidc>,
+    /// REQ: API-016 (T23.10) — the sign-ins in progress and the discovery cache, which outlive a
+    /// rebuild of the providers.
+    oidc_shared: Arc<oidc::Shared>,
+    /// Rebuilds ask for a ticket; only the newest one's result is used.
+    oidc_gen: std::sync::atomic::AtomicU64,
+    /// One rebuild at a time.
+    oidc_gate: tokio::sync::Mutex<()>,
+    /// Each provider's status as of the last rebuild.
+    oidc_status: Mutex<Vec<oidc::ProviderStatus>>,
     /// `[agents]`: the kill switch and rate limits (AGT-009).
     agents: agent::Policy,
     /// REQ: AGT-007 — agents' change plans on this node.
@@ -410,7 +419,11 @@ impl Auth {
             failures: Mutex::new(HashMap::new()),
             basic_cache: Mutex::new(HashMap::new()),
             basic_salt: rand::random(),
-            oidc: std::sync::OnceLock::new(),
+            oidc: arc_swap::ArcSwapOption::empty(),
+            oidc_shared: Arc::default(),
+            oidc_gen: std::sync::atomic::AtomicU64::new(0),
+            oidc_gate: tokio::sync::Mutex::new(()),
+            oidc_status: Mutex::new(Vec::new()),
             agents: agent::Policy::default(),
             plans: crate::plans::Plans::default(),
             identity_primary: Mutex::new(None),
@@ -473,15 +486,6 @@ impl Auth {
 
     pub fn settings(&self) -> &Settings {
         &self.settings
-    }
-
-    /// Attaches OIDC providers (once, at startup).
-    pub fn set_oidc(&self, o: oidc::Oidc) {
-        let _ = self.oidc.set(Arc::new(o));
-    }
-
-    pub fn oidc(&self) -> Option<&Arc<oidc::Oidc>> {
-        self.oidc.get()
     }
 
     /// Password sign-in (and HTTP Basic) may be tried from `ip`: always, unless local

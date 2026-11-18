@@ -101,7 +101,12 @@ pub(crate) fn unpinned(file: &Config) -> Config {
     if file.cluster.git.is_some() && matches!(id.meta.role, Some(node::Role::Primary)) {
         if let Some(shared) = crate::gitsource::shared(file) {
             match telltale_config::shared::with_shared(file, &shared) {
-                Ok(c) => return c,
+                Ok(mut c) => {
+                    // REQ: API-016 (T23.10) — the Git source carries the node-managed rows
+                    // unchanged (writes of these kinds are refused there): this node applies them.
+                    crate::node_managed::overlay_own(&mut c, &crate::managed::state_path(file));
+                    return c;
+                }
                 Err(e) => {
                     error!("the Git commit in use doesn't merge with this node's settings: {e:?}");
                 }
@@ -126,7 +131,10 @@ pub(crate) fn unpinned(file: &Config) -> Config {
     if !with_managed {
         warn_ignored_once(telltale_config::shared::ignored_on_replica(file));
     }
-    match merged(file, &m) {
+    // REQ: CLU-015 (T23.10) — a primary seeds its node-managed rows from the version it inherited
+    // (once), and from then on they're its rows: the inherited blob isn't overlaid again.
+    let overlay = !with_managed || !seed_node_managed(file, &m);
+    match merged_with(file, &m, overlay) {
         // REQ: API-014 (review of T23.2) — the stored paths are judged against this node's own
         // files, not the version it builds on.
         Ok(c) if with_managed => crate::managed::effective_on(&c, file),
@@ -161,15 +169,51 @@ fn warn_ignored_once(ignored: Vec<String>) {
 }
 
 fn merged(file: &Config, m: &ClusterManifest) -> Result<Config, String> {
+    merged_with(file, m, true)
+}
+
+/// [`merged`], with or without the version's node-managed entries (REQ: API-016, CLU-015,
+/// T23.10). They are validated and merged apart from the shared part, under this node's own
+/// files: a bad blob or entry drops only itself and logs once (CLU-004). A primary that seeded
+/// its own rows from the blob it inherited leaves the blob out, so an entry deleted here doesn't
+/// come back from a stale copy.
+fn merged_with(file: &Config, m: &ClusterManifest, node_managed: bool) -> Result<Config, String> {
     let store = BlobStore::open(data_dir(file)).map_err(|e| e.to_string())?;
     let shared: serde_json::Value = serde_json::from_slice(&store.read(&m.config)?)
         .map_err(|e| format!("shared configuration: {e}"))?;
-    with_shared(file, &shared).map_err(|errs| {
+    let mut cfg = with_shared(file, &shared).map_err(|errs| {
         errs.iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("; ")
-    })
+    })?;
+    if node_managed && let Some(b) = &m.node_managed {
+        match store.read(b) {
+            Ok(bytes) => crate::node_managed::overlay_blob(&mut cfg, &bytes),
+            Err(e) => warn!("cluster: the version's node-managed entries can't be read ({e}); the shared configuration is applied without them"),
+        }
+    }
+    Ok(cfg)
+}
+
+/// REQ: CLU-015 (T23.10, ADR-903 §6) — a primary promoted from replica takes the node-managed
+/// entries of the version it inherited as its own rows, once (a marker keeps the blob's hash).
+/// Whether its rows are the source now.
+fn seed_node_managed(file: &Config, m: &ClusterManifest) -> bool {
+    let Some(b) = &m.node_managed else {
+        return true;
+    };
+    let cdir = node::dir_of(data_dir(file));
+    if crate::node_managed::seeded(&cdir, &b.hash) {
+        return true;
+    }
+    let Ok(store) = BlobStore::open(data_dir(file)) else {
+        return false;
+    };
+    let Ok(bytes) = store.read(b) else {
+        return false;
+    };
+    crate::node_managed::seed_once(&crate::managed::state_path(file), &cdir, &b.hash, &bytes)
 }
 
 /// Whether this node's own configuration comes from Git: rendered from a repository (the Helm
@@ -568,6 +612,31 @@ async fn export_acks(sources: &Arc<Sources>, cache: &mut AcksCache) -> Option<St
     cache.as_ref().map(|(_, _, h)| h.clone())
 }
 
+/// REQ: CLU-015 (T23.10) — refreshes `cache` with the node-managed entries to publish and returns
+/// their hash, or `None` before the API opened `state.db`. Read again only when the stored
+/// configuration changed (the loop runs twice a second; every write to `managed` bumps the config
+/// version). An empty document is published too, so taking the last entry back reaches every node.
+async fn export_node_managed(sources: &Arc<Sources>, cache: &mut AcksCache) -> Option<String> {
+    let auth = Arc::clone(sources.auth.get()?);
+    let known = cache.as_ref().map(|(v, _, _)| *v);
+    let fresh = tokio::task::spawn_blocking(move || {
+        let state = auth.state();
+        let version = state.config_version().ok()?;
+        if known == Some(version) {
+            return Some(None);
+        }
+        Some(Some((version, crate::node_managed::export(state))))
+    })
+    .await
+    .ok()
+    .flatten()?;
+    if let Some((version, bytes)) = fresh {
+        let h = hash(&bytes);
+        *cache = Some((version, bytes, h));
+    }
+    cache.as_ref().map(|(_, _, h)| h.clone())
+}
+
 /// REQ: OBS-014 (ADR-103) — a replica takes the primary's acknowledged anomalies.
 async fn import_acks(sources: &Sources, store: &BlobStore, b: &BlobRef) -> Result<(), String> {
     let Some(auth) = sources.auth.get().cloned() else {
@@ -813,6 +882,9 @@ struct Published {
     /// REQ: OBS-014 — hash of the published acknowledged anomalies.
     #[serde(default)]
     acks: String,
+    /// REQ: CLU-015 (T23.10) — hash of the published node-managed entries.
+    #[serde(default)]
+    node_managed: String,
 }
 
 /// The newest filter snapshot as replicated blobs (its own manifest included).
@@ -868,6 +940,9 @@ struct Gathered {
     identities_hash: String,
     acks: Option<Vec<u8>>,
     acks_hash: String,
+    /// REQ: CLU-015 (T23.10) — the node-managed entries (references only) and their hash.
+    node_managed: Option<Vec<u8>>,
+    node_managed_hash: String,
     /// The key that signs (a CA rotation switches it, T5.4c).
     key: String,
 }
@@ -915,6 +990,9 @@ struct Primary {
     key: String,
     store: Option<BlobStore>,
     acks_cache: AcksCache,
+    /// REQ: CLU-015 (T23.10) — the node-managed export as last read: the config version it was
+    /// read at, the document, and its hash.
+    nm_cache: AcksCache,
     first: bool,
     /// Publish the content as new even if it's what was published last (a rollout that a
     /// restart interrupted, an unpin).
@@ -994,6 +1072,7 @@ impl Primary {
             key,
             store,
             acks_cache: None,
+            nm_cache: None,
             first: true,
             force,
             ro,
@@ -1170,6 +1249,29 @@ impl Primary {
                 .unwrap_or_default();
             (self.acks_cache.as_ref().map(|(_, b, _)| b.clone()), h)
         };
+        // REQ: CLU-015 (T23.10, ADR-903 §6) — the node-managed entries travel as one blob of
+        // references. An emergency primary passes on the one it inherited, a pinned one the
+        // pinned version's; otherwise this node's own rows (seeded from an inherited blob first).
+        let (node_managed, node_managed_hash) = if self.emergency || self.ro.pinned.is_some() {
+            let kept = if self.emergency {
+                inherited.cloned()
+            } else {
+                self.pinned_manifest()
+            };
+            let b: Option<Vec<u8>> = kept
+                .and_then(|m| m.node_managed)
+                .and_then(|b| self.store.as_ref().and_then(|s| s.read(&b).ok()));
+            let h = b.as_deref().map(hash).unwrap_or_default();
+            (b, h)
+        } else {
+            if let Some(m) = inherited {
+                seed_node_managed(&cfg, m);
+            }
+            let h = export_node_managed(&self.sources, &mut self.nm_cache)
+                .await
+                .unwrap_or_default();
+            (self.nm_cache.as_ref().map(|(_, b, _)| b.clone()), h)
+        };
         let key = id_now.ca_key_pem().unwrap_or_else(|_| self.key.clone());
         Gather::Ready(Box::new(Gathered {
             shared,
@@ -1188,6 +1290,8 @@ impl Primary {
             identities_hash,
             acks,
             acks_hash,
+            node_managed,
+            node_managed_hash,
             key,
         }))
     }
@@ -1226,6 +1330,7 @@ impl Primary {
         };
         let identities = put("identities.json", &g.identities, &mut blobs);
         let anomaly_acks = put("anomaly-acks.json", &g.acks, &mut blobs);
+        let node_managed = put(crate::node_managed::BLOB, &g.node_managed, &mut blobs);
         if let Some((_, paths)) = &g.filter {
             for (h, p) in paths {
                 blobs.insert(h.clone(), BlobSource::File(p.clone()));
@@ -1251,6 +1356,7 @@ impl Primary {
             identities,
             privacy_key: g.privacy_key.clone(),
             anomaly_acks,
+            node_managed,
             rollout: rollout_info,
             // REQ: CLU-013 — every version published while pinned says so (and a promoted
             // node inherits the pin from it).
@@ -1314,6 +1420,7 @@ impl Primary {
             filter: m.filter.clone(),
             identities: m.identities.clone(),
             acks: m.anomaly_acks.clone(),
+            node_managed: m.node_managed.clone(),
             pinned_to: m.pinned.as_ref().map(|p| p.to),
             reason: m.pinned.as_ref().map(|p| p.reason.clone()),
         }
@@ -1365,7 +1472,8 @@ impl Primary {
             || content_changed
             || g.meta_hash != self.last.meta
             || g.identities_hash != self.last.identities
-            || g.acks_hash != self.last.acks;
+            || g.acks_hash != self.last.acks
+            || g.node_managed_hash != self.last.node_managed;
         if !(changed || self.first) {
             return;
         }
@@ -1574,6 +1682,7 @@ impl Primary {
             base: epoch_base,
             identities: g.identities_hash.clone(),
             acks: g.acks_hash.clone(),
+            node_managed: g.node_managed_hash.clone(),
         };
         self.persist(g.filter.as_ref());
         self.first = false;
@@ -1918,6 +2027,7 @@ impl Primary {
             base: self.last.base,
             identities: g.identities_hash.clone(),
             acks: g.acks_hash.clone(),
+            node_managed: g.node_managed_hash.clone(),
         };
         self.cluster.set_local(|l| {
             l.applied_seq = seq;

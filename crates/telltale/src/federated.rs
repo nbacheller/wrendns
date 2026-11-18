@@ -2376,6 +2376,10 @@ impl Backend for Federated {
     fn router_entries(&self) -> Vec<telltale_api::model::RouterEntry> {
         self.local.router_entries()
     }
+    // REQ: API-016 (T23.10) — every member holds the node-managed providers; the status is this node's.
+    fn oidc_provider_entries(&self) -> telltale_api::model::OidcProviderList {
+        self.local.oidc_provider_entries()
+    }
     // REQ: API-016 (T23.8) — the checks run on the node that answers (an admin's draft).
     fn check_router(
         &self,

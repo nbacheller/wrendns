@@ -283,6 +283,10 @@ pub fn required(method: &Method, path: &str) -> Need {
         if under("/api/v1/routers") {
             return Need::Forbidden;
         }
+        // REQ: API-016 (T23.10, ADR-967) — OIDC providers are admin-only and have no agent scope.
+        if under("/api/v1/oidc-providers") {
+            return Need::Forbidden;
+        }
         // REQ: DSC-001 (T25.2, ADR-907) — `[discovery]` and the inventory's status have no agent
         // scope yet: `discovery:read` (DSC-013) comes with T25.12, and no agent writes the kind.
         if under("/api/v1/discovery") {

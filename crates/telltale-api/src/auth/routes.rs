@@ -249,7 +249,7 @@ pub async fn authenticate(
             Some(
                 o.verify_access_token(t, now())
                     .await
-                    .map(|c| (Arc::clone(o), c)),
+                    .map(|c| (o, c)),
             )
         }
         _ => None,
@@ -1438,7 +1438,7 @@ pub(crate) async fn oidc_start(
     Path(id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<OidcStart>,
 ) -> Response {
-    let Some(oidc) = auth.oidc().cloned() else {
+    let Some(oidc) = auth.oidc() else {
         return login_error("sign-in providers aren't configured");
     };
     let back = super::oidc::safe_return(q.return_to.as_deref());
@@ -1471,7 +1471,7 @@ pub(crate) async fn oidc_callback(
     Path(id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<OidcCallback>,
 ) -> Response {
-    let Some(oidc) = auth.oidc().cloned() else {
+    let Some(oidc) = auth.oidc() else {
         return login_error("sign-in providers aren't configured");
     };
     if let Some(e) = &q.error {

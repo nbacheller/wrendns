@@ -1039,6 +1039,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         git_poke: Arc::default(),
         routers: Arc::default(),
         routers_changed: Arc::default(),
+        oidc_changed: Arc::default(),
         reload: reload_tx,
         config_writes: tokio::sync::Mutex::new(()),
         probes: Arc::default(),
@@ -1136,6 +1137,10 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         Arc::clone(&sources),
         http_stopped.clone(),
     ));
+    // REQ: API-016 (T23.10, ADR-903 §7) — OIDC providers apply without a restart; one pass at
+    // start-up reads what changed since the service was built.
+    crate::auth_setup::run(Arc::clone(&sources), http_stopped.clone());
+    sources.oidc_changed.notify_one();
     // REQ: T8.2 — device names from the routers' DHCP; API-016 (T23.7) — the live list: a router
     // the API or UI changes is read again without a restart.
     tokio::spawn(crate::routers::run(
@@ -1397,7 +1402,7 @@ async fn reload(
     listeners: &mut Listeners,
     health: &mut JoinHandle<()>,
     pipeline: &Arc<Pipeline>,
-    sources: &http::Sources,
+    sources: &Arc<http::Sources>,
     lists: &mut Option<Lists>,
     from_api: bool,
 ) -> bool {
@@ -1505,6 +1510,10 @@ async fn reload(
     sources.config.store(Arc::new(new.clone()));
     sources.file_config.store(Arc::new(file));
     *current = new;
+    // REQ: API-016 (T23.10, ADR-903 §7) — OIDC providers added, changed or removed (the files',
+    // the UI's, or a replicated node-managed entry) apply now, without a restart; discovery and
+    // keys are read off this task, and a failure keeps the previous settings.
+    sources.oidc_changed.notify_one();
     // REQ: FLT-017 — a `[[kubernetes.map]]` rule or a group change reaches the workload table
     // before the next query, not on the watcher's next tick.
     sources.pipeline.kube.reconfigured.notify_one();

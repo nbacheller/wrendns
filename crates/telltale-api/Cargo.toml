@@ -13,6 +13,8 @@ workspace = true
 
 [dependencies]
 argon2 = "0.6.0"
+# REQ: API-016 (T23.10) — OIDC providers swapped in without a restart (already in the tree: telltale).
+arc-swap = "1.9.2"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json", "query"] }
 base64 = "0.23.1"
 # The live tail's SSE stream (already in the tree via axum).

@@ -3814,3 +3814,64 @@ mod dhcp_lease_tests {
         assert_eq!(off["offline"], serde_json::json!(false));
     }
 }
+
+/// REQ: API-016 (T23.10, ADR-903 §6, ADR-967) — one OIDC provider as the API shows it: its
+/// settings (the client secret as a name, never a value), where it comes from, and whether this
+/// node serves its sign-in button.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OidcProviderEntry {
+    /// The short ID used in URLs.
+    pub id: String,
+    /// The button label.
+    pub name: String,
+    pub issuer: String,
+    pub client_id: String,
+    /// `file` (the configuration files define it; read-only here) or `api`.
+    pub source: String,
+    pub scopes: Vec<String>,
+    pub username_claim: String,
+    pub groups_claim: String,
+    /// Group to role rules, in order.
+    pub roles: Vec<OidcRoleRuleInfo>,
+    /// The role for people in no mapped group; absent means they can't sign in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_role: Option<String>,
+    pub require_verified_email: bool,
+    /// Where the client secret comes from: `stored` (the encrypted store, by name), `file`,
+    /// `inline` (in the configuration file), or `none` (a public client).
+    pub secret_source: String,
+    /// The stored secret's name, when `secretSource` is `stored`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// Whether this node can read the secret now; absent when none is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_readable: Option<bool>,
+    /// Whether the button works on this node.
+    pub active: bool,
+    /// Why it doesn't (no `public_url` on this node, an unreadable secret), or what went wrong
+    /// the last time the provider was read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The address to register with the provider as the redirect URI; absent without `public_url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redirect_uri: Option<String>,
+}
+
+/// One group to role rule of an OIDC provider.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct OidcRoleRuleInfo {
+    pub group: String,
+    /// `viewer`, `operator` or `admin`.
+    pub role: String,
+}
+
+/// REQ: API-016 (T23.10) — `GET /api/v1/oidc-providers`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OidcProviderList {
+    pub items: Vec<OidcProviderEntry>,
+    /// This node's `[auth.oidc] public_url` (node-local, set in its file); empty when unset, and
+    /// then every provider is inactive here.
+    pub public_url: String,
+}

@@ -241,6 +241,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                 ManagedKind::AlertDestination => "alert_destination",
                 ManagedKind::AlertRule => "alert_rule",
                 ManagedKind::Router => "router",
+                ManagedKind::OidcProvider => "oidc_provider",
                 ManagedKind::Schedule => "schedule",
                 ManagedKind::AnomalyMute => "anomaly_mute",
                 ManagedKind::RateLimit => "ratelimit",

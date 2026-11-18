@@ -123,6 +123,11 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/routers/{name}",
             put(put_router).delete(delete_router),
         )
+        // REQ: API-016 (T23.10, ADR-967) — OIDC providers (admin-only, node-managed).
+        .route(
+            "/api/v1/oidc-providers/{id}",
+            put(put_oidc_provider).delete(delete_oidc_provider),
+        )
         .route(
             "/api/v1/alerts/destinations/{name}/test",
             axum::routing::post(test_alert_destination),
@@ -829,6 +834,86 @@ pub(crate) async fn delete_router(
         request,
         name,
         Op::Managed(ManagedKind::Router, None),
+    )
+    .await
+}
+
+/// Add or change an OIDC sign-in provider.
+///
+/// API-016 (T23.10, ADR-903 §6, ADR-967). The body has the fields of `[[auth.oidc.provider]]`
+/// (the ID comes from the path): `issuer`, `client_id`, `name`, `scopes`, the claims and the role
+/// rules. The client secret is a name, never a value: `client_secret_ref` names a stored secret
+/// (422 `secret_missing` when none has that name); `client_secret` and `client_secret_file` are
+/// set in the configuration file, not through the API. Admins only: an operator or an agent is
+/// refused (403). A provider the config files define is read-only here (409 `set_by_file`). The
+/// provider is read and applied on every node without a restart; a node without `public_url`
+/// shows it as inactive. Under a Git source the write is refused (409 `gitops_managed`).
+#[utoipa::path(put, path = "/api/v1/oidc-providers/{id}", tag = "config",
+    params(("id" = String, Path, description = "The provider ID: 1-32 lowercase letters, digits, or -."), DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Only an admin can change an OIDC provider."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files define this provider, which is read-only here."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A field is wrong, the reference names no stored secret (`secret_missing`), or a secret or file path is set through the API."),
+    ))]
+pub(crate) async fn put_oidc_provider(
+    State((backend, auth)): State<Ctx>,
+    Path(id): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /oidc-providers/{id} {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        id,
+        Op::Managed(ManagedKind::OidcProvider, Some(input)),
+    )
+    .await
+}
+
+/// Remove an OIDC provider that the API added.
+///
+/// API-016 (T23.10). The provider stops serving sign-ins on every node at once, and the sessions
+/// that were opened through it end. The users it created stay (they can sign in again if the
+/// provider returns).
+#[utoipa::path(delete, path = "/api/v1/oidc-providers/{id}", tag = "config",
+    params(("id" = String, Path, description = "The provider ID."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Only an admin can remove an OIDC provider."),
+        (status = 404, body = Problem, description = "No provider by that ID."),
+        (status = 409, body = Problem, description = "`set_by_file`: the config files define it."),
+    ))]
+pub(crate) async fn delete_oidc_provider(
+    State((backend, auth)): State<Ctx>,
+    Path(id): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /oidc-providers/{id}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        id,
+        Op::Managed(ManagedKind::OidcProvider, None),
     )
     .await
 }
@@ -1896,6 +1981,7 @@ impl Op {
             Self::Managed(ManagedKind::AlertDestination, _) => "alert_destination",
             Self::Managed(ManagedKind::AlertRule, _) => "alert_rule",
             Self::Managed(ManagedKind::Router, _) => "router",
+            Self::Managed(ManagedKind::OidcProvider, _) => "oidc_provider",
             Self::Managed(ManagedKind::Schedule, _) => "schedule",
             Self::Managed(ManagedKind::AnomalyMute, _) => "anomaly_mute",
             Self::Managed(ManagedKind::RateLimit, _) => "ratelimit",
