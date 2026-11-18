@@ -13,6 +13,9 @@
     help?: string;
     /** Only in the Advanced view. */
     advanced?: boolean;
+    /** Shown only while the entry's values satisfy this (a field another field's value makes
+     *  meaningless, such as a threshold that only some conditions read). */
+    visibleWhen?: (values: Record<string, unknown>) => boolean;
     /** The value a new entry starts with. */
     initial?: unknown;
     /** `lines` fields kept as text while editing and converted on Check (T9.7: schedule
@@ -141,7 +144,7 @@
   let formError = $state<unknown>(null);
   const writable = $derived(can(role ?? 'operator'));
   const advanced = $derived(currentMode() === 'advanced');
-  const shown = $derived(fields.filter((f) => advanced || !f.advanced));
+  const shown = $derived(fields.filter((f) => (advanced || !f.advanced) && (!f.visibleWhen || !editing || f.visibleWhen(editing.values))));
 
   async function load() {
     try {

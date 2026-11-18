@@ -1,6 +1,8 @@
 //! OPS-005 acceptance tests: unknown keys error with path; env overrides apply.
 
-use telltale_config::{ByteSize, Config, ConfigError, Loader, Role, Strategy, TelemetryMode};
+use telltale_config::{
+    AlertWhen, ByteSize, Config, ConfigError, Loader, Role, Strategy, TelemetryMode,
+};
 
 const EXAMPLE: &str = include_str!("../../../docs/examples/telltale.toml");
 
@@ -1806,4 +1808,52 @@ fn t8_2_router_offline_days() {
     assert_eq!(year.config.router[0].offline_days, 365);
     let errs = load_str(&format!("{UNIFI}offline_days = 366\n")).unwrap_err();
     assert_eq!(paths(&errs), ["router[0].offline_days"]);
+}
+
+/// REQ: OBS-010 (T27.1) — the Alerts form offers every `when` the server accepts (the `AlertWhen`
+/// enum, read from its JSON Schema), and no other: `ui/src/lib/alert-conditions.ts` is compared
+/// with the enum in both directions, so a new condition fails this test until the form offers it.
+#[test]
+fn obs_010_alert_conditions_match_ui() {
+    const UI_LIST: &str = include_str!("../../../ui/src/lib/alert-conditions.ts");
+    let schema = serde_json::to_value(schemars::schema_for!(AlertWhen)).unwrap();
+    // Doc comments on the variants make schemars write `oneOf` with a `const` each; plain
+    // variants give an `enum` array. Both are read.
+    let mut server: Vec<String> = match (schema["enum"].as_array(), schema["oneOf"].as_array()) {
+        (Some(values), _) => values
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect(),
+        (None, Some(variants)) => variants
+            .iter()
+            .filter_map(|v| v["const"].as_str().map(str::to_owned))
+            .collect(),
+        (None, None) => panic!("AlertWhen is a string enum"),
+    };
+    server.sort();
+    assert!(server.len() >= 22, "the schema lists the enum's values");
+
+    // The array literal in the module: every quoted name between `alertConditions` and `];`.
+    let body = UI_LIST
+        .split_once("alertConditions")
+        .and_then(|(_, rest)| rest.split_once("];"))
+        .map(|(body, _)| body)
+        .expect("ui/src/lib/alert-conditions.ts exports alertConditions");
+    let mut ui: Vec<String> = body
+        .split('\'')
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 1)
+        .map(|(_, name)| name.to_owned())
+        .collect();
+    let listed = ui.len();
+    ui.sort();
+    ui.dedup();
+    assert_eq!(listed, ui.len(), "no condition is listed twice");
+    let missing: Vec<&String> = server.iter().filter(|c| !ui.contains(c)).collect();
+    let unknown: Vec<&String> = ui.iter().filter(|c| !server.contains(c)).collect();
+    assert!(missing.is_empty(), "the Alerts form lacks: {missing:?}");
+    assert!(
+        unknown.is_empty(),
+        "the Alerts form offers what the server doesn't accept: {unknown:?}"
+    );
 }

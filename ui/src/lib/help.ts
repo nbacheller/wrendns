@@ -14,6 +14,8 @@ export interface Topic {
   when: string;
   example: string;
   caution: string;
+  /** REQ: OBS-010 (T27.1) — a list under the topic, one line each (`alert-conditions`). */
+  items?: { name: string; line: string }[];
   diagram?: FlowPath;
   docs?: string;
   general?: boolean;

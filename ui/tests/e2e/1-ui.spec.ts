@@ -8,6 +8,7 @@ import { zstdDecompressSync } from 'node:zlib';
 import { BASE_URL, DNS_PORT, E2E_ROOT, MDNS_PORT, PORTS } from './ports';
 import { resolve } from 'node:path';
 import { query } from './dns';
+import { alertConditions } from '../../src/lib/alert-conditions';
 import { FrameHub, Loop, PANEL_MIN, Particles, Ticker, chooseLayout, dotBudget, lerpBoxes, motionAllowed, parseEvery, parseLayout, parsePanels, screenClass, screenClassStable, type Box } from '../../src/lib/wall';
 
 test.describe.configure({ mode: 'serial' });
@@ -2172,6 +2173,89 @@ test('obs_010 alerts page: destinations, test, rules', async () => {
   } finally {
     await page.getByRole('button', { name: 'Simple', exact: true }).click().catch(() => {});
     hook.close();
+  }
+});
+
+// REQ: OBS-010 (T27.1) — every condition the server accepts can be chosen in the Alerts form: a rule
+// of each of the seven added by T27.1 is added, read back after a reload, and removed.
+test('obs_010 every alert condition can be chosen', async () => {
+  test.setTimeout(240_000); // seven rules, each checked and applied, then read back after a reload
+  const kinds = ['slo_burn', 'probe_failing', 'cert_expiring', 'rollout_failed', 'cluster_pinned', 'chatty_loop', 'drill_report'];
+  const nameOf = (kind: string) => `ui-${kind.replace(/_/g, '-')}`;
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/alerts');
+  await expect(page.locator('h1', { hasText: 'Alerts' })).toBeVisible();
+  const rules = page.getByTestId('editor-alert_rule');
+  try {
+    for (const kind of kinds) {
+      await rules.getByRole('button', { name: 'Add rule' }).click();
+      if (kind === kinds[0]) {
+        // Every condition the server accepts is offered, not only the seven added here.
+        const offered = await page.getByLabel('When', { exact: true }).locator('option').evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value).filter(Boolean));
+        expect(offered.sort()).toEqual([...alertConditions].sort());
+      }
+      await page.getByRole('textbox', { name: 'Name', exact: true }).fill(nameOf(kind));
+      await page.getByLabel('When', { exact: true }).selectOption(kind);
+      // The config file's destination (file-ntfy) is the one every rule here sends to; its checkbox is
+      // named "Send to file-ntfy", so match the name by part.
+      await page.getByRole('group', { name: 'Send to' }).getByRole('checkbox', { name: /file-ntfy/ }).check();
+      await page.getByRole('button', { name: 'Check' }).click();
+      await page.getByRole('button', { name: 'Apply' }).click();
+      await expect(rules.getByTestId('entry-row').filter({ hasText: nameOf(kind) })).toContainText(`${kind} → file-ntfy`);
+    }
+    await page.reload();
+    for (const kind of kinds) {
+      await expect(rules.getByTestId('entry-row').filter({ hasText: nameOf(kind) })).toContainText(`${kind} → file-ntfy`);
+    }
+  } finally {
+    for (const kind of kinds) {
+      const row = rules.getByTestId('entry-row').filter({ hasText: nameOf(kind) });
+      if ((await row.count()) > 0) {
+        await row.getByRole('button', { name: 'Remove' }).click();
+        await expect(row).toHaveCount(0);
+      }
+    }
+  }
+});
+
+// REQ: OBS-010 (T27.1, T24.5) — the threshold field is shown only for the four conditions that read it,
+// and the server refuses an out-of-range value at Check (cert_expiring takes days from 1 to 365).
+test('obs_010 threshold shown per condition and out-of-range refused', async () => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/alerts');
+  await expect(page.locator('h1', { hasText: 'Alerts' })).toBeVisible();
+  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+  try {
+    const rules = page.getByTestId('editor-alert_rule');
+    await rules.getByRole('button', { name: 'Add rule' }).click();
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-range');
+    await page.getByLabel('When', { exact: true }).selectOption('slo_burn');
+    await expect(page.getByRole('spinbutton', { name: 'Threshold' })).toHaveCount(0);
+    await page.getByLabel('When', { exact: true }).selectOption('cert_expiring');
+    await expect(page.getByRole('spinbutton', { name: 'Threshold' })).toBeVisible();
+    await page.getByRole('group', { name: 'Send to' }).getByRole('checkbox', { name: /file-ntfy/ }).check();
+    await page.getByRole('spinbutton', { name: 'Threshold' }).fill('0');
+    await page.getByRole('button', { name: 'Check' }).click();
+    await expect(page.getByText('days from 1 to 365')).toBeVisible();
+    // The other two ranges: seconds for primary_unreachable (15 to 86400), a percentage for servfail_rate (0 to 100).
+    const refused: [string, string, string][] = [
+      ['primary_unreachable', '14', 'seconds from 15 to 86400'],
+      ['primary_unreachable', '86401', 'seconds from 15 to 86400'],
+      ['servfail_rate', '101', 'a percentage from 0 to 100'],
+    ];
+    for (const [when, value, message] of refused) {
+      await page.getByLabel('When', { exact: true }).selectOption(when);
+      await page.getByRole('spinbutton', { name: 'Threshold' }).fill(value);
+      await page.getByRole('button', { name: 'Check' }).click();
+      await expect(page.getByText(message)).toBeVisible();
+      // Each refused Check logs its 422; the test expects it.
+      for (let i = problems.length - 1; i >= 0; i--) if (/status of 422 \(/.test(problems[i])) problems.splice(i, 1);
+    }
+    await expect(rules.getByTestId('entry-row').filter({ hasText: 'ui-range' })).toHaveCount(0);
+  } finally {
+    await page.reload();
+    await page.getByRole('button', { name: 'Simple', exact: true }).click().catch(() => {});
   }
 });
 
