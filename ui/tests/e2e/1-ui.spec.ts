@@ -2110,7 +2110,8 @@ test('flt_004 prune lists that add little, then undo', async () => {
   const row = (name: string) => page.locator('table:not(.compact) tbody tr').filter({ has: page.locator('strong', { hasText: new RegExp(`^${name}$`) }) });
   await expect(row('prune-small').getByTestId('list-adds')).toHaveText('adds 0%');
   await expect(row('prune-small').getByTestId('list-covered-by')).toContainText('100% also in prune-big');
-  await expect(row('prune-big').getByTestId('list-adds')).toHaveText('adds 83.3%');
+  // prune-small's row names prune-big too ("also in prune-big"), so look for the figure, not the row's only cell.
+  await expect(row('prune-big').getByTestId('list-adds').filter({ hasText: 'adds 83.3%' })).toHaveCount(1);
 
   // The read API: the overlap rows and the plan agree with the page.
   const ov = (await (await page.request.get('/api/v1/lists/overlap')).json()).items as { name: string; addsPercent: number; coveredBy: { list: string }[] }[];
@@ -2180,7 +2181,7 @@ test('flt_004 prune lists that add little, then undo', async () => {
   await done.getByTestId('prune-undo').click();
   await expect(done).toHaveCount(0);
   await expect.poll(async () => (await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(true);
-  await expect(row('prune-small')).not.toContainText('off');
+  await expect(row('prune-small').getByText('off', { exact: true })).toHaveCount(0); // the "Turn it off" button is not the badge
   const def = (await (await page.request.get('/api/v1/config/entries?kind=list')).json()).items.find((e: { name: string }) => e.name === 'prune-small');
   expect(def.definition.rules).toHaveLength(10);
 
