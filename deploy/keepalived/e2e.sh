@@ -11,6 +11,10 @@
 #      and node b vote; the lease lapses first);
 #   d. node a comes back: it takes the VIP again (keepalived preempts a backup with higher priority)
 #      and steps down to a replica of node b in the cluster;
+#   f. the second network (T24.32): the same two nodes are also on 10.231.251.0/24 with a second VIP
+#      (10.231.251.10, its own VRRP instance): what a pair on two VLANs looks like. The listeners on
+#      the wildcard answer there too (UDP and TCP), both VIPs sit on node a, both move to node b when
+#      a is killed and both come back; in maintenance both move.
 #   e. node a goes into maintenance through the API: /readyz answers 503, the VIP moves to b while
 #      a keeps answering on its own address, and when the window ends the VIP returns to a (the
 #      runbook in docs/running.md relies on this).
@@ -36,7 +40,11 @@ if command -v cygpath >/dev/null 2>&1; then HERE_W=$(cygpath -m "$HERE"); ROOT_W
 PROJECT=telltale-keepalived
 SUBNET=10.231.250
 VIP=$SUBNET.10
+# The second network and its VIP (T24.32): the pair's second VLAN.
+SUBNET2=10.231.251
+VIP2=$SUBNET2.10
 NET=${PROJECT}_vip
+NET2=${PROJECT}_vip2
 KA_IMAGE=telltale-keepalived:alpine-3.20
 # The keepalived image is removed at exit unless it was there before this run (REQ: OPS-010).
 KA_PRESENT=0
@@ -98,15 +106,20 @@ until_ok() { # budget_ms command...
   return 1
 }
 
+# The Docker network an address is on: the second VLAN's, or the first.
+net_for() { # address
+  case "$1" in "$SUBNET2".*) echo "$NET2" ;; *) echo "$NET" ;; esac
+}
+
 # The A record of a name at an address (the VIP, or a node's own address), or empty.
 dig_at() { # address name type
-  docker run --rm --network "$NET" --entrypoint dig "$KA_IMAGE" +time=1 +tries=1 +short "@$1" "$2" "$3" 2>/dev/null | head -n 1 || true
+  docker run --rm --network "$(net_for "$1")" --entrypoint dig "$KA_IMAGE" +time=1 +tries=1 +short "@$1" "$2" "$3" 2>/dev/null | head -n 1 || true
 }
 
 # The node that answered at an address: its name from the NSID option of the answer ([node] name),
 # or empty when nothing answered.
 node_at() { # address
-  docker run --rm --network "$NET" --entrypoint dig "$KA_IMAGE" +time=1 +tries=1 +nsid "@$1" gateway.vip.home.arpa A 2>/dev/null \
+  docker run --rm --network "$(net_for "$1")" --entrypoint dig "$KA_IMAGE" +time=1 +tries=1 +nsid "@$1" gateway.vip.home.arpa A 2>/dev/null \
     | sed -n 's/^; NSID: .*("\(.*\)").*$/\1/p' | head -n 1 || true
 }
 
@@ -122,11 +135,12 @@ metric_at() { # address name [label-text]
 node_is() { [ "$(node_at "$1")" = "$2" ]; } # address node-name
 metric_is() { [ "$(metric_at "$1" "$2" "$3")" = "$4" ]; } # address name label-text value
 
-# The node that holds the VIP: a or b, or empty. The check runs inside each node's network namespace.
-vip_owner() {
-  local n
+# The node that holds a VIP (the first network's unless one is given): a or b, or empty. The check
+# runs inside each node's network namespace, on whichever interface carries the address.
+vip_owner() { # [vip]
+  local n v=${1:-$VIP}
   for n in "${NODES[@]}"; do
-    if "${COMPOSE[@]}" exec -T "keepalived-$n" ip -4 addr show eth0 2>/dev/null | grep -qF "inet $VIP/"; then
+    if "${COMPOSE[@]}" exec -T "keepalived-$n" ip -4 addr show 2>/dev/null | grep -qF "inet $v/"; then
       echo "$n"
       return 0
     fi
@@ -179,12 +193,20 @@ vip_answers_as() { # budget_ms node
   until_ok "$1" node_is "$VIP" "telltale-$2"
 }
 
+# 0 when both VIPs answer as the wanted node and are held by it, for up to budget_ms (T24.32).
+both_vips_as() { # budget_ms node
+  vip_answers_as "$1" "$2" && until_ok "$1" node_is "$VIP2" "telltale-$2" \
+    && [ "$(vip_owner "$VIP")" = "$2" ] && [ "$(vip_owner "$VIP2")" = "$2" ]
+}
+
 "${COMPOSE[@]}" --profile witness down -v --remove-orphans >/dev/null 2>&1 || true
 
-step "the isolated network: $SUBNET.0/24 is free"
-if docker network ls -q | xargs -r docker network inspect --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null | grep -qF "$SUBNET.0/24"; then
-  bad "$SUBNET.0/24 is already used by a Docker network; change the subnet in compose.yaml, the node files and this script"
-fi
+step "the isolated networks: $SUBNET.0/24 and $SUBNET2.0/24 are free"
+for net in "$SUBNET" "$SUBNET2"; do
+  if docker network ls -q | xargs -r docker network inspect --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null | grep -qF "$net.0/24"; then
+    bad "$net.0/24 is already used by a Docker network; change the subnet in compose.yaml, the node files and this script"
+  fi
+done
 pass
 
 if [ -n "$BUILT_IMAGE" ]; then
@@ -239,6 +261,18 @@ vip_answers_as 60000 a || bad "the VIP $VIP does not answer as telltale-a within
 [ "$(dig_at "$VIP" gateway.vip.home.arpa A)" = 192.0.2.1 ] || bad "the A record does not answer through the VIP"
 pass "owner a"
 
+step "f. the second network: each node answers on its own address there, and both VIPs are held by a"
+for n in "${NODES[@]}"; do
+  i=$([ "$n" = a ] && echo 11 || echo 12)
+  until_ok 60000 node_is "$SUBNET2.$i" "telltale-$n" || bad "node $n does not answer on $SUBNET2.$i as telltale-$n"
+done
+both_vips_as 60000 a || bad "the VIPs $VIP and $VIP2 are not both held by a and answering as telltale-a (owners: '$(vip_owner "$VIP")' and '$(vip_owner "$VIP2")')"
+[ "$(dig_at "$VIP2" gateway.vip.home.arpa A)" = 192.0.2.1 ] || bad "the A record does not answer through the second VIP"
+# TCP on the second VIP too: the wildcard TCP listener answers on every interface.
+tcp_ok=$(docker run --rm --network "$NET2" --entrypoint dig "$KA_IMAGE" +tcp +time=2 +tries=1 +short "@$VIP2" gateway.vip.home.arpa A 2>/dev/null | head -n 1 || true)
+[ "$tcp_ok" = 192.0.2.1 ] || bad "TCP to the second VIP does not answer (got '$tcp_ok')"
+pass "telltale-a on $SUBNET2.11, telltale-b on $SUBNET2.12, both VIPs on a, UDP and TCP answer on the second"
+
 step "c. kill node a (TelltaleDNS and keepalived at once)"
 t0=$(now_ms)
 "${COMPOSE[@]}" kill telltale-a keepalived-a >/dev/null 2>&1 || bad "could not kill node a"
@@ -263,6 +297,11 @@ done
 [ "$ok_after" = 5 ] || bad "only $ok_after of 5 queries answered as telltale-b after the move"
 [ "$(dig_at "$VIP" gateway.vip.home.arpa A)" = 192.0.2.1 ] || bad "the A record does not answer through the VIP after the move"
 pass "the VIP moved to b after ${took} ms, $lost failed probes before the first answer, then 5 of 5 answered"
+# The second VIP moves on the same health check (T24.32).
+until_ok 15000 node_is "$VIP2" telltale-b || bad "the second VIP $VIP2 did not move to b (owner: '$(vip_owner "$VIP2")')"
+[ "$(vip_owner "$VIP2")" = b ] || bad "the second VIP answers as telltale-b but is held by '$(vip_owner "$VIP2")'"
+[ "$(dig_at "$VIP2" gateway.vip.home.arpa A)" = 192.0.2.1 ] || bad "the A record does not answer through the second VIP after the move"
+pass "both VIPs are on b"
 
 until_ok 60000 metric_is "$SUBNET.12" telltale_cluster_primary "" 1 \
   || bad "the cluster did not promote node b within 60 s"
@@ -272,10 +311,11 @@ step "d. node a comes back: it takes the VIP again and steps down to a replica"
 "${COMPOSE[@]}" up -d >/dev/null 2>&1 || bad "compose up (node a) failed"
 vip_answers_as 60000 a || bad "node a did not take the VIP back within 60 s (owner: '$(vip_owner)', answered by '$(node_at "$VIP")')"
 [ "$(vip_owner)" = a ] || bad "the VIP answers as telltale-a but is held by '$(vip_owner)'"
+both_vips_as 60000 a || bad "the second VIP did not come back to a with the first (owner: '$(vip_owner "$VIP2")')"
 until_ok 90000 metric_is "$SUBNET.11" telltale_cluster_primary "" 0 \
   || bad "node a did not step down to a replica within 90 s"
 [ "$(metric_at "$SUBNET.12" telltale_cluster_primary)" = 1 ] || bad "node b lost the primary role"
-pass "the VIP is back on a; a is a replica, b the primary"
+pass "both VIPs are back on a; a is a replica, b the primary"
 
 step "e. maintenance on a hands the VIP to b, and ending it brings the VIP back"
 admin_login "$SUBNET.11" || bad "the admin can't sign in on node a"
@@ -283,6 +323,8 @@ out=$(admin_api "$SUBNET.11" POST /api/v1/nodes/local/maintenance '{"forSecs":30
 [ "$(api_status "$out")" = 200 ] || bad "could not start maintenance on node a (HTTP $(api_status "$out"): $(api_body "$out"))"
 until_ok 30000 node_is "$VIP" telltale-b || bad "the VIP did not move to b while a is in maintenance (owner: '$(vip_owner)')"
 [ "$(vip_owner)" = b ] || bad "the VIP answers as telltale-b but is held by '$(vip_owner)'"
+both_vips_as 30000 b || bad "the second VIP did not move to b with the first while a is in maintenance (owner: '$(vip_owner "$VIP2")')"
+[ "$(node_at "$SUBNET2.11")" = telltale-a ] || bad "node a stopped answering on its own second-network address during maintenance"
 [ "$(node_at "$SUBNET.11")" = telltale-a ] || bad "node a stopped answering on its own address during maintenance"
 # The first identity sync from the primary after node a rejoined replaces the admin that node a made
 # locally, and that ends its sessions (crates/telltale-store identity import). It can land between
@@ -290,7 +332,7 @@ until_ok 30000 node_is "$VIP" telltale-b || bad "the VIP did not move to b while
 admin_login "$SUBNET.11" || bad "the admin can't sign in on node a before ending maintenance"
 out=$(admin_api "$SUBNET.11" DELETE /api/v1/nodes/local/maintenance)
 [ "$(api_status "$out")" = 200 ] || bad "could not end maintenance on node a (HTTP $(api_status "$out"): $(api_body "$out"))"
-vip_answers_as 60000 a || bad "the VIP did not come back to a after maintenance ended (owner: '$(vip_owner)')"
-pass "the VIP moved to b in maintenance and back to a after it, and a kept answering on its own address"
+both_vips_as 60000 a || bad "the VIPs did not both come back to a after maintenance ended (owners: '$(vip_owner)' and '$(vip_owner "$VIP2")')"
+pass "both VIPs moved to b in maintenance and back to a after it, and a kept answering on its own addresses"
 
 echo "PASS: deploy/keepalived/e2e.sh"

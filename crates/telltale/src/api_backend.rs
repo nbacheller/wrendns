@@ -714,6 +714,32 @@ impl ApiBackend {
     }
 }
 
+/// REQ: UPS-013 (T24.31, ADR-997) — this node's own addresses, for the `source` suggestions:
+/// up interfaces only, no loopback, no link-local, each with the network it is in.
+fn node_addresses() -> Vec<telltale_api::model::NodeAddress> {
+    let mut out: Vec<_> = telltale_net::local_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| a.up && !a.ip.is_loopback() && !a.ip.is_multicast())
+        .filter(|a| match a.ip {
+            std::net::IpAddr::V4(v) => !v.is_link_local(),
+            std::net::IpAddr::V6(v) => v.segments()[0] & 0xffc0 != 0xfe80,
+        })
+        .map(|a| telltale_api::model::NodeAddress {
+            interface: a.iface,
+            address: a.ip.to_string(),
+            network: telltale_config::Cidr {
+                addr: a.ip,
+                prefix: a.prefix,
+            }
+            .network()
+            .to_string(),
+        })
+        .collect();
+    out.sort_by(|a, b| (&a.interface, &a.address).cmp(&(&b.interface, &b.address)));
+    out
+}
+
 fn bad_cursor() -> Problem {
     Problem::invalid("`cursor`: not a cursor from this API")
         .hint("Pass the nextCursor value from the previous page unchanged.")
@@ -768,6 +794,8 @@ impl Backend for ApiBackend {
                 }
             }),
             cluster: self.src.cluster.as_deref().map(crate::cluster::info),
+            // REQ: UPS-013 (T24.31) — the addresses an upstream's `source` can name.
+            addresses: node_addresses(),
             // REQ: OPS-010 — the web UI's banner when this node is in maintenance.
             maintenance: {
                 let now = crate::maintenance::now_ms();
@@ -2752,6 +2780,7 @@ impl Backend for ApiBackend {
     ) -> BoxFuture<Result<telltale_api::model::RouterCertificate, Problem>> {
         Box::pin(async move { crate::router_cert::fetch(&url).await })
     }
+    #[allow(clippy::too_many_lines)] // one table, built in one pass
     fn networks(&self) -> Vec<telltale_api::model::NetworkInfo> {
         use std::net::{IpAddr, Ipv4Addr};
         let state = self.src.pipeline.current();
@@ -2798,7 +2827,8 @@ impl Backend for ApiBackend {
                         net: Ipv4Addr,
                         prefix: u8,
                         source: &str,
-                        r: Option<&crate::routers::Network>| {
+                        r: Option<&crate::routers::Network>,
+                        own_vlan: Option<u16>| {
             let in_net: Vec<Ipv4Addr> = known
                 .iter()
                 .copied()
@@ -2820,7 +2850,7 @@ impl Backend for ApiBackend {
             out.push(telltale_api::model::NetworkInfo {
                 name,
                 subnet: format!("{net}/{prefix}"),
-                vlan: r.and_then(|r| r.vlan),
+                vlan: r.and_then(|r| r.vlan).or(own_vlan),
                 gateway: r.and_then(|r| r.gateway).map(|g| g.to_string()),
                 dhcp_start: r.and_then(|r| r.dhcp_start).map(|a| a.to_string()),
                 dhcp_end: r.and_then(|r| r.dhcp_stop).map(|a| a.to_string()),
@@ -2837,16 +2867,35 @@ impl Backend for ApiBackend {
         };
         let nets = self.src.pipeline.router_networks.load();
         for n in nets.iter() {
-            info(n.name.clone(), n.subnet, n.prefix, "router", Some(n));
+            info(n.name.clone(), n.subnet, n.prefix, "router", Some(n), None);
+        }
+        // REQ: API-013 (T24.32) — the networks this node is directly on (tagged VLAN interfaces,
+        // or its own LAN), unless a router already reported the same subnet.
+        let own = crate::own_networks::current();
+        for n in own.iter().filter(|n| {
+            !nets
+                .iter()
+                .any(|r| r.subnet == n.subnet && r.prefix == n.prefix)
+        }) {
+            info(
+                n.name.clone(),
+                n.subnet,
+                n.prefix,
+                "interface",
+                None,
+                n.vlan,
+            );
         }
         for g in clients.groups() {
             for c in &g.networks {
                 let IpAddr::V4(a) = c.addr else { continue };
                 let net = Ipv4Addr::from(u32::from(a) & mask(c.prefix));
-                if nets.iter().any(|n| n.subnet == net && n.prefix == c.prefix) {
+                if nets.iter().any(|n| n.subnet == net && n.prefix == c.prefix)
+                    || own.iter().any(|n| n.subnet == net && n.prefix == c.prefix)
+                {
                     continue;
                 }
-                info(g.name.to_string(), net, c.prefix, "group", None);
+                info(g.name.to_string(), net, c.prefix, "group", None, None);
             }
         }
         out
@@ -4130,6 +4179,9 @@ impl Backend for ApiBackend {
                     latency_ewma_ms: h.ewma.map_or(0.0, |d| {
                         ms(u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
                     }),
+                    // REQ: UPS-013
+                    source: u.source().map(|ip| ip.to_string()),
+                    source_problem: u.source_problem(),
                 }
             })
             .collect()
@@ -5816,6 +5868,25 @@ fn plan_override(
             .map(|r| serde_json::to_value(r).unwrap_or_default()),
         _ => named_json(&merged.group, &name),
     };
+    // REQ: UPS-013 (ADR-997 §4) — the hard refusal for an upstream `source` this node doesn't
+    // hold is here, on the write: start, reload and a replica's apply only degrade that
+    // upstream, so a saved row never takes DNS down.
+    if w.kind == ManagedKind::Upstream
+        && body_in.is_some()
+        && let Some(spec) = merged
+            .upstream
+            .iter()
+            .find(|u| u.name() == name)
+            .and_then(|u| u.source.as_ref())
+    {
+        let held = telltale_net::local_addrs()
+            .map_err(|e| Problem::internal(format!("couldn't list this node's addresses: {e}")))?;
+        telltale_upstream::resolve_source(spec.as_str(), &held).map_err(|e| {
+            Problem::new(Code::InvalidConfig, format!("upstream `{name}`: {e}")).hint(
+                "`source` must be an address this node holds, or a network it has an address in; in a cluster, a network is the safer choice.",
+            )
+        })?;
+    }
     let mut warnings: Vec<String> = telltale_config::validate_config(&merged).unwrap_or_default();
     warnings.extend(mixed_version_warning(
         src,
