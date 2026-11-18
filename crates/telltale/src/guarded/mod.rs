@@ -18,6 +18,10 @@
 //!
 //! DNS never depends on any of it (CLU-004): a failure here fails the change, not the queries.
 
+// The framework's hooks (a window row's sockets, the bind fallback, the CheckCx a row reads) are used by
+// the rows T27.14 to T27.17 add and by the test rows; until then a build without them sees them unused.
+#![allow(dead_code)]
+
 pub(crate) mod appliers;
 pub(crate) mod assertion;
 pub(crate) mod cli;
@@ -35,8 +39,7 @@ mod api_tests;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use engine::{Engine, RowDef};
-pub(crate) use host::Host;
+pub(crate) use engine::Engine;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -108,7 +111,12 @@ pub(crate) fn split_name(name: &str) -> Option<(&str, &str)> {
 
 /// Lowercase hex of `bytes`.
 pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
 }
 
 /// A fresh random identifier of `n` bytes, in hex.

@@ -918,10 +918,15 @@ impl Auth {
     /// REQ: API-902 — a short, stable name for a session that is safe to keep in memory and in
     /// logs (a prefix of the hash of its identifier; never the cookie).
     pub fn session_key(p: &Principal) -> Option<String> {
+        use std::fmt::Write as _;
         let Via::Session { id_hash, .. } = &p.via else {
             return None;
         };
-        Some(id_hash.iter().take(8).map(|b| format!("{b:02x}")).collect())
+        let mut key = String::new();
+        for b in id_hash.iter().take(8) {
+            let _ = write!(key, "{b:02x}");
+        }
+        Some(key)
     }
 
     /// REQ: API-003 (T10.7, ADR-142) — changes to the account itself (its password, two-factor

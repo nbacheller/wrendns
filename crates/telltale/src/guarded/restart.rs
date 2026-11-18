@@ -181,9 +181,7 @@ impl Engine {
         req: &GuardedApplyRequest,
         _pre: &Preview,
     ) -> Result<GuardedApplied, Problem> {
-        if let Err(e) = self.restart_checked() {
-            return Err(e);
-        }
+        self.restart_checked()?;
         let staged = self.staged_ids();
         // No audit, no restart: the row is written before anything stops.
         let audited = self.host.audit(

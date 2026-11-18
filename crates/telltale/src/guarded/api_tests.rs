@@ -4,6 +4,15 @@
 //! the routes is the tests' fake node (`tests::install`); the sockets of a confirmation window are
 //! simulated by the extension the real proof listener puts on a request.
 
+#![allow(
+    clippy::many_single_char_names,
+    clippy::items_after_statements,
+    clippy::assert_is_empty,
+    clippy::too_many_lines,
+    clippy::manual_assert_eq,
+    clippy::assertions_on_constants
+)]
+
 use std::net::SocketAddr;
 
 use axum::body::Body;
@@ -466,7 +475,9 @@ async fn api_902_listing_readable_by_agent_without_values() {
 #[cfg(not(feature = "e2e"))]
 #[test]
 fn api_902_test_row_absent_in_release() {
-    assert!(!telltale_config::guarded::TEST_ROWS_COMPILED);
+    assert!(!std::hint::black_box(
+        telltale_config::guarded::TEST_ROWS_COMPILED
+    ));
     let ids: Vec<&str> = crate::guarded::appliers::rows()
         .iter()
         .map(|d| d.row.id)
@@ -489,5 +500,7 @@ fn api_902_test_row_absent_in_release() {
     assert!(prod.contains("super::e2e::simulate_restart"));
     // `e2e.rs` is a module only under the feature.
     let m = include_str!("mod.rs");
-    assert!(m.contains("#[cfg(feature = \"e2e\")]\npub(crate) mod e2e;"));
+    let lines: Vec<&str> = m.lines().collect();
+    let at = lines.iter().position(|l| l.contains("mod e2e;")).unwrap();
+    assert!(lines[at - 1].contains("#[cfg(feature = \"e2e\")]"));
 }

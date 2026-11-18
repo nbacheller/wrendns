@@ -132,6 +132,7 @@ pub(crate) fn begin(cfg: &Config, defs: &[RowDef], now: u64) -> Begin {
 }
 
 /// [`begin`] for node `node`, with the environment switch passed in (the tests' form).
+#[allow(clippy::too_many_lines)] // the start-up decision reads best in one place
 pub(crate) fn begin_for(
     cfg: &Config,
     node: &str,
@@ -257,6 +258,7 @@ pub(crate) fn begin_for(
 }
 
 /// What proving healthy needs, as the node reports it.
+#[allow(clippy::struct_excessive_bools)] // four independent facts
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Health {
     pub(crate) state_open: bool,

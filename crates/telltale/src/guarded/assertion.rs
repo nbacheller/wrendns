@@ -90,20 +90,32 @@ impl Refusal {
     }
 }
 
+/// What a target expects of an assertion it was sent.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Expect<'a> {
+    /// The connection the request came over (the peer's mTLS-authenticated name).
+    pub(crate) sender: &'a str,
+    pub(crate) now: u64,
+    /// This node.
+    pub(crate) me: &'a str,
+    pub(crate) action: &'a str,
+    pub(crate) setting: &'a str,
+    pub(crate) preview_id: &'a str,
+}
+
 impl Signed {
     /// Checks everything about the assertion except the nonce (the engine keeps those): that it is
     /// for this node, this action, this setting and preview, not expired, an admin's, from the
     /// primary, and signed by the primary's key.
-    pub(crate) fn check(
-        &self,
-        host: &dyn Host,
-        sender: &str,
-        now: u64,
-        me: &str,
-        action: &str,
-        setting: &str,
-        preview_id: &str,
-    ) -> Result<&Assertion, Refusal> {
+    pub(crate) fn check(&self, host: &dyn Host, want: &Expect<'_>) -> Result<&Assertion, Refusal> {
+        let Expect {
+            sender,
+            now,
+            me,
+            action,
+            setting,
+            preview_id,
+        } = *want;
         let a = &self.assertion;
         if a.node != me {
             return Err(Refusal::WrongNode);
@@ -147,6 +159,9 @@ pub(crate) enum ForwardedOp {
     Cancel {
         pending: String,
     },
+    /// A read of the target's own status (its supervisor, what is pending): it carries no value, so
+    /// any member may ask and no assertion is needed.
+    Status,
 }
 
 /// A forwarded request.
@@ -164,6 +179,7 @@ pub(crate) enum ForwardedAnswer {
     Preview(GuardedPreview),
     Applied(GuardedApplied),
     Result(GuardedResult),
+    Status(telltale_api::guarded::GuardedNodeStatus),
     /// The target refused: a problem's code and text, to be returned as is.
     Refused {
         code: telltale_api::problem::Code,

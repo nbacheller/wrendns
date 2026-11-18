@@ -98,8 +98,8 @@ fn all_managed(state: &State) -> Vec<Stored> {
             Ok(mut s) => {
                 // The name is the key: it wins over what the body says.
                 if let Some((node, id)) = split_name(&m.name) {
-                    s.node = node.to_owned();
-                    s.id = id.to_owned();
+                    node.clone_into(&mut s.node);
+                    id.clone_into(&mut s.id);
                 }
                 Some(s)
             }
@@ -147,8 +147,7 @@ pub(crate) fn delete(state: &State, node: &str, id: &str) -> Result<(), String> 
             .map_err(|e| e.to_string());
     }
     match state.delete_managed(KIND, &entry_name(node, id), None) {
-        Ok(_) => Ok(()),
-        Err(telltale_store::state::ManagedError::NotFound { .. }) => Ok(()),
+        Ok(_) | Err(telltale_store::state::ManagedError::NotFound { .. }) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
 }

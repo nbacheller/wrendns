@@ -383,7 +383,7 @@ pub(crate) fn rpc_handler(
                 return if kind == crate::guarded::prod::KIND_FORWARD {
                     crate::guarded::prod::handle_forward(src, cluster, peer, body).await
                 } else {
-                    crate::guarded::prod::handle_entry(src, cluster, peer, body).await
+                    crate::guarded::prod::handle_entry(&src, &cluster, &peer, &body)
                 };
             }
             if kind == crate::secrets::sync::KIND_FETCH {

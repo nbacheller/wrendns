@@ -63,6 +63,7 @@ pub struct Supervisor {
 }
 
 /// One guarded setting, as `GET /api/v1/guarded` lists it for this node.
+#[allow(clippy::struct_excessive_bools)] // the flags are independent facts the UI shows
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GuardedSetting {
@@ -179,6 +180,7 @@ pub struct GuardedCheck {
 }
 
 /// The dry run's answer. Nothing was changed.
+#[allow(clippy::struct_excessive_bools)] // the flags are independent facts the UI shows
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GuardedPreview {

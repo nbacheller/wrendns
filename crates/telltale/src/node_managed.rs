@@ -237,8 +237,8 @@ pub(crate) fn guarded_of(entries: &[Entry], node: &str) -> Vec<crate::guarded::s
             let mut s: crate::guarded::store::Stored =
                 serde_json::from_value(e.body.clone()).ok()?;
             let (n, id) = crate::guarded::split_name(&e.name)?;
-            s.node = n.to_owned();
-            s.id = id.to_owned();
+            n.clone_into(&mut s.node);
+            id.clone_into(&mut s.id);
             (s.node == node).then_some(s)
         })
         .collect()

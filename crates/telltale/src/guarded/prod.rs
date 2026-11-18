@@ -341,13 +341,13 @@ impl Host for ProdHost {
 }
 
 /// The primary's side of [`KIND_ENTRY`]: a replica writes its own entry through here.
-pub(crate) async fn handle_entry(
-    src: Arc<Sources>,
-    cluster: Arc<Cluster>,
-    peer: String,
-    body: Vec<u8>,
+pub(crate) fn handle_entry(
+    src: &Sources,
+    cluster: &Cluster,
+    peer: &str,
+    body: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let answer: Option<String> = entry_write(&src, &cluster, &peer, &body);
+    let answer: Option<String> = entry_write(src, cluster, peer, body);
     serde_json::to_vec(&answer).map_err(|e| e.to_string())
 }
 

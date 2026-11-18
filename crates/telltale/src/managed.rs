@@ -423,7 +423,9 @@ fn safe(s: &str) -> Result<SafeString, String> {
 }
 
 /// The one-of sections the API or UI set, each replacing the files' section as a whole.
-fn apply_one_of(cfg: &mut Config, e: &Entries) {
+fn apply_one_of(cfg: &mut Config, own: &Config, e: &Entries) {
+    // REQ: API-902 (T27.13, ADR-956 §2) — the guarded values in force (a field the files set wins).
+    crate::guarded::appliers::overlay(cfg, own, &e.guarded, None);
     if let Some(r) = &e.ratelimit {
         cfg.ratelimit = r.clone();
     }
@@ -487,12 +489,10 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
     // apart from `[[auth.oidc.provider]]` (a node without `public_url` shows them as inactive
     // instead of failing the configuration), the files' ID wins, and a bad one is dropped alone.
     crate::node_managed::overlay_providers(&mut cfg, e.valid_oidc_providers());
-    // REQ: API-902 (T27.13, ADR-956 §2) — guarded values in force (the files' fields win).
-    crate::guarded::appliers::overlay(&mut cfg, own, &e.guarded, None);
     apply_ovr(&mut cfg.schedule, &e.schedules);
     apply_ovr(&mut cfg.anomaly_mute, &e.anomaly_mutes);
     apply_kubernetes_map(&mut cfg, &e.kubernetes_map);
-    apply_one_of(&mut cfg, e);
+    apply_one_of(&mut cfg, own, e);
     // REQ: API-014 (T23.2, ADR-903 §4) — a stored path the rules refuse isn't read
     // (`effective` logs why; the entries list it in `credentialIssues`).
     crate::credential_rules::confine(&mut cfg, own, e);

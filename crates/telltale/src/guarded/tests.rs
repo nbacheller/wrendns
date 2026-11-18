@@ -4,6 +4,15 @@
 //! audit log) is a recording fake, so the state machine runs under `tokio::time::pause` with no
 //! sockets, clocks or cluster.
 
+#![allow(
+    clippy::many_single_char_names,
+    clippy::items_after_statements,
+    clippy::assert_is_empty,
+    clippy::too_many_lines,
+    clippy::manual_assert_eq,
+    clippy::assertions_on_constants
+)]
+
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -164,7 +173,8 @@ impl Applier for TApplier {
                     pending_proxies: Some(proxies),
                 });
             }
-            let port = value.get("port").and_then(Value::as_u64).unwrap_or(0) as u16;
+            let port =
+                u16::try_from(value.get("port").and_then(Value::as_u64).unwrap_or(0)).unwrap_or(0);
             let sock = host
                 .proof_socket(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
                 .await
@@ -2454,6 +2464,39 @@ async fn api_902_primary_unreachable_rolls_back() {
         .await
         .unwrap_err();
     assert_eq!(e.code, Code::PrimaryUnreachable);
+}
+
+// REQ: API-902 (ADR-956 §4a) — `GET /api/v1/guarded` lists each member's own supervisor and what is
+// pending on it (a read with no value in it, so any member answers it without an assertion).
+#[tokio::test(start_paused = true)]
+async fn api_902_listing_covers_every_node() {
+    let (a, _b, _c) = cluster();
+    let s = a.engine.status().await;
+    let by: std::collections::BTreeMap<&str, &str> = s
+        .nodes
+        .iter()
+        .map(|n| (n.node.as_str(), n.supervisor.kind.as_str()))
+        .collect();
+    assert_eq!(by.get("pi-a"), Some(&"systemd"));
+    assert_eq!(by.get("pi-b"), Some(&"systemd"));
+    assert_eq!(by.get("pi-c"), Some(&"docker"));
+    assert_eq!(s.nodes[0].node, "pi-a", "this node first");
+    // A pending change on a member shows there, without its value.
+    let alice = admin("alice", 5);
+    let v = json!({"port": 40_180});
+    let p = preview_for(&a.engine, &alice, "pi-c", "t-win", v.clone())
+        .await
+        .unwrap();
+    apply_for(&a.engine, &alice, "pi-c", "t-win", &p, v)
+        .await
+        .unwrap();
+    let s = a.engine.status().await;
+    let c = s.nodes.iter().find(|n| n.node == "pi-c").unwrap();
+    assert_eq!(
+        c.pending.as_ref().map(|p| p.setting.as_str()),
+        Some("t-win")
+    );
+    assert!(!serde_json::to_string(&s).unwrap().contains("40180"));
 }
 
 // REQ: API-902 (ADR-956 §4a) — the restart is forwarded only by the primary with the same signed

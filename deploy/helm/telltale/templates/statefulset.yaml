@@ -75,6 +75,10 @@ spec:
             # REQ: OPS-004 (ADR-046) — how this node updates (shown with the update status).
             - name: TELLTALE_INSTALL
               value: helm
+            # REQ: API-902 (T27.13, ADR-956 §4a) - the kubelet restarts an exited container, so the UI may
+            # offer "Restart now" (exit status 75).
+            - name: TELLTALE_SUPERVISOR
+              value: kubernetes
             # REQ: OPS-003 — node addresses count as infrastructure for the masked-client-IP check.
             - name: TELLTALE_NODE_IPS
               valueFrom:

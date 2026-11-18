@@ -27,7 +27,7 @@ use tokio::time::Instant;
 use tracing::{info, warn};
 
 use super::assertion::{
-    ASSERTION_SECS, Assertion, Forwarded, ForwardedAnswer, ForwardedOp, Refusal, Signed,
+    ASSERTION_SECS, Assertion, Expect, Forwarded, ForwardedAnswer, ForwardedOp, Refusal, Signed,
 };
 use super::host::{Host, Member, ProofSocket};
 use super::store::{self, EntryState, Stored};
@@ -184,7 +184,7 @@ struct Pending {
     weakening: bool,
     guard: Arc<dyn WindowGuard>,
     proof_addr: Option<SocketAddr>,
-    pending_proxies: Option<Vec<(std::net::IpAddr, u8)>>,
+    proxies: Option<Vec<(std::net::IpAddr, u8)>>,
     /// The expiry task; dropped (aborted) when the change ends.
     expiry: Option<tokio::task::JoinHandle<()>>,
 }
@@ -369,7 +369,7 @@ impl Engine {
 
     /// Audits a refusal (past the role check; no value in it) and hands the problem back.
     fn refuse(&self, c: &GuardedCaller, id: &str, p: Problem) -> Problem {
-        let actor = self.actor_of(c);
+        let actor = Self::actor_of(c);
         self.audit_best_effort(
             &actor,
             "settings.guarded_refused",
@@ -380,7 +380,7 @@ impl Engine {
     }
 
     /// The audit actor for a caller; a token-only confirmation takes the pending change's actor.
-    fn actor_of(&self, c: &GuardedCaller) -> Actor {
+    fn actor_of(c: &GuardedCaller) -> Actor {
         c.actor.clone()
     }
 
@@ -564,9 +564,20 @@ impl Engine {
 
     /// `GET /api/v1/guarded`: this node, then the members the primary can see.
     pub(crate) async fn status(self: &Arc<Self>) -> GuardedStatus {
-        GuardedStatus {
-            nodes: vec![self.status_local()],
+        let mut nodes = vec![self.status_local()];
+        // In a cluster each member says its own (its supervisor, what is pending on it): a read with
+        // no value in it, so no assertion is needed. A member that doesn't answer is left out (an
+        // older one doesn't know the read: it isn't listed either).
+        for m in self.host.members().into_iter().filter(|m| m.up) {
+            let ask = Forwarded {
+                op: ForwardedOp::Status,
+                assertion: None,
+            };
+            if let Ok(ForwardedAnswer::Status(s)) = self.host.forward(&m.name, ask).await {
+                nodes.push(s);
+            }
         }
+        GuardedStatus { nodes }
     }
 
     /// The pending `trusted-proxies` list, for the confirm route's own address evaluation.
@@ -574,7 +585,7 @@ impl Engine {
         lock(&self.inner)
             .pending
             .as_ref()
-            .and_then(|p| p.pending_proxies.clone())
+            .and_then(|p| p.proxies.clone())
     }
 
     // ---- preview -------------------------------------------------------------------------
@@ -592,7 +603,7 @@ impl Engine {
                 self.must_forward().map_err(|e| self.refuse(c, id, e))?;
                 self.forward_preview(c, &m, id, req).await
             }
-            Ok(Target::Local) => self.preview_local(c, id, req),
+            Ok(Target::Local) => self.preview_local(c, id, &req),
         }
     }
 
@@ -600,13 +611,13 @@ impl Engine {
         &self,
         c: &GuardedCaller,
         id: &str,
-        req: GuardedPreviewRequest,
+        req: &GuardedPreviewRequest,
     ) -> Result<GuardedPreview, Problem> {
         let def = self.row_def(id)?;
         self.rate_limit(c)?;
         self.not_restarting()?;
         let r = self
-            .preview_checked(c, def, &req)
+            .preview_checked(c, def, req)
             .map_err(|e| self.refuse(c, id, e))?;
         Ok(r)
     }
@@ -815,6 +826,7 @@ impl Engine {
 
     /// The checks that come before anything changes, ending with taking the operation lock
     /// atomically with the pending check (ADR-956 §4a). The preview is consumed here.
+    #[allow(clippy::too_many_lines)] // one ordered list of checks
     fn accept(
         &self,
         c: &GuardedCaller,
@@ -1192,7 +1204,7 @@ impl Engine {
                 weakening: pre.weakening,
                 guard: staged.guard,
                 proof_addr: staged.proof_addr,
-                pending_proxies: staged.pending_proxies,
+                proxies: staged.pending_proxies,
                 expiry: Some(expiry),
             });
         }
@@ -1255,7 +1267,7 @@ impl Engine {
                         p.admin.clone(),
                         p.token_hash,
                         p.proof_addr,
-                        p.pending_proxies.is_some(),
+                        p.proxies.is_some(),
                     );
                     g.busy = true;
                     snap
@@ -1402,14 +1414,14 @@ impl Engine {
         let seen = c.remote_under_pending.map(|a| a.to_string());
         {
             let mut g = lock(&self.inner);
-            if let Some(mut p) = g.pending.take() {
-                if let Some(h) = p.expiry.take() {
-                    h.abort();
-                }
+            if let Some(mut p) = g.pending.take()
+                && let Some(h) = p.expiry.take()
+            {
+                h.abort();
             }
         }
         let mut who = actor.clone();
-        who.reason = reason.clone();
+        who.reason.clone_from(&reason);
         self.audit_best_effort(
             &who,
             "settings.guarded",
@@ -1439,12 +1451,25 @@ impl Engine {
         pending_id: &str,
     ) -> Result<GuardedResult, Problem> {
         self.rate_limit(c)?;
-        let setting = {
+        let here = {
             let g = lock(&self.inner);
-            match g.pending.as_ref() {
-                Some(p) if p.id == pending_id => p.setting.clone(),
-                _ => return Err(Problem::not_found("no change is pending under that ID")),
+            g.pending
+                .as_ref()
+                .filter(|p| p.id == pending_id)
+                .map(|p| p.setting.clone())
+        };
+        let Some(setting) = here else {
+            // Not here: on the primary, the change may be a member's (the admin is looking at the
+            // cluster through this node), so each member is asked with a signed, single-use
+            // assertion; the one that holds it answers.
+            if self.host.is_primary() && self.host.clustered() {
+                for m in self.host.members().into_iter().filter(|m| m.up) {
+                    if let Ok(r) = self.forward_cancel(c, &m.name, pending_id).await {
+                        return Ok(r);
+                    }
+                }
             }
+            return Err(Problem::not_found("no change is pending under that ID"));
         };
         self.rollback(pending_id, "cancelled").await;
         Ok(GuardedResult {
@@ -1640,6 +1665,9 @@ impl Engine {
             hint: p.hint.clone(),
             retry_after: p.retry_after,
         };
+        if matches!(f.op, ForwardedOp::Status) {
+            return ForwardedAnswer::Status(self.status_local());
+        }
         let Some(signed) = f.assertion.as_ref() else {
             return refused(&Problem::new(
                 Code::Forbidden,
@@ -1650,17 +1678,18 @@ impl Engine {
             ForwardedOp::Preview { id, .. } => ("preview", id.clone(), String::new()),
             ForwardedOp::Apply { id, req } => ("apply", id.clone(), req.preview_id.clone()),
             ForwardedOp::Cancel { pending } => ("cancel", pending.clone(), String::new()),
+            ForwardedOp::Status => return refused(&Problem::internal("unreachable")),
         };
         let now = (self.now)();
-        let a = match signed.check(
-            &*self.host,
+        let want = Expect {
             sender,
             now,
-            &self.node,
+            me: &self.node,
             action,
-            &setting,
-            &preview_id,
-        ) {
+            setting: &setting,
+            preview_id: &preview_id,
+        };
+        let a = match signed.check(&*self.host, &want) {
             Ok(a) => a.clone(),
             Err(r) => {
                 self.audit_best_effort(
@@ -1699,7 +1728,7 @@ impl Engine {
         match f.op {
             ForwardedOp::Preview { id, mut req } => {
                 req.node = None;
-                match self.preview_local(&caller, &id, req) {
+                match self.preview_local(&caller, &id, &req) {
                     Ok(p) => ForwardedAnswer::Preview(p),
                     Err(e) => refused(&e),
                 }
@@ -1715,6 +1744,7 @@ impl Engine {
                 Ok(r) => ForwardedAnswer::Result(r),
                 Err(e) => refused(&e),
             },
+            ForwardedOp::Status => refused(&Problem::internal("unreachable")),
         }
     }
 }

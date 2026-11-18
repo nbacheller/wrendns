@@ -43,6 +43,8 @@ services:
       - telltale-data:/var/lib/telltale
     environment:
       TELLTALE_LOG: info
+      # REQ: API-902 (T27.13) - `restart: unless-stopped` starts the container again after any exit.
+      TELLTALE_SUPERVISOR: docker
     healthcheck:
       test: ["CMD", "/usr/local/bin/telltale", "health", "--url", "http://127.0.0.1:8053/readyz"]
       interval: 30s

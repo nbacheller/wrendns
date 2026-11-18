@@ -122,17 +122,19 @@ async fn caller(
     })
 }
 
-fn body<T>(b: Result<Json<T>, JsonRejection>) -> Result<T, Problem> {
+fn rejection(e: &JsonRejection) -> Problem {
     // REQ: API-015 — a parse error's own text can quote the input.
-    b.map(|Json(v)| v).map_err(|e| {
-        let what = match e {
-            JsonRejection::JsonSyntaxError(_) => "isn't valid JSON",
-            JsonRejection::JsonDataError(_) => "has an unknown, missing or wrongly typed field",
-            JsonRejection::MissingJsonContentType(_) => "must be sent as application/json",
-            _ => "couldn't be read",
-        };
-        Problem::invalid(format!("the request body {what}"))
-    })
+    let what = match e {
+        JsonRejection::JsonSyntaxError(_) => "isn't valid JSON",
+        JsonRejection::JsonDataError(_) => "has an unknown, missing or wrongly typed field",
+        JsonRejection::MissingJsonContentType(_) => "must be sent as application/json",
+        _ => "couldn't be read",
+    };
+    Problem::invalid(format!("the request body {what}"))
+}
+
+fn body<T>(b: Result<Json<T>, JsonRejection>) -> Result<T, Problem> {
+    b.map(|Json(v)| v).map_err(|e| rejection(&e))
 }
 
 /// What is guarded on each node, what a file sets, and what is pending.
@@ -246,40 +248,37 @@ pub(crate) async fn guarded_confirm(
     let req = match req {
         Ok(Json(r)) => r,
         Err(JsonRejection::MissingJsonContentType(_)) => GuardedConfirmRequest::default(),
-        Err(e) => return Err(body::<GuardedConfirmRequest>(Err(e)).unwrap_err()),
+        Err(e) => return Err(rejection(&e)),
     };
-    let c = match ext.get::<Principal>() {
-        Some(p) => {
-            let p = p.clone();
-            caller(&backend, &auth, &p, &ext, &headers).await?
+    let c = if let Some(p) = ext.get::<Principal>() {
+        let p = p.clone();
+        caller(&backend, &auth, &p, &ext, &headers).await?
+    } else {
+        // No session: only a token can confirm, and the node then knows the admin from the
+        // pending change it is bound to.
+        if req.confirm_token.is_none() {
+            return Err(Problem::new(
+                Code::Unauthorized,
+                "sign in, or send the confirmToken the change answered with",
+            ));
         }
-        None => {
-            // No session: only a token can confirm, and the node then knows the admin from the
-            // pending change it is bound to.
-            if req.confirm_token.is_none() {
-                return Err(Problem::new(
-                    Code::Unauthorized,
-                    "sign in, or send the confirmToken the change answered with",
-                ));
-            }
-            let ip = remote(&auth, &ext, &headers);
-            GuardedCaller {
-                actor: crate::auth::Actor {
-                    name: String::new(),
-                    kind: "token",
-                    remote: Some(ip.to_string()),
-                    reason: reason(&headers),
-                },
-                username: String::new(),
-                session: None,
-                signed_in_at: None,
-                arrived_on: ext.get::<ArrivedOn>().map(|a| a.0),
-                remote: Some(ip),
-                remote_under_pending: backend
-                    .guarded_pending_proxies()
-                    .map(|list| remote_under(&auth, &ext, &headers, &list)),
-                tls: ext.get::<crate::auth::routes::TlsConnection>().is_some(),
-            }
+        let ip = remote(&auth, &ext, &headers);
+        GuardedCaller {
+            actor: crate::auth::Actor {
+                name: String::new(),
+                kind: "token",
+                remote: Some(ip.to_string()),
+                reason: reason(&headers),
+            },
+            username: String::new(),
+            session: None,
+            signed_in_at: None,
+            arrived_on: ext.get::<ArrivedOn>().map(|a| a.0),
+            remote: Some(ip),
+            remote_under_pending: backend
+                .guarded_pending_proxies()
+                .map(|list| remote_under(&auth, &ext, &headers, &list)),
+            tls: ext.get::<crate::auth::routes::TlsConnection>().is_some(),
         }
     };
     backend

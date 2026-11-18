@@ -575,6 +575,36 @@ addr = \"127.0.0.1:5\"
         }
     }
 
+    // REQ: API-902 (ADR-957) — a docs check: every guarded ID (the registry's and the ones still to
+    // come) appears in docs/recovery.md, with the three ways back and the environment switch.
+    #[test]
+    fn api_902_recovery_doc_lists_every_guarded_id() {
+        let doc = include_str!("../../../docs/recovery.md");
+        let ids = rows()
+            .into_iter()
+            .filter(|r| !r.test_only)
+            .map(|r| r.id)
+            .chain(PLANNED.iter().map(|p| p.id));
+        for id in ids {
+            assert!(
+                doc.contains(&format!("`{id}`")),
+                "docs/recovery.md doesn't mention `{id}`"
+            );
+        }
+        for needle in [
+            "telltale guarded list",
+            "telltale guarded clear",
+            "TELLTALE_IGNORE_GUARDED",
+            "guarded-probation",
+            "Restart now",
+        ] {
+            assert!(
+                doc.contains(needle),
+                "docs/recovery.md doesn't mention {needle}"
+            );
+        }
+    }
+
     // REQ: API-902 (ADR-956 §1(b)) — the two sign-in lockout settings are file-only.
     #[test]
     fn api_902_lockout_settings_are_file_only() {
@@ -707,7 +737,7 @@ addr = \"127.0.0.1:5\"
     #[cfg(not(feature = "e2e"))]
     #[test]
     fn api_902_test_row_absent_in_release() {
-        assert!(!TEST_ROWS_COMPILED);
+        assert!(!std::hint::black_box(TEST_ROWS_COMPILED));
         assert!(
             rows()
                 .iter()
