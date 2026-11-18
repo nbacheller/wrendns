@@ -64,6 +64,8 @@ services:
     networks:
       vip:
         ipv4_address: 10.231.250.11
+      vip2:
+        ipv4_address: 10.231.251.11
     volumes:
       - ./keepalived/node-a.conf:/etc/keepalived/keepalived.conf:ro
 
@@ -85,6 +87,8 @@ services:
     networks:
       vip:
         ipv4_address: 10.231.250.12
+      vip2:
+        ipv4_address: 10.231.251.12
     volumes:
       - ./keepalived/node-b.conf:/etc/keepalived/keepalived.conf:ro
 
@@ -123,6 +127,15 @@ networks:
     ipam:
       config:
         - subnet: 10.231.250.0/24
+  # A second network the two nodes are both on (T24.32), with its own VIP (10.231.251.10): what a
+  # pair on two VLANs looks like (one interface and one VRRP instance per VLAN). The witness is
+  # only on the first.
+  vip2:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.231.251.0/24
 
 volumes:
   telltale-a-data:
