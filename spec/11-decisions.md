@@ -4490,3 +4490,17 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 **Alternatives rejected:** serving only v6 (phone apps and Home Assistant's fallback need v5); a separate listener (a second port to firewall and a second allowed-networks story); accepting the signed-in session or an agent token on these paths (a different credential model than what the clients can send); "disable forever" (see 5); an unauthenticated `status` (Pi-hole v5 has one; here every read except `versions` needs the token); replicating the token across a cluster now (needs the secrets rules).
 
 **Consequences:** one more credential to rotate, off until an admin asks for it; statistics shown to a Pi-hole client are the same ones a viewer sees (domains and client addresses at the node's privacy level); `unique_domains` and `clients_ever_seen` are bounded counts and say so in the docs.
+
+## ADR-969 — `telltale snmp walk` before the agent list exists: the lookup is the only seam, an address is refused as a name, and ownership is tested by binding (Proposed 2026-11-17)
+**Context:** T25.4 (DSC-003, ADR-908 "Diagnostic CLI") asks for `telltale snmp walk --agent <name>`, which takes a configured agent name only. `[[discovery.snmp_agent]]` and `[[discovery.snmp_credential]]` are T25.6 and T25.8 and ship with their own UI (standing rule), so the config has no agent to find yet. Adding the schema in T25.4 would add settings without their UI controls, help topics and Playwright tests.
+
+**Decision:**
+1. **One seam.** `snmp_cli::lookup(cfg, name)` is the only place that turns a name into an `AgentSpec` (address, credential files). Until T25.6 it finds none and says so. Everything after it is built and tested: the destination check (ADR-907), the credential read from `*_file` under `[node] secret_file_dirs`, the table roots with their fallbacks, the bounded walk (rows, time, pacing) and the printing. T25.6 replaces the body of `lookup` and nothing else.
+2. **An address is not a name.** `--agent` values that parse as an IP address or a socket address are refused before the lookup. The command line has no other way to give a destination (`--agent`, `--table`, `--config` only).
+3. **Table groups.** `arp`: ipNetToPhysicalTable, else ipNetToMediaTable. `ifmib`: ifTable, ifXTable, and ipAddressTable else ipAddrTable. `bridge`: dot1qTpFdbTable else dot1dTpFdbTable, and dot1dBasePortIfIndex. `lldp`: lldpRemTable. The first root of a group that answers a row wins; the others are not read.
+4. **The host's own address** (a refused destination, ADR-907) is found by binding a UDP socket to it: a bind that succeeds means the address is local. No new dependency and no interface listing.
+5. **Output.** Rows print as `OID = TYPE: value`; device strings are cut at 255 bytes with control characters replaced (ADR-908 "Untrusted strings"). No credential is read into the output path.
+
+**Alternatives rejected:** adding `[[discovery.snmp_agent]]` to the schema now (settings without UI); accepting `--address` for a quick test (it would let the command reach any host, against ADR-907).
+
+**Consequences:** the subcommand reports "no agent configured" until T25.6; `telltale` links `telltale-snmp` (binary +13,440 bytes, stripped release, measured below in T25.4's Done note).

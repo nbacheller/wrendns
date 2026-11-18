@@ -370,3 +370,13 @@ jobs:
       # REQ: API-007 (T6.4) — Technitium import through the API of the official image.
       - name: Technitium import (API)
         run: bash deploy/technitium-import-e2e.sh target/bench-fast/telltale
+  # REQ: DSC-003 (T25.4, ADR-908) — the SNMP client against net-snmp `snmpd` in a container on an
+  # RFC 1918 Docker network: v2c GET and walk, v3 SHA with and without AES.
+  snmp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - run: bash deploy/snmp-e2e.sh

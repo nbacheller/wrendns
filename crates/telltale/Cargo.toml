@@ -76,6 +76,8 @@ telltale-store = { version = "0.8.0", path = "../telltale-store" }
 telltale-net = { version = "0.8.0", path = "../telltale-net" }
 telltale-policy = { version = "0.8.0", path = "../telltale-policy" }
 telltale-proto = { version = "0.8.0", path = "../telltale-proto" }
+# REQ: DSC-003 (T25.4) — `telltale snmp walk`; the poller (T25.6) uses it in the discovery worker.
+telltale-snmp = { version = "0.8.0", path = "../telltale-snmp" }
 telltale-telemetry = { version = "0.8.0", path = "../telltale-telemetry" }
 telltale-upstream = { version = "0.8.0", path = "../telltale-upstream" }
 # io-std/io-util: `telltale mcp --stdio` (AGT-006).
