@@ -8124,6 +8124,16 @@ export interface components {
         ListPrunePlan: {
             /** @description Lists that would be turned off, least-adding first. */
             candidates: components["schemas"]["ListPruneCandidate"][];
+            /**
+             * @description True when the lists changed after the last compile finished (a list turned off or
+             *     edited): what each adds isn't known yet, so nothing is proposed. Preview again.
+             */
+            compilePending: boolean;
+            /**
+             * Format: int64
+             * @description Configuration version the plan was read at (send it back to apply).
+             */
+            configVersion: number;
             /** @description Every other enabled list, with the reason it stays. */
             kept: components["schemas"]["ListPruneKept"][];
             /**
@@ -8139,6 +8149,11 @@ export interface components {
              * @description Names in the active snapshot.
              */
             ofNames: number;
+            /**
+             * Format: int64
+             * @description Version of the compiled snapshot the numbers come from (send it back to apply).
+             */
+            snapshotVersion: number;
             /**
              * Format: double
              * @description The threshold used: lists adding at most this share of their own entries.
@@ -8219,10 +8234,20 @@ export interface components {
         /** @description REQ: FLT-004 (T24.28, ADR-992) - `POST /api/v1/lists/prune`. */
         ListsPruneRequest: {
             /**
-             * @description The lists the person saw in the preview. Each must still be in the plan, or nothing is
-             *     changed (409). Absent: every list in the plan.
+             * Format: int64
+             * @description The preview's `configVersion`: any configuration change since is a 409.
              */
-            names?: string[] | null;
+            configVersion: number;
+            /**
+             * @description The lists the person saw in the preview. Each must still be in the plan, or nothing is
+             *     changed (409).
+             */
+            names: string[];
+            /**
+             * Format: int64
+             * @description The preview's `snapshotVersion`: another compile since is a 409.
+             */
+            snapshotVersion: number;
             /**
              * Format: double
              * @description Lists adding at most this share of their entries, 0 to 50 (default 1).

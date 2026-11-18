@@ -112,10 +112,12 @@ impl Backend for Fake {
         w: crate::ManagedWrite,
     ) -> crate::BoxFuture<Result<crate::model::ConfigChange, Problem>> {
         self.seen.lock().unwrap().push(format!(
-            "managed {:?} {} {}",
+            "managed {:?} {} {}{}",
             w.kind,
             w.name,
-            w.body.map(|b| b.to_string()).unwrap_or_default()
+            w.body.map(|b| b.to_string()).unwrap_or_default(),
+            w.expect
+                .map_or_else(String::new, |v| format!(" expect={v}"))
         ));
         if w.kind == crate::ManagedKind::List
             && self.prunable.load(std::sync::atomic::Ordering::SeqCst)
@@ -4711,7 +4713,7 @@ async fn flt_004_prune_lists_over_http() {
         post(
             "/api/v1/lists/prune",
             &app.bearer,
-            r#"{"names":["quiet","mine"]}"#,
+            r#"{"names":["quiet","mine"],"snapshotVersion":3,"configVersion":0}"#,
             &[],
         ),
     )
@@ -4719,7 +4721,33 @@ async fn flt_004_prune_lists_over_http() {
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert!(v["detail"].as_str().unwrap().contains("`mine`"), "{v}");
     assert_eq!(writes(&fake), Vec::<String>::new());
-    for bad in ["{", r#"{"all":true}"#, r#"{"thresholdPercent":99}"#] {
+    // The preview's versions are required, and a different one is a 409 (ADR-993).
+    let plan_v = send(&app, get("/api/v1/lists/prune-plan", &app.bearer))
+        .await
+        .2;
+    assert_eq!(
+        (
+            plan_v["snapshotVersion"].as_u64(),
+            plan_v["configVersion"].as_u64()
+        ),
+        (Some(3), Some(0)),
+        "{plan_v}"
+    );
+    for stale in [
+        r#"{"names":["quiet"],"snapshotVersion":2,"configVersion":0}"#,
+        r#"{"names":["quiet"],"snapshotVersion":3,"configVersion":9}"#,
+    ] {
+        let (s, _, v) = send(&app, post("/api/v1/lists/prune", &app.bearer, stale, &[])).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{stale}: {v}");
+    }
+    assert_eq!(writes(&fake), Vec::<String>::new());
+    for bad in [
+        "{",
+        "",
+        r#"{"names":["quiet"]}"#,
+        r#"{"all":true}"#,
+        r#"{"names":[],"snapshotVersion":3,"configVersion":0,"thresholdPercent":99}"#,
+    ] {
         let (s, _, v) = send(&app, post("/api/v1/lists/prune", &app.bearer, bad, &[])).await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}: {v}");
     }
@@ -4730,7 +4758,7 @@ async fn flt_004_prune_lists_over_http() {
         post(
             "/api/v1/lists/prune",
             &app.bearer,
-            r#"{"names":["quiet"]}"#,
+            r#"{"names":["quiet"],"snapshotVersion":3,"configVersion":0}"#,
             &[],
         ),
     )
@@ -4756,10 +4784,28 @@ async fn flt_004_prune_lists_over_http() {
         "{audit:?}"
     );
 
-    // No body: every list in the plan.
-    let (s, _, v) = send(&app, post("/api/v1/lists/prune", &app.bearer, "", &[])).await;
+    // The write is checked against the version the preview read (no lost update), and the list's
+    // own audit entry is written next to the prune's.
+    assert!(w[0].ends_with(" expect=0"), "{w:?}");
+    let own = app
+        .auth
+        .state()
+        .audit_page(None, 10, Some("list.put"), None)
+        .unwrap();
+    assert_eq!((own.len(), own[0].target.as_str()), (1, "quiet"), "{own:?}");
+
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/lists/prune",
+            &app.bearer,
+            r#"{"names":["quiet","quiet"],"snapshotVersion":3,"configVersion":0}"#,
+            &[],
+        ),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(v["disabled"], serde_json::json!(["quiet"]));
+    assert_eq!(v["disabled"], serde_json::json!(["quiet"]), "names once");
 
     // Agents read the plan, and never apply it, whatever their scopes.
     let token = |scopes: &str| {

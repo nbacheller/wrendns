@@ -2002,6 +2002,22 @@ test('flt_004 prune lists that add little, then undo', async () => {
   expect((await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(true);
   await panel.getByRole('button', { name: 'Back' }).click();
   await expect(panel.getByTestId('prune-apply')).toBeVisible();
+
+  // A stale preview: the configuration changed after it (any edit), so the confirmation is refused with
+  // a 409, nothing is turned off, and previewing again brings the versions up to date.
+  await panel.getByTestId('prune-apply').click();
+  const touch = await page.request.put('/api/v1/lists/prune-touch', { headers: { 'x-csrf-token': csrf }, data: { rules: ['||touch.prune.e2e.test^'], kind: 'block' } });
+  expect(touch.ok(), await touch.text()).toBeTruthy();
+  await expect.poll(async () => (await listed()).find((l) => l.name === 'prune-touch')?.entries, { timeout: 45_000 }).toBe(1);
+  const refusedApply = page.waitForResponse((r) => r.url().endsWith('/api/v1/lists/prune') && r.request().method() === 'POST');
+  await panel.getByTestId('prune-confirm').click();
+  expect((await refusedApply).status()).toBe(409);
+  await expect(page.getByText(/preview again/i).first()).toBeVisible();
+  await expect.poll(() => problems.some((m) => /status of 409/.test(m))).toBe(true);
+  for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1); // the expected refusal
+  expect((await listed()).find((l) => l.name === 'prune-small')?.enabled).toBe(true);
+  await panel.getByTestId('prune-preview').click();
+  await expect(cand.filter({ hasText: 'prune-small' })).toHaveCount(1);
   await panel.getByTestId('prune-apply').click();
   const applied = page.waitForResponse((r) => r.url().endsWith('/api/v1/lists/prune') && r.request().method() === 'POST');
   await panel.getByTestId('prune-confirm').click();
@@ -2025,6 +2041,17 @@ test('flt_004 prune lists that add little, then undo', async () => {
   const def = (await (await page.request.get('/api/v1/config/entries?kind=list')).json()).items.find((e: { name: string }) => e.name === 'prune-small');
   expect(def.definition.rules).toHaveLength(10);
 
+  // A group that names a list keeps it: the preview says so.
+  const grp = await page.request.put('/api/v1/groups/prune-grp', { headers: { 'x-csrf-token': csrf }, data: { networks: ['10.78.0.0/24'], lists: ['prune-small'] } });
+  expect(grp.ok(), await grp.text()).toBeTruthy();
+  await page.getByTestId('lists-prune').click();
+  await expect(panel).toBeVisible();
+  await expect(panel.getByTestId('prune-candidate').filter({ hasText: 'prune-small' })).toHaveCount(0);
+  await panel.locator('summary').click();
+  await expect(panel.getByTestId('prune-kept')).toContainText('prune-small: group `prune-grp` names it');
+  await panel.getByTestId('prune-close').click();
+  expect((await page.request.delete('/api/v1/groups/prune-grp', { headers: { 'x-csrf-token': csrf } })).ok()).toBeTruthy();
+
   // Agents don't get to apply it.
   const tok = await page.request.post('/api/v1/tokens', { headers: { 'x-csrf-token': csrf }, data: { name: 'prune-agent', kind: 'agent', scopes: ['config:read', 'config:write:lists'] } });
   expect(tok.status()).toBe(201);
@@ -2034,14 +2061,14 @@ test('flt_004 prune lists that add little, then undo', async () => {
   expect(plan.status()).toBe(200);
   const refused = await asAgent.request.post('/api/v1/lists/prune', {
     headers: { authorization: `Bearer ${agent}`, 'x-telltale-reason': 'tidy up the lists' },
-    data: {},
+    data: { names: ['prune-small'], snapshotVersion: 1, configVersion: 1 },
   });
   expect(refused.status()).toBe(403);
   expect((await refused.json()).code).toBe('agent_not_allowed');
   await asAgent.close();
 
   // Clean up: the lists, and the agent token.
-  for (const name of ['prune-small', 'prune-big']) {
+  for (const name of ['prune-small', 'prune-big', 'prune-touch']) {
     expect((await page.request.delete(`/api/v1/lists/${name}`, { headers: { 'x-csrf-token': csrf } })).ok()).toBeTruthy();
   }
   const tokens = (await (await page.request.get('/api/v1/tokens')).json()).items as { id: string; name: string }[];

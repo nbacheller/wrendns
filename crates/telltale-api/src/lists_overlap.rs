@@ -134,16 +134,34 @@ pub fn rows(lists: &[ListInfo], groups: &Named) -> Vec<ListOverlapRow> {
         .collect()
 }
 
-/// What turning a list off could lose that is certain to be lost or can't be shown covered:
-/// its unique names, its rules (overlap is by name), and the names it shares with a shadow list
-/// (which never blocks, so it covers nothing).
-fn base_loss(l: &ListInfo, lists: &[ListInfo]) -> u64 {
-    let shadow: u64 = lists
+/// Does this list block right now? Only an enabled block list in enforce mode covers names.
+fn covering(y: &ListInfo) -> bool {
+    y.enabled && y.mode == "enforce" && y.kind == "block"
+}
+
+/// Is the overlap from a compile that no longer matches the configuration? A share naming a list
+/// that is off or gone means the lists changed (a prune, an edit) and the compile that follows
+/// hasn't finished, or failed and the old snapshot stays.
+fn compile_pending(lists: &[ListInfo]) -> bool {
+    lists
         .iter()
-        .filter(|y| y.enabled && y.mode == "shadow" && y.name != l.name)
-        .map(|y| share(l, &y.name))
+        .filter(|l| l.enabled)
+        .flat_map(|l| l.overlap.iter())
+        .any(|s| !lists.iter().any(|y| y.enabled && y.name == s.list))
+}
+
+/// What turning a list off could lose that is certain to be lost or can't be shown covered:
+/// its unique names, its rules (overlap is by name), and the names it shares with a list that
+/// does not block now (a shadow list, an allow list, a list that is off or gone: it covers
+/// nothing).
+fn base_loss(l: &ListInfo, lists: &[ListInfo]) -> u64 {
+    let uncovered: u64 = l
+        .overlap
+        .iter()
+        .filter(|s| s.list != l.name && !lists.iter().any(|y| y.name == s.list && covering(y)))
+        .map(|s| s.names)
         .sum();
-    l.unique + l.rules + shadow
+    l.unique + l.rules + uncovered
 }
 
 /// `base_loss` as a share of the list's entries (0 to a few; for ordering only).
@@ -185,11 +203,15 @@ fn set_fits(set: &[&ListInfo], lists: &[ListInfo], threshold: f64) -> bool {
 /// The lists to turn off at `threshold` percent. Greedy, least-adding first, and each list added
 /// has to keep the whole set within the threshold (two lists that mirror each other are never
 /// both proposed). `of_names` is the active snapshot's size, for the note.
+#[allow(clippy::too_many_lines)] // one pass: classify, choose the set, describe it
 pub fn plan(lists: &[ListInfo], groups: &Named, threshold: f64, of_names: u64) -> ListPrunePlan {
     let mut kept: Vec<ListPruneKept> = Vec::new();
     let mut pool: Vec<&ListInfo> = Vec::new();
+    let pending = compile_pending(lists);
     for l in lists.iter().filter(|l| l.enabled) {
-        let why = if l.kind != "block" {
+        let why = if pending {
+            Some("the lists changed and the compile that follows hasn't finished".to_owned())
+        } else if l.kind != "block" {
             Some("allow list: only block lists are proposed".to_owned())
         } else if l.mode != "enforce" {
             Some(
@@ -203,8 +225,11 @@ pub fn plan(lists: &[ListInfo], groups: &Named, threshold: f64, of_names: u64) -
                 "group `{g}` names it, so it can't be covered by others for that group"
             ))
         } else {
+            // Exact, not the rounded share: `set_fits` is exact too.
+            #[allow(clippy::cast_precision_loss)]
+            let over = base_loss(l, lists) as f64 * 100.0 > threshold * l.entries as f64;
             let adds = percent(base_loss(l, lists), l.entries);
-            if adds > threshold {
+            if over {
                 Some(format!("adds {adds}% of its entries, above {threshold}%"))
             } else {
                 None
@@ -257,7 +282,9 @@ pub fn plan(lists: &[ListInfo], groups: &Named, threshold: f64, of_names: u64) -
         })
         .collect();
     let total = set_loss(&chosen, lists);
-    let note = if candidates.is_empty() {
+    let note = if pending {
+        "A compile is pending: the lists changed since the last one finished, so what each list adds isn't known yet. Preview again in a moment.".to_owned()
+    } else if candidates.is_empty() {
         format!("No enabled list adds {threshold}% or less of its own entries.")
     } else {
         format!(
@@ -277,20 +304,49 @@ pub fn plan(lists: &[ListInfo], groups: &Named, threshold: f64, of_names: u64) -
         loses_at_most: total,
         of_names,
         note,
+        compile_pending: pending,
+        snapshot_version: 0,
+        config_version: 0,
     }
 }
 
 /// The lists, the groups, and the snapshot's size, from the primary on a replica (the compile
 /// runs there).
-async fn inputs(b: &Shared) -> Result<(Vec<ListInfo>, Vec<(String, Vec<String>)>, u64), Problem> {
+async fn inputs(b: &Shared) -> Result<Inputs, Problem> {
     let bk = Arc::clone(b);
     blocking(move || {
+        // The version first: an edit after it makes the apply's write fail, never get lost.
+        let config_version = bk.config_version();
         let lists = bk.lists_and_hits().lists;
         let groups = named_lists(&bk.groups());
-        let names = bk.system_info().filter_names;
-        Ok((lists, groups, names))
+        let info = bk.system_info();
+        Ok(Inputs {
+            lists,
+            groups,
+            names: info.filter_names,
+            snapshot_version: info.filter_snapshot.unwrap_or(0),
+            config_version,
+        })
     })
     .await
+}
+
+/// What a plan is computed from, with the two versions it was read at.
+struct Inputs {
+    lists: Vec<ListInfo>,
+    groups: Vec<(String, Vec<String>)>,
+    names: u64,
+    snapshot_version: u64,
+    config_version: u64,
+}
+
+impl Inputs {
+    fn plan(&self, threshold: f64) -> ListPrunePlan {
+        let mut p = plan(&self.lists, &self.groups, threshold, self.names);
+        p.snapshot_version = self.snapshot_version;
+        p.config_version = self.config_version;
+        p
+    }
 }
 
 /// How much each filter list adds.
@@ -306,9 +362,9 @@ async fn inputs(b: &Shared) -> Result<(Vec<ListInfo>, Vec<(String, Vec<String>)>
 pub(crate) async fn overlap(
     State(b): State<Shared>,
 ) -> Result<Json<Items<ListOverlapRow>>, Problem> {
-    let (lists, groups, _) = inputs(&b).await?;
+    let i = inputs(&b).await?;
     Ok(Json(Items {
-        items: rows(&lists, &groups),
+        items: rows(&i.lists, &i.groups),
         missing_nodes: Vec::new(),
     }))
 }
@@ -332,8 +388,7 @@ pub(crate) async fn prune_plan(
     Query(q): Query<PruneParams>,
 ) -> Result<Json<ListPrunePlan>, Problem> {
     let t = threshold(q.threshold_percent)?;
-    let (lists, groups, names) = inputs(&b).await?;
-    Ok(Json(plan(&lists, &groups, t, names)))
+    Ok(Json(inputs(&b).await?.plan(t)))
 }
 
 /// Turn off the lists that add little.
@@ -358,18 +413,6 @@ pub(crate) async fn prune(
     ext: axum::http::Extensions,
     body: Bytes,
 ) -> Response {
-    let req: ListsPruneRequest = if body.iter().all(u8::is_ascii_whitespace) {
-        ListsPruneRequest::default()
-    } else {
-        match serde_json::from_slice(&body) {
-            Ok(r) => r,
-            Err(e) => {
-                return Problem::invalid(format!("request body: {e}"))
-                    .hint("Send {\"thresholdPercent\": 1, \"names\": [\"<list>\"]}.")
-                    .into_response();
-            }
-        }
-    };
     let p = match principal(&ext) {
         Ok(p) => p,
         Err(e) => return e.into_response(),
@@ -383,54 +426,56 @@ pub(crate) async fn prune(
         .hint("Read GET /api/v1/lists/prune-plan; a person confirms it in the UI.")
         .into_response();
     }
+    let req: ListsPruneRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return Problem::invalid(format!("request body: {e}"))
+                .hint("Send what the preview returned: {\"thresholdPercent\": 1, \"names\": [\"<list>\"], \"snapshotVersion\": 7, \"configVersion\": 12}.")
+                .into_response();
+        }
+    };
     let t = match threshold(req.threshold_percent) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
-    if req.names.as_ref().is_some_and(|n| n.len() > MAX_NAMES) {
+    if req.names.len() > MAX_NAMES {
         return Problem::invalid(format!("`names`: at most {MAX_NAMES} lists")).into_response();
     }
-    let (lists, groups, names) = match inputs(&backend).await {
+    let input = match inputs(&backend).await {
         Ok(i) => i,
         Err(e) => return e.into_response(),
     };
-    let plan = plan(&lists, &groups, t, names);
-    let chosen: Vec<String> = match &req.names {
-        None => plan.candidates.iter().map(|c| c.name.clone()).collect(),
-        Some(given) => {
-            let stale: Vec<&str> = given
-                .iter()
-                .map(|n| n.trim())
-                .filter(|n| !plan.candidates.iter().any(|c| c.name == *n))
-                .collect();
-            if !stale.is_empty() {
-                return Problem::new(
-                    Code::Conflict,
-                    format!(
-                        "not in the plan any more: {}",
-                        stale
-                            .iter()
-                            .map(|n| format!("`{n}`"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                )
-                .hint("The lists changed since the preview. Nothing was turned off; preview again.")
+    let stale_hint = "The lists changed since the preview. Nothing was turned off; preview again.";
+    if input.config_version != req.config_version || input.snapshot_version != req.snapshot_version
+    {
+        return Problem::new(
+            Code::Conflict,
+            "the configuration or the compiled lists changed since the preview",
+        )
+        .hint(stale_hint)
+        .into_response();
+    }
+    let plan = input.plan(t);
+    if plan.compile_pending {
+        return Problem::new(Code::Conflict, "a compile is pending")
+            .hint("The lists changed and the compile that follows hasn't finished. Nothing was turned off; preview again in a moment.")
+            .into_response();
+    }
+    let mut chosen: Vec<String> = Vec::new();
+    for n in req.names.iter().map(|n| n.trim()) {
+        if !plan.candidates.iter().any(|c| c.name == n) {
+            return Problem::new(Code::Conflict, format!("not in the plan any more: `{n}`"))
+                .hint(stale_hint)
                 .into_response();
-            }
-            let mut v: Vec<String> = Vec::new();
-            for n in given.iter().map(|n| n.trim().to_owned()) {
-                if !v.contains(&n) {
-                    v.push(n);
-                }
-            }
-            v
         }
-    };
+        if !chosen.iter().any(|c| c == n) {
+            chosen.push(n.to_owned());
+        }
+    }
     if chosen.is_empty() {
         return Json(ListsPruneResult {
             disabled: Vec::new(),
-            config_version: 0,
+            config_version: input.config_version,
             note: "Nothing to turn off.".into(),
         })
         .into_response();
@@ -446,10 +491,15 @@ pub(crate) async fn prune(
         .collect();
     let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
     let mut disabled: Vec<String> = Vec::new();
-    let mut version = 0;
+    // REQ: API-002 - each write is checked against the version read before the definitions, then
+    // against the one the write before it returned: an edit in between fails it, never lost.
+    let mut version = input.config_version;
     for name in &chosen {
         let Some(def) = defs.get(name.as_str()) else {
             return failed(
+                &auth,
+                &actor,
+                t,
                 &disabled,
                 Problem::not_found(format!("no definition for list `{name}`")),
             );
@@ -461,6 +511,9 @@ pub(crate) async fn prune(
             }
             None => {
                 return failed(
+                    &auth,
+                    &actor,
+                    t,
                     &disabled,
                     Problem::internal(format!("list `{name}` has no editable definition")),
                 );
@@ -471,7 +524,7 @@ pub(crate) async fn prune(
             name: name.clone(),
             body: Some(body),
             dry_run: false,
-            expect: None,
+            expect: Some(version),
             by: actor.name.clone(),
             simulate: None,
             role: Some(p.role),
@@ -480,9 +533,16 @@ pub(crate) async fn prune(
         match backend.write_managed(w).await {
             Ok(c) => {
                 version = c.config_version;
+                // The same audit entry the list's own edit writes (ADR-993).
+                auth.record(
+                    &actor,
+                    "list.put",
+                    name,
+                    &serde_json::json!({ "before": c.before, "after": c.after, "configVersion": c.config_version }),
+                );
                 disabled.push(name.clone());
             }
-            Err(e) => return failed(&disabled, e),
+            Err(e) => return failed(&auth, &actor, t, &disabled, e),
         }
     }
     auth.record(
@@ -504,10 +564,23 @@ pub(crate) async fn prune(
 }
 
 /// A write that failed part-way: the lists already off stay off (and are named).
-fn failed(done: &[String], e: Problem) -> Response {
+fn failed(
+    auth: &Auth,
+    actor: &crate::auth::Actor,
+    t: f64,
+    done: &[String],
+    e: Problem,
+) -> Response {
     if done.is_empty() {
         return e.into_response();
     }
+    // The lists already off are audited as a prune too, so none changes unrecorded.
+    auth.record(
+        actor,
+        "lists.prune",
+        &done.join(", "),
+        &serde_json::json!({ "thresholdPercent": t, "disabled": done, "partial": true, "error": e.title }),
+    );
     let hint = format!(
         "Already turned off: {}. They stay off; turn them on again in Manage lists if you don't want that.",
         done.join(", ")
@@ -660,5 +733,44 @@ mod tests {
         assert_eq!(r[0].covered_by[0].percent, 75.0);
         assert_eq!(r[0].groups, ["kids"]);
         assert_eq!(r[1].adds_percent, 10.0, "unique + rules over entries");
+    }
+
+    // REQ: FLT-004 (T24.28, ADR-992 item 6) - a list that covered another is now off (a first
+    // prune, before the compile ran): the old overlap still names it, but it covers nothing, so
+    // the second list is not proposed, and the plan says a compile is pending.
+    #[test]
+    fn flt_004_prune_plan_ignores_cover_by_a_list_now_off() {
+        let mut a = list("a", 100, 0, &[("b", 100)]);
+        a.enabled = false;
+        let b = list("b", 100, 0, &[("a", 100)]);
+        let p = plan(&[a, b], &[], 1.0, 100);
+        assert!(p.candidates.is_empty(), "{p:?}");
+        assert!(p.compile_pending);
+        assert!(p.note.contains("compile is pending"), "{}", p.note);
+        // A list deleted from the configuration is the same.
+        let b = list("b", 100, 0, &[("gone", 100)]);
+        let p = plan(&[b], &[], 1.0, 100);
+        assert!(p.candidates.is_empty() && p.compile_pending, "{p:?}");
+        // A cover that is now in shadow mode is not a cover either.
+        let mut a = list("a", 100, 0, &[("b", 100)]);
+        a.mode = "shadow".into();
+        let b = list("b", 100, 0, &[("a", 100)]);
+        let p = plan(&[a, b], &[], 1.0, 100);
+        assert!(p.candidates.is_empty() && !p.compile_pending, "{p:?}");
+    }
+
+    // REQ: FLT-004 (T24.28) - the first check is exact, so a list just over the threshold is kept
+    // with the "adds" reason, not the "together with the others" one.
+    #[test]
+    fn flt_004_prune_plan_near_threshold_is_exact() {
+        // 1.04 % adds, rounded to 1.0, at a threshold of 1.
+        let lists = vec![
+            list("big", 10_000, 10_000, &[]),
+            list("near", 10_000, 104, &[]),
+        ];
+        let p = plan(&lists, &[], 1.0, 20_000);
+        assert!(p.candidates.is_empty(), "{p:?}");
+        let why = &p.kept.iter().find(|k| k.name == "near").unwrap().reason;
+        assert!(why.starts_with("adds"), "{why}");
     }
 }

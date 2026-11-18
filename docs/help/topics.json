@@ -960,7 +960,7 @@
       "id": "list-overlap",
       "title": "Unique names and overlap",
       "term": "List overlap",
-      "summary": "Unique names are the ones no other list has. When almost everything in a list is also in another, the list adds little.",
+      "summary": "Unique names are the ones no other list of the same side (block or allow) has, so an exception list never makes a block list look covered. When almost everything in a list is also in another, the list adds little.",
       "when": "Deciding which lists to drop to save memory and compile time.",
       "example": "\"97% also in hagezi-pro\": removing this list would lose only its unique names.",
       "caution": "Hits count since each node started (every node's added up), so a list with no hits after a restart may just be new.",

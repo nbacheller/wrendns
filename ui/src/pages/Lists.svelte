@@ -170,8 +170,14 @@
     applying = true;
     planError = null;
     try {
-      // The lists previewed: a plan that changed since is refused (409) and changes nothing.
-      const r = await api.pruneLists({ thresholdPercent: plan.thresholdPercent, names: plan.candidates.map((c) => c.name) });
+      // The lists previewed, with the versions the preview was read at: a plan that changed since (a
+      // list edited, another compile) is refused (409) and changes nothing.
+      const r = await api.pruneLists({
+        thresholdPercent: plan.thresholdPercent,
+        names: plan.candidates.map((c) => c.name),
+        snapshotVersion: plan.snapshotVersion,
+        configVersion: plan.configVersion,
+      });
       pruned = r.disabled;
       closePrune();
       ({ items: lists, missingNodes: unread = [] } = await api.lists());

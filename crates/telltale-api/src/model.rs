@@ -2142,6 +2142,13 @@ pub struct ListPrunePlan {
     pub of_names: u64,
     /// In a sentence.
     pub note: String,
+    /// True when the lists changed after the last compile finished (a list turned off or
+    /// edited): what each adds isn't known yet, so nothing is proposed. Preview again.
+    pub compile_pending: bool,
+    /// Version of the compiled snapshot the numbers come from (send it back to apply).
+    pub snapshot_version: u64,
+    /// Configuration version the plan was read at (send it back to apply).
+    pub config_version: u64,
 }
 
 /// `GET /api/v1/lists/overlap` and `GET /api/v1/lists/prune-plan` parameters.
@@ -2154,16 +2161,19 @@ pub struct PruneParams {
 }
 
 /// REQ: FLT-004 (T24.28, ADR-992) - `POST /api/v1/lists/prune`.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListsPruneRequest {
     /// Lists adding at most this share of their entries, 0 to 50 (default 1).
     #[serde(default)]
     pub threshold_percent: Option<f64>,
     /// The lists the person saw in the preview. Each must still be in the plan, or nothing is
-    /// changed (409). Absent: every list in the plan.
-    #[serde(default)]
-    pub names: Option<Vec<String>>,
+    /// changed (409).
+    pub names: Vec<String>,
+    /// The preview's `snapshotVersion`: another compile since is a 409.
+    pub snapshot_version: u64,
+    /// The preview's `configVersion`: any configuration change since is a 409.
+    pub config_version: u64,
 }
 
 /// REQ: FLT-004 (T24.28, ADR-992) - what a prune turned off.

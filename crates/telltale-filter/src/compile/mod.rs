@@ -736,9 +736,10 @@ fn manifest_lists(inputs: &[ListMeta]) -> Vec<ManifestList> {
 }
 
 /// REQ: FLT-004 (T24.28, ADR-992) - how many names each pair of lists shares. Up to
-/// [`PairCounts::DENSE_LISTS`] lists a triangle of counters (no hashing per name pair, the
-/// cost that matters with 40 lists and millions of shared names); more lists fall back to a map.
-/// At most 128 KiB in the dense form, a few KiB with 40 lists.
+/// [`PairCounts::DENSE_LISTS`] lists a triangle of `n(n-1)/2` counters (no hashing per name
+/// pair, the cost that matters with 40 lists and millions of shared names); more lists fall back
+/// to a map. At most 64 KiB in the dense form, about 6 KiB with 40 lists; the map holds one
+/// entry per pair that shares a name, so at most `n(n-1)/2` entries.
 struct PairCounts {
     lists: usize,
     dense: Vec<u64>,
@@ -750,7 +751,7 @@ impl PairCounts {
 
     fn new(lists: usize) -> Self {
         let dense = if lists <= Self::DENSE_LISTS {
-            vec![0; lists * lists]
+            vec![0; lists * lists.saturating_sub(1) / 2]
         } else {
             Vec::new()
         };
@@ -761,6 +762,11 @@ impl PairCounts {
         }
     }
 
+    /// Position of the pair `lo < hi` in the triangle (row `lo` starts after the shorter rows).
+    fn slot(&self, lo: usize, hi: usize) -> usize {
+        lo * self.lists - lo * (lo + 1) / 2 + (hi - lo - 1)
+    }
+
     /// Counts the name once for each pair of `members` (list IDs, ascending).
     fn record(&mut self, members: &[u16]) {
         for (i, &a) in members.iter().enumerate() {
@@ -768,11 +774,11 @@ impl PairCounts {
                 let (lo, hi) = (a.min(b), a.max(b));
                 if self.dense.is_empty() {
                     *self.sparse.entry((lo, hi)).or_insert(0) += 1;
-                } else if let Some(c) = self
-                    .dense
-                    .get_mut(usize::from(lo) * self.lists + usize::from(hi))
-                {
-                    *c += 1;
+                } else {
+                    let at = self.slot(usize::from(lo), usize::from(hi));
+                    if let Some(c) = self.dense.get_mut(at) {
+                        *c += 1;
+                    }
                 }
             }
         }
@@ -789,7 +795,7 @@ impl PairCounts {
             let mut v = Vec::new();
             for a in 0..self.lists {
                 for b in a + 1..self.lists {
-                    let names = self.dense.get(a * self.lists + b).copied().unwrap_or(0);
+                    let names = self.dense.get(self.slot(a, b)).copied().unwrap_or(0);
                     if names > 0 {
                         v.push(snapshot::ListOverlap {
                             a: u16::try_from(a).unwrap_or(u16::MAX),

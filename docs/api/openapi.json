@@ -21409,7 +21409,10 @@
           "kept",
           "losesAtMost",
           "ofNames",
-          "note"
+          "note",
+          "compilePending",
+          "snapshotVersion",
+          "configVersion"
         ],
         "properties": {
           "candidates": {
@@ -21418,6 +21421,16 @@
               "$ref": "#/components/schemas/ListPruneCandidate"
             },
             "description": "Lists that would be turned off, least-adding first."
+          },
+          "compilePending": {
+            "type": "boolean",
+            "description": "True when the lists changed after the last compile finished (a list turned off or\nedited): what each adds isn't known yet, so nothing is proposed. Preview again."
+          },
+          "configVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Configuration version the plan was read at (send it back to apply).",
+            "minimum": 0
           },
           "kept": {
             "type": "array",
@@ -21440,6 +21453,12 @@
             "type": "integer",
             "format": "int64",
             "description": "Names in the active snapshot.",
+            "minimum": 0
+          },
+          "snapshotVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Version of the compiled snapshot the numbers come from (send it back to apply).",
             "minimum": 0
           },
           "thresholdPercent": {
@@ -21689,16 +21708,30 @@
       "ListsPruneRequest": {
         "type": "object",
         "description": "REQ: FLT-004 (T24.28, ADR-992) - `POST /api/v1/lists/prune`.",
+        "required": [
+          "names",
+          "snapshotVersion",
+          "configVersion"
+        ],
         "properties": {
+          "configVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The preview's `configVersion`: any configuration change since is a 409.",
+            "minimum": 0
+          },
           "names": {
-            "type": [
-              "array",
-              "null"
-            ],
+            "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "The lists the person saw in the preview. Each must still be in the plan, or nothing is\nchanged (409). Absent: every list in the plan."
+            "description": "The lists the person saw in the preview. Each must still be in the plan, or nothing is\nchanged (409)."
+          },
+          "snapshotVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The preview's `snapshotVersion`: another compile since is a 409.",
+            "minimum": 0
           },
           "thresholdPercent": {
             "type": [
