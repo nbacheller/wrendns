@@ -312,6 +312,11 @@ test('obs_901 filters narrow the map', async ({ browser }) => {
   await expect(o.page).toHaveURL(/device=cam/);
   await expect(o.page.locator('[data-node][data-kind="device"]')).toHaveCount(1);
   expect(o.requests.some((r) => r.includes('device=cam'))).toBe(true);
+  // The box follows the URL when it changes elsewhere (back/forward, a link).
+  await o.page.evaluate(() => { location.hash = '#/map?device=cam2'; });
+  await expect(o.page.getByTestId('filter-device')).toHaveValue('cam2');
+  await o.page.evaluate(() => { location.hash = '#/map?device=cam'; });
+  await expect(o.page.getByTestId('filter-device')).toHaveValue('cam');
   // Clear: everything is back, and the stream again.
   await o.page.getByTestId('filter-clear').click();
   await expect(o.page.locator('[data-node][data-kind="device"]')).toHaveCount(4);
@@ -583,6 +588,7 @@ test('obs_901 banners say sampled, partial, truncated and off', async ({ browser
   off.current.status = 404;
   await go(off);
   await expect(off.page.getByTestId('map-off')).toBeVisible();
+  await expect(off.page.getByTestId('map-state')).toHaveAttribute('data-stream', 'off');
   await expect(off.page.locator('[role="alert"]')).toHaveCount(0);
   expect(off.problems).toEqual([]);
   await off.ctx.close();
@@ -744,6 +750,9 @@ test('obs_901 flow rows, click-through links and via', () => {
   expect(links(d, 1).length).toBe(4);
   expect(links(d, 2)).toEqual([]);
   expect(links(s.nodes.find((n) => n.id === 'ans:node-a:cache')!, 0)[0].params).toEqual({ status: 'cached' });
+  const more = s.nodes.find((n) => n.kind === 'more')!;
+  expect(links(more, 1).length).toBe(1);
+  expect(links(more, 2)).toEqual([]);
   expect(via(d)).toBeNull();
   expect(via({ ...d, via: 'sw1', port: '3' } as N)).toBe('sw1, port 3');
   expect(via({ ...d, via: 'sw1' } as N)).toBe('sw1');

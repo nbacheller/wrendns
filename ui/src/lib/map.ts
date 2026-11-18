@@ -417,6 +417,7 @@ export function links(n: MapNode, privacy: number): Link[] {
       ];
     }
     case 'more':
+      if (privacy >= 2) return [];
       return [{ label: 'All devices', path: '/clients', testid: 'to-clients' }];
     case 'upstream':
       return [{ label: 'Upstreams', path: '/upstreams', testid: 'to-upstreams' }];

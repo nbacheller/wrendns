@@ -6,6 +6,7 @@
   // the server narrows is set (the stream is unfiltered) or the stream can't be had. The tab being
   // hidden closes the stream and pauses the pulses; `prefers-reduced-motion` stops them for good and
   // the rate is written on each flow. The table view is the same data in words.
+  import { untrack } from 'svelte';
   import { api, ApiError } from '../lib/api';
   import { route, navigate, href } from '../lib/router.svelte';
   import { poll } from '../lib/poll';
@@ -58,7 +59,7 @@
   let rawNarrowed = $state(false);
   let error = $state<unknown>(null);
   let off = $state(false);
-  type Mode = 'connecting' | 'live' | 'retrying' | 'polling' | 'paused';
+  type Mode = 'connecting' | 'live' | 'retrying' | 'polling' | 'paused' | 'off';
   let mode = $state<Mode>('connecting');
   let streamFailed = $state(false);
   let hidden = $state(typeof document !== 'undefined' && document.visibilityState === 'hidden');
@@ -73,24 +74,32 @@
   const groupNames = $derived([...new Set([...groups, ...seenGroups])].sort());
 
   function remember(s: Snapshot) {
-    const nets = new Map(networks.map((n) => [n.value, n.label]));
-    const res = new Map(nodes.map((n) => [n.value, n.label]));
-    const gs = new Set(seenGroups);
+    const nets = new Map<string, string>();
+    const res = new Map<string, string>();
+    const gs = new Set<string>();
     for (const n of s.nodes) {
       if (n.group) gs.add(n.group);
       if (n.kind === 'network') nets.set(n.id.replace(/^net:/, ''), n.label);
       if (n.kind === 'resolver' && n.node) res.set(n.node, n.label);
     }
-    if (nets.size !== networks.length) networks = [...nets].map(([value, label]) => ({ value, label }));
-    if (gs.size !== seenGroups.length) seenGroups = [...gs];
-    if (res.size !== nodes.length) nodes = [...res].map(([value, label]) => ({ value, label }));
+    // The unfiltered snapshot is the whole picture: replace the lists (so gone entries drop and a
+    // renamed label updates), assigning only when the contents differ.
+    const nl = [...nets].map(([value, label]) => ({ value, label }));
+    const rl = [...res].map(([value, label]) => ({ value, label }));
+    const gl = [...gs];
+    if (JSON.stringify(nl) !== JSON.stringify(networks)) networks = nl;
+    if (JSON.stringify(rl) !== JSON.stringify(nodes)) nodes = rl;
+    if (JSON.stringify(gl) !== JSON.stringify(seenGroups)) seenGroups = gl;
   }
 
   function accept(s: Snapshot, narrowed: boolean) {
     raw = s;
     rawNarrowed = narrowed;
     error = null;
-    off = false;
+    if (off) {
+      off = false;
+      mode = 'polling';
+    }
     if (!narrowed) remember(s);
   }
   function failed(e: unknown) {
@@ -98,13 +107,18 @@
       off = true;
       raw = null;
       error = null;
+      mode = 'off';
     } else error = e;
   }
+  // Only the latest request may set the data: a slow reply for an old filter is dropped.
+  let seq = 0;
   async function fetchMap(f: Filters) {
+    const mine = ++seq;
     try {
-      accept(await api.map(serverFilters(f)), hasServerFilter(f));
+      const s = await api.map(serverFilters(f));
+      if (mine === seq) accept(s, hasServerFilter(f));
     } catch (e) {
-      failed(e);
+      if (mine === seq) failed(e);
     }
   }
 
@@ -142,7 +156,14 @@
     }
     if (server || streamFailed) {
       mode = 'polling';
-      return poll(() => fetchMap(f), 2000);
+      const stop = poll(() => fetchMap(f), 2000);
+      // After a stream failure, try the stream again in a while.
+      const retry = streamFailed && !server ? setTimeout(() => (streamFailed = false), 30000) : undefined;
+      return () => {
+        seq++;
+        clearTimeout(retry);
+        stop();
+      };
     }
     mode = 'connecting';
     void fetchMap(f);
@@ -160,7 +181,10 @@
     es.addEventListener('map_disabled', () => {
       off = true;
       raw = null;
+      mode = 'off';
       es.close();
+      // Poll until the map is turned on again, then the stream is tried once more.
+      streamFailed = true;
     });
     es.onerror = () => {
       errors++;
@@ -170,7 +194,10 @@
         streamFailed = true;
       } else mode = 'retrying';
     };
-    return () => es.close();
+    return () => {
+      seq++;
+      es.close();
+    };
   });
 
   // ---- What is drawn.
@@ -201,10 +228,17 @@
     retrying: 'Reconnecting',
     polling: 'Updating every 2 seconds',
     paused: 'Paused: this tab is hidden',
+    off: 'Turned off on this node',
   };
 
   let deviceText = $state(route.params.get('device') ?? '');
   let typing: ReturnType<typeof setTimeout> | undefined;
+  // The box follows the URL (back/forward, "Clear filters" from elsewhere).
+  $effect(() => {
+    const d = filters.device;
+    if (untrack(() => deviceText.trim()) !== d) deviceText = d;
+  });
+  $effect(() => () => clearTimeout(typing));
   function typed() {
     clearTimeout(typing);
     typing = setTimeout(() => setParams({ device: deviceText.trim() || undefined }), 300);
@@ -356,8 +390,8 @@
           <div data-testid="map-table">
             <h2 class="tabletitle">Flows</h2>
             <div class="tablewrap">
-              <table>
-                <thead><tr><th>From</th><th>To</th><th class="num">Per second</th><th class="num">Slow</th><th class="num">Failing</th><th>State</th></tr></thead>
+              <table aria-label="Flows">
+                <thead><tr><th scope="col">From</th><th scope="col">To</th><th scope="col" class="num">Per second</th><th scope="col" class="num">Slow</th><th scope="col" class="num">Failing</th><th scope="col">State</th></tr></thead>
                 <tbody>
                   {#each rows as r (r.id)}
                     <tr data-flow-row={r.id}>
@@ -372,8 +406,8 @@
             </div>
             <h2 class="tabletitle">Nodes</h2>
             <div class="tablewrap">
-              <table>
-                <thead><tr><th>Node</th><th>Kind</th><th>State</th><th>Why</th><th class="num">Per second</th></tr></thead>
+              <table aria-label="Nodes">
+                <thead><tr><th scope="col">Node</th><th scope="col">Kind</th><th scope="col">State</th><th scope="col">Why</th><th scope="col" class="num">Per second</th></tr></thead>
                 <tbody>
                   {#each snap.nodes as n (n.id)}
                     <tr data-node-row={n.id}>
