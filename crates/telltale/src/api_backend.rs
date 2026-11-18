@@ -1445,19 +1445,46 @@ impl Backend for ApiBackend {
         }
         // REQ: FLT-017 — `client` may name a Kubernetes workload (its text form or analytics
         // key): the search covers the addresses it held in the window.
-        let workload = q
+        // REQ: FLT-006 (T24.9, ADR-973) — `client` may be `hostname:<label>`: the addresses a router
+        // gave that name now (the query log's router-name filter).
+        let router = q
             .client
             .as_deref()
-            .and_then(|c| crate::kubernetes::workload_ref(c, &self.src.pipeline.workloads.load()));
-        let mut filter = match &workload {
-            Some(_) => {
-                let mut plain = q.clone();
-                plain.client = None;
-                qlog_filter(&plain, from_us, to_us)?
-            }
-            None => qlog_filter(q, from_us, to_us)?,
+            .filter(|c| telltale_policy::clients::is_router_key(c))
+            .map(|c| c[9..].to_ascii_lowercase());
+        let workload = match router {
+            Some(_) => None,
+            None => q.client.as_deref().and_then(|c| {
+                crate::kubernetes::workload_ref(c, &self.src.pipeline.workloads.load())
+            }),
+        };
+        let mut filter = if workload.is_some() || router.is_some() {
+            let mut plain = q.clone();
+            plain.client = None;
+            qlog_filter(&plain, from_us, to_us)?
+        } else {
+            qlog_filter(q, from_us, to_us)?
         };
         let mut client_truncated = false;
+        if let Some(label) = &router {
+            let mut ips = self
+                .src
+                .pipeline
+                .current()
+                .policy
+                .clients
+                .router_name_addresses(label);
+            ips.sort();
+            client_truncated = ips.len() > MAX_WORKLOAD_ADDRESSES;
+            ips.truncate(MAX_WORKLOAD_ADDRESSES);
+            filter.client_any = ips.into_iter().map(mapped).collect();
+            if filter.client_any.is_empty() {
+                // No address carries the name now: match no row (a workload key never has a colon).
+                filter.client_ip = Some(telltale_telemetry::workload::key(&format!(
+                    "hostname:{label}"
+                )));
+            }
+        }
         if let Some(text) = &workload {
             let until_s = if to_us == 0 {
                 u64::MAX

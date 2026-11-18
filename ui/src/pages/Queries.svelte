@@ -14,6 +14,7 @@
   import CacheCard from '../lib/components/CacheCard.svelte';
   import { can } from '../lib/session.svelte';
   import DomainIcon from '../lib/icons/DomainIcon.svelte';
+  import { isRouterKey, routerKey, routerLabelOf } from '../lib/router-name';
 
   const STATUSES = ['blocked', 'cached', 'refreshed', 'forwarded', 'local', 'stale', 'special', 'refused', 'servfail', 'rate_limited'];
   const RANGES = [
@@ -29,6 +30,8 @@
   let name = $state('');
   let match = $state('substring');
   let client = $state('');
+  // REQ: FLT-006 (T24.9, ADR-973) — the client is an address or a device's router name.
+  let clientBy = $state<'address' | 'router'>('address');
   let statuses = $state(new Set<string>());
   let qtype = $state('');
   let rcode = $state('');
@@ -49,7 +52,9 @@
     const p = route.params;
     name = p.get('name') ?? '';
     match = p.get('match') ?? 'substring';
-    client = p.get('client') ?? '';
+    const clientParam = p.get('client') ?? '';
+    clientBy = isRouterKey(clientParam) ? 'router' : 'address';
+    client = isRouterKey(clientParam) ? routerLabelOf(clientParam) : clientParam;
     statuses = new Set((p.get('status') ?? '').split(',').filter(Boolean));
     qtype = p.get('qtype') ?? '';
     rcode = p.get('rcode') ?? '';
@@ -160,7 +165,7 @@
     navigate('/queries', {
       name: name.trim() || undefined,
       match: name.trim() && match !== 'substring' ? match : undefined,
-      client: client.trim() || undefined,
+      client: client.trim() ? (clientBy === 'router' ? routerKey(client.trim()) : client.trim()) : undefined,
       status: [...statuses].join(',') || undefined,
       qtype: qtype.trim().toUpperCase() || undefined,
       rcode: rcode.trim().toUpperCase() || undefined,
@@ -182,6 +187,7 @@
     name = '';
     match = 'substring';
     client = '';
+    clientBy = 'address';
     statuses = new Set();
     qtype = '';
     rcode = '';
@@ -246,7 +252,13 @@
         </select>
       </label>
       <label class="field">Client
-        <input name="client" placeholder="192.168.1.20" bind:value={client} />
+        <input name="client" placeholder={clientBy === 'router' ? 'kitchen-tablet' : '192.168.1.20'} bind:value={client} />
+      </label>
+      <label class="field narrow">Client by
+        <select name="client-by" bind:value={clientBy}>
+          <option value="address">address or name</option>
+          <option value="router">router name</option>
+        </select>
       </label>
       <label class="field narrow">Type
         <input name="qtype" placeholder="A,AAAA" bind:value={qtype} />

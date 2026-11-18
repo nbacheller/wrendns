@@ -1080,12 +1080,23 @@ name = "Office"
 match = ["10.0.5.0/24"]                  # no groups: its network's group, else "default"
 ```
 - A device in several groups gets every list of all of them. Other settings, such as block mode, come from its highest-priority group.
-- **How a query's device is recognized,** first match wins: client ID (`id:…`, from the DoH URL path `/dns-query/<id>` or the DoT/DoH server name `<id>.dns.example.com`) → MAC address, from a trusted router's EDNS option or from the kernel neighbor table → exact IP → the most specific CIDR → `default`.
+- **How a query's device is recognized,** first match wins: client ID (`id:…`, from the DoH URL path `/dns-query/<id>` or the DoT/DoH server name `<id>.dns.example.com`) → MAC address, from a trusted router's EDNS option or from the kernel neighbor table → exact IP → the name the router gave the device (`hostname:…`, or a group's `router_names`) → the most specific CIDR → `default`.
 - **MAC addresses** survive DHCP changes and IPv6 privacy addresses, which makes them the most dependable key for a home network. While any `[[client]]` matches by MAC, TelltaleDNS reads the kernel's neighbor table (ARP and IPv6 NDP) every 60 s (`[clients] neighbor_refresh_secs`); without one it isn't read, and `telltale_neighbors` stays 0. The table only holds devices on the node's own subnets, and only with host networking (as on a Pi): in a container's bridge network or a Kubernetes pod, every query appears to come from the gateway. Device recognition also gets MAC addresses from router integrations and mDNS, with or without the table.
 - If your router forwards queries with dnsmasq's `add-mac`, trust it explicitly. Any device could send that option and impersonate another, so it's ignored by default:
   ```toml
   [clients]
   trust_edns_mac_from = ["192.168.1.1/32"]
+  ```
+- **Router names.** A router that hands out addresses (`[[router]]`, UniFi or OPNsense) names each device by its DHCP host name, and a device can keep that name when its address changes. Write the name in label form (`Kitchen Tablet` is `kitchen-tablet`, the form device names take in DNS) and match it with `match = ["hostname:kitchen-tablet"]` on a `[[client]]` beside its address, or list it in a group's `router_names`, where a device the router named this belongs to that group the way a network's devices do. A `[[client]]` naming the device by address or MAC still wins. A rule can name the device too: `devices = ["hostname:kitchen-tablet"]`. The name is read from the leases the routers report now: an offline device, or one whose name the router no longer gives, isn't matched. The query log's **Client by → router name** filter does the same: it shows the queries of the addresses that name has now.
+  ```toml
+  [[client]]
+  name = "Kitchen tablet"
+  match = ["192.168.1.21", "hostname:kitchen-tablet"]
+  groups = ["kids-devices"]
+
+  [[group]]
+  name = "kids-devices"
+  router_names = ["kids-ipad", "kids-phone"]
   ```
 - `$client=` rules match the device's name (`$client='Kids tablet'`), its client ID, or its IP or CIDR.
 - A group can also send its questions to its own upstream servers (for example, a family-filtering resolver): see [Upstream servers per group](#upstream-servers-per-group).

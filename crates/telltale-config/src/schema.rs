@@ -820,6 +820,12 @@ pub struct GroupConfig {
     /// matching network; a `[[client]]` entry with its own `groups` still wins.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub networks: Vec<Cidr>,
+    /// REQ: API-010 (T24.9, ADR-973) — router names (`kitchen-tablet`, the label form) of devices
+    /// that belong to this group, the way a network's devices do. A `[[client]]` that matches the
+    /// device by its address or MAC still wins, and the match is by the name the router gave
+    /// the device at its current address.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub router_names: Vec<SafeString>,
     /// Color for this group in charts and chips (`#rrggbb`); one is picked when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<SafeString>,

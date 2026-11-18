@@ -1005,6 +1005,81 @@ test('api_010 name a device from the dashboard', async () => {
   await page.getByLabel('Live').uncheck();
 });
 
+// REQ: API-010 (T24.9, ADR-973) — a device its router named ("Kitchen Tablet" in DHCP) is matched
+// by that name: a client keeps it beside its address, a group takes it, a quick rule names it, and
+// the query log filters by it. No router runs here, so the browser sees the lease through a stub.
+test('api_010 match a client by router name', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const leases = {
+    items: [{ mac: 'aa:bb:cc:00:00:21', ip: '127.0.0.1', hostname: 'Kitchen Tablet', expiresUnixSeconds: 0, source: 'router', router: 'udm', offline: false }],
+  };
+  await page.route('**/api/v1/dhcp/leases', (r) => r.fulfill({ json: leases }));
+  // A client keeps the router's name beside its address.
+  await page.goto('/#/');
+  await listOf('Top clients').getByRole('button', { name: 'Test laptop', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Name this device…' }).click();
+  await page.getByRole('checkbox', { name: /Also recognize it by its router name/ }).check();
+  const clientPut = page.waitForRequest((r) => r.method() === 'PUT' && r.url().includes('/api/v1/clients/') && !r.url().includes('dryRun'));
+  await page.getByRole('button', { name: 'Save' }).click();
+  expect((await clientPut).postDataJSON()).toMatchObject({ match: ['127.0.0.1', 'hostname:kitchen-tablet'] });
+  await expect(page.getByRole('status')).toContainText('Saved');
+  await page.keyboard.press('Escape');
+  // A group takes the devices its router names (the group editor's Router names).
+  await page.goto('/#/groups');
+  const groups = page.getByTestId('editor-group');
+  await groups.getByRole('button', { name: 'Add group' }).click();
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('router-kids');
+  await page.getByRole('textbox', { name: 'Router names', exact: true }).fill('kitchen-tablet');
+  await page.getByRole('button', { name: 'Check' }).click();
+  await expect(page.getByTestId('entry-preview')).toBeVisible();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  const groupRow = groups.getByTestId('entry-row').filter({ hasText: 'router-kids' });
+  await expect(groupRow).toBeVisible();
+  await groupRow.getByRole('button', { name: 'Edit' }).click();
+  await expect(page.getByRole('textbox', { name: 'Router names', exact: true })).toHaveValue('kitchen-tablet');
+  await page.keyboard.press('Escape');
+  await groupRow.getByRole('button', { name: 'Remove' }).click();
+  await expect(groupRow).toHaveCount(0);
+  // A quick rule for the router's name, saved as a device by name (the rule's write is stubbed).
+  let ruleBody: unknown = null;
+  await page.route('**/api/v1/rules/**', async (r) => {
+    if (r.request().method() !== 'PUT') return r.continue();
+    if (!r.request().url().includes('dryRun')) ruleBody = r.request().postDataJSON();
+    await r.fulfill({ json: { impact: 'Saved for the test.' } });
+  });
+  await page.goto('/#/rules');
+  await page.getByLabel('Domain', { exact: true }).fill('games.example');
+  await page.getByLabel('Applies to', { exact: true }).selectOption('device');
+  await page.getByLabel('Device by', { exact: true }).selectOption('router');
+  await page.getByLabel('Router name', { exact: true }).fill('kitchen-tablet');
+  await page.getByRole('button', { name: 'Save rule' }).click();
+  await expect(page.getByTestId('quick-rule-saved')).toContainText('Saved for the test');
+  expect(ruleBody).toMatchObject({ devices: ['hostname:kitchen-tablet'] });
+  await page.unroute('**/api/v1/rules/**');
+  // The query log filters by the name: the addresses it has now.
+  await page.goto('/#/queries');
+  await page.locator('select[name="client-by"]').selectOption('router');
+  await page.locator('input[name="client"]').fill('kitchen-tablet');
+  const logged = page.waitForRequest((r) => r.url().includes('/api/v1/queries') && decodeURIComponent(r.url()).includes('client=hostname:kitchen-tablet'));
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await logged;
+  // The server takes the same filter: no address holds the name on this node, so no rows.
+  const byName = await page.request.get('/api/v1/queries?client=hostname:kitchen-tablet');
+  expect(byName.status()).toBe(200);
+  expect((await byName.json()).items).toEqual([]);
+  // Put the client back as it was: the device API test that follows expects its address alone.
+  await page.goto('/#/');
+  await listOf('Top clients').getByRole('button', { name: 'Test laptop', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Name this device…' }).click();
+  await page.getByRole('checkbox', { name: /Also recognize it by its router name/ }).uncheck();
+  const reverted = page.waitForRequest((r) => r.method() === 'PUT' && r.url().includes('/api/v1/clients/') && !r.url().includes('dryRun'));
+  await page.getByRole('button', { name: 'Save' }).click();
+  expect((await reverted).postDataJSON()).toMatchObject({ match: ['127.0.0.1'] });
+  await expect(page.getByRole('status')).toContainText('Saved');
+  await page.keyboard.press('Escape');
+  await page.unroute('**/api/v1/dhcp/leases');
+});
+
 // REQ: API-002, AGT-002, AGT-003 — the same change through the API: dry run, If-Match,
 // Idempotency-Key, validation, delete, audit.
 test('api_010 device API: dry run, versions, idempotency', async () => {

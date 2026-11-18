@@ -10,6 +10,7 @@
   import ChangePreview from './ChangePreview.svelte';
   import Icon from './Icon.svelte';
   import { groupFromText, loadWorkloads, podAt, workloadOf } from '../workloads.svelte';
+  import { routerKey, routerLabel } from '../router-name';
 
   let {
     ip,
@@ -55,6 +56,10 @@
   // what it was set to be ('' = let TelltaleDNS guess).
   let identity = $state<S['DeviceIdentity'] | null>(null);
   let kind = $state('');
+  // REQ: FLT-006 (T24.9, ADR-973) — the name the router gave this address, as a label, and whether
+  // the device is also recognized by it (a `hostname:` key beside its address).
+  let routerName = $state<string | null>(null);
+  let routerMatch = $state(false);
   const article = (p: string) => (/^[aeiou]/i.test(p) ? 'an' : 'a');
   const kinds = ['phone', 'tablet', 'laptop', 'desktop', 'tv', 'streaming', 'speaker', 'console', 'camera', 'doorbell', 'plug', 'bulb', 'thermostat', 'hub', 'vacuum', 'printer', 'nas', 'network', 'appliance', 'wearable', 'car', 'other', 'unknown'];
   let busy = $state(false);
@@ -149,6 +154,9 @@
       // A guess only pre-fills the form (owner, 2026-10-09): it never becomes a name by itself.
       const guess = id?.available && id.level !== 'unknown' ? (id.product ?? undefined) : undefined;
       newName = existing?.name ?? name ?? suggested ?? guess ?? '';
+      const label = suggested ? routerLabel(suggested) : '';
+      routerName = label || null;
+      routerMatch = !!label && !!existing?.match.some((m) => m.toLowerCase() === routerKey(label));
       chosen = existing ? [...existing.groups] : ['default'];
       if (mode === 'groups' && id?.suggestedGroup && !chosen.includes(id.suggestedGroup)) {
         chosen = [id.suggestedGroup, ...chosen.filter((x) => x !== 'default')];
@@ -166,11 +174,20 @@
   }
 
   /** REQ: OBS-024 — the device change as a dry run, replayed over the query log. */
+  /** The device's match keys: its address (or its existing keys), with its router-name key set or not. */
+  function matchKeys(): string[] {
+    const base = existing ? [...existing.match] : [ip];
+    if (!routerName) return base;
+    const key = routerKey(routerName);
+    const kept = base.filter((m) => m.toLowerCase() !== key);
+    return routerMatch ? [...kept, key] : kept;
+  }
+
   async function simulateChange(): Promise<S['Simulation'] | null | undefined> {
     const n = newName.trim();
     const r = await api.putClient(
       existing?.name ?? n,
-      { name: n, match: existing ? existing.match : [ip], groups: chosen.length ? chosen : ['default'] },
+      { name: n, match: matchKeys(), groups: chosen.length ? chosen : ['default'] },
       true,
       'true',
     );
@@ -190,7 +207,7 @@
       const target = existing?.name ?? n;
       const r = await api.putClient(target, {
         name: n,
-        match: existing ? existing.match : [ip],
+        match: matchKeys(),
         groups: chosen.length ? chosen : ['default'],
         kind: kind || undefined,
       });
@@ -306,6 +323,12 @@
             {#each kinds as k (k)}<option value={k}>{k === 'unknown' ? 'unknown (stop guessing)' : k}</option>{/each}
           </select>
         </label>
+        {#if routerName}
+          <label class="check" data-testid="router-name-match">
+            <input type="checkbox" bind:checked={routerMatch} /> Also recognize it by its router name (<code>{routerName}</code>)
+          </label>
+          <p class="muted small">The router gave it that name. A device keeps its name when it gets a new address.</p>
+        {/if}
         <fieldset>
           <legend>Groups <span class="muted small">(first one's settings apply)</span><HelpButton id="device-groups" /></legend>
           {#each groups as g (g.name)}

@@ -68,7 +68,7 @@ A credential that can be read from a file can instead name a secret stored (encr
 | `[local]` | hosts files to import, automatic PTRs, default TTL for local records | `docs/running.md` |
 | `[[list]]` | filter lists: a `url`, a local `path`, or inline `rules`; `kind` (`block`/`allow`), `match` (`subtree`/`exact`), `mode` (`enforce`/`shadow`: counted, never blocks), per-list refresh, size limit, and `stale_after_days` | `docs/running.md` |
 | `[[group]]` | client groups: which lists apply, priority, answer filtering, DNS64, `filter_aaaa` (no IPv6 addresses), `device_classes` (kinds of device suggested for the group) | `docs/running.md`, FLT-016, OBS-025 |
-| `[[client]]` | known devices: name, how to recognize them (IP, CIDR, MAC, `id:`), groups, `kind` (what it is, over any guess) | `docs/running.md`, OBS-025 |
+| `[[client]]` | known devices: name, how to recognize them (IP, CIDR, MAC, `id:`, `hostname:` for the name a router gave), groups, `kind` (what it is, over any guess) | `docs/running.md`, OBS-025, FLT-006 |
 | `[clients]` | neighbor table on/off and refresh interval; which forwarders' EDNS MAC to trust; `infrastructure` networks for the masked-client-IP check | FLT-006, OPS-003 |
 | `[filter]` | list refresh interval, download concurrency, timeout, retries, size limit; compile threads and memory; `stale_after_days` (when an unchanged URL list counts as stale) | `spec/05` §3.4, OBS-023 |
 | `[access]` | networks allowed to query (everyone else is refused) | `spec/08` §6 |

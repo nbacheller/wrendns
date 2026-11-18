@@ -10,6 +10,7 @@
   import { endsAt } from '../format';
   import ErrorNote from './ErrorNote.svelte';
   import SimulationCard from './SimulationCard.svelte';
+  import { isRouterKey, routerKey, routerLabel, routerLabelOf } from '../router-name';
 
   let {
     domain = '',
@@ -42,12 +43,17 @@
   let saved = $state('');
   let groups = $state<S['GroupInfo'][]>([]);
   let devices = $state<S['ClientInfo'][]>([]);
+  // REQ: FLT-006 (T24.9, ADR-973) — a device by the name its router gave it (`hostname:<label>`).
+  let by = $state<'name' | 'router'>('name');
+  let routerNames = $state<string[]>([]);
 
   $effect(() => {
     if (rule) {
       action = rule.action === 'block' ? 'block' : 'allow';
       name = rule.domain;
-      who = rule.devices[0] ?? '';
+      const first = rule.devices[0] ?? '';
+      by = isRouterKey(first) ? 'router' : 'name';
+      who = isRouterKey(first) ? routerLabelOf(first) : first;
       whichGroup = rule.groups[0] ?? '';
       scope = rule.devices.length ? 'device' : rule.groups.length ? 'group' : 'everyone';
       note = rule.note ?? '';
@@ -55,13 +61,18 @@
       return;
     }
     name = domain;
-    who = device;
+    by = isRouterKey(device) ? 'router' : 'name';
+    who = isRouterKey(device) ? routerLabelOf(device) : device;
     whichGroup = group;
     scope = device ? 'device' : group ? 'group' : 'everyone';
   });
   $effect(() => {
     api.groups().then((g) => (groups = g.items)).catch(() => {});
     api.clients().then((c) => (devices = c.items)).catch(() => {});
+    api
+      .dhcpLeases()
+      .then((l) => (routerNames = [...new Set(l.items.map((x) => x.hostname ?? '').filter(Boolean).map(routerLabel))].filter(Boolean)))
+      .catch(() => {});
   });
 
   const durations = [
@@ -93,7 +104,7 @@
     return {
       action,
       domain: name.trim(),
-      devices: scope === 'device' ? [who.trim()] : [],
+      devices: scope === 'device' ? [by === 'router' ? routerKey(who) : who.trim()] : [],
       groups: scope === 'group' ? [whichGroup] : [],
       expires: duration === 'keep' ? rule?.expires : undefined,
       forMinutes,
@@ -144,8 +155,17 @@
       </select>
     </label>
     {#if scope === 'device'}
-      <input aria-label="Device" list={listId} placeholder="device name or IP" bind:value={who} required />
-      <datalist id={listId}>{#each devices as d (d.name)}<option value={d.name}></option>{/each}</datalist>
+      <select aria-label="Device by" bind:value={by}>
+        <option value="name">name or IP</option>
+        <option value="router">router name</option>
+      </select>
+      {#if by === 'router'}
+        <input aria-label="Router name" list={listId} placeholder="kitchen-tablet" bind:value={who} required />
+        <datalist id={listId}>{#each routerNames as n (n)}<option value={n}></option>{/each}</datalist>
+      {:else}
+        <input aria-label="Device" list={listId} placeholder="device name or IP" bind:value={who} required />
+        <datalist id={listId}>{#each devices as d (d.name)}<option value={d.name}></option>{/each}</datalist>
+      {/if}
     {:else if scope === 'group'}
       <select aria-label="Group" bind:value={whichGroup} required>
         {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}

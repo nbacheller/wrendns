@@ -120,6 +120,8 @@ fn source_name(s: IdSource) -> &'static str {
         IdSource::EdnsMac => "edns_mac",
         IdSource::NeighborMac => "neighbor_mac",
         IdSource::Workload => "kubernetes",
+        // REQ: FLT-006 (T24.9, ADR-973) — matched by the name a router gave the device.
+        IdSource::Hostname => "router_name",
         IdSource::Ip => "ip",
         IdSource::Cidr => "cidr",
         IdSource::Default => "default",

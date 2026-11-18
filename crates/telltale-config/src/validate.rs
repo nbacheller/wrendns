@@ -47,6 +47,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     routes(cfg, &groups, &mut r);
     lists(cfg, &mut r);
     clients(cfg, &mut r);
+    router_names(cfg, &mut r);
     rules(cfg, &mut r);
     services(cfg, &mut r);
     schedules(cfg, &mut r);
@@ -1185,10 +1186,12 @@ fn rules(cfg: &Config, r: &mut Report<'_>) {
         for (j, dev) in rule.devices.iter().enumerate() {
             let known = devices.contains(&dev.to_ascii_lowercase());
             let address = crate::Cidr::parse(dev).is_ok();
-            if !known && !address {
+            // REQ: FLT-005 (T24.9, ADR-973) — a router's name for the device.
+            let router_name = matches!(MatchKey::parse(dev), Ok(MatchKey::Hostname(_)));
+            if !known && !address && !router_name {
                 r.err(
                     format!("{p}.devices[{j}]"),
-                    format!("`{dev}` is neither a device name nor an IP or CIDR"),
+                    format!("`{dev}` is neither a device name, an IP or CIDR, nor hostname:<router name>"),
                 );
             }
         }
@@ -1840,6 +1843,19 @@ pub enum MatchKey {
     Cidr(crate::Cidr),
     Mac([u8; 6]),
     ClientId(String),
+    /// REQ: FLT-006 (T24.9, ADR-973) — the device name a router gave it (a label).
+    Hostname(String),
+}
+
+/// REQ: API-010 (T24.9, ADR-973) — a router name in label form: 1–63 of `a-z`, `0-9`, `-`,
+/// no leading or trailing `-` (`Kitchen Tablet` is `kitchen-tablet`).
+pub(crate) fn router_label_ok(label: &str) -> bool {
+    (1..=63).contains(&label.len())
+        && !label.starts_with('-')
+        && !label.ends_with('-')
+        && label
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 impl MatchKey {
@@ -1858,6 +1874,16 @@ impl MatchKey {
                 return Err(format!("client ID `{id}`: use 1-63 of a-z, 0-9, -"));
             }
             return Ok(Self::ClientId(id));
+        }
+        // REQ: FLT-006 (T24.9, ADR-973) — `hostname:<label>`: a router's name for the device.
+        if let Some(h) = s.strip_prefix("hostname:") {
+            let h = h.to_ascii_lowercase();
+            if !router_label_ok(&h) {
+                return Err(format!(
+                    "router name `{h}`: use the label form, 1-63 of a-z, 0-9 and -, as the name shows on the Clients page (Kitchen Tablet is kitchen-tablet)"
+                ));
+            }
+            return Ok(Self::Hostname(h));
         }
         if let Ok(ip) = s.parse::<std::net::IpAddr>() {
             return Ok(Self::Ip(ip));
@@ -1936,6 +1962,36 @@ fn discovery(cfg: &Config, r: &mut Report<'_>) {
     }
 }
 
+/// REQ: API-010 (T24.9, ADR-973) — the groups' router names: label form, and one group each.
+fn router_names(cfg: &Config, r: &mut Report<'_>) {
+    let mut seen = std::collections::HashMap::new();
+    for (i, g) in cfg.group.iter().enumerate() {
+        check_router_names(g, &format!("group[{i}]"), &mut seen, r);
+    }
+}
+
+/// REQ: API-010 (T24.9, ADR-973) — a group's router names: label form, and one group each.
+fn check_router_names<'a>(
+    g: &'a crate::GroupConfig,
+    p: &str,
+    seen: &mut std::collections::HashMap<String, &'a str>,
+    r: &mut Report<'_>,
+) {
+    for (j, n) in g.router_names.iter().enumerate() {
+        if !router_label_ok(n.as_str()) {
+            r.err(
+                format!("{p}.router_names[{j}]"),
+                format!("`{n}`: use the label form, 1-63 of a-z, 0-9 and - (Kitchen Tablet is kitchen-tablet)"),
+            );
+        } else if let Some(other) = seen.insert(n.as_str().to_owned(), g.name.as_str()) {
+            r.err(
+                format!("{p}.router_names[{j}]"),
+                format!("`{n}` is already a router name of group `{other}`"),
+            );
+        }
+    }
+}
+
 // REQ: FLT-005, FLT-006 — groups, clients, identification.
 fn clients(cfg: &Config, r: &mut Report<'_>) {
     let lists: HashSet<&str> = cfg.list.iter().map(|l| l.name.as_str()).collect();
@@ -2006,7 +2062,7 @@ fn clients(cfg: &Config, r: &mut Report<'_>) {
         if c.match_keys.is_empty() {
             r.err(
                 format!("{p}.match"),
-                "needs at least one IP, CIDR, MAC, or id:",
+                "needs at least one IP, CIDR, MAC, id:, or hostname:",
             );
         }
         for (j, k) in c.match_keys.iter().enumerate() {

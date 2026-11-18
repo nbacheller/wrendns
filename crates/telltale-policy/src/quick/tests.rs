@@ -258,3 +258,31 @@ fn flt_005_quick_cost() {
         println!("quick rules {label:>4}: {ns:6.1} ns per decision ({hits} hits)");
     }
 }
+
+// REQ: FLT-006 (T24.9, ADR-973) — a quick rule for a router name applies to the address that name
+// is given now, to no other, and stops once the name is gone.
+#[test]
+fn flt_006_quick_rule_by_router_name() {
+    let s = setup(
+        r#"
+[[rule]]
+id = "no-games"
+action = "block"
+domain = "games.example"
+devices = ["hostname:kitchen-tablet"]
+"#,
+    );
+    assert_eq!(s.ask("192.168.1.50", "games.example", 0), None);
+    s.table.set_router_names(
+        [(
+            IpAddr::from([192, 168, 1, 50]),
+            std::sync::Arc::<str>::from("kitchen-tablet"),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    assert_eq!(s.ask("192.168.1.50", "games.example", 0), Some(false));
+    assert_eq!(s.ask("192.168.1.99", "games.example", 0), None);
+    s.table.set_router_names(std::collections::HashMap::new());
+    assert_eq!(s.ask("192.168.1.50", "games.example", 0), None);
+}
