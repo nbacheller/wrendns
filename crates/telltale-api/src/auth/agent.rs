@@ -213,6 +213,9 @@ pub fn required(method: &Method, path: &str) -> Need {
                 return Need::Scope("querylog:read");
             }
             "/api/v1/lists"
+            // REQ: FLT-004 (T24.28) - which lists add little, and the plan (a read).
+            | "/api/v1/lists/overlap"
+            | "/api/v1/lists/prune-plan"
             | "/api/v1/services"
             | "/api/v1/groups"
             | "/api/v1/clients"
@@ -246,6 +249,8 @@ pub fn required(method: &Method, path: &str) -> Need {
             _ if timeline_path(p) => return Need::Scope("querylog:read"),
             // REQ: API-015 — one stored secret's metadata.
             _ if secret_path(p) => return Need::Scope("config:read"),
+            // REQ: FLT-006, API-010 (T24.30) — a device's effective policy is configuration.
+            _ if policy_path(p) => return Need::Scope("config:read"),
             _ if under("/api/v1/stats") || under("/api/v1/analytics") => {
                 return Need::Scope("analytics:read");
             }
@@ -364,8 +369,11 @@ pub fn never_for_agents(method: &Method, path: &str) -> bool {
     // REQ: API-902 (T27.13, ADR-956 §7) — guarded changes: no tool, plan or scope; an agent token
     // gets `agent_not_allowed` on preview, apply, confirm and cancel.
     let guarded = p == "/api/v1/guarded" || p.starts_with("/api/v1/guarded/");
+    // REQ: FLT-004 (T24.28, ADR-992) - turning lists off in bulk: a person confirms the preview.
+    let prune = p == "/api/v1/lists/prune";
     ((secret || pihole) && write)
         || (guarded && *method != Method::GET && *method != Method::HEAD)
+        || (prune && write)
         || (*method == Method::POST
             && (p == "/api/v1/backup" || p.starts_with("/api/v1/checks/router")))
 }
@@ -374,6 +382,13 @@ pub fn never_for_agents(method: &Method, path: &str) -> bool {
 fn timeline_path(p: &str) -> bool {
     p.strip_prefix("/api/v1/clients/")
         .and_then(|r| r.strip_suffix("/timeline"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// REQ: FLT-006, API-010 (T24.30) — `/api/v1/clients/{id}/policy`.
+fn policy_path(p: &str) -> bool {
+    p.strip_prefix("/api/v1/clients/")
+        .and_then(|r| r.strip_suffix("/policy"))
         .is_some_and(|id| !id.is_empty() && !id.contains('/'))
 }
 
@@ -492,6 +507,8 @@ pub fn group_aware(method: &Method, path: &str) -> bool {
         | "/api/v1/stats/top"
         | "/api/v1/clients" => read,
         "/mcp" => true,
+        // REQ: FLT-006, API-010 (T24.30) — a device's policy: the handler narrows to the group.
+        _ if read && policy_path(p) => true,
         _ => {
             (*method == Method::PUT || *method == Method::DELETE)
                 && p.strip_prefix("/api/v1/clients/")
@@ -970,6 +987,19 @@ mod tests {
         }
         assert_eq!(
             required(&Method::GET, "/api/v1/clients/a/b/identity"),
+            Need::Forbidden
+        );
+    }
+
+    /// REQ: FLT-006, API-010 (T24.30) — a device's policy is configuration, read-only.
+    #[test]
+    fn flt_006_policy_route_needs_config_read() {
+        assert_eq!(
+            required(&Method::GET, "/api/v1/clients/living-room-tv/policy"),
+            Need::Scope("config:read")
+        );
+        assert_eq!(
+            required(&Method::GET, "/api/v1/clients/a/b/policy"),
             Need::Forbidden
         );
     }

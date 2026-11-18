@@ -92,6 +92,34 @@ impl Ballot {
         true
     }
 
+    /// REQ: CLU-005 (T24.26, ADR-990) — whether `self` differs from `before` in a way that must
+    /// reach the disk before a reply leaves: a vote (a new epoch or candidate), or a first lease.
+    /// A renewal only moves `lease_until_ms`, which is on this process's clock and is never read
+    /// back by another process ([`Ballot::adopt`] gives a restarted node a full lease), so it
+    /// isn't stored: renewing every [`RENEW_MS`] used to cost every voter an fsync each round,
+    /// and a slow one (an SD card) stalled the answer past the primary's deadline.
+    pub fn must_persist_since(&self, before: &Ballot) -> bool {
+        self.epoch != before.epoch
+            || self.candidate != before.candidate
+            || self.clock != before.clock
+            || (before.lease_until_ms == 0 && self.lease_until_ms > 0)
+    }
+
+    /// REQ: CLU-005 (T24.26, ADR-990) — the ballot a new elector starts from. The running
+    /// elector's own ballot, when there is one, is exact (renewals extend it in memory only).
+    /// A ballot read from disk has the lease of its last *stored* change, which may be older
+    /// than the last renewal, so a lease it records is taken to run a full [`LEASE_MS`] from
+    /// `now_ms`: never shorter than what was promised.
+    pub fn for_new_elector(previous: Option<Ballot>, stored: Ballot, now_ms: u64) -> Ballot {
+        previous.unwrap_or_else(|| {
+            let mut b = stored;
+            if b.lease_until_ms > 0 {
+                b.lease_until_ms = b.lease_until_ms.max(now_ms + LEASE_MS);
+            }
+            b
+        })
+    }
+
     /// Whether the lease granted to someone other than `who` is still running.
     pub fn lease_held_by_other(&self, who: &str, now_ms: u64) -> bool {
         now_ms < self.lease_until_ms && self.candidate != who
@@ -306,7 +334,7 @@ impl Elector {
             if self.ballot.decide(ask, now_ms, applied).granted {
                 grants.insert(self.id.clone());
             }
-            if self.ballot != before {
+            if self.ballot.must_persist_since(&before) {
                 out.push(Out::Persist);
             }
         }
@@ -406,7 +434,7 @@ impl Elector {
         let mut out = Vec::new();
         let before = self.ballot.clone();
         let reply = self.ballot.decide(ask, now_ms, self.applied);
-        if self.ballot != before {
+        if self.ballot.must_persist_since(&before) {
             out.push(Out::Persist);
         }
         // REQ: CLU-005 (ADR-960) — a lease granted to another candidate is a lease seen.
@@ -532,6 +560,90 @@ impl Elector {
 
 #[cfg(test)]
 mod tests {
+    // REQ: CLU-005 (T24.26, ADR-990) — a renewal of a lease already granted (same epoch, same
+    // candidate) is answered without storing the ballot. Before the fix every renewal changed
+    // `lease_until_ms`, so every voter fsynced `ballot.json` each 5 s round, and one slow fsync
+    // (an SD card) held an answer past the primary's 2 s deadline.
+    #[test]
+    fn clu_005_t24_26_a_renewal_is_not_stored() {
+        let voters: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_owned()).collect();
+        let mut v = Elector::new("c", voters, false, Ballot::default());
+        let ask = |round| Ask {
+            epoch: 1,
+            candidate: "a".into(),
+            round,
+            pre: false,
+            applied: (0, 0),
+        };
+        let (r, outs) = v.on_ask(&ask(1), 1_000);
+        assert!(r.granted);
+        assert!(outs.contains(&Out::Persist), "the vote itself is stored");
+        let lease = v.ballot.lease_until_ms;
+        for k in 1..=10u64 {
+            let (r, outs) = v.on_ask(&ask(k + 1), 1_000 + k * RENEW_MS);
+            assert!(r.granted);
+            assert!(!outs.contains(&Out::Persist), "renewal {k} is not stored");
+        }
+        assert!(
+            v.ballot.lease_until_ms > lease,
+            "the lease still extends in memory"
+        );
+        // A newer epoch is a vote again.
+        let newer = Ask {
+            epoch: 2,
+            candidate: "b".into(),
+            ..ask(99)
+        };
+        let (r, outs) = v.on_ask(&newer, 1_000 + 10 * RENEW_MS + LEASE_MS + 1);
+        assert!(r.granted && outs.contains(&Out::Persist));
+    }
+
+    // REQ: CLU-005 (T24.26, ADR-990) — the primary's own grant of its renewal is not stored either.
+    #[test]
+    fn clu_005_t24_26_the_primarys_own_renewal_is_not_stored() {
+        let voters: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_owned()).collect();
+        let mut a = Elector::new("a", voters, true, Ballot::default());
+        a.resume(1);
+        let persists = |outs: &[Out]| outs.iter().filter(|o| **o == Out::Persist).count();
+        // The first round grants the primary its own vote for the epoch: stored once.
+        let first = a.tick(0, 0);
+        assert_eq!(persists(&first), 1);
+        for k in 1..=5u64 {
+            assert_eq!(persists(&a.tick(k * RENEW_MS, 0)), 0, "round {k}");
+        }
+    }
+
+    // REQ: CLU-005 (T24.26, ADR-990) — a stored ballot's lease is older than the last renewal, so a
+    // new elector built from it takes a full lease from now; one built from a running elector's
+    // ballot keeps that ballot's exact lease.
+    #[test]
+    fn clu_005_t24_26_a_new_elector_never_shortens_a_lease() {
+        let stored = Ballot {
+            epoch: 3,
+            candidate: "a".into(),
+            lease_until_ms: 15_000,
+            clock: 1,
+        };
+        let b = Ballot::for_new_elector(None, stored.clone(), 100_000);
+        assert_eq!(b.lease_until_ms, 100_000 + LEASE_MS);
+        let live = Ballot {
+            lease_until_ms: 104_000,
+            ..stored.clone()
+        };
+        assert_eq!(
+            Ballot::for_new_elector(Some(live.clone()), stored.clone(), 100_000),
+            live
+        );
+        let none = Ballot {
+            lease_until_ms: 0,
+            ..stored
+        };
+        assert_eq!(
+            Ballot::for_new_elector(None, none, 100_000).lease_until_ms,
+            0
+        );
+    }
+
     use super::*;
 
     fn ask(epoch: u64, who: &str, pre: bool) -> Ask {

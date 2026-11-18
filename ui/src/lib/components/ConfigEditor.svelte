@@ -202,6 +202,12 @@
     }
     const initial = e ? {} : Object.fromEntries(fields.filter((f) => f.initial !== undefined).map((f) => [f.key, f.initial]));
     editing = { name: e?.name ?? name, isNew: !e, values: { ...initial, ...def, ...fill } };
+    // REQ: OBS-903 (T24.35) — a field keyed `log.clients` edits the `clients` of the entry's `log` object.
+    for (const f of fields.filter((f) => f.key.includes('.'))) {
+      const [outer, inner] = f.key.split('.');
+      const o = editing.values[outer];
+      if (o && typeof o === 'object' && inner in (o as Record<string, unknown>)) editing.values[f.key] = (o as Record<string, unknown>)[inner];
+    }
     texts = Object.fromEntries(fields.filter((f) => f.toText).map((f) => [f.key, f.toText!(editing!.values[f.key])]));
   }
   // REQ: FLT-005 (T24.15) — a draft from another page opens a new entry, once per draft object. The
@@ -243,6 +249,16 @@
       if (x === '' || x === null || x === undefined || (Array.isArray(x) && x.length === 0 && f.type !== 'multi')) delete v[f.key];
     }
     for (const f of fields) if (f.enabledWhen && !f.enabledWhen(v)) delete v[f.key];
+    // REQ: OBS-903 — dotted fields go back into their object, which is rebuilt from them alone.
+    const dotted = fields.filter((f) => f.key.includes('.'));
+    for (const outer of new Set(dotted.map((f) => f.key.split('.')[0]))) delete v[outer];
+    for (const f of dotted) {
+      const [outer, inner] = f.key.split('.');
+      const x = v[f.key];
+      delete v[f.key];
+      if (x === undefined) continue;
+      v[outer] = { ...((v[outer] as Record<string, unknown> | undefined) ?? {}), [inner]: x };
+    }
     return v;
   }
 

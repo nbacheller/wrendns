@@ -388,6 +388,10 @@ export const api = {
       body: names?.length ? { names } : {},
       headers: { 'idempotency-key': newKey() },
     }),
+  // REQ: FLT-004 (T24.28, ADR-992) — which lists add little: the plan at a threshold (a read), and the apply
+  // (a person's; the names are the ones previewed, so a plan that changed since is refused with 409).
+  listPrunePlan: (thresholdPercent?: number) => get<S['ListPrunePlan']>('/lists/prune-plan', { thresholdPercent }),
+  pruneLists: (b: S['ListsPruneRequest']) => post<S['ListsPruneResult']>('/lists/prune', b),
   groups: () => get<S['Items_GroupInfo']>('/groups'),
   // REQ: OBS-901 (T26.3), the live network map; the filters narrow it on the server.
   map: (q: { network?: string; group?: string; device?: string; node?: string } = {}) => get<S['MapSnapshot']>('/map', q),
@@ -434,6 +438,8 @@ export const api = {
   identities: () => get<S['Items_DeviceIdentity']>('/clients/identities'),
   identity: (id: string) => get<S['DeviceIdentity']>(`/clients/${encodeURIComponent(id)}/identity`),
   rhythm: (id: string) => get<S['ClientRhythm']>(`/clients/${encodeURIComponent(id)}/rhythm`),
+  // REQ: FLT-006, API-010 (T24.30, ADR-996) — a device's effective policy.
+  clientPolicy: (id: string) => get<S['ClientPolicy']>(`/clients/${encodeURIComponent(id)}/policy`),
   timeline: (id: string, q: { from?: string; to?: string; bins?: number; lanes?: number } = {}) =>
     get<S['DeviceTimeline']>(`/clients/${encodeURIComponent(id)}/timeline`, q),
   // REQ: FLT-017 (T15.1) — Kubernetes workloads as devices.

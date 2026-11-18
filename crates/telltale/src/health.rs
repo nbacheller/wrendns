@@ -983,6 +983,7 @@ mod tests {
             regex_skipped: 0,
             hits: 0,
             overlap: Vec::new(),
+            rules: 0,
             last_checked_unix_seconds: None,
             last_success_unix_seconds: None,
             last_changed_unix_seconds: None,

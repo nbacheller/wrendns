@@ -1780,8 +1780,11 @@ pub(crate) async fn delete_ratelimit(
 /// off without losing the lists), `names` (each with its subdomains, e.g.
 /// `connectivitycheck.gstatic.com`), and `clients` (addresses or networks). Their queries are
 /// still answered and still counted in `/metrics`, but left out of the query log, the live view,
-/// the dashboard and top lists, anomalies, and every export. It replaces the whole section until
-/// it's deleted again; it applies to every node of a cluster from the next query on.
+/// the dashboard and top lists, anomalies, and every export. `log` (clients as addresses,
+/// networks or device names; `domains`, exact or `*.` for everything under; `own_lookups`) keeps
+/// queries out of the query log, the live view and the event sinks only: the statistics still
+/// count them (OBS-903). It replaces the whole section until it's deleted again; it applies to
+/// every node of a cluster from the next query on.
 #[utoipa::path(put, path = "/api/v1/exclusions/default", tag = "config",
     params(DryRun),
     request_body = Object,

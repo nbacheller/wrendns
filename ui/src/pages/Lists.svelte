@@ -12,6 +12,7 @@
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
   // REQ: FLT-004 (T27.11) — the list refresh and stale settings, above the lists.
   import FilterSettings from '../lib/components/FilterSettings.svelte';
+  import { classifyListError } from '../lib/list-failure';
 
   // REQ: API-002 (T7.5) — add and change lists here.
   const listFields: Field[] = [
@@ -133,6 +134,86 @@
       startingRow = null;
     }
   }
+  // REQ: FLT-004 (T24.28, ADR-992) — prune: preview the lists that add little at a threshold, turn them
+  // off after a confirmation, and turn them back on from the notice that follows.
+  let pruning = $state(false);
+  let threshold = $state(1);
+  let plan = $state<S['ListPrunePlan'] | null>(null);
+  let planError = $state<unknown>(null);
+  let planning = $state(false);
+  let confirming = $state(false);
+  let applying = $state(false);
+  let pruned = $state<string[]>([]);
+  let restoring = $state(false);
+  const prunable = $derived(lists.filter((l) => l.enabled && l.kind === 'block').length >= 2);
+  const thresholdOk = $derived(Number.isFinite(threshold) && threshold >= 0 && threshold <= 50);
+  async function preview() {
+    if (!thresholdOk) return;
+    planning = true;
+    confirming = false;
+    planError = null;
+    try {
+      plan = await api.listPrunePlan(threshold);
+    } catch (e) {
+      planError = e;
+      plan = null;
+    } finally {
+      planning = false;
+    }
+  }
+  function openPrune() {
+    pruning = true;
+    void preview();
+  }
+  function closePrune() {
+    pruning = false;
+    confirming = false;
+    plan = null;
+    planError = null;
+  }
+  async function applyPrune() {
+    if (!plan || plan.candidates.length === 0) return;
+    applying = true;
+    planError = null;
+    try {
+      // The lists previewed, with the versions the preview was read at: a plan that changed since (a
+      // list edited, another compile) is refused (409) and changes nothing.
+      const r = await api.pruneLists({
+        thresholdPercent: plan.thresholdPercent,
+        names: plan.candidates.map((c) => c.name),
+        snapshotVersion: plan.snapshotVersion,
+        configVersion: plan.configVersion,
+      });
+      pruned = r.disabled;
+      closePrune();
+      ({ items: lists, missingNodes: unread = [] } = await api.lists());
+    } catch (e) {
+      planError = e;
+      confirming = false;
+    } finally {
+      applying = false;
+    }
+  }
+  // Undo: each list is written back with `enabled: true` (the same edit as turning it on in Manage lists).
+  async function restorePruned() {
+    restoring = true;
+    planError = null;
+    try {
+      const entries = (await api.configEntries('list')).items;
+      for (const name of pruned) {
+        const def = entries.find((e) => e.name === name)?.definition;
+        if (def) await api.putEntry('lists', name, { ...(def as Record<string, unknown>), enabled: true });
+      }
+      pruned = [];
+      ({ items: lists, missingNodes: unread = [] } = await api.lists());
+    } catch (e) {
+      planError = e;
+    } finally {
+      restoring = false;
+    }
+  }
+  const addsPercent = (l: S['ListInfo']) => (l.entries > 0 ? Math.round(((l.unique + (l.rules ?? 0)) / l.entries) * 1000) / 10 : 0);
+  const pct = (n: number) => `${n}%`;
   // While lists download, check every 2 s instead of every 15 s.
   $effect(() => {
     if (!busy) return;
@@ -145,6 +226,60 @@
     }, 2000);
     return () => clearInterval(t);
   });
+  // REQ: T24.27 — fixes offered on a list row: raise a list's size limit, turn off or remove a list
+  // that failed for good (404) or adds nothing (every name is in another list).
+  let fixing = $state<string | null>(null);
+  let fixError = $state<unknown>(null);
+  let fixNote = $state<string | null>(null);
+  let confirmRemove = $state<string | null>(null);
+  async function definitionOf(name: string): Promise<Record<string, unknown>> {
+    const e = (await api.configEntries('list')).items.find((x) => x.name === name);
+    if (!e?.definition) throw new Error(`The list ${name} isn't in this node's configuration.`);
+    const { name: _n, ...def } = e.definition as Record<string, unknown>;
+    return def;
+  }
+  async function fix(name: string, note: string, change: () => Promise<unknown>) {
+    fixing = name;
+    fixError = null;
+    fixNote = null;
+    confirmRemove = null;
+    try {
+      await change();
+      fixNote = note;
+      ({ items: lists, missingNodes: unread = [] } = await api.lists());
+    } catch (e) {
+      fixError = e;
+    } finally {
+      fixing = null;
+    }
+  }
+  // Sets this list's own `max_bytes`, then downloads it again.
+  const raiseLimit = (name: string, mib: number) =>
+    fix(name, `${name}: the limit is now ${mib} MiB and the list is downloading again.`, async () => {
+      const def = await definitionOf(name);
+      await api.putEntry('lists', name, { ...def, max_bytes: `${mib}MiB` });
+      await api.refreshLists([name]);
+    });
+  const turnOff = (name: string) =>
+    fix(name, `${name} is off. It stays in the configuration; turn it on from Manage lists.`, async () => {
+      const def = await definitionOf(name);
+      await api.putEntry('lists', name, { ...def, enabled: false });
+    });
+  const removeList = (name: string) =>
+    fix(name, `${name} was removed.`, () => api.deleteEntry('lists', name));
+  // Every name in it is also in another list: it adds nothing, so it can go.
+  // Only when ONE enabled, enforcing list of the same kind holds every name (a shadow or allow list
+  // covering a block list is not redundant). Identical lists: only the later-sorting one is offered.
+  const redundantWith = (l: S['ListInfo']): string | null => {
+    if (!(l.enabled && l.state === 'ok' && l.entries > 0 && l.unique === 0 && l.overlap.length)) return null;
+    const top = l.overlap[0];
+    if (top.names !== l.entries) return null;
+    const cover = lists.find((x) => x.name === top.list);
+    if (!cover || !cover.enabled || cover.state !== 'ok' || cover.mode !== 'enforce' || cover.kind !== l.kind) return null;
+    if (cover.unique === 0 && cover.entries === l.entries && cover.name > l.name) return null;
+    return cover.name;
+  };
+
   // REQ: API-002 (T9.12) — download and parse the draft list before saving it.
   const tryList = {
     label: 'Test it',
@@ -157,6 +292,15 @@
     },
   };
 </script>
+
+{#snippet removeButtons(name: string)}
+  {#if confirmRemove === name}
+    <button class="link small danger" disabled={fixing !== null} data-testid="list-remove-confirm" onclick={() => removeList(name)}>Yes, remove {name}</button>
+    <button class="link small" onclick={() => (confirmRemove = null)}>Keep it</button>
+  {:else}
+    <button class="link small danger" disabled={fixing !== null} data-testid="list-remove" onclick={() => (confirmRemove = name)}>Remove it</button>
+  {/if}
+{/snippet}
 
 <div class="page">
   <div class="page-head">
@@ -174,10 +318,17 @@
           {busy ? 'Updating…' : 'Update now'}
         </button><HelpButton id="list-update-now" />
       {/if}
+      {#if can('operator') && prunable}
+        <!-- REQ: FLT-004 (T24.28) — find the lists that add little, and turn them off. -->
+        <button class="prune" onclick={openPrune} disabled={pruning} data-testid="lists-prune"
+          title="Find lists that add little because other lists already have their names">Prune…</button><HelpButton id="list-prune" />
+      {/if}
     </div>
   </div>
   <ErrorNote {error} />
   <ErrorNote error={refreshError} />
+  <ErrorNote error={fixError} />
+  {#if fixNote}<div class="notice" role="status" data-testid="list-fix-note">{fixNote}</div>{/if}
   {#if unread.length}
     {#if primaryUnread}
       <div class="notice warn" role="status" data-testid="lists-unread">Not read: {unread.join(', ')}. The download state shown isn't confirmed from the primary until it answers.</div>
@@ -210,6 +361,78 @@
       {#if refresh?.skipped.length}<span> Left out (off): {refresh.skipped.map((k) => k.name).join(', ')}.</span>{/if}
     </p>
   {/if}
+  <ErrorNote error={planError} />
+  {#if pruned.length}
+    <div class="notice ok" role="status" data-testid="prune-done">
+      {pruned.length} {pruned.length === 1 ? 'list' : 'lists'} turned off: {pruned.join(', ')}. They stay in the configuration.
+      {#if can('operator')}
+        <button onclick={restorePruned} disabled={restoring} data-testid="prune-undo">{restoring ? 'Turning on…' : 'Undo: turn them on again'}</button>
+      {/if}
+      <button onclick={() => (pruned = [])} data-testid="prune-dismiss">Dismiss</button>
+    </div>
+  {/if}
+  {#if pruning}
+    <section class="card prune-panel" aria-labelledby="prune-title" data-testid="prune-panel">
+      <h2 id="prune-title">Prune lists<HelpButton id="list-prune" /></h2>
+      <p class="muted small">
+        Turns off block lists that add little: nearly every name they hold is also in another list.
+        They stay in the configuration, so turning one on again is one click. Allow lists, shadow lists and lists a group names are never proposed.
+      </p>
+      <div class="prune-controls">
+        <label>
+          Adds at most
+          <input type="number" min="0" max="50" step="0.5" bind:value={threshold} data-testid="prune-threshold" onchange={preview} />
+          % of its own entries
+        </label>
+        <button onclick={preview} disabled={planning || !thresholdOk} data-testid="prune-preview">{planning ? 'Checking…' : 'Preview'}</button>
+      </div>
+      {#if !thresholdOk}<p class="err small">Enter a number from 0 to 50.</p>{/if}
+      {#if plan}
+        {#if plan.candidates.length === 0}
+          <p data-testid="prune-none">{plan.note}</p>
+        {:else}
+          <div class="table-wrap">
+            <table class="compact" data-testid="prune-candidates">
+              <thead><tr><th>List</th><th class="num">Names</th><th class="num">Unique</th><th class="num">Adds</th><th class="num">Could lose</th><th>Also in</th></tr></thead>
+              <tbody>
+                {#each plan.candidates as c (c.name)}
+                  <tr data-testid="prune-candidate">
+                    <td><strong>{c.name}</strong></td>
+                    <td class="num">{num(c.entries)}</td>
+                    <td class="num">{num(c.unique)}</td>
+                    <td class="num">{pct(c.addsPercent)}</td>
+                    <td class="num">{num(c.losesAtMost)}</td>
+                    <td class="small">{c.coveredBy.map((x) => `${x.list} (${pct(x.percent)})`).join(', ')}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+          <p class="small" data-testid="prune-note">{plan.note}</p>
+        {/if}
+        {#if plan.kept.length}
+          <details class="small">
+            <summary>{plan.kept.length} {plan.kept.length === 1 ? 'list stays' : 'lists stay'}, and why</summary>
+            <ul data-testid="prune-kept">
+              {#each plan.kept as k (k.name)}<li><strong>{k.name}</strong>: {k.reason}</li>{/each}
+            </ul>
+          </details>
+        {/if}
+      {/if}
+      <div class="prune-actions">
+        {#if confirming && plan}
+          <span data-testid="prune-confirm-text">Turn off {plan.candidates.length} {plan.candidates.length === 1 ? 'list' : 'lists'}?</span>
+          <button onclick={applyPrune} disabled={applying} data-testid="prune-confirm">{applying ? 'Turning off…' : 'Yes, turn them off'}</button>
+          <button onclick={() => (confirming = false)} disabled={applying}>Back</button>
+        {:else}
+          <button onclick={() => (confirming = true)} disabled={!plan || plan.candidates.length === 0 || planning} data-testid="prune-apply">
+            Turn off {plan ? plan.candidates.length : 0} {plan?.candidates.length === 1 ? 'list' : 'lists'}…
+          </button>
+          <button onclick={closePrune} data-testid="prune-close">Close</button>
+        {/if}
+      </div>
+    </section>
+  {/if}
   <section class="card">
     {#if !loaded}
       <p class="empty muted">Loading…</p>
@@ -223,11 +446,45 @@
           </thead>
           <tbody>
             {#each lists as l (l.name)}
+              {@const failure = classifyListError(l.error)}
+              {@const redundant = redundantWith(l)}
               <tr class:off={!l.enabled}>
                 <td>
                   <strong>{l.name}</strong>{#if !l.enabled} <span class="badge">off</span>{/if}{#if l.mode === 'shadow'} <span class="badge info" title="Never blocks: what it would have blocked is counted below">shadow</span>{/if}
                   {#if advanced}<div class="muted small src">{l.source}</div>{/if}
-                  {#if l.error}<div class="small err">{l.error}</div>{/if}
+                  {#if l.error}<div class="small err" data-testid="list-error">{l.error}</div>{/if}
+                  <!-- REQ: T24.27 — a failure says what to do about it. -->
+                  {#if failure?.kind === 'too_large'}
+                    <div class="small fix" data-testid="list-too-large">
+                      This list is bigger than its {bytes(failure.limit)} limit{failure.seen ? ` (the server says ${bytes(failure.seen)})` : ''}; the last good copy, if any, is still used.<HelpButton id="list-too-large" />
+                      {#if can('operator') && failure.suggestedMiB}
+                        <button class="link small" disabled={fixing !== null} data-testid="list-raise-limit"
+                          onclick={() => raiseLimit(l.name, failure.suggestedMiB!)}
+                          title="Sets this list's max_bytes to {failure.suggestedMiB} MiB and downloads it again">
+                          {fixing === l.name ? 'Working…' : `Raise the limit to ${failure.suggestedMiB} MiB`}
+                        </button>
+                      {:else if failure.suggestedMiB === null}
+                        <span class="muted">It is over what a small device's memory allows for one list (128 MiB); remove it or use a smaller list.</span>
+                      {/if}
+                    </div>
+                  {:else if failure?.kind === 'not_found'}
+                    <div class="small fix" data-testid="list-not-found">
+                      The address returns "not found" (HTTP {failure.status}): the list was moved or deleted by its maintainer. Remove it, or replace it with the list's new address.<HelpButton id="list-not-found" />
+                      {#if can('operator')}
+                        {@render removeButtons(l.name)}
+                      {/if}
+                    </div>
+                  {/if}
+                  <!-- Pruning: a list that adds nothing. -->
+                  {#if redundant}
+                    <div class="small fix" data-testid="list-redundant">
+                      Every name in it is also in <strong>{redundant}</strong>: it adds nothing.<HelpButton id="list-redundant" />
+                      {#if can('operator')}
+                        <button class="link small" disabled={fixing !== null} data-testid="list-turn-off" onclick={() => turnOff(l.name)}>Turn it off</button>
+                        {@render removeButtons(l.name)}
+                      {/if}
+                    </div>
+                  {/if}
                   <!-- REQ: FLT-003 (review 02-08) — regex rules the snapshot leaves out. -->
                   {#if l.regexSkipped > 0}<div class="small warn-text" data-testid="list-regex-skipped">{num(l.regexSkipped)} regex {l.regexSkipped === 1 ? 'rule' : 'rules'} left out (over the limit of <code>max_regexes</code>, or too large to compile)</div>{/if}
                 </td>
@@ -242,8 +499,14 @@
                 <!-- REQ: OBS-009 (T7.14) — unique contribution, overlap, hits. -->
                 <td class="num" data-testid="list-unique">
                   {num(l.unique)}
-                  {#if l.entries > 0 && l.overlap.length && l.overlap[0].names / l.entries >= 0.95}
-                    <div class="small warn-text">{Math.round((l.overlap[0].names / l.entries) * 100)}% also in {l.overlap[0].list}</div>
+                  {#if l.enabled && l.entries > 0}
+                    <!-- REQ: FLT-004 (T24.28) — what it adds, and which lists have the rest. -->
+                    <div class="small muted" data-testid="list-adds" title="Unique names and regex or modifier rules, as a share of its entries">adds {pct(addsPercent(l))}</div>
+                    {#if l.overlap.length}
+                      <div class="small" class:warn-text={l.overlap[0].names / l.entries >= 0.95} data-testid="list-covered-by">
+                        {l.overlap.slice(0, 2).map((o) => `${Math.round((o.names / l.entries) * 100)}% also in ${o.list}`).join(', ')}
+                      </div>
+                    {/if}
                   {/if}
                 </td>
                 <td class="num">{num(l.hits)}{#if l.state === 'ok' && l.entries > 0 && l.hits === 0}<div class="small muted">none yet</div>{/if}</td>
@@ -325,7 +588,7 @@
   <ConfigEditor kind="list" path="lists" title="Manage lists" noun="list" fields={listFields}
     summary={(d) => `${String(d.kind ?? 'block')} · ${d.url ? String(d.url) : `${((d.rules as string[]) ?? []).length} rules`}${d.enabled === false ? ' · off' : ''}`}
     onchanged={async () => (lists = (await api.lists()).items)} formAction={tryList} />
-  <p class="muted small">"Names used" counts the names this list puts in the active snapshot; "Unique" the ones no other list has (what removing it would lose). "Hits" counts the queries it decided since each node started, across the cluster.</p>
+  <p class="muted small">"Names used" counts the names this list puts in the active snapshot; "Unique" the ones no other list of its kind has (what removing it would lose), "adds" that plus its regex and modifier rules as a share of its entries, and "also in" the lists that have the rest. <strong>Prune…</strong> turns off the lists that add little, after a preview. "Hits" counts the queries it decided since each node started, across the cluster.</p>
 </div>
 
 <style>
@@ -334,6 +597,20 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 10px;
+  }
+  .prune-panel {
+    display: grid;
+    gap: 10px;
+  }
+  .prune-controls,
+  .prune-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
+  .prune-controls input {
+    width: 5em;
   }
   .refresh-status {
     margin: 0 0 8px;
@@ -351,6 +628,9 @@
   }
   .err {
     color: var(--bad);
+  }
+  .fix {
+    margin-top: 2px;
   }
   .warn-text {
     color: var(--warn);
