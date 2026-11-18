@@ -1303,7 +1303,7 @@
       "id": "list-redundant",
       "title": "A list that adds nothing",
       "term": "Redundant list",
-      "summary": "Every name this list puts in the snapshot is also in another list, so removing it loses no blocking. It still costs a download and memory. Turn it off to keep it in the configuration, or remove it.",
+      "summary": "Every name this list puts in the snapshot is also in one other enabled, enforcing list of the same kind, so removing it loses no blocking. It still costs a download and memory. Turn it off to keep it in the configuration, or remove it.",
       "when": "The Unique column reads 0 and the row says every name is in another list.",
       "example": "A small list is wholly inside a bigger one you also use: turn the small one off.",
       "caution": "Unique counts names, not regex rules, and is measured on the active snapshot: if you later remove the other list, this one is no longer redundant. Lists assigned to different groups overlap on purpose, so check the groups before removing.",

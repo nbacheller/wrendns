@@ -1641,7 +1641,15 @@ pub(crate) fn github_raw(url: &str) -> Option<String> {
 pub(crate) fn is_regex_list(address: &str) -> bool {
     let path = address.split(['?', '#']).next().unwrap_or(address);
     let name = path.trim_end_matches('/').rsplit('/').next().unwrap_or("");
-    name.to_ascii_lowercase().contains("regex")
+    let lower = name.to_ascii_lowercase();
+    let stem = lower.rsplit_once('.').map_or(lower.as_str(), |(s, _)| s);
+    // Whole-word match: `regex`, `regex-list`, `my_regex`, not `no-regex-needed`.
+    let words: Vec<&str> = stem
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let is_rx = |w: &&str| *w == "regex" || *w == "regexes";
+    words.first().is_some_and(is_rx) || words.last().is_some_and(is_rx)
 }
 
 fn domain_rule(domain: &str, t: i64) -> Result<String, String> {

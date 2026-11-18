@@ -2078,11 +2078,17 @@ test('t24_27 list failures offer a fix', async () => {
   }
   // Pruning: every name is in another list.
   const redundantChanges: Record<string, unknown>[] = [];
+  // A shadow list never blocks, so it is not a cover: no offer until the cover enforces.
+  let coverOverride: Record<string, unknown> = { state: 'ok', enabled: true, mode: 'shadow', kind: 'block', unique: 5 };
   await page.route('**/api/v1/lists', async (route) => {
     const r = await route.fetch();
     const json = await r.json();
     json.items = json.items.map((l: { name: string }) =>
-      l.name === 'e2e-block' ? { ...l, state: 'ok', enabled: true, entries: 5, unique: 0, overlap: [{ list: 'e2e-shadow', names: 5 }] } : l,
+      l.name === 'e2e-block'
+        ? { ...l, state: 'ok', enabled: true, entries: 5, unique: 0, overlap: [{ list: 'e2e-shadow', names: 5 }] }
+        : l.name === 'e2e-shadow'
+          ? { ...l, ...coverOverride }
+          : l,
     );
     await route.fulfill({ response: r, json });
   });
@@ -2093,6 +2099,10 @@ test('t24_27 list failures offer a fix', async () => {
   try {
     await page.reload();
     const row = rowOf('e2e-block');
+    await expect(row).toBeVisible();
+    await expect(row.getByTestId('list-redundant')).toHaveCount(0);
+    coverOverride = { state: 'ok', enabled: true, mode: 'enforce', kind: 'block', unique: 5, entries: 5 };
+    await page.reload();
     await expect(row.getByTestId('list-redundant')).toContainText('Every name in it is also in e2e-shadow');
     await row.getByTestId('list-turn-off').click();
     await expect(page.getByTestId('list-fix-note')).toContainText('e2e-block is off');

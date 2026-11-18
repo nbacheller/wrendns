@@ -183,8 +183,17 @@
   const removeList = (name: string) =>
     fix(name, `${name} was removed.`, () => api.deleteEntry('lists', name));
   // Every name in it is also in another list: it adds nothing, so it can go.
-  const redundantWith = (l: S['ListInfo']): string | null =>
-    l.enabled && l.state === 'ok' && l.entries > 0 && l.unique === 0 && l.overlap.length ? l.overlap[0].list : null;
+  // Only when ONE enabled, enforcing list of the same kind holds every name (a shadow or allow list
+  // covering a block list is not redundant). Identical lists: only the later-sorting one is offered.
+  const redundantWith = (l: S['ListInfo']): string | null => {
+    if (!(l.enabled && l.state === 'ok' && l.entries > 0 && l.unique === 0 && l.overlap.length)) return null;
+    const top = l.overlap[0];
+    if (top.names !== l.entries) return null;
+    const cover = lists.find((x) => x.name === top.list);
+    if (!cover || !cover.enabled || cover.state !== 'ok' || cover.mode !== 'enforce' || cover.kind !== l.kind) return null;
+    if (cover.unique === 0 && cover.entries === l.entries && cover.name > l.name) return null;
+    return cover.name;
+  };
 
   // REQ: API-002 (T9.12) — download and parse the draft list before saving it.
   const tryList = {
