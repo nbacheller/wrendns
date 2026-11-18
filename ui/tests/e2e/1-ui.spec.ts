@@ -1361,6 +1361,9 @@ test('api_011 names on my network: wizards, DNS, and the API', async () => {
 // device for an hour; DNS stops blocking it at once, the Rules page shows it with its
 // countdown, and removing it blocks the name again. No list is recompiled.
 test('flt_005 quick rule: allow for 1 hour from the query log', async () => {
+  // The poll below allows 60 s for the allowed query to be logged; the default 30 s test timeout
+  // would end the test first on a starved runner.
+  test.setTimeout(90_000);
   expect(await query('ads.e2e.test')).toBe(0); // blocked: 0.0.0.0
   await page.goto('/#/queries?status=blocked&name=ads.e2e.test&match=exact');
   await page.getByRole('button', { name: 'Why?' }).first().click();
@@ -3529,6 +3532,13 @@ test('dns_010 add a zone', async () => {
   expect(answer.ttl).toBe(120);
   // The refusal for a name it doesn't have is expected: the zone answers it itself.
   expect(await query('ghost.zone010.e2e.test')).toBe(3);
+  // REQ: DNS-010 (T27.7) — an API zone is edited in place: the new address is answered at once.
+  await zoneRow.getByRole('button', { name: 'Edit zone zone010.e2e.test' }).click();
+  await page.getByTestId('zone-form').getByLabel('Record 1 value').fill('192.168.11.21');
+  await page.getByTestId('zone-form').getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'zone010.e2e.test' })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+  expect((await queryDetail('printer.zone010.e2e.test')).address).toBe('192.168.11.21');
   await zoneRow.getByRole('button', { name: 'Remove zone zone010.e2e.test' }).click();
   await expect(page.getByTestId('zone-row').filter({ hasText: 'zone010.e2e.test' })).toHaveCount(0);
 });
@@ -3580,6 +3590,39 @@ test('obs_003 operator cannot change privacy level', async () => {
   } finally {
     await o.close();
   }
+});
+
+// REQ: OBS-020 (T27.5, API-901) — the form refuses a probe timeout the server would refuse (a timeout
+// of whole seconds at or above the interval) before it asks the server, and says why.
+test('obs_020 form refuses a timeout longer than the interval', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  // The page may already be on this URL (a hash change does not reload it): reload, so the
+  // disclosure starts closed and the click opens it.
+  await page.goto('/#/settings?tab=system');
+  await page.reload();
+  await page.getByTestId('tuning-probe').locator('summary').click();
+  const row = page.getByTestId('editor-probe').getByTestId('entry-row');
+  await expect(row).toContainText('Every 30 s');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await page.getByRole('spinbutton', { name: 'Seconds between rounds' }).fill('5');
+  await page.getByRole('spinbutton', { name: 'Timeout per check (ms)' }).fill('6000');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByText('The timeout must be shorter than the interval')).toBeVisible();
+  await expect(row).not.toContainText('Every 5 s');
+});
+
+// REQ: OBS-003 (T27.5, API-901) — the query log's size is checked in the form: a size the server
+// can't read (`2 gigs`) is refused with the accepted units, not sent.
+test('obs_003 form refuses a size it cannot read', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/queries');
+  await page.getByTestId('tuning-qlog').locator('summary').click();
+  const row = page.getByTestId('editor-qlog_settings').getByTestId('entry-row');
+  await expect(row).toContainText('Privacy level');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await page.getByRole('textbox', { name: 'Keep at most (size)' }).fill('2 gigs');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByText('Keep at most: a size such as 500MiB or 2GiB')).toBeVisible();
 });
 
 // REQ: UPS-007 (T9.25) — a group's upstream servers are chosen in the Groups editor.

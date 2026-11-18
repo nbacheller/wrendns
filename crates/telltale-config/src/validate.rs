@@ -2272,6 +2272,41 @@ fn cache_and_telemetry(cfg: &Config, r: &mut Report<'_>) {
     if t.qlog.flush_interval_secs == 0 {
         r.err("telemetry.qlog.flush_interval_secs", "must be at least 1");
     }
+    // REQ: OBS-003 (T27.5) — the same upper bounds the settings form shows (tuning.ts), so a
+    // direct API write meets them too.
+    if t.qlog.retention_days > 3650 {
+        r.err("telemetry.qlog.retention_days", "at most 3650 days");
+    }
+    if t.qlog.flush_interval_secs > 3600 {
+        r.err("telemetry.qlog.flush_interval_secs", "at most 3600 seconds");
+    }
+    // REQ: OBS-013 (T27.5) — the anomaly settings and the per-client series' cap are bounded like
+    // the form's fields (tuning.ts): a zero or a huge value is refused, not stored.
+    let a = &t.anomaly;
+    if !(1..=90).contains(&a.learning_days) {
+        r.err("telemetry.anomaly.learning_days", "from 1 to 90 days");
+    }
+    if !(1..=100_000).contains(&a.max_clients) {
+        r.err("telemetry.anomaly.max_clients", "from 1 to 100000 devices");
+    }
+    if !(1..=100_000).contains(&a.nxdomain_per_minute) {
+        r.err(
+            "telemetry.anomaly.nxdomain_per_minute",
+            "from 1 to 100000 answers a minute",
+        );
+    }
+    if !(1..=100).contains(&a.nxdomain_percent) {
+        r.err(
+            "telemetry.anomaly.nxdomain_percent",
+            "from 1 to 100 percent",
+        );
+    }
+    if !(1..=10_000).contains(&t.metrics.per_client_cap) {
+        r.err(
+            "telemetry.metrics.per_client_cap",
+            "from 1 to 10000 devices",
+        );
+    }
 }
 
 /// REQ: OPS-014 (ADR-903 §2) — references to stored secrets: at most one of a credential's inline

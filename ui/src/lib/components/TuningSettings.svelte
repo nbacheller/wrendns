@@ -31,6 +31,7 @@
       fields={spec.fields}
       summary={spec.describe}
       role={spec.role}
+      validate={spec.validate}
     />
   {/if}
 </details>

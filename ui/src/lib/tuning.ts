@@ -1,7 +1,8 @@
 // REQ: OBS-016, OBS-020, OBS-019, OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — the form fields of
 // the tuning sections: the objectives (`[slo]`), the listener checks (`[probe]`), second opinions
 // (`[upstream_check]`), device anomaly settings, the query log's store and the per-client metric
-// series. The server checks every bound and refuses an unknown field; these bounds are the form's.
+// series. The server checks every bound and refuses an unknown field; these bounds are the form's,
+// and `validate` repeats the server's checks that a single bound can't say (REQ: API-901).
 import type { Field } from './components/ConfigEditor.svelte';
 
 export type TuningKey = 'slo' | 'probe' | 'upstream_check' | 'anomaly' | 'qlog' | 'metrics';
@@ -19,9 +20,17 @@ export type TuningSpec = {
   summary: string;
   fields: Field[];
   describe: (def: Record<string, unknown>) => string;
+  /** The reason a draft is refused, or null (the server checks the same; this is the sooner check). */
+  validate?: (values: Record<string, unknown>) => string | null;
 };
 
 const num = (v: unknown) => (typeof v === 'number' ? v : Number(v ?? 0));
+/** A value the user gave (an empty field is left out, so the server's default applies). */
+const given = (v: unknown) => v !== undefined && v !== null && v !== '';
+/** The histogram bounds of /metrics (`SLO_LATENCY_MS` in telltale-config). */
+const SLO_LATENCY_MS = [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
+/** A byte size as the server reads it (`ByteSize::parse`): a number, then an optional unit. */
+const SIZE = /^\s*\d+\s*(B|KiB|K|k|MiB|M|GiB|G|TiB|T|KB|kB|MB|GB|TB)?\s*$/;
 
 export const TUNING: Record<TuningKey, TuningSpec> = {
   slo: {
@@ -33,9 +42,10 @@ export const TUNING: Record<TuningKey, TuningSpec> = {
     summary: 'Change the objectives',
     fields: [
       { key: 'enabled', label: 'Track the objectives', type: 'bool', initial: true },
-      { key: 'availability_target', label: 'Answers that must not fail (%)', type: 'number', min: 50, max: 100, initial: 99.9,
-        help: 'SERVFAIL answers count against it; queries dropped by a rate limit do not.' },
-      { key: 'latency_target', label: 'Answers that must be fast enough (%)', type: 'number', min: 50, max: 100, initial: 99 },
+      { key: 'availability_target', label: 'Answers that must not fail (%)', type: 'number', min: 50, max: 99.999, initial: 99.9,
+        help: 'SERVFAIL answers count against it; queries dropped by a rate limit do not. Below 100: 100 leaves no budget to burn.' },
+      { key: 'latency_target', label: 'Answers that must be fast enough (%)', type: 'number', min: 50, max: 99.999, initial: 99,
+        help: 'Below 100, as above.' },
       { key: 'latency_ms', label: 'Fast enough means within (ms)', type: 'number', min: 1, max: 5000, initial: 250,
         help: 'One of 1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500 or 5000 ms (the histogram bounds of /metrics).' },
       { key: 'window_days', label: 'Error budget window (days)', type: 'number', min: 1, max: 90, initial: 30,
@@ -43,6 +53,14 @@ export const TUNING: Record<TuningKey, TuningSpec> = {
     ],
     describe: (d) =>
       `Availability ${num(d.availability_target)}%, latency ${num(d.latency_target)}% within ${num(d.latency_ms)} ms, over ${num(d.window_days)} days${d.enabled === false ? ' (off)' : ''}.`,
+    validate: (v) => {
+      for (const [k, label] of [['availability_target', 'Answers that must not fail'], ['latency_target', 'Answers that must be fast enough']] as const) {
+        if (given(v[k]) && !(Number(v[k]) >= 50 && Number(v[k]) < 100)) return `${label}: a percentage from 50 up to (not including) 100.`;
+      }
+      if (given(v.latency_ms) && !SLO_LATENCY_MS.includes(Number(v.latency_ms)))
+        return `Fast enough means within one of ${SLO_LATENCY_MS.join(', ')} ms (the histogram bounds of /metrics).`;
+      return null;
+    },
   },
   probe: {
     kind: 'probe',
@@ -61,6 +79,10 @@ export const TUNING: Record<TuningKey, TuningSpec> = {
     ],
     describe: (d) =>
       `Every ${num(d.interval_secs)} s, timeout ${num(d.timeout_ms)} ms${d.enabled === false ? ' (off)' : ''}.`,
+    validate: (v) =>
+      given(v.timeout_ms) && given(v.interval_secs) && Math.floor(Number(v.timeout_ms) / 1000) >= Number(v.interval_secs)
+        ? 'The timeout must be shorter than the interval: the timeout in whole seconds must be below the interval in seconds.'
+        : null,
   },
   upstream_check: {
     kind: 'upstream_check',
@@ -118,6 +140,10 @@ export const TUNING: Record<TuningKey, TuningSpec> = {
     ],
     describe: (d) =>
       `Privacy level ${num(d.privacy_level)}, kept ${num(d.retention_days)} days${d.enabled === false ? ' (off)' : ''}.`,
+    validate: (v) =>
+      given(v.retention_bytes) && !SIZE.test(String(v.retention_bytes))
+        ? 'Keep at most: a size such as 500MiB or 2GiB (B, KiB, MiB, GiB, TiB, KB, MB, GB or TB).'
+        : null,
   },
   metrics: {
     kind: 'metrics_settings',
