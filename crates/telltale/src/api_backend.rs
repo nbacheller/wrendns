@@ -1804,6 +1804,7 @@ impl Backend for ApiBackend {
             special: e.special.map(str::to_owned),
             summary: e.summary,
             block: e.block.map(|b| ExplainBlock {
+                category: telltale_config::categories::label_of_list(&b.list),
                 list: b.list,
                 mode: label(&b.mode),
                 ttl_seconds: b.ttl,

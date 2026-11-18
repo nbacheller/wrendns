@@ -29,6 +29,12 @@ pub struct Group {
     pub services: Vec<Box<str>>,
     /// REQ: FLT-011 (T7.11) — safe search, and YouTube's restriction with it.
     pub safe_search: Option<telltale_config::YoutubeRestrict>,
+    /// REQ: FLT-902 (T24.29) — the engines safe search covers (empty: every engine), with
+    /// `youtube` added when the group sets its own YouTube level.
+    pub safe_search_engines: Vec<Box<str>>,
+    /// REQ: FLT-901 (T24.29) — the lists this group wants because of its categories and ad
+    /// block: `cat-<source>` names, or the name of a list that provides the source already.
+    pub cat_lists: Vec<Box<str>>,
     /// REQ: FLT-015 (T7.20) — which answer addresses are refused.
     pub answers: Option<AnswerFilter>,
     /// REQ: FLT-014 (T7.20) — rewrites.
@@ -449,6 +455,21 @@ impl Default for ClientTable {
     }
 }
 
+/// REQ: FLT-902 — the engines a group's safe search covers: its list, plus YouTube when the
+/// group sets its own YouTube level (`moderate`, `off`) so that level applies whatever the list
+/// says (empty: every engine).
+fn effective_engines(g: &telltale_config::GroupConfig) -> Vec<Box<str>> {
+    let mut v: Vec<Box<str>> = g
+        .safe_search_engines
+        .iter()
+        .map(|e| e.as_str().into())
+        .collect();
+    if !v.is_empty() && !g.youtube_restrict.is_default() && !v.iter().any(|e| &**e == "youtube") {
+        v.push("youtube".into());
+    }
+    v
+}
+
 impl Group {
     fn from_config(g: &telltale_config::GroupConfig) -> Self {
         Self {
@@ -466,7 +487,10 @@ impl Group {
                 .iter()
                 .map(|s| s.as_str().into())
                 .collect(),
-            safe_search: g.safe_search.then_some(g.youtube_restrict),
+            safe_search: (g.safe_search || !g.safe_search_engines.is_empty())
+                .then_some(g.youtube_restrict),
+            safe_search_engines: effective_engines(g),
+            cat_lists: Vec::new(),
             answers: (g.rebinding_protection || !g.block_answer_ips.is_empty()).then(|| {
                 AnswerFilter {
                     private: g.rebinding_protection,
@@ -519,6 +543,14 @@ impl ClientTable {
     #[allow(clippy::too_many_lines)] // one pass over the config into the table's indexes
     pub fn from_config(cfg: &Config) -> Self {
         let mut groups: Vec<Group> = cfg.group.iter().map(Group::from_config).collect();
+        // REQ: FLT-901 — each group's category lists (a provider list's name where a file already
+        // defines the source's URL).
+        for (g, c) in groups.iter_mut().zip(&cfg.group) {
+            g.cat_lists = telltale_config::categories::group_lists(cfg, c)
+                .into_iter()
+                .map(String::into_boxed_str)
+                .collect();
+        }
         let default_idx = if let Some(i) = groups.iter().position(|g| &*g.name == "default") {
             i
         } else {
@@ -531,6 +563,8 @@ impl ClientTable {
                 color: None,
                 services: Vec::new(),
                 safe_search: None,
+                safe_search_engines: Vec::new(),
+                cat_lists: Vec::new(),
                 answers: None,
                 rewrites: Vec::new(),
                 dns64: None,

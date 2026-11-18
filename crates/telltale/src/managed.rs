@@ -548,6 +548,7 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
     apply_ovr(&mut cfg.upstream_group, &e.upstream_groups);
     apply_ovr(&mut cfg.list, &e.lists);
     apply_ovr(&mut cfg.group, &e.groups);
+    adopt_ad_list(&mut cfg, file, e);
     apply_ovr(&mut cfg.alerts.destination, &e.alert_destinations);
     // REQ: OPS-014 (ADR-903 §2, decision 4) — a credential this node's files set (inline or by
     // file) wins over whatever an override stored for it (one stored before the files set it):
@@ -654,6 +655,80 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
     let (_, report) = telltale_policy::LocalData::from_config(&cfg);
     errs.extend(report.errors);
     if errs.is_empty() { Ok(cfg) } else { Err(errs) }
+}
+
+/// REQ: FLT-901 (T24.29, ADR-994, design section 6.3) — a list made through the API or the UI
+/// whose URL is the Ad Block category's current source (the bundles' `hagezi-pro`) is adopted by
+/// that category: it leaves the lists, and every group that never set `content` (and so used it
+/// through "every enabled list", or by name) gets `content.ads = true` in its place, so ad
+/// blocking does not change and the checkbox is live. A group that has a `content` of its own,
+/// even with ads off, is left alone: unchecking stops ad blocking. This is done on the effective
+/// configuration, never written back; a list the files define is a provider the category does not
+/// download twice, and is never adopted (the files win, ADR-040).
+fn adopt_ad_list(cfg: &mut Config, file: &Config, e: &Entries) {
+    let cat = telltale_config::categories::catalog();
+    let Some(ads) = cat.category("ads") else {
+        return;
+    };
+    let Some(want) = cat
+        .tier_for(
+            ads,
+            &telltale_config::GroupContent::default(),
+            cfg.filter.ads_tier,
+        )
+        .and_then(|t| t.sources.first())
+        .and_then(|id| cat.source(id))
+        .map(|s| telltale_config::categories::normalize_url(&s.url))
+    else {
+        return;
+    };
+    let adopted: Vec<String> = e
+        .lists
+        .iter()
+        .filter_map(|(name, o)| match o {
+            Ovr::Set(l)
+                if !file.list.iter().any(|f| f.name.as_str() == name)
+                    && l.enabled
+                    && l.url.as_ref().is_some_and(|u| {
+                        telltale_config::categories::normalize_url(u.as_str()) == want
+                    }) =>
+            {
+                Some(name.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    if adopted.is_empty() {
+        return;
+    }
+    cfg.list
+        .retain(|l| !adopted.iter().any(|a| a == l.name.as_str()));
+    let ads_on = telltale_config::GroupContent {
+        ads: true,
+        ..telltale_config::GroupContent::default()
+    };
+    for g in &mut cfg.group {
+        if g.content.is_some() {
+            continue;
+        }
+        let names_it = g
+            .lists
+            .as_ref()
+            .is_some_and(|l| l.iter().any(|n| adopted.iter().any(|a| a == n.as_str())));
+        if g.lists.is_none() || names_it {
+            if let Some(l) = &mut g.lists {
+                l.retain(|n| !adopted.iter().any(|a| a == n.as_str()));
+            }
+            g.content = Some(ads_on.clone());
+        }
+    }
+    // The implicit default group used it through "every enabled list" too.
+    if !cfg.group.iter().any(|g| g.name.as_str() == "default")
+        && let Ok(mut g) = toml::from_str::<GroupConfig>("name = \"default\"")
+    {
+        g.content = Some(ads_on);
+        cfg.group.push(g);
+    }
 }
 
 /// Adds the upstreams a forwarded domain becomes to `cfg` and returns their names: one per
@@ -1065,5 +1140,93 @@ mod tests {
             ..Entries::default()
         };
         assert!(merge(&file, &broken).is_err());
+    }
+    const PRO: &str =
+        "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt";
+
+    fn hagezi_pro() -> FilterList {
+        toml::from_str(&format!(
+            "name = \"hagezi-pro\"
+url = \"{PRO}\"
+"
+        ))
+        .unwrap()
+    }
+
+    /// REQ: FLT-901 (T24.29, design 6.3) — a list the API stored with the Ad Block category's
+    /// URL is adopted: it leaves the lists, groups that never set `content` get `content.ads`
+    /// (also the implicit default group), and a list the files define is left as a provider.
+    #[test]
+    fn flt_901_ads_adopts_existing_list_by_url() {
+        let file: Config = toml::from_str(
+            r#"
+            [[group]]
+            name = "kids"
+            lists = ["hagezi-pro"]
+            [[group]]
+            name = "plain"
+            lists = []
+            "#,
+        )
+        .unwrap();
+        // The kids group names a list that only the API defines.
+        let e = Entries {
+            lists: vec![("hagezi-pro".into(), Ovr::Set(hagezi_pro()))],
+            ..Entries::default()
+        };
+        let c = merge(&file, &e).unwrap();
+        assert!(c.list.is_empty(), "adopted, so no longer a list of its own");
+        let kids = c.group.iter().find(|g| g.name.as_str() == "kids").unwrap();
+        assert!(kids.content.as_ref().unwrap().ads, "{kids:?}");
+        assert!(
+            kids.lists.as_ref().unwrap().is_empty(),
+            "the name left `lists`"
+        );
+        let plain = c.group.iter().find(|g| g.name.as_str() == "plain").unwrap();
+        assert!(plain.content.is_none(), "never used the list");
+        let default = c
+            .group
+            .iter()
+            .find(|g| g.name.as_str() == "default")
+            .unwrap();
+        assert!(
+            default.content.as_ref().unwrap().ads,
+            "the implicit default used it"
+        );
+        // The category now downloads it (once) under its own name.
+        let lists = telltale_config::categories::expand(&c).list;
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0].name.as_str(), "cat-hagezi-ads-pro");
+        // A list the files define is a provider and stays.
+        let mut f2 = file.clone();
+        f2.list.push(hagezi_pro());
+        let c2 = merge(&f2, &Entries::default()).unwrap();
+        assert_eq!(c2.list.len(), 1);
+    }
+
+    /// REQ: FLT-901 — once a group has its own `content`, unchecking ads stops ad blocking: the
+    /// adoption does not turn it back on.
+    #[test]
+    fn flt_901_ads_unchecked_stops_ad_blocking() {
+        let file = Config::default();
+        let mut off: GroupConfig = toml::from_str("name = \"default\"").unwrap();
+        off.content = Some(telltale_config::GroupContent::default());
+        let e = Entries {
+            lists: vec![("hagezi-pro".into(), Ovr::Set(hagezi_pro()))],
+            groups: vec![("default".into(), Ovr::Set(off))],
+            ..Entries::default()
+        };
+        let c = merge(&file, &e).unwrap();
+        let d = c
+            .group
+            .iter()
+            .find(|g| g.name.as_str() == "default")
+            .unwrap();
+        assert!(!d.content.as_ref().unwrap().ads);
+        assert!(
+            telltale_config::categories::expand(&c).list.is_empty(),
+            "nothing downloads"
+        );
+        assert!(telltale_config::categories::used_sources(&c).is_empty());
     }
 }

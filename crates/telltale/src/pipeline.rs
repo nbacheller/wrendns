@@ -334,9 +334,14 @@ impl FilterState {
                         .lists
                         .as_ref()
                         .is_some_and(|l| l.iter().any(|l| **l == **n));
+                    // REQ: FLT-901 — category lists apply only to the groups whose categories
+                    // use them, never through the "every enabled list" default.
+                    let by_category = g.cat_lists.iter().any(|x| **x == **n);
                     let wanted = now
+                        || by_category
                         || match telltale_config::services::of_list(n) {
                             Some(s) => g.services.iter().any(|x| **x == *s.id),
+                            None if telltale_config::categories::is_category_list(n) => false,
                             None if sched.scheduled.iter().any(|x| x == n) => explicit,
                             None => g.lists.is_none() || explicit,
                         };
@@ -391,14 +396,21 @@ impl FilterState {
                 .iter()
                 .map(|n| match telltale_config::services::of_list(n) {
                     Some(s) => format!("blocked service {}", s.name),
-                    None => format!("blocked by list {n}"),
+                    // REQ: FLT-901 — a category list names the category it stands for.
+                    None => match telltale_config::categories::label_of_list(n) {
+                        Some(c) => format!("blocked by category {c} (list {n})"),
+                        None => format!("blocked by list {n}"),
+                    },
                 })
                 .collect(),
             cname_reasons: names
                 .iter()
                 .map(|n| match telltale_config::services::of_list(n) {
                     Some(s) => format!("CNAME target blocked: service {}", s.name),
-                    None => format!("CNAME target blocked by list {n}"),
+                    None => match telltale_config::categories::label_of_list(n) {
+                        Some(c) => format!("CNAME target blocked by category {c} (list {n})"),
+                        None => format!("CNAME target blocked by list {n}"),
+                    },
                 })
                 .collect(),
             list_names: names,
@@ -1517,7 +1529,8 @@ impl Pipeline {
             }
         }
         let name = std::str::from_utf8(buf.get(..n)?).ok()?;
-        let target = telltale_config::safesearch::target(name, youtube)?;
+        let target =
+            telltale_config::safesearch::target_in(name, youtube, &group.safe_search_engines)?;
         NameBuf::from_presentation(target).ok()
     }
 
@@ -3074,6 +3087,241 @@ blocked_services = ["tiktok"]
             "every list still applies"
         );
         assert!(blocked(&ask("10.0.1.5:1000", "ads.example.com")));
+    }
+
+    /// A pipeline over `toml` (with `UPSTREAM` added) whose category lists carry `rules`
+    /// (list name, rule text), built through `Policy::from_config` so quick rules apply.
+    fn category_pipeline(toml: &str, rules: &[(&str, &str)]) -> Arc<Pipeline> {
+        let cfg: telltale_config::Config = telltale_config::Loader::new()
+            .toml_str("t.toml", format!("{UPSTREAM}{toml}"))
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, report) = telltale_policy::LocalData::from_config(&cfg);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy::from_config(&cfg, local),
+        );
+        install_lists(&p, rules);
+        p
+    }
+
+    fn is_blocked(r: &[u8]) -> bool {
+        summarize(r).is_ok_and(|s| s.rcode == rcode::NOERROR && s.answers == 1)
+    }
+
+    /// REQ: FLT-901 (T24.29) — a category selected for one group does not block for another,
+    /// the default group included (whose `lists` is omitted, so it uses every enabled list), and
+    /// the block says which category it was.
+    #[test]
+    fn flt_901_category_lists_not_in_default() {
+        let p = category_pipeline(
+            r#"
+[[list]]
+name = "ads"
+rules = ["||ads.example.com^"]
+[[group]]
+name = "default"
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+content = { level = "enhanced", categories = ["adult"] }
+"#,
+            &[
+                (
+                    "ads",
+                    "||ads.example.com^
+",
+                ),
+                (
+                    "cat-hagezi-nsfw",
+                    "||adult.example^
+",
+                ),
+            ],
+        );
+        let kid = ask_from(&p, "10.0.1.5", "www.adult.example", rtype::A);
+        assert!(is_blocked(&kid), "the kids group blocks the category");
+        let text = b"blocked by category Adult content (list cat-hagezi-nsfw)";
+        assert!(contains(&kid, text), "the block names the category");
+        assert!(
+            !is_blocked(&ask_from(&p, "10.0.0.9", "www.adult.example", rtype::A)),
+            "the default group, which uses every list, does not"
+        );
+        assert!(is_blocked(&ask_from(
+            &p,
+            "10.0.0.9",
+            "ads.example.com",
+            rtype::A
+        )));
+        assert!(is_blocked(&ask_from(
+            &p,
+            "10.0.1.5",
+            "ads.example.com",
+            rtype::A
+        )));
+    }
+
+    /// REQ: FLT-902 (T24.29) — `basic` blocks adult content and threats and not gambling; `off`
+    /// blocks none and keeps the selection; `enhanced` follows the selection.
+    #[test]
+    fn flt_902_levels_decide_what_blocks() {
+        let p = category_pipeline(
+            r#"
+[[group]]
+name = "default"
+[[group]]
+name = "basic"
+networks = ["10.0.1.0/24"]
+content = { level = "basic", categories = ["gambling"] }
+[[group]]
+name = "off"
+networks = ["10.0.2.0/24"]
+content = { level = "off", categories = ["adult", "gambling"] }
+[[group]]
+name = "enhanced"
+networks = ["10.0.3.0/24"]
+content = { level = "enhanced", categories = ["gambling"] }
+"#,
+            &[
+                (
+                    "cat-hagezi-nsfw",
+                    "||adult.example^
+",
+                ),
+                (
+                    "cat-hagezi-tif-mini",
+                    "||threat.example^
+",
+                ),
+                (
+                    "cat-hagezi-gambling-medium",
+                    "||bet.example^
+",
+                ),
+            ],
+        );
+        let blocked = |peer: &str, name: &str| is_blocked(&ask_from(&p, peer, name, rtype::A));
+        assert!(blocked("10.0.1.5", "adult.example"));
+        assert!(blocked("10.0.1.5", "threat.example"));
+        assert!(!blocked("10.0.1.5", "bet.example"), "basic leaves gambling");
+        for name in ["adult.example", "threat.example", "bet.example"] {
+            assert!(!blocked("10.0.2.5", name), "off blocks nothing: {name}");
+        }
+        assert!(blocked("10.0.3.5", "bet.example"));
+        assert!(
+            !blocked("10.0.3.5", "adult.example"),
+            "enhanced is the selection"
+        );
+    }
+
+    /// REQ: FLT-901 (T24.29) — a quick allow rule beats a category block, and a deny from the
+    /// category stays where no rule applies.
+    #[test]
+    fn flt_901_allow_rule_beats_category() {
+        let p = category_pipeline(
+            r#"
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+content = { level = "enhanced", categories = ["adult"] }
+[[rule]]
+id = "homework"
+action = "allow"
+domain = "ok.adult.example"
+groups = ["kids"]
+"#,
+            &[(
+                "cat-hagezi-nsfw",
+                "||adult.example^
+",
+            )],
+        );
+        assert!(is_blocked(&ask_from(
+            &p,
+            "10.0.1.5",
+            "www.adult.example",
+            rtype::A
+        )));
+        assert!(
+            !is_blocked(&ask_from(&p, "10.0.1.5", "ok.adult.example", rtype::A)),
+            "the allow rule wins"
+        );
+    }
+
+    /// REQ: FLT-902 (T24.29) — `safe_search_engines = ["google"]` answers Google with its
+    /// safe-search target and Bing normally; `safe_search = true` alone still covers every
+    /// engine; YouTube's own level applies whatever the list says.
+    #[test]
+    fn flt_902_safe_search_engines_per_group() {
+        let p = category_pipeline(
+            r#"
+[[group]]
+name = "default"
+safe_search = true
+[[group]]
+name = "google"
+networks = ["10.0.1.0/24"]
+safe_search_engines = ["google"]
+[[group]]
+name = "yt"
+networks = ["10.0.2.0/24"]
+safe_search_engines = ["google"]
+youtube_restrict = "moderate"
+"#,
+            &[(
+                "ads",
+                "||nothing.example^
+",
+            )],
+        );
+        // The engines' safe-search names are in the cache (the upstream is never contacted).
+        let cache_a = |name: &str, ip: Ipv4Addr| {
+            let req = query(name, rtype::A, false);
+            let q = parse_query(&req).unwrap();
+            let mut out = [0u8; 512];
+            let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+            b.answer_a(300, ip).unwrap();
+            let len = b.finish(None).unwrap();
+            let view = p
+                .current()
+                .router
+                .select(&Question::from_query(&q), &["default"])
+                .unwrap()
+                .view;
+            p.cache
+                .insert(&p.key(&q, view), &q, &out[..len], Instant::now())
+                .unwrap();
+        };
+        cache_a(
+            "forcesafesearch.google.com",
+            Ipv4Addr::new(216, 239, 38, 120),
+        );
+        cache_a("strict.bing.com", Ipv4Addr::new(204, 79, 197, 220));
+        cache_a(
+            "restrictmoderate.youtube.com",
+            Ipv4Addr::new(216, 239, 38, 119),
+        );
+        let answered = |peer: &str, name: &str| !ask_from(&p, peer, name, rtype::A).is_empty();
+        // A group that covers only Google: Bing is left alone (forwarded, so nothing is answered).
+        assert!(
+            answered("10.0.1.5", "www.google.com"),
+            "Google gets its target"
+        );
+        assert!(!answered("10.0.1.5", "www.bing.com"), "Bing is left alone");
+        // `safe_search = true` alone covers every engine.
+        assert!(answered("10.0.0.5", "www.google.com"));
+        assert!(
+            answered("10.0.0.5", "www.bing.com"),
+            "safe_search alone covers Bing"
+        );
+        // YouTube's own level applies though the list names only Google.
+        assert!(!answered("10.0.1.5", "www.youtube.com"));
+        assert!(answered("10.0.2.5", "www.youtube.com"));
     }
 
     /// REQ: FLT-010 (T7.10) — schedules: bedtime blocks everything for its group during the

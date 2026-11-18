@@ -23,9 +23,11 @@ name = "default"
 members = ["cloudflare", "quad9"]
 strategy = "fastest"
 
-[[list]]
-name = "hagezi-pro"
-url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt"
+# Ad block: HaGeZi's Pro list, as the Ad Block category (no hand-written list, so it is downloaded
+# once and the checkbox on the Groups page is live).
+[[group]]
+name = "default"
+content = { ads = true }
 
 # Your UniFi Cloud Gateway Fiber: connected clients, reservations, and networks (read-only).
 # API key: UniFi Network → Settings → Control Plane → Integrations → Create API key.

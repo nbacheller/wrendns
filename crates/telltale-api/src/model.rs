@@ -728,6 +728,10 @@ pub struct ExplainWorkload {
 #[serde(rename_all = "camelCase")]
 pub struct ExplainBlock {
     pub list: String,
+    /// REQ: FLT-901 — the category (or categories) a `cat-` list stands for, for example "Adult
+    /// content"; absent for any other list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
     /// `null_ip`, `nxdomain`, `nodata`, `refused`, or `custom_ip`.
     pub mode: String,
     pub ttl_seconds: u32,

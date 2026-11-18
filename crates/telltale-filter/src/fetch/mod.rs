@@ -6,6 +6,7 @@
 //! actually changed. Nothing here touches the query path.
 
 mod http;
+mod spool;
 mod store;
 
 use std::collections::{BTreeSet, HashMap};
@@ -19,7 +20,8 @@ use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 pub use self::http::{
-    BodyStream, Client, Conditional, HttpError, Resolve, Response, SystemResolver,
+    BodySink, BodyStream, Client, Conditional, HttpError, Resolve, Response, Streamed,
+    SystemResolver,
 };
 pub use self::store::{ListMeta, Store, content_hash, count_lines};
 
@@ -27,6 +29,12 @@ pub use self::store::{ListMeta, Store, content_hash, count_lines};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListSource {
     Url(String),
+    /// REQ: FLT-901 (ADR-995 item 1) — a source whose file name changes: `meta_url` names the
+    /// current one (`blocklist.raw_url` in a small JSON file), which must start with `prefix`.
+    UrlMeta {
+        meta_url: String,
+        prefix: String,
+    },
     Path(PathBuf),
     Inline(Vec<String>),
 }
@@ -37,6 +45,7 @@ impl ListSource {
     fn key(&self) -> String {
         match self {
             Self::Url(u) => u.clone(),
+            Self::UrlMeta { meta_url, .. } => format!("meta:{meta_url}"),
             Self::Path(p) => format!("file:{}", p.display()),
             Self::Inline(rules) => {
                 format!(
@@ -61,6 +70,22 @@ pub struct ListSpec {
     pub enabled: bool,
 }
 
+/// REQ: FLT-901 — a `cat-` list whose catalog source resolves its URL through a JSON file is
+/// fetched that way; any other URL is fetched as it is.
+fn category_source(name: &str, url: &str) -> ListSource {
+    if let Some(s) = telltale_config::categories::source_of_list(name)
+        && s.resolve.is_some()
+        && s.url == url
+        && let Some(prefix) = &s.url_prefix
+    {
+        return ListSource::UrlMeta {
+            meta_url: url.to_owned(),
+            prefix: prefix.clone(),
+        };
+    }
+    ListSource::Url(url.to_owned())
+}
+
 impl ListSpec {
     /// The configured lists, disabled ones included (marked), with `[filter]` defaults
     /// applied.
@@ -70,7 +95,7 @@ impl ListSpec {
             .iter()
             .filter_map(|l| {
                 let source = if let Some(u) = &l.url {
-                    ListSource::Url(u.to_string())
+                    category_source(l.name.as_str(), u.as_str())
                 } else if let Some(p) = &l.path {
                     ListSource::Path(PathBuf::from(p.as_str()))
                 } else if !l.rules.is_empty() {
@@ -407,57 +432,26 @@ impl Fetcher {
         let now = unix_now();
         meta.last_attempt = Some(now);
 
-        let fetched = match &spec.source {
-            ListSource::Url(url) => self.download(&spec.name, url, &cond, spec.max_bytes).await,
-            ListSource::Path(path) => read_file(path, spec.max_bytes).await,
-            ListSource::Inline(rules) => {
-                let mut text = rules.join("\n");
-                text.push('\n');
-                Ok(Response::Body {
-                    data: text.into_bytes(),
-                    etag: None,
-                    last_modified: None,
-                })
-            }
-        };
-
-        let outcome = match fetched {
-            Ok(Response::NotModified) if same_source => Outcome::Unchanged,
-            Ok(Response::NotModified) => {
-                Outcome::Failed("server answered 304 but no copy is stored".to_owned())
-            }
-            Ok(Response::Body {
-                data,
-                etag,
-                last_modified,
-            }) => {
-                // Hashing, checking, and zstd-compressing a large list takes hundreds of ms:
-                // never on a runtime worker, which also carries upstream answers (T2.7).
-                let (store, name, mut m) = (self.store.clone(), spec.name.clone(), meta.clone());
-                let checks = self.checks(spec);
-                let processed = tokio::task::spawn_blocking(move || {
-                    let r = accept_body(&store, &name, &mut m, same_source, &data, now, checks);
-                    (r, m)
-                })
-                .await;
-                match processed {
-                    Ok((r, m)) => {
-                        meta = m;
-                        r.map_or_else(Outcome::Failed, |outcome| {
-                            // A held body keeps the stored copy's validators, so the next
-                            // conditional GET fetches it again rather than answering 304.
-                            if !matches!(outcome, Outcome::Held(_)) {
-                                meta.source.clone_from(&key);
-                                meta.etag = etag;
-                                meta.last_modified = last_modified;
-                            }
-                            outcome
-                        })
+        // REQ: FLT-901 (design 2.4): a URL list streams to disk and is checked as it arrives, so
+        // a 40 MB source is never held in memory; a file or inline list is small and is buffered.
+        let outcome = if matches!(spec.source, ListSource::Url(_) | ListSource::UrlMeta { .. }) {
+            match self
+                .refresh_streamed(spec, &cond, &mut meta, same_source, now)
+                .await
+            {
+                Ok((outcome, etag, last_modified)) => {
+                    if !matches!(outcome, Outcome::Held(_)) {
+                        meta.source.clone_from(&key);
+                        meta.etag = etag;
+                        meta.last_modified = last_modified;
                     }
-                    Err(e) => Outcome::Failed(format!("processing the list failed: {e}")),
+                    outcome
                 }
+                Err(e) => Outcome::Failed(e),
             }
-            Err(e) => Outcome::Failed(e),
+        } else {
+            self.refresh_buffered(spec, &mut meta, same_source, now, &key)
+                .await
         };
 
         match &outcome {
@@ -500,12 +494,272 @@ impl Fetcher {
         outcome
     }
 
+    /// A file or inline list: small, read whole and checked in memory.
+    async fn refresh_buffered(
+        &self,
+        spec: &ListSpec,
+        meta: &mut ListMeta,
+        same_source: bool,
+        now: u64,
+        key: &str,
+    ) -> Outcome {
+        let fetched = match &spec.source {
+            ListSource::Url(_) | ListSource::UrlMeta { .. } => {
+                Err("internal: a URL list is fetched as a stream".to_owned())
+            }
+            ListSource::Path(path) => read_file(path, spec.max_bytes).await,
+            ListSource::Inline(rules) => {
+                let mut text = rules.join("\n");
+                text.push('\n');
+                Ok(Response::Body {
+                    data: text.into_bytes(),
+                    etag: None,
+                    last_modified: None,
+                })
+            }
+        };
+
+        match fetched {
+            Ok(Response::NotModified) if same_source => Outcome::Unchanged,
+            Ok(Response::NotModified) => {
+                Outcome::Failed("server answered 304 but no copy is stored".to_owned())
+            }
+            Ok(Response::Body {
+                data,
+                etag,
+                last_modified,
+            }) => {
+                // Hashing, checking, and zstd-compressing a large list takes hundreds of ms:
+                // never on a runtime worker, which also carries upstream answers (T2.7).
+                let (store, name, mut m) = (self.store.clone(), spec.name.clone(), meta.clone());
+                let checks = self.checks(spec);
+                let processed = tokio::task::spawn_blocking(move || {
+                    let r = accept_body(&store, &name, &mut m, same_source, &data, now, checks);
+                    (r, m)
+                })
+                .await;
+                match processed {
+                    Ok((r, m)) => {
+                        *meta = m;
+                        r.map_or_else(Outcome::Failed, |outcome| {
+                            // A held body keeps the stored copy's validators, so the next
+                            // conditional GET fetches it again rather than answering 304.
+                            if !matches!(outcome, Outcome::Held(_)) {
+                                meta.source.clone_from(&key.to_owned());
+                                meta.etag = etag;
+                                meta.last_modified = last_modified;
+                            }
+                            outcome
+                        })
+                    }
+                    Err(e) => Outcome::Failed(format!("processing the list failed: {e}")),
+                }
+            }
+            Err(e) => Outcome::Failed(e),
+        }
+    }
+
+    /// REQ: FLT-901: fetches a URL list into a spool on disk and decides whether to keep it.
+    /// The checks are the buffered ones (empty or HTML body, too many invalid lines, unchanged,
+    /// shrunk), made from what the spool counted as the body arrived. On success the temp file
+    /// replaces the stored source; otherwise it is deleted.
+    async fn refresh_streamed(
+        &self,
+        spec: &ListSpec,
+        cond: &Conditional,
+        meta: &mut ListMeta,
+        same_source: bool,
+        now: u64,
+    ) -> Result<(Outcome, Option<String>, Option<String>), String> {
+        let (url, cond) = match &spec.source {
+            ListSource::Url(u) => (u.clone(), cond.clone()),
+            // The file name changes with every update, so a validator never applies.
+            ListSource::UrlMeta { meta_url, prefix } => (
+                self.resolve_meta(&spec.name, meta_url, prefix).await?,
+                Conditional::default(),
+            ),
+            _ => return Err("internal: not a URL list".to_owned()),
+        };
+        let mut spool = spool::Spool::new(self.store.spool_path(&spec.name));
+        let got = self
+            .download_into(&spec.name, &url, &cond, spec.max_bytes, &mut spool)
+            .await;
+        let (etag, last_modified) = match got {
+            Err(e) => {
+                spool.discard();
+                return Err(e);
+            }
+            Ok(Streamed::NotModified) => {
+                spool.discard();
+                return if same_source {
+                    Ok((Outcome::Unchanged, None, None))
+                } else {
+                    Err("server answered 304 but no copy is stored".to_owned())
+                };
+            }
+            Ok(Streamed::Body {
+                etag,
+                last_modified,
+            }) => (etag, last_modified),
+        };
+        let finished = tokio::task::spawn_blocking(move || spool.finish())
+            .await
+            .map_err(|e| format!("processing the list failed: {e}"))?;
+        let (spooled, spool) = finished.map_err(|e| format!("cannot store source: {e}"))?;
+        let checks = self.checks(spec);
+        let decided = (|| {
+            sanity_check_head(&spooled.head, spooled.bytes)?;
+            if spooled.invalid > 0
+                && spooled.invalid * 100
+                    > (spooled.rules + spooled.invalid) * u64::from(checks.max_invalid_percent)
+            {
+                return Err(format!(
+                    "not a usable list: {} rules, {} invalid lines (first: {})",
+                    spooled.rules, spooled.invalid, spooled.first_invalid
+                ));
+            }
+            if same_source && meta.content_hash.as_deref() == Some(spooled.hash.as_str()) {
+                return Ok(Outcome::Unchanged);
+            }
+            // REQ: FLT-004 (ADR-147): a list that suddenly lost most of its lines waits for the
+            // source to serve the same content again.
+            if same_source
+                && meta.lines >= SHRINK_MIN_LINES
+                && spooled.lines.saturating_mul(100)
+                    < meta
+                        .lines
+                        .saturating_mul(100 - u64::from(checks.max_shrink_percent.min(100)))
+                && meta.held_hash.as_deref() != Some(spooled.hash.as_str())
+            {
+                meta.held_hash = Some(spooled.hash.clone());
+                return Ok(Outcome::Held(format!(
+                    "it shrank from {} to {} lines, more than [filter] max_shrink_percent ({} %) \
+                     allows; the previous copy stays in use until a later refresh brings the same \
+                     content (\"Refresh now\" accepts it)",
+                    meta.lines, spooled.lines, checks.max_shrink_percent
+                )));
+            }
+            Ok(Outcome::Updated)
+        })();
+        match decided {
+            Ok(Outcome::Updated) => {
+                if meta.held_hash.as_deref() == Some(spooled.hash.as_str()) {
+                    info!(
+                        list = %spec.name,
+                        from = meta.lines,
+                        to = spooled.lines,
+                        "list shrank; the source served the same content again, so it's accepted"
+                    );
+                }
+                spool
+                    .commit(&self.store.src_path(&spec.name))
+                    .map_err(|e| format!("cannot store source: {e}"))?;
+                meta.content_hash = Some(spooled.hash);
+                meta.bytes = spooled.bytes;
+                meta.lines = spooled.lines;
+                meta.last_changed = Some(now);
+                Ok((Outcome::Updated, etag, last_modified))
+            }
+            Ok(other) => {
+                spool.discard();
+                Ok((other, etag, last_modified))
+            }
+            Err(e) => {
+                spool.discard();
+                Err(e)
+            }
+        }
+    }
+
+    /// REQ: FLT-901 (ADR-995 item 1): the current file's URL from a source's small JSON file
+    /// (`blocklist.raw_url`), refused unless it starts with the source's fixed prefix. A refusal
+    /// reads `resolve_refused` in the list's status.
+    async fn resolve_meta(
+        &self,
+        name: &str,
+        meta_url: &str,
+        prefix: &str,
+    ) -> Result<String, String> {
+        let body = match self
+            .download(name, meta_url, &Conditional::default(), RESOLVE_MAX_BYTES)
+            .await?
+        {
+            Response::Body { data, .. } => data,
+            Response::NotModified => return Err("resolve_failed: unexpected 304".to_owned()),
+        };
+        let v: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|e| format!("resolve_failed: {meta_url} is not JSON: {e}"))?;
+        let url = v
+            .pointer("/blocklist/raw_url")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("resolve_failed: {meta_url} has no blocklist.raw_url"))?;
+        let ok = url.strip_prefix(prefix).is_some_and(|r| {
+            !r.is_empty()
+                && !r.contains("..")
+                && !r.contains(['\\', '?', '#', '@'])
+                && !r.starts_with('/')
+        });
+        if ok {
+            Ok(url.to_owned())
+        } else {
+            Err(format!(
+                "resolve_refused: {url} is outside {prefix}; the list is not fetched"
+            ))
+        }
+    }
+
+    /// One URL download into `sink` with retries and backoff.
+    async fn download_into(
+        &self,
+        name: &str,
+        url: &str,
+        cond: &Conditional,
+        max_bytes: u64,
+        sink: &mut dyn BodySink,
+    ) -> Result<Streamed, String> {
+        let attempts = u32::from(self.settings.retries) + 1;
+        let mut last = String::new();
+        for attempt in 0..attempts {
+            if attempt > 0 {
+                let delay = backoff(self.settings.backoff, attempt);
+                debug!(
+                    list = name,
+                    attempt,
+                    ?delay,
+                    "retrying list download: {last}"
+                );
+                tokio::time::sleep(delay).await;
+            }
+            match tokio::time::timeout(
+                self.settings.timeout,
+                self.client.get_into(url, cond, max_bytes, sink),
+            )
+            .await
+            {
+                Ok(Ok(resp)) => return Ok(resp),
+                Ok(Err(HttpError { message, retryable })) => {
+                    last = message;
+                    if !retryable {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    last = format!("timed out after {:?}", self.settings.timeout);
+                }
+            }
+        }
+        Err(last)
+    }
+
     /// The checks a download of `spec` must pass.
     fn checks(&self, spec: &ListSpec) -> Checks {
         Checks {
             max_invalid_percent: self.settings.max_invalid_percent,
             // A file or inline list shrinks because someone edited it.
-            max_shrink_percent: if matches!(spec.source, ListSource::Url(_)) {
+            max_shrink_percent: if matches!(
+                spec.source,
+                ListSource::Url(_) | ListSource::UrlMeta { .. }
+            ) {
                 self.settings.max_shrink_percent
             } else {
                 100
@@ -621,6 +875,26 @@ impl Fetcher {
         }
         !removed.is_empty()
     }
+}
+
+/// The largest meta file a source's file name is read from.
+const RESOLVE_MAX_BYTES: u64 = 1 << 20;
+
+/// [`sanity_check`] for a body that was streamed: only its first bytes and its size are known.
+fn sanity_check_head(head: &[u8], total: u64) -> Result<(), String> {
+    if head.len() as u64 == total {
+        return sanity_check(head);
+    }
+    // Longer than the head: only the HTML-page check can be made from the head alone.
+    let start = head
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .map_or(&[][..], |i| &head[i..]);
+    let lower: Vec<u8> = start.iter().take(15).map(u8::to_ascii_lowercase).collect();
+    if lower.starts_with(b"<!doctype html") || lower.starts_with(b"<html") {
+        return Err("got an HTML page, not a list".to_owned());
+    }
+    Ok(())
 }
 
 /// The `[filter]` checks a downloaded body must pass.

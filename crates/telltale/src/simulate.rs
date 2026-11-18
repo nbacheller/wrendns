@@ -484,7 +484,7 @@ struct Decider {
 
 /// The configuration's enabled lists (blocked services included), in ID order.
 fn enabled_lists(cfg: &Config) -> Vec<FilterList> {
-    telltale_config::services::expand(cfg)
+    telltale_config::categories::expand_lists(cfg)
         .list
         .into_iter()
         .filter(|l| l.enabled)

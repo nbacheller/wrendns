@@ -70,6 +70,41 @@ pub enum Response {
     },
 }
 
+/// REQ: FLT-901 (T24.29, design 2.4) — where a response body goes as it arrives: a list too big
+/// to hold in memory is written to disk piece by piece instead of being collected first.
+pub trait BodySink: Send {
+    /// A body starts (again: a retry or a redirect): forget anything received so far.
+    fn reset(&mut self) -> Result<(), String>;
+    /// The next piece of the body.
+    fn chunk(&mut self, data: &[u8]) -> Result<(), String>;
+}
+
+/// What a streamed GET came back with (the body went to the sink).
+#[derive(Debug)]
+pub enum Streamed {
+    /// 304: the stored copy is current.
+    NotModified,
+    /// 200: the whole body is in the sink.
+    Body {
+        etag: Option<String>,
+        last_modified: Option<String>,
+    },
+}
+
+/// Collects a body in memory.
+struct VecSink(Vec<u8>);
+
+impl BodySink for VecSink {
+    fn reset(&mut self) -> Result<(), String> {
+        self.0.clear();
+        Ok(())
+    }
+    fn chunk(&mut self, data: &[u8]) -> Result<(), String> {
+        self.0.extend_from_slice(data);
+        Ok(())
+    }
+}
+
 /// A failed attempt, and whether trying again might help.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpError {
@@ -262,11 +297,35 @@ impl Client {
         cond: &Conditional,
         max_bytes: u64,
     ) -> Result<Response, HttpError> {
+        let mut sink = VecSink(Vec::new());
+        match self.get_into(url, cond, max_bytes, &mut sink).await? {
+            Streamed::NotModified => Ok(Response::NotModified),
+            Streamed::Body {
+                etag,
+                last_modified,
+            } => Ok(Response::Body {
+                data: sink.0,
+                etag,
+                last_modified,
+            }),
+        }
+    }
+
+    /// Like [`Self::get`], but the body goes to `sink` as it arrives, so nothing the size of the
+    /// list is held here (REQ: FLT-901, design 2.4). The sink is reset when a body starts again
+    /// after a redirect; a failed attempt leaves it to the caller's next call.
+    pub async fn get_into(
+        &self,
+        url: &str,
+        cond: &Conditional,
+        max_bytes: u64,
+        sink: &mut dyn BodySink,
+    ) -> Result<Streamed, HttpError> {
         let mut uri: Uri = url
             .parse()
             .map_err(|e| HttpError::fatal(format!("invalid URL: {e}")))?;
         for _ in 0..=MAX_REDIRECTS {
-            match self.get_once(&uri, cond, max_bytes).await? {
+            match self.get_once(&uri, cond, max_bytes, sink).await? {
                 Step::Done(r) => return Ok(r),
                 Step::Redirect(location) => {
                     let next = resolve_location(&uri, &location)?;
@@ -289,6 +348,7 @@ impl Client {
         uri: &Uri,
         cond: &Conditional,
         max_bytes: u64,
+        sink: &mut dyn BodySink,
     ) -> Result<Step, HttpError> {
         let https = match uri.scheme_str() {
             Some("https") => true,
@@ -344,7 +404,7 @@ impl Client {
                 .map(str::to_owned)
         };
         if status == StatusCode::NOT_MODIFIED {
-            return Ok(Step::Done(Response::NotModified));
+            return Ok(Step::Done(Streamed::NotModified));
         }
         if status.is_redirection() {
             return header(LOCATION)
@@ -374,18 +434,19 @@ impl Client {
             return Err(HttpError::fatal(too_big(max_bytes, Some(len))));
         }
         let mut body = resp.into_body();
-        let mut data = Vec::new();
+        sink.reset().map_err(HttpError::fatal)?;
+        let mut total = 0u64;
         while let Some(frame) = body.frame().await {
             let frame = frame.map_err(|e| HttpError::retry(format!("reading body: {e}")))?;
             if let Some(chunk) = frame.data_ref() {
-                if data.len() as u64 + chunk.len() as u64 > max_bytes {
+                total += chunk.len() as u64;
+                if total > max_bytes {
                     return Err(HttpError::fatal(too_big(max_bytes, announced)));
                 }
-                data.extend_from_slice(chunk);
+                sink.chunk(chunk).map_err(HttpError::fatal)?;
             }
         }
-        Ok(Step::Done(Response::Body {
-            data,
+        Ok(Step::Done(Streamed::Body {
             etag,
             last_modified,
         }))
@@ -500,7 +561,7 @@ impl Client {
 }
 
 enum Step {
-    Done(Response),
+    Done(Streamed),
     Redirect(String),
 }
 

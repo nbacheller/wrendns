@@ -620,6 +620,21 @@ pub fn categories_of_source(source_id: &str) -> Vec<&'static Category> {
         .collect()
 }
 
+/// The category names a `cat-` list stands for, for a block reason ("Malware, Phishing or Scam").
+pub fn label_of_list(list: &str) -> Option<String> {
+    let src = source_of_list(list)?;
+    let names: Vec<&str> = categories_of_source(&src.id)
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    let (tail, init) = names.split_last()?;
+    Some(if init.is_empty() {
+        (*tail).to_owned()
+    } else {
+        format!("{} or {tail}", init.join(", "))
+    })
+}
+
 /// `https://Host/path` with the scheme and host lowercased and a lone trailing slash dropped:
 /// two spellings of one URL are one source.
 pub fn normalize_url(url: &str) -> String {
@@ -830,6 +845,12 @@ pub fn expand(cfg: &Config) -> Config {
         });
     }
     out
+}
+
+/// `cfg` with every synthetic list the filter compiles: blocked services (`svc-`) and the
+/// category sources groups use (`cat-`). What the fetcher, the compiler and the Lists page read.
+pub fn expand_lists(cfg: &Config) -> Config {
+    expand(&crate::services::expand(cfg))
 }
 
 /// What a selection costs and whether this node may take it (ADR-994 item 5).

@@ -26,10 +26,12 @@ name = "default"
 members = ["cloudflare", "quad9"]
 strategy = "fastest"
 
-# A balanced ad and tracker blocklist (about 150k names), refreshed daily.
-[[list]]
-name = "hagezi-pro"
-url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt"
+# Ad block: HaGeZi's balanced ad and tracker blocklist (about 250k names), refreshed every 8 hours.
+# It is the Ad Block category now (Lists > Categories, or the Ad block checkbox of a group), so
+# the list is no longer written by hand; the size is Settings > Filtering > Ad block size.
+[[group]]
+name = "default"
+content = { ads = true }
 
 # On an SD-card Pi, keep the query log small (or put /var/lib/telltale on a USB SSD).
 [telemetry.qlog]

@@ -1144,3 +1144,129 @@ async fn flt_004_disabled_list_is_not_fetched_but_keeps_its_copy() {
     assert_eq!(names, ["on"], "only the enabled list is fetched");
     assert_eq!(f.store().read_source("off").unwrap(), b"a.com\nb.com\n");
 }
+
+// REQ: FLT-901 (ADR-995 item 1) — a source whose file name changes is found through its meta
+// file; a URL outside the source's fixed prefix is refused, and the list reports
+// `resolve_refused` and keeps its last good copy.
+#[tokio::test]
+async fn flt_901_meta_json_url_outside_prefix_refused() {
+    let body = "a.com\nb.com\n";
+    let srv = serve(
+        handler(move |r, _| {
+            let host = r.headers.get("host").cloned().unwrap_or_default();
+            match r.path.as_str() {
+                "/meta.json" => ok(&format!(
+                    "{{\"blocklist\": {{\"raw_url\": \"http://{host}/files/abc123/block.txt\"}}}}"
+                )),
+                "/evil/meta.json" => ok(&format!(
+                    "{{\"blocklist\": {{\"raw_url\": \"http://{host}/other/block.txt\"}}}}"
+                )),
+                "/dots/meta.json" => ok(&format!(
+                    "{{\"blocklist\": {{\"raw_url\": \"http://{host}/files/../other/block.txt\"}}}}"
+                )),
+                "/other/block.txt" | "/files/abc123/block.txt" => ok(body),
+                _ => status(404),
+            }
+        }),
+        None,
+    )
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let f = fetcher(tmp.path(), settings(), &[]);
+    let prefix = srv.url("http", "h", "/files/");
+    let meta_spec = |path: &str| ListSpec {
+        source: ListSource::UrlMeta {
+            meta_url: srv.url("http", "h", path),
+            prefix: prefix.clone(),
+        },
+        ..spec("m", String::new())
+    };
+    // Inside the prefix: fetched, and stored under the list's own name.
+    assert_eq!(
+        f.refresh_one(&meta_spec("/meta.json")).await,
+        Outcome::Updated
+    );
+    assert_eq!(f.store().read_source("m").unwrap(), body.as_bytes());
+    // Outside the prefix, or climbing out of it: refused, the stored copy kept.
+    for path in ["/evil/meta.json", "/dots/meta.json"] {
+        match f.refresh_one(&meta_spec(path)).await {
+            Outcome::Failed(why) => assert!(why.contains("resolve_refused"), "{path}: {why}"),
+            other => panic!("{path}: {other:?}"),
+        }
+    }
+    assert!(
+        srv.requests().iter().all(|r| r.path != "/other/block.txt"),
+        "the refused URL is never requested"
+    );
+    assert_eq!(f.store().read_source("m").unwrap(), body.as_bytes());
+}
+
+// REQ: FLT-901 — the specs a group's categories make: one per distinct source, refreshed every 8
+// hours (24 for a heavy one), the size cap of a big source raised, and the meta-file source
+// fetched through its meta file; removing the last use deletes the list and its stored file.
+#[tokio::test]
+async fn flt_901_last_user_removed_deletes_list() {
+    let load = |toml: &str| {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config
+    };
+    let with = load(
+        "[[group]]\nname = \"kids\"\ncontent = { level = \"enhanced\", categories = [\"adult\", \"nrd\"], tiers = { adult = \"extended\" } }\n\
+         [[group]]\nname = \"teens\"\ncontent = { level = \"enhanced\", categories = [\"adult\"] }\n",
+    );
+    let specs = ListSpec::from_config(&telltale_config::categories::expand_lists(&with));
+    let by = |n: &str| specs.iter().find(|s| s.name == n).unwrap();
+    assert_eq!(
+        specs.iter().filter(|s| s.name == "cat-hagezi-nsfw").count(),
+        1,
+        "two groups, one list"
+    );
+    assert_eq!(by("cat-hagezi-nsfw").refresh, Duration::from_hours(8));
+    assert_eq!(by("cat-hagezi-nrd7").refresh, Duration::from_hours(24));
+    assert!(by("cat-hagezi-nrd7").max_bytes > 40_223_891);
+    assert!(matches!(
+        by("cat-bonappetit-porn").source,
+        ListSource::UrlMeta { .. }
+    ));
+    // The last user goes: the list leaves the specs and its stored file is deleted.
+    let srv = serve(handler(|_, _| ok("a.com\n")), None).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let f = fetcher(tmp.path(), settings(), &[]);
+    let mut one = ListSpec::from_config(&telltale_config::categories::expand_lists(&load(
+        "[[group]]\nname = \"teens\"\ncontent = { level = \"enhanced\", categories = [\"adult\"] }\n",
+    )));
+    assert_eq!(one.len(), 1);
+    one[0].source = ListSource::Url(srv.url("http", "h", "/nsfw"));
+    one[0].max_bytes = 1024;
+    let (specs_tx, specs_rx) = watch::channel(Arc::new(one));
+    let (changed_tx, mut changed_rx) = watch::channel(0u64);
+    let task = tokio::spawn(Arc::clone(&f).run(specs_rx, changed_tx));
+    tokio::time::timeout(Duration::from_secs(5), changed_rx.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(f.store().read_source("cat-hagezi-nsfw").is_ok());
+    let none = ListSpec::from_config(&telltale_config::categories::expand_lists(&load(
+        "[[group]]\nname = \"teens\"\ncontent = { level = \"off\", categories = [\"adult\"] }\n",
+    )));
+    assert_eq!(none.len(), 0);
+    specs_tx.send(Arc::new(none)).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), changed_rx.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        f.store().read_source("cat-hagezi-nsfw").is_err(),
+        "the file is gone"
+    );
+    assert_eq!(f.status().len(), 0);
+    drop(specs_tx);
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
