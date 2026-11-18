@@ -30,7 +30,7 @@ mod passphrase;
 
 pub(crate) use passphrase::{BackupError, ExportRow, SecretsExport, SecretsInfo, check_passphrase};
 #[cfg(test)]
-pub(crate) use passphrase::{kdf_slot, kdf_slot_for_tests, test_lock};
+pub(crate) use passphrase::{kdf_slot_for_tests, test_lock};
 
 /// `manifest.json`'s `format`.
 const FORMAT: &str = "telltale-backup";

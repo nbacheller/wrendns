@@ -456,6 +456,7 @@ enum ClusterTokenCommand {
 
 /// REQ: API-007 (T23.9, ADR-903 §8) — where a backup's passphrase comes from. Never an argument.
 #[derive(Debug, clap::Args)]
+#[allow(clippy::struct_field_names)] // the flags are named by the spec: --secrets-passphrase-*
 struct PassphraseArgs {
     /// Read the passphrase (at least 12 characters) from the first line of this file.
     #[arg(long, value_name = "FILE", conflicts_with_all = ["secrets_passphrase_stdin", "secrets_passphrase_prompt"])]
@@ -1208,7 +1209,13 @@ fn run_backup(command: BackupCommand) -> ExitCode {
                 return ExitCode::FAILURE;
             };
             let out = output.unwrap_or_else(|| backup::default_name(cfg.node.name.as_str()));
-            backup::cli::create(&files, &cfg, include_qlog, &out, passphrase.source().as_ref())
+            backup::cli::create(
+                &files,
+                &cfg,
+                include_qlog,
+                &out,
+                passphrase.source().as_ref(),
+            )
         }
         BackupCommand::Restore {
             file,

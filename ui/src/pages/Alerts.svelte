@@ -51,7 +51,7 @@
   ];
   const conditions = [
     'upstream_down', 'node_down', 'sync_lag', 'primary_unreachable', 'list_failing', 'list_stale', 'servfail_rate', 'anomaly', 'new_device',
-    'disk_full', 'plan_pending', 'update_available', 'maintenance', 'credential_redirected',
+    'disk_full', 'plan_pending', 'update_available', 'maintenance', 'credential_redirected', 'secrets_exported',
   ];
   const ruleFields = $derived<Field[]>([
     { key: 'when', label: 'When', type: 'select', options: conditions, initial: 'upstream_down' },

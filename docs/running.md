@@ -223,10 +223,12 @@ In a cluster, upgrade replicas first.
 ```sh
 telltale backup create -o pi.ttbk               # safe while TelltaleDNS runs
 telltale backup create --include-qlog -o pi.ttbk # also the query log (can be large)
+telltale backup create --secrets-passphrase-file pass.txt -o pi.ttbk  # with the stored secrets, encrypted
 telltale backup show pi.ttbk                     # check it and list what's in it
 telltale backup restore pi.ttbk                  # on the new machine, TelltaleDNS stopped
+telltale backup restore --secrets-passphrase-file pass.txt pi.ttbk  # a backup that holds secrets
 ```
-Admins can also download one in the web UI (**Settings → System → Download a backup**) or with `GET /api/v1/backup`. Each download is recorded in the audit log as `backup.create`. Downloads leave out the query log; use the command for that.
+Admins can also make one in the web UI (**Settings → System → Backup**) or with `GET` / `POST /api/v1/backup`. Each one is recorded in the audit log as `backup.create`. `GET` leaves out the query log and the stored secrets; `POST` takes `{"includeQlog": true, "passphrase": "..."}` (see [Stored secrets in a backup](#stored-secrets-in-a-backup)). The query log is included from the web UI only when it is under 256 MiB; the command has no limit.
 
 **In a backup:**
 - the config files the node was started with;
@@ -237,7 +239,7 @@ Admins can also download one in the web UI (**Settings → System → Download a
 
 **Left out:**
 - sign-in sessions (everyone signs in again);
-- [stored secrets](#stored-secrets) and the node's secrets key: they're encrypted with a key no backup holds, so a restored node has none (set them again);
+- [stored secrets](#stored-secrets) unless you give a passphrase ([below](#stored-secrets-in-a-backup)), and always the node's secrets key: they're encrypted with a key no backup holds, so a restored node without the passphrase has none (set them again);
 - downloaded lists, compiled snapshots, and the cache, which are rebuilt;
 - the cluster identity and its CA key. A restored cluster member starts on its own: run `telltale cluster init` or join it again.
 
@@ -250,6 +252,15 @@ The file is zstd-compressed tar with a manifest of BLAKE3 checksums, written own
 - It refuses while TelltaleDNS is running on that data directory (it can't take the directory's lock): stop the service first.
 - Files are given the data directory's owner, so a restore run as root works for the `telltale` service user.
 - If you restore into a different data directory, the restored config still names the old one: restore says so, and you set `data_dir` (or add a small file that does).
+
+### Stored secrets in a backup
+A backup carries the [stored secrets](#stored-secrets) only when you give a passphrase of at least 12 characters (the command takes it from `--secrets-passphrase-file FILE` or `--secrets-passphrase-stdin` (the first line), or asks for it on the terminal with `--secrets-passphrase-prompt`, twice and not shown; never as an argument or a variable). The secrets are encrypted into `data/secrets.enc` with ChaCha20-Poly1305, under a key made from the passphrase with Argon2id (19 MiB, 2 passes, 1 lane; the salt, nonce and these costs are in the manifest). Without a passphrase the command, the API (header `X-Telltale-Backup-Secrets: omitted; count=N`) and the web UI all say "N stored secrets were left out". The backup also warns when the configuration files, or entries made in the UI or API, hold a credential inline: a backup copies those as they are (a stored secret or a credential file keeps one out).
+
+- **Format.** A backup with secrets is format version 2, which builds before this one refuse; one without stays version 1, so older builds still restore it. `telltale backup show` says which and how many.
+- **Restore** needs the passphrase (`--secrets-passphrase-file`, `--secrets-passphrase-stdin`, `--secrets-passphrase-prompt`) or `--skip-secrets` (everything else is restored, and you enter the secrets again). A version 2 backup with neither is refused before anything is written, and so is a wrong passphrase ("wrong passphrase or damaged archive"). The secrets are stored under the restored node's own key, taken from the same place the server takes it: `TELLTALE_SECRETS_KEY`, `[node] secrets_key_file` in the files you give with `-c`, or `secrets.key` in the data directory (made if there is none). A configured key that can't be read stops the restore rather than making another; it prints which key (its source and `key_id`) it used. The restored rows are stamped again from the start, as this node's own. A restore refuses a backup that asks for more than 256 MiB, 10 passes or 8 lanes of key derivation.
+- **Through the API,** `POST /api/v1/backup` with a passphrase is for an admin's signed-in session that signed in within the last 10 minutes (403 `reauth_required` otherwise; the web UI then asks for the password again), over HTTPS or from the node itself (403 `insecure_transport`; `[api] allow_secrets_over_http` lifts that), never an agent token. One key derivation runs at a time on a node: a second backup with a passphrase gets 429 until it finishes. An API token, even an admin's, can't make one: run the command on the node.
+- **Audit and alert.** `backup.create {secretsIncluded, count}` (never the passphrase). A backup that carried secrets raises the alert condition `secrets_exported` (once per backup).
+- **Keep the passphrase apart from the file.** Anyone with both can read every secret in it. There is no way to recover the secrets from a backup whose passphrase is lost; the rest of it restores with `--skip-secrets`.
 
 ## Support package
 When something goes wrong, the most useful thing to attach to an issue is a **support package**: one `.tar.gz` with what a maintainer needs to see, and nothing that identifies you. It holds build and platform facts; your settings without secrets; the cluster view and its timeline; health checks and listener checks; upstream state; list names and counts (no domains); a snapshot of the metrics; aggregate statistics; this node's recent log; and the newest [watchdog dump](#when-a-node-stops-answering-the-watchdog), if the node wrote one (without its log lines at the `strict` level). Nothing is uploaded: you make it, look it over, and attach it yourself.
@@ -3051,9 +3062,10 @@ Rules watch:
 | `chatty_loop` | a device asks a domain at a steady rhythm faster than every 30 s (an informational finding the `anomaly` rule leaves out; see [Device anomalies](#device-anomalies)) | finding |
 | `drill_report` | a [failover drill](#failover-drills)'s report is ready, scheduled or started by hand: followed, stuck, quiet, coverage | drill |
 | `credential_redirected` | an admin changed where an entry's credential is sent (an upstream's URL or TLS name, an alert destination's URL; see [Who may point a credential somewhere](#who-may-point-a-credential-somewhere)) | change |
+| `secrets_exported` | a backup with the stored secrets was made through the API (`backup.create` with `secretsIncluded`; once per backup, naming who and how many; read from the audit log of the node that made it, for an hour). See [Stored secrets in a backup](#stored-secrets-in-a-backup) | backup |
 
 - **Nodes in maintenance** are left out of the per-node conditions, and an alert about one that was firing resolves with "(maintenance)". When the window ends, `for_secs` counts from zero. The Alerts page says whose alerts are paused, until when.
-- A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies, updates, new devices, pending plans, failed rollouts, and credential redirects go out once each.
+- A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies, updates, new devices, pending plans, failed rollouts, credential redirects, and secret exports go out once each.
 - In a cluster, the primary checks the rules against the whole cluster's data and sends the alerts, so you get one message, not one per node.
 - Formats: `webhook` posts JSON (`rule`, `status` = `firing` or `resolved`, `subject`, `summary`, `node`, `time`); `ntfy` posts the text with a title and priority (a token from `token_file` as a Bearer token); `gotify` posts to `<url>/message` with the application token from `token_file`; `slack` posts `{"text": ...}`.
 - Alerts never affect DNS: a destination that's down is logged (`alert not delivered`) and skipped.
@@ -3170,7 +3182,7 @@ api_key_ref = "unifi"     # the secret named `unifi`
 - **`telltale secrets status`** (on the node, with its `-c` files) shows the store (`ready`, `locked` with why, or `ephemeral` on a resolver pod), the key's source and `key_id` (never the key), each stored secret without its value (readable, `unreadable`: another key made it, or `corrupt`), and every credential field with its source and whether this node can read it (a file is opened without being read). It exits 1 while the store is locked, and changes nothing (no key or database made, no leftover `secrets.key.new` finished or dropped, nothing re-encrypted), so it's safe beside a running node.
 - **`telltale secrets rotate-key`** replaces the data-directory key with TelltaleDNS stopped (it refuses while the node runs): every stored secret is re-encrypted under a new key in one transaction, then the new key replaces `secrets.key`. An interrupted rotation is finished, or undone, at the next start. A key from `TELLTALE_SECRETS_KEY` or `[node] secrets_key_file` is rotated by setting the new key there and the old one as `TELLTALE_SECRETS_PREVIOUS_KEY` (or `[node] secrets_previous_key_file`): the next start re-encrypts and logs that the previous key can go.
 - **Locked.** With the configured key unreadable, `secrets.key` missing while secrets are stored (a new key is never made then), or no stored secret readable with the key, the store is locked: secret writes get 503 `secrets_locked`, health is degraded (`secrets_locked`), status reads work, and DNS and `/readyz` are unaffected. A replica whose stored secrets all came from the cluster drops them, makes a new key, and gets them again from the primary.
-- **Backups never hold them**: the rows, their deletion records and the node key are left out of every backup (`telltale backup create`). A restored node has no stored secrets; set them again.
+- **Backups hold them only under a passphrase** (T23.9, [Stored secrets in a backup](#stored-secrets-in-a-backup)): the rows, their deletion records, the head and the node key are never copied as they are; with `--secrets-passphrase-file` (or the web UI's passphrase) the secrets travel encrypted with a key made from that passphrase, and a restore stores them under the new node's own key. Without a passphrase a restored node has no stored secrets; set them again.
 - **Metrics:** `telltale_secrets{state="readable|unreadable|corrupt"}`.
 
 ##### Setting a stored secret

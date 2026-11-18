@@ -4,11 +4,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::cli::{Source, create as cli_create, restore as cli_restore};
 use super::*;
 use crate::secrets::SecretStore;
 use crate::secrets::store::EnvFn;
 use crate::secrets::value::Kind;
 use crate::secrets::{SecretValue, process_env};
+
+/// A change to a recorded key derivation.
+type Edit = fn(&mut passphrase::Kdf);
 
 const PASS: &str = "correct horse battery staple";
 const UNIFI: &str = "planted-unifi-key-7d21c4";
@@ -52,7 +56,11 @@ fn config_in(root: &Path, extra: &str) -> (PathBuf, telltale_config::Config) {
 fn node_with_secrets(root: &Path) -> (Vec<PathBuf>, telltale_config::Config) {
     let (conf, cfg) = config_in(root, "");
     let store = SecretStore::with_env(&cfg, env(&[]), true, false);
-    for (n, v) in [("unifi", UNIFI), ("ntfy", NTFY), ("gone", "deleted-value-1")] {
+    for (n, v) in [
+        ("unifi", UNIFI),
+        ("ntfy", NTFY),
+        ("gone", "deleted-value-1"),
+    ] {
         store
             .put(n, Kind::Text, &value(v), 3, "root", "local", 1_700_000_000)
             .unwrap();
@@ -113,7 +121,11 @@ fn rewrite(archive: &Path, out: &Path, edit: impl FnOnce(&mut Manifest)) {
 
 fn needle_forms(v: &str) -> Vec<Vec<u8>> {
     use base64::Engine as _;
-    let hex: String = v.bytes().map(|b| format!("{b:02x}")).collect();
+    let hex = v.bytes().fold(String::new(), |mut s, b| {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+        s
+    });
     vec![
         v.as_bytes().to_vec(),
         base64::engine::general_purpose::STANDARD
@@ -140,7 +152,7 @@ fn restored_store(root: &Path, extra: &str, e: EnvFn) -> (SecretStore, PathBuf) 
     )
 }
 
-fn plain_keys<'a>(e: &'a dyn Fn(&str) -> Option<String>) -> RestoreKeys<'a> {
+fn plain_keys(e: &dyn Fn(&str) -> Option<String>) -> RestoreKeys<'_> {
     RestoreKeys { cfg: None, env: e }
 }
 
@@ -198,7 +210,10 @@ fn api_007_planted_secret_absent_from_plaintext() {
     // The manifest records the cost, the cipher, a nonce and an id: never the key or the passphrase.
     let s = m.secrets.unwrap();
     let k = s.kdf.unwrap();
-    assert_eq!((k.alg.as_str(), k.m_kib, k.t, k.p), ("argon2id", 19_456, 2, 1));
+    assert_eq!(
+        (k.alg.as_str(), k.m_kib, k.t, k.p),
+        ("argon2id", 19_456, 2, 1)
+    );
     assert_eq!(s.aead.as_deref(), Some("chacha20-poly1305"));
     assert!(s.nonce.is_some() && s.backup_id.is_some());
 }
@@ -271,7 +286,10 @@ fn api_007_roundtrip_with_passphrase() {
     store.load_now();
     assert_eq!(store.get("unifi").unwrap().expose(), UNIFI);
     assert_eq!(store.get("ntfy").unwrap().expose(), NTFY);
-    assert!(store.get("gone").is_err(), "a deleted secret isn't restored");
+    assert!(
+        store.get("gone").is_err(),
+        "a deleted secret isn't restored"
+    );
     // Re-stamped (AC11): epoch 0, from 1, as local rows; the old stamps (epoch 3) are gone.
     let state = telltale_store::state::State::open(&new.join("data/state.db")).unwrap();
     let mut rows = state.secret_rows().unwrap();
@@ -302,7 +320,12 @@ fn api_007_restore_restamps() {
     create_with(&files, &cfg, false, &out, Some(&export_of(&cfg, PASS))).unwrap();
     // The source stamped in epoch 3; what comes back doesn't carry that epoch.
     let src = telltale_store::state::State::open(&tmp.path().join("old/data/state.db")).unwrap();
-    assert!(src.secret_rows().unwrap().iter().all(|r| r.stamp.epoch == 3));
+    assert!(
+        src.secret_rows()
+            .unwrap()
+            .iter()
+            .all(|r| r.stamp.epoch == 3)
+    );
     drop(src);
     let new = tmp.path().join("new");
     let none = env(&[]);
@@ -355,12 +378,7 @@ fn api_007_wrong_passphrase_moves_nothing() {
         })
         .unwrap_or_default();
     assert!(left.is_empty(), "nothing moved or generated: {left:?}");
-    assert!(
-        fs::read_dir(new.join("etc"))
-            .map(|d| d.count())
-            .unwrap_or(0)
-            == 0
-    );
+    assert_eq!(fs::read_dir(new.join("etc")).map_or(0, Iterator::count), 0);
     // Too short is refused too, before any key derivation.
     let e = restore_with(
         &out,
@@ -480,7 +498,7 @@ fn api_007_kdf_params_bounded() {
     let (files, cfg) = node_with_secrets(&tmp.path().join("old"));
     let first = tmp.path().join("first.ttbk");
     create_with(&files, &cfg, false, &first, Some(&export_of(&cfg, PASS))).unwrap();
-    let cases: [(&str, fn(&mut passphrase::Kdf)); 6] = [
+    let cases: [(&str, Edit); 6] = [
         ("memory", |k| k.m_kib = 262_145),
         ("passes", |k| k.t = 11),
         ("lanes", |k| k.p = 9),
@@ -788,19 +806,33 @@ fn api_007_inline_credentials_warned_not_named() {
 #[test]
 fn api_007_cli_create_and_restore() {
     let _serial = test_lock();
-    use super::cli::{Source, create as cli_create, restore as cli_restore};
     let tmp = tempfile::tempdir().unwrap();
     let (files, cfg) = node_with_secrets(&tmp.path().join("old"));
     let pass_file = tmp.path().join("pass.txt");
     fs::write(&pass_file, format!("{PASS}\nignored second line\n")).unwrap();
     let out = tmp.path().join("b.ttbk");
-    cli_create(&files, &cfg, false, &out, Some(&Source::File(pass_file.clone()))).unwrap();
+    cli_create(
+        &files,
+        &cfg,
+        false,
+        &out,
+        Some(&Source::File(pass_file.clone())),
+    )
+    .unwrap();
     let m = show(&out).unwrap();
     assert!(m.has_secrets() && m.secrets.as_ref().unwrap().count == 2);
     let new = tmp.path().join("new");
     // No passphrase: refused; a file with the wrong one: refused; the right one: restored.
-    let e = cli_restore(&out, Some(&new.join("data")), Some(&new.join("etc")), false, None, false, None)
-        .unwrap_err();
+    let e = cli_restore(
+        &out,
+        Some(&new.join("data")),
+        Some(&new.join("etc")),
+        false,
+        None,
+        false,
+        None,
+    )
+    .unwrap_err();
     assert!(e.contains("--skip-secrets"), "{e}");
     let wrong = tmp.path().join("wrong.txt");
     fs::write(&wrong, "not the passphrase\n").unwrap();
@@ -831,8 +863,14 @@ fn api_007_cli_create_and_restore() {
     // A short passphrase file is refused on create.
     let short = tmp.path().join("short.txt");
     fs::write(&short, "short\n").unwrap();
-    let e = cli_create(&files, &cfg, false, &tmp.path().join("c.ttbk"), Some(&Source::File(short)))
-        .unwrap_err();
+    let e = cli_create(
+        &files,
+        &cfg,
+        false,
+        &tmp.path().join("c.ttbk"),
+        Some(&Source::File(short)),
+    )
+    .unwrap_err();
     assert!(e.contains("at least 12"), "{e}");
     // The passphrase file is never an archive entry: the file isn't read into the backup.
     assert!(!contains(&fs::read(&out).unwrap(), PASS.as_bytes()));

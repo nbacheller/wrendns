@@ -3,14 +3,23 @@
 //! interactive session signed in within 10 minutes, over HTTPS or loopback, never an agent;
 //! nothing of the passphrase or a value is answered, logged or audited.
 
+// The tests that derive a key hold the backup module's test lock for their whole run, so two of
+// them never meet in the one KDF slot. They run on one thread; the lock is never taken in the
+// handlers they call.
+#![allow(
+    clippy::await_holding_lock,
+    clippy::assert_is_empty,
+    clippy::format_push_string
+)]
+
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
-use telltale_api::auth;
 use telltale_api::Backend as _;
+use telltale_api::auth;
 use tower::ServiceExt as _;
 
 use crate::credential_tests::{Harness, harness};
@@ -29,7 +38,9 @@ fn secret_put(h: &Harness, name: &str, value: &str) -> Request<Body> {
 async fn plant(h: &Harness) {
     let (s, _, t) = h.send(secret_put(h, "unifi", VALUE)).await;
     assert_eq!(s, StatusCode::OK, "{t}");
-    let (s, _, t) = h.send(secret_put(h, "ntfy", "planted-other-value-15d2")).await;
+    let (s, _, t) = h
+        .send(secret_put(h, "ntfy", "planted-other-value-15d2"))
+        .await;
     assert_eq!(s, StatusCode::OK, "{t}");
 }
 
@@ -80,7 +91,7 @@ fn json_of(body: &[u8]) -> Value {
 }
 
 fn archive_of(h: &Harness, bytes: &[u8]) -> crate::backup::Manifest {
-    let path = h._dir_path().join("downloaded.ttbk");
+    let path = h.dir_path().join("downloaded.ttbk");
     std::fs::write(&path, bytes).unwrap();
     crate::backup::show(&path).unwrap()
 }
@@ -128,7 +139,11 @@ async fn api_007_roundtrip_with_passphrase() {
     plant(&h).await;
     let (s, hd, bytes) = send(
         &h,
-        from_session(&h, 0, Some(json!({"passphrase": PASS, "includeQlog": false}))),
+        from_session(
+            &h,
+            0,
+            Some(json!({"passphrase": PASS, "includeQlog": false})),
+        ),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&bytes));
@@ -149,10 +164,10 @@ async fn api_007_roundtrip_with_passphrase() {
         "{audit}"
     );
     // It restores under another node's key with the passphrase.
-    let new = h._dir_path().join("restored");
+    let new = h.dir_path().join("restored");
     let none: crate::secrets::store::EnvFn = std::sync::Arc::new(|_: &str| None);
     let r = crate::backup::restore_with(
-        &h._dir_path().join("downloaded.ttbk"),
+        &h.dir_path().join("downloaded.ttbk"),
         Some(&new.join("data")),
         Some(&new.join("etc")),
         false,
@@ -180,7 +195,10 @@ async fn api_007_passphrase_backup_needs_recent_sign_in() {
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
     assert_eq!(v["code"], "reauth_required");
     assert!(
-        v["hint"].as_str().unwrap().contains("telltale backup create"),
+        v["hint"]
+            .as_str()
+            .unwrap()
+            .contains("telltale backup create"),
         "{v}"
     );
     assert_eq!(hd["cache-control"], "no-store");
@@ -208,7 +226,13 @@ async fn api_007_backup_post_refused_for_agents() {
     let now = crate::pipeline::unix_now();
     let owner = h
         .auth
-        .create_user("bot-owner", "correct horse battery", auth::Role::Admin, false, now)
+        .create_user(
+            "bot-owner",
+            "correct horse battery",
+            auth::Role::Admin,
+            false,
+            now,
+        )
         .unwrap();
     let (id, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
     h.auth
@@ -244,7 +268,7 @@ async fn api_007_backup_post_refused_for_agents() {
         assert_eq!(s, StatusCode::FORBIDDEN);
         assert_eq!(json_of(&b)["code"], "agent_not_allowed");
     }
-    assert!(audit_backups(&h).is_empty());
+    assert_eq!(audit_backups(&h), "");
 }
 
 // REQ: API-007 (AC7) — one key derivation at a time: while one is running a second passphrase
@@ -255,12 +279,13 @@ async fn api_007_concurrent_backup_kdf_429() {
     let h = harness("");
     plant(&h).await;
     let slot = crate::backup::kdf_slot_for_tests();
-    let (s, hd, b) = send(
-        &h,
-        from_session(&h, 0, Some(json!({"passphrase": PASS}))),
-    )
-    .await;
-    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "{}", String::from_utf8_lossy(&b));
+    let (s, hd, b) = send(&h, from_session(&h, 0, Some(json!({"passphrase": PASS})))).await;
+    assert_eq!(
+        s,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{}",
+        String::from_utf8_lossy(&b)
+    );
     assert!(hd.contains_key("retry-after"));
     let (s, _, _) = send(&h, h.request("POST", "/api/v1/backup", Some(&json!({})))).await;
     assert_eq!(s, StatusCode::OK);
@@ -268,7 +293,7 @@ async fn api_007_concurrent_backup_kdf_429() {
     let (s, _, _) = send(&h, from_session(&h, 0, Some(json!({"passphrase": PASS})))).await;
     assert_eq!(s, StatusCode::OK);
     assert!(
-        !std::fs::read_dir(h._dir_path())
+        !std::fs::read_dir(h.dir_path())
             .unwrap()
             .flatten()
             .any(|e| e.file_name().to_string_lossy().starts_with(".backup-api")),
@@ -285,14 +310,21 @@ async fn api_007_backup_post_validates_body() {
         (json!({"passphrase": "short"}), "at least 12"),
         (json!({"passphrase": 123_456_789_012_i64}), "wrongly typed"),
         (json!({"unknown": "planted-extra-field-77"}), "unknown"),
-        (json!({"includeQlog": "planted-not-a-bool-31"}), "wrongly typed"),
+        (
+            json!({"includeQlog": "planted-not-a-bool-31"}),
+            "wrongly typed",
+        ),
     ] {
         let user_session = from_session(&h, 0, Some(body.clone()));
         let (s, _, b) = send(&h, user_session).await;
         let text = String::from_utf8_lossy(&b).into_owned();
         assert_eq!(s, StatusCode::BAD_REQUEST, "{body}: {text}");
         assert!(text.contains(what), "{what}: {text}");
-        for planted in ["planted-extra-field-77", "planted-not-a-bool-31", "123456789012"] {
+        for planted in [
+            "planted-extra-field-77",
+            "planted-not-a-bool-31",
+            "123456789012",
+        ] {
             assert!(!text.contains(planted), "{text}");
         }
     }
@@ -368,7 +400,10 @@ async fn api_007_passphrase_never_logged_or_audited() {
             break;
         }
     }
-    assert!(log.contains("backup downloaded"), "the log was captured: {log}");
+    assert!(
+        log.contains("backup downloaded"),
+        "the log was captured: {log}"
+    );
     assert!(!log.contains(PASS) && !log.contains(VALUE), "{log}");
 }
 
@@ -422,6 +457,13 @@ async fn api_007_secrets_exported_alert() {
     let first = engine.step(0, &rules, std::slice::from_ref(&seen));
     assert_eq!(first.len(), 1);
     assert!(first[0].firing);
-    assert!(engine.step(10, &rules, std::slice::from_ref(&seen)).is_empty());
-    assert!(engine.step(20, &rules, &[Vec::new()]).is_empty(), "no resolve");
+    assert!(
+        engine
+            .step(10, &rules, std::slice::from_ref(&seen))
+            .is_empty()
+    );
+    assert!(
+        engine.step(20, &rules, &[Vec::new()]).is_empty(),
+        "no resolve"
+    );
 }

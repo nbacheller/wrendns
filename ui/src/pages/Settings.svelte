@@ -11,6 +11,7 @@
   import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
   import TabPanel from '../lib/components/TabPanel.svelte';
   import WallDisplays from '../lib/components/WallDisplays.svelte';
+  import BackupCard from '../lib/components/BackupCard.svelte';
   import SupportPackage from '../lib/components/SupportPackage.svelte';
   import SecretsPanel from '../lib/components/SecretsPanel.svelte';
   import DomainIcon from '../lib/icons/DomainIcon.svelte';
@@ -969,19 +970,8 @@
       </section>
     {/if}
     {#if can('admin')}
-      <!-- REQ: API-007 (T6.7) -->
-      <section class="card">
-        <h2>Backup<HelpButton id="backup" /></h2>
-        <p>
-          One file with your settings, users and API tokens, the devices and names you added here, the audit log, and
-          statistics history. Restore it on a new machine with <code>telltale backup restore FILE</code>.
-        </p>
-        <p><a class="button" href="/api/v1/backup" download>Download a backup</a></p>
-        <p class="muted small">
-          It holds password hashes, so keep it private. The query log isn't included; for that, run
-          <code>telltale backup create --include-qlog</code> on the server.
-        </p>
-      </section>
+      <!-- REQ: API-007 (T6.7, T23.9) -->
+      <BackupCard />
       <!-- REQ: OPS-011 (ADR-156) — one redacted file for a bug report. -->
       <SupportPackage />
     {/if}

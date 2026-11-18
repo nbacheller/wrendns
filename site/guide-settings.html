@@ -156,7 +156,7 @@ path = "telltale/shared.toml"
       <tr><td>Inline (OIDC client secret and OTLP headers only)</td><td><code>client_secret = "..."</code></td><td>Trying something out</td></tr>
     </tbody>
   </table></div>
-  <p>A stored secret is write-only: nothing shows it again, admins included. It is encrypted in <code>state.db</code> with the node's own key (<code>secrets.key</code> in the data directory, made on the first start, or one you keep elsewhere with <code>TELLTALE_SECRETS_KEY</code> or <code>[node] secrets_key_file</code>; the Helm chart's <code>secretsKey.existingSecret</code>). Backups never include stored secrets or the key, and resolver pods hold neither.</p>
+  <p>A stored secret is write-only: nothing shows it again, admins included. It is encrypted in <code>state.db</code> with the node's own key (<code>secrets.key</code> in the data directory, made on the first start, or one you keep elsewhere with <code>TELLTALE_SECRETS_KEY</code> or <code>[node] secrets_key_file</code>; the Helm chart's <code>secretsKey.existingSecret</code>). A backup leaves them out unless you give it a passphrase (Settings → System → Backup, or <code>telltale backup create --secrets-passphrase-file</code>): then they travel encrypted with a key made from it, and a restore stores them under the new node's own key. The node's key is never in a backup, and resolver pods hold neither.</p>
   <pre><code>telltale ctl secrets set unifi --from-file /root/unifi-key   # or: ... set unifi &lt; key
 telltale ctl secrets list                                     # names and users, never a value
 telltale ctl secrets clear unifi                              # refused while a field names it</code></pre>

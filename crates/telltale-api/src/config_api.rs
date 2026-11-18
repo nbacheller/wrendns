@@ -718,7 +718,9 @@ pub(crate) async fn backup_create(
         }
     };
     drop(raw);
-    let passphrase = req.passphrase.map(crate::secrets_api::SecretText::into_inner);
+    let passphrase = req
+        .passphrase
+        .map(crate::secrets_api::SecretText::into_inner);
     if let Some(pass) = &passphrase
         && pass.chars().count() < 12
     {
@@ -792,8 +794,7 @@ async fn backup_response(
                 HeaderValue::from_static("no-store"),
             );
             // The name is ours (letters, digits, `-`, `.`), so it's safe in the header.
-            if let Ok(v) =
-                HeaderValue::from_str(&format!("attachment; filename=\"{}\"", out.name))
+            if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{}\"", out.name))
             {
                 h.insert(axum::http::header::CONTENT_DISPOSITION, v);
             }

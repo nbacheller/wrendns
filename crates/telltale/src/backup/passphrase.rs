@@ -93,7 +93,8 @@ impl Drop for KdfSlot {
 #[cfg(test)]
 pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The slot, taken by a test that checks the refusal (waits for any other test holding it).
@@ -446,7 +447,8 @@ pub(crate) fn store_rows(
     let state = telltale_store::state::State::open(db).map_err(|e| e.to_string())?;
     for (r, kind, value) in &staged {
         let stamp = state.next_secret_stamp(0).map_err(|e| e.to_string())?;
-        let sealed = crate::secrets::store::seal(&keys.current, kind.as_str(), &r.name, stamp, value)?;
+        let sealed =
+            crate::secrets::store::seal(&keys.current, kind.as_str(), &r.name, stamp, value)?;
         state
             .put_secret_row(
                 &telltale_store::state::SecretRow {

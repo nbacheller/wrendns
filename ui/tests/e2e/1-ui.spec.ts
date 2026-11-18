@@ -5961,3 +5961,108 @@ test('api_007 comparison options reach the request', async () => {
     await page.unroute(PREVIEW_ROUTE);
   }
 });
+
+// REQ: API-007, OPS-014 (T23.9, ADR-903 §8) — Settings → System → Backup: without a passphrase a
+// backup leaves the stored secrets out and says how many; with one, the passphrase is confirmed
+// (12 characters, typed twice), a 403 `reauth_required` opens the recent-sign-in prompt (the
+// request waits for it), and the secrets go into the file encrypted: the planted value is nowhere
+// in the downloaded bytes. `secrets_exported` is offered as an alert condition.
+test('api_007 passphrase backup from settings', async () => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const PLANTED = 'planted-backup-ui-value-5f3a19';
+  const PASSPHRASE = 'a long passphrase for the backup';
+  expect((await r.put('/api/v1/secrets/backup-ui-test', { headers: h, data: { value: PLANTED, kind: 'text' } })).status()).toBe(200);
+  try {
+    await page.goto('/#/settings?tab=system');
+    const card = page.getByTestId('backup-card');
+    await expect(card).toBeVisible();
+    await expect(card.getByTestId('backup-make')).toHaveText('Download a backup');
+
+    // Without a passphrase: a file, and the omitted-secrets notice.
+    const [plain] = await Promise.all([page.waitForEvent('download'), card.getByTestId('backup-make').click()]);
+    expect(plain.suggestedFilename()).toMatch(/\.ttbk$/);
+    await expect(card.getByTestId('backup-secrets-omitted')).toContainText(/stored secrets? (was|were) left out/);
+    await expect(card.getByTestId('backup-secrets-included')).toHaveCount(0);
+
+    // With a passphrase: it must be long enough and typed twice.
+    await card.getByTestId('backup-with-secrets').check();
+    await expect(card.getByTestId('backup-make')).toBeDisabled();
+    await card.getByLabel('Backup passphrase', { exact: true }).fill('short');
+    await expect(card.getByTestId('backup-short')).toBeVisible();
+    await card.getByLabel('Backup passphrase', { exact: true }).fill(PASSPHRASE);
+    await card.getByLabel('Repeat the backup passphrase').fill('another long passphrase');
+    await expect(card.getByTestId('backup-mismatch')).toBeVisible();
+    await expect(card.getByTestId('backup-make')).toBeDisabled();
+    await card.getByLabel('Repeat the backup passphrase').fill(PASSPHRASE);
+    await expect(card.getByTestId('backup-mismatch')).toHaveCount(0);
+    await expect(card.getByTestId('backup-make')).toBeEnabled();
+    await expect(card.getByTestId('backup-make')).toHaveText('Download a backup with secrets');
+
+    // The server asks for a recent sign-in once; the prompt keeps the request until the password
+    // is given, then the backup is made for real.
+    let refused = 0;
+    const bodies: string[] = [];
+    await page.route('**/api/v1/backup', async (route) => {
+      const req = route.request();
+      if (req.method() === 'POST') bodies.push(req.postData() ?? '');
+      if (req.method() === 'POST' && refused === 0) {
+        refused++;
+        await route.fulfill({
+          status: 403,
+          contentType: 'application/problem+json',
+          body: JSON.stringify({
+            type: 'https://telltaledns.dev/problems/reauth_required',
+            title: 'Recent sign-in needed',
+            status: 403,
+            code: 'reauth_required',
+            detail: 'this needs a sign-in within the last 10 minutes; yours is older',
+            hint: 'Sign in again (POST /api/v1/auth/login), then retry.',
+          }),
+        });
+      } else {
+        await route.continue();
+      }
+    });
+    try {
+      await card.getByTestId('backup-make').click();
+      const prompt = card.getByTestId('backup-reauth');
+      await expect(prompt).toBeVisible();
+      await expect(prompt).toContainText("Confirm it's you");
+      await expect(card.getByTestId('backup-make')).toHaveCount(0);
+      await expect(prompt.getByTestId('backup-reauth-go')).toBeDisabled();
+      await prompt.getByLabel('Your password').fill(ADMIN.pass);
+      const [enc] = await Promise.all([page.waitForEvent('download'), prompt.getByTestId('backup-reauth-go').click()]);
+      await expect(card.getByTestId('backup-secrets-included')).toContainText('encrypted with your passphrase');
+      await expect(card.getByTestId('backup-reauth')).toHaveCount(0);
+      // The fields are cleared once the backup is made.
+      await expect(card.getByLabel('Backup passphrase', { exact: true })).toHaveValue('');
+      // The passphrase went in the request body only, twice (the refused try and the retry).
+      expect(bodies).toHaveLength(2);
+      expect(bodies.every((b) => b.includes(PASSPHRASE))).toBe(true);
+      // The file holds the secret only encrypted.
+      const path = await enc.path();
+      const bytes = readFileSync(path);
+      expect(bytes.includes(Buffer.from(PLANTED))).toBe(false);
+      expect(bytes.includes(Buffer.from(PASSPHRASE))).toBe(false);
+      expect(bytes.length).toBeGreaterThan(1000);
+    } finally {
+      await page.unroute('**/api/v1/backup');
+    }
+    // Making it is audited, without the passphrase.
+    const audit = await (await r.get('/api/v1/audit')).text();
+    expect(audit).toContain('secretsIncluded');
+    expect(audit).not.toContain(PASSPHRASE);
+
+    // The alert condition is offered (selecting it fails if it isn't).
+    await page.goto('/#/alerts');
+    await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+    await page.getByTestId('editor-alert_rule').getByRole('button', { name: 'Add rule' }).click();
+    await page.getByLabel('When', { exact: true }).selectOption('secrets_exported');
+    await page.reload();
+  } finally {
+    await r.delete('/api/v1/secrets/backup-ui-test', { headers: h });
+  }
+});

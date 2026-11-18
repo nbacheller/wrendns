@@ -1053,6 +1053,7 @@ async fn paused_now(
 
 /// The alert task: every `interval_secs`, evaluate (on the primary or a standalone node) and
 /// send what started or cleared.
+#[allow(clippy::too_many_lines)] // one loop: read, observe, step, deliver
 pub(crate) async fn run(
     sources: Arc<crate::http::Sources>,
     mut stop: tokio::sync::watch::Receiver<bool>,
@@ -1109,7 +1110,8 @@ pub(crate) async fn run(
             let exports = recent_exports(&sources, now);
             let observed = tokio::task::spawn_blocking(move || {
                 rs.iter()
-                    .map(|r| observe(
+                    .map(|r| {
+                        observe(
                             b.as_ref(),
                             r,
                             now,
@@ -1117,7 +1119,8 @@ pub(crate) async fn run(
                             &redirects,
                             &exports,
                             &in_maintenance,
-                        ))
+                        )
+                    })
                     .collect::<Vec<_>>()
             })
             .await

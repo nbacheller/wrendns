@@ -903,14 +903,38 @@ export interface paths {
          * @description One `.ttbk` file (ADR-063) with the configuration files, users and API tokens, devices and
          *     names made through the API, the audit log, statistics history, and anomaly baselines.
          *     Sign-in sessions, lists, and the cluster identity aren't included, and neither is the
-         *     query log (use `telltale backup create --include-qlog` for that). Restore it with
+         *     query log (use `POST /api/v1/backup` with `includeQlog`, or `telltale backup create
+         *     --include-qlog`, for that). **The stored secrets are left out** (they are encrypted with this
+         *     node's key, which no backup holds): `X-Telltale-Backup-Secrets: omitted; count=N` says how
+         *     many. `POST /api/v1/backup` with a passphrase carries them. Restore it with
          *     `telltale backup restore FILE` on the new machine.
          *
          *     The file holds password hashes: keep it private. Admin only; audited as `backup.create`.
          */
         get: operations["backup_download"];
         put?: never;
-        post?: never;
+        /**
+         * Make a backup, optionally with the stored secrets.
+         * @description Like `GET /api/v1/backup` (one `.ttbk`; ADR-063), and with a body it can carry more:
+         *     - `includeQlog`: the query log too;
+         *     - `passphrase` (at least 12 characters): the node's stored secrets, encrypted under a key made
+         *       from it (Argon2id m = 19 MiB, t = 2, p = 1; ChaCha20-Poly1305), as `data/secrets.enc`.
+         *       The archive is then format 2, which builds before this one refuse. Restore needs the
+         *       passphrase (`telltale backup restore --secrets-passphrase-file`) or `--skip-secrets`.
+         *
+         *     `X-Telltale-Backup-Secrets` says `included; count=N` or `omitted; count=N` (how many were left
+         *     out), and `X-Telltale-Backup-Warnings` lists what to know (credentials held inline in the
+         *     configuration are copied as they are).
+         *
+         *     Admin only, never an agent token (403 `agent_not_allowed`), only over HTTPS or from the node
+         *     itself (403 `insecure_transport`). With a passphrase it needs an interactive session signed in
+         *     within the last 10 minutes: tokens and Basic sign-in get 403 `reauth_required`, with a hint to
+         *     run `telltale backup create` on the node. One key derivation runs at a time: a second request
+         *     gets 429. Audited as `backup.create` (`secretsIncluded`, `count`; never the passphrase), and
+         *     a backup with secrets raises the alert event `secrets_exported`. It takes no
+         *     `Idempotency-Key`: it changes no state.
+         */
+        post: operations["backup_create"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4080,6 +4104,18 @@ export interface components {
             setupRequired: boolean;
             user?: components["schemas"]["Me"] | null;
         };
+        /** @description REQ: API-007 (T23.9, ADR-903 §8) — the body of `POST /api/v1/backup`. */
+        BackupRequest: {
+            /** @description Also include the query log (refused when it is too big to build in memory: use the CLI). */
+            includeQlog?: boolean | null;
+            /**
+             * @description At least 12 characters. With one, the node's stored secrets are encrypted into the backup
+             *     (`data/secrets.enc`, Argon2id and ChaCha20-Poly1305), and the request needs a session
+             *     signed in within the last 10 minutes. Write-only: never answered, logged or audited.
+             * @example correct horse battery staple
+             */
+            passphrase?: string | null;
+        };
         /** @description Body of `POST /api/dns/blocking`. */
         BlockingBody: {
             /** @description `true` ends every pause, `false` pauses blocking for everyone. */
@@ -4972,7 +5008,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "members_too_old" | "path_not_allowed" | "set_by_file" | "secret_missing" | "secret_in_use" | "insecure_transport" | "agent_not_allowed";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "members_too_old" | "path_not_allowed" | "set_by_file" | "secret_missing" | "secret_in_use" | "insecure_transport" | "agent_not_allowed" | "reauth_required";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -10956,6 +10992,8 @@ export interface operations {
             /** @description The backup, as an attachment named `telltale-<node>-<time>.ttbk`. */
             200: {
                 headers: {
+                    /** @description `omitted; count=N`: how many stored secrets were left out. */
+                    "X-Telltale-Backup-Secrets"?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -10963,6 +11001,71 @@ export interface operations {
                 };
             };
             /** @description Backups aren't available on this node. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    backup_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Optional: `includeQlog`, `passphrase`. */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupRequest"];
+            };
+        };
+        responses: {
+            /** @description The backup, as an attachment named `telltale-<node>-<time>.ttbk`. */
+            200: {
+                headers: {
+                    /** @description `included; count=N` or `omitted; count=N`. */
+                    "X-Telltale-Backup-Secrets"?: string;
+                    /** @description Present when there is something to know; items separated by ` | `. */
+                    "X-Telltale-Backup-Warnings"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": number[];
+                };
+            };
+            /** @description The body isn't valid, or the passphrase is under 12 characters, or the query log is too big for the API. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not an admin, an agent token (`agent_not_allowed`), plain HTTP from another host (`insecure_transport`), or a passphrase without a recent sign-in (`reauth_required`). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Another backup with a passphrase is deriving its key: wait for Retry-After seconds. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Backups aren't available on this node, or its secrets key can't be read (`secrets_locked`). */
             503: {
                 headers: {
                     [name: string]: unknown;

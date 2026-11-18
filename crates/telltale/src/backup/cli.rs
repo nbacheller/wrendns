@@ -30,10 +30,10 @@ fn prompt_hidden(label: &str) -> Result<Zeroizing<String>, String> {
     let stty = |arg: &str| {
         std::process::Command::new("stty")
             .arg(arg)
-            .stdin(tty.try_clone().map_or_else(
-                |_| std::process::Stdio::null(),
-                std::process::Stdio::from,
-            ))
+            .stdin(
+                tty.try_clone()
+                    .map_or_else(|_| std::process::Stdio::null(), std::process::Stdio::from),
+            )
             .status()
             .is_ok_and(|s| s.success())
     };

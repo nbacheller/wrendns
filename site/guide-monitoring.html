@@ -191,7 +191,7 @@ to = ["phone"]</code></pre>
   </div>
   <p><b>Rules worth starting with:</b> <code>upstream_down</code>, <code>servfail_rate</code>, <code>list_failing</code>, <code>disk_full</code>, <code>slo_burn</code>, <code>probe_failing</code>, and <code>cert_expiring</code> if you serve encrypted DNS. In a cluster add <code>node_down</code>, and <code>sync_lag</code> with <code>for_secs</code> around 300 so a normal sync stays quiet. Every condition, and what each sends one alert per, is in the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#alerts">Alerts docs</a>.</p>
   <ul>
-    <li>A condition must hold for <code>for_secs</code> (60 by default) before it alerts, and a "Resolved" message follows when it clears. Anomalies, updates, new devices, pending plans, failed rollouts, and credential redirects go out once each.</li>
+    <li>A condition must hold for <code>for_secs</code> (60 by default) before it alerts, and a "Resolved" message follows when it clears. Anomalies, updates, new devices, pending plans, failed rollouts, credential redirects, and secret exports go out once each.</li>
     <li>In a cluster the primary checks the rules for the whole cluster, so you get one message, not one per node. Nodes in maintenance are left out of per-node rules.</li>
   </ul>
   <h3>Email</h3>
