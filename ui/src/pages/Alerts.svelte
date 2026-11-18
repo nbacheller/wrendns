@@ -56,7 +56,7 @@
   const thresholdConditions = ['servfail_rate', 'disk_full', 'cert_expiring', 'primary_unreachable'];
   const ruleFields = $derived<Field[]>([
     { key: 'when', label: 'When', type: 'select', options: conditions, initial: 'upstream_down',
-      help: 'What the rule watches. The ? below the Rules list explains each condition.' },
+      help: 'What the rule watches. The ? above the Rules list explains each condition.' },
     { key: 'to', label: 'Send to', type: 'multi', options: destinations },
     { key: 'for_secs', label: 'For at least (seconds)', type: 'number', placeholder: '60',
       help: 'How long the condition must hold before the alert goes out, so short blips stay quiet.' },

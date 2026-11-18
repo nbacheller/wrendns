@@ -7,6 +7,7 @@ import { zstdDecompressSync } from 'node:zlib';
 import { BASE_URL, DNS_PORT, E2E_ROOT, MDNS_PORT, PORTS } from './ports';
 import { resolve } from 'node:path';
 import { query } from './dns';
+import { alertConditions } from '../../src/lib/alert-conditions';
 import { FrameHub, Loop, PANEL_MIN, Particles, Ticker, chooseLayout, dotBudget, lerpBoxes, motionAllowed, parseEvery, parseLayout, parsePanels, screenClass, screenClassStable, type Box } from '../../src/lib/wall';
 
 test.describe.configure({ mode: 'serial' });
@@ -2057,6 +2058,11 @@ test('obs_010 every alert condition can be chosen', async () => {
   try {
     for (const kind of kinds) {
       await rules.getByRole('button', { name: 'Add rule' }).click();
+      if (kind === kinds[0]) {
+        // Every condition the server accepts is offered, not only the seven added here.
+        const offered = await page.getByLabel('When', { exact: true }).locator('option').evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value).filter(Boolean));
+        expect(offered.sort()).toEqual([...alertConditions].sort());
+      }
       await page.getByRole('textbox', { name: 'Name', exact: true }).fill(nameOf(kind));
       await page.getByLabel('When', { exact: true }).selectOption(kind);
       // The config file's destination (file-ntfy) is the one every rule here sends to; its checkbox is
@@ -2101,8 +2107,20 @@ test('obs_010 threshold shown per condition and out-of-range refused', async () 
     await page.getByRole('spinbutton', { name: 'Threshold' }).fill('0');
     await page.getByRole('button', { name: 'Check' }).click();
     await expect(page.getByText('days from 1 to 365')).toBeVisible();
-    // The refused Check logs its 422; the test expects it.
-    for (let i = problems.length - 1; i >= 0; i--) if (/status of 422 \(/.test(problems[i])) problems.splice(i, 1);
+    // The other two ranges: seconds for primary_unreachable (15 to 86400), a percentage for servfail_rate (0 to 100).
+    const refused: [string, string, string][] = [
+      ['primary_unreachable', '14', 'seconds from 15 to 86400'],
+      ['primary_unreachable', '86401', 'seconds from 15 to 86400'],
+      ['servfail_rate', '101', 'a percentage from 0 to 100'],
+    ];
+    for (const [when, value, message] of refused) {
+      await page.getByLabel('When', { exact: true }).selectOption(when);
+      await page.getByRole('spinbutton', { name: 'Threshold' }).fill(value);
+      await page.getByRole('button', { name: 'Check' }).click();
+      await expect(page.getByText(message)).toBeVisible();
+      // Each refused Check logs its 422; the test expects it.
+      for (let i = problems.length - 1; i >= 0; i--) if (/status of 422 \(/.test(problems[i])) problems.splice(i, 1);
+    }
     await expect(rules.getByTestId('entry-row').filter({ hasText: 'ui-range' })).toHaveCount(0);
   } finally {
     await page.reload();
