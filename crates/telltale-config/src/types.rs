@@ -318,6 +318,9 @@ pub fn parse_source(s: &str) -> Result<SourceSpec, String> {
         if c.addr.is_unspecified() || c.prefix == 0 {
             return Err(bad());
         }
+        if link_local_v6(c.addr) {
+            return Err(link_local_msg(s));
+        }
         return Ok(SourceSpec::Subnet(c));
     }
     let ip = if let Ok(sa) = s.parse::<std::net::SocketAddr>() {
@@ -333,7 +336,22 @@ pub fn parse_source(s: &str) -> Result<SourceSpec, String> {
     if ip.is_unspecified() || ip.is_multicast() {
         return Err(bad());
     }
+    if link_local_v6(ip) {
+        return Err(link_local_msg(s));
+    }
     Ok(SourceSpec::Addr(ip))
+}
+
+/// An IPv6 link-local address (`fe80::/10`) only means something with a scope (interface), which
+/// a `source` doesn't carry: every bind of it would fail.
+fn link_local_v6(ip: std::net::IpAddr) -> bool {
+    matches!(ip, std::net::IpAddr::V6(v6) if v6.segments()[0] & 0xffc0 == 0xfe80)
+}
+
+fn link_local_msg(s: &str) -> String {
+    format!(
+        "`{s}`: an IPv6 link-local address (fe80::/10) can't be a source (it needs an interface scope); use a global or unique-local address"
+    )
 }
 
 impl fmt::Debug for Cidr {

@@ -104,8 +104,9 @@ pub(crate) async fn upstream(
                 ..CheckResult::default()
             }
         }
+        // REQ: UPS-013 — a source address this node doesn't hold says so, not just "no answer".
         Err(e) => CheckResult {
-            error: Some(e.to_string()),
+            error: Some(up.source_problem().unwrap_or_else(|| e.to_string())),
             detail: "no answer".to_owned(),
             elapsed_ms,
             ..CheckResult::default()

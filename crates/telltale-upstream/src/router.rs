@@ -258,7 +258,6 @@ fn build_upstreams<'c>(
     // UPS-009: shared system bootstrap, never pointing at our own listeners.
     let listen: Vec<_> = cfg.listen.iter().map(|l| l.addr).collect();
     let mut system_bootstrap: Option<Arc<Bootstrap>> = None;
-    let mut held: Option<Vec<telltale_net::IfAddr>> = None;
     for (i, u) in cfg.upstream.iter().enumerate() {
         let id = u16::try_from(i + 1).unwrap_or(u16::MAX);
         let (ep, stamp) = match upstream_endpoint(u) {
@@ -329,22 +328,6 @@ fn build_upstreams<'c>(
                 }
             },
         };
-        // REQ: UPS-013 (T24.31, ADR-997) — `source` names an address this node holds (or a
-        // network: the address it holds there); one it doesn't hold is refused here.
-        let source = match u.source.as_ref() {
-            None => None,
-            Some(spec) => {
-                let held =
-                    held.get_or_insert_with(|| telltale_net::local_addrs().unwrap_or_default());
-                match crate::source::resolve_source(spec.as_str(), held) {
-                    Ok(ip) => Some(ip),
-                    Err(e) => {
-                        errors.push(format!("upstream `{}`: {e}", u.name));
-                        continue;
-                    }
-                }
-            }
-        };
         let (stamp_tls_name, dnscrypt) = stamp_options(stamp.as_ref());
         // REQ: UPS-003 (T9.17) — a DoH/DoT/DoQ stamp's certificate hashes are enforced.
         up_tls.tbs_hashes = stamp_hashes(stamp.as_ref());
@@ -376,7 +359,10 @@ fn build_upstreams<'c>(
             tls: up_tls,
             plugin_args: u.args.iter().map(ToString::to_string).collect(),
             doh_get: u.doh_method == telltale_config::DohMethod::Get,
-            source,
+            source: None,
+            // REQ: UPS-013 (ADR-997 §4) — looked up when the upstream is built; an address this
+            // node doesn't hold degrades this upstream only, never the start or a reload.
+            source_spec: u.source.as_ref().map(ToString::to_string),
             plugin_dir: Some(std::path::Path::new(cfg.node.data_dir.as_str()).join("plugins")),
             // REQ: DNS-012 (T7.15)
             recursive: telltale_recursor::Settings {

@@ -39,6 +39,38 @@ pub fn resolve_source(spec: &str, held: &[IfAddr]) -> Result<IpAddr, String> {
     }
 }
 
+/// REQ: UPS-013 (ADR-997 §4) — one line per upstream whose `source` names no address this node
+/// holds. Start and reload don't refuse these (that upstream degrades; the others serve), so
+/// `config check` and the pre-save checks are where an operator hears of it.
+pub fn source_warnings(cfg: &telltale_config::Config) -> Vec<String> {
+    let specs: Vec<(&str, &str)> = cfg
+        .upstream
+        .iter()
+        .filter_map(|u| Some((u.name.as_str(), u.source.as_ref()?.as_str())))
+        .collect();
+    if specs.is_empty() {
+        return Vec::new();
+    }
+    let held = match telltale_net::local_addrs() {
+        Ok(h) => h,
+        Err(e) => {
+            return vec![format!(
+                "couldn't list this node's addresses to check `source`: {e}"
+            )];
+        }
+    };
+    specs
+        .into_iter()
+        .filter_map(|(name, spec)| {
+            resolve_source(spec, &held).err().map(|e| {
+                format!(
+                    "upstream `{name}`: {e} (this node would start with that upstream degraded)"
+                )
+            })
+        })
+        .collect()
+}
+
 fn link_local(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => v4.is_link_local(),

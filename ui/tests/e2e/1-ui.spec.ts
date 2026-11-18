@@ -653,6 +653,30 @@ test('ups_013 upstream source address: suggestions and a lost-address problem', 
   }
 });
 
+// REQ: UPS-013 (ADR-997 §4) — a real save of a `source` this node doesn't hold is refused with a
+// message that names the problem, on a dry run too, and nothing is stored.
+test('ups_013 a source this node does not hold is refused on save', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const body = { url: 'udp://192.0.2.1', source: '203.0.113.9' };
+  for (const q of ['?dryRun=true', '']) {
+    const put = await r.put(`/api/v1/upstreams/ups013-foreign${q}`, { headers: h, data: body });
+    expect(put.status(), await put.text()).toBe(422);
+    expect(await put.text()).toContain('holds no such address');
+  }
+  const list = await (await r.get('/api/v1/upstreams')).json();
+  expect(list.items.some((u: { name: string }) => u.name === 'ups013-foreign')).toBe(false);
+  // The loopback network is held by every node: saved, and shown on the row.
+  const ok = await r.put('/api/v1/upstreams/ups013-held', { headers: h, data: { url: 'udp://192.0.2.1', source: '127.0.0.0/8' } });
+  expect(ok.status(), await ok.text()).toBe(200);
+  try {
+    const row = (await (await r.get('/api/v1/upstreams')).json()).items.find((u: { name: string }) => u.name === 'ups013-held');
+    expect(row.source).toBe('127.0.0.1');
+  } finally {
+    await r.delete('/api/v1/upstreams/ups013-held', { headers: h });
+  }
+});
+
 // REQ: OBS-019 — the Upstreams page's Answer quality: second opinions off on the e2e server
 // (it says how to turn them on), then a stubbed filtering upstream with its EDE and a
 // disagreement.

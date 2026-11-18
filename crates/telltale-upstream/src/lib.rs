@@ -40,7 +40,7 @@ pub use conn::{Close, ConnSnapshot, ConnStats};
 pub use endpoint::{Endpoint, Host, Protocol};
 pub use group::{Answer, Group, ResolveError, Strategy};
 pub use router::{Router, Selection, parse_qtype};
-pub use source::resolve_source;
+pub use source::{resolve_source, source_warnings};
 pub use tls::{TlsOptions, UpstreamTls, spki_pin, tbs_hash};
 pub use upstream::{
     Exchange, ExchangeError, ExchangeObserver, Question, Upstream, UpstreamOptions, client_subnet,

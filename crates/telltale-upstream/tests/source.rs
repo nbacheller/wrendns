@@ -186,21 +186,84 @@ fn config(toml: &str) -> telltale_config::Config {
         .config
 }
 
-/// REQ: UPS-013 — start refuses an address the node doesn't hold, and accepts one it does
-/// (an address, `address:0`, or the network it is in).
-#[test]
-fn ups_013_router_refuses_a_foreign_source() {
-    let foreign = Router::from_config(&config(
-        "[[upstream]]\nname = \"a\"\nurl = \"udp://192.0.2.1\"\nsource = \"203.0.113.9\"\n",
-    ));
-    let Err(errs) = foreign else {
-        panic!("a foreign source must be refused")
-    };
+/// REQ: UPS-013 (ADR-997 §4), CLU-004 — a stored config whose `source` this node doesn't hold
+/// still starts: that upstream is degraded (a problem, queries fail fast) and the others serve.
+#[tokio::test]
+async fn ups_013_foreign_source_degrades_that_upstream_only() {
+    let (addr, _seen) = udp_server().await;
+    let r = Router::from_config(&config(&format!(
+        "[[upstream]]\nname = \"vlan\"\nurl = \"udp://192.0.2.1\"\nsource = \"203.0.113.9\"\n\
+         [[upstream]]\nname = \"other\"\nurl = \"udp://{addr}\"\n"
+    )))
+    .unwrap_or_else(|e| panic!("must start: {e:?}"));
+    let ups = r.upstreams();
+    let p = ups[0].source_problem().unwrap();
+    assert!(p.contains("holds no such address"), "{p}");
+    assert!(ups[0].source().is_none());
+    let t = std::time::Instant::now();
     assert!(
-        errs.iter().any(|e| e.contains("holds no such address")),
-        "{errs:?}"
+        ups[0]
+            .exchange(&question(), Duration::from_secs(2))
+            .await
+            .is_err()
     );
+    assert!(t.elapsed() < Duration::from_secs(1), "fails fast");
+    ups[1]
+        .exchange(&question(), Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert!(ups[1].source_problem().is_none());
+    // `config check` names it.
+    let w = telltale_upstream::source_warnings(&config(
+        "[[upstream]]\nname = \"vlan\"\nurl = \"udp://192.0.2.1\"\nsource = \"203.0.113.9\"\n",
+    ));
+    assert!(
+        w.iter().any(|l| l.contains("holds no such address")),
+        "{w:?}"
+    );
+}
 
+/// REQ: UPS-013 — a hostname upstream is reached over the source's IP version: a v6 source
+/// with only a v4 answer is a stated problem, not a bind across families.
+#[tokio::test]
+async fn ups_013_source_family_picks_the_matching_address() {
+    use telltale_upstream::Bootstrap;
+    // A bootstrap that answers A only.
+    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let bs_addr = sock.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 512];
+        while let Ok((n, peer)) = sock.recv_from(&mut buf).await {
+            sock.send_to(&reply(&buf[..n]), peer).await.ok();
+        }
+    });
+    let opts = UpstreamOptions {
+        timeout: Duration::from_secs(2),
+        source_spec: Some("::1".into()),
+        bootstrap: Some(std::sync::Arc::new(Bootstrap::new(vec![bs_addr]))),
+        ..UpstreamOptions::default()
+    };
+    let up = Upstream::build(
+        1,
+        "u",
+        Endpoint::parse("udp://dns.example.test").unwrap(),
+        &opts,
+        &TlsOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        up.exchange(&question(), Duration::from_secs(2))
+            .await
+            .is_err()
+    );
+    let p = up.source_problem().unwrap();
+    assert!(p.contains("has no IPv6 address"), "{p}");
+}
+
+/// REQ: UPS-013 — start accepts an address the node holds (an address, `address:0`, or the
+/// network it is in).
+#[test]
+fn ups_013_router_accepts_a_held_source() {
     for src in ["127.0.0.1", "127.0.0.1:0", "127.0.0.0/8"] {
         let r = Router::from_config(&config(&format!(
             "[[upstream]]\nname = \"a\"\nurl = \"udp://192.0.2.1\"\nsource = \"{src}\"\n"

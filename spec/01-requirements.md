@@ -46,7 +46,7 @@ Detailed behavior lives in the referenced spec section. If this table and a sect
 | UPS-010 | P1 | SOCKS5 and HTTP CONNECT proxy per upstream (Tor parity with Technitium). |
 | UPS-011 | P1 | **Custom upstreams:** (a) arbitrary endpoint parameters (custom DoH path/headers/method, SNI override, client certificate mTLS, TLS pinning); (b) an *exec/socket plugin* that speaks DNS wire format over a Unix socket or localhost; (c) a WASM upstream plugin ABI (P2). |
 | UPS-012 | P1 | `recursive` as an upstream type (uses DNS-012), so it can sit in any upstream group. |
-| UPS-013 | P2 | Per-upstream source address (`source`) for udp, tcp, tls and https upstreams, bound before connect; a network names the address each node holds in it; refused at start when the node holds none. *(Fork, T24.31, ADR-997.)* |
+| UPS-013 | P2 | Per-upstream source address (`source`) for udp, tcp, tls and https upstreams, bound before connect; a network names the address each node holds in it; refused on save when the node holds none; a node that doesn't hold it (at start, on reload, on a replica) degrades only that upstream. *(Fork, T24.31, ADR-997.)* |
 
 ## Filtering (FLT) — see `05`
 | ID | Pri | Requirement |

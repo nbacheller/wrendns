@@ -5847,6 +5847,25 @@ fn plan_override(
             .map(|r| serde_json::to_value(r).unwrap_or_default()),
         _ => named_json(&merged.group, &name),
     };
+    // REQ: UPS-013 (ADR-997 §4) — the hard refusal for an upstream `source` this node doesn't
+    // hold is here, on the write: start, reload and a replica's apply only degrade that
+    // upstream, so a saved row never takes DNS down.
+    if w.kind == ManagedKind::Upstream
+        && body_in.is_some()
+        && let Some(spec) = merged
+            .upstream
+            .iter()
+            .find(|u| u.name() == name)
+            .and_then(|u| u.source.as_ref())
+    {
+        let held = telltale_net::local_addrs()
+            .map_err(|e| Problem::internal(format!("couldn't list this node's addresses: {e}")))?;
+        telltale_upstream::resolve_source(spec.as_str(), &held).map_err(|e| {
+            Problem::new(Code::InvalidConfig, format!("upstream `{name}`: {e}")).hint(
+                "`source` must be an address this node holds, or a network it has an address in; in a cluster, a network is the safer choice.",
+            )
+        })?;
+    }
     let mut warnings: Vec<String> = telltale_config::validate_config(&merged).unwrap_or_default();
     warnings.extend(mixed_version_warning(
         src,

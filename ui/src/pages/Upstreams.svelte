@@ -95,7 +95,7 @@
       help: 'The name on the server certificate, for tls:// and quic:// addresses given by IP.', admin: keepsCredential },
     { key: 'source', label: 'Source address', type: 'text', placeholder: '198.51.100.0/24 or 198.51.100.252', advanced: true,
       suggest: sourceSuggestions, helpTopic: 'upstream-source',
-      help: 'Send the queries to this upstream from one of the addresses this node holds (udp://, tcp://, tls://, https://). A network, such as 198.51.100.0/24, means the address each node holds in it.' },
+      help: 'Send the queries to this upstream from one of the addresses this node holds (udp://, tcp://, tls://, https://). A network, such as 198.51.100.0/24, means the address each node holds in it: in a cluster use a network, since one node’s address is missing on the others. Saving an address this node doesn’t hold is refused.' },
     { key: 'timeout_ms', label: 'Timeout (ms)', type: 'number', placeholder: '2000', advanced: true },
   ]);
   const names = $derived(upstreams.map((u) => u.name).filter((n) => !n.startsWith('forward:')));
