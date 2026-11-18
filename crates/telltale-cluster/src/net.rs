@@ -716,6 +716,42 @@ struct EchoState {
 /// The echo state of one stream, shared by its reader and writer.
 type EchoSlot = Arc<Mutex<EchoState>>;
 
+/// Records a heartbeat sent at `ts_ms` (sent at `at`), keeping the last [`ECHO_KEPT`].
+fn remember_sent(
+    sent: &mut VecDeque<(u64, tokio::time::Instant)>,
+    ts_ms: u64,
+    at: tokio::time::Instant,
+) {
+    sent.push_back((ts_ms, at));
+    while sent.len() > ECHO_KEPT {
+        sent.pop_front();
+    }
+}
+
+/// When the heartbeat a peer echoed (by its wall-clock `ts_ms`) was sent. Two sent in the same
+/// millisecond share a `ts_ms`; the newer one is taken, so that round trip reads a little short.
+/// An echo older than the kept window has no send instant and gives no sample (REQ: CLU-008).
+fn echoed_sent_at(
+    sent: &VecDeque<(u64, tokio::time::Instant)>,
+    echo_ms: u64,
+) -> Option<tokio::time::Instant> {
+    sent.iter()
+        .rev()
+        .find(|(ts, _)| *ts == echo_ms)
+        .map(|(_, at)| *at)
+}
+
+/// The round trip in ms: the monotonic time from `sent_at` to `now`, less how long the peer held
+/// the heartbeat. Never negative; no wall clock is involved (REQ: CLU-008).
+fn echo_round_trip_ms(
+    sent_at: tokio::time::Instant,
+    now: tokio::time::Instant,
+    echo_delay_ms: u32,
+) -> u64 {
+    let elapsed = u64::try_from(now.duration_since(sent_at).as_millis()).unwrap_or(u64::MAX);
+    elapsed.saturating_sub(u64::from(echo_delay_ms))
+}
+
 /// Where the primary reads a blob it serves.
 #[derive(Debug, Clone)]
 pub enum BlobSource {
@@ -2116,13 +2152,11 @@ impl Cluster {
         let trust_fp = crate::pki::trust_fp(&id.ca_pem);
         let issuer_fp = crate::pki::issuer_fp(&id.cert_pem, &id.ca_pem).unwrap_or_default();
         let ts_ms = now_ms();
-        {
-            let mut e = echo.lock().unwrap_or_else(PoisonError::into_inner);
-            e.sent.push_back((ts_ms, tokio::time::Instant::now()));
-            while e.sent.len() > ECHO_KEPT {
-                e.sent.pop_front();
-            }
-        }
+        remember_sent(
+            &mut echo.lock().unwrap_or_else(PoisonError::into_inner).sent,
+            ts_ms,
+            tokio::time::Instant::now(),
+        );
         Frame {
             body: Some(Body::Heartbeat(Heartbeat {
                 source_commit: l.source_commit.clone(),
@@ -2389,18 +2423,16 @@ impl Cluster {
                     // now, less how long the peer held it. Both ends are on the monotonic clock.
                     let sent_at = if hb.echo_ms > 0 {
                         let e = echo.lock().unwrap_or_else(PoisonError::into_inner);
-                        e.sent
-                            .iter()
-                            .rev()
-                            .find(|(ts, _)| *ts == hb.echo_ms)
-                            .map(|(_, at)| *at)
+                        echoed_sent_at(&e.sent, hb.echo_ms)
                     } else {
                         None
                     };
                     if let Some(sent_at) = sent_at {
-                        let elapsed =
-                            u64::try_from(sent_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-                        let rtt = elapsed.saturating_sub(u64::from(hb.echo_delay_ms));
+                        let rtt = echo_round_trip_ms(
+                            sent_at,
+                            tokio::time::Instant::now(),
+                            hb.echo_delay_ms,
+                        );
                         m.rtt_ms = Some(u32::try_from(rtt).unwrap_or(u32::MAX));
                         // T6.11 — its clock was at ts_ms about half a round trip ago.
                         let theirs = i128::from(hb.ts_ms) + i128::from(rtt / 2);

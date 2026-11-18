@@ -16,6 +16,14 @@ async fn bound_port() -> (TcpListener, SocketAddr) {
     (l, addr)
 }
 
+/// The notBefore and notAfter of a PEM certificate, as Unix seconds.
+fn validity_window(cert_pem: &str) -> (i64, i64) {
+    let der = crate::pki::der_of(cert_pem).unwrap();
+    let (_, cert) = x509_parser::parse_x509_certificate(&der).unwrap();
+    let v = cert.validity();
+    (v.not_before.timestamp(), v.not_after.timestamp())
+}
+
 // Waits until a spawned `serve` accepts connections. A fixed sleep raced the bind (and its
 // certificate setup) when the suite runs in parallel on a busy runner.
 async fn listening(addr: SocketAddr) {
@@ -246,10 +254,12 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
     if had_key {
         std::fs::rename(&key, rdir.join("ca.key.aside")).unwrap();
     }
-    // The certificate's validity starts at the wall-clock second it is issued. The clock can
-    // step (a VM resumes or syncs), so two issues a second apart can carry the same bytes:
-    // the renewal is proven by the stored certificate's generation and event below, not by a
-    // different PEM.
+    // The certificate's validity window is taken from the wall clock when it is issued. The
+    // renewal is proven by the stored certificate's event and generation, and by its validity
+    // window not moving backwards. A changed PEM is not required: the key is kept, so the serial
+    // (derived from the key) and the public key are the same. Whether a clock step explains an
+    // identical PEM was never reproduced, so this is a recorded assumption, not a proven cause.
+    let before = replica.identity.reload();
     crate::renew::renew_now(&replica).await.unwrap();
     if had_key {
         std::fs::rename(rdir.join("ca.key.aside"), &key).unwrap();
@@ -266,6 +276,16 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
     assert_eq!(after.meta.node_id, rid, "same node ID");
     crate::pki::verify_issued(&after.cert_pem, &after.ca_pem).unwrap();
     assert_eq!(replica.cert_generation(), 1);
+    let (before_from, before_until) = validity_window(&before.cert_pem);
+    let (after_from, after_until) = validity_window(&after.cert_pem);
+    assert!(
+        after_from >= before_from,
+        "the renewed certificate starts no earlier"
+    );
+    assert!(
+        after_until >= before_until,
+        "the renewed certificate ends no earlier"
+    );
     assert!(!crate::renew::due(&after.cert_pem));
     // Someone else's CSR is refused: the certificate names come from the asking peer.
     let csr = crate::pki::csr_for(&after.key_pem).unwrap();
@@ -343,6 +363,41 @@ async fn clu_001_streams_need_a_cluster_certificate() {
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+}
+
+// REQ: CLU-008 — a round trip is monotonic time less the peer's hold time; a wall-clock step
+// cannot make it 0 (the earlier wall-clock mix did).
+#[test]
+fn clu_008_round_trips_are_monotonic_less_the_hold() {
+    let sent = tokio::time::Instant::now();
+    let now = sent + Duration::from_millis(100);
+    assert_eq!(echo_round_trip_ms(sent, now, 30), 70);
+    assert_eq!(echo_round_trip_ms(sent, now, 0), 100);
+    // A hold longer than the elapsed time saturates to 0 instead of going negative.
+    assert_eq!(echo_round_trip_ms(sent, now, 500), 0);
+}
+
+// REQ: CLU-008 — two heartbeats sent in the same millisecond share a ts_ms; the newer is taken.
+// An echo older than the kept window has no send instant (no sample).
+#[test]
+fn clu_008_an_echo_takes_the_newest_heartbeat_with_that_ts_and_none_past_the_window() {
+    let t0 = tokio::time::Instant::now();
+    let mut sent = VecDeque::new();
+    remember_sent(&mut sent, 5, t0);
+    remember_sent(&mut sent, 5, t0 + Duration::from_millis(3));
+    assert_eq!(
+        echoed_sent_at(&sent, 5),
+        Some(t0 + Duration::from_millis(3))
+    );
+    assert_eq!(echoed_sent_at(&sent, 6), None);
+    // The window keeps ECHO_KEPT heartbeats: the oldest falls out, and its echo gives no sample.
+    let mut window = VecDeque::new();
+    for ts in 1..=(ECHO_KEPT as u64 + 1) {
+        remember_sent(&mut window, ts, t0);
+    }
+    assert_eq!(window.len(), ECHO_KEPT);
+    assert_eq!(echoed_sent_at(&window, 1), None);
+    assert_eq!(echoed_sent_at(&window, 2), Some(t0));
 }
 
 #[test]
