@@ -52,6 +52,8 @@
   ];
   // REQ: OBS-010 (T27.1) — every condition the server accepts; the list is checked against the enum.
   const conditions = alertConditions;
+  // The conditions that read the threshold; the field is shown for these only.
+  const thresholdConditions = ['servfail_rate', 'disk_full', 'cert_expiring', 'primary_unreachable'];
   const ruleFields = $derived<Field[]>([
     { key: 'when', label: 'When', type: 'select', options: conditions, initial: 'upstream_down',
       help: 'What the rule watches. The ? below the Rules list explains each condition.' },
@@ -62,6 +64,7 @@
     // The server accepts 0 to 100 for any condition, days 1 to 365 for cert_expiring, and seconds 15 to 86400
     // for primary_unreachable; the other conditions ignore it.
     { key: 'threshold', label: 'Threshold', type: 'number', placeholder: '5 (servfail_rate), 90 (disk_full), 14 days (cert_expiring), 60 s (primary_unreachable)', advanced: true,
+      visibleWhen: (v) => thresholdConditions.includes(String(v.when)),
       help: 'The unit depends on the condition: a percentage for servfail_rate (default 5, from 0 to 100) and disk_full (default 90), days for cert_expiring (default 14, from 1 to 365), and seconds for primary_unreachable (default 60, from 15 to 86400): how long a replica may go without reaching its primary before the alert. Other conditions ignore it.' },
     { key: 'enabled', label: 'On', type: 'bool', initial: true },
   ]);

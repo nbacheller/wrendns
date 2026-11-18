@@ -2081,6 +2081,35 @@ test('obs_010 every alert condition can be chosen', async () => {
   }
 });
 
+// REQ: OBS-010 (T27.1, T24.5) — the threshold field is shown only for the four conditions that read it,
+// and the server refuses an out-of-range value at Check (cert_expiring takes days from 1 to 365).
+test('obs_010 threshold shown per condition and out-of-range refused', async () => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/alerts');
+  await expect(page.locator('h1', { hasText: 'Alerts' })).toBeVisible();
+  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+  try {
+    const rules = page.getByTestId('editor-alert_rule');
+    await rules.getByRole('button', { name: 'Add rule' }).click();
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-range');
+    await page.getByLabel('When', { exact: true }).selectOption('slo_burn');
+    await expect(page.getByRole('spinbutton', { name: 'Threshold' })).toHaveCount(0);
+    await page.getByLabel('When', { exact: true }).selectOption('cert_expiring');
+    await expect(page.getByRole('spinbutton', { name: 'Threshold' })).toBeVisible();
+    await page.getByRole('group', { name: 'Send to' }).getByRole('checkbox', { name: /file-ntfy/ }).check();
+    await page.getByRole('spinbutton', { name: 'Threshold' }).fill('0');
+    await page.getByRole('button', { name: 'Check' }).click();
+    await expect(page.getByText('days from 1 to 365')).toBeVisible();
+    // The refused Check logs its 422; the test expects it.
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 422 \(/.test(problems[i])) problems.splice(i, 1);
+    await expect(rules.getByTestId('entry-row').filter({ hasText: 'ui-range' })).toHaveCount(0);
+  } finally {
+    await page.reload();
+    await page.getByRole('button', { name: 'Simple', exact: true }).click().catch(() => {});
+  }
+});
+
 // REQ: API-014 (T23.2) — the Alerts page shows an operator the fields only an admin changes
 // read-only: a destination's token and password files always, and its address and CA once it
 // holds a credential; the server refuses them anyway.
