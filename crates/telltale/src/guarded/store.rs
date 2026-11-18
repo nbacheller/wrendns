@@ -132,7 +132,9 @@ pub(crate) fn effective(
         .collect();
     if crate::replication::follows_primary(cfg) {
         let states = replica_states(state);
-        for mut e in crate::node_managed::applied_guarded(cfg, node) {
+        let applied = crate::node_managed::applied_guarded(cfg, node);
+        prune_suppressed(state, &applied);
+        for mut e in applied {
             if out.iter().any(|(l, _)| l.id == e.id) || is_local(&e.id) {
                 continue;
             }
@@ -145,6 +147,21 @@ pub(crate) fn effective(
         }
     }
     out
+}
+
+/// Drops the local suppressions of entries the replicated blob no longer holds and that are no
+/// longer queued for removal (the primary's next version arrived without them). Best effort.
+pub(crate) fn prune_suppressed(state: &State, applied: &[Stored]) {
+    let mut s = suppressed(state);
+    if s.is_empty() {
+        return;
+    }
+    let queued = removals(state);
+    let before = s.len();
+    s.retain(|id, _| applied.iter().any(|e| &e.id == id) || queued.iter().any(|r| &r.id == id));
+    if s.len() != before {
+        let _ = set_suppressed(state, &s);
+    }
 }
 
 const REPLICA_STATES: &str = "guarded.replica_states";
@@ -340,17 +357,13 @@ pub(crate) fn queue_removal(state: &State, id: &str, by: &str) -> Result<(), Str
     set_removals(state, &v)
 }
 
-/// The primary took the removal: it is no longer queued, and the local suppression (which hid the
-/// primary's copy until then) is dropped with it.
+/// The primary took the removal: it is no longer queued. The local suppression stays until the
+/// replicated blob no longer holds the entry ([`prune_suppressed`]), so a reload in the gap
+/// doesn't apply the old copy again.
 pub(crate) fn removal_done(state: &State, id: &str) -> Result<(), String> {
     let mut v = removals(state);
     v.retain(|r| r.id != id);
-    set_removals(state, &v)?;
-    let mut s = suppressed(state);
-    if s.remove(id).is_some() {
-        set_suppressed(state, &s)?;
-    }
-    Ok(())
+    set_removals(state, &v)
 }
 
 /// A restore brought the guarded entries of the archive back: every one is marked `staged`, so the

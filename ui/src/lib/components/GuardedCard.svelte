@@ -148,7 +148,7 @@
     {#if n.outcomes.length}
       <h3>Latest outcomes</h3>
       <ul class="small" data-testid="guarded-outcomes">
-        {#each n.outcomes.slice(0, 5) as o (o.at + o.setting + o.outcome)}
+        {#each n.outcomes.slice(0, 5) as o, i (i)}
           <li>{o.setting}: {outcomeText(o)} <span class="muted">({ago(o.at)})</span></li>
         {/each}
       </ul>

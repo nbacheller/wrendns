@@ -1,4 +1,4 @@
-//! REQ: API-902, CLU-004, OPS-012 (T27.13; ADR-956 Â§4, ADR-957) â€” probation: what a node does at
+//! REQ: API-902, CLU-004, OPS-012 (T27.13; ADR-956 §4, ADR-957) — probation: what a node does at
 //! start with a staged or restored guarded entry.
 //!
 //! A `staged` entry is written at once and applied at the next start. That start marks it on
@@ -346,7 +346,7 @@ static FALLBACK: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 /// A confirmed guarded listener couldn't bind at this start (an interface that isn't up yet, a DHCP
 /// or VLAN address): the node runs on the file's value for this start only, with the health reason
 /// `guarded_bind_fallback` and an audit row (`failed_start`). The entry stays and is tried again at
-/// the next start (ADR-956 Â§4).
+/// the next start (ADR-956 §4).
 pub(crate) fn note_bind_fallback(state: Option<&State>, node: &str, id: &str, now: u64) {
     if let Ok(mut f) = FALLBACK.lock() {
         f.insert(id.to_owned());
@@ -403,7 +403,7 @@ pub(crate) fn fall_back_after_bind_failure(
         return Vec::new();
     };
     let mut done = Vec::new();
-    for e in store::for_node(&state, &node) {
+    for (e, _replicated) in store::effective(file_cfg, &state, &node) {
         let listener = defs.iter().any(|d| {
             d.row.id == e.id && d.row.mode == Mode::Window && d.row.proof == Some(Proof::NewSocket)
         });

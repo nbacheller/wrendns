@@ -1587,6 +1587,40 @@ async fn api_902_restart_excludes_other_guarded_operations() {
     );
 }
 
+// REQ: CLU-004, API-902 (ADR-956 §4) — a start that fails after the DNS listeners bound (the API or
+// metrics listener couldn't) stops its UDP workers, so the bind fallback's second start isn't
+// sharing the port (SO_REUSEPORT) with orphaned workers whose runtime is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_902_failed_start_leaves_no_udp_workers_behind() {
+    use telltale_config::{ListenProto, Listener};
+    let dir = tempfile::tempdir().unwrap();
+    let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let udp_addr = probe.local_addr().unwrap();
+    drop(probe);
+    let mut cfg = Config::default();
+    cfg.node.data_dir = telltale_config::SafeString::new(dir.path().to_str().unwrap()).unwrap();
+    cfg.node.name = telltale_config::SafeString::new("pi-a").unwrap();
+    cfg.api.enabled = false;
+    cfg.cache.persist = false;
+    cfg.telemetry.metrics.enabled = true;
+    cfg.telemetry.metrics.listen = busy.local_addr().unwrap();
+    cfg.listen = vec![Listener {
+        proto: ListenProto::Udp,
+        addr: udp_addr,
+        path: None,
+        tls: None,
+        proxy_protocol: false,
+        max_connections: None,
+        max_connections_per_address: None,
+    }];
+    let r = crate::server::serve(Vec::new(), cfg).await;
+    let e = r.expect_err("the metrics listener can't bind");
+    assert!(probation::is_bind_failure(&e), "{e:?}");
+    // A plain (non-REUSEPORT) bind on the DNS port only works if every worker socket is closed.
+    std::net::UdpSocket::bind(udp_addr).expect("the failed start's UDP workers are gone");
+}
+
 // REQ: API-902 (ADR-956 §4a) — a requested restart drains and exits 75: the node is driven through
 // `server::serve` (listeners bound on ephemeral ports), the restart is requested the way the engine
 // does it, `serve` returns within the drain cap (it does not wait for the 10 s hard cap, which would
@@ -2836,6 +2870,33 @@ fn api_902_replica_in_primarys_site_is_not_the_primary() {
     );
 }
 
+// REQ: API-902 (ADR-956 §4) — the bind fallback covers a replica too: a confirmed listener entry
+// that reached it in the primary's blob (not a row of its own) is set aside when it can't bind.
+#[test]
+fn api_902_bind_fallback_covers_a_replicated_entry() {
+    let _g = FALLBACK_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    probation::reset_fallbacks();
+    let (_dir, cfg, me) = replica_with(&[("t-bindfb3", json!({"port": 1}), EntryState::Active)]);
+    super::set_this_node(&me);
+    static ROW: Row = row!(
+        "t-bindfb3",
+        &["t.bindfb3"],
+        Mode::Window,
+        Some(Proof::NewSocket),
+        never
+    );
+    let rows = vec![RowDef {
+        row: ROW,
+        applier: Arc::new(NoOp),
+    }];
+    let done = probation::fall_back_after_bind_failure(&cfg, &rows, 10);
+    assert_eq!(done, vec!["t-bindfb3".to_owned()]);
+    assert!(probation::fell_back("t-bindfb3"));
+    probation::reset_fallbacks();
+}
+
 // REQ: API-902 (ADR-956 §4) — the start path: a listener that can't bind with a confirmed guarded
 // entry behind it starts again, once, on the file's value; the entry stays for the next start; a
 // bind failure with no such entry, or any other failure, is returned as it is.
@@ -3080,7 +3141,11 @@ fn api_902_replica_clear_queues_a_removal_for_the_primary() {
     assert!(store::suppressed(&state).contains_key("t-stg"));
     // The removal the primary took (its own blob no longer has the entry): queue and suppression go.
     store::removal_done(&state, "t-stg").unwrap();
-    assert!(store::removals(&state).is_empty() && store::suppressed(&state).is_empty());
+    assert!(store::removals(&state).is_empty());
+    // The suppression stays while the replicated blob still holds the entry, and goes once it doesn't.
+    assert!(store::suppressed(&state).contains_key("t-stg"));
+    store::prune_suppressed(&state, &[]);
+    assert!(store::suppressed(&state).is_empty());
 }
 
 // REQ: API-902 (ADR-956 §3) — a replica's immediate change isn't answered `applied` until the
