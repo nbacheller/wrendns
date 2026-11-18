@@ -4906,7 +4906,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Review amendments (2026-11-18):** the fallback to the system temporary directory creates only a fresh `telltale-import-<random>` directory (mode 0700, fails if it exists) and never changes the mode of, or sweeps, the temporary directory itself; the stale sweep runs only under `<data_dir>/import-tmp` and only on names `up-<pid>-<time>-<n>-<random>`. Scratch names carry a random suffix. An archive entry is capped at 256 MiB (was 512) so inflating (which doubles its buffer) stays under the 1 GiB limit and the user gets the clear refusal, not an abort. Previews are already limited to two at once (`PREVIEWS`). The upload's removal on drop is synchronous and accepted: the directory is one upload and one file.
 
-## ADR-994 — Content categories and filter profiles are in scope; a profile is a group (Proposed 2026-11-18, owner request; amended 2026-11-18 after review)
+## ADR-994 — Content categories and filter profiles are in scope; a profile is a group (Accepted 2026-11-18, owner decisions)
 **Context:** the owner asked (2026-11-18, with two screenshots of UniFi's content filtering) to organise blocking into categories (groups such as "Adult and Sensitive Content", "AI & Crypto", "Business & Professional", "Culture & Entertainment", "Networking Infrastructure", "New or Risky Domains", "Security & Threat Protection", each with checkboxes and an "n of m" count) and to manage them in named filter profiles (a list with Name, Source, Filter Scope, Safe Search and Schedule, and an editor with Source, Ad Block, Safe Search per engine, Filtering Off, Enhanced or Basic, and a category picker with Search, Select All and Deselect All). A later message added that adding devices from the profile is wanted too. The scope note in `spec/10` (quick rules, around line 272) said "Not parental controls: no screen time, no content categories".
 **Decision:**
 1. **Scope.** Content categories are in scope as FLT-901; filter profiles as FLT-902. The note is amended: *no screen time* (per-device time budgets) stays out; *no content categories* is withdrawn. Schedules (FLT-010) stay time windows.
@@ -4923,7 +4923,21 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 **Consequences:** a per-engine safe-search field is added; the Lists page shows category-owned lists read-only; the config schema, OpenAPI and MCP snapshot change; `docs/third-party-notices.md` gains the sources; no screen time. Design: `docs/design/content-categories.md`. Task: T24.29.
 **Test plan:** `docs/design/content-categories.md` §9.
 
-## ADR-995 — The category catalog: `presets/categories/*.toml`, sources with licence and cadence, downloaded at runtime (Proposed 2026-11-18)
+**Owner decisions (2026-11-18).** All ten recommendations in `docs/design/content-categories.md` §12 are accepted:
+1. Offer the seven UniFi-style groups plus Privacy and Ads.
+2. Basic is Adult, Malware, Phishing and Scam.
+3. Nothing is selected by default.
+4. UT1 comes later, through the mirror once its licence is read.
+5. No OISD.
+6. An authored AI-services bundle, and no crypto bundle.
+7. Ad Block is one checkbox, with the tier in Settings.
+8. Newly registered domains at 7 days only.
+9. A category over 50 % of a small node's limit is refused.
+10. A device's several profiles combine as a union. Bon-Appetit is an Extended Adult tier, off by default.
+
+**Measured the same day:** UniFi's content filter is DNS-level. The gateway sinkholes filtered names and intercepts outbound port-53 queries, but queries to an internal resolver are not intercepted. So a device that uses TelltaleDNS is filtered only by TelltaleDNS's categories, or by the gateway when TelltaleDNS forwards to it from that device's VLAN (T24.31 source address, T24.32 direct way). The owner chose both.
+
+## ADR-995 — The category catalog: `presets/categories/*.toml`, sources with licence and cadence, downloaded at runtime (Accepted 2026-11-18, owner decisions)
 **Context:** ADR-994 needs a catalog that is data (like `presets/services/*.toml`, FLT-012), with sources checked for licence, maintenance and size. Sources were checked on 2026-11-18 by fetching repository metadata, licences and file headers (`docs/design/content-categories.md` §2.1).
 **Decision:**
 1. **Format.** One TOML file per catalog group, compiled into the binary, with five tables: `[[group]]` (id, name, order); `[[category]]` (id, name, group, one-line description for the info icon, `sources`, optional `tiers` and `default_tier`, `kind = "list" | "service"`); `[[source]]` (id, name, maintainer, url, `format = "domains" | "adblock" | "hosts"`, SPDX licence, licence_url, optional attribution, homepage, cadence, entries and bytes from the file header at catalog build, optional `max_bytes`, `weight = "light" | "heavy"` computed above 500,000 entries, optional `resolve = "meta-json"` when the file name changes, and then a fixed `url_prefix` per source: scheme, host, repository path and file-name pattern, e.g. `https://raw.githubusercontent.com/Bon-Appetit/porn-domains/` and `block.<hash>.txt`; a resolved URL outside the prefix is refused and the source reports `resolve_refused`; `cadence = "daily" | "low"`; `tiers` of kind `exclusive` or `additive`; per-source `checked` date and `archived` as recorded); `[[preset]]` (id such as `basic`, `categories`); `[[not_offered]]` (name, group, reason, alternative).
@@ -4937,7 +4951,10 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 **Alternatives rejected:** fetching the catalog at runtime (a second thing that can fail, and an injection path for URLs: the catalog is code-reviewed data); one big merged list (no per-category choice); bundling a snapshot (licence, size, staleness).
 **Consequences:** counts in the catalog go stale between releases; the UI shows the live count after download and the catalog value before. A source URL that moves needs a release (or the user's own list). Risk for the owner: GPL-3.0 on a dataset is recorded here, not resolved by legal review.
 **Test plan:** `flt_901_catalog_*` (design section 9), a fuzz target for the catalog parser, `flt_901_meta_json_url_outside_prefix_refused`, `flt_901_cat_prefix_reserved`, `flt_901_catalog_recorded_metadata_fresh`, and a weekly job running `scripts/check-catalog.py` (licence, recency and `archived` flag against the GitHub API; not a cargo test).
-## ADR-998 — UniFi device and group sync: explicit links, MAC identity, a three-way merge per link, and a definitive side chosen per link (Proposed 2026-11-18, owner request; needs the owner's approval with ADR-999 before any build)
+
+**Owner decisions (2026-11-18).** Accepted with ADR-994's decisions.
+
+## ADR-998 — UniFi device and group sync: explicit links, MAC identity, a three-way merge per link, and a definitive side chosen per link (Accepted 2026-11-18, owner decisions)
 **Context:** The owner asked (2026-11-18) that devices and policies sync between TelltaleDNS and UniFi in both directions: a device added to a group in UniFi joins the same group in TelltaleDNS, and the reverse. The owner's reading is that UniFi's content filtering acts on traffic and applies whatever DNS a client uses, so TelltaleDNS filters DNS and adds per-device visibility while UniFi enforces at the IP level, and the sync keeps the two consistent. What the repository does today (`routers.rs`, ADR-080, ADR-902, ADR-912, T25.10): TelltaleDNS reads UniFi (`stat/sta`, `rest/user`, `rest/networkconf`, the v2 `clients/history`, and with T25.10 `stat/alluser` and `stat/device`) with an API key (`x-api-key` on `/proxy/network/api/s/<site>/...`) or a session cookie, and **never writes**. A TelltaleDNS device is a `[[client]]` (`name`, `match` keys with the MAC among them, an ordered `groups` list); a group is a `[[group]]`. No UniFi object is linked to either.
 
 **What the research found (public sources only; no request was made to any gateway).** Ubiquiti's own help pages (`help.ui.com`) refused this tool (HTTP 403), so each claim below says where it comes from.
@@ -4971,7 +4988,18 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 **Consequences:** a new managed kind `group_links`, a `[unifi_sync]` singleton, a sync thread on the primary, a write-capable UniFi client (ADR-999), a Groups-page control, new help topics, and a spec/10 task, T25.18. A TelltaleDNS operator who can edit a linked group's membership can, in a write mode, change which devices a UniFi firewall policy applies to, and a UniFi admin can move a device out of a restrictive TelltaleDNS group; both show in the preview, the audit and the effective policy page, and link creation and write modes are admin-only. Until the build's capability check finds a usable device-group interface the task stays at step 1, and the owner is told.
 **Test plan:** in T25.18, against a fake UniFi only (never the owner's gateway): the merge function by property tests (convergence, idempotence, no removal without a baseline, no oscillation), the echo and flapping rules, outages, the guard, the preview-then-apply flow, audit-before-write, the kill switches, the cluster gate, the credential never appearing in any output, and the Playwright flow.
 
-## ADR-999 — UniFi write access: one operation, one credential, off by default, audited before it is sent (Proposed 2026-11-18, owner request; the owner's approval is required before any build, per the standing rule that writes to the gateway need an ADR)
+**Owner decisions (2026-11-18).** All recommendations for Q1–Q11 are accepted:
+- ADR-998 and ADR-999 are accepted, with the read direction shipping first.
+- A new link defaults to `unifi_definitive`, preview-only, `create_missing_devices` on and `include_private_macs` off.
+- Writes use a dedicated local UniFi user with the narrowest role that works.
+- A round that removes more than 5 members or 20 % of a link is held.
+- Operators may change a linked group's membership; links and modes stay admin-only.
+- Each link uses the first `unifi` router and one site.
+- The build comes after T25.10. For step 1, the owner supplies the gateway's OpenAPI JSON when asked.
+
+**Q4 measured:** UniFi content filtering is DNS-level (sinkhole 203.0.113.250 and port-53 interception). Queries to an internal resolver are not intercepted, and nothing is blocked by IP or SNI. The product wording must say "DNS-level".
+
+## ADR-999 — UniFi write access: one operation, one credential, off by default, audited before it is sent (Accepted 2026-11-18, owner decisions)
 **Context:** Everything TelltaleDNS does to UniFi today is a read (ADR-080, ADR-902, ADR-912), through a `[[router]]` credential that an admin may well have created read-only. ADR-998 needs the first write: changing the members of one linked group on the gateway. A gateway is the home's firewall; a bug or a stolen credential here is worse than one in a DNS resolver.
 **Decision:**
 1. **One write class.** The only UniFi write TelltaleDNS may make is *set the members of one linked group object* (add or remove one MAC at a time, on the object a link names). No client edit, forget, block or reservation; no firewall policy, zone, ACL, traffic rule, content-filter profile, network, WLAN, device or setting; no object creation or deletion. This is enforced in one function, `unifi_write::member_op`, that builds the request from a `MemberOp` value (link, MAC, add or remove) and refuses any other path or method; no other code holds the write credential or an HTTP client for it. A test checks the function against a list of paths it must refuse.
@@ -4986,3 +5014,4 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 **Consequences:** "TelltaleDNS never writes to the gateway" stops being true for linked groups with `writes_enabled`; docs, the Routers page text and `docs/security` say so. The read-only direction (`unifi_definitive`) needs no write credential and is the safe first step. The owner may accept ADR-998 and refuse ADR-999: the sync then ships read-only (UniFi to TelltaleDNS) and the write directions stay off.
 **Test plan:** in T25.18 (`dsc_017_*`), against the fake.
 
+**Owner decision (2026-11-18).** Accepted. The exposure in Q11 is accepted only with the read direction shipped first.
