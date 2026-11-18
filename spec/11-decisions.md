@@ -4905,3 +4905,21 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 **Test plan:** `api_007_upload_scratch_is_private_and_removed`, `api_007_upload_scratch_falls_back_to_temp_dir`, `api_007_import_worker_unpacks_teleporter_in_its_scratch_dir`, and the `worker-image` CI job (the previews run in the image with a read-only root and no `/tmp`).
 
 **Review amendments (2026-11-18):** the fallback to the system temporary directory creates only a fresh `telltale-import-<random>` directory (mode 0700, fails if it exists) and never changes the mode of, or sweeps, the temporary directory itself; the stale sweep runs only under `<data_dir>/import-tmp` and only on names `up-<pid>-<time>-<n>-<random>`. Scratch names carry a random suffix. An archive entry is capped at 256 MiB (was 512) so inflating (which doubles its buffer) stays under the 1 GiB limit and the user gets the clear refusal, not an abort. Previews are already limited to two at once (`PREVIEWS`). The upload's removal on drop is synchronous and accepted: the directory is one upload and one file.
+
+## ADR-1006 — Per-node sections and small shared singletons for the cache and the small settings (Proposed 2026-11-18)
+
+**Context:** T27.2 (the cache) and T27.11 (the small settings) expose settings that have no UI editing path today. Three are node-local (`[cache]`, `[support]`, `[updates]`): each node has its own value, so the value has to be named by the node it applies to and replicate in the node-managed blob (ADR-903 §6, ADR-967). Three are shared singletons (`[dnssec]`, `[filter]`, `[drill]`) that the settings-kinds framework (T24.12, T25.2) already handles.
+
+**Decision:**
+1. `cache`, `support` and `updates` are node-managed kinds, named by the node they apply to (the name the guarded module uses, `node_label`). A node applies only its own row. The rows travel in the manifest's `node_managed` blob (references only; these kinds carry no secret), and an older node ignores them.
+2. `dnssec`, `filter` and `drill` are shared singletons (one entry, `default`). The files win field by field; `explicit_keys` records the six sections so a field a file sets is read-only in the UI (ADR-040).
+3. Roles: the cache is an operator's setting (T27.2 says operator-editable); support and update switches are admins' (T27.11); the drill schedule is admins' (it starts failover drills on the cluster's nodes); the DNSSEC mode, its trust anchors and the list refresh settings are operators'. No agent changes any of them; a write from a node too old to say who asked is refused (409 `upgrade_required`).
+4. Restart: `[cache]`, `[support]`, `[updates]` and `[filter]` are read once, when the node starts (`restart_only_changes`; `[updates]` joins that list here, since its daily loop starts with the value it had). The status view, `GET /api/v1/node-settings[/{node}]`, reports `pendingRestart` against a start-time snapshot. `[dnssec]` applies on reload; `[drill]` is read at each check.
+
+**Alternatives rejected:** keeping `cache` in the singleton framework (one entry per kind; the node would have to be in the key anyway); making the cache admin-only (T27.2 says operators); a restart-window (guarded, ADR-956) flow for the cache (it is not a bootstrap or security setting, so ADR-914's tier doesn't apply).
+
+**Consequences:** a node's row stays in the store after the node leaves the cluster, until it is deleted, and applies to nothing. The routes add 8 documented paths (166 in all). Every change to a per-node section reads "pending restart" until the node restarts.
+
+**Test plan:** `dns_006_cache_settings_node_managed`, `dns_006_file_wins_over_the_cache_settings`, `dns_006_pending_restart_until_the_node_starts_again`, `dns_006_blob_applies_only_this_nodes_row`, `ops_011_ops_012_support_and_updates_per_node`, `clu_014_drill_schedule_admin_only`, `dns_011_dnssec_mode_and_trust_anchors`, `flt_004_filter_refresh_and_stale_settings` (telltale), the path count in `api_001`, and the Playwright files `8-settings.spec.ts` (T27.2 tests) and the T27.11 tests in the same file.
+
+**Decisions for the owner:** the drill schedule's tier (admins here, the conservative choice; the task text is silent); the operator tier for the DNSSEC mode and the list refresh settings; whether a departed node's rows should be swept at the next primary start.

@@ -1738,8 +1738,12 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // /map/health and /map-settings/default (T26.2); 149 with API-016's /oidc-providers and
     // /oidc-providers/{id} (T23.10); 153 with API-016's /sinks, /sinks/{name}, /otlp and
     // /otlp/default (T23.11); 158 with API-902's /guarded, /guarded/{id},
-    // /guarded/{id}/preview, /guarded/pending/{id}/confirm and /guarded/pending/{id}/cancel (T27.13).
-    assert_eq!(paths.len(), 158);
+    // /guarded/{id}/preview, /guarded/pending/{id}/confirm and /guarded/pending/{id}/cancel (T27.13);
+    // 166 with DNS-006's /node-settings, /node-settings/{node} and /cache-settings/{node}, OPS-011's
+    // /support-settings/{node}, OPS-012's /updates-settings/{node}, and DNS-011's, FLT-004's and
+    // CLU-014's /dnssec-settings/default, /filter-settings/default and /drill-settings/default
+    // (T27.2, T27.11).
+    assert_eq!(paths.len(), 166);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

@@ -2597,6 +2597,14 @@ impl Backend for Federated {
     fn otlp_entry(&self) -> telltale_api::model::OtlpEntry {
         self.local.otlp_entry()
     }
+    // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — each node's sections are read from
+    // the node that runs them (this one, or a member through the primary's rows).
+    fn node_settings(
+        &self,
+        node: Option<&str>,
+    ) -> Result<telltale_api::model::NodeSettings, telltale_api::problem::Problem> {
+        self.local.node_settings(node)
+    }
     // REQ: API-016 (T23.8) — the checks run on the node that answers (an admin's draft).
     fn check_router(
         &self,

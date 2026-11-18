@@ -1808,6 +1808,14 @@ node; Kubernetes pods are told apart by pod name.
   and how much of its memory budget that uses. The last hour's lookups, prefetches, stale
   answers served, and evictions. Whether it started warm (how many answers it reloaded from
   the dump, or why it didn't). The `[cache]` settings in effect.
+- **Settings:** each node's card has the node's `[cache]` settings. Operators change them: the form
+  checks the change first (what it does, and any warning), then saves it. Every field applies when the
+  node restarts, so the card shows **pending restart** until then. The fields the configuration files
+  set are locked ("set by file"), and a field the form leaves out keeps the file's value. A viewer sees
+  the same values read-only. The API: `GET /api/v1/node-settings` (this node) and
+  `GET /api/v1/node-settings/{node}`, `PUT` and `DELETE /api/v1/cache-settings/{node}` (add `?dryRun=true`
+  to check). The stored change is a node-managed entry, named by the node, that replicates to the cluster's
+  nodes; each node applies its own.
 - **Charts:** the hit rate and the lookups per 15 s over the last hour, one line per node. A
   pod that just started shows a low hit rate while its cache fills.
 - **What's cached:** what each cache holds by kind (answers, names that don't exist, no data,

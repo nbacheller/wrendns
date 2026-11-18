@@ -154,7 +154,7 @@ function newKey(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'discovery-settings' | 'sinks';
+export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'discovery-settings' | 'sinks' | 'cache-settings' | 'support-settings' | 'updates-settings' | 'dnssec-settings' | 'filter-settings' | 'drill-settings';
 
 /** REQ: API-007 (T23.9) — a backup made through the API. */
 export type BackupResult = { blob: Blob; name: string; secrets: 'included' | 'omitted'; count: number; warnings: string[] };
@@ -287,6 +287,10 @@ export const api = {
   oidcProviders: () => get<S['OidcProviderList']>('/oidc-providers'),
   putOidcProvider: (id: string, b: Record<string, unknown>) => call<unknown>('PUT', `/oidc-providers/${encodeURIComponent(id)}`, { body: b }),
   deleteOidcProvider: (id: string) => call<unknown>('DELETE', `/oidc-providers/${encodeURIComponent(id)}`),
+  // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — a node's own sections (cache, support,
+  // updates) with the fields the files set and whether a restart is pending. No node: this node.
+  nodeSettings: (node?: string | null) =>
+    get<S['NodeSettings']>(node ? `/node-settings/${encodeURIComponent(node)}` : '/node-settings'),
   // REQ: API-016, OBS-010, OBS-006 (T23.11) — event sinks (written through `putEntry`/`deleteEntry` on
   // `sinks`) and the OTLP export: what this node runs, and the admin's write of the one OTLP entry.
   sinks: () => get<S['SinkList']>('/sinks'),

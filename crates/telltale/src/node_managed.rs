@@ -20,14 +20,22 @@ use telltale_config::{Config, OidcProvider, OtlpConfig, SinkConfig};
 use telltale_store::state::State;
 use tracing::{info, warn};
 
-use crate::managed::{OIDC_PROVIDER, OTLP, SINK};
+use crate::managed::{CACHE, OIDC_PROVIDER, OTLP, SINK, SUPPORT, UPDATES};
 
 /// The blob's name in the manifest.
 pub(crate) const BLOB: &str = "node-managed.json";
 /// The document's version.
 const VERSION: u32 = 1;
 /// The kinds that are node-managed (the others are the shared configuration's).
-pub(crate) const KINDS: &[&str] = &[OIDC_PROVIDER, SINK, OTLP, crate::guarded::KIND];
+pub(crate) const KINDS: &[&str] = &[
+    OIDC_PROVIDER,
+    SINK,
+    OTLP,
+    CACHE,
+    SUPPORT,
+    UPDATES,
+    crate::guarded::KIND,
+];
 /// The fields that hold or point at a secret outside the store: a provider's `client_secret` and
 /// its file, a sink's `token_file` (and `tls_ca`, a path), OTLP's inline `headers`. A blob never
 /// carries them: only the references (`client_secret_ref`, `token_ref`, `header_refs`: names)
@@ -323,6 +331,8 @@ pub(crate) fn overlay_blob(cfg: &mut Config, bytes: &[u8]) {
     overlay_providers(cfg, ok);
     overlay_sinks(cfg, sink_ok);
     overlay_otlp(cfg, otlp_ok);
+    // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — this node's per-node sections.
+    crate::node_settings::overlay_blob(cfg, &entries);
     // REQ: API-902 (T27.13, ADR-956 §2) — this node's guarded entries, under its own files.
     overlay_guarded(cfg, &entries);
 }
@@ -418,6 +428,8 @@ pub(crate) fn overlay_own(cfg: &mut Config, state_path: &Path) {
     overlay_providers(cfg, ok);
     overlay_sinks(cfg, sink_ok);
     overlay_otlp(cfg, otlp_ok);
+    // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — the per-node sections it holds.
+    crate::node_settings::overlay_blob(cfg, &entries);
 }
 
 /// A promoted primary's seeding (ADR-903 §6): the entries of the blob it inherited that it has no

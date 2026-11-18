@@ -256,6 +256,12 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                 ManagedKind::Local => "local",
                 ManagedKind::Clients => "clients",
                 ManagedKind::Discovery => "discovery",
+                ManagedKind::Cache => "cache",
+                ManagedKind::Support => "support",
+                ManagedKind::Updates => "updates",
+                ManagedKind::Dnssec => "dnssec",
+                ManagedKind::Filter => "filter",
+                ManagedKind::Drill => "drill",
             };
             let deleting = body.is_none();
             let r = local
