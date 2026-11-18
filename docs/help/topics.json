@@ -424,6 +424,16 @@
       "docs": "users-and-sign-in"
     },
     {
+      "id": "password-reset",
+      "title": "Forgot the password",
+      "term": "Offline password reset",
+      "summary": "On the machine that runs TelltaleDNS, with it stopped, an admin on the machine sets a new password for any user. Their web sessions end.",
+      "when": "Only when nobody can sign in: no admin remembers a password and no second admin exists.",
+      "example": "Stop the service, then run: printf '%s\\n' \"$NEW_PASSWORD\" | telltale auth reset-password alice -c /etc/telltale/telltale.toml, or run it without the pipe and type the password twice.",
+      "caution": "It needs the node stopped, and it can't run on a cluster replica (reset the password on the primary). Whoever can run it controls the node, so it's for the person who runs the box.",
+      "docs": "users-and-sign-in"
+    },
+    {
       "id": "api-tokens",
       "title": "Keys for scripts and dashboards",
       "term": "API tokens",

@@ -3462,6 +3462,11 @@ TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH='$argon2id$v=19$...'   # from: echo 'a lo
 # or TELLTALE_BOOTSTRAP_ADMIN_PASSWORD=...
 ```
 
+**Forgot the password.** With no admin able to sign in, stop TelltaleDNS and reset the password on the machine that runs it. `telltale auth reset-password <user>` takes the new password on stdin (one line, from a pipe or a file) or asks for it twice in a terminal, with echo off. It refuses while `telltale run` holds the data directory, so stop the service first (a container: stop the container, then run the command in a one-off container that mounts the same data volume), and it refuses on a cluster replica, whose users come from the primary. The user's web sessions end, their other sessions and tokens are kept as they are, and the reset is in the audit log as `user.password` by `auth reset-password`. It doesn't print the password.
+```sh
+printf '%s\n' "$NEW_PASSWORD" | telltale auth reset-password alice -c /etc/telltale/telltale.toml
+```
+
 **Roles.** `viewer` sees dashboards and the query log; `operator` can also pause, flush the cache, and manage lists, clients, and groups; `admin` can do everything, including users. Admins manage users at `/api/v1/users`. The last admin can't be removed or demoted. To stop a leaked token without disabling its owner, an admin opens **Settings → Users → Tokens** for that user and revokes it (`GET /api/v1/users/{id}/tokens`, `DELETE /api/v1/users/{id}/tokens/{tokenId}`, audited as `token.revoke`).
 
 **Ways to sign in:**

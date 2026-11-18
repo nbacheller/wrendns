@@ -562,6 +562,18 @@ enum AuthCommand {
     /// Read a password from stdin and print its Argon2id hash, for
     /// `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH`.
     HashPassword,
+    /// Set a local user's password with the node stopped, for when nobody can sign in. The
+    /// password comes from stdin (one line) or is typed twice in a terminal (echo off). It ends
+    /// the user's UI sessions and is audited. Refuses while `telltale run` holds the data
+    /// directory, and on a cluster replica (reset it on the primary).
+    // REQ: API-003 (ADR-972; the offline command, so no UI control, API-901)
+    ResetPassword {
+        /// The username.
+        user: String,
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1682,6 +1694,12 @@ fn run_auth(command: AuthCommand) -> ExitCode {
             auth_setup::print_setup_token(&cfg)
         }
         AuthCommand::HashPassword => auth_setup::hash_password(),
+        AuthCommand::ResetPassword { user, config } => {
+            let Some(cfg) = server::load(&config_files(config)) else {
+                return ExitCode::FAILURE;
+            };
+            auth_setup::reset_password(&cfg, &user)
+        }
     };
     match done {
         Ok(true) => ExitCode::SUCCESS,
