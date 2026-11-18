@@ -23,6 +23,9 @@
 > - **M26, live network map (designed, [ADR-958](spec/11-decisions.md)):** an animated map of your network and of where its lookups go, coloured green, yellow or red by health, sampled off the DNS path. A world view is optional, with a country database you download only if you turn it on ([ADR-959](spec/11-decisions.md)).
 > - **A three-node test cluster (T21.5, [`deploy/cluster3`](deploy/cluster3/README.md)):** a primary and two replicas in containers, checked in CI on every change to the cluster code; it found and fixed a replica that followed a dead primary after a promotion.
 > - **Cluster alerts:** an alert and a health reason when a replica can't reach its primary (T24.5).
+> - **Pi-hole compatible API** (T24.10): dashboards, phone apps and the Home Assistant Pi-hole integration can read the summary and pause or resume blocking. It is off by default and needs a token.
+> - **OIDC without `chrono`** (T24.23): sign-in tokens are checked in-tree on `ring`; `openidconnect`, `oauth2`, `chrono` and `rsa` are gone, and `cargo deny` passes with no ignored advisory.
+> - **Cluster:** automatic failover can be turned on in a running cluster (T21.7), and dev builds report a readable version (T21.6).
 > - **Test harnesses:** a throwaway Home Assistant in Docker for the Home Assistant source ([`deploy/ha-test`](deploy/ha-test/README.md), in CI).
 > - **M27, UI for everything (designed, [ADR-956](spec/11-decisions.md)):** a UI control for every older setting too, with guarded admin controls for listeners, TLS, keys and cluster setup ([ADR-914](spec/11-decisions.md)).
 >
