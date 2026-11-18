@@ -2627,3 +2627,48 @@ fn solo_sync() -> Node {
 // Keeps an unused-import lint quiet where a test needs only the trait.
 #[allow(dead_code)]
 fn _uses(_: &dyn Applier) {}
+
+// REQ: API-902 (ADR-956 §4a) — a restart is refused while a window change is pending, and the
+// pending change is untouched by the refusal.
+#[tokio::test(start_paused = true)]
+async fn api_902_restart_refused_while_window_pending() {
+    let n = solo();
+    let a = admin("alice", 5);
+    let r = start_window(&n, &a, 40_150).await;
+    assert_eq!(
+        code(preview(&n.engine, &a, RESTART_NOW, Value::Null).await),
+        Code::GuardedChangePending
+    );
+    assert_eq!(n.host.restarts.load(Ordering::SeqCst), 0);
+    // The window is still there to cancel.
+    n.engine
+        .cancel(&a, r.pending_id.as_deref().unwrap())
+        .await
+        .unwrap();
+}
+
+// REQ: API-902 (ADR-957) — TELLTALE_IGNORE_GUARDED ignores the `data-dir` pointer too: the node
+// starts in the file-named directory, and the pointer entry is kept, not deleted.
+#[test]
+fn api_902_ignore_env_ignores_data_dir_pointer() {
+    let (_dir, cfg) = dir_with(&[(
+        "data-dir",
+        json!({"path": "/elsewhere"}),
+        EntryState::Active,
+    )]);
+    let b = probation::begin_for(&cfg, "pi-a", &defs(true), 100, true);
+    assert!(b.ignored && b.on_probation.is_empty() && b.dropped.is_empty());
+    assert_eq!(entries_of(&cfg).len(), 1, "the pointer is kept");
+    let all = entries_of(&cfg);
+    let mut c = Config::default();
+    super::appliers::overlay_with(
+        &mut c,
+        &Config::default(),
+        &all,
+        None,
+        &defs(true),
+        "pi-a",
+        true,
+    );
+    assert_eq!(c, Config::default());
+}

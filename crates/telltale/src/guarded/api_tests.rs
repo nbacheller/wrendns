@@ -504,3 +504,34 @@ fn api_902_test_row_absent_in_release() {
     let at = lines.iter().position(|l| l.contains("mod e2e;")).unwrap();
     assert!(lines[at - 1].contains("#[cfg(feature = \"e2e\")]"));
 }
+
+// REQ: API-902, AGT-004 — the restart routes alone: agents (any scope) and every other token are
+// refused, viewers and operators are 403.
+#[tokio::test]
+async fn api_902_restart_now_refuses_agents_and_tokens() {
+    let h = harness("");
+    let _n = install(&h);
+    let every: Vec<&str> = auth::agent::SCOPES.iter().map(|(n, _)| *n).collect();
+    let agent = token(&h, "bot", Role::Admin, Some(&every.join(" ")));
+    let op = token(&h, "olive", Role::Operator, None);
+    let viewer = token(&h, "vic", Role::Viewer, None);
+    for (method, uri, body) in routes().into_iter().take(2) {
+        let (s, _, v) = call_as(&h, &agent, method, &uri, Some(&body), &[]).await;
+        assert_eq!(
+            (s, v["code"].as_str()),
+            (StatusCode::FORBIDDEN, Some("agent_not_allowed"))
+        );
+        for t in [&op, &viewer] {
+            let (s, _, v) = call_as(&h, t, method, &uri, Some(&body), &[]).await;
+            assert_eq!(
+                (s, v["code"].as_str()),
+                (StatusCode::FORBIDDEN, Some("forbidden"))
+            );
+        }
+        let (s, _, v) = call_as(&h, &h.bearer, method, &uri, Some(&body), &[]).await;
+        assert_eq!(
+            (s, v["code"].as_str()),
+            (StatusCode::FORBIDDEN, Some("reauth_required"))
+        );
+    }
+}

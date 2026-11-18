@@ -4698,3 +4698,24 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 **Test plan:** `deploy/keepalived/e2e.sh` on the isolated bridge, run locally (five complete local runs with the final checks, and the hosted runs, with the same checks: the takeover took 3.2 to 6.8 s, with 0 to 2 probes lost before the first answer; the promotion to epoch 2, the VIP back on the primary, and the maintenance hand-over all passed), and the `keepalived` CI workflow on every change to the example, the sources or the Dockerfile.
 
 **Consequences:** an operator who wants a VIP runs keepalived beside TelltaleDNS (or in the example's sidecar), and restarts them together. No code, dependency or hot-path change, so no image delta. The example's keepalived image is a separate 33 MB image, used only by the example and its checks.
+
+## ADR-977 — Guarded changes as built: the codes, the limits and the framework's seams (Proposed 2026-11-18)
+
+**Context:** T27.13 (API-902; ADR-914, ADR-956, ADR-957). The task fixes the behaviour; a few details it left open were decided conservatively while building it.
+
+**Decision:**
+1. **Problem codes.** The framework adds 409 `guarded_only`, `guarded_change_pending`, `preview_stale`, `primary_unreachable`, `would_disconnect_you`, `would_lock_out_admins`, `no_supervisor`, `target_not_empty`, `acknowledgement_required`, `clustered_node`, `restarting`, `rotation_incomplete` and `data_dir_not_persistent`, and 421 `not_primary` for a request that names another node and arrives at a replica (the detail names the primary). 403 `reauth_required` and `agent_not_allowed` are the existing codes. The last four are used by T27.14 to T27.17 rows; they exist now so the problem list does not change as rows are added.
+2. **Rate limits.** Guarded previews and applies share one limiter of 30 requests a minute per session; failed confirmations are counted separately (5 in 10 minutes block the session, 429), as ADR-956 says.
+3. **Framework hooks.** `crates/telltale/src/guarded` carries `#![allow(dead_code)]` for the hooks that only the T27.14 to T27.17 rows and the test rows use (a window row's sockets, the bind fallback, `CheckCx`). Remove the allow when those rows land.
+4. **Test rows and hooks** (`e2e.rs`, the test registry rows) compile only under the cargo feature `e2e`; `TT_E2E_RESTART_HOOK` and `TT_E2E_CONFIRM_WINDOW_SECS` are read only in that build, so no environment variable changes a release binary (`api_902_test_row_absent_in_release`).
+5. **Names in phrases.** A phrase uses the cluster site name when the node has one, else its node ID, else the configured node name; every member computes the others' names the same way.
+
+**Consequences:** no new dependency; no hot-path change; image delta not measured (code only).
+
+## ADR-978 — A guarded entry is never part of the replicated shared part, and the sidecar stays in the file-named directory (Proposed 2026-11-18)
+
+**Context:** ADR-956 §2 and §6 say the entry is `node_managed` and that the probation counter must survive a `state.db` that will not open.
+
+**Decision:** The `guarded` kind is exported in the node-managed blob like the other node kinds, but a node reads only entries whose node part is its own name and ignores the rest. The probation sidecar `guarded-probation` is written beside the file-named `data_dir` (not a pointer target) and is fsynced before any guarded value applies. An entry the CLI cleared on a replica is suppressed locally until the primary's copy changes (ADR-957).
+
+**Consequences:** an N-1 node that does not know the kind ignores it (`clu_010_guarded_entry_ignored_by_n_minus_1`).
