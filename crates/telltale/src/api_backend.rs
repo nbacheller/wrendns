@@ -1568,7 +1568,8 @@ impl Backend for ApiBackend {
             ips.truncate(MAX_WORKLOAD_ADDRESSES);
             filter.client_any = ips.into_iter().map(mapped).collect();
             if filter.client_any.is_empty() {
-                // No address carries the name now: match no row (a workload key never has a colon).
+                // No address carries the name now: a sentinel key no row has (a workload key never has a
+                // colon). Plain, it matches no row; with clientNot it matches every row.
                 filter.client_ip = Some(telltale_telemetry::workload::key(&format!(
                     "hostname:{label}"
                 )));
