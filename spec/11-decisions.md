@@ -4906,7 +4906,6 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Review amendments (2026-11-18):** the fallback to the system temporary directory creates only a fresh `telltale-import-<random>` directory (mode 0700, fails if it exists) and never changes the mode of, or sweeps, the temporary directory itself; the stale sweep runs only under `<data_dir>/import-tmp` and only on names `up-<pid>-<time>-<n>-<random>`. Scratch names carry a random suffix. An archive entry is capped at 256 MiB (was 512) so inflating (which doubles its buffer) stays under the 1 GiB limit and the user gets the clear refusal, not an abort. Previews are already limited to two at once (`PREVIEWS`). The upload's removal on drop is synchronous and accepted: the directory is one upload and one file.
 
-<<<<<<< HEAD
 ## ADR-1010 — The map's settings card: Query handling, one field per `[map]` setting, a client-side preview of the flows (Proposed)
 **Context:** T26.6 (OBS-901). ADR-958 section 4 puts the `[map]` controls in "Settings → Monitoring" and asks for a live preview that reclassifies the current snapshot with the draft values. There is no Monitoring tab: Settings has Account, API tokens, Integrations and secrets, Users, Audit log, Sign-in, Telemetry, Pi-hole, System, Query handling and Cluster; Telemetry is operators-only, and the card has to be readable by viewers.
 **Decision:**
@@ -4918,10 +4917,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 **Test plan:** Playwright `obs_901 change map thresholds`, `obs_901 out of range value names the field`, `obs_901 viewer sees map settings read-only` and `obs_901 preview reclassifies by sample, scope and held reasons` (`ui/tests/e2e/7-map-settings.spec.ts`).
 
 
-## ADR-994 — Content categories and filter profiles are in scope; a profile is a group (Proposed 2026-11-18, owner request; amended 2026-11-18 after review)
-=======
 ## ADR-994 — Content categories and filter profiles are in scope; a profile is a group (Accepted 2026-11-18, owner decisions)
->>>>>>> feat/ipam-integrations
 **Context:** the owner asked (2026-11-18, with two screenshots of UniFi's content filtering) to organise blocking into categories (groups such as "Adult and Sensitive Content", "AI & Crypto", "Business & Professional", "Culture & Entertainment", "Networking Infrastructure", "New or Risky Domains", "Security & Threat Protection", each with checkboxes and an "n of m" count) and to manage them in named filter profiles (a list with Name, Source, Filter Scope, Safe Search and Schedule, and an editor with Source, Ad Block, Safe Search per engine, Filtering Off, Enhanced or Basic, and a category picker with Search, Select All and Deselect All). A later message added that adding devices from the profile is wanted too. The scope note in `spec/10` (quick rules, around line 272) said "Not parental controls: no screen time, no content categories".
 **Decision:**
 1. **Scope.** Content categories are in scope as FLT-901; filter profiles as FLT-902. The note is amended: *no screen time* (per-device time budgets) stays out; *no content categories* is withdrawn. Schedules (FLT-010) stay time windows.
