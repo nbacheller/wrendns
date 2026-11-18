@@ -28,6 +28,9 @@ pub(crate) const KIND: &str = "api.write";
 const DEADLINE: Duration = Duration::from_secs(10);
 /// REQ: OBS-024 — a dry run with `simulate` also replays the cluster's logs: at most
 /// `[simulate] max_secs` (300 s at most), plus the peers' list downloads.
+/// REQ: DSC-004 — a forwarded SNMP Test: up to 10 s for the primary to take it, 90 s for the worker's
+/// probe (which can wait behind a poll), plus the answer.
+const SNMP_TEST_DEADLINE: Duration = Duration::from_secs(10 + 90 + 5);
 const SIMULATE_DEADLINE: Duration = Duration::from_secs(10 + 300 + 30);
 
 /// A configuration write, as sent to the primary. Its `Debug` redacts credentials (API-014).
@@ -498,6 +501,7 @@ async fn send<T: serde::de::DeserializeOwned>(
         | Write::Client {
             simulate: Some(_), ..
         } => SIMULATE_DEADLINE,
+        Write::SnmpTest { .. } => SNMP_TEST_DEADLINE,
         _ => DEADLINE,
     };
     tracing::debug!(?primary, write = ?w, "forwarding a write to the primary");

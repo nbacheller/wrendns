@@ -98,6 +98,8 @@ struct Run<'a, S: Source, P: Pacer> {
     in_a_row: u32,
     aborted: Option<String>,
     engine: Option<String>,
+    /// Bytes of varbinds kept so far in this poll.
+    bytes: usize,
 }
 
 impl<S: Source, P: Pacer> Run<'_, S, P> {
@@ -138,6 +140,11 @@ impl<S: Source, P: Pacer> Run<'_, S, P> {
                     self.engine = self.src.engine_id();
                 }
             }
+            // REQ: DSC-004 - a refused credential (a USM Report), an unknown user or an undecodable
+            // reply is the whole agent failing, not one table not answering: end the poll.
+            Err(e) if credential_failure(e) => {
+                self.aborted.get_or_insert_with(|| error_text(e));
+            }
             Err(_) => {}
         }
     }
@@ -163,11 +170,26 @@ impl<S: Source, P: Pacer> Run<'_, S, P> {
     }
 }
 
+/// Whether an error says the agent can't be read at all (wrong v3 credential, no engine, garbage),
+/// as opposed to one table not answering.
+fn credential_failure(e: &AgentError) -> bool {
+    matches!(
+        e,
+        AgentError::ReportRefused
+            | AgentError::Usm(_)
+            | AgentError::NoEngine
+            | AgentError::Decode(_)
+    )
+}
+
 fn parse_root(text: &str) -> Option<Oid> {
     Oid::parse(text)
 }
 
-/// The caps of one walk (ADR-908): 5,000 rows, 30 s, and a gap of 50 ms.
+/// The most bytes of varbinds one poll keeps across its walks (ADR-908, bounded memory).
+const POLL_BYTE_CAP: usize = 16 * 1024 * 1024;
+
+/// The caps of one walk (ADR-908): 5,000 rows, 30 s, 4 MiB and a gap of 50 ms.
 fn limits(max_repetitions: u32) -> Limits {
     Limits {
         max_repetitions: max_repetitions.clamp(5, 25),
@@ -240,7 +262,7 @@ fn walk_alt<S: Source, P: Pacer>(
     req: &SnmpRequest,
     out: &mut Outcome,
 ) {
-    let lim = limits(req.max_repetitions);
+    let mut lim = limits(req.max_repetitions);
     let mut columns: Vec<Vec<telltale_snmp::pdu::VarBind>> = Vec::new();
     let mut stop_label = "end";
     let mut total = 0u32;
@@ -253,17 +275,24 @@ fn walk_alt<S: Source, P: Pacer>(
             columns.push(Vec::new());
             continue;
         };
+        lim.max_bytes = lim.max_bytes.min(POLL_BYTE_CAP.saturating_sub(run.bytes));
         run.gap();
         let w = walk::walk(&mut *run.src, &mut *run.pacer, &root, &lim);
         match w {
             Ok(walked) => {
                 run.requests = run.requests.saturating_add(walked.requests);
                 run.in_a_row = 0;
+                run.bytes = run.bytes.saturating_add(walked.bytes);
+                if run.bytes >= POLL_BYTE_CAP {
+                    run.aborted
+                        .get_or_insert_with(|| "the poll's byte cap was reached".to_owned());
+                }
                 total = total.saturating_add(u32::try_from(walked.rows.len()).unwrap_or(u32::MAX));
                 match walked.stop {
                     Stop::EndOfView => {}
                     Stop::RowCap => stop_label = "row_cap",
                     Stop::TimeCap => stop_label = "time_cap",
+                    Stop::ByteCap => stop_label = "byte_cap",
                 }
                 columns.push(walked.rows);
             }
@@ -271,8 +300,8 @@ fn walk_alt<S: Source, P: Pacer>(
                 // The walker doesn't say how many requests it sent before it failed: count one.
                 run.requests = run.requests.saturating_add(1);
                 error = Some(error_text(&e));
-                if matches!(e, AgentError::Timeout) {
-                    run.exchange::<()>(&Err(AgentError::Timeout));
+                if matches!(e, AgentError::Timeout) || credential_failure(&e) {
+                    run.exchange::<()>(&Err(e));
                 }
                 stop_label = "error";
                 columns.push(Vec::new());
@@ -331,6 +360,7 @@ pub(crate) fn run<S: Source, P: Pacer>(
         in_a_row: 0,
         aborted: None,
         engine: None,
+        bytes: 0,
     };
     let choices = if let (Some(known), false) = (&req.known, probe_only) {
         known.clone()

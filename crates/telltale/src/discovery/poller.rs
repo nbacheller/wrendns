@@ -464,7 +464,9 @@ impl AgentsBoard {
 }
 
 fn state_text(s: &AgentState) -> &'static str {
-    if s.skipped {
+    // REQ: DSC-014 - a misconfigured agent (skipped, never sent a packet) that stays so for
+    // FAILING_AFTER polls is failing too, so the health reason is raised for it.
+    if s.skipped && s.in_a_row < FAILING_AFTER {
         "skipped"
     } else if s.polls == 0 {
         "waiting"
@@ -533,7 +535,7 @@ fn view_of(name: &str, s: &AgentState) -> DiscoveryAgent {
             let stop = walks
                 .iter()
                 .map(|w| w.stop.as_str())
-                .find(|s| *s == "error" || *s == "row_cap" || *s == "time_cap")
+                .find(|s| *s == "error" || *s == "row_cap" || *s == "time_cap" || *s == "byte_cap")
                 .or_else(|| walks.first().map(|w| w.stop.as_str()))
                 .map(str::to_owned);
             let error = walks.iter().find_map(|w| w.error.clone());
@@ -657,7 +659,15 @@ async fn poll_agent(
     let name = agent.name.as_str();
     let now = unix_now();
     let known = board.known(name);
-    let req = match ctx.request(agent, known) {
+    // Blocking work (file reads, one UDP bind): off the inventory runtime's thread.
+    let req = {
+        let ctx = ctx.clone();
+        let agent = agent.clone();
+        tokio::task::spawn_blocking(move || ctx.request(&agent, known))
+            .await
+            .unwrap_or_else(|_| Err("the credential check did not finish".to_owned()))
+    };
+    let req = match req {
         Ok(r) => r,
         Err(why) => {
             board.record_failure(name, &why, true, now);

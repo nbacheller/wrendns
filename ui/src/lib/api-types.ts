@@ -5923,7 +5923,7 @@ export interface components {
             rows?: number | null;
             /** @description `unprobed`, `answered`, or `unanswered` (skipped until the next test). */
             state: string;
-            /** @description Why the last walk of the table ended: `end`, `row_cap`, `time_cap`, `error` or `skipped`. */
+            /** @description Why the last walk of the table ended: `end`, `row_cap`, `time_cap`, `byte_cap`, `error` or `skipped`. */
             stop?: string | null;
             /** @description `arp`, `ifmib`, `bridge` or `lldp`. */
             table: string;

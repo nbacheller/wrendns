@@ -16042,7 +16042,7 @@
               "string",
               "null"
             ],
-            "description": "Why the last walk of the table ended: `end`, `row_cap`, `time_cap`, `error` or `skipped`."
+            "description": "Why the last walk of the table ended: `end`, `row_cap`, `time_cap`, `byte_cap`, `error` or `skipped`."
           },
           "table": {
             "type": "string",

@@ -1402,7 +1402,7 @@ pub struct DiscoveryAgentTable {
     pub state: String,
     /// The rows the last poll read from the table, over every part and column.
     pub rows: Option<u32>,
-    /// Why the last walk of the table ended: `end`, `row_cap`, `time_cap`, `error` or `skipped`.
+    /// Why the last walk of the table ended: `end`, `row_cap`, `time_cap`, `byte_cap`, `error` or `skipped`.
     pub stop: Option<String>,
     /// The last error of the table, in words.
     pub error: Option<String>,

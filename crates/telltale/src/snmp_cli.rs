@@ -320,6 +320,7 @@ pub(crate) fn print(
             Stop::EndOfView => "end of table",
             Stop::RowCap => "row cap reached",
             Stop::TimeCap => "time cap reached",
+            Stop::ByteCap => "byte cap reached",
         };
         writeln!(out, "# {} rows, {why}", rows.len()).map_err(|_| CliError::Output)?;
     }

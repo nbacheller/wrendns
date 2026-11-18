@@ -455,6 +455,12 @@ impl Runtime {
                 ..made
             });
         }
+        if !self.board.load().iter().any(|x| x.worker == "snmp" && x.up) {
+            return Err(Problem::unavailable(
+                "the SNMP worker isn't running (it restarts with a delay after a crash)",
+            )
+            .hint("Settings, Network inventory shows the worker's state."));
+        }
         let now = unix_now();
         if let Err(wait) = self.agents.begin_test(&w.agent, now) {
             return Err(Problem::new(
@@ -463,12 +469,6 @@ impl Runtime {
             )
             .hint(format!("Try again in {wait} seconds."))
             .retry_after(wait));
-        }
-        if !self.board.load().iter().any(|x| x.worker == "snmp" && x.up) {
-            return Err(Problem::unavailable(
-                "the SNMP worker isn't running (it restarts with a delay after a crash)",
-            )
-            .hint("Settings, Network inventory shows the worker's state."));
         }
         let started = std::time::Instant::now();
         let ctx = Arc::clone(ctx);

@@ -87,6 +87,8 @@ pub(crate) enum Behaviour {
     Silent,
     /// The first `n` exchanges answer, the rest time out.
     SilentAfter(u32),
+    /// Every exchange gets a USM Report back (a wrong v3 credential).
+    Refused,
     /// Each answer takes this long on the virtual clock.
     Slow(Duration),
 }
@@ -149,6 +151,7 @@ impl FakeMib {
         self.exchanges += 1;
         match self.behaviour {
             Behaviour::Silent => Err(AgentError::Timeout),
+            Behaviour::Refused => Err(AgentError::ReportRefused),
             Behaviour::SilentAfter(n) if self.exchanges > n => Err(AgentError::Timeout),
             Behaviour::Slow(d) => {
                 self.clock.advance(d);

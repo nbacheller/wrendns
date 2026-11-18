@@ -5362,6 +5362,13 @@ fn plan_settings(
     let file_section = crate::settings_kinds::section_json(w.kind, &file);
     let stored = if let Some(v) = &w.body {
         let s = crate::settings_kinds::prepare(w.kind, v, &file_section, &file)?;
+        // REQ: DSC-004 (review of T25.6, ADR-903 §4) - an SNMP credential's files are held to the
+        // path rules as every credential file is.
+        if w.kind == ManagedKind::Discovery {
+            crate::credential_rules::PathRules::of(&file)
+                .check_snmp_credentials(&before, &s)
+                .map_err(Problem::invalid)?;
+        }
         crate::settings_kinds::set_stored(&mut entries, w.kind, Some(s.clone()));
         Some(s)
     } else {

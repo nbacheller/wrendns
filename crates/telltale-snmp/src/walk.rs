@@ -22,6 +22,11 @@ pub const MAX_ROWS: usize = 5_000;
 pub const WALK_TIME_CAP: Duration = Duration::from_secs(30);
 /// The least gap between two requests (DSC-004: at least 50 ms, so at most 20 requests a second).
 pub const MIN_GAP: Duration = Duration::from_millis(50);
+/// The most bytes one walk keeps (ADR-908: bounded memory per walk).
+pub const MAX_WALK_BYTES: usize = 4 * 1024 * 1024;
+/// The longest octet string a walk keeps; a longer value is cut as it arrives (no table this
+/// client reads has a value this long: a MAC, a name, an LLDP chassis ID).
+pub const MAX_VALUE_BYTES: usize = 255;
 /// The max-repetitions of each GETBULK.
 pub const MAX_REPETITIONS: u32 = 20;
 
@@ -68,6 +73,8 @@ pub struct Limits {
     /// The gap between requests. Never less than `MIN_GAP`.
     pub gap: Duration,
     pub max_repetitions: u32,
+    /// The bytes of varbinds kept (an estimate: OID arcs and value bytes).
+    pub max_bytes: usize,
 }
 
 impl Default for Limits {
@@ -77,6 +84,7 @@ impl Default for Limits {
             max_time: WALK_TIME_CAP,
             gap: MIN_GAP,
             max_repetitions: MAX_REPETITIONS,
+            max_bytes: MAX_WALK_BYTES,
         }
     }
 }
@@ -90,6 +98,8 @@ pub enum Stop {
     RowCap,
     /// The time cap was reached before the next request.
     TimeCap,
+    /// The byte budget was used up.
+    ByteCap,
 }
 
 /// What a walk read.
@@ -98,6 +108,22 @@ pub struct Walked {
     pub rows: Vec<VarBind>,
     pub stop: Stop,
     pub requests: u32,
+    /// The bytes kept (the same estimate as `Limits::max_bytes`).
+    pub bytes: usize,
+}
+
+/// What one varbind costs against a byte budget.
+fn cost(vb: &VarBind) -> usize {
+    let value = match &vb.value {
+        Value::OctetString(b) => b.len(),
+        _ => 8,
+    };
+    vb.oid
+        .arcs()
+        .len()
+        .saturating_mul(4)
+        .saturating_add(value)
+        .saturating_add(16)
 }
 
 /// Why a walk failed. Neither variant carries a secret or an input byte.
@@ -126,6 +152,7 @@ pub fn walk<B: Bulk, P: Pacer>(
     let mut rows: Vec<VarBind> = Vec::new();
     let mut last = root.clone();
     let mut requests: u32 = 0;
+    let mut bytes: usize = 0;
     loop {
         if requests > 0 {
             pacer.pause(gap);
@@ -135,6 +162,7 @@ pub fn walk<B: Bulk, P: Pacer>(
                 rows,
                 stop: Stop::TimeCap,
                 requests,
+                bytes,
             });
         }
         let resp = agent.bulk(&last, limits.max_repetitions)?;
@@ -146,6 +174,7 @@ pub fn walk<B: Bulk, P: Pacer>(
                 rows,
                 stop: Stop::TimeCap,
                 requests,
+                bytes,
             });
         }
         if resp.varbinds.is_empty() {
@@ -153,14 +182,16 @@ pub fn walk<B: Bulk, P: Pacer>(
                 rows,
                 stop: Stop::EndOfView,
                 requests,
+                bytes,
             });
         }
-        for vb in resp.varbinds {
+        for mut vb in resp.varbinds {
             if !vb.oid.starts_with(root) || matches!(vb.value, Value::EndOfMibView) {
                 return Ok(Walked {
                     rows,
                     stop: Stop::EndOfView,
                     requests,
+                    bytes,
                 });
             }
             if vb.oid <= last {
@@ -171,6 +202,19 @@ pub fn walk<B: Bulk, P: Pacer>(
                     rows,
                     stop: Stop::RowCap,
                     requests,
+                    bytes,
+                });
+            }
+            if let Value::OctetString(b) = &mut vb.value {
+                b.truncate(MAX_VALUE_BYTES);
+            }
+            bytes = bytes.saturating_add(cost(&vb));
+            if bytes > limits.max_bytes {
+                return Ok(Walked {
+                    rows,
+                    stop: Stop::ByteCap,
+                    requests,
+                    bytes,
                 });
             }
             last = vb.oid.clone();

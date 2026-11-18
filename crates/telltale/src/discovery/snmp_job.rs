@@ -163,7 +163,7 @@ pub(crate) struct WalkStat {
     pub(crate) alt: String,
     /// Rows read (varbinds, over every column).
     pub(crate) rows: u32,
-    /// `end`, `row_cap`, `time_cap` or `error`.
+    /// `end`, `row_cap`, `time_cap`, `byte_cap` or `error`.
     pub(crate) stop: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,

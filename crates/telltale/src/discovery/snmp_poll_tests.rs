@@ -391,3 +391,49 @@ fn dsc_004_every_part_of_the_switch_is_parsed() {
         "{name:?}"
     );
 }
+
+/// REQ: DSC-004 (review of T25.6) - a wrong v3 credential (a USM Report back, not a timeout) fails
+/// the whole probe, so a Test says `ok: false` and the old capability record is kept.
+#[test]
+fn dsc_004_refused_credential_fails_the_probe() {
+    let clock = Clock::new();
+    let mut gw = FakeMib::from_walk(GATEWAY, &clock);
+    gw.behaviour = Behaviour::Refused;
+    let o = run(&mut gw, &mut clock.clone(), &request(&ALL), false);
+    assert!(o.result.aborted.is_some(), "{:?}", o.result.aborted);
+    assert_eq!(
+        o.result.requests, 1,
+        "nothing more is asked of an agent that refuses"
+    );
+    assert_eq!(o.rows.len(), 0);
+}
+
+/// REQ: DSC-004 (review of T25.6, ADR-908) - a walk keeps a bounded number of bytes: a 60 KB value
+/// is cut to 255 bytes as it arrives, and a walk stops at its byte cap.
+#[test]
+fn dsc_004_walk_byte_cap() {
+    let clock = Clock::new();
+    let rows: Vec<VarBind> = (1..=2_000u32)
+        .map(|i| VarBind {
+            oid: Oid::parse(&format!(
+                "1.3.6.1.2.1.4.35.1.4.1.1.4.10.0.{}.{}",
+                i >> 8,
+                i & 255
+            ))
+            .unwrap(),
+            value: Value::OctetString(vec![7; 60_000]),
+        })
+        .collect();
+    let mut big = FakeMib::new(rows, &clock);
+    let root = Oid::parse("1.3.6.1.2.1.4.35").unwrap();
+    let lim = Limits {
+        max_bytes: 20_000,
+        ..Limits::default()
+    };
+    let got = walk::walk(&mut big, &mut clock.clone(), &root, &lim).unwrap();
+    assert_eq!(got.stop, Stop::ByteCap);
+    assert!(got.bytes <= 20_000 + 400 && !got.rows.is_empty());
+    for vb in &got.rows {
+        assert!(matches!(&vb.value, Value::OctetString(b) if b.len() == 255));
+    }
+}

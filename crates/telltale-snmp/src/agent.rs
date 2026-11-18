@@ -111,6 +111,9 @@ pub struct Agent {
     trusted: Option<Engine>,
     gate: ResyncGate,
     keys: Option<RoundKeys>,
+    /// When the last datagram went out: no two leave less than 50 ms apart (ADR-908), engine
+    /// discovery and a time-window resend included.
+    last_send: std::cell::Cell<Option<Instant>>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -210,6 +213,7 @@ impl Agent {
             trusted: None,
             gate: ResyncGate::default(),
             keys: None,
+            last_send: std::cell::Cell::new(None),
         }
     }
 
@@ -529,6 +533,15 @@ impl Agent {
     }
 
     fn send(&self, msg: &[u8]) -> Result<(), AgentError> {
+        // REQ: DSC-004 (ADR-908) - at least 50 ms between any two datagrams to one agent.
+        if let Some(t) = self.last_send.get() {
+            let gap = Duration::from_millis(50);
+            let since = t.elapsed();
+            if since < gap {
+                std::thread::sleep(gap.saturating_sub(since));
+            }
+        }
+        self.last_send.set(Some(Instant::now()));
         self.socket
             .send(msg)
             .map(|_| ())
