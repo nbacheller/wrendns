@@ -223,6 +223,12 @@ impl Elector {
         }
     }
 
+    /// REQ: CLU-005 (ADR-960) — numbers this elector's rounds from `first`. A rebuilt elector
+    /// must not reuse a round number that a delayed reply to its predecessor still carries.
+    pub fn start_rounds_at(&mut self, first: u64) {
+        self.next_round = first.max(1);
+    }
+
     /// REQ: CLU-005 (ADR-960) — from now on this node stands for election only after it has
     /// seen a lease from another primary (its ballot holds one from before, or a vote it
     /// granted since) and that lease has lapsed. A node that never saw one (a primary that
@@ -450,13 +456,15 @@ impl Elector {
             {
                 grants.insert(from.to_owned());
             }
+            // A granted real vote for the epoch led carries that epoch (a stale reply from an
+            // earlier pre-vote round carries the voter's lower one).
             Phase::Leader {
+                epoch,
                 round,
                 grants,
                 round_started_ms,
                 lease_until_ms,
-                ..
-            } if *round == r.round => {
+            } if *round == r.round && r.epoch == *epoch => {
                 grants.insert(from.to_owned());
                 if grants.len() > self.voters.len() / 2 {
                     *lease_until_ms =
@@ -925,6 +933,64 @@ mod tests {
             assert!(a.writable(t), "the lease lapsed at {t} ms");
         }
         assert_eq!(a.leading(), Some(1));
+    }
+
+    // REQ: CLU-005 (ADR-960, T21.7) — a primary that resumes with no ballot asks at its very
+    // first tick even when the clock reads under one renewal interval (a fresh boot), writes
+    // only once a majority grants, and keeps its epoch.
+    #[test]
+    fn clu_005_t21_7_a_resumed_primary_renews_at_once_even_early_on_the_clock() {
+        let mut nodes = trio();
+        let (a, rest) = nodes.split_first_mut().unwrap();
+        let (b, c) = rest.split_at_mut(1);
+        a.stand_only_after_a_lease();
+        a.resume(3);
+        assert_eq!(a.leading(), Some(3));
+        assert!(!a.writable(100), "no lease before a majority grants");
+        let outs = a.tick(100, 0);
+        assert!(
+            outs.iter().any(|o| matches!(o, Out::Send { .. })),
+            "no renewal at 100 ms: {outs:?}"
+        );
+        exchange(a, outs, &mut [&mut b[0], &mut c[0]], 100);
+        assert!(a.writable(101));
+    }
+
+    // REQ: CLU-005 (ADR-960) — a grant that carries a lower epoch (a pre-vote's) gives no
+    // lease, and a rebuilt elector numbers its rounds apart from its predecessor's.
+    #[test]
+    fn clu_005_t21_7_a_stale_reply_gives_no_lease() {
+        let mut nodes = trio();
+        let a = &mut nodes[0];
+        a.stand_only_after_a_lease();
+        a.resume(3);
+        let outs = a.tick(1_000, 0);
+        let round = outs
+            .iter()
+            .find_map(|o| match o {
+                Out::Send { ask, .. } => Some(ask.round),
+                _ => None,
+            })
+            .unwrap();
+        for from in ["b", "c"] {
+            let stale = Reply {
+                round,
+                granted: true,
+                epoch: 2,
+            };
+            a.on_reply(from, &stale, 1_010);
+        }
+        assert!(!a.writable(1_020), "a stale grant gave a lease");
+        let ids: Vec<String> = ["a", "b", "c"].iter().map(|v| (*v).to_owned()).collect();
+        let mut fresh = Elector::new("a", ids, true, Ballot::default());
+        fresh.start_rounds_at(1 << 20);
+        fresh.resume(3);
+        let outs = fresh.tick(2_000, 0);
+        assert!(
+            outs.iter()
+                .any(|o| matches!(o, Out::Send { ask, .. } if ask.round >= 1 << 20)),
+            "{outs:?}"
+        );
     }
 
     // REQ: CLU-005 (ADR-960, T21.7) — a replica that never saw a lease from a primary doesn't

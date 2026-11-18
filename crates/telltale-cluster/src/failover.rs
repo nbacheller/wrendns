@@ -14,6 +14,7 @@
 //!   throughout (CLU-004): none of this is on the query path.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
@@ -47,6 +48,9 @@ pub fn voters(id: &Identity) -> Vec<String> {
     v.dedup();
     v
 }
+
+/// Counts the electors built in this process (see `Elector::start_rounds_at`).
+static ELECTOR_GEN: AtomicU64 = AtomicU64::new(0);
 
 /// Whether automatic failover runs on this node: `auto` mode, three or more voters, and this
 /// node one of them.
@@ -104,7 +108,7 @@ pub fn answer(cluster: &Cluster, peer: &str, body: &[u8]) -> Result<Vec<u8>, Str
     } else {
         let mut b = load_ballot(cluster, now);
         let before = b.clone();
-        let reply = b.decide(&ask, now, (0, 0));
+        let reply = decide_without_election(&mut b, &ask, now);
         (reply, (b != before).then_some(b))
     };
     if let Some(b) = ballot {
@@ -116,6 +120,27 @@ pub fn answer(cluster: &Cluster, peer: &str, body: &[u8]) -> Result<Vec<u8>, Str
         cluster.note_vote(&ask.candidate, ask.epoch);
     }
     serde_json::to_vec(&reply).map_err(|e| e.to_string())
+}
+
+/// REQ: CLU-005 (ADR-960) — a node with no running election (manual mode, or not a voter)
+/// grants no real vote: with `auto` just turned off on a primary that now writes without a
+/// lease, a vote from here could make a second primary. A pre-vote changes nothing, so it is
+/// still answered.
+fn decide_without_election(b: &mut Ballot, ask: &Ask, now: u64) -> Reply {
+    if ask.pre {
+        b.decide(ask, now, (0, 0))
+    } else {
+        Reply {
+            round: ask.round,
+            granted: false,
+            epoch: b.epoch,
+        }
+    }
+}
+
+/// Whether a primary resumes its epoch under a new election (see `step`).
+fn resumes_as_primary(role: Role, epoch: u64, can_lead: bool) -> bool {
+    matches!(role, Role::Primary | Role::Emergency) && epoch > 0 && can_lead
 }
 
 /// REQ: CLU-005 (ADR-154, GitHub issue #3) — why an emergency primary refuses to hand over, on
@@ -240,6 +265,8 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
             can_lead,
             load_ballot(cluster, now),
         );
+        // A reply to the previous elector may still arrive: number this one's rounds apart.
+        el.start_rounds_at(1 + (ELECTOR_GEN.fetch_add(1, Ordering::Relaxed) << 20));
         // REQ: CLU-005 (ADR-947) — a node that isn't the primary waits one lease period before its
         // first try: no lease exists yet, so without the wait it would stand against a primary that is
         // up and about to take its lease. The primary itself doesn't wait: it stands at once and
@@ -255,7 +282,13 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
         // majority grants it. A primary that is stale (a newer epoch exists) is refused by the
         // voters and steps down, as in any election.
         let (role, epoch) = cluster.role();
-        if matches!(role, Role::Primary | Role::Emergency) && epoch > 0 && can_lead {
+        if matches!(role, Role::Primary | Role::Emergency) && epoch > 0 && !can_lead {
+            warn!(
+                epoch,
+                "cluster: this primary can't lead under automatic failover (not eligible, or without the cluster key) and stops publishing until another node is elected"
+            );
+        }
+        if resumes_as_primary(role, epoch, can_lead) {
             el.resume(epoch);
             // The primary was writing in manual mode; it pauses for the first round (a lease it
             // never held can't be assumed) and says so once, not as a lost lease.
@@ -414,6 +447,33 @@ pub struct FailoverView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // REQ: CLU-005 (ADR-960) — a node in manual mode refuses a real vote but answers a pre-vote.
+    #[test]
+    fn clu_005_t21_7_manual_mode_refuses_real_votes() {
+        let ask = |pre| Ask {
+            epoch: 2,
+            candidate: "c".into(),
+            round: 1,
+            pre,
+            applied: (0, 0),
+        };
+        let mut b = Ballot::default();
+        let r = decide_without_election(&mut b, &ask(false), 1_000);
+        assert!(!r.granted);
+        assert_eq!(b, Ballot::default(), "the ballot moved");
+        assert!(decide_without_election(&mut b, &ask(true), 1_000).granted);
+    }
+
+    // REQ: CLU-005 (ADR-960) — a primary resumes whatever its stored ballot says.
+    #[test]
+    fn clu_005_t21_7_a_primary_resumes_whatever_its_ballot() {
+        assert!(resumes_as_primary(Role::Primary, 1, true));
+        assert!(resumes_as_primary(Role::Emergency, 4, true));
+        assert!(!resumes_as_primary(Role::Replica, 1, true));
+        assert!(!resumes_as_primary(Role::Primary, 0, true));
+        assert!(!resumes_as_primary(Role::Primary, 1, false));
+    }
 
     /// REQ: CLU-005 (ADR-154, GitHub issue #3) — an emergency primary hands over only under
     /// automatic failover and the `GitOps` authority, only when it is an emergency primary, and
