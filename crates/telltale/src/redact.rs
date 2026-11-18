@@ -37,6 +37,12 @@ pub(crate) const fn api_kind(kind: ManagedKind) -> &'static str {
         ManagedKind::Local => "local",
         ManagedKind::Clients => "clients",
         ManagedKind::Discovery => "discovery",
+        ManagedKind::Slo => "slo",
+        ManagedKind::Probe => "probe",
+        ManagedKind::UpstreamCheck => "upstream_check",
+        ManagedKind::TelemetryAnomaly => "anomaly_settings",
+        ManagedKind::TelemetryQlog => "qlog_settings",
+        ManagedKind::TelemetryMetrics => "metrics_settings",
     }
 }
 

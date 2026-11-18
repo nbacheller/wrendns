@@ -3533,6 +3533,55 @@ test('dns_010 add a zone', async () => {
   await expect(page.getByTestId('zone-row').filter({ hasText: 'zone010.e2e.test' })).toHaveCount(0);
 });
 
+// REQ: OBS-020 (T27.5, ADR-1007) — the listener checks' interval is changed from Settings → System,
+// applied with no restart (the card reads it back), and reverted to the file.
+test('obs_020 change probe interval', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/settings?tab=system');
+  const tuning = page.getByTestId('tuning-probe');
+  await tuning.locator('summary').click();
+  const editor = page.getByTestId('editor-probe');
+  const row = editor.getByTestId('entry-row');
+  await expect(row).toContainText('Every 30 s');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await page.getByRole('spinbutton', { name: 'Seconds between rounds' }).fill('45');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(row).toContainText('Every 45 s');
+  await expect(row).toContainText('overrides the file');
+  await row.getByRole('button', { name: 'Revert to the file' }).click();
+  await expect(row).toContainText('Every 30 s');
+});
+
+// REQ: OBS-003 (T27.5, ADR-1007) — the query log's store is an admin's: an operator sees the
+// settings read-only, and the server refuses the privacy level from an operator (403).
+test('obs_003 operator cannot change privacy level', async () => {
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const made = await page.request.post('/api/v1/users', { headers: { 'x-csrf-token': csrf }, data: { username: 'olive', password: 'an operator password', role: 'operator' } });
+  expect([200, 201, 409]).toContain(made.status());
+  const o = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  try {
+    const p = await o.newPage();
+    await p.goto('/#/queries');
+    await p.getByLabel('Username', { exact: true }).fill('olive');
+    await p.getByLabel('Password', { exact: true }).fill('an operator password');
+    await p.getByRole('button', { name: 'Sign in' }).click();
+    await p.goto('/#/queries');
+    await p.getByTestId('tuning-qlog').locator('summary').click();
+    const row = p.getByTestId('editor-qlog_settings').getByTestId('entry-row');
+    await expect(row).toContainText('Privacy level', { timeout: 30_000 });
+    await expect(row.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+    const token = (await (await o.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+    const refused = await o.request.put('/api/v1/qlog-settings/default', {
+      headers: { 'x-csrf-token': token, 'content-type': 'application/json' },
+      data: { privacy_level: 2 },
+    });
+    expect(refused.status()).toBe(403);
+  } finally {
+    await o.close();
+  }
+});
+
 // REQ: UPS-007 (T9.25) — a group's upstream servers are chosen in the Groups editor.
 test('ups_007 a group picks its upstream group from the UI', async () => {
   await page.goto('/#/groups');

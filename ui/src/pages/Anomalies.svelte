@@ -11,6 +11,7 @@
   import { dateTime, num } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import TuningSettings from '../lib/components/TuningSettings.svelte';
   import RhythmStrip from '../lib/components/RhythmStrip.svelte';
   import MuteForm from '../lib/components/MuteForm.svelte';
   import KeepInGit from '../lib/components/KeepInGit.svelte';
@@ -122,6 +123,8 @@
 <div class="page">
   <div class="page-head">
     <h1>Anomalies<HelpButton id="anomalies" /></h1>
+    <!-- REQ: OBS-013 (T27.5, ADR-1007) — the detector's settings, an admin's. -->
+    <TuningSettings which="anomaly" />
     <label class="pill-field">
       Show
       <select bind:value={range} aria-label="Time range">

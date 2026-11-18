@@ -178,9 +178,25 @@ impl Loader {
 /// overridden by the file.
 fn explicit_keys(root: &Table) -> Vec<String> {
     let mut keys = Vec::new();
-    for section in ["special", "local", "clients", "discovery"] {
+    for section in [
+        "special",
+        "local",
+        "clients",
+        "discovery",
+        "slo",
+        "probe",
+        "upstream_check",
+    ] {
         if let Some(Value::Table(t)) = root.get(section) {
             keys.extend(t.keys().map(|k| format!("{section}.{k}")));
+        }
+    }
+    // REQ: OBS-013, OBS-003, OBS-020 (T27.5, ADR-1007) — the node-managed parts of `[telemetry]`.
+    if let Some(Value::Table(tel)) = root.get("telemetry") {
+        for section in ["anomaly", "qlog", "metrics"] {
+            if let Some(Value::Table(t)) = tel.get(section) {
+                keys.extend(t.keys().map(|k| format!("telemetry.{section}.{k}")));
+            }
         }
     }
     // REQ: API-902 (T27.13, ADR-956 §2) — the guarded settings a file sets: the file wins over a

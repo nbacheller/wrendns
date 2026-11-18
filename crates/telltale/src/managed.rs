@@ -73,6 +73,16 @@ pub(crate) const OIDC_PROVIDER: &str = "oidc_provider";
 /// REQ: API-016 (T23.11, ADR-984) — event sinks, by name: a node-managed kind (ADR-903 §6),
 /// admin-only; a sink the files define is read-only through the API.
 pub(crate) const SINK: &str = "sink";
+/// REQ: OBS-016, OBS-020, OBS-019 (T27.5, ADR-1007) — `[slo]`, `[probe]` and `[upstream_check]`:
+/// shared singletons (one entry, `default`), operators write them; the files win field by field.
+pub(crate) const SLO: &str = "slo";
+pub(crate) const PROBE: &str = "probe";
+pub(crate) const UPSTREAM_CHECK: &str = "upstream_check";
+/// REQ: OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — `[telemetry.anomaly]`, `[telemetry.qlog]` and
+/// `[telemetry.metrics]`: node-managed singletons (`node-managed.json`), admin-only.
+pub(crate) const ANOMALY_SETTINGS: &str = "anomaly_settings";
+pub(crate) const QLOG_SETTINGS: &str = "qlog_settings";
+pub(crate) const METRICS_SETTINGS: &str = "metrics_settings";
 /// REQ: API-016 (T23.11, ADR-984) — the OTLP export (one row, named `default`): a node-managed
 /// kind, admin-only; the files win when they set a destination.
 pub(crate) const OTLP: &str = "otlp";
@@ -235,6 +245,15 @@ pub(crate) struct Entries {
     pub(crate) clients_settings: Option<serde_json::Value>,
     /// REQ: DSC-001 (T25.2) — the stored `[discovery]` section, likewise.
     pub(crate) discovery: Option<serde_json::Value>,
+    /// REQ: OBS-016, OBS-020, OBS-019 (T27.5) — the stored `[slo]`, `[probe]` and
+    /// `[upstream_check]` sections, likewise.
+    pub(crate) slo: Option<serde_json::Value>,
+    pub(crate) probe: Option<serde_json::Value>,
+    pub(crate) upstream_check: Option<serde_json::Value>,
+    /// REQ: OBS-013, OBS-003, OBS-005 (T27.5) — the stored `[telemetry.*]` sections, likewise.
+    pub(crate) telemetry_anomaly: Option<serde_json::Value>,
+    pub(crate) telemetry_qlog: Option<serde_json::Value>,
+    pub(crate) telemetry_metrics: Option<serde_json::Value>,
     /// REQ: API-902 (T27.13) — this node's guarded entries (the reserved kind `guarded`).
     pub(crate) guarded: Vec<crate::guarded::store::Stored>,
 }
@@ -458,6 +477,30 @@ pub(crate) fn entries(state: &State) -> Entries {
             .next()
             .map(|(_, v)| v),
         discovery: decode::<serde_json::Value>(state, DISCOVERY)
+            .into_iter()
+            .next()
+            .map(|(_, v)| v),
+        slo: decode::<serde_json::Value>(state, SLO)
+            .into_iter()
+            .next()
+            .map(|(_, v)| v),
+        probe: decode::<serde_json::Value>(state, PROBE)
+            .into_iter()
+            .next()
+            .map(|(_, v)| v),
+        upstream_check: decode::<serde_json::Value>(state, UPSTREAM_CHECK)
+            .into_iter()
+            .next()
+            .map(|(_, v)| v),
+        telemetry_anomaly: decode::<serde_json::Value>(state, ANOMALY_SETTINGS)
+            .into_iter()
+            .next()
+            .map(|(_, v)| v),
+        telemetry_qlog: decode::<serde_json::Value>(state, QLOG_SETTINGS)
+            .into_iter()
+            .next()
+            .map(|(_, v)| v),
+        telemetry_metrics: decode::<serde_json::Value>(state, METRICS_SETTINGS)
             .into_iter()
             .next()
             .map(|(_, v)| v),

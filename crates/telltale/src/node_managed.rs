@@ -27,7 +27,16 @@ pub(crate) const BLOB: &str = "node-managed.json";
 /// The document's version.
 const VERSION: u32 = 1;
 /// The kinds that are node-managed (the others are the shared configuration's).
-pub(crate) const KINDS: &[&str] = &[OIDC_PROVIDER, SINK, OTLP, crate::guarded::KIND];
+pub(crate) const KINDS: &[&str] = &[
+    OIDC_PROVIDER,
+    SINK,
+    OTLP,
+    // REQ: OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — the node-local telemetry settings.
+    crate::managed::ANOMALY_SETTINGS,
+    crate::managed::QLOG_SETTINGS,
+    crate::managed::METRICS_SETTINGS,
+    crate::guarded::KIND,
+];
 /// The fields that hold or point at a secret outside the store: a provider's `client_secret` and
 /// its file, a sink's `token_file` (and `tls_ca`, a path), OTLP's inline `headers`. A blob never
 /// carries them: only the references (`client_secret_ref`, `token_ref`, `header_refs`: names)

@@ -619,6 +619,12 @@ fn telemetry_at_start(t: &telltale_config::TelemetryConfig) -> telltale_config::
     t.otlp.headers.clear();
     t.otlp.header_refs.clear();
     t.otlp.interval_secs = 0;
+    // REQ: OBS-013, OBS-005, OBS-003 (T27.5, ADR-1007) — anomaly detection, the per-client series
+    // and the query log's privacy level follow a reload; the rest of the query log doesn't.
+    t.anomaly = telltale_config::AnomalyConfig::default();
+    t.metrics.per_client = false;
+    t.metrics.per_client_cap = 0;
+    t.qlog.privacy_level = 0;
     t
 }
 

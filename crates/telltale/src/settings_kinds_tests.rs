@@ -469,3 +469,138 @@ fn dsc_001_file_edit_audited_at_start() {
     let changed = crate::server::discovery_audit_detail(Some(&unset.discovery), &set);
     assert!(changed.is_some(), "a reload that turns it on is recorded");
 }
+
+const PROBE: &str = "/api/v1/probe-settings/default";
+const ANOMALY: &str = "/api/v1/anomaly-settings/default";
+const QLOG: &str = "/api/v1/qlog-settings/default";
+const SLO_SETTINGS: &str = "/api/v1/slo-settings/default";
+
+/// REQ: OBS-020 (T27.5, ADR-1007) — the listener checks' settings apply through the reload: the
+/// interval the next round uses changes, the files' fields hold, and a DELETE brings the file back.
+#[tokio::test]
+async fn obs_020_probe_settings_apply_on_reload() {
+    let h = harness("[probe]\ncert_warn_days = 21\n");
+    let (s, _, v) = h
+        .call(
+            "PUT",
+            PROBE,
+            Some(&json!({ "enabled": true, "interval_secs": 60, "timeout_ms": 2000, "targets": [], "cert_warn_days": 5 })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], "set_by_file", "{v}");
+    let (s, _, v) = h
+        .call("PUT", PROBE, Some(&json!({ "interval_secs": 60 })))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let applied = h.src.config.load().probe.clone();
+    assert_eq!(applied.interval_secs, 60, "the reload applied the PUT");
+    assert_eq!(applied.cert_warn_days, 21, "the file's value is kept");
+    let (s, _, v) = h.call("DELETE", PROBE, None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        h.src.config.load().probe.interval_secs,
+        30,
+        "the default applies again"
+    );
+}
+
+/// REQ: OBS-013 (T27.5, ADR-1007) — anomaly settings are node-managed and admin-only: an operator
+/// and an agent are refused (403), an admin's change applies on the node through the reload.
+#[tokio::test]
+async fn obs_013_anomaly_settings_node_managed() {
+    let h = harness("");
+    let op = token(&h, "olive", auth::Role::Operator, None);
+    let (s, _, v) = call_as(
+        &h,
+        &op,
+        "PUT",
+        ANOMALY,
+        Some(&json!({ "learning_days": 3 })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let agent = token(&h, "agent-owner", auth::Role::Admin, Some("config:read"));
+    let (s, _, v) = call_as(
+        &h,
+        &agent,
+        "PUT",
+        ANOMALY,
+        Some(&json!({ "learning_days": 3 })),
+        &[("x-agent-reason", "tuning")],
+    )
+    .await;
+    assert_ne!(s, StatusCode::OK, "an agent never changes the kind: {v}");
+    let (s, _, v) = h
+        .call(
+            "PUT",
+            ANOMALY,
+            Some(&json!({ "learning_days": 3, "max_clients": 256 })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let applied = h.src.config.load().telemetry.anomaly.clone();
+    assert_eq!(applied.learning_days, 3);
+    assert_eq!(applied.max_clients, 256);
+    let (s, _, v) = h.call("DELETE", ANOMALY, None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(h.src.config.load().telemetry.anomaly.learning_days, 7);
+}
+
+/// REQ: OBS-003 (T27.5, ADR-1007) — the query log's settings are admin-only, privacy included: an
+/// operator's change of the privacy level is 403 (the whole kind is an admin's); an admin's change
+/// of the retention applies on the next reload.
+#[tokio::test]
+async fn obs_003_qlog_retention_node_managed() {
+    let h = harness("");
+    let op = token(&h, "olive", auth::Role::Operator, None);
+    let (s, _, v) = call_as(
+        &h,
+        &op,
+        "PUT",
+        QLOG,
+        Some(&json!({ "privacy_level": 2, "retention_days": 30 })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, _, v) = h
+        .call(
+            "PUT",
+            QLOG,
+            Some(&json!({ "retention_days": 7, "privacy_level": 1 })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let applied = h.src.config.load().telemetry.qlog.clone();
+    assert_eq!(applied.retention_days, 7);
+    assert_eq!(applied.privacy_level, 1);
+    // An unknown field is refused with its name, not silently dropped.
+    let (s, _, v) = h.call("PUT", QLOG, Some(&json!({ "retention": 7 }))).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+}
+
+/// REQ: OBS-016 (T27.5, ADR-1007) — the objectives are an operator's setting, and a window out of
+/// range is refused by the configuration's own rules (the error names the field).
+#[tokio::test]
+async fn obs_016_slo_settings_operator_and_bounds() {
+    let h = harness("");
+    let op = token(&h, "olive", auth::Role::Operator, None);
+    let (s, _, v) = call_as(
+        &h,
+        &op,
+        "PUT",
+        SLO_SETTINGS,
+        Some(&json!({ "window_days": 14 })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(h.src.config.load().slo.window_days, 14);
+    let (s, _, v) = h
+        .call("PUT", SLO_SETTINGS, Some(&json!({ "window_days": 0 })))
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(v.to_string().contains("window"), "{v}");
+}

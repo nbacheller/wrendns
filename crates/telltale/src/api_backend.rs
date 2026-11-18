@@ -3424,6 +3424,29 @@ impl Backend for ApiBackend {
             ),
             // REQ: DSC-001 (T25.2) — `[discovery]`.
             (ManagedKind::Discovery, "discovery", e.discovery.is_some()),
+            // REQ: OBS-016, OBS-020, OBS-019, OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007).
+            (ManagedKind::Slo, "slo", e.slo.is_some()),
+            (ManagedKind::Probe, "probe", e.probe.is_some()),
+            (
+                ManagedKind::UpstreamCheck,
+                "upstream_check",
+                e.upstream_check.is_some(),
+            ),
+            (
+                ManagedKind::TelemetryAnomaly,
+                "anomaly_settings",
+                e.telemetry_anomaly.is_some(),
+            ),
+            (
+                ManagedKind::TelemetryQlog,
+                "qlog_settings",
+                e.telemetry_qlog.is_some(),
+            ),
+            (
+                ManagedKind::TelemetryMetrics,
+                "metrics_settings",
+                e.telemetry_metrics.is_some(),
+            ),
         ] {
             if want(k) {
                 let sec = crate::settings_kinds::section(mk);
@@ -4458,6 +4481,12 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Local => crate::managed::LOCAL,
         ManagedKind::Clients => crate::managed::CLIENTS,
         ManagedKind::Discovery => crate::managed::DISCOVERY,
+        ManagedKind::Slo => crate::managed::SLO,
+        ManagedKind::Probe => crate::managed::PROBE,
+        ManagedKind::UpstreamCheck => crate::managed::UPSTREAM_CHECK,
+        ManagedKind::TelemetryAnomaly => crate::managed::ANOMALY_SETTINGS,
+        ManagedKind::TelemetryQlog => crate::managed::QLOG_SETTINGS,
+        ManagedKind::TelemetryMetrics => crate::managed::METRICS_SETTINGS,
         ManagedKind::Router => crate::managed::ROUTER,
         ManagedKind::OidcProvider => crate::managed::OIDC_PROVIDER,
         ManagedKind::Sink => crate::managed::SINK,
@@ -5039,9 +5068,19 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         (ManagedKind::Rollout, false) => {
             "The config file's rollout settings (or none: every change reaches every node at once) apply again.".into()
         }
-        (ManagedKind::Special | ManagedKind::Local | ManagedKind::Clients | ManagedKind::Discovery, put) => {
-            crate::settings_kinds::impact(kind, put)
-        }
+        (
+            ManagedKind::Special
+            | ManagedKind::Local
+            | ManagedKind::Clients
+            | ManagedKind::Discovery
+            | ManagedKind::Slo
+            | ManagedKind::Probe
+            | ManagedKind::UpstreamCheck
+            | ManagedKind::TelemetryAnomaly
+            | ManagedKind::TelemetryQlog
+            | ManagedKind::TelemetryMetrics,
+            put,
+        ) => crate::settings_kinds::impact(kind, put),
         (ManagedKind::KubernetesMap, true) => {
             "The workloads it matches use the group from their next query, and on the other nodes within a few seconds (a pod or namespace label still wins).".into()
         }
@@ -6667,6 +6706,12 @@ fn keep_in_git(
         ManagedKind::Local => "local",
         ManagedKind::Clients => "clients",
         ManagedKind::Discovery => "discovery",
+        ManagedKind::Slo => "slo",
+        ManagedKind::Probe => "probe",
+        ManagedKind::UpstreamCheck => "upstream_check",
+        ManagedKind::TelemetryAnomaly => "telemetry.anomaly",
+        ManagedKind::TelemetryQlog => "telemetry.qlog",
+        ManagedKind::TelemetryMetrics => "telemetry.metrics",
     };
     let head = "# Add to the configuration in Git (with the Helm chart: under `config:`).\n";
     // REQ: FLT-017 — a map rule: `[[kubernetes.map]]`, or a label on the namespace or pod.
@@ -6703,6 +6748,12 @@ fn keep_in_git(
             | ManagedKind::Local
             | ManagedKind::Clients
             | ManagedKind::Discovery
+            | ManagedKind::Slo
+            | ManagedKind::Probe
+            | ManagedKind::UpstreamCheck
+            | ManagedKind::TelemetryAnomaly
+            | ManagedKind::TelemetryQlog
+            | ManagedKind::TelemetryMetrics
     ) {
         return singleton_in_git(head, section, body.is_some(), after);
     }

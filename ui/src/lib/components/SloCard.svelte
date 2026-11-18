@@ -5,6 +5,7 @@
   import { short } from '../format';
   import { href } from '../router.svelte';
   import HelpButton from './HelpButton.svelte';
+  import TuningSettings from './TuningSettings.svelte';
   import Tip from './Tip.svelte';
 
   let { slo }: { slo: S['SloStatus'] | null } = $props();
@@ -92,6 +93,8 @@
       {/each}
     </div>
   {/if}
+  <!-- REQ: OBS-016 (T27.5, ADR-1007) — the objectives' form, where the budgets are read. -->
+  <TuningSettings which="slo" />
 </section>
 
 <style>

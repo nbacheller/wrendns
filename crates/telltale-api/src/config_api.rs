@@ -82,6 +82,7 @@ pub(crate) fn expected_version(headers: &HeaderMap) -> Result<Option<u64>, Probl
         })
 }
 
+#[allow(clippy::too_many_lines)] // one route per endpoint of this module
 pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
     use axum::routing::put;
     Router::new()
@@ -99,6 +100,32 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
         )
         // REQ: DNS-010 (T27.7) — authoritative zones made through the API or UI.
         .route("/api/v1/zones/{name}", put(put_zone).delete(delete_zone))
+        // REQ: OBS-016, OBS-020, OBS-019, OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — the tuning
+        // sections (one entry each).
+        .route(
+            "/api/v1/slo-settings/default",
+            put(put_slo_settings).delete(delete_slo_settings),
+        )
+        .route(
+            "/api/v1/probe-settings/default",
+            put(put_probe_settings).delete(delete_probe_settings),
+        )
+        .route(
+            "/api/v1/upstream-check-settings/default",
+            put(put_upstream_check_settings).delete(delete_upstream_check_settings),
+        )
+        .route(
+            "/api/v1/anomaly-settings/default",
+            put(put_anomaly_settings).delete(delete_anomaly_settings),
+        )
+        .route(
+            "/api/v1/qlog-settings/default",
+            put(put_qlog_settings).delete(delete_qlog_settings),
+        )
+        .route(
+            "/api/v1/metrics-settings/default",
+            put(put_metrics_settings).delete(delete_metrics_settings),
+        )
         .route("/api/v1/rules/{id}", put(put_rule).delete(delete_rule))
         // REQ: API-002 (T7.5, ADR-069)
         .route(
@@ -2294,6 +2321,372 @@ pub(crate) async fn delete_discovery_settings(
     .await
 }
 
+/// Set the objectives (`[slo]`): the availability and latency targets, the latency threshold and the window. Operators change them; the error budget and the burn-rate alerts follow on every node within a few seconds.
+///
+/// REQ: OBS-016 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.
+/// The configuration files win field by field (`set_by_file`), and a field left out takes its default.
+#[utoipa::path(put, path = "/api/v1/slo-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Not allowed for this role, or an agent."),
+        (status = 409, body = Problem, description = "`set_by_file`: a field the configuration files set."),
+        (status = 422, body = Problem, description = "A field is unknown or out of range."),
+    ))]
+pub(crate) async fn put_slo_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::Slo,
+        "/slo-settings/default",
+    )
+    .await
+}
+
+/// Go back to the configuration file's `[slo]` settings (ADR-1007).
+///
+/// Removes what the API stored, so the file's settings apply again on every node (ADR-1007).
+#[utoipa::path(delete, path = "/api/v1/slo-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Not allowed for this role, or an agent."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+    ))]
+pub(crate) async fn delete_slo_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::Slo,
+        "DELETE /slo-settings/default",
+    )
+    .await
+}
+
+/// Set the listener checks (`[probe]`): on or off, the interval (at least 5 seconds), the timeout, extra targets and the certificate warning. Operators change them; every node applies them with the next round.
+///
+/// REQ: OBS-020 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.
+/// The configuration files win field by field (`set_by_file`), and a field left out takes its default.
+#[utoipa::path(put, path = "/api/v1/probe-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Not allowed for this role, or an agent."),
+        (status = 409, body = Problem, description = "`set_by_file`: a field the configuration files set."),
+        (status = 422, body = Problem, description = "A field is unknown or out of range."),
+    ))]
+pub(crate) async fn put_probe_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::Probe,
+        "/probe-settings/default",
+    )
+    .await
+}
+
+/// Go back to the configuration file's `[probe]` settings (ADR-1007).
+///
+/// Removes what the API stored, so the file's settings apply again on every node (ADR-1007).
+#[utoipa::path(delete, path = "/api/v1/probe-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Not allowed for this role, or an agent."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+    ))]
+pub(crate) async fn delete_probe_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::Probe,
+        "DELETE /probe-settings/default",
+    )
+    .await
+}
+
+/// Set the second opinions (`[upstream_check]`): one question in `sample_every` (0 is off), the reference group and how many disagreements are kept. Operators change them.
+///
+/// REQ: OBS-019 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.
+/// The configuration files win field by field (`set_by_file`), and a field left out takes its default.
+#[utoipa::path(put, path = "/api/v1/upstream-check-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Not allowed for this role, or an agent."),
+        (status = 409, body = Problem, description = "`set_by_file`: a field the configuration files set."),
+        (status = 422, body = Problem, description = "A field is unknown or out of range."),
+    ))]
+pub(crate) async fn put_upstream_check_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::UpstreamCheck,
+        "/upstream-check-settings/default",
+    )
+    .await
+}
+
+/// Go back to the configuration file's `[upstream_check]` settings (ADR-1007).
+///
+/// Removes what the API stored, so the file's settings apply again on every node (ADR-1007).
+#[utoipa::path(delete, path = "/api/v1/upstream-check-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Not allowed for this role, or an agent."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+    ))]
+pub(crate) async fn delete_upstream_check_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::UpstreamCheck,
+        "DELETE /upstream-check-settings/default",
+    )
+    .await
+}
+
+/// Set device anomaly detection (`[telemetry.anomaly]`): on or off, the learning period, sensitivity, the device and domain limits and the NXDOMAIN storm thresholds. Admins only: the whole kind is admin-only, and no agent can change it.
+///
+/// REQ: OBS-013 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.
+/// The configuration files win field by field (`set_by_file`), and a field left out takes its default.
+#[utoipa::path(put, path = "/api/v1/anomaly-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Not allowed for this role, or an agent."),
+        (status = 409, body = Problem, description = "`set_by_file`: a field the configuration files set."),
+        (status = 422, body = Problem, description = "A field is unknown or out of range."),
+    ))]
+pub(crate) async fn put_anomaly_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::TelemetryAnomaly,
+        "/anomaly-settings/default",
+    )
+    .await
+}
+
+/// Go back to the configuration file's `[telemetry.anomaly]` settings (ADR-1007).
+///
+/// Removes what the API stored, so the file's settings apply again on every node (ADR-1007).
+#[utoipa::path(delete, path = "/api/v1/anomaly-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Not allowed for this role, or an agent."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+    ))]
+pub(crate) async fn delete_anomaly_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::TelemetryAnomaly,
+        "DELETE /anomaly-settings/default",
+    )
+    .await
+}
+
+/// Set the query log's store (`[telemetry.qlog]`): on or off, retention, the privacy level, fsync and the flush interval. Admins only, since privacy and retention are at stake; no agent can change it.
+///
+/// REQ: OBS-003 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.
+/// The configuration files win field by field (`set_by_file`), and a field left out takes its default.
+#[utoipa::path(put, path = "/api/v1/qlog-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Not allowed for this role, or an agent."),
+        (status = 409, body = Problem, description = "`set_by_file`: a field the configuration files set."),
+        (status = 422, body = Problem, description = "A field is unknown or out of range."),
+    ))]
+pub(crate) async fn put_qlog_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::TelemetryQlog,
+        "/qlog-settings/default",
+    )
+    .await
+}
+
+/// Go back to the configuration file's `[telemetry.qlog]` settings (ADR-1007).
+///
+/// Removes what the API stored, so the file's settings apply again on every node (ADR-1007).
+#[utoipa::path(delete, path = "/api/v1/qlog-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Not allowed for this role, or an agent."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+    ))]
+pub(crate) async fn delete_qlog_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::TelemetryQlog,
+        "DELETE /qlog-settings/default",
+    )
+    .await
+}
+
+/// Set the per-client metric series (`[telemetry.metrics]`): on or off, and the cap on how many clients get their own series. Admins only; no agent can change it.
+///
+/// REQ: OBS-005 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.
+/// The configuration files win field by field (`set_by_file`), and a field left out takes its default.
+#[utoipa::path(put, path = "/api/v1/metrics-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Not allowed for this role, or an agent."),
+        (status = 409, body = Problem, description = "`set_by_file`: a field the configuration files set."),
+        (status = 422, body = Problem, description = "A field is unknown or out of range."),
+    ))]
+pub(crate) async fn put_metrics_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::TelemetryMetrics,
+        "/metrics-settings/default",
+    )
+    .await
+}
+
+/// Go back to the configuration file's `[telemetry.metrics]` settings (ADR-1007).
+///
+/// Removes what the API stored, so the file's settings apply again on every node (ADR-1007).
+#[utoipa::path(delete, path = "/api/v1/metrics-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Not allowed for this role, or an agent."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+    ))]
+pub(crate) async fn delete_metrics_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::TelemetryMetrics,
+        "DELETE /metrics-settings/default",
+    )
+    .await
+}
+
 /// Go back to the config file's `[clients]` mdns setting (DNS-023).
 ///
 /// Removes what the API stored, so the file's `mdns` applies again on every node. Only an admin may
@@ -2413,6 +2806,12 @@ impl Op {
             // LOW 5: not one letter from the device writes' `client.put`.
             Self::Managed(ManagedKind::Clients, _) => "clients_settings",
             Self::Managed(ManagedKind::Discovery, _) => "discovery",
+            Self::Managed(ManagedKind::Slo, _) => "slo",
+            Self::Managed(ManagedKind::Probe, _) => "probe",
+            Self::Managed(ManagedKind::UpstreamCheck, _) => "upstream_check",
+            Self::Managed(ManagedKind::TelemetryAnomaly, _) => "anomaly_settings",
+            Self::Managed(ManagedKind::TelemetryQlog, _) => "qlog_settings",
+            Self::Managed(ManagedKind::TelemetryMetrics, _) => "metrics_settings",
         }
     }
     fn deleting(&self) -> bool {

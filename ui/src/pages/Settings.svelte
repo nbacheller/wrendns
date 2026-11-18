@@ -7,6 +7,7 @@
   import { poll } from '../lib/poll';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import TuningSettings from '../lib/components/TuningSettings.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
   import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
   import TabPanel from '../lib/components/TabPanel.svelte';
@@ -866,8 +867,12 @@
       <p class="muted small">API reference: <a href="/api/v1/openapi.json" target="_blank" rel="noreferrer">/api/v1/openapi.json</a> (OpenAPI 3.1).</p>
     </section>
     <!-- REQ: OBS-020 (ADR-107) — can clients reach each listener? -->
+    <!-- REQ: OBS-005 (T27.5, ADR-1007) — the per-client series, an admin's setting. -->
+    <TuningSettings which="metrics" />
     <section class="card" data-testid="probes">
       <h2>Listener checks<HelpButton id="probes" /></h2>
+      <!-- REQ: OBS-020 (T27.5, ADR-1007) — the probes' interval and targets. -->
+      <TuningSettings which="probe" />
       {#if probes == null}
         <p class="empty">Loading…</p>
       {:else if probes.length === 0}

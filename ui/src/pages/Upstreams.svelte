@@ -6,6 +6,7 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import BreakerBadge from '../lib/components/BreakerBadge.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import TuningSettings from '../lib/components/TuningSettings.svelte';
   import ShareBar from '../lib/components/ShareBar.svelte';
   import { currentMode } from '../lib/mode.svelte';
   import { href } from '../lib/router.svelte';
@@ -177,6 +178,8 @@
   <!-- REQ: OBS-019 (ADR-108) — are the upstreams telling the truth? -->
   <section class="card" data-testid="upstream-quality">
     <h2>Answer quality<HelpButton id="upstream-checks" /></h2>
+    <!-- REQ: OBS-019 (T27.5, ADR-1007) — second opinions' sampling and reference group. -->
+    <TuningSettings which="upstream_check" />
     {#if !anyQuality}
       <p class="empty">Nothing to show yet: DNSSEC verdicts and error codes appear as upstreams answer.</p>
     {:else}

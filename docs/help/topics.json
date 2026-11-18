@@ -363,6 +363,39 @@
       "docs": "local-zones"
     },
     {
+      "id": "anomaly-settings",
+      "title": "Device anomaly settings",
+      "term": "Anomaly detection (per device)",
+      "summary": "How readily TelltaleDNS reports a device that suddenly asks for much more, or for many new domains, or beacons to a service on a schedule.",
+      "when": "Too many findings for devices that are normal (lower the sensitivity, or lengthen the learning period); or a device that should be watched more closely (raise the sensitivity).",
+      "example": "Learning for 14 days and low sensitivity: only large departures from a device's own baseline are reported.",
+      "caution": "Admins only: these are node-managed and apply on every node, and the files win field by field. Findings already recorded stay as they are. Ignored domains are never reported.",
+      "diagram": "local",
+      "docs": "device-anomalies"
+    },
+    {
+      "id": "qlog-settings",
+      "title": "Query log store, retention and privacy",
+      "term": "Query log (retention and privacy level)",
+      "summary": "How long the query log is kept, how much disk it may use, and how much of each query it keeps.",
+      "when": "The log holds more than you want to keep (shorten the retention), or it should not show the names or the devices (raise the privacy level).",
+      "example": "Privacy level 2 keeps the domains but hides the devices; retention of 7 days keeps the last week.",
+      "caution": "Admins only, since privacy and retention are at stake. The privacy level applies within seconds; turning the log on or off, its retention and its flush settings take effect after a restart.",
+      "diagram": "local",
+      "docs": "query-log"
+    },
+    {
+      "id": "metrics-settings",
+      "title": "Per-client metric series",
+      "term": "Per-client metrics (Prometheus)",
+      "summary": "Whether /metrics has a series for each device, and how many devices get one.",
+      "when": "You want to graph one device's queries in Prometheus or Grafana.",
+      "example": "Per device with a cap of 100: the first 100 devices get their own series, the rest count as “other”.",
+      "caution": "High cardinality: every device is a time series in your Prometheus, so keep the cap low. Admins only; no agent can change it.",
+      "diagram": "local",
+      "docs": "monitoring"
+    },
+    {
       "id": "config-sources",
       "title": "Change upstreams, lists, and groups here",
       "term": "Configuration overrides",
@@ -904,7 +937,7 @@
       "summary": "Whether each upstream's answers can be trusted: the DNSSEC verdicts on them, the error codes it attaches (EDE 15 Blocked, 16 Censored, 17 Filtered mean it filters names itself), and, if you turn them on, second opinions: a small sample of questions asked again of another upstream, with the two answers compared.",
       "when": "A site works on one network but not yours, an upstream seems to block things you didn't, or you want to know whether an upstream rewrites answers (an ISP's resolver, a 'family' filter).",
       "example": "family-dns answered NXDOMAIN for casino.example.org while quad9 had an address: a 'filtered' disagreement, and family-dns's answers carry EDE 17 (Filtered).",
-      "caution": "Different addresses are normal for big sites (CDNs answer per resolver). Second opinions are off by default because the second upstream sees the sampled names; one in 1,000 is a good start.",
+      "caution": "Different addresses are normal for big sites (CDNs answer per resolver). Second opinions are off by default because the second upstream sees the sampled names; one in 1,000 is a good start. The sampling rate, reference group and history size are set under “Change the second opinions” (operators).",
       "docs": "upstream-truth-checks"
     },
     {
@@ -914,7 +947,7 @@
       "summary": "Every 30 seconds each node asks each of its own DNS listeners a question the way a device would: over UDP, TCP, DNS over TLS, DNS over HTTPS (HTTP/2 or HTTP/3), or DNS over QUIC. It also reads when each encrypted listener's certificate expires, and with HTTPS on the web UI ([api] tls) checks the web UI and its certificate too, showing the SHA-256 fingerprint to compare with your browser's.",
       "when": "Devices say DNS is broken but the dashboard looks fine: a listener can be bound and still not answer (a stuck TLS handshake, a firewall, a load balancer in front). Add the load balancer's address under [probe] targets to check the path devices really use.",
       "example": "tls://127.0.0.1:853 answers in 1.8 ms, certificate expires in 9 days: the health icon turns amber so you renew it before Android's Private DNS stops working.",
-      "caution": "Probes connect by IP, so they don't check the certificate's name; the expiry is read from the certificate file. A listener with PROXY protocol on is skipped (probes don't send the header).",
+      "caution": "Probes connect by IP, so they don't check the certificate's name; the expiry is read from the certificate file. A listener with PROXY protocol on is skipped (probes don't send the header). Their interval, timeout, extra targets and certificate warning are set under “Change the listener checks” on this page (operators).",
       "docs": "listener-checks"
     },
     {
@@ -954,7 +987,7 @@
       "summary": "Two promises about DNS on your network: answers that work (not SERVFAIL) and answers that are quick (within 250 ms). Each allows a few bad answers a month, its error budget; the card shows how much of it is left and how fast it's going right now.",
       "when": "You want one honest number for \"is DNS good here?\" over a month, and a warning when a problem is eating the month's allowance fast, not every time one lookup fails.",
       "example": "Target 99.9%: of 1,000,000 answers this month, 1,000 may be SERVFAIL. If an upstream outage causes 300 in an hour, the burn rate jumps far above 1, the card says \"burning fast\", the health icon turns amber, and a slo_burn alert goes out.",
-      "caution": "A target of 100% leaves no budget, so it isn't allowed. On a quiet network a few bad answers can look like a big share: alerts wait for at least 50 answers in the short window and 10 bad ones in the long one.",
+      "caution": "A target of 100% leaves no budget, so it isn't allowed. On a quiet network a few bad answers can look like a big share: alerts wait for at least 50 answers in the short window and 10 bad ones in the long one. The objectives are set on this card (under “Change the objectives”): operators change them, and the files win field by field.",
       "docs": "service-level-objectives"
     },
     {

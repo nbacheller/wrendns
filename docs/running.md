@@ -2645,6 +2645,8 @@ primary kept can't be pinned there.
 **Metrics:** `telltale_cluster_pinned` (0/1) and `telltale_cluster_pinned_to{version}`.
 
 ## Monitoring
+**Tuning in the UI (T27.5, ADR-1007).** The objectives (`[slo]`) are on the SLO card, and the listener checks (`[probe]`) on Settings → System, both for operators. Second opinions (`[upstream_check]`) are on the Upstreams page and device anomaly settings (`[telemetry.anomaly]`) on the Anomalies page, and the query log's store, retention and privacy level (`[telemetry.qlog]`) on the Query log page. The per-client metric series (`[telemetry.metrics]`) are on Settings → System. The last four are admin-only, since privacy and retention are at stake, and apply on every node: the privacy level and the anomaly and metric settings within a few seconds, the query log's store after a restart. The API: `PUT`/`DELETE /api/v1/slo-settings/default`, `/probe-settings/default`, `/upstream-check-settings/default`, `/anomaly-settings/default`, `/qlog-settings/default` and `/metrics-settings/default`, with the fields of the file's section as JSON.
+
 **The dashboard across restarts and upgrades.**
 - Charts over time come from `<data_dir>/rollups.db`, kept by minute (7 days), hour (400 days)
   and day. That includes traffic by group, which is stored by group name, so renaming or
