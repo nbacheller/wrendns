@@ -10,6 +10,8 @@ pub mod doh;
 pub mod doh3;
 pub mod doq;
 pub mod handler;
+pub mod iface;
+pub mod ifaddrs;
 pub mod neigh;
 pub mod peer_limit;
 pub mod proxy;
@@ -26,6 +28,8 @@ pub use doh::{DohConfig, DohServer, DohStats};
 pub use doh3::{Doh3Config, Doh3Server};
 pub use doq::{DoqConfig, DoqServer, DoqStats};
 pub use handler::{ClientId, Deferred, QueryHandler, RequestMeta, Response, Transport};
+pub use iface::{IfaceAddr, Ipv4Interface, ipv4_interfaces};
+pub use ifaddrs::{IfAddr, local_addrs};
 pub use neigh::{Neighbor, neighbors};
 #[cfg(target_os = "linux")]
 pub use sys::MappedFile;

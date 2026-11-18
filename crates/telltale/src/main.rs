@@ -56,6 +56,7 @@ mod node_managed_tests;
 mod node_removal;
 mod oidc_settings;
 mod otlp;
+mod own_networks;
 mod pihole;
 mod pihole_import;
 mod pipeline;
@@ -2021,6 +2022,10 @@ fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
             match loader.load() {
                 Ok(cfg) => {
                     for w in &cfg.warnings {
+                        eprintln!("warning: {w}");
+                    }
+                    // REQ: UPS-013 — an upstream `source` this machine doesn't hold.
+                    for w in telltale_upstream::source_warnings(&cfg.config) {
                         eprintln!("warning: {w}");
                     }
                     // Record values and hosts files are checked too (DNS-010).

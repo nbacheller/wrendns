@@ -569,6 +569,17 @@ pub struct Upstream {
     /// Extra HTTP headers for DoH (e.g. an auth token).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<SafeString, SafeString>,
+    /// REQ: UPS-013 (T24.31, ADR-997) — the local address this upstream's sockets are bound to
+    /// before they connect (`udp://`, `tcp://`, `tls://`, `https://`): `198.51.100.252` or
+    /// `198.51.100.252:0`, or a network, `198.51.100.0/24`, meaning "the address this node
+    /// holds in it" (so a shared upstream works on nodes whose addresses differ; in a cluster
+    /// name a network, not one node's address). The address must be on a real interface (a VLAN
+    /// interface, not an alias on an untagged one). Binding it does not choose the interface the
+    /// packet leaves by: Linux routes by destination, so add a source-based routing rule for it
+    /// (see docs/running.md). Saving an address the node doesn't hold is refused; a node that
+    /// lacks it at start or on a replica runs only this upstream degraded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SafeString>,
     /// Max pooled connections for TCP/DoT/DoH.
     #[serde(default = "default_pool_size")]
     pub pool_size: u16,

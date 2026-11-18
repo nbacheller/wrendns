@@ -359,6 +359,10 @@ fn build_upstreams<'c>(
             tls: up_tls,
             plugin_args: u.args.iter().map(ToString::to_string).collect(),
             doh_get: u.doh_method == telltale_config::DohMethod::Get,
+            source: None,
+            // REQ: UPS-013 (ADR-997 §4) — looked up when the upstream is built; an address this
+            // node doesn't hold degrades this upstream only, never the start or a reload.
+            source_spec: u.source.as_ref().map(ToString::to_string),
             plugin_dir: Some(std::path::Path::new(cfg.node.data_dir.as_str()).join("plugins")),
             // REQ: DNS-012 (T7.15)
             recursive: telltale_recursor::Settings {

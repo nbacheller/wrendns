@@ -205,6 +205,7 @@ impl Backend for Fake {
             filter_names: 42,
             client_ips_masked: None,
             cluster: None,
+            addresses: Vec::new(),
             build: crate::model::BuildInfo {
                 version: "0.1.0-edge.60".into(),
                 commit: "abc1234".into(),
