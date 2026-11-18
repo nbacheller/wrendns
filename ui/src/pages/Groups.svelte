@@ -144,6 +144,7 @@
     // (0 to 86400 s), the Extended DNS Error code and whether it names the list.
     { key: 'block_ips', label: 'Block addresses (custom_ip)', type: 'lines', placeholder: '192.168.1.2', helpTopic: 'block-response',
       toText: linesOf, fromText: addressesFrom,
+      enabledWhen: (v) => v.block_mode === 'custom_ip',
       help: 'Used only with Blocked answer = custom_ip: an IPv4 address answers A, an IPv6 address answers AAAA.' },
     { key: 'block_ttl', label: 'Block TTL (seconds)', type: 'number', placeholder: '60', min: 0, max: 86400, helpTopic: 'block-response',
       help: 'How long clients may keep a block: 0 to 86400 seconds.' },

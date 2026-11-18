@@ -24,6 +24,9 @@
      *  windows as `weekdays 21:00-07:00`). `fromText` throws to report a bad line. */
     toText?: (v: unknown) => string;
     fromText?: (s: string) => unknown;
+    /** REQ: FLT-008 (T27.4) — the field applies only while this holds for the entry's values (the
+     *  others are shown disabled and left out of the body): `block_ips` only with `custom_ip`. */
+    enabledWhen?: (values: Record<string, unknown>) => boolean;
     /** REQ: API-014 (T23.2) — only an admin changes it (a file holding a credential, or where
      *  one is sent): shown read-only to others. A function decides from the entry as it was
      *  read (`{}` for a new one) and the credential paths the entry keeps (`redacted`, T24.16). */
@@ -224,6 +227,7 @@
       const x = v[f.key];
       if (x === '' || x === null || x === undefined || (Array.isArray(x) && x.length === 0 && f.type !== 'multi')) delete v[f.key];
     }
+    for (const f of fields) if (f.enabledWhen && !f.enabledWhen(v)) delete v[f.key];
     return v;
   }
 
@@ -416,6 +420,7 @@
                 placeholder={f.placeholder}
                 aria-label={f.label}
                 bind:value={texts[f.key]}
+                disabled={f.enabledWhen ? !f.enabledWhen(editing.values) : false}
               ></textarea>
             {:else if f.type === 'lines'}
               <textarea
@@ -430,7 +435,7 @@
               <input type="checkbox" role="switch" bind:checked={editing.values[f.key] as boolean} aria-label={f.label} disabled={locked(f)} />
             {:else if f.type === 'number'}
               <!-- step="any": thresholds such as 0.5 % are allowed. -->
-              <input type="number" step="any" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} min={f.min} max={f.max} />
+              <input type="number" step="any" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} min={f.min} max={f.max} disabled={f.enabledWhen ? !f.enabledWhen(editing.values) : false} />
             {:else}
               <input class="mono" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} />
             {/if}

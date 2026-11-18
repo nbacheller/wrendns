@@ -2883,6 +2883,14 @@ test('flt_014 group block ttl and ede', async () => {
   await ttl.fill('86401');
   expect(await ttl.evaluate((el: HTMLInputElement) => el.validity.valid)).toBe(false);
   await ttl.fill('120');
+  // REQ: FLT-008 (T27.4) — the block addresses apply only to Blocked answer = custom_ip: the field
+  // is disabled otherwise and left out of the saved entry.
+  const blockMode = page.getByRole('combobox', { name: 'Blocked answer' });
+  const addrs = page.getByRole('textbox', { name: 'Block addresses (custom_ip)' });
+  await blockMode.selectOption('custom_ip');
+  await expect(addrs).toBeEnabled();
+  await blockMode.selectOption('null_ip');
+  await expect(addrs).toBeDisabled();
   await page.getByRole('combobox', { name: 'Extended DNS Error' }).selectOption('filtered');
   await page.getByRole('switch', { name: 'Name the list in the error' }).uncheck();
   await page.getByRole('button', { name: 'Check', exact: true }).click();
