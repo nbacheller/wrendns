@@ -16974,9 +16974,14 @@ export interface operations {
                  *     `name`. Default: false.
                  */
                 nameNot?: boolean;
-                /** @description Client IP address. */
+                /**
+                 * @description Client IP address, or several, comma-separated (REQ: OBS-003, ADR-1013): addresses,
+                 *     `hostname:<label>` (the addresses a router gave that name now) and Kubernetes workloads
+                 *     (`namespace/kind/name`). At most 100 entries and 256 addresses; `clientTruncated` says
+                 *     when a cap cut the set.
+                 */
                 client?: string;
-                /** @description Keep the rows from every client except `client`. Needs `client`. Default: false. */
+                /** @description Keep the rows from every client except `client` (all of them, when several). Needs `client`. Default: false. */
                 clientNot?: boolean;
                 /** @description Statuses, comma-separated (`blocked,forwarded`). */
                 status?: string;
@@ -17071,9 +17076,12 @@ export interface operations {
                  *     Needs `name`. Default: false.
                  */
                 nameNot?: boolean;
-                /** @description Client IP address. */
+                /**
+                 * @description Client IP address, or several, comma-separated (addresses, `hostname:<label>` and
+                 *     Kubernetes workloads; REQ: OBS-003, ADR-1013).
+                 */
                 client?: string;
-                /** @description Only queries from every client except `client`. Needs `client`. Default: false. */
+                /** @description Only queries from every client except `client` (all of them, when several). Needs `client`. Default: false. */
                 clientNot?: boolean;
                 /** @description The client's group (its highest-priority group). */
                 group?: string;

@@ -178,13 +178,13 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "name": {"type": "string", "description": "Part of the queried name."},
-                "client": {"type": "string", "description": "Client IP or device name."},
+                "client": {"type": "string", "description": "A client IP, or several comma-separated (addresses, `hostname:<router name>`, Kubernetes workloads as namespace/kind/name; at most 100). With clientNot, every client except these."},
                 "group": {"type": "string", "description": "Client group."},
                 "status": {"type": "string", "description": "blocked, cached, forwarded, local, refused, error, ..."},
                 "qtype": {"type": "string", "description": "A, AAAA, HTTPS, ..."},
                 "rcode": {"type": "string", "description": "NOERROR, NXDOMAIN, SERVFAIL, ..."},
                 "nameNot": {"type": "boolean", "description": "Keep the queries whose name does NOT contain `name`. Needs `name`."},
-                "clientNot": {"type": "boolean", "description": "Keep the queries from every client except `client`. Needs `client`."},
+                "clientNot": {"type": "boolean", "description": "Keep the queries from every client except those in `client`. Needs `client`."},
                 "statusNot": {"type": "boolean", "description": "Keep the queries whose status is none of `status`. Needs `status`."},
                 "qtypeNot": {"type": "boolean", "description": "Keep the queries whose type is none of `qtype`. Needs `qtype`."},
                 "rcodeNot": {"type": "boolean", "description": "Keep the queries whose response code is none of `rcode` (queries with no response code are kept). Needs `rcode`."},

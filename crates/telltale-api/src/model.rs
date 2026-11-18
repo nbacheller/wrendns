@@ -512,9 +512,12 @@ pub struct QueryParams {
     /// does not contain, is not, is not under, doesn't match the wildcard or the regex. Needs
     /// `name`. Default: false.
     pub name_not: Option<bool>,
-    /// Client IP address.
+    /// Client IP address, or several, comma-separated (REQ: OBS-003, ADR-1013): addresses,
+    /// `hostname:<label>` (the addresses a router gave that name now) and Kubernetes workloads
+    /// (`namespace/kind/name`). At most 100 entries and 256 addresses; `clientTruncated` says
+    /// when a cap cut the set.
     pub client: Option<String>,
-    /// Keep the rows from every client except `client`. Needs `client`. Default: false.
+    /// Keep the rows from every client except `client` (all of them, when several). Needs `client`. Default: false.
     pub client_not: Option<bool>,
     /// Statuses, comma-separated (`blocked,forwarded`).
     pub status: Option<String>,
@@ -1238,9 +1241,10 @@ pub struct TailParams {
     /// REQ: OBS-003 (ADR-171) — only queries whose name does NOT match `name` and `match`.
     /// Needs `name`. Default: false.
     pub name_not: Option<bool>,
-    /// Client IP address.
+    /// Client IP address, or several, comma-separated (addresses, `hostname:<label>` and
+    /// Kubernetes workloads; REQ: OBS-003, ADR-1013).
     pub client: Option<String>,
-    /// Only queries from every client except `client`. Needs `client`. Default: false.
+    /// Only queries from every client except `client` (all of them, when several). Needs `client`. Default: false.
     pub client_not: Option<bool>,
     /// The client's group (its highest-priority group).
     pub group: Option<String>,
