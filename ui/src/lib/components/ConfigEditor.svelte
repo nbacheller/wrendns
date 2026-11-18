@@ -390,6 +390,7 @@
               label={f.label}
               help={f.help}
               testid={`secret-${f.key}`}
+              setting={`${kind}.${f.key}`}
               reference={(editing.values[f.key] as string | undefined) || undefined}
               defaultName={f.secretName?.(editing.name.trim()) ?? ''}
               filePath={(editing.values[fileKey] as string | undefined) || undefined}

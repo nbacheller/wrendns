@@ -47,7 +47,11 @@ function raw(): Snapshot {
   };
 }
 
-/** The snapshot as the server would colour it under these thresholds (the card's own rules). */
+/**
+ * The snapshot as the server would colour it under these thresholds. NOTE: this uses the card's own
+ * rules, so the test proves the card wires the preview and the recolour together; the server's real
+ * classification is covered by the Rust test obs_901_map_settings_override_toggle_and_revert.
+ */
 function coloured(t: Thresholds): Snapshot {
   const s = raw();
   const to = new Map(reclassify(s, t).changes.map((c) => [c.id, c.to]));

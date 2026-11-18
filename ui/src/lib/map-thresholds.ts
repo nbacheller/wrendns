@@ -57,7 +57,11 @@ function owner(e: MapEdge, byId: Map<string, MapNode>): MapNode | undefined {
 
 /** One entity's health under the thresholds, over its flows. */
 function classify(n: MapNode, flows: MapEdge[], t: Thresholds): Health {
-  if (n.sampled < t.minSample) return 'idle';
+  // The server's order: facts first (an open breaker or an unreachable node is red whatever was
+  // sampled; a half-open breaker is yellow), then idle for too few samples, then the rates.
+  const codes = n.reasons.map((r) => r.code);
+  if (codes.some((c) => c === 'breaker_open' || c === 'unreachable')) return 'red';
+  if (n.sampled < t.minSample) return codes.includes('breaker_half_open') ? 'yellow' : 'idle';
   let h: Health = floor(n);
   for (const e of flows) {
     // The answer kinds (cache, local, blocked) have no error rate: SERVFAIL is not theirs.
@@ -121,11 +125,11 @@ export function previewSentence(p: Preview | null): string {
   if (!p) return 'No map data to preview yet: the thresholds apply when lookups arrive.';
   if (p.total === 0) return 'The map has no flows right now, so there is nothing to preview.';
   const counts = (c: Record<Health, number>) => `${c.red} failing, ${c.yellow} warning, ${c.green} OK, ${c.idle} idle`;
-  if (p.changes.length === 0) return `With these values the current map is unchanged (${counts(p.now)}).`;
+  if (p.changes.length === 0) return `With these values the current map is, by estimate, unchanged (${counts(p.now)}).`;
   const named = p.changes
     .slice(0, 3)
     .map((c) => `${c.label} ${WORD[c.from]} to ${WORD[c.to]}`)
     .join('; ');
   const more = p.changes.length > 3 ? `; and ${p.changes.length - 3} more` : '';
-  return `With these values ${p.changes.length} of ${p.total} would change: ${named}${more}. Now ${counts(p.now)}; then ${counts(p.draft)}.`;
+  return `With these values ${p.changes.length} of ${p.total} would change (an estimate from the flows drawn): ${named}${more}. Now ${counts(p.now)}; then ${counts(p.draft)}.`;
 }

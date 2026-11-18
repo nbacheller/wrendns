@@ -1286,7 +1286,7 @@
       "summary": "The map is drawn from a sample of lookups. Each node samples up to N lookups a second (10 to 2,000), and something is coloured only after it has enough answers (the minimum). It turns Warning when a share of its answers are slow, fail or (for a device) are blocked, and Failing when the failures reach the higher threshold. Idle means too few answers to say.",
       "when": "The map is too jumpy or too calm for your network, shows Idle for quiet devices, or says it is sampled 1 in N on a busy network.",
       "example": "A home network with a few chatty devices: leave the defaults. A network with one flaky upstream you accept: raise the failing threshold from 25% to 50% so it stays Warning.",
-      "caution": "The thresholds change only what the map shows, never an answer or an alert (alerts use the service-level objectives). A higher sampling rate costs a little CPU on every node and, above the default, is worth it only on a busy network. Slow means slower than the latency objective unless you set your own.",
+      "caution": "The preview on the card is an estimate: it reclassifies the flows drawn now, one by one, while the server judges each device or upstream as a whole, so a value right at a threshold can colour differently once applied. The thresholds change only what the map shows, never an answer or an alert (alerts use the service-level objectives). A higher sampling rate costs a little CPU on every node and, above the default, is worth it only on a busy network. Slow means slower than the latency objective unless you set your own.",
       "docs": "network-map"
     }
   ]
