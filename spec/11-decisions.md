@@ -5050,7 +5050,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Owner decision (2026-11-18).** Accepted. The exposure in Q11 is accepted only with the read direction shipped first.
 
-## ADR-1014 — Log-only exclusions and a readiness check that asks the listener (Proposed)
+## ADR-1014 — Log-only exclusions and a readiness check that asks the listener (Accepted 2026-11-18)
 **Context:** The owner's cluster query log fills with client 127.0.0.1, group `default`, name `localhost`: a keepalived check every 2 s and a watchdog every 5 s query the node for `localhost`, and the node's own lookups show as 127.0.0.1. `[exclusions]` (OBS-022, ADR-111) already leaves names and clients out, but of the log and the statistics together. `[telemetry]` is node-local (`NODE_LOCAL`) and has no editable kind until T27.5. `/readyz` and `telltale health` exist (OPS-006) but only report that listeners are bound. The probe name `probe.telltale.invalid` (OBS-020) is already answered locally and kept out of the log and analytics.
 **Decision:**
 1. **Log-only, and they still count.** `[exclusions.log]` (`clients`, `domains`, `own_lookups`) leaves queries out of the query log, the live view and the event sinks only. The dashboard, top lists, device pages, anomalies, the live map and `/metrics` still count them. Reason: the owner asked for a quieter log, not different numbers. `[exclusions]` `names` and `clients` stay the way to remove a query from the statistics too; the docs say which does what. `telltale_queries_log_excluded_total` counts what the log skipped.
