@@ -2044,6 +2044,43 @@ test('obs_010 alerts page: destinations, test, rules', async () => {
   }
 });
 
+// REQ: OBS-010 (T27.1) — every condition the server accepts can be chosen in the Alerts form: a rule
+// of each of the seven added by T27.1 is added, read back after a reload, and removed.
+test('obs_010 every alert condition can be chosen', async () => {
+  test.setTimeout(240_000); // seven rules, each checked and applied, then read back after a reload
+  const kinds = ['slo_burn', 'probe_failing', 'cert_expiring', 'rollout_failed', 'cluster_pinned', 'chatty_loop', 'drill_report'];
+  const nameOf = (kind: string) => `ui-${kind.replace(/_/g, '-')}`;
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/alerts');
+  await expect(page.locator('h1', { hasText: 'Alerts' })).toBeVisible();
+  const rules = page.getByTestId('editor-alert_rule');
+  try {
+    for (const kind of kinds) {
+      await rules.getByRole('button', { name: 'Add rule' }).click();
+      await page.getByRole('textbox', { name: 'Name', exact: true }).fill(nameOf(kind));
+      await page.getByLabel('When', { exact: true }).selectOption(kind);
+      // The config file's destination (file-ntfy) is the one every rule here sends to; its checkbox is
+      // named "Send to file-ntfy", so match the name by part.
+      await page.getByRole('group', { name: 'Send to' }).getByRole('checkbox', { name: /file-ntfy/ }).check();
+      await page.getByRole('button', { name: 'Check' }).click();
+      await page.getByRole('button', { name: 'Apply' }).click();
+      await expect(rules.getByTestId('entry-row').filter({ hasText: nameOf(kind) })).toContainText(`${kind} → file-ntfy`);
+    }
+    await page.reload();
+    for (const kind of kinds) {
+      await expect(rules.getByTestId('entry-row').filter({ hasText: nameOf(kind) })).toContainText(`${kind} → file-ntfy`);
+    }
+  } finally {
+    for (const kind of kinds) {
+      const row = rules.getByTestId('entry-row').filter({ hasText: nameOf(kind) });
+      if ((await row.count()) > 0) {
+        await row.getByRole('button', { name: 'Remove' }).click();
+        await expect(row).toHaveCount(0);
+      }
+    }
+  }
+});
+
 // REQ: API-014 (T23.2) — the Alerts page shows an operator the fields only an admin changes
 // read-only: a destination's token and password files always, and its address and CA once it
 // holds a credential; the server refuses them anyway.

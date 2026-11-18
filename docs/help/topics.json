@@ -726,6 +726,106 @@
       "general": true
     },
     {
+      "id": "alert-conditions",
+      "title": "Alert conditions",
+      "term": "Alert condition (the when of a rule)",
+      "summary": "Each rule watches one condition. Pick the one that matches the problem you want to hear about; the list below says what each one means.",
+      "when": "You are adding a rule and want to know what a condition covers before you choose it.",
+      "example": "A rule with when = \"cert_expiring\" and threshold = 30 tells you a DoT listener's certificate is within 30 days of expiring.",
+      "caution": "Threshold means different things: a percentage, days or seconds, depending on the condition. Conditions that don't use it ignore it.",
+      "docs": "alerts",
+      "items": [
+        {
+          "name": "upstream_down",
+          "line": "an upstream is benched (its circuit breaker is open); one alert per upstream."
+        },
+        {
+          "name": "node_down",
+          "line": "a cluster node isn't connected; one alert per node."
+        },
+        {
+          "name": "sync_lag",
+          "line": "a replica is behind the primary's configuration; one alert per node. Set for_secs so a normal sync stays quiet."
+        },
+        {
+          "name": "primary_unreachable",
+          "line": "a replica hasn't reached its primary for threshold seconds (default 60, 15 to 86400); one alert per replica."
+        },
+        {
+          "name": "list_failing",
+          "line": "a list fails to download; one alert per list."
+        },
+        {
+          "name": "list_stale",
+          "line": "a URL list's content hasn't changed in stale_after_days; one alert per list."
+        },
+        {
+          "name": "servfail_rate",
+          "line": "SERVFAIL above threshold percent (default 5) of queries over 5 minutes, at least 50 queries; one alert per node."
+        },
+        {
+          "name": "anomaly",
+          "line": "a device anomaly is found (not acknowledged or muted); one alert per finding."
+        },
+        {
+          "name": "new_device",
+          "line": "a device TelltaleDNS has never seen starts asking; once per device, quiet for the first day after a fresh start."
+        },
+        {
+          "name": "disk_full",
+          "line": "a node's data disk is more than threshold percent full (default 90); one alert per node."
+        },
+        {
+          "name": "plan_pending",
+          "line": "an AI agent's change waits for your approval; once per plan."
+        },
+        {
+          "name": "update_available",
+          "line": "a newer TelltaleDNS build is out; once per version."
+        },
+        {
+          "name": "maintenance",
+          "line": "a node is in maintenance; resolves when it leaves. Set for_secs to 0 to hear at once."
+        },
+        {
+          "name": "credential_redirected",
+          "line": "an admin changed where an entry's credential is sent; once per change."
+        },
+        {
+          "name": "secrets_exported",
+          "line": "a backup with the stored secrets was made through the API; once per backup."
+        },
+        {
+          "name": "slo_burn",
+          "line": "a service-level objective spends its error budget too fast (14.4 times over an hour and 5 minutes, or 6 times over 6 hours and 30 minutes); one alert per objective."
+        },
+        {
+          "name": "probe_failing",
+          "line": "a listener or extra target hasn't answered its probe twice in a row, on any node; one alert per node and target."
+        },
+        {
+          "name": "cert_expiring",
+          "line": "a DoT, DoH or DoQ listener's certificate expires within threshold days (default 14, from 1 to 365); one alert per node and listener."
+        },
+        {
+          "name": "rollout_failed",
+          "line": "a staged rollout's guard failed a version and pinned the cluster to the one before; once per version, with the reason."
+        },
+        {
+          "name": "cluster_pinned",
+          "line": "the cluster is pinned to an older version, so configuration changes wait; raise for_secs if you pin on purpose for long."
+        },
+        {
+          "name": "chatty_loop",
+          "line": "a device asks one domain at a steady rhythm faster than every 30 seconds (an informational finding the anomaly rule leaves out); one alert per finding."
+        },
+        {
+          "name": "drill_report",
+          "line": "a failover drill's report is ready, scheduled or started by hand; once per drill, saying who followed, who was stuck and the coverage."
+        }
+      ]
+    },
+    {
       "id": "shadow-lists",
       "title": "Would have blocked",
       "term": "Shadow lists",

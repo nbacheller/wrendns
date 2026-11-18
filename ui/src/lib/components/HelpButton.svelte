@@ -32,6 +32,12 @@
       {#if t.when}<h3>When you'd use it</h3><p>{t.when}</p>{/if}
       {#if t.example}<h3>Example</h3><p>{t.example}</p>{/if}
       {#if t.caution}<h3>Careful</h3><p class="notice warn">{t.caution}</p>{/if}
+      {#if t.items?.length}
+        <h3>Each one</h3>
+        <ul class="help-items">
+          {#each t.items as it (it.name)}<li><code>{it.name}</code>: {it.line}</li>{/each}
+        </ul>
+      {/if}
       {#if t.term}<p class="muted small">The DNS term for this is <b>{t.term}</b>.</p>{/if}
       {#if docsUrl(t)}<p><a href={docsUrl(t)} target="_blank" rel="noreferrer">Full documentation</a></p>{/if}
     </div>
@@ -65,6 +71,10 @@
   }
   .help .lead {
     font-size: 1.05em;
+  }
+  .help-items {
+    padding-left: 18px;
+    font-size: 0.95em;
   }
   .help h3 {
     margin: 16px 0 4px;

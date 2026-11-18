@@ -8,6 +8,7 @@
   import HelpButton from '../lib/components/HelpButton.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
   import { secretNameFor } from '../lib/components/SecretField.svelte';
+  import { alertConditions } from '../lib/alert-conditions';
 
   let status = $state<S['AlertsStatus'] | null>(null);
   let destinations = $state<string[]>([]);
@@ -49,18 +50,19 @@
       help: 'The access token of your ntfy or Gotify server, kept encrypted on this node and never shown again. A token_file in the configuration wins over it.' },
     { key: 'tls_ca', label: 'Private CA (email)', type: 'text', placeholder: '/etc/telltale/mail-ca.pem', advanced: true, admin: holdsCredential },
   ];
-  const conditions = [
-    'upstream_down', 'node_down', 'sync_lag', 'primary_unreachable', 'list_failing', 'list_stale', 'servfail_rate', 'anomaly', 'new_device',
-    'disk_full', 'plan_pending', 'update_available', 'maintenance', 'credential_redirected', 'secrets_exported',
-  ];
+  // REQ: OBS-010 (T27.1) — every condition the server accepts; the list is checked against the enum.
+  const conditions = alertConditions;
   const ruleFields = $derived<Field[]>([
-    { key: 'when', label: 'When', type: 'select', options: conditions, initial: 'upstream_down' },
+    { key: 'when', label: 'When', type: 'select', options: conditions, initial: 'upstream_down',
+      help: 'What the rule watches. The ? below the Rules list explains each condition.' },
     { key: 'to', label: 'Send to', type: 'multi', options: destinations },
     { key: 'for_secs', label: 'For at least (seconds)', type: 'number', placeholder: '60',
       help: 'How long the condition must hold before the alert goes out, so short blips stay quiet.' },
     // REQ: OBS-010 (T24.5, fork #2) — the unit depends on the condition: a percentage, days, or seconds.
-    { key: 'threshold', label: 'Threshold', type: 'number', placeholder: '5 (servfail_rate), 90 (disk_full), 60 s (primary_unreachable)', advanced: true,
-      help: 'The unit depends on the condition: a percentage for servfail_rate (default 5) and disk_full (default 90), days for cert_expiring (default 14), and seconds for primary_unreachable (default 60, from 15 to 86400): how long a replica may go without reaching its primary before the alert.' },
+    // The server accepts 0 to 100 for any condition, days 1 to 365 for cert_expiring, and seconds 15 to 86400
+    // for primary_unreachable; the other conditions ignore it.
+    { key: 'threshold', label: 'Threshold', type: 'number', placeholder: '5 (servfail_rate), 90 (disk_full), 14 days (cert_expiring), 60 s (primary_unreachable)', advanced: true,
+      help: 'The unit depends on the condition: a percentage for servfail_rate (default 5, from 0 to 100) and disk_full (default 90), days for cert_expiring (default 14, from 1 to 365), and seconds for primary_unreachable (default 60, from 15 to 86400): how long a replica may go without reaching its primary before the alert. Other conditions ignore it.' },
     { key: 'enabled', label: 'On', type: 'bool', initial: true },
   ]);
   const test = {
@@ -122,6 +124,7 @@
   <ConfigEditor kind="alert_destination" path="alerts/destinations" title="Destinations" noun="destination"
     help="alerts" fields={destinationFields} rowAction={test} onchanged={load}
     summary={(d) => `${String(d.type ?? '')}: ${d.type === 'email' ? ((d.to as string[]) ?? []).join(', ') : String(d.url ?? '')}`} />
+  <p class="small muted" data-testid="alert-conditions-help">Each rule watches one condition. <HelpButton id="alert-conditions" /> says what each one means and what its threshold is.</p>
   <ConfigEditor kind="alert_rule" path="alerts/rules" title="Rules" noun="rule" help="alerts" fields={ruleFields}
     summary={(d) => `${String(d.when ?? '')} → ${((d.to as string[]) ?? []).join(', ')}${d.enabled === false ? ' (off)' : ''}`} />
 </div>
