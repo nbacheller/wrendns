@@ -1,8 +1,9 @@
-# One of the two TelltaleDNS nodes behind the keepalived VIP (deploy/keepalived, REQ: CLU-004).
-# The two files differ only in [node] name, [cluster] site and [cluster.init] (node a creates the
-# cluster on its first start; node b joins it with a token, see deploy/keepalived/README.md). The
-# DNS listeners bind the wildcard address, so they answer on the VIP the node holds and on its own
-# address. Every shared setting stays identical on both nodes.
+# One of the two TelltaleDNS nodes behind the keepalived VIP (deploy/keepalived, REQ: CLU-004, CLU-005).
+# Node a is the primary of the two-node cluster: it creates the cluster on its first start
+# ([cluster.init]), and node b and the witness join it with tokens (e2e.sh; README.md). Its shared
+# settings ([dns], [[record]], upstreams) are the cluster's configuration, so node b takes them from
+# here. The DNS listeners bind the wildcard address, so they answer on the VIP the node holds and on
+# its own address.
 #
 # This example has no upstream resolvers: the test network has no internet. Add [[upstream]] and
 # [[upstream_group]] (see deploy/compose/telltale.toml) for a real node.

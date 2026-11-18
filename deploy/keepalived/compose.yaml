@@ -93,6 +93,25 @@ services:
       - ./config/node-b.toml:/etc/telltale/telltale.toml:ro
       - telltale-b-data:/var/lib/telltale
 
+  # The witness of the cluster (CLU-005): a vote-only process, started with `--profile witness` after it
+  # has joined (README.md). It has no DNS listener, no API and no VIP; it only votes on promotion.
+  telltale-witness:
+    image: ${TELLTALE_IMAGE:-ghcr.io/paimonsoror/telltale:${TELLTALE_TAG:-latest}}
+    pull_policy: missing
+    profiles: [witness]
+    restart: "no"
+    command: ["cluster", "witness", "-c", "/etc/telltale/telltale.toml"]
+    user: "65532:65532"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    networks:
+      vip:
+        ipv4_address: 10.231.250.13
+    volumes:
+      - ./config/witness.toml:/etc/telltale/telltale.toml:ro
+      - witness-data:/var/lib/telltale
+
 networks:
   vip:
     driver: bridge
@@ -104,3 +123,4 @@ networks:
 volumes:
   telltale-a-data:
   telltale-b-data:
+  witness-data:
