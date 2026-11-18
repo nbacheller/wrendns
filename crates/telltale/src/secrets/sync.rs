@@ -837,6 +837,8 @@ async fn fetch_if_due(
                     }),
                 );
             }
+            // REQ: API-016 (T23.10) — a replicated client secret reaches an OIDC provider here.
+            src.oidc_changed.notify_one();
             st.applied = Some(theirs);
             st.held = p.held;
             st.failures = 0;

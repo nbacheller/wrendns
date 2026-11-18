@@ -1425,3 +1425,476 @@ async fn api_004_concurrent_refetches_collapse_into_one() {
     assert!(ra.is_err() && rb.is_err(), "both refused");
     assert_eq!(fake.hits(), before + 1, "one fetch for both");
 }
+
+// ---- API-016 (T23.10): providers applied without a restart
+
+/// An app whose `Auth` starts with no provider, the fake provider reachable at `idp.test`, and
+/// the fetch to hand to `reload_oidc`.
+fn reload_harness() -> (Harness, Fetch) {
+    let fake = Idp::new(ISSUER, vec![Signer::rsa("k1", Alg::Rs256)], Some("s3cret"));
+    let mut routes = HashMap::new();
+    routes.insert("idp.test".to_owned(), router(fake.clone()));
+    let f = fetch(routes);
+    let state = Arc::new(telltale_store::state::State::in_memory().unwrap());
+    let auth = Arc::new(Auth::new(state, Settings::default()));
+    auth.start_oidc(oidc_settings(Vec::new()), Vec::new(), Arc::clone(&f));
+    auth.create_user("root", "correct horse battery", Role::Admin, false, 1)
+        .unwrap();
+    let app = crate::router(Arc::new(NoData), Arc::clone(&auth));
+    let mut idps = HashMap::new();
+    idps.insert("fake".to_owned(), fake);
+    (Harness { app, auth, idps }, f)
+}
+
+fn oidc_settings(providers: Vec<ProviderSettings>) -> OidcSettings {
+    OidcSettings {
+        public_url: "https://dns.test".into(),
+        providers,
+        mcp: None,
+    }
+}
+
+async fn status_buttons(h: &Harness) -> Value {
+    let r = h
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/auth/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let v: Value =
+        serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap())
+            .unwrap();
+    v["oidc"].clone()
+}
+
+/// Signs `sub` in through provider `fake`; the session cookie.
+async fn session_for(h: &Harness, sub: &str, groups: &[&str]) -> String {
+    let r = sign_in(h, sub, sub, groups, false).await;
+    assert_eq!(r.status(), StatusCode::FOUND);
+    set_cookie(&r, "telltale_session").expect("signed in")
+}
+
+async fn me_status(h: &Harness, session: &str) -> StatusCode {
+    h.app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/auth/me")
+                .header("cookie", session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+/// REQ: API-016 — a provider added after start serves sign-ins at once: its button appears and a
+/// person signs in, with no restart.
+#[tokio::test]
+async fn api_016_oidc_provider_added_without_restart() {
+    let (h, f) = reload_harness();
+    assert_eq!(status_buttons(&h).await, json!([]));
+    let out = h
+        .auth
+        .reload_oidc(
+            oidc_settings(vec![provider("fake", "Fake IdP", ISSUER, Some("s3cret"))]),
+            Vec::new(),
+            f,
+        )
+        .await;
+    assert_eq!(
+        out,
+        super::Reloaded::Applied(vec![super::ProviderStatus::active("fake").at(ISSUER)])
+    );
+    assert_eq!(
+        status_buttons(&h).await,
+        json!([{"id": "fake", "name": "Fake IdP"}])
+    );
+    let session = session_for(&h, "ana", &["dns-admins"]).await;
+    assert_eq!(me(&h, &session).await["role"], "admin");
+}
+
+/// REQ: API-016 — a changed issuer that can't be read is left out with the reason (it fails
+/// closed); so is a new provider that can't be read. (An unchanged issuer keeps its previous
+/// settings: `api_016_oidc_unchanged_issuer_keeps_previous`.)
+#[tokio::test]
+async fn api_016_oidc_discovery_failure_keeps_previous() {
+    let (h, f) = reload_harness();
+    h.auth
+        .reload_oidc(
+            oidc_settings(vec![provider("fake", "Fake IdP", ISSUER, Some("s3cret"))]),
+            Vec::new(),
+            Arc::clone(&f),
+        )
+        .await;
+    // The issuer moves to a host nobody serves.
+    let out = h
+        .auth
+        .reload_oidc(
+            oidc_settings(vec![
+                provider("fake", "Renamed", OTHER, Some("s3cret")),
+                provider("new", "New", "https://gone.test", None),
+            ]),
+            Vec::new(),
+            f,
+        )
+        .await;
+    let super::Reloaded::Applied(status) = out else {
+        panic!("applied")
+    };
+    // A changed issuer that can't be read fails closed: the old issuer isn't trusted on.
+    let fake = status.iter().find(|s| s.id == "fake").unwrap();
+    assert!(
+        !fake.active
+            && fake.retry
+            && fake
+                .reason
+                .as_deref()
+                .is_some_and(|r| r.contains("couldn't be read")),
+        "{fake:?}"
+    );
+    let new = status.iter().find(|s| s.id == "new").unwrap();
+    assert!(!new.active, "{new:?}");
+    assert_eq!(
+        status_buttons(&h).await,
+        json!([]),
+        "the old issuer no longer serves sign-ins"
+    );
+}
+
+/// REQ: API-016 — sessions made through a provider survive a rebuild that keeps it, and end when
+/// the provider is removed.
+#[tokio::test]
+async fn api_016_oidc_sessions_survive_reload() {
+    let (h, f) = reload_harness();
+    let p = provider("fake", "Fake IdP", ISSUER, Some("s3cret"));
+    h.auth
+        .reload_oidc(oidc_settings(vec![p.clone()]), Vec::new(), Arc::clone(&f))
+        .await;
+    let session = session_for(&h, "ana", &["dns-admins"]).await;
+    assert_eq!(me_status(&h, &session).await, StatusCode::OK);
+    // A changed provider (new role rules, new secret) keeps the session.
+    let mut changed = p.clone();
+    changed.roles.push(("extra".into(), Role::Operator));
+    changed.client_secret = Some("rotated".into());
+    h.auth
+        .reload_oidc(oidc_settings(vec![changed]), Vec::new(), Arc::clone(&f))
+        .await;
+    assert_eq!(me_status(&h, &session).await, StatusCode::OK);
+    // A provider that is only inactive here (say, no public_url) keeps its sessions too.
+    h.auth
+        .reload_oidc(
+            oidc_settings(Vec::new()),
+            vec![super::ProviderStatus::inactive("fake", "no public_url")],
+            Arc::clone(&f),
+        )
+        .await;
+    assert_eq!(me_status(&h, &session).await, StatusCode::OK);
+    // Removed: the session ends.
+    h.auth
+        .reload_oidc(oidc_settings(Vec::new()), Vec::new(), f)
+        .await;
+    assert_eq!(me_status(&h, &session).await, StatusCode::UNAUTHORIZED);
+}
+
+/// REQ: API-016 (ADR-967 point 7) — a provider repointed to another issuer ends the sessions
+/// opened at the old one (even when the new one can't be read), and a user linked at the old
+/// issuer isn't mapped onto a subject of the new one.
+#[tokio::test]
+async fn api_016_oidc_issuer_change_ends_sessions() {
+    let (h, f) = reload_harness();
+    let p = provider("fake", "Fake IdP", ISSUER, Some("s3cret"));
+    h.auth
+        .reload_oidc(oidc_settings(vec![p.clone()]), Vec::new(), Arc::clone(&f))
+        .await;
+    let session = session_for(&h, "ana", &["dns-admins"]).await;
+    assert_eq!(me_status(&h, &session).await, StatusCode::OK);
+    let user = h.auth.state().user_by_oidc("fake", "ana").unwrap().unwrap();
+    assert_eq!(user.oidc_issuer.as_deref(), Some(ISSUER));
+    // Repointed at an issuer nobody serves: the session ends at once.
+    let mut moved = p.clone();
+    moved.issuer = OTHER.into();
+    h.auth
+        .reload_oidc(oidc_settings(vec![moved]), Vec::new(), Arc::clone(&f))
+        .await;
+    assert_eq!(me_status(&h, &session).await, StatusCode::UNAUTHORIZED);
+    // Back at the first issuer, a user linked at another one isn't mapped.
+    h.auth
+        .reload_oidc(oidc_settings(vec![p]), Vec::new(), f)
+        .await;
+    h.auth.state().set_user_issuer(user.id, OTHER).unwrap();
+    let r = sign_in(&h, "ana", "ana", &["dns-admins"], false).await;
+    assert_refused(&r, "another%20issuer");
+}
+
+/// REQ: API-016 (ADR-967 point 7) — a repointed provider this node can't serve at all (its new
+/// secret can't be read, so it is skipped) still ends the old issuer's sessions.
+#[tokio::test]
+async fn api_016_oidc_skipped_repointed_provider_ends_sessions() {
+    let (h, f) = reload_harness();
+    h.auth
+        .reload_oidc(
+            oidc_settings(vec![provider("fake", "Fake IdP", ISSUER, Some("s3cret"))]),
+            Vec::new(),
+            Arc::clone(&f),
+        )
+        .await;
+    let session = session_for(&h, "ana", &["dns-admins"]).await;
+    assert_eq!(me_status(&h, &session).await, StatusCode::OK);
+    h.auth
+        .reload_oidc(
+            oidc_settings(Vec::new()),
+            vec![super::ProviderStatus::inactive("fake", "the secret file is missing").at(OTHER)],
+            f,
+        )
+        .await;
+    assert_eq!(me_status(&h, &session).await, StatusCode::UNAUTHORIZED);
+}
+
+/// REQ: API-016 — a provider that can't be read just now keeps its previous settings when its
+/// issuer is unchanged (it is down, not repointed), with the reason and a retry.
+#[tokio::test]
+async fn api_016_oidc_unchanged_issuer_keeps_previous() {
+    let (h, _f) = reload_harness();
+    let p = provider("fake", "Fake IdP", ISSUER, Some("s3cret"));
+    let down = fetch(HashMap::new());
+    // As after a restart while the provider is down: settings in place, discovery not read.
+    h.auth.start_oidc(
+        oidc_settings(vec![p.clone()]),
+        Vec::new(),
+        Arc::clone(&down),
+    );
+    let mut renamed = p;
+    renamed.name = "Renamed".into();
+    let out = h
+        .auth
+        .reload_oidc(oidc_settings(vec![renamed]), Vec::new(), down)
+        .await;
+    let super::Reloaded::Applied(status) = out else {
+        panic!("applied")
+    };
+    let fake = status.iter().find(|s| s.id == "fake").unwrap();
+    assert!(
+        fake.active && fake.retry && fake.reason.is_some(),
+        "{fake:?}"
+    );
+    assert_eq!(
+        status_buttons(&h).await,
+        json!([{"id": "fake", "name": "Fake IdP"}])
+    );
+}
+
+/// REQ: API-016 (ADR-967 point 7) — a user of a provider the configuration no longer names can't
+/// use a session or a token, even one the removal's sweep never saw (a node that was down).
+#[tokio::test]
+async fn api_016_oidc_removed_provider_users_cannot_authenticate() {
+    let (h, f) = reload_harness();
+    let p = provider("fake", "Fake IdP", ISSUER, Some("s3cret"));
+    h.auth
+        .reload_oidc(oidc_settings(vec![p]), Vec::new(), Arc::clone(&f))
+        .await;
+    let session = session_for(&h, "ana", &["dns-admins"]).await;
+    assert_eq!(me_status(&h, &session).await, StatusCode::OK);
+    h.auth
+        .reload_oidc(oidc_settings(Vec::new()), Vec::new(), f)
+        .await;
+    let user = h.auth.state().user_by_oidc("fake", "ana").unwrap().unwrap();
+    // A session that survived (written after the sweep, as on a node that missed the removal).
+    let late = h
+        .auth
+        .start_session(
+            &user,
+            "127.0.0.1".parse().unwrap(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        )
+        .unwrap();
+    assert_eq!(
+        me_status(&h, &format!("telltale_session={}", late.cookie)).await,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+/// REQ: API-016 — a sign-in in progress for a provider that is removed meanwhile fails with the
+/// login error and opens no session.
+#[tokio::test]
+async fn api_016_oidc_sign_in_of_removed_provider_fails() {
+    let (h, f) = reload_harness();
+    h.auth
+        .reload_oidc(
+            oidc_settings(vec![provider("fake", "Fake IdP", ISSUER, Some("s3cret"))]),
+            Vec::new(),
+            Arc::clone(&f),
+        )
+        .await;
+    let (flow, state, nonce) = start_flow(&h, "fake").await;
+    h.auth
+        .reload_oidc(oidc_settings(Vec::new()), Vec::new(), f)
+        .await;
+    let token = h.idps["fake"].sign("k1", &id_claims("sub-9", "late", &["family"], &nonce));
+    h.idps["fake"]
+        .codes
+        .lock()
+        .unwrap()
+        .insert("code1".into(), token);
+    let r = callback(&h, "fake", &state, &flow).await;
+    let to = refused_at(&r);
+    assert!(to.starts_with("/#/?loginError="), "{to}");
+    assert!(set_cookie(&r, "telltale_session").is_none());
+}
+
+/// REQ: API-016 — a sign-in started before a rebuild completes after it: the flow state lives in
+/// `Auth`, and the new service applies the new rules.
+#[tokio::test]
+async fn api_016_oidc_sign_in_spanning_reload_completes() {
+    let (h, f) = reload_harness();
+    let p = provider("fake", "Fake IdP", ISSUER, Some("s3cret"));
+    h.auth
+        .reload_oidc(oidc_settings(vec![p.clone()]), Vec::new(), Arc::clone(&f))
+        .await;
+    let (flow, state, nonce) = start_flow(&h, "fake").await;
+    // The rebuild: a rule that maps `ops` to operator.
+    let mut changed = p;
+    changed.roles.push(("ops".into(), Role::Operator));
+    h.auth
+        .reload_oidc(oidc_settings(vec![changed]), Vec::new(), f)
+        .await;
+    let token = h.idps["fake"].sign("k1", &id_claims("sub-9", "ops-user", &["ops"], &nonce));
+    h.idps["fake"]
+        .codes
+        .lock()
+        .unwrap()
+        .insert("code1".into(), token);
+    let r = callback(&h, "fake", &state, &flow).await;
+    assert_eq!(r.status(), StatusCode::FOUND);
+    let session = set_cookie(&r, "telltale_session").expect("the sign-in completed");
+    assert_eq!(me(&h, &session).await["role"], "operator");
+}
+
+/// REQ: API-016 — a rebuild that a newer one overtook while it read discovery changes nothing:
+/// the newer settings are the ones in use.
+#[tokio::test]
+async fn api_016_oidc_stale_rebuild_discarded() {
+    let fake = Idp::new(ISSUER, vec![Signer::rsa("k1", Alg::Rs256)], Some("s3cret"));
+    let slow = Idp::new(
+        "https://slow.test",
+        vec![Signer::rsa("s1", Alg::Rs256)],
+        None,
+    );
+    let mut routes = HashMap::new();
+    routes.insert("idp.test".to_owned(), router(fake));
+    routes.insert("slow.test".to_owned(), router(slow));
+    let inner = fetch(routes);
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let open = Arc::new(AtomicBool::new(false));
+    let (e2, r2, o2) = (
+        Arc::clone(&entered),
+        Arc::clone(&release),
+        Arc::clone(&open),
+    );
+    // slow.test holds its answers until the test lets it go (then it answers at once).
+    let gated: Fetch = Arc::new(move |req: Request<Vec<u8>>| {
+        let (inner, e, r, o) = (
+            Arc::clone(&inner),
+            Arc::clone(&e2),
+            Arc::clone(&r2),
+            Arc::clone(&o2),
+        );
+        Box::pin(async move {
+            if req.uri().host() == Some("slow.test") && !o.load(Ordering::SeqCst) {
+                e.notify_one();
+                r.notified().await;
+            }
+            inner(req).await
+        })
+    });
+    let state = Arc::new(telltale_store::state::State::in_memory().unwrap());
+    let auth = Arc::new(Auth::new(state, Settings::default()));
+    auth.start_oidc(oidc_settings(Vec::new()), Vec::new(), Arc::clone(&gated));
+    let a = {
+        let auth = Arc::clone(&auth);
+        let gated = Arc::clone(&gated);
+        tokio::spawn(async move {
+            auth.reload_oidc(
+                oidc_settings(vec![provider("slow", "Slow", "https://slow.test", None)]),
+                Vec::new(),
+                gated,
+            )
+            .await
+        })
+    };
+    entered.notified().await; // A is reading discovery
+    let b = {
+        let auth = Arc::clone(&auth);
+        let gated = Arc::clone(&gated);
+        tokio::spawn(async move {
+            auth.reload_oidc(
+                oidc_settings(vec![provider("fake", "Fake IdP", ISSUER, Some("s3cret"))]),
+                Vec::new(),
+                gated,
+            )
+            .await
+        })
+    };
+    // Let B take its ticket (it queues behind A's gate), then release A.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    open.store(true, Ordering::SeqCst);
+    release.notify_one();
+    assert_eq!(a.await.unwrap(), super::Reloaded::Discarded);
+    assert!(matches!(b.await.unwrap(), super::Reloaded::Applied(_)));
+    let ids: Vec<String> = auth
+        .oidc()
+        .expect("B's providers are in use")
+        .providers()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(ids, ["fake"], "A's provider never went live");
+}
+
+/// REQ: API-016 — a rebuild, even one that leaves every provider out, never touches password
+/// sign-in or the local admin's sessions.
+#[tokio::test]
+async fn api_016_break_glass_admin_unaffected() {
+    let (h, f) = reload_harness();
+    let ip = "127.0.0.1".parse().unwrap();
+    h.auth
+        .reload_oidc(
+            oidc_settings(vec![provider("fake", "Fake IdP", ISSUER, Some("s3cret"))]),
+            Vec::new(),
+            Arc::clone(&f),
+        )
+        .await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let user = h
+        .auth
+        .login("root", "correct horse battery", None, None, ip, now)
+        .expect("password sign-in works");
+    let login = h.auth.start_session(&user, ip, now).expect("a session");
+    // Everything removed, then a provider that can't be read: the admin's session stays.
+    h.auth
+        .reload_oidc(oidc_settings(Vec::new()), Vec::new(), Arc::clone(&f))
+        .await;
+    h.auth
+        .reload_oidc(
+            oidc_settings(vec![provider("down", "Down", "https://gone.test", None)]),
+            Vec::new(),
+            f,
+        )
+        .await;
+    let session = format!("telltale_session={}", login.cookie);
+    assert_eq!(me_status(&h, &session).await, StatusCode::OK);
+    assert!(
+        h.auth
+            .login("root", "correct horse battery", None, None, ip, now + 1)
+            .is_ok()
+    );
+}

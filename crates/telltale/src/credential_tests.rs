@@ -185,6 +185,8 @@ pub(crate) fn harness_with(
             });
             // REQ: API-016 (T23.7) — the router loop reads the new list, as the server's reload does.
             s2.routers_changed.notify_one();
+            // REQ: API-016 (T23.10) — and the OIDC applier, as the reload does.
+            s2.oidc_changed.notify_one();
             let _ = done.send(ok);
         }
     });

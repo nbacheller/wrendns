@@ -2572,6 +2572,62 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/oidc-providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The OIDC sign-in providers in the configuration, with their status on this node.
+         * @description Each provider comes with its settings (the client secret as a name, never a value), where it
+         *     comes from (the files or the API), and whether this node serves its sign-in button: a node
+         *     without `[auth.oidc] public_url`, or one that can't read the provider's secret or reach its
+         *     issuer, shows it as inactive with the reason (API-016). Admins only.
+         */
+        get: operations["list_oidc_providers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/oidc-providers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add or change an OIDC sign-in provider.
+         * @description API-016 (T23.10, ADR-903 §6, ADR-967). The body has the fields of `[[auth.oidc.provider]]`
+         *     (the ID comes from the path): `issuer`, `client_id`, `name`, `scopes`, the claims and the role
+         *     rules. The client secret is a name, never a value: `client_secret_ref` names a stored secret
+         *     (422 `secret_missing` when none has that name); `client_secret` and `client_secret_file` are
+         *     set in the configuration file, not through the API. Admins only: an operator or an agent is
+         *     refused (403). A provider the config files define is read-only here (409 `set_by_file`). The
+         *     provider is read and applied on every node without a restart; a node without `public_url`
+         *     shows it as inactive. Under a Git source the write is refused (409 `gitops_managed`).
+         */
+        put: operations["put_oidc_provider"];
+        post?: never;
+        /**
+         * Remove an OIDC provider that the API added.
+         * @description API-016 (T23.10). The provider stops serving sign-ins on every node at once, and the sessions
+         *     that were opened through it end. The users it created stay (they can sign in again if the
+         *     provider returns).
+         */
+        delete: operations["delete_oidc_provider"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/pihole-api": {
         parameters: {
             query?: never;
@@ -8060,6 +8116,62 @@ export interface components {
             id: string;
             /** @description Label. */
             name: string;
+        };
+        /**
+         * @description REQ: API-016 (T23.10, ADR-903 §6, ADR-967) — one OIDC provider as the API shows it: its
+         *     settings (the client secret as a name, never a value), where it comes from, and whether this
+         *     node serves its sign-in button.
+         */
+        OidcProviderEntry: {
+            /** @description Whether the button works on this node. */
+            active: boolean;
+            clientId: string;
+            /** @description The role for people in no mapped group; absent means they can't sign in. */
+            defaultRole?: string | null;
+            groupsClaim: string;
+            /** @description The short ID used in URLs. */
+            id: string;
+            issuer: string;
+            /** @description The button label. */
+            name: string;
+            /**
+             * @description Why it doesn't (no `public_url` on this node, an unreadable secret), or what went wrong
+             *     the last time the provider was read.
+             */
+            reason?: string | null;
+            /** @description The address to register with the provider as the redirect URI; absent without `public_url`. */
+            redirectUri?: string | null;
+            requireVerifiedEmail: boolean;
+            /** @description Group to role rules, in order. */
+            roles: components["schemas"]["OidcRoleRuleInfo"][];
+            scopes: string[];
+            /** @description The stored secret's name, when `secretSource` is `stored`. */
+            secret?: string | null;
+            /** @description Whether this node can read the secret now; absent when none is set. */
+            secretReadable?: boolean | null;
+            /**
+             * @description Where the client secret comes from: `stored` (the encrypted store, by name), `file`,
+             *     `inline` (in the configuration file), or `none` (a public client).
+             */
+            secretSource: string;
+            /** @description `file` (the configuration files define it; read-only here) or `api`. */
+            source: string;
+            usernameClaim: string;
+        };
+        /** @description REQ: API-016 (T23.10) — `GET /api/v1/oidc-providers`. */
+        OidcProviderList: {
+            items: components["schemas"]["OidcProviderEntry"][];
+            /**
+             * @description This node's `[auth.oidc] public_url` (node-local, set in its file); empty when unset, and
+             *     then every provider is inactive here.
+             */
+            publicUrl: string;
+        };
+        /** @description One group to role rule of an OIDC provider. */
+        OidcRoleRuleInfo: {
+            group: string;
+            /** @description `viewer`, `operator` or `admin`. */
+            role: string;
         };
         /** @description `POST /api/v1/auth/display`. */
         OpenDisplay: {
@@ -14851,6 +14963,178 @@ export interface operations {
             };
             /** @description The node isn't reachable over the cluster channel (`node_unreachable`). */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_oidc_providers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The providers, files' first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OidcProviderList"];
+                };
+            };
+            /** @description Only an admin can read the sign-in providers. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_oidc_provider: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The provider ID: 1-32 lowercase letters, digits, or -. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change an OIDC provider. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define this provider, which is read-only here. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, the reference names no stored secret (`secret_missing`), or a secret or file path is set through the API. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_oidc_provider: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The provider ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can remove an OIDC provider. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No provider by that ID. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define it. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

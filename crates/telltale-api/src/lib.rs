@@ -32,6 +32,7 @@ pub mod map;
 pub mod map_api;
 pub mod mcp;
 pub mod model;
+pub mod oidc_providers_api;
 pub mod pihole_api;
 mod pihole_import_api;
 pub mod plans;
@@ -490,6 +491,14 @@ pub trait Backend: Send + Sync + 'static {
     ) -> BoxFuture<Result<model::RouterCertificate, Problem>> {
         let _ = url;
         Box::pin(async { Err(Problem::unavailable("checks aren't available on this node")) })
+    }
+    /// REQ: API-016 (T23.10) — the OIDC providers in the configuration (the files' and the ones
+    /// made in the UI), with their status on this node.
+    fn oidc_provider_entries(&self) -> model::OidcProviderList {
+        model::OidcProviderList {
+            items: Vec::new(),
+            public_url: String::new(),
+        }
     }
     /// REQ: AGT-012 — runs a parsed `vqlog` query over `[from_us, to_us)` (or only
     /// estimates its cost).
@@ -1005,6 +1014,9 @@ pub enum ManagedKind {
     /// REQ: API-016 (T23.7, ADR-921) — a router integration (`/routers/{name}`): admin-only; a
     /// router the config files define is read-only through the API (ADR-040).
     Router,
+    /// REQ: API-016 (T23.10, ADR-967) — an OIDC provider (`/oidc-providers/{id}`): admin-only, a
+    /// node-managed kind (ADR-903 §6); a provider the config files define is read-only here.
+    OidcProvider,
     /// REQ: FLT-010 (T9.7) — a schedule (`/schedules/{name}`).
     Schedule,
     /// REQ: OBS-038 (ADR-161) — an anomaly mute (`/anomaly-mutes/{name}`): kinds of finding that
@@ -1256,6 +1268,8 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .merge(routers_api::read_routes(Arc::clone(&backend)))
         // REQ: OBS-901 (T26.2, ADR-958) — the live network map: snapshot, stream, world, health.
         .merge(map_api::read_routes(Arc::clone(&backend)))
+        // REQ: API-016 (T23.10) — OIDC providers and their status (admin-only, by the handler).
+        .merge(oidc_providers_api::read_routes(Arc::clone(&backend)))
         .route_layer(from_fn(auth::routes::require_viewer));
     let protected = data
         .merge(auth::routes::self_service(Arc::clone(&auth)))
@@ -1424,12 +1438,12 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_map_settings, config_api::delete_map_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_discovery_settings, config_api::delete_discovery_settings, discovery_status, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, pihole_import_api::preview, pihole_import_api::apply, pihole_import_api::discard, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule, config_api::put_router, config_api::delete_router, routers_api::list_routers, routers_api::check_router, routers_api::check_router_certificate,
+        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_map_settings, config_api::delete_map_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_discovery_settings, config_api::delete_discovery_settings, discovery_status, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, pihole_import_api::preview, pihole_import_api::apply, pihole_import_api::discard, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule, config_api::put_router, config_api::delete_router, routers_api::list_routers, routers_api::check_router, routers_api::check_router_certificate, oidc_providers_api::list_oidc_providers, config_api::put_oidc_provider, config_api::delete_oidc_provider,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
         map::MapSnapshot, map::MapNode, map::MapEdge, map::MapHealth, map::MapNodeKind, map::MapReason, map::MapRecent, map::MapCounts, map::MapWorld, map::WorldRegion, map::WorldMarker, map::WorldUnlocated, map::NetworkHealth, map::HealthProblem, map::HealthFlow,
-        model::RouterEntry, model::RouterCredential, model::RouterStatus, model::RouterList, model::RouterCheck, model::RouterCertificate,
+        model::RouterEntry, model::RouterCredential, model::RouterStatus, model::RouterList, model::RouterCheck, model::RouterCertificate, model::OidcProviderEntry, model::OidcRoleRuleInfo, model::OidcProviderList,
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::ListsRefreshRequest, model::ListsRefreshResult, model::ListRefreshSkip, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, model::CredentialIssue, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, config_api::BackupRequest, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,

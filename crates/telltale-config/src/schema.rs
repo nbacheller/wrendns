@@ -2903,6 +2903,15 @@ pub struct OidcConfig {
     pub mcp_provider: SafeString,
     /// The audience (`aud`) MCP access tokens must carry. Default: `<public_url>/mcp`.
     pub mcp_audience: SafeString,
+    /// REQ: API-016 (T23.10, ADR-903 §6) — the providers made in the UI (a `node_managed`
+    /// kind), merged by this node at load. Never in a file, never serialized and never
+    /// replicated as part of the shared configuration (the primary publishes them in the
+    /// manifest's `node_managed` blob); a file's provider of the same id wins. Kept out of
+    /// `provider` so that a node without `public_url` shows them as inactive instead of
+    /// failing the whole configuration (CLU-004).
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub managed_provider: Vec<OidcProvider>,
 }
 
 impl OidcConfig {

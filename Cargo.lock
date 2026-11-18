@@ -2824,6 +2824,7 @@ dependencies = [
 name = "telltale-api"
 version = "0.8.0"
 dependencies = [
+ "arc-swap",
  "argon2",
  "axum",
  "base64",

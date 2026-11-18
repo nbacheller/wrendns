@@ -82,6 +82,8 @@ pub(crate) fn sources_in(dir: &std::path::Path) -> Sources {
         git_poke: Arc::default(),
         routers: Arc::default(),
         routers_changed: Arc::default(),
+        oidc_changed: Arc::default(),
+        oidc_fetch: crate::auth_setup::FetchSlot::default(),
         reload: tokio::sync::mpsc::channel(1).0,
         config_writes: tokio::sync::Mutex::new(()),
         allowed: Vec::new(),

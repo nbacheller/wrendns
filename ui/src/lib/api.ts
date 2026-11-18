@@ -268,6 +268,11 @@ export const api = {
   deleteRouter: (name: string) => call<unknown>('DELETE', `/routers/${encodeURIComponent(name)}`),
   checkRouter: (b: Record<string, unknown>) => post<S['RouterCheck']>('/checks/router', b),
   routerCertificate: (url: string) => post<S['RouterCertificate']>('/checks/router-certificate', { url }),
+  // REQ: API-016 (T23.10) — OIDC sign-in providers (admins): the list with each one's status on this
+  // node, and the writes (the client secret is a stored name, never a value).
+  oidcProviders: () => get<S['OidcProviderList']>('/oidc-providers'),
+  putOidcProvider: (id: string, b: Record<string, unknown>) => call<unknown>('PUT', `/oidc-providers/${encodeURIComponent(id)}`, { body: b }),
+  deleteOidcProvider: (id: string) => call<unknown>('DELETE', `/oidc-providers/${encodeURIComponent(id)}`),
   // REQ: OBS-035 (T14.13) — wall displays.
   displays: () => get<S['Listed_DisplayInfo']>('/displays'),
   createDisplay: (b: S['CreateDisplay']) => post<S['NewDisplay']>('/displays', b),

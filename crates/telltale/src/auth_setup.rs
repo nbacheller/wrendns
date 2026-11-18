@@ -57,28 +57,110 @@ fn role(r: UserRole) -> Role {
     }
 }
 
-/// REQ: API-004 — OIDC providers from `[auth.oidc]`, reaching them with the same HTTPS client
-/// as list downloads (system resolver, Mozilla roots, no redirects, 1 MiB, 15 s).
-fn oidc(
+/// Where a test puts the fake issuer it wants OIDC providers reached through; unset, the real
+/// HTTPS client is used.
+#[derive(Default)]
+pub(crate) struct FetchSlot(std::sync::OnceLock<telltale_api::auth::oidc::Fetch>);
+
+impl std::fmt::Debug for FetchSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FetchSlot")
+            .field("set", &self.0.get().is_some())
+            .finish()
+    }
+}
+
+impl FetchSlot {
+    #[cfg(test)]
+    pub(crate) fn set(
+        &self,
+        f: telltale_api::auth::oidc::Fetch,
+    ) -> Result<(), telltale_api::auth::oidc::Fetch> {
+        self.0.set(f)
+    }
+
+    fn get(&self) -> Option<telltale_api::auth::oidc::Fetch> {
+        self.0.get().cloned()
+    }
+}
+
+/// REQ: API-004 — the HTTPS client OIDC providers are reached with: the same as list downloads
+/// (system resolver, Mozilla roots, no redirects, 1 MiB, 15 s). Built once.
+fn oidc_fetch() -> io::Result<telltale_api::auth::oidc::Fetch> {
+    use telltale_api::auth::oidc::Fetch;
+    static FETCH: std::sync::OnceLock<Fetch> = std::sync::OnceLock::new();
+    if let Some(f) = FETCH.get() {
+        return Ok(Arc::clone(f));
+    }
+    let client =
+        telltale_filter::fetch::Client::new(Arc::new(telltale_filter::fetch::SystemResolver), &[])
+            .map_err(io::Error::other)?;
+    let fetch: Fetch = Arc::new(move |req| {
+        let client = client.clone();
+        Box::pin(async move {
+            match tokio::time::timeout(Duration::from_secs(15), client.request(req, 1 << 20)).await
+            {
+                Ok(Ok(r)) => Ok(r),
+                Ok(Err(e)) => Err(e.message),
+                Err(_) => Err("timed out".to_owned()),
+            }
+        })
+    });
+    Ok(Arc::clone(FETCH.get_or_init(|| fetch)))
+}
+
+/// REQ: API-004, API-016 (T23.10) — the OIDC providers `cfg` names, as the service takes them:
+/// the ones this node can serve (their secrets resolved: inline, its file, or the store), and
+/// for each other one why not. A provider whose secret can't be read, or any provider on a node
+/// without `public_url`, is left out alone and says why; the others keep working (CLU-004).
+pub(crate) fn oidc_inputs(
     cfg: &Config,
     store: &crate::secrets::SecretStore,
-) -> io::Result<Option<telltale_api::auth::oidc::Oidc>> {
-    use telltale_api::auth::oidc::{Fetch, Oidc, OidcSettings, ProviderSettings};
+) -> (
+    telltale_api::auth::oidc::OidcSettings,
+    Vec<telltale_api::auth::oidc::ProviderStatus>,
+) {
+    use telltale_api::auth::oidc::{McpOAuth, OidcSettings, ProviderSettings, ProviderStatus};
     let o = &cfg.auth.oidc;
-    if o.provider.is_empty() {
-        return Ok(None);
-    }
     let mut providers = Vec::new();
-    for p in &o.provider {
+    let mut skipped = Vec::new();
+    for p in o.provider.iter().chain(&o.managed_provider) {
+        if o.public_url.is_empty() {
+            skipped.push(
+                ProviderStatus::inactive(
+                    p.id.to_string(),
+                    "this node has no [auth.oidc] public_url (set it in this node's file; it is node-local)",
+                )
+                .at(p.issuer.to_string()),
+            );
+            continue;
+        }
         // REQ: OPS-014 (ADR-903 §2) — inline, its file, or the store.
-        let client_secret = crate::secrets::Credential::of(
+        let client_secret = match crate::secrets::Credential::of(
             p.client_secret_file.as_ref(),
             p.client_secret_ref.as_ref(),
         )
         .with_inline(p.client_secret.as_ref())
         .resolve(Some(store))
-        .map_err(|e| io::Error::other(format!("provider `{}`: {e}", p.id)))?
-        .map(|r| r.value.expose().to_owned());
+        {
+            Ok(r) => r.map(|r| r.value.expose().to_owned()),
+            Err(e) => {
+                // REQ: CLU-009 (ADR-120) — a resolver pod has the chart's configuration but not its
+                // secrets, by design: nobody signs in there.
+                if cfg.cluster.ephemeral {
+                    info!(
+                        "OIDC provider `{}` isn't set up on this resolver pod (people sign in elsewhere): {e}",
+                        p.id
+                    );
+                } else {
+                    warn!("OIDC provider `{}` is not set up: {e}", p.id);
+                }
+                skipped.push(
+                    ProviderStatus::inactive(p.id.to_string(), e.clone()).at(p.issuer.to_string()),
+                );
+                continue;
+            }
+        };
         providers.push(ProviderSettings {
             id: p.id.to_string(),
             name: if p.name.is_empty() {
@@ -101,23 +183,8 @@ fn oidc(
             require_verified_email: p.require_verified_email,
         });
     }
-    let client =
-        telltale_filter::fetch::Client::new(Arc::new(telltale_filter::fetch::SystemResolver), &[])
-            .map_err(io::Error::other)?;
-    let fetch: Fetch = Arc::new(move |req| {
-        let client = client.clone();
-        Box::pin(async move {
-            match tokio::time::timeout(Duration::from_secs(15), client.request(req, 1 << 20)).await
-            {
-                Ok(Ok(r)) => Ok(r),
-                Ok(Err(e)) => Err(e.message),
-                Err(_) => Err("timed out".to_owned()),
-            }
-        })
-    });
-    info!(providers = providers.len(), "OIDC sign-in enabled");
     // REQ: AGT-008 (T7.4) — MCP clients sign in through one provider.
-    let mcp = (!o.mcp_provider.is_empty()).then(|| telltale_api::auth::oidc::McpOAuth {
+    let mcp = (!o.mcp_provider.is_empty()).then(|| McpOAuth {
         provider: o.mcp_provider.to_string(),
         audience: if o.mcp_audience.is_empty() {
             format!("{}/mcp", o.public_url.as_str().trim_end_matches('/'))
@@ -125,14 +192,85 @@ fn oidc(
             o.mcp_audience.to_string()
         },
     });
-    Ok(Some(Oidc::new(
+    (
         OidcSettings {
             public_url: o.public_url.to_string(),
             providers,
             mcp,
         },
-        fetch,
-    )))
+        skipped,
+    )
+}
+
+/// How long after a change the applier waits for more (a reload and the secret it needs arrive
+/// together), and how long before it tries a provider that couldn't be read again (doubling).
+const SETTLE: Duration = Duration::from_millis(250);
+const RETRY_MIN: Duration = Duration::from_secs(60);
+const RETRY_MAX: Duration = Duration::from_secs(600);
+
+/// REQ: API-016 (T23.10, ADR-903 §7) — one pass: applies the providers of the configuration in
+/// effect to the running service, without a restart. New or changed ones are read, the ones that
+/// can't be keep their previous settings (or are left out with the reason), and a removed
+/// provider's sessions end. Whether any provider couldn't be read (the pass tries again later).
+pub(crate) async fn reapply(src: &crate::http::Sources) -> bool {
+    use telltale_api::auth::oidc::Reloaded;
+    let Some(auth) = src.auth.get().cloned() else {
+        return false;
+    };
+    let cfg = src.config.load_full();
+    let store = Arc::clone(&src.secrets);
+    // Resolving secrets reads the store (SQLite, a key file): not on this worker.
+    let inputs = tokio::task::spawn_blocking(move || oidc_inputs(&cfg, &store)).await;
+    let Ok((settings, skipped)) = inputs else {
+        return false;
+    };
+    let fetch = match src.oidc_fetch.get().map_or_else(oidc_fetch, Ok) {
+        Ok(f) => f,
+        Err(e) => {
+            error!("OIDC providers can't be applied: {e}");
+            return false;
+        }
+    };
+    match auth.reload_oidc(settings, skipped, fetch).await {
+        // The ones whose discovery failed (the ones that lack `public_url` or a secret change
+        // only when the configuration or a secret does, which wakes the applier).
+        Reloaded::Applied(status) => status.iter().any(|s| s.retry),
+        // A newer pass overtook this one and applies the newer settings itself.
+        Reloaded::Discarded => false,
+    }
+}
+
+/// REQ: API-016 (T23.10) — the task that applies OIDC providers: once at start-up (the service
+/// was built lazily, so this reads what changed since, say a node-managed blob), then whenever
+/// `oidc_changed` fires, and again after a minute (then every ten) while a provider can't be
+/// read. It never blocks DNS, the API or a reload.
+pub(crate) fn run(src: Arc<crate::http::Sources>, mut stop: tokio::sync::watch::Receiver<bool>) {
+    tokio::spawn(async move {
+        let mut retry: Option<Duration> = None;
+        loop {
+            let wait = async {
+                match retry {
+                    Some(d) => {
+                        tokio::select! {
+                            () = src.oidc_changed.notified() => {}
+                            () = tokio::time::sleep(d) => {}
+                        }
+                    }
+                    None => src.oidc_changed.notified().await,
+                }
+            };
+            tokio::select! {
+                _ = stop.changed() => return,
+                () = wait => {}
+            }
+            tokio::time::sleep(SETTLE).await;
+            retry = if reapply(&src).await {
+                Some(retry.map_or(RETRY_MIN, |d| (d * 2).min(RETRY_MAX)))
+            } else {
+                None
+            };
+        }
+    });
 }
 
 fn open_state(cfg: &Config) -> io::Result<State> {
@@ -166,15 +304,15 @@ pub(crate) fn open(cfg: &Config, store: &crate::secrets::SecretStore) -> io::Res
         );
     }
     // A broken provider setup (say, a missing secret file) leaves password sign-in working.
-    match oidc(cfg, store) {
-        Ok(Some(o)) => auth.set_oidc(o),
-        Ok(None) => {}
-        // REQ: CLU-009 (ADR-120) — a Helm resolver pod has the chart's whole configuration but
-        // not its secrets, by design: nobody signs in there (its API has no Service port), so
-        // a missing secret isn't an error on it (2026-10-14 review: an error per pod start).
-        Err(e) if cfg.cluster.ephemeral => {
-            info!("OIDC sign-in isn't set up on this resolver pod (people sign in elsewhere): {e}");
-        }
+    // REQ: API-016 (T23.10) — each provider on its own: one whose secret can't be read is left
+    // out with the reason; discovery is read at the first sign-in (starting never waits on a
+    // provider), and a later change is applied by `reapply`.
+    let (settings, skipped) = oidc_inputs(cfg, store);
+    if !settings.providers.is_empty() {
+        info!(providers = settings.providers.len(), "OIDC sign-in enabled");
+    }
+    match oidc_fetch() {
+        Ok(fetch) => auth.start_oidc(settings, skipped, fetch),
         Err(e) => error!("OIDC sign-in disabled: {e}"),
     }
     bootstrap_from_env(&auth);

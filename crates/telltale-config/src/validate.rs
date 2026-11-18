@@ -1370,38 +1370,60 @@ fn oidc(o: &crate::OidcConfig, r: &mut Report<'_>) {
     let mut ids = HashSet::new();
     for (n, p) in o.provider.iter().enumerate() {
         let at = format!("auth.oidc.provider[{n}]");
-        let id = p.id.as_str();
-        if id.is_empty()
-            || id.len() > 32
-            || !id
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        {
-            r.err(format!("{at}.id"), "1-32 lowercase letters, digits, or -");
-        }
-        if !ids.insert(id) {
-            r.err(format!("{at}.id"), format!("duplicate provider `{id}`"));
-        }
-        let issuer = p.issuer.as_str();
-        if !(issuer.starts_with("https://") || issuer.starts_with("http://")) {
-            r.err(format!("{at}.issuer"), "must be an http(s) URL");
-        } else if issuer.starts_with("http://") {
-            r.warn(format!(
-                "{at}.issuer: plain HTTP is only safe for local testing"
-            ));
-        }
-        if p.client_id.is_empty() {
-            r.err(format!("{at}.client_id"), "must not be empty");
-        }
-        if !p.scopes.iter().any(|s| s.as_str() == "openid") {
-            r.err(format!("{at}.scopes"), "must include `openid`");
-        }
-        if p.role.is_empty() && p.default_role.is_none() {
-            r.warn(format!(
-                "{at}: no [[...role]] rules and no default_role: nobody can sign in with `{id}`"
-            ));
+        provider(p, &at, r);
+        if !ids.insert(p.id.as_str()) {
+            r.err(
+                format!("{at}.id"),
+                format!("duplicate provider `{}`", p.id.as_str()),
+            );
         }
     }
+}
+
+/// One provider's own settings (the checks that don't look at the rest of the configuration).
+fn provider(p: &crate::OidcProvider, at: &str, r: &mut Report<'_>) {
+    let id = p.id.as_str();
+    if id.is_empty()
+        || id.len() > 32
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        r.err(format!("{at}.id"), "1-32 lowercase letters, digits, or -");
+    }
+    let issuer = p.issuer.as_str();
+    if !(issuer.starts_with("https://") || issuer.starts_with("http://")) {
+        r.err(format!("{at}.issuer"), "must be an http(s) URL");
+    } else if issuer.starts_with("http://") {
+        r.warn(format!(
+            "{at}.issuer: plain HTTP is only safe for local testing"
+        ));
+    }
+    if p.client_id.is_empty() {
+        r.err(format!("{at}.client_id"), "must not be empty");
+    }
+    if !p.scopes.iter().any(|s| s.as_str() == "openid") {
+        r.err(format!("{at}.scopes"), "must include `openid`");
+    }
+    if p.role.is_empty() && p.default_role.is_none() {
+        r.warn(format!(
+            "{at}: no [[...role]] rules and no default_role: nobody can sign in with `{id}`"
+        ));
+    }
+}
+
+/// REQ: API-016 (T23.10) — the problems with one OIDC provider on its own (a provider made in
+/// the UI), as messages; warnings are left out. The rules are the ones `validate_config`
+/// applies to a file's providers, minus `public_url` (a node without one shows the provider as
+/// inactive) and the duplicate check across the list.
+pub fn provider_errors(p: &crate::OidcProvider) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut report = Report {
+        errors: &mut errors,
+        warnings: Vec::new(),
+    };
+    provider(p, "provider", &mut report);
+    errors.iter().map(ToString::to_string).collect()
 }
 
 fn node(cfg: &Config, r: &mut Report<'_>) {

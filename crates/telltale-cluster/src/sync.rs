@@ -87,6 +87,13 @@ pub struct ClusterManifest {
     /// Absent from older primaries (a replica then keeps its own).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anomaly_acks: Option<BlobRef>,
+    /// REQ: API-016, CLU-015 (T23.10, ADR-903 §6) — the entries of the node-managed kinds
+    /// (`oidc_provider`), as one JSON document of references only (a secret is named, never
+    /// carried). Every member persists it, validates it and merges it apart from the shared
+    /// part, under its own files. Absent from older primaries and ignored by older replicas
+    /// (CLU-010).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_managed: Option<BlobRef>,
     /// REQ: CLU-013 (ADR-116) — set on a version sent to canary nodes first: shown on the
     /// Cluster page ("canary of version …"); informational. Absent otherwise and from older
     /// primaries; older replicas are never sent one.
@@ -150,6 +157,7 @@ impl ClusterManifest {
         }
         v.extend(self.identities.iter());
         v.extend(self.anomaly_acks.iter());
+        v.extend(self.node_managed.iter());
         v
     }
 
@@ -370,6 +378,37 @@ mod tests {
         old.as_object_mut().unwrap().remove("anomaly_acks");
         let back: ClusterManifest = serde_json::from_value(old).unwrap();
         assert!(back.anomaly_acks.is_none());
+    }
+
+    // REQ: CLU-010, API-016 (T23.10) — the node-managed blob is fetched with the rest; a manifest
+    // from an older primary (without it) still reads, and an older replica (a manifest type
+    // without the field) reads the manifest and ignores it.
+    #[test]
+    fn clu_010_node_managed_ignored_by_n_minus_1() {
+        #[derive(Deserialize)]
+        struct OlderManifest {
+            epoch: u64,
+            seq: u64,
+            config: BlobRef,
+            #[serde(default)]
+            anomaly_acks: Option<BlobRef>,
+        }
+        let mut m = manifest();
+        assert!(m.blobs().iter().all(|b| b.name != "node-managed.json"));
+        m.node_managed = Some(blob_ref("node-managed.json", b"{}"));
+        assert!(m.blobs().iter().any(|b| b.name == "node-managed.json"));
+        let ca = pki::new_ca("home").unwrap();
+        let signed = Signed::sign(&m, &ca.key_pem).unwrap();
+        assert_eq!(signed.verify(&ca.cert_pem).unwrap(), m);
+        let old: OlderManifest = serde_json::from_slice(&signed.json).unwrap();
+        assert_eq!((old.epoch, old.seq), (m.epoch, m.seq));
+        assert_eq!(old.config, m.config);
+        assert!(old.anomaly_acks.is_none());
+        let mut json = serde_json::to_value(manifest()).unwrap();
+        assert!(json.get("node_managed").is_none(), "absent when unset");
+        json.as_object_mut().unwrap().remove("node_managed");
+        let back: ClusterManifest = serde_json::from_value(json).unwrap();
+        assert!(back.node_managed.is_none());
     }
 
     // REQ: CLU-013 — the rollout and pin fields default to absent (an older primary's manifest

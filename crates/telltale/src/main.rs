@@ -48,7 +48,11 @@ mod managed;
 mod masking;
 mod mcp_stdio;
 mod mdns;
+mod node_managed;
+#[cfg(test)]
+mod node_managed_tests;
 mod node_removal;
+mod oidc_settings;
 mod otlp;
 mod pihole;
 mod pihole_import;

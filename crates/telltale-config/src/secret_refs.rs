@@ -157,7 +157,13 @@ pub fn references(cfg: &Config) -> Vec<Reference> {
             d.password_ref.as_ref(),
         );
     }
-    for p in &cfg.auth.oidc.provider {
+    for p in cfg
+        .auth
+        .oidc
+        .provider
+        .iter()
+        .chain(&cfg.auth.oidc.managed_provider)
+    {
         add(
             "oidc_provider",
             &p.id,

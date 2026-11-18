@@ -1735,8 +1735,9 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // API-005's /pihole-api and /pihole-api/token (T24.10) and the Pi-hole compatible paths
     // /api/auth, /api/stats/{summary,top_domains,top_clients,upstreams}, /api/info/version,
     // /api/dns/blocking and /admin/api.php; 147 with OBS-901's /map, /map/stream, /map/world,
-    // /map/health and /map-settings/default (T26.2).
-    assert_eq!(paths.len(), 147);
+    // /map/health and /map-settings/default (T26.2); 149 with API-016's /oidc-providers and
+    // /oidc-providers/{id} (T23.10).
+    assert_eq!(paths.len(), 149);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

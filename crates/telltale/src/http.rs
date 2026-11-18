@@ -93,6 +93,12 @@ pub(crate) struct Sources {
     pub(crate) routers: Arc<crate::routers::Board>,
     /// Wakes the router poll loop when the configuration or a stored secret changes.
     pub(crate) routers_changed: Arc<tokio::sync::Notify>,
+    /// REQ: API-016 (T23.10) — wakes the OIDC applier when the configuration, a stored secret
+    /// (here or replicated) or a node-managed entry changes.
+    pub(crate) oidc_changed: Arc<tokio::sync::Notify>,
+    /// How OIDC providers are reached; unset, the HTTPS client list downloads use (tests set a
+    /// fake issuer).
+    pub(crate) oidc_fetch: crate::auth_setup::FetchSlot,
     /// Asks the main loop to re-read the config files and state.db and apply them; answers
     /// whether it worked (ADR-040).
     pub(crate) reload: tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<bool>>,

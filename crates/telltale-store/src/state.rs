@@ -197,6 +197,11 @@ const MIGRATIONS: &[&str] = &[
         changed INTEGER NOT NULL DEFAULT 0
     );
     INSERT INTO pihole_api (id) VALUES (1);",
+    // 15: REQ: API-016 (T23.10, ADR-967 point 7) — the issuer a user is linked at and a session
+    // was opened through, so a provider repointed to another issuer neither keeps the old
+    // issuer's sessions nor maps its subjects onto existing users. NULL: made before this.
+    "ALTER TABLE users ADD COLUMN oidc_issuer TEXT;
+    ALTER TABLE sessions ADD COLUMN oidc_issuer TEXT;",
 ];
 
 /// REQ: API-014 — the migration that purges the old idempotency records.
@@ -275,6 +280,8 @@ pub struct User {
     pub password_changed: u64,
     /// The OIDC provider this user signs in with (no local password), if any.
     pub oidc_provider: Option<String>,
+    /// The issuer that link was made at (`None`: made before issuers were recorded).
+    pub oidc_issuer: Option<String>,
 }
 
 /// A session row (the session ID itself is never stored, only its hash).
@@ -550,7 +557,7 @@ impl State {
     }
 
     const USER_COLS: &'static str = "id, username, password_hash, role, totp_secret, totp_enabled, \
-        totp_last_step, allow_basic_api, disabled, created, password_changed, oidc_provider";
+        totp_last_step, allow_basic_api, disabled, created, password_changed, oidc_provider, oidc_issuer";
 
     fn row_user(r: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
         Ok(User {
@@ -566,6 +573,7 @@ impl State {
             created: u(r.get(9)?),
             password_changed: u(r.get(10)?),
             oidc_provider: r.get(11)?,
+            oidc_issuer: r.get(12)?,
         })
     }
 
@@ -794,11 +802,11 @@ impl State {
     }
 
     /// Marks a session as started through an OIDC provider.
-    pub fn set_session_provider(&self, id_hash: &[u8], provider: &str) -> Result<()> {
+    pub fn set_session_provider(&self, id_hash: &[u8], provider: &str, issuer: &str) -> Result<()> {
         self.with(|c| {
             c.execute(
-                "UPDATE sessions SET oidc_provider = ?2 WHERE id_hash = ?1",
-                params![id_hash, provider],
+                "UPDATE sessions SET oidc_provider = ?2, oidc_issuer = ?3 WHERE id_hash = ?1",
+                params![id_hash, provider, issuer],
             )
             .map(|_| ())
         })
@@ -833,6 +841,57 @@ impl State {
             )
         })
         .map(|n| n as u64)
+    }
+
+    /// REQ: API-016 (T23.10) — ends every session that was opened through OIDC provider
+    /// `provider` (it was removed). The users stay.
+    pub fn delete_provider_sessions(&self, provider: &str) -> Result<u64> {
+        self.with(|c| c.execute("DELETE FROM sessions WHERE oidc_provider = ?1", [provider]))
+            .map(|n| n as u64)
+    }
+
+    /// REQ: API-016 — settles the issuers of `provider`, now at `issuer`. `was` is the issuer it
+    /// was served at before this rebuild, when this process knew one. Rows made before issuers
+    /// were recorded (NULL) belong to `was`, or, with no earlier issuer known, to `issuer`.
+    /// When the provider was repointed (`was` differs), the sessions opened at any other issuer
+    /// (NULL ones included) end, and a user keeps the issuer it was linked at, so its `sub`
+    /// isn't mapped at the new one. Returns the number of sessions ended.
+    pub fn reconcile_provider_issuer(
+        &self,
+        provider: &str,
+        issuer: &str,
+        was: Option<&str>,
+    ) -> Result<u64> {
+        self.with(|c| {
+            let owner = was.unwrap_or(issuer);
+            c.execute(
+                "UPDATE users SET oidc_issuer = ?2 WHERE oidc_provider = ?1 AND oidc_issuer IS NULL",
+                [provider, owner],
+            )?;
+            if was.is_none_or(|w| w == issuer) {
+                c.execute(
+                    "UPDATE sessions SET oidc_issuer = ?2 WHERE oidc_provider = ?1 AND oidc_issuer IS NULL",
+                    [provider, issuer],
+                )?;
+            }
+            c.execute(
+                "DELETE FROM sessions WHERE oidc_provider = ?1
+                   AND (oidc_issuer IS NULL OR oidc_issuer != ?2)",
+                [provider, issuer],
+            )
+        })
+        .map(|n| n as u64)
+    }
+
+    /// REQ: API-016 — records the issuer a user's OIDC link was made at.
+    pub fn set_user_issuer(&self, id: i64, issuer: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE users SET oidc_issuer = ?2 WHERE id = ?1",
+                params![id, issuer],
+            )
+            .map(|_| ())
+        })
     }
 
     /// Deletes sessions that expired or were idle since before `idle_before`.
@@ -1046,6 +1105,65 @@ mod tests {
             .unwrap();
         assert_eq!(secure, 1);
         s.checkpoint().unwrap();
+    }
+
+    /// REQ: API-016 (ADR-967 point 7) — users and sessions from before issuers were recorded
+    /// (NULL) are settled: with no earlier issuer known they take the current one; when the
+    /// provider is repointed they belong to the old one, so their sessions end and the user is
+    /// not adopted by the new issuer.
+    #[test]
+    fn api_016_null_issuer_rows_follow_the_old_issuer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = State::open(&tmp.path().join("state.db")).unwrap();
+        let make = |name: &str| {
+            let u = s.create_user(name, "h", "viewer", false, 1).unwrap();
+            s.lock()
+                .execute(
+                    "UPDATE users SET oidc_provider = 'p', oidc_subject = ?2 WHERE id = ?1",
+                    params![u.id, name],
+                )
+                .unwrap();
+            s.create_session(name.as_bytes(), u.id, "c", 1, 9_999_999_999, None)
+                .unwrap();
+            s.set_session_provider(name.as_bytes(), "p", "https://a.test")
+                .unwrap();
+            s.lock()
+                .execute("UPDATE sessions SET oidc_issuer = NULL", [])
+                .unwrap();
+            u.id
+        };
+        let issuer_of = |id: i64| -> Option<String> {
+            s.lock()
+                .query_row("SELECT oidc_issuer FROM users WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        let sessions = || -> i64 {
+            s.lock()
+                .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+                .unwrap()
+        };
+        // First rebuild after the upgrade: the rows take the current issuer and stay.
+        let a = make("ana");
+        assert_eq!(
+            s.reconcile_provider_issuer("p", "https://a.test", None)
+                .unwrap(),
+            0
+        );
+        assert_eq!(issuer_of(a).as_deref(), Some("https://a.test"));
+        assert_eq!(sessions(), 1);
+        // A user and session still NULL when the provider is repointed in process: they belong to
+        // the old issuer, the session ends, and the user keeps the old issuer.
+        let b = make("bob");
+        assert_eq!(
+            s.reconcile_provider_issuer("p", "https://b.test", Some("https://a.test"))
+                .unwrap(),
+            2
+        );
+        assert_eq!(issuer_of(b).as_deref(), Some("https://a.test"));
+        assert_eq!(issuer_of(a).as_deref(), Some("https://a.test"));
+        assert_eq!(sessions(), 0);
     }
 
     // REQ: OPS-001, ADR-124 — no temp files: the image's root filesystem is read-only.

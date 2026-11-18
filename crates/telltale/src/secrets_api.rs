@@ -521,6 +521,8 @@ pub(crate) fn apply(
             drop(value);
             // REQ: API-016 (T23.7) — a router's stored credential changed: its read runs again.
             src.routers_changed.notify_one();
+            // REQ: API-016 (T23.10) — and an OIDC provider's client secret: it applies now.
+            src.oidc_changed.notify_one();
             tracing::info!(name = %name, stamp = ?info.stamp, "stored secret set");
             Ok(SecretChange {
                 applied: true,
@@ -587,6 +589,7 @@ pub(crate) fn apply(
             // REQ: API-016 (T23.7) — a deleted secret a router used: its read runs again (and fails
             // with the reason, keeping the last answer).
             src.routers_changed.notify_one();
+            src.oidc_changed.notify_one();
             tracing::info!(name = %name, stamp = ?info.stamp, "stored secret deleted");
             Ok(SecretChange {
                 applied: true,

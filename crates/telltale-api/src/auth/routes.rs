@@ -246,11 +246,7 @@ pub async fn authenticate(
         (Some(t), Some(o))
             if o.mcp().is_some() && !t.starts_with("tt_") && t.split('.').count() == 3 =>
         {
-            Some(
-                o.verify_access_token(t, now())
-                    .await
-                    .map(|c| (Arc::clone(o), c)),
-            )
+            Some(o.verify_access_token(t, now()).await.map(|c| (o, c)))
         }
         _ => None,
     };
@@ -1438,7 +1434,7 @@ pub(crate) async fn oidc_start(
     Path(id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<OidcStart>,
 ) -> Response {
-    let Some(oidc) = auth.oidc().cloned() else {
+    let Some(oidc) = auth.oidc() else {
         return login_error("sign-in providers aren't configured");
     };
     let back = super::oidc::safe_return(q.return_to.as_deref());
@@ -1471,7 +1467,7 @@ pub(crate) async fn oidc_callback(
     Path(id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<OidcCallback>,
 ) -> Response {
-    let Some(oidc) = auth.oidc().cloned() else {
+    let Some(oidc) = auth.oidc() else {
         return login_error("sign-in providers aren't configured");
     };
     if let Some(e) = &q.error {
@@ -1490,11 +1486,12 @@ pub(crate) async fn oidc_callback(
     let https = is_https(&auth, &req_ext, &headers);
     let ttl = auth.settings().session_ttl_secs;
     let pid = id.clone();
+    let issuer = oidc.issuer(&id).unwrap_or_default().to_owned();
     let signed_in = blocking(move || {
         let user = auth.oidc_user(&oidc, &pid, &who, ip, now())?;
         let sess = auth.start_session(&user, ip, now())?;
         auth.state()
-            .set_session_provider(&crypto::secret_hash(&sess.cookie), &pid)
+            .set_session_provider(&crypto::secret_hash(&sess.cookie), &pid, &issuer)
             .map_err(db)?;
         Ok(sess)
     })

@@ -27,6 +27,9 @@ use crate::problem::{Code, Problem};
 mod claims;
 mod jose;
 mod metadata;
+mod reload;
+
+pub use reload::{ProviderStatus, Reloaded};
 
 /// What the binary supplies to reach providers (its HTTPS client; no redirects followed).
 pub type Fetch = Arc<
@@ -53,7 +56,7 @@ const MAX_RESPONSE: usize = 1 << 20;
 pub const FLOW_COOKIE: &str = "telltale_oidc";
 
 /// One configured provider.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderSettings {
     pub id: String,
     pub name: String,
@@ -70,7 +73,7 @@ pub struct ProviderSettings {
 }
 
 /// `[auth.oidc]`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OidcSettings {
     /// `https://dns.example.com` (no trailing slash).
     pub public_url: String,
@@ -80,7 +83,7 @@ pub struct OidcSettings {
 }
 
 /// OAuth for MCP (REQ: AGT-008, T7.4): which provider issues access tokens, and for whom.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpOAuth {
     /// A provider's `id`.
     pub provider: String,
@@ -100,6 +103,8 @@ struct Discovered {
 #[derive(Debug)]
 struct Flow {
     provider: String,
+    /// The issuer the provider had when this sign-in started.
+    issuer: String,
     verifier: String,
     nonce: String,
     return_to: String,
@@ -107,12 +112,66 @@ struct Flow {
     started: Instant,
 }
 
-/// The OIDC service.
+/// What outlives a rebuild of [`Oidc`] (REQ: API-016, T23.10, ADR-903 §7): the sign-ins in
+/// progress (PKCE verifier, nonce) and what discovery read, so that a provider added, changed
+/// or removed in the UI doesn't cut off a person who is halfway through signing in, and an
+/// unchanged provider isn't read again. Discovery is keyed by provider ID and issuer, so a
+/// changed issuer reads again and an unchanged one doesn't.
+#[derive(Debug, Default)]
+pub struct Shared {
+    discovered: Mutex<HashMap<String, Arc<Discovered>>>,
+    flows: Mutex<HashMap<String, Flow>>,
+}
+
+impl Shared {
+    /// Forgets what isn't needed for `keep` (provider ID, issuer): their discovery, and the
+    /// flows of providers that are gone.
+    pub(super) fn retain(&self, keep: &[(String, String)]) {
+        self.discovered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|k, _| {
+                keep.iter()
+                    .any(|(id, issuer)| *k == discovery_key(id, issuer))
+            });
+        self.flows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|_, f| {
+                keep.iter()
+                    .any(|(id, issuer)| *id == f.provider && *issuer == f.issuer)
+            });
+    }
+
+    fn cached(&self, id: &str, issuer: &str) -> Option<Arc<Discovered>> {
+        self.discovered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&discovery_key(id, issuer))
+            .cloned()
+    }
+
+    fn store(&self, id: &str, issuer: &str, d: Arc<Discovered>) {
+        self.discovered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(discovery_key(id, issuer), d);
+    }
+}
+
+fn discovery_key(id: &str, issuer: &str) -> String {
+    format!(
+        "{id}
+{issuer}"
+    )
+}
+
+/// The OIDC service: one set of providers. A change of providers builds a new one that shares
+/// the [`Shared`] state of the old (`Auth::reload_oidc`).
 pub struct Oidc {
     settings: OidcSettings,
     fetch: Fetch,
-    discovered: Mutex<HashMap<String, Arc<Discovered>>>,
-    flows: Mutex<HashMap<String, Flow>>,
+    shared: Arc<Shared>,
     /// Per provider: when its key set was last fetched. Held across a fetch, so concurrent
     /// refetches for one provider collapse into one.
     jwks_gate: HashMap<String, tokio::sync::Mutex<Option<Instant>>>,
@@ -240,8 +299,35 @@ fn unix_now() -> u64 {
         .map_or(u64::MAX, |d| d.as_secs())
 }
 
+/// Reads the discovery document and the key set of the provider at `issuer`.
+async fn load_discovery(fetch: &Fetch, issuer: &str) -> Result<Discovered, String> {
+    let req = axum::http::Request::get(metadata::url_of(issuer))
+        .body(Vec::new())
+        .map_err(|e| e.to_string())?;
+    let (status, body) = send(fetch, req).await?;
+    if !status.is_success() {
+        return Err(format!(
+            "the discovery document returned HTTP {}",
+            status.as_u16()
+        ));
+    }
+    let doc: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+    let meta = metadata::parse(&doc, issuer)?;
+    let keys = fetch_keys(fetch, &meta.jwks_uri).await?;
+    Ok(Discovered {
+        meta,
+        keys,
+        at: Instant::now(),
+    })
+}
+
 impl Oidc {
     pub fn new(settings: OidcSettings, fetch: Fetch) -> Self {
+        Self::with_shared(settings, fetch, Arc::default())
+    }
+
+    /// A service that continues the sign-ins and discovery in `shared`.
+    pub fn with_shared(settings: OidcSettings, fetch: Fetch, shared: Arc<Shared>) -> Self {
         let jwks_gate = settings
             .providers
             .iter()
@@ -255,8 +341,7 @@ impl Oidc {
         Self {
             settings,
             fetch,
-            discovered: Mutex::new(HashMap::new()),
-            flows: Mutex::new(HashMap::new()),
+            shared,
             jwks_gate,
             reload_gate,
         }
@@ -269,6 +354,11 @@ impl Oidc {
             .iter()
             .map(|p| (p.id.clone(), p.name.clone()))
             .collect()
+    }
+
+    /// REQ: API-016 — the issuer provider `id` is configured with.
+    pub fn issuer(&self, id: &str) -> Option<&str> {
+        self.provider(id).ok().map(|p| p.issuer.as_str())
     }
 
     fn provider(&self, id: &str) -> Result<&ProviderSettings, Problem> {
@@ -286,60 +376,33 @@ impl Oidc {
         )
     }
 
-    /// The cached discovery for provider `id`, if any (fresh or not).
-    fn cached(&self, id: &str) -> Option<Arc<Discovered>> {
-        self.discovered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
+    /// The cached discovery for provider `p` at its issuer, if any (fresh or not).
+    fn cached(&self, p: &ProviderSettings) -> Option<Arc<Discovered>> {
+        self.shared.cached(&p.id, &p.issuer)
     }
 
-    fn store(&self, id: &str, d: Arc<Discovered>) {
-        self.discovered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id.to_owned(), d);
+    fn store(&self, p: &ProviderSettings, d: Arc<Discovered>) {
+        self.shared.store(&p.id, &p.issuer, d);
     }
 
     /// Reads the discovery document and the key set of `p`.
     async fn load(&self, p: &ProviderSettings) -> Result<Discovered, String> {
-        let req = axum::http::Request::get(metadata::url_of(&p.issuer))
-            .body(Vec::new())
-            .map_err(|e| e.to_string())?;
-        let (status, body) = send(&self.fetch, req).await?;
-        if !status.is_success() {
-            return Err(format!(
-                "the discovery document returned HTTP {}",
-                status.as_u16()
-            ));
-        }
-        let doc: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
-        let meta = metadata::parse(&doc, &p.issuer)?;
-        let keys = fetch_keys(&self.fetch, &meta.jwks_uri).await?;
-        Ok(Discovered {
-            meta,
-            keys,
-            at: Instant::now(),
-        })
+        load_discovery(&self.fetch, &p.issuer).await
     }
 
     /// The discovery of `p`, from the cache while it's fresh.
     async fn discover(&self, p: &ProviderSettings) -> Result<Arc<Discovered>, Problem> {
-        if let Some(d) = self
-            .cached(&p.id)
-            .filter(|d| d.at.elapsed() < DISCOVERY_TTL)
-        {
+        if let Some(d) = self.cached(p).filter(|d| d.at.elapsed() < DISCOVERY_TTL) {
             return Ok(d);
         }
         let Some(gate) = self.reload_gate.get(&p.id) else {
             let d = Arc::new(self.load(p).await.map_err(|e| provider_down(&p.id, e))?);
-            self.store(&p.id, Arc::clone(&d));
+            self.store(p, Arc::clone(&d));
             return Ok(d);
         };
         // One reload at a time per provider; a request that waited uses what the first stored.
         let mut failed_at = gate.lock().await;
-        let stale = self.cached(&p.id);
+        let stale = self.cached(p);
         if let Some(d) = stale.as_ref().filter(|d| d.at.elapsed() < DISCOVERY_TTL) {
             return Ok(Arc::clone(d));
         }
@@ -352,7 +415,7 @@ impl Oidc {
         match self.load(p).await {
             Ok(d) => {
                 let d = Arc::new(d);
-                self.store(&p.id, Arc::clone(&d));
+                self.store(p, Arc::clone(&d));
                 *failed_at = None;
                 Ok(d)
             }
@@ -377,7 +440,7 @@ impl Oidc {
             return Arc::clone(seen);
         };
         let mut last = gate.lock().await;
-        let current = self.cached(&p.id).unwrap_or_else(|| Arc::clone(seen));
+        let current = self.cached(p).unwrap_or_else(|| Arc::clone(seen));
         if !Arc::ptr_eq(&current, seen) || last.is_some_and(|at| at.elapsed() < JWKS_MIN_INTERVAL) {
             return current;
         }
@@ -389,7 +452,7 @@ impl Oidc {
                     keys,
                     at: seen.at,
                 });
-                self.store(&p.id, Arc::clone(&fresh));
+                self.store(p, Arc::clone(&fresh));
                 fresh
             }
             Err(e) => {
@@ -453,8 +516,13 @@ impl Oidc {
         };
         let url = format!("{}{sep}{query}", d.meta.authorization_endpoint);
         let browser = crypto::random_secret();
-        let mut flows = self.flows.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut flows = self
+            .shared
+            .flows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         flows.retain(|_, f| f.started.elapsed() < FLOW_TTL);
+        let issuer = self.provider(id)?.issuer.clone();
         if flows.len() >= MAX_FLOWS {
             return Err(Problem::new(
                 Code::RateLimited,
@@ -465,6 +533,7 @@ impl Oidc {
             state,
             Flow {
                 provider: id.to_owned(),
+                issuer,
                 verifier,
                 nonce,
                 return_to: return_to.to_owned(),
@@ -551,6 +620,7 @@ impl Oidc {
         browser: Option<&str>,
     ) -> Result<(Identity, String), Problem> {
         let flow = self
+            .shared
             .flows
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -573,6 +643,13 @@ impl Oidc {
             .hint("Start again from the sign-in page in this browser."));
         }
         let p = self.provider(id)?;
+        if p.issuer != flow.issuer {
+            return Err(Problem::new(
+                Code::Unauthorized,
+                "this sign-in provider changed while you were signing in",
+            )
+            .hint("Start again from the sign-in page."));
+        }
         let d = self.discover(p).await?;
         let id_token = self.exchange(p, &d.meta, code, &flow.verifier).await?;
         let allowed = id_token_algs(&d.meta)?;
@@ -664,7 +741,7 @@ impl Oidc {
     /// Where to send the browser to also sign out at the provider, if it supports that.
     pub fn logout_url(&self, id: &str) -> Option<String> {
         let p = self.provider(id).ok()?;
-        let end = self.cached(id)?.meta.end_session_endpoint.clone()?;
+        let end = self.cached(p)?.meta.end_session_endpoint.clone()?;
         let back = format!("{}/", self.settings.public_url.trim_end_matches('/'));
         let sep = if end.contains('?') { '&' } else { '?' };
         Some(format!(
@@ -827,6 +904,8 @@ impl Auth {
             .user_by_oidc(&provider, sub)
             .map_err(super::db)?
             .filter(|_| !sub.is_empty())
+            .map(|u| self.check_link(oidc, &provider, u))
+            .transpose()?
             .ok_or_else(|| {
                 Problem::new(
                     Code::Unauthorized,
@@ -891,6 +970,33 @@ impl Auth {
         })
     }
 
+    /// REQ: API-016 — a `sub` is unique only within one issuer, so a user linked at another
+    /// issuer than the provider has now isn't mapped (an admin deletes the user to let the
+    /// person sign in again as a new one). A user from before issuers were recorded adopts the
+    /// current one.
+    fn check_link(&self, oidc: &Oidc, id: &str, u: User) -> Result<User, Problem> {
+        let Some(now) = oidc.issuer(id) else {
+            return Ok(u);
+        };
+        match u.oidc_issuer.as_deref() {
+            Some(was) if was != now => Err(Problem::new(
+                Code::Forbidden,
+                "this account was linked to another issuer of this provider",
+            )
+            .hint("The provider's issuer changed. An admin can delete the user so the person signs in as a new one.")),
+            Some(_) => Ok(u),
+            None => {
+                self.state()
+                    .set_user_issuer(u.id, now)
+                    .map_err(super::db)?;
+                Ok(User {
+                    oidc_issuer: Some(now.to_owned()),
+                    ..u
+                })
+            }
+        }
+    }
+
     /// Signs in (and on first sign-in creates) the user `who` from provider `id`, updating
     /// their role from their groups. Blocking.
     pub fn oidc_user(
@@ -920,6 +1026,7 @@ impl Auth {
             .map_err(super::db)?;
         let user = if let Some(u) = existing {
             {
+                let u = self.check_link(oidc, id, u)?;
                 if u.disabled {
                     return Err(Problem::new(
                         Code::Forbidden,
@@ -948,6 +1055,11 @@ impl Auth {
                     .state()
                     .create_oidc_user(&name, role.as_str(), id, &who.subject, now)
                     .map_err(super::db)?;
+                if let Some(issuer) = oidc.issuer(id) {
+                    self.state()
+                        .set_user_issuer(u.id, issuer)
+                        .map_err(super::db)?;
+                }
                 self.record(
                     &actor(&u),
                     "user.create",

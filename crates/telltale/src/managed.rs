@@ -63,6 +63,10 @@ pub(crate) const DISCOVERY: &str = "discovery";
 /// REQ: API-016 (T23.7, ADR-921) — `[[router]]` integrations, by name. Admin-only; a router the
 /// files define is read-only through the API (ADR-040), so these never override the files.
 pub(crate) const ROUTER: &str = "router";
+/// REQ: API-016 (T23.10, ADR-967) — OIDC sign-in providers, by ID: a node-managed kind
+/// (ADR-903 §6). Admin-only; a provider the files define is read-only through the API, and the
+/// rows travel to the other members as the manifest's `node_managed` blob, not in `[auth]`.
+pub(crate) const OIDC_PROVIDER: &str = "oidc_provider";
 
 /// An API entry for a kind that can override the files (ADR-069): a definition, or the
 /// files' entry of that name left out.
@@ -162,6 +166,8 @@ pub(crate) struct Entries {
     pub(crate) alert_rules: Vec<(String, Ovr<telltale_config::AlertRule>)>,
     /// REQ: API-016 (T23.7) — the routers made through the API or UI.
     pub(crate) routers: Vec<(String, Ovr<telltale_config::RouterConfig>)>,
+    /// REQ: API-016 (T23.10) — the OIDC providers made through the API or UI, by ID.
+    pub(crate) oidc_providers: Vec<(String, telltale_config::OidcProvider)>,
     pub(crate) schedules: Vec<(String, Ovr<telltale_config::ScheduleConfig>)>,
     /// REQ: OBS-038 — anomaly mutes.
     pub(crate) anomaly_mutes: Vec<(String, Ovr<telltale_config::AnomalyMuteConfig>)>,
@@ -188,6 +194,27 @@ pub(crate) struct Entries {
     pub(crate) discovery: Option<serde_json::Value>,
 }
 
+impl Entries {
+    /// The stored OIDC providers that validate, with the secret fields a body never carries
+    /// cleared (references only); the ones that don't are logged and left out (CLU-004).
+    pub(crate) fn valid_oidc_providers(&self) -> Vec<telltale_config::OidcProvider> {
+        let mut ok = Vec::new();
+        for (id, p) in &self.oidc_providers {
+            let mut p = p.clone();
+            p.id = telltale_config::SafeString::new(id).unwrap_or(p.id);
+            p.client_secret = None;
+            p.client_secret_file = None;
+            let errs = telltale_config::oidc_provider_errors(&p);
+            if errs.is_empty() {
+                ok.push(p);
+            } else {
+                warn!(provider = %id, "skipping a stored OIDC provider: {}", errs.join("; "));
+            }
+        }
+        ok
+    }
+}
+
 /// Where the state database lives.
 pub(crate) fn state_path(cfg: &Config) -> std::path::PathBuf {
     Path::new(cfg.node.data_dir.as_str()).join("state.db")
@@ -207,6 +234,26 @@ fn decode<T: for<'de> Deserialize<'de>>(state: &State, kind: &str) -> Vec<(Strin
             Err(e) => {
                 warn!(kind, name = %m.name, "skipping a stored entry: {e}");
                 None
+            }
+        })
+        .collect()
+}
+
+/// REQ: API-016 (T23.10) — the stored OIDC providers: the row's name is the provider's ID, whatever
+/// the body says (a row seeded from a replicated blob names it only by the row).
+fn decode_oidc_providers(state: &State) -> Vec<(String, telltale_config::OidcProvider)> {
+    decode::<serde_json::Value>(state, OIDC_PROVIDER)
+        .into_iter()
+        .filter_map(|(name, mut v)| {
+            if let Some(o) = v.as_object_mut() {
+                o.insert("id".into(), serde_json::Value::String(name.clone()));
+            }
+            match serde_json::from_value::<telltale_config::OidcProvider>(v) {
+                Ok(p) => Some((name, p)),
+                Err(e) => {
+                    warn!(kind = OIDC_PROVIDER, %name, "skipping a stored entry: {e}");
+                    None
+                }
             }
         })
         .collect()
@@ -262,6 +309,7 @@ pub(crate) fn entries(state: &State) -> Entries {
         alert_destinations: decode_ovr(state, ALERT_DESTINATION),
         alert_rules: decode_ovr(state, ALERT_RULE),
         routers: decode_ovr(state, ROUTER),
+        oidc_providers: decode_oidc_providers(state),
         schedules: decode_ovr(state, SCHEDULE),
         anomaly_mutes: decode_ovr(state, ANOMALY_MUTE),
         ratelimit: decode::<telltale_config::RateLimitConfig>(state, RATELIMIT)
@@ -432,6 +480,10 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
             cfg.router.push(r.clone());
         }
     }
+    // REQ: API-016 (T23.10, ADR-967) — the providers made in the UI are node-managed: merged
+    // apart from `[[auth.oidc.provider]]` (a node without `public_url` shows them as inactive
+    // instead of failing the configuration), the files' ID wins, and a bad one is dropped alone.
+    crate::node_managed::overlay_providers(&mut cfg, e.valid_oidc_providers());
     apply_ovr(&mut cfg.schedule, &e.schedules);
     apply_ovr(&mut cfg.anomaly_mute, &e.anomaly_mutes);
     apply_kubernetes_map(&mut cfg, &e.kubernetes_map);

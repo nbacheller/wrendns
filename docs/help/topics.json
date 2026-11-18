@@ -434,6 +434,36 @@
       "docs": "users-and-sign-in"
     },
     {
+      "id": "oidc-providers",
+      "title": "Let people sign in with an account they already have",
+      "term": "OIDC sign-in provider",
+      "summary": "Keycloak, Authentik, Google or any OpenID Connect provider. A person signs in at the provider and TelltaleDNS gives them a role from the groups the provider reports. A provider you add, change or remove here applies on every node within seconds, with no restart.",
+      "when": "You want family or colleagues to sign in with their own account instead of a password kept here.",
+      "example": "Issuer https://id.example.com/realms/home, client ID telltale, the client secret stored as oidc.keycloak.client_secret, and the group dns-admins mapped to admin.",
+      "caution": "Register each node's redirect URI (shown on the provider's card) with the provider. Each node's configuration file sets its own public_url; without it the provider is inactive on that node. Removing a provider ends the sessions it opened. The break-glass admin's password sign-in is never affected. A provider the configuration file defines is read-only here.",
+      "docs": "users-and-sign-in"
+    },
+    {
+      "id": "oidc-role-rules",
+      "title": "Choose each person's role from their groups",
+      "term": "Group to role rules",
+      "summary": "Each rule maps one group the provider reports to a role. A person gets the highest role any of their groups maps to, at every sign-in. People in no mapped group get the role for everyone else, or can't sign in when there is none.",
+      "when": "You decide who is an admin, an operator or a viewer by the groups they are in at the provider.",
+      "example": "dns-admins is admin, family is viewer, and no role for everyone else: a stranger with an account at the provider is refused.",
+      "caution": "Leave the role for everyone else empty unless every account at the provider should get in. The groups claim (default groups) has to be in the provider's tokens: add it to the client's scope there.",
+      "docs": "users-and-sign-in"
+    },
+    {
+      "id": "oidc-public-url",
+      "title": "Why a provider is inactive on a node",
+      "term": "public_url",
+      "summary": "Each node is opened at its own address, so each node's configuration file sets [auth.oidc] public_url. It makes the redirect URI the provider sends people back to. A node without it can't serve sign-in buttons, so it shows the providers as inactive.",
+      "when": "A provider's card says Inactive on this node and names public_url.",
+      "example": "public_url = \"https://dns.example.com\" on one node and \"http://192.168.1.2:8053\" on another, each registered with the provider as <public_url>/api/v1/auth/oidc/<id>/callback.",
+      "caution": "It is not shared between nodes and can't be set here: it is part of how the node is reached. Set it in the node's file and reload.",
+      "docs": "users-and-sign-in"
+    },
+    {
       "id": "api-tokens",
       "title": "Keys for scripts and dashboards",
       "term": "API tokens",
