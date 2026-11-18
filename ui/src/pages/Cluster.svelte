@@ -497,7 +497,7 @@ telltale cluster join tt_join_…</pre>
                   <td>
                     <span class="badge {n.up ? 'ok' : 'bad'}">{n.up ? 'up' : 'down'}</span>
                     <div class="muted small">
-                      {#if n.thisNode}—{:else}{n.link}{#if n.rttMs != null}{' · '}{ms(n.rttMs)} RTT{/if}{#if !n.up}{' · '}seen {duration(n.lastSeenSecondsAgo)} ago{/if}{/if}
+                      {#if n.thisNode}—{:else}<span title={n.link === 'relayed' ? 'No stream to this node (manual failover keeps replicas linked to the primary only): another node reports it up.' : undefined}>{n.link}</span>{#if n.rttMs != null}{' · '}{ms(n.rttMs)} RTT{/if}{#if !n.up}{' · '}seen {duration(n.lastSeenSecondsAgo)} ago{/if}{/if}
                     </div>
                   </td>
                   <td>

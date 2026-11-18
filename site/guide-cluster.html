@@ -98,7 +98,7 @@ telltale cluster token create --witness
 telltale cluster join tt_join_... --witness --advertise https://witness.lan:8443 -c witness.toml
 telltale cluster witness -c witness.toml        # run it as a service
 
-# On the primary, then restart it
+# On the primary (a running primary adopts it with no restart)
 telltale cluster set-failover auto</code></pre>
       <ul>
         <li>The primary holds a 15-second lease with a majority of voters. If it disappears, an eligible node is elected in a new epoch, typically within 15 to 25 seconds.</li>

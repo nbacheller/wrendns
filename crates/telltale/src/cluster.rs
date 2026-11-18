@@ -499,6 +499,9 @@ pub(crate) fn view(
     }];
     let mut peers = c.members();
     peers.sort_by(|a, b| (&a.site, &a.node_id).cmp(&(&b.site, &b.node_id)));
+    // REQ: CLU-001 (ADR-960) — members this node has no stream to (the other replicas, in manual
+    // failover) but that its peers hear from: up, on their word.
+    let relayed = c.relayed_members();
     for p in &peers {
         let (lag, behind) = lag_of(p.stable_seq(), p.behind_since_ms);
         nodes.push(ClusterNode {
@@ -513,7 +516,7 @@ pub(crate) fn view(
             this_node: false,
             eligible: p.eligible,
             version: p.version.clone(),
-            up: p.up(now),
+            up: p.up(now) || relayed.iter().any(|r| r.node_id == p.node_id),
             connected: p.connected,
             link: p.via.into(),
             last_seen_seconds_ago: now.saturating_sub(p.last_seen_ms) / 1000,
@@ -552,9 +555,39 @@ pub(crate) fn view(
     // listed as down, so they can be seen and removed; they still count as voters. Not in the
     // first minutes after a start, while the members are still reconnecting, and never for
     // ephemeral members (they expire by themselves).
+    for r in registry
+        .iter()
+        .filter(|r| r.node_id != me.node_id && !peers.iter().any(|p| p.node_id == r.node_id))
+    {
+        let Some(rel) = relayed.iter().find(|m| m.node_id == r.node_id) else {
+            continue;
+        };
+        let (lag, behind) = lag_of(rel.applied_seq, None);
+        nodes.push(ClusterNode {
+            node_id: r.node_id.clone(),
+            site: r.site.clone(),
+            witness: r.witness,
+            eligible: r.eligible,
+            ephemeral: r.ephemeral,
+            role: "replica".into(),
+            up: true,
+            connected: false,
+            link: "relayed".into(),
+            protocol: 0,
+            ready: rel.ready,
+            config_seq: rel.applied_seq,
+            config_lag: lag,
+            behind_seconds: behind,
+            last_seen_seconds_ago: now.saturating_sub(rel.heard_ms) / 1000,
+            ..ClusterNode::default()
+        });
+    }
     if local.uptime_s >= REGISTRY_ONLY_AFTER_S {
         for r in registry.iter().filter(|r| {
-            !r.ephemeral && r.node_id != me.node_id && !peers.iter().any(|p| p.node_id == r.node_id)
+            !r.ephemeral
+                && r.node_id != me.node_id
+                && !peers.iter().any(|p| p.node_id == r.node_id)
+                && !relayed.iter().any(|m| m.node_id == r.node_id)
         }) {
             nodes.push(ClusterNode {
                 node_id: r.node_id.clone(),
@@ -1385,19 +1418,12 @@ pub(crate) fn set_failover(
         return fail(&e);
     }
     let voters = telltale_cluster::failover::voters(&id).len();
+    // REQ: CLU-005 (ADR-960) — a running primary takes the mode up within a second, signs it into
+    // its next record, and (under `auto`) renews its lease at once: no restart is needed.
     let _ = writeln!(
         out,
-        "Failover is now `{mode}`. Restart telltale to publish it; every node follows."
+        "Failover is now `{mode}`. A running primary signs it into its next record and every node follows; no restart is needed."
     );
-    if mode == "auto" {
-        // REQ: CLU-005 (review of T21.5) — the replicas adopt `auto` from the signed records at once,
-        // but this primary runs `manual` until it restarts and renews no lease: until then a replica
-        // can be elected within seconds, deposing this one.
-        let _ = writeln!(
-            out,
-            "Warning: restart this primary now. Until it restarts it keeps running in manual mode              and renews no lease, and a replica can elect a new primary within seconds. On a new              cluster, set this before the replicas join."
-        );
-    }
     if mode == "auto" && voters < 3 {
         let _ = writeln!(
             out,

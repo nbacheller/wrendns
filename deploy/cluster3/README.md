@@ -37,13 +37,14 @@ temporary directory it removes at exit: the admin password, the secret it writes
 Each check prints `== <name>` and then `ok` or `FAIL:` with the reason. The bracketed IDs are the
 requirements each one covers.
 
-Before the replicas join, automatic failover is turned on and the primary is restarted to run it
-(`telltale cluster set-failover auto`, as `docs/running.md` describes). Every check after that runs
-with failover on, so a check that pauses the primary for longer than its lease can promote a replica.
+Automatic failover is turned on after the replicas join, on the running primary, with no restart
+(`telltale cluster set-failover auto`, check **a2**). Every check after that runs with failover on,
+so a check that pauses the primary for longer than its lease can promote a replica.
 
 | check | what it proves | requirements |
 |---|---|---|
 | **a.** the three nodes join | both replicas join with a token and `--advertise`; the primary's `/api/v1/cluster` lists three connected nodes | CLU-001, CLU-005 |
+| **a2.** automatic failover on a running cluster | in manual mode each replica reports the other as up (relayed by the primary); `set-failover auto` on the running primary is adopted by all three without a restart, the primary holds a lease, keeps its role and epoch, and no replica stands for 45 s (ADR-960) | CLU-005, CLU-001 |
 | **b.** a config edit reaches every node | a record written on the primary answers on all three nodes' DNS within 5 s | CLU-003 |
 | **c.** a write on a replica is forwarded | a record written on replica-a's API is on the primary and on replica-b | CLU-002 |
 | **d.** secrets | a secret set on the primary is readable on both replicas (`secrets status` shows it readable); every read surface (secrets, config, cluster, system info, audit) answers 200 and shows no value, and so do the metrics and every node's log | CLU-015, ADR-917 |

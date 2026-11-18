@@ -4450,7 +4450,10 @@ export interface components {
             kubeNode?: string | null;
             /** Format: int64 */
             lastSeenSecondsAgo: number;
-            /** @description `self`, `inbound` (it connected to this node), or `outbound`. */
+            /**
+             * @description `self`, `inbound` (it connected to this node), `outbound`, or `relayed` (no stream: a
+             *     peer reports it up, as the primary does for a replica in manual failover).
+             */
             link: string;
             maintenance?: components["schemas"]["NodeMaintenance"] | null;
             nodeId: string;
@@ -4506,7 +4509,10 @@ export interface components {
             startedAt?: string | null;
             /** @description The node answering this request. */
             thisNode: boolean;
-            /** @description Heard from within 15 s (always true for this node). */
+            /**
+             * @description Heard from within 15 s (always true for this node), by this node or, for a member it has
+             *     no stream to, by a peer that says so (`link` `relayed`).
+             */
             up: boolean;
             /**
              * Format: double

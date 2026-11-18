@@ -3179,11 +3179,13 @@ pub struct ClusterNode {
     pub this_node: bool,
     pub eligible: bool,
     pub version: String,
-    /// Heard from within 15 s (always true for this node).
+    /// Heard from within 15 s (always true for this node), by this node or, for a member it has
+    /// no stream to, by a peer that says so (`link` `relayed`).
     pub up: bool,
     /// A stream to it is open (this node: n/a, true).
     pub connected: bool,
-    /// `self`, `inbound` (it connected to this node), or `outbound`.
+    /// `self`, `inbound` (it connected to this node), `outbound`, or `relayed` (no stream: a
+    /// peer reports it up, as the primary does for a replica in manual failover).
     pub link: String,
     pub last_seen_seconds_ago: u64,
     /// Round-trip time over the cluster link.

@@ -1404,6 +1404,48 @@ test('dns_006 cache page', async () => {
   await expect(page.getByTestId('updates')).toContainText('Newer than the published');
 });
 
+// REQ: CLU-005 (ADR-960, T21.7) — turning automatic failover on under a running cluster needs no
+// restart: the Cluster page, which polls every 5 s, goes from "manual" to "automatic" with the
+// lease the primary now holds, and the other replica (no stream to this node in manual mode) is
+// listed up on the primary's word, so the health check "peers up" holds in either mode.
+test('clu_005 the failover mode changes on the Cluster page without a restart', async () => {
+  const node = (o: Record<string, unknown>) => ({
+    ephemeral: false, witness: false, protocol: 1, role: 'replica', thisNode: false, eligible: true, version: '0.8.0',
+    up: true, connected: true, link: 'inbound', lastSeenSecondsAgo: 1, rttMs: 3, configSeq: 9, configLag: 0, ready: true,
+    qps: 1, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, restarts: 0, cacheEntries: 5,
+    cacheHitPercent: 80, querySharePercent: 10, ...o,
+  });
+  const view = (failover: Record<string, unknown>) => ({
+    enabled: true, clusterId: 'c1', name: 'home', thisNode: 'id-a', newestConfigSeq: 9, healthy: true,
+    checks: [{ id: 'peers_up', ok: true, summary: 'All 3 nodes are up' }],
+    events: [], conflicts: [], authority: 'primary', failover,
+    nodes: [
+      node({ nodeId: 'id-a', site: 'replica-a', thisNode: true, link: 'self', rttMs: null }),
+      node({ nodeId: 'id-p', site: 'primary', role: 'primary', link: 'outbound' }),
+      node({ nodeId: 'id-b', site: 'replica-b', connected: false, link: 'relayed', rttMs: null }),
+    ],
+  });
+  let current = view({ mode: 'manual', active: false, voters: 3, reachableVoters: 2, leaseHeld: false, votedEpoch: 0 });
+  await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: current }));
+  await page.route('**/api/v1/cluster/rollout', (route) => route.fulfill({ json: { fromPrimary: true, canaries: [], bakeSecs: 300, stable: '1.9', stage: 'none', nodes: [] } }));
+  await page.route('**/api/v1/cluster/versions', (route) => route.fulfill({ json: { items: [], history: 20 } }));
+  try {
+    await page.goto('/#/cluster');
+    await expect(page.getByTestId('cluster-failover')).toContainText('manual');
+    // The replica with no stream to this node is up, on the primary's word.
+    const b = page.locator('#node-id-b');
+    await expect(b).toContainText('relayed');
+    await expect(b).not.toContainText('seen');
+    // `telltale cluster set-failover auto` on the primary: no restart anywhere.
+    current = view({ mode: 'auto', active: true, voters: 3, reachableVoters: 3, leaseHeld: true, leaseSecondsLeft: 11, votedEpoch: 1, votedFor: 'id-p' });
+    await expect(page.getByTestId('cluster-failover')).toContainText('automatic: 3 of 3 voters reachable', { timeout: 10_000 });
+    await expect(page.getByTestId('cluster-failover')).toContainText("this primary's lease: 11 s left");
+    await expect(page.getByTestId('cluster-failover')).not.toContainText('manual');
+  } finally {
+    for (const r of ['**/api/v1/cluster', '**/api/v1/cluster/rollout', '**/api/v1/cluster/versions']) await page.unroute(r);
+  }
+});
+
 // REQ: DNS-006, CLU-008 (T6.15) — the Cache page scales with the cluster: with 8 nodes, each
 // name is listed once (hits summed, "N of 8" nodes, per-node detail on demand), and the makeup
 // is one row per node, the first 6 shown.

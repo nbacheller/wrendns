@@ -12304,7 +12304,7 @@
           },
           "link": {
             "type": "string",
-            "description": "`self`, `inbound` (it connected to this node), or `outbound`."
+            "description": "`self`, `inbound` (it connected to this node), `outbound`, or `relayed` (no stream: a\npeer reports it up, as the primary does for a replica in manual failover)."
           },
           "maintenance": {
             "oneOf": [
@@ -12416,7 +12416,7 @@
           },
           "up": {
             "type": "boolean",
-            "description": "Heard from within 15 s (always true for this node)."
+            "description": "Heard from within 15 s (always true for this node), by this node or, for a member it has\nno stream to, by a peer that says so (`link` `relayed`)."
           },
           "upstreamP90Ms": {
             "type": "number",

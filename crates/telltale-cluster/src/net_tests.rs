@@ -2255,6 +2255,132 @@ fn clu_005_a_promotion_reaches_a_replica_in_the_heartbeats() {
     assert!(!replica.primary_urls().contains(&new));
 }
 
+/// REQ: CLU-001 (ADR-960) — a replica with a stream only to its primary (manual failover) learns
+/// that another replica is up from the heartbeats it receives: the primary names the members it
+/// hears from and how long ago. Its own entry and the sender's are left out, a report older than
+/// the `up` window is no evidence, and a member the replica hears itself is never taken on a
+/// relay's word. A node's own heartbeat names only the members it heard within the window.
+#[test]
+#[allow(clippy::too_many_lines)] // one fixture, then the steps
+fn clu_001_a_replica_learns_that_another_replica_is_up_from_the_primarys_heartbeats() {
+    let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let primary = Identity::init(
+        pdir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    let token = primary
+        .create_token_for(
+            60,
+            None,
+            crate::node::TokenGrants {
+                eligible: true,
+                witness: false,
+            },
+        )
+        .unwrap();
+    let key = pki::new_node_key().unwrap();
+    let req = JoinRequest {
+        witness: false,
+        ephemeral: false,
+        secret: token.secret.clone(),
+        csr_pem: key.csr_pem.clone(),
+        advertise: vec![],
+        site: "pi".into(),
+        eligible: true,
+        version: "0.1.0".into(),
+    };
+    let resp = primary.accept_join(&req, None).unwrap();
+    let replica =
+        Identity::save_joined(rdir.path(), &key.key_pem, &resp, "pi", true, vec![]).unwrap();
+    let me = replica.meta.node_id.clone();
+    let replica = Cluster::new(replica, "0.1.0");
+    let hello = Frame {
+        body: Some(Body::Hello(Hello {
+            protocol: PROTOCOL,
+            cluster_id: replica.identity.meta.cluster_id.clone(),
+            node_id: "primary".into(),
+            version: "0.1.0".into(),
+            site: "k8s".into(),
+            eligible: true,
+            advertise: vec![],
+            epoch: 1,
+            applied_seq: 0,
+            primary: true,
+            config_source: String::new(),
+            source_commit: String::new(),
+        })),
+    };
+    let peer_of = |id: &str, age_ms: u64| crate::wire::PeerHealth {
+        node_id: id.into(),
+        age_ms,
+        ready: true,
+        applied_seq: 7,
+    };
+    let beat = |peers: Vec<crate::wire::PeerHealth>| Frame {
+        body: Some(Body::Heartbeat(Heartbeat {
+            ts_ms: 1,
+            epoch: 1,
+            primary: Some(true),
+            peers,
+            ..Heartbeat::default()
+        })),
+    };
+    let mut link = None;
+    replica
+        .on_frame(&mut link, hello, "outbound", &EchoSlot::default())
+        .unwrap();
+    assert_eq!(replica.relayed_members().len(), 0);
+    replica
+        .on_frame(
+            &mut link,
+            beat(vec![
+                peer_of("replica-b", 1_000),
+                peer_of("replica-c", 16_000),
+                peer_of("primary", 0),
+                peer_of(&me, 0),
+            ]),
+            "outbound",
+            &EchoSlot::default(),
+        )
+        .unwrap();
+    let relayed = replica.relayed_members();
+    assert_eq!(
+        relayed
+            .iter()
+            .map(|r| r.node_id.as_str())
+            .collect::<Vec<_>>(),
+        ["replica-b"],
+        "only a fresh member that is neither the sender nor this node"
+    );
+    assert!(relayed[0].ready && relayed[0].applied_seq == 7);
+    // A newer report wins; an older one doesn't move it back.
+    let first = relayed[0].heard_ms;
+    replica
+        .on_frame(
+            &mut link,
+            beat(vec![peer_of("replica-b", 60_000)]),
+            "outbound",
+            &EchoSlot::default(),
+        )
+        .unwrap();
+    assert_eq!(replica.relayed_members()[0].heard_ms, first);
+    // Its own heartbeat names the members it hears from within the window.
+    let named = peer_health(&replica.members(), now_ms());
+    assert_eq!(named.len(), 1);
+    assert_eq!(named[0].node_id, "primary");
+    assert!(named[0].age_ms < 1_000);
+    // A member heard directly is never listed as relayed.
+    assert!(
+        replica
+            .relayed_members()
+            .iter()
+            .all(|r| r.node_id != "primary")
+    );
+}
+
 /// REQ: CLU-005 (ADR-051) — the primary's key share is sent again after the resend interval, since a
 /// peer that refused it (it didn't yet know this node was primary) never acknowledges it.
 #[test]
