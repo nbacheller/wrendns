@@ -957,6 +957,71 @@ args = ["--datacenter", "home"]
 - The plugin gets TelltaleDNS's environment except every `TELLTALE_*` variable but the two above: settings given through the environment can hold credentials (an upstream's headers, an OIDC `client_secret`), besides `TELLTALE_SECRETS_KEY`, `TELLTALE_SECRETS_PREVIOUS_KEY`, `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD`, `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH` and `TELLTALE_TOKEN` (the self-update's checks and restart don't get those five either). Its `args` are treated as credentials: the API and `telltale config check --print` show them as `<redacted>`.
 - A plugin can't hurt the resolver: it's another process, every exchange has the upstream's timeout, and a dead plugin is a failing upstream like any other (health, breaker, the group's other members).
 
+## Commercial filters behind TelltaleDNS
+*(REQ: UPS-013; ADR-997)* Devices ask TelltaleDNS (DHCP hands out its address), and TelltaleDNS asks a commercial filter for the names it doesn't answer itself. You keep TelltaleDNS's per-device policy and visibility, and the commercial categories apply on top.
+
+### With a gateway that filters traffic (UniFi content filtering, CyberSecure)
+A gateway's content filtering may work on DNS, not on traffic. That was measured on a UniFi Cloud Gateway Fiber (2026-11-18): its content filter answers filtered names with a sinkhole address and intercepts DNS a device sends straight to the internet on port 53. But it does **not** touch queries sent to a resolver on the LAN (TelltaleDNS or Pi-hole), and it doesn't block a connection to a filtered site's real address. Check your own gateway the same way: ask its DNS, an outside resolver on port 53, and TelltaleDNS for a name the filter should block, then try the site's address directly. On such a gateway:
+- **A device that uses TelltaleDNS is filtered only by TelltaleDNS** (its lists and categories), unless TelltaleDNS forwards that device's group to the gateway's DNS from the device's own network (the `source` setting below, with the node on that VLAN, see "Serving several networks"), so the gateway applies that network's profile.
+- **TelltaleDNS** decides what a name resolves to, per device and group, and records who asked what.
+- **The gateway** catches a device that bypasses the LAN resolver with plain DNS to the internet; DoH or DoT in an app bypasses both unless the gateway blocks encrypted DNS.
+- Group devices in both places. TelltaleDNS groups are in **Groups**; UniFi's profiles are in its own console. They are not synchronised by this feature.
+
+- **What the gateway sees of TelltaleDNS's lookups:** only the encrypted DoT or DoH connections from the TelltaleDNS node to the commercial resolver, never which device asked for which name (that is visible only to TelltaleDNS, and to the resolver). If the gateway's encrypted-DNS or DoH blocking applies to the network the TelltaleDNS node is on, it can block those upstream connections and every query to that upstream then fails. Exempt the TelltaleDNS node (by its address or its device) from that blocking in the UniFi console.
+
+### Commercial DoH and DoT filters, one per group
+Send a group's questions to a commercial resolver with [per-group upstreams](#upstream-servers-per-group): an `[[upstream]]` for the service, an `[[upstream_group]]` holding it, and `upstreams = "..."` on the group. Their privacy terms are theirs, and every one sees the names that group looks up. Forms below were checked on 2026-11-18 against each provider's own documentation, except where a cell says it comes from a community forum.
+
+| Service | DoH form | Device name in the URL | Privacy, in one line |
+|---|---|---|---|
+| NextDNS | `https://dns.nextdns.io/<profile>` | Yes: `https://dns.nextdns.io/<profile>/<device-name>` (URL-encoded). The DoT form (`<device-name>-<profile>.dns.nextdns.io`, spaces as `--`), the `device_name` query parameter and the `X-Device-Name` header come from NextDNS's help forum, not its documentation: try them before relying on them | Logs nothing unless you turn on a feature that needs it; you choose what, how long and where (nextdns.io/privacy). |
+| Control D | `https://dns.controld.com/<resolver-id>` | Yes: a client name after the resolver ID, `https://dns.controld.com/<resolver-id>/<name>` (DoT: `<resolver-id>-<name>.dns.controld.com`; docs.controld.com/docs/device-clients). The resolver ID itself stands for one device in your account, so one Control D device per TelltaleDNS group still works | Its policy names website data it collects; it states no DNS log retention, so ask Control D (controld.com/privacy). |
+| CleanBrowsing | `https://doh.cleanbrowsing.org/doh/family-filter/` (also `adult-filter`, `security-filter`) | No (the free filters are fixed; paid plans have their own endpoints) | Its filters page states no query logging terms: read its privacy policy before relying on it. |
+| Cloudflare for Families | `https://family.cloudflare-dns.com/dns-query` (malware only: `https://security.cloudflare-dns.com/dns-query`) | No profiles at all | The public resolver's logs and truncated IPs are deleted within 25 hours (developers.cloudflare.com/1.1.1.1/privacy). |
+
+The catalog has all of them as templates (`telltale presets list`; nothing is active until you add it): `nextdns`, `controld`, `controld-free`, `cleanbrowsing-family`, `cleanbrowsing-adult`, `cleanbrowsing-security`, `cloudflare-family`, `cloudflare-security`.
+```sh
+telltale presets show nextdns --param profile=abc123 --proto https --group kids >> telltale.toml
+```
+A device name in the NextDNS path: after `show`, append `/Kids-iPad` to that upstream's `url` (one upstream per name).
+
+### Sending a group's queries from a chosen address
+Some filters know a network by the address its queries come from, and a node on several networks (a VLAN, a second NIC) may need to pick one. Set `source` on the upstream (`udp://`, `tcp://`, `tls://`, `https://`; not with a `proxy`):
+```toml
+[[upstream]]
+name = "family-filter"
+url = "tls://family-filter-dns.cleanbrowsing.org"
+source = "198.51.100.0/24"      # or one address: "198.51.100.252" or "198.51.100.252:0"
+```
+- A network means *the address this node holds in it*, so one shared upstream works on every node even though their addresses differ (.11 on one, .12 on another). An address is for one node.
+- The address must be on an interface of the node (for another network to see it, a real interface such as a VLAN interface, not an alias). **Saving** an upstream (UI, API, MCP) whose `source` names no address the node holds is refused (422) before anything is stored. A configuration that already holds one (a VLAN interface that isn't up yet at boot, an address lost later, a replica or a pod without that network) never stops the node: that upstream's queries fail fast and it shows the problem on **Upstreams** and in the health icon (`upstream_source_lost`), every other upstream keeps answering, and it recovers on its own (the address is looked up again every few seconds). `telltale config check` and **Test it** report it too. An existing pooled DoT or DoH connection stays open until it closes, so a removed address shows up when the next connection is made.
+- **In a cluster, name a network, not an address.** An address is one node's; every other node would run that upstream degraded. A network (`198.51.100.0/24`) resolves to the address each node holds in it, and a node with none shows the problem on its own row.
+- **Containers and Kubernetes:** under the Docker bridge or in a pod, the node's own addresses are the container's, so there is no VLAN address to bind. Use host networking (`network_mode: host`, `hostNetwork: true`) on a node that needs a `source`, or leave `source` off.
+- **Binding an address does not choose the interface.** Linux routes by the *destination*: with the default route on `eth0`, a query bound to `198.51.100.252` still leaves through `eth0`, untagged, carrying a VLAN-100 source address. The gateway may drop it as spoofed, or the reply comes back by the other path. Add a routing rule so traffic from that address uses the VLAN's own route table (the runbook below).
+- A query to a hostname upstream is sent to the first address of the source's IP version (an IPv6 source needs an AAAA record, an IPv4 source an A record); with none, the upstream shows that as its problem. An IPv6 link-local source (`fe80::`) is refused: it needs an interface scope a `source` doesn't carry.
+- The lookup of an upstream's *hostname* (bootstrap) is sent from the node's default address, not from `source`: a filter keyed on the source address sees only the queries themselves from it.
+- The port, if written, must be 0: each query still uses a random source port.
+- **In the UI:** Upstreams → Add or Edit → Advanced → **Source address**; the node's own addresses and networks are offered.
+- This is not what makes a gateway's traffic filtering apply (see above).
+
+#### Runbook: a VLAN address on Debian 12 or 13 with NetworkManager
+This gives the node `198.51.100.252` on VLAN 100 (gateway `198.51.100.1`) and makes traffic from that address leave by the VLAN. Change the interface, VLAN ID and addresses to yours.
+```sh
+sudo nmcli con add type vlan con-name vlan100 dev eth0 id 100 \
+  ipv4.method manual ipv4.addresses 198.51.100.252/24 ipv4.never-default yes \
+  ipv4.route-table 100 ipv4.routes "0.0.0.0/0 198.51.100.1 table=100" \
+  ipv4.routing-rules "priority 100 from 198.51.100.252 table 100" ipv6.method ignore
+sudo nmcli con up vlan100
+```
+Check it:
+```sh
+ip -br addr show eth0.100 || ip -br addr show vlan100   # the address is up
+ip rule                                                  # 100: from 198.51.100.252 lookup 100
+ip route show table 100                                  # default via 198.51.100.1 dev ...
+ip route get 1.1.1.1 from 198.51.100.252                # leaves by the VLAN interface
+```
+Then set `source = "198.51.100.0/24"` on the upstream. The VLAN must also be allowed on the switch port the node is plugged into. The systemd unit starts `After=network-online.target`; with NetworkManager that target waits only if `NetworkManager-wait-online.service` is enabled (`systemctl is-enabled NetworkManager-wait-online`). Even so, a node that starts before the VLAN is up now starts and picks the address up when it appears.
+
 ## How a query is answered
 ```mermaid
 flowchart LR

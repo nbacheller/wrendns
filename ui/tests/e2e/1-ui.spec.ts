@@ -612,6 +612,71 @@ test('api_005 upstream health reads in plain words', async () => {
   }
 });
 
+// REQ: UPS-013 (T24.31, ADR-997) — an upstream's source address: the Upstreams form offers this
+// node's own addresses and networks, and a source the node lost shows as a problem on its row.
+test('ups_013 upstream source address: suggestions and a lost-address problem', async () => {
+  const isUpstreams = (url: URL) => url.pathname === '/api/v1/upstreams';
+  const isInfo = (url: URL) => url.pathname === '/api/v1/system/info';
+  const upstreams = (route: Route) =>
+    route.fulfill({
+      json: {
+        items: [
+          { breaker: 'closed', endpoint: 'tls://192.0.2.1', failures: 0, failuresByKind: {}, groups: ['default'], id: 1, latencyEwmaMs: 5, name: 'from-vlan', requests: 3, source: '198.51.100.252' },
+          { breaker: 'closed', endpoint: 'tls://192.0.2.2', failures: 0, failuresByKind: {}, groups: ['default'], id: 2, latencyEwmaMs: 5, name: 'lost-src', requests: 3, source: '198.51.100.9', sourceProblem: 'its source address 198.51.100.9 is no longer held by this node: queries to it fail' },
+        ],
+      },
+    });
+  const info = async (route: Route) => {
+    const res = await route.fetch();
+    const body = await res.json();
+    body.addresses = [{ interface: 'eth0.100', address: '198.51.100.252', network: '198.51.100.0/24' }];
+    await route.fulfill({ response: res, json: body });
+  };
+  await page.route(isUpstreams, upstreams);
+  await page.route(isInfo, info);
+  try {
+    await page.goto('/#/upstreams');
+    await page.reload();
+    await expect(page.getByTestId('upstream-source').first()).toHaveText('from 198.51.100.252');
+    await expect(page.getByTestId('upstream-source-problem')).toContainText('no longer held by this node');
+    await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+    await page.getByRole('button', { name: 'Add upstream', exact: true }).click();
+    const field = page.getByRole('combobox', { name: 'Source address', exact: true });
+    await expect(field).toBeVisible();
+    const listId = await field.getAttribute('list');
+    expect(listId).toBeTruthy();
+    const opts = await page.locator(`datalist#${listId} option`).evaluateAll((o) => o.map((x) => (x as HTMLOptionElement).value));
+    expect(opts).toEqual(['198.51.100.0/24', '198.51.100.252']);
+  } finally {
+    await page.unroute(isUpstreams, upstreams);
+    await page.unroute(isInfo, info);
+  }
+});
+
+// REQ: UPS-013 (ADR-997 §4) — a real save of a `source` this node doesn't hold is refused with a
+// message that names the problem, on a dry run too, and nothing is stored.
+test('ups_013 a source this node does not hold is refused on save', async () => {
+  const r = page.request;
+  const h = { 'x-csrf-token': await csrfOf(r) };
+  const body = { url: 'udp://192.0.2.1', source: '203.0.113.9' };
+  for (const q of ['?dryRun=true', '']) {
+    const put = await r.put(`/api/v1/upstreams/ups013-foreign${q}`, { headers: h, data: body });
+    expect(put.status(), await put.text()).toBe(422);
+    expect(await put.text()).toContain('holds no such address');
+  }
+  const list = await (await r.get('/api/v1/upstreams')).json();
+  expect(list.items.some((u: { name: string }) => u.name === 'ups013-foreign')).toBe(false);
+  // The loopback network is held by every node: saved, and shown on the row.
+  const ok = await r.put('/api/v1/upstreams/ups013-held', { headers: h, data: { url: 'udp://192.0.2.1', source: '127.0.0.0/8' } });
+  expect(ok.status(), await ok.text()).toBe(200);
+  try {
+    const row = (await (await r.get('/api/v1/upstreams')).json()).items.find((u: { name: string }) => u.name === 'ups013-held');
+    expect(row.source).toBe('127.0.0.1');
+  } finally {
+    await r.delete('/api/v1/upstreams/ups013-held', { headers: h });
+  }
+});
+
 // REQ: OBS-019 — the Upstreams page's Answer quality: second opinions off on the e2e server
 // (it says how to turn them on), then a stubbed filtering upstream with its EDE and a
 // disagreement.
