@@ -2535,6 +2535,26 @@ fn clu_005_t24_26_a_deposed_primary_reports_no_renewal() {
     assert!(c.lease_lapsed_at.lock().unwrap().is_none());
 }
 
+// REQ: CLU-005 (T24.26) - switching to manual mode while lapsed is not a renewal either.
+#[test]
+fn clu_005_t24_26_manual_mode_reports_no_renewal() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = Identity::init(
+        dir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    let c = Cluster::new(id, "0.1.0");
+    c.set_lease_ok(true);
+    c.set_lease_ok(false);
+    c.end_lease_lapse_for_manual_mode();
+    c.set_lease_ok(true);
+    assert!(!c.events().iter().any(|e| e.kind == "lease_renewed"));
+    assert!(c.lease_lapsed_at.lock().unwrap().is_none());
+}
+
 // REQ: CLU-005 (T24.26) — a primary that regains its lease reports the renewal once.
 #[test]
 fn clu_005_t24_26_a_primary_reports_its_renewal() {

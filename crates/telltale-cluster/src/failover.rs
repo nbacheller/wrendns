@@ -258,6 +258,8 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
         // Manual mode: roles change only by `promote` (ADR-051).
         *guard = None;
         drop(guard);
+        // REQ: CLU-005 (T24.26): leaving automatic mode ends a lapse without a "renewed" claim.
+        cluster.end_lease_lapse_for_manual_mode();
         cluster.set_lease_ok(true);
         return Vec::new();
     }

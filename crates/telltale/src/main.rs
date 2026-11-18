@@ -1706,7 +1706,8 @@ fn init_logging() {
     // its depth limit (an error); TelltaleDNS counts and logs each verdict itself.
     // `TELLTALE_LOG_DNSSEC_LIBRARY=1` turns its log back on, for debugging validation.
     let library = if std::env::var_os("TELLTALE_LOG_DNSSEC_LIBRARY").is_some() {
-        tracing::level_filters::LevelFilter::TRACE
+        // INFO and above, as the console's default: the library's own noise is its warnings.
+        tracing::level_filters::LevelFilter::INFO
     } else {
         tracing::level_filters::LevelFilter::OFF
     };

@@ -1201,7 +1201,7 @@ impl Cluster {
             .unwrap_or_else(PoisonError::into_inner)
             .take();
         if lapsed.is_some() && !self.is_primary() {
-            // A deposed primary (or one switched to manual mode) is not "resuming".
+            // A deposed primary is not "resuming".
             info!("cluster: the lease lapse ended: this node is no longer the primary");
             return;
         }
@@ -1216,6 +1216,19 @@ impl Cluster {
                 &self.identity.meta.node_id.clone(),
                 format!("publishing resumed after {paused_ms} ms"),
             );
+        }
+    }
+
+    /// REQ: CLU-005 (T24.26): a node switched to manual mode no longer has a lease to lapse:
+    /// publishing resumes because the rule changed, not because a majority renewed.
+    pub(crate) fn end_lease_lapse_for_manual_mode(&self) {
+        let lapsed = self
+            .lease_lapsed_at
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if lapsed.is_some() {
+            info!("cluster: automatic failover is off; publishing resumes without a lease");
         }
     }
 
