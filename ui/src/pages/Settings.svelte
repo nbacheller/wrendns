@@ -72,6 +72,13 @@
       help: 'One per line; each covers its subdomains too. Noise like connectivity checks, time servers, or a monitoring probe.' },
     { key: 'clients', label: 'Devices', type: 'lines', placeholder: '192.168.1.10\n10.20.0.0/24',
       help: 'Addresses or networks, one per line (a monitoring host, say).' },
+    // REQ: OBS-903 (T24.35, ADR-1014) — kept out of the query log only; the statistics still count them.
+    { key: 'log.own_lookups', label: "Leave this node's own lookups out of the query log", type: 'bool', initial: false,
+      help: "Loopback (127.0.0.1, ::1) and this node's own addresses: a health check, a watchdog, programs on the host. They are answered and counted in the statistics; only the log skips them." },
+    { key: 'log.clients', label: 'Log only: devices', type: 'lines', placeholder: 'kitchen-tablet\n192.168.1.10\n10.20.0.0/24',
+      help: 'Addresses, networks or device names (as named under Clients), one per line, kept out of the query log, the live view and event sinks. Still counted in the dashboard and top lists.' },
+    { key: 'log.domains', label: 'Log only: domains', type: 'lines', placeholder: 'localhost\n*.lan',
+      help: 'One per line. localhost is that name only; *.lan is every name under lan (not lan itself). Still counted in the dashboard and top lists.' },
   ];
   // REQ: OBS-024 (T13.1) — the fields of `[simulate]`.
   const simulateFields: Field[] = [
@@ -1019,12 +1026,18 @@
     <ConfigEditor kind="exclusions" path="exclusions" singleton title="Kept out of the log" noun="exclusions" fields={exclusionFields}
       summary={(d) => {
         const n = (k: string) => (Array.isArray(d[k]) ? (d[k] as unknown[]).length : 0);
-        if (n('names') + n('clients') === 0) return 'nothing excluded';
-        return `${d.enabled === false ? 'off: ' : ''}${n('names')} names, ${n('clients')} devices`;
+        const log = (d.log ?? {}) as Record<string, unknown>;
+        const ln = (k: string) => (Array.isArray(log[k]) ? (log[k] as unknown[]).length : 0);
+        const logOnly = ln('clients') + ln('domains') + (log.own_lookups ? 1 : 0);
+        if (n('names') + n('clients') + logOnly === 0) return 'nothing excluded';
+        const own = log.own_lookups ? ", this node's own lookups" : '';
+        return `${d.enabled === false ? 'off: ' : ''}${n('names')} names, ${n('clients')} devices; log only: ${ln('domains')} domains, ${ln('clients')} devices${own}`;
       }} />
     <p class="muted small">
       Their queries are still answered and still counted in <code>/metrics</code>, but left out of the query log, the live view,
       the dashboard and top lists, anomalies, and exports, on every node. Queries logged before stay.<HelpButton id="exclusions" />
+      The "Log only" fields leave queries out of the query log, the live view and event sinks alone: the dashboard and top lists
+      still count them.<HelpButton id="qlog-exclusions" />
     </p>
     <!-- REQ: OBS-024 (T13.1) — change simulation's switches and bounds. -->
     <ConfigEditor kind="simulate" path="simulate-settings" singleton title="Change simulation" noun="simulation settings" fields={simulateFields}

@@ -1,0 +1,52 @@
+# The soak topology for T24.26 (lapse-soak.sh): two eligible nodes and a witness, like the owner's
+# three Raspberry Pis, in its own compose project and its own volumes. No host ports are
+# published. Each node's data volume sits on the Docker data disk; DISK_DEV (a block device
+# of the Docker VM, e.g. /dev/sdb) with WRITE_BPS caps the write rate of every node, which is
+# how a slow SD card is imitated (compose's blkio_config).
+name: telltale-lapse
+
+x-telltale: &telltale
+  image: "${LAPSE_IMAGE:-telltale:lapse-test}"
+  pull_policy: never
+  restart: "no"
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  read_only: true
+  command: ["run", "-c", "/etc/telltale/telltale.toml"]
+  healthcheck:
+    test: ["CMD", "/usr/local/bin/telltale", "health", "--url", "http://127.0.0.1:8053/readyz"]
+    interval: 5s
+    timeout: 5s
+    retries: 30
+    start_period: 10s
+  environment:
+    TELLTALE_LOG: "${LAPSE_LOG:-debug}"
+
+services:
+  primary:
+    <<: *telltale
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        PROFILE: bench-fast
+        TELLTALE_BUILD_CHANNEL: dev
+    volumes:
+      - ./config/primary.toml:/etc/telltale/telltale.toml:ro
+      - primary-data:/var/lib/telltale
+  replica-a:
+    <<: *telltale
+    volumes:
+      - ./config/replica-a.toml:/etc/telltale/telltale.toml:ro
+      - replica-a-data:/var/lib/telltale
+  witness:
+    <<: *telltale
+    command: ["cluster", "witness", "-c", "/etc/telltale/telltale.toml"]
+    volumes:
+      - ./config/witness.toml:/etc/telltale/telltale.toml:ro
+      - witness-data:/var/lib/telltale
+
+volumes:
+  primary-data:
+  replica-a-data:
+  witness-data:

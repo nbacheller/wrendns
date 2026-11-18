@@ -135,6 +135,16 @@
       "docs": "a-devices-rhythm"
     },
     {
+      "id": "device-policy",
+      "title": "Which filters apply to this device?",
+      "term": "A device's effective policy",
+      "summary": "Every filter and rule that applies to one device, and why: the group it is in, the key that matched it (a MAC, an address, a network, a client ID, a router name), then its lists, blocked services, SafeSearch, rewrites, schedules, quick rules and upstream group, each linking to where it is set.",
+      "when": "A device is blocked, or not blocked, and you want to know which group, list, schedule or rule is responsible. Or you want to check that the right group took a new device.",
+      "example": "The kids' tablet matched by its MAC lands in group kids; its bedtime schedule is in effect now, so every name is blocked until 07:00; a quick rule for game.example ends at 22:00.",
+      "caution": "It is read the way a query from the device is matched. A device known only by a MAC that has not been seen at an address has no network, so a network group is not shown for it.",
+      "docs": "a-devices-policy"
+    },
+    {
       "id": "kubernetes-workloads",
       "title": "Pods named by what they run",
       "term": "Kubernetes workloads as devices",
@@ -328,6 +338,16 @@
       "caution": "If every server is benched, only cached and local answers work.",
       "diagram": "upstream",
       "docs": "encrypted-upstreams"
+    },
+    {
+      "id": "upstream-route",
+      "title": "\"This node has no IPv6 route\"",
+      "term": "No route to an upstream",
+      "summary": "This node can't reach the server's address: it is an IPv6 (or IPv4) address and the machine has no default route for that family. TelltaleDNS checks with a connection attempt that sends nothing, at start and every 30 seconds, never on the query path. The server fails on every query until the route exists.",
+      "when": "A server you imported from Pi-hole, or added by address, is always failing.",
+      "example": "Cloudflare's [2606:4700:4700::1111] on a Pi with only IPv4: remove it from the group, or give the host IPv6. On the map the group's resolver stays yellow while the others answer.",
+      "caution": "A server given by hostname isn't checked this way; its failures show as connection errors.",
+      "docs": "network-map"
     },
     {
       "id": "upstream-source",
@@ -886,6 +906,16 @@
       "docs": "keeping-names-and-devices-out-of-the-log"
     },
     {
+      "id": "qlog-exclusions",
+      "title": "Kept out of the query log only",
+      "term": "Log-only exclusions",
+      "summary": "Devices, domains and this node's own lookups whose queries are answered and counted in the dashboard and top lists, but never written to the query log, the live view or the event sinks.",
+      "when": "The log fills with the node's own lookups (client 127.0.0.1, name localhost) from a health check or a watchdog, or with one chatty device or domain, and you still want them in the statistics.",
+      "example": "Turn on the node's own lookups and add *.lan: the log shows only real devices asking for real names, while the dashboard's totals stay complete.",
+      "caution": "Excluded queries can't be searched later. Queries logged before stay. A device name that no client has matches nothing. To leave a query out of the statistics too, use the Names and Devices fields above.",
+      "docs": "keeping-queries-out-of-the-query-log-only"
+    },
+    {
       "id": "exemplars",
       "title": "Trace IDs",
       "term": "Exemplars and traces",
@@ -980,10 +1010,20 @@
       "id": "list-overlap",
       "title": "Unique names and overlap",
       "term": "List overlap",
-      "summary": "Unique names are the ones no other list has. When almost everything in a list is also in another, the list adds little.",
+      "summary": "Unique names are the ones no other list of the same side (block or allow) has, so an exception list never makes a block list look covered. When almost everything in a list is also in another, the list adds little.",
       "when": "Deciding which lists to drop to save memory and compile time.",
       "example": "\"97% also in hagezi-pro\": removing this list would lose only its unique names.",
       "caution": "Hits count since each node started (every node's added up), so a list with no hits after a restart may just be new.",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "list-prune",
+      "title": "Prune lists",
+      "term": "Prune",
+      "summary": "Previews the block lists that add less than a threshold of their own entries (names no other list has, plus their regexes), and turns them off after you confirm. They stay in the configuration; Undo turns them on again.",
+      "when": "Several big lists overlap and you want fewer lists to download and compile.",
+      "example": "At 1%, a list where 99.5% of the names are also in hagezi-pro is proposed; turning it off could stop blocking at most the 0.5%.",
+      "caution": "Allow lists, shadow lists and lists a group names are never proposed. Overlap is by name, so a regex or a wildcard another list covers isn't seen: the plan only errs toward keeping a list.",
       "docs": "filter-lists"
     },
     {
@@ -1318,6 +1358,36 @@
       "example": "On Kubernetes, set TELLTALE_IGNORE_GUARDED=1 on the pod and let it restart: it ignores every stored guarded setting and uses its ConfigMap. Fix the setting, remove the variable, and restart again.",
       "caution": "telltale guarded clear needs the node stopped and only clears that node's entries. TELLTALE_IGNORE_GUARDED ignores entries without deleting them, and never ignores the file.",
       "docs": "recovering-from-a-guarded-change"
+    },
+    {
+      "id": "list-too-large",
+      "title": "A list is over its size limit",
+      "term": "List size limit",
+      "summary": "A download bigger than the list's limit (64 MiB unless the list or [filter] max_list_bytes says otherwise) is refused so a wrong address can't fill the disk or memory; the last good copy stays in use. Raise the limit sets this list's own max_bytes (the size the server announced plus a quarter, or double the old limit) and downloads it again.",
+      "when": "A list's row says it is larger than its limit.",
+      "example": "A big hosts list grew past 64 MiB: one click sets that list's limit to 128 MiB and the next download works.",
+      "caution": "A big list costs memory: about 20 bytes a name while running and about three times that while a snapshot compiles. The page offers up to 128 MiB for one list; past that, remove it or pick a smaller list. Check the address first: a limit hit on a list that should be small usually means the address returns something else.",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "list-not-found",
+      "title": "A list's address returns not found",
+      "term": "List not found (404)",
+      "summary": "The server answered HTTP 404 or 410 for the list's address: the maintainer moved or deleted it. TelltaleDNS keeps the last good copy, if there was one, but it will never update. Remove the list, or edit it to the new address in Manage lists.",
+      "when": "A list's row says the address returns not found.",
+      "example": "A project renamed its file: remove the old list and add the new address.",
+      "caution": "Removing a list that came from a configuration file hides it on this node; the file still lists it (Manage lists can revert that).",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "list-redundant",
+      "title": "A list that adds nothing",
+      "term": "Redundant list",
+      "summary": "Every name this list puts in the snapshot is also in one other enabled, enforcing list of the same kind, so removing it loses no blocking. It still costs a download and memory. Turn it off to keep it in the configuration, or remove it.",
+      "when": "The Unique column reads 0 and the row says every name is in another list.",
+      "example": "A small list is wholly inside a bigger one you also use: turn the small one off.",
+      "caution": "Unique counts names, not regex rules, and is measured on the active snapshot: if you later remove the other list, this one is no longer redundant. Lists assigned to different groups overlap on purpose, so check the groups before removing.",
+      "docs": "filter-lists"
     }
   ]
 }

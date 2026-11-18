@@ -118,10 +118,80 @@ fn flt_003_compile_and_look_up() {
     // ads: ads, ok.ads, shared, imp, exact, wild (6 names) + 2 regexes; tracker was badfiltered.
     assert_eq!((ads.entries, ads.unique), (8, 5));
     assert_eq!((more.entries, more.unique), (2, 1));
-    // REQ: OBS-009 (T7.14) — the overlap matrix: shared.example.com is on all three lists.
+    // REQ: OBS-009 (T7.14), FLT-004 (T24.28, ADR-992) — the overlap matrix counts lists doing
+    // the same thing: shared.example.com is blocked by `ads` and `more` and allowed by `allow`,
+    // so only the two block lists share it; the allow list is the only one allowing it.
     let pair = |a, b| crate::snapshot::ListOverlap { a, b, names: 1 };
-    assert_eq!(st.overlap, vec![pair(0, 1), pair(0, 2), pair(1, 2)]);
+    assert_eq!(st.overlap, vec![pair(0, 1)]);
+    assert_eq!(st.per_list[2].unique, 1);
+    // The regexes of `ads` can't be shown covered: they are counted apart.
+    assert_eq!((ads.rules, more.rules), (2, 0));
     assert_eq!(report.parse[0].rules, 10);
+}
+
+// REQ: FLT-004 (T24.28, ADR-992) - the pair counters give the same answer as a map, with a
+// triangle of counters up to 128 lists and a map beyond.
+#[test]
+fn flt_004_pair_counts_dense_and_sparse_agree() {
+    for lists in [4usize, PairCounts::DENSE_LISTS + 2] {
+        let mut p = PairCounts::new(lists);
+        p.record(&[0, 1, 3]);
+        p.record(&[1, 3]);
+        p.record(&[2]);
+        p.record(&[]);
+        let n = |a, b, names| crate::snapshot::ListOverlap { a, b, names };
+        assert_eq!(
+            p.finish(),
+            vec![n(0, 1, 1), n(0, 3, 1), n(1, 3, 2)],
+            "{lists} lists"
+        );
+    }
+}
+
+// REQ: FLT-004 (T24.28, ADR-992) - a name that one list holds and another list's allow rule
+// matches isn't covered by it; a name two block lists hold is, and each list's unique count
+// stays what removing it would lose.
+#[test]
+fn flt_004_unique_counts_the_same_side_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("v1");
+    let lists = vec![
+        input(
+            "a",
+            ListKind::Block,
+            "both.example.com
+only-a.example.com
+allowed.example.com
+",
+        ),
+        input(
+            "b",
+            ListKind::Block,
+            "both.example.com
+only-b.example.com
+",
+        ),
+        input(
+            "exc",
+            ListKind::Allow,
+            "allowed.example.com
+",
+        ),
+    ];
+    let report = compile(lists, &out, &CompileOptions::default()).unwrap();
+    let st = &report.manifest.stats;
+    // a: only-a and allowed (an allow list holding it doesn't cover a block rule); both is shared.
+    assert_eq!(st.per_list[0].unique, 2);
+    assert_eq!(st.per_list[1].unique, 1);
+    assert_eq!(st.per_list[2].unique, 1);
+    assert_eq!(
+        st.overlap,
+        vec![crate::snapshot::ListOverlap {
+            a: 0,
+            b: 1,
+            names: 1
+        }]
+    );
 }
 
 #[test]

@@ -54,7 +54,7 @@ pub(super) fn part(node: &str) -> MapPart {
             id: 1,
             name: "quad9".into(),
             breaker: "closed".into(),
-            ip: None,
+            ..PartUpstream::default()
         }],
         level: "healthy".into(),
         reasons: Vec::new(),

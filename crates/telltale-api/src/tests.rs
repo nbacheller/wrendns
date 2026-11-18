@@ -27,6 +27,8 @@ struct Fake {
     /// REQ: OBS-902 - the GeoIP database's status (`None`: this backend keeps none) and the
     /// countries it answers by address.
     geoip: Mutex<Option<FakeGeoip>>,
+    /// REQ: FLT-004 (T24.28) - lists where `quiet` nearly duplicates `ads`, for the prune tests.
+    prunable: std::sync::atomic::AtomicBool,
 }
 
 /// The GeoIP database the fake reports: its status and the country of each address prefix.
@@ -51,6 +53,23 @@ impl Backend for Fake {
         self.map.lock().unwrap().1.parts.first().cloned()
     }
     fn config_entries(&self, kind: Option<&str>) -> Vec<crate::model::ConfigEntry> {
+        if kind == Some("list") && self.prunable.load(std::sync::atomic::Ordering::SeqCst) {
+            return ["ads", "quiet", "mine"]
+                .iter()
+                .map(|n| crate::model::ConfigEntry {
+                    kind: "list".into(),
+                    name: (*n).into(),
+                    source: "file".into(),
+                    definition: Some(serde_json::json!({
+                        "name": n, "url": "https://lists.example/x", "enabled": true
+                    })),
+                    redacted: Vec::new(),
+                    credential_issues: Vec::new(),
+                    set_by_file: Vec::new(),
+                    answering: None,
+                })
+                .collect();
+        }
         if kind != Some("map") {
             return Vec::new();
         }
@@ -142,11 +161,30 @@ impl Backend for Fake {
         w: crate::ManagedWrite,
     ) -> crate::BoxFuture<Result<crate::model::ConfigChange, Problem>> {
         self.seen.lock().unwrap().push(format!(
-            "managed {:?} {} {}",
+            "managed {:?} {} {}{}",
             w.kind,
             w.name,
-            w.body.map(|b| b.to_string()).unwrap_or_default()
+            w.body.map(|b| b.to_string()).unwrap_or_default(),
+            w.expect
+                .map_or_else(String::new, |v| format!(" expect={v}"))
         ));
+        if w.kind == crate::ManagedKind::List
+            && self.prunable.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Box::pin(async {
+                Ok(crate::model::ConfigChange {
+                    applied: true,
+                    config_version: 7,
+                    before: None,
+                    after: None,
+                    recent_queries: 0,
+                    impact: String::new(),
+                    warnings: Vec::new(),
+                    keep_in_git: None,
+                    simulation: None,
+                })
+            });
+        }
         Box::pin(async { Err(Problem::unavailable("recorded")) })
     }
     fn annotations(&self, f: &crate::model::AnnotationFilter) -> Vec<crate::model::Annotation> {
@@ -385,6 +423,21 @@ impl Backend for Fake {
         .unwrap();
         Ok(rx) // the sender drops here, so the stream ends after these two
     }
+    fn client_policy(&self, client: &str) -> Result<crate::policy_api::ClientPolicy, Problem> {
+        if client != "tv" {
+            return Err(Problem::not_found("no such device"));
+        }
+        Ok(crate::policy_api::ClientPolicy {
+            client: "tv".into(),
+            device: Some("tv".into()),
+            identified_by: "ip".into(),
+            matched_key: Some("192.168.1.40".into()),
+            group: "kids".into(),
+            group_from: "device".into(),
+            groups: vec!["kids".into()],
+            ..crate::policy_api::ClientPolicy::default()
+        })
+    }
     fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem> {
         if p.name.is_empty() {
             return Err(Problem::invalid("`name` is empty"));
@@ -397,6 +450,10 @@ impl Backend for Fake {
                 mac: None,
                 device: None,
                 identified_by: "default".into(),
+                matched_key: None,
+                group: "default".into(),
+                group_from: "default".into(),
+                group_key: None,
                 groups: vec!["default".into()],
                 workload: None,
             },
@@ -427,12 +484,26 @@ impl Backend for Fake {
             regex_skipped: 0,
             hits: 1,
             overlap: Vec::new(),
+            rules: 0,
             last_checked_unix_seconds: None,
             last_changed_unix_seconds: None,
             stale_days: None,
             last_success_unix_seconds: None,
             refreshing: false,
         };
+        if self.prunable.load(std::sync::atomic::Ordering::SeqCst) {
+            let share = |n: &str, names| crate::model::ListShare {
+                list: n.into(),
+                names,
+            };
+            let mut ads = list("ads");
+            (ads.entries, ads.unique, ads.overlap) = (1000, 901, vec![share("quiet", 99)]);
+            let mut quiet = list("quiet");
+            (quiet.entries, quiet.unique, quiet.overlap) = (100, 1, vec![share("ads", 99)]);
+            let mut mine = list("mine");
+            (mine.entries, mine.unique) = (100, 100);
+            return vec![ads, quiet, mine];
+        }
         vec![list("ads"), list("quiet")]
     }
     fn list_hits(&self) -> BTreeMap<String, u64> {
@@ -1754,6 +1825,64 @@ async fn clu_008_cluster_view_on_a_standalone_node() {
     assert_eq!(send(&app, anonymous).await.0, StatusCode::UNAUTHORIZED);
 }
 
+/// REQ: FLT-006, API-010, AGT-001, AGT-004 (T24.30) — a device's policy over HTTP: the admin reads
+/// it, an agent needs `config:read`, a group-restricted agent reads its own group's devices and
+/// gets a 404 for another group's, and an unknown device is a 404.
+#[tokio::test]
+async fn flt_006_client_policy_over_http() {
+    let (app, _) = app();
+    let (s, _, v) = get(&app, "/api/v1/clients/tv/policy").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["group"], "kids");
+    assert_eq!(v["matchedKey"], "192.168.1.40");
+    assert_eq!(v["identifiedBy"], "ip");
+    assert_eq!(
+        get(&app, "/api/v1/clients/nobody/policy").await.0,
+        StatusCode::NOT_FOUND
+    );
+    let make = |scopes: &'static [&'static str], group: Option<&'static str>| {
+        let body = serde_json::json!({"name": format!("p-{scopes:?}-{group:?}"), "kind": "agent",
+            "scopes": scopes, "group": group});
+        app.signed_in("POST", "/api/v1/tokens", body)
+    };
+    let token = |scopes: &'static [&'static str], group: Option<&'static str>| {
+        let req = make(scopes, group);
+        let app = &app;
+        async move {
+            let (s, _, v) = send(app, req).await;
+            assert_eq!(s, StatusCode::CREATED, "{v}");
+            v["token"].as_str().unwrap().to_owned()
+        }
+    };
+    let read = |bearer: String| {
+        let req = Request::get("/api/v1/clients/tv/policy")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("x-telltale-client", "test-agent/1.0")
+            .body(Body::empty())
+            .unwrap();
+        let app = &app;
+        async move { send(app, req).await.0 }
+    };
+    assert_eq!(
+        read(token(&["config:read"], None).await).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        read(token(&["analytics:read"], None).await).await,
+        StatusCode::FORBIDDEN,
+        "no config:read"
+    );
+    assert_eq!(
+        read(token(&["config:read"], Some("kids")).await).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        read(token(&["config:read"], Some("adults")).await).await,
+        StatusCode::NOT_FOUND,
+        "another group's device"
+    );
+}
+
 #[tokio::test]
 async fn api_001_openapi_is_served_and_documents_every_route() {
     let (app, _) = app();
@@ -1789,8 +1918,10 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // /oidc-providers/{id} (T23.10); 153 with API-016's /sinks, /sinks/{name}, /otlp and
     // /otlp/default (T23.11); 158 with API-902's /guarded, /guarded/{id},
     // /guarded/{id}/preview, /guarded/pending/{id}/confirm and /guarded/pending/{id}/cancel (T27.13);
-    // 160 with OBS-902's /map/geoip and /map/geoip/update (T26.4).
-    assert_eq!(paths.len(), 160);
+    // 160 with OBS-902's /map/geoip and /map/geoip/update (T26.4), then upstream's additions:
+    // 161 with FLT-004's /lists/overlap, /lists/prune-plan and /lists/prune (T24.28);
+    // 162 with FLT-006's /clients/{id}/policy (T24.30) -> 164 with both.
+    assert_eq!(paths.len(), 164);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -4642,4 +4773,212 @@ async fn api_005_pihole_paths_take_only_their_own_token() {
     )
     .await;
     assert_eq!((s, v), (StatusCode::OK, serde_json::json!([])));
+}
+
+// REQ: FLT-004, AGT-004 (T24.28, ADR-992) - the overlap and the plan are reads (viewers, agents
+// with `config:read`); the apply turns the plan's lists off, is an operator's, audited, refuses a
+// list the plan no longer holds, and is never for agent tokens.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one story: read, plan, refuse, apply, audit
+async fn flt_004_prune_lists_over_http() {
+    let (app, fake) = app();
+    fake.prunable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let get = |uri: &str, bearer: &str| {
+        Request::get(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let post = |uri: &str, bearer: &str, body: &str, extra: &[(&str, &str)]| {
+        let mut b = Request::post(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json");
+        for (k, v) in extra {
+            b = b.header(*k, *v);
+        }
+        b.body(Body::from(body.to_owned())).unwrap()
+    };
+    let (s, _, v) = send(&app, get("/api/v1/lists/overlap", &app.bearer)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["items"][0]["name"], "ads");
+    assert_eq!(v["items"][1]["addsPercent"], 1.0);
+    assert_eq!(v["items"][1]["coveredBy"][0]["list"], "ads");
+
+    // The plan: at the default threshold `quiet` (1 of 100 unique) is proposed; nothing changes.
+    let (s, _, v) = send(&app, get("/api/v1/lists/prune-plan", &app.bearer)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["candidates"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["candidates"][0]["name"], "quiet");
+    assert_eq!(v["candidates"][0]["losesAtMost"], 1);
+    assert_eq!(v["kept"].as_array().unwrap().len(), 2);
+    let (s, _, v) = send(
+        &app,
+        get("/api/v1/lists/prune-plan?thresholdPercent=0", &app.bearer),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(v["candidates"].as_array().unwrap().is_empty(), "{v}");
+    let (s, _, _) = send(
+        &app,
+        get("/api/v1/lists/prune-plan?thresholdPercent=80", &app.bearer),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let writes = |fake: &Fake| {
+        fake.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.starts_with("managed List"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(writes(&fake), Vec::<String>::new());
+
+    // A list the plan doesn't hold: nothing changes.
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/lists/prune",
+            &app.bearer,
+            r#"{"names":["quiet","mine"],"snapshotVersion":3,"configVersion":0}"#,
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["detail"].as_str().unwrap().contains("`mine`"), "{v}");
+    assert_eq!(writes(&fake), Vec::<String>::new());
+    // The preview's versions are required, and a different one is a 409 (ADR-993).
+    let plan_v = send(&app, get("/api/v1/lists/prune-plan", &app.bearer))
+        .await
+        .2;
+    assert_eq!(
+        (
+            plan_v["snapshotVersion"].as_u64(),
+            plan_v["configVersion"].as_u64()
+        ),
+        (Some(3), Some(0)),
+        "{plan_v}"
+    );
+    for stale in [
+        r#"{"names":["quiet"],"snapshotVersion":2,"configVersion":0}"#,
+        r#"{"names":["quiet"],"snapshotVersion":3,"configVersion":9}"#,
+    ] {
+        let (s, _, v) = send(&app, post("/api/v1/lists/prune", &app.bearer, stale, &[])).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{stale}: {v}");
+    }
+    assert_eq!(writes(&fake), Vec::<String>::new());
+    for bad in [
+        "{",
+        "",
+        r#"{"names":["quiet"]}"#,
+        r#"{"all":true}"#,
+        r#"{"names":[],"snapshotVersion":3,"configVersion":0,"thresholdPercent":99}"#,
+    ] {
+        let (s, _, v) = send(&app, post("/api/v1/lists/prune", &app.bearer, bad, &[])).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}: {v}");
+    }
+
+    // The apply: `quiet` is written back with `enabled: false`, audited.
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/lists/prune",
+            &app.bearer,
+            r#"{"names":["quiet"],"snapshotVersion":3,"configVersion":0}"#,
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["disabled"], serde_json::json!(["quiet"]));
+    assert_eq!(v["configVersion"], 7);
+    let w = writes(&fake);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].starts_with("managed List quiet "), "{w:?}");
+    assert!(
+        w[0].contains(r#""enabled":false"#) && w[0].contains("lists.example"),
+        "{w:?}"
+    );
+    let audit = app
+        .auth
+        .state()
+        .audit_page(None, 10, Some("lists.prune"), None)
+        .unwrap();
+    assert_eq!(
+        (audit.len(), audit[0].target.as_str()),
+        (1, "quiet"),
+        "{audit:?}"
+    );
+
+    // The write is checked against the version the preview read (no lost update), and the list's
+    // own audit entry is written next to the prune's.
+    assert!(w[0].ends_with(" expect=0"), "{w:?}");
+    let own = app
+        .auth
+        .state()
+        .audit_page(None, 10, Some("list.put"), None)
+        .unwrap();
+    assert_eq!((own.len(), own[0].target.as_str()), (1, "quiet"), "{own:?}");
+
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/lists/prune",
+            &app.bearer,
+            r#"{"names":["quiet","quiet"],"snapshotVersion":3,"configVersion":0}"#,
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["disabled"], serde_json::json!(["quiet"]), "names once");
+
+    // Agents read the plan, and never apply it, whatever their scopes.
+    let token = |scopes: &str| {
+        Request::post("/api/v1/tokens")
+            .header("cookie", &app.cookie)
+            .header("x-csrf-token", &app.csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"name":"pruner","kind":"agent","scopes":[{scopes}]}}"#
+            )))
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, token(r#""config:read","config:write:lists""#)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let agent = v["token"].as_str().unwrap().to_owned();
+    let (s, _, v) = send(&app, get("/api/v1/lists/prune-plan", &agent)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let why = [("x-telltale-reason", "tidy the lists")];
+    let (s, _, v) = send(&app, post("/api/v1/lists/prune", &agent, "{}", &why)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert_eq!(v["code"], "agent_not_allowed", "{v}");
+    assert_eq!(writes(&fake).len(), 2, "the agent changed nothing");
+
+    // A viewer can't apply, but reads the plan.
+    let vic = app
+        .auth
+        .create_user("vic", "a viewer password", auth::Role::Viewer, false, NOW)
+        .unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            vic.id,
+            "ro",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let viewer = format!("tt_{tid}_{secret}");
+    let (s, _, _) = send(&app, post("/api/v1/lists/prune", &viewer, "{}", &[])).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = send(&app, get("/api/v1/lists/prune-plan", &viewer)).await;
+    assert_eq!(s, StatusCode::OK);
 }

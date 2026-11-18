@@ -156,7 +156,7 @@
                 {#if u.source}<div class="muted small" data-testid="upstream-source">from {u.source}</div>{/if}
                 {#if u.sourceProblem}<div class="small bad-text" data-testid="upstream-source-problem">{u.sourceProblem}</div>{/if}</td>
               <td>{u.groups.join(', ')}</td>
-              <td><BreakerBadge value={u.breaker} /></td>
+              <td><BreakerBadge value={u.breaker} />{#if u.routeProblem}<div class="small warn" data-testid="route-problem">{u.routeProblem}<HelpButton id="upstream-route" /></div>{/if}</td>
               <td class="num">{num(u.requests)}<ShareBar value={totalRequests ? (u.requests / totalRequests) * 100 : 0} color="--s-forwarded" label="share of all upstream requests" /></td>
               <td class="num">{num(u.failures)} <span class="muted small">({pct(u.requests ? (u.failures / u.requests) * 100 : 0)})</span><ShareBar value={u.requests ? (u.failures / u.requests) * 100 : 0} color="--s-blocked" label="failure rate" />
                 {#if u.failures > 0}<div class="muted small">{breakdown(u)}</div>{/if}</td>
