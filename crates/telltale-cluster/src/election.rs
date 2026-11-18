@@ -185,9 +185,11 @@ pub struct Elector {
     /// No new election before this (backoff with jitter).
     next_try_ms: u64,
     /// REQ: CLU-005 (ADR-960) — whether this node has seen a lease from a primary. A server's
-    /// node stands only once it has ([`Elector::stand_only_after_a_lease`]); the protocol alone
-    /// (the simulator, a first election from nothing) doesn't need it.
+    /// node stands only once it has ([`Elector::stand_only_after_a_lease`], which turns
+    /// `lease_gate` on); the protocol alone (the simulator, a first election from nothing)
+    /// doesn't need it.
     lease_seen: bool,
+    lease_gate: bool,
     /// REQ: CLU-005 (ADR-960) — a primary that took the role without an election (it adopted
     /// automatic failover while running) renews at its next tick, not after a full interval.
     renew_now: bool,
@@ -215,7 +217,8 @@ impl Elector {
             stepping_down: false,
             next_round: 1,
             next_try_ms: 0,
-            lease_seen: true,
+            lease_seen: false,
+            lease_gate: false,
             renew_now: false,
         }
     }
@@ -226,6 +229,7 @@ impl Elector {
     /// adopted automatic failover a moment ago and has not renewed yet) is never the one that
     /// deposes it.
     pub fn stand_only_after_a_lease(&mut self) {
+        self.lease_gate = true;
         self.lease_seen = !self.ballot.candidate.is_empty()
             && self.ballot.candidate != self.id
             && self.ballot.lease_until_ms > 0;
@@ -233,8 +237,17 @@ impl Elector {
 
     /// Whether this node has seen a lease from another primary (see
     /// [`Elector::stand_only_after_a_lease`]).
+    ///
+    /// A node whose own ballot is for itself (it was the primary) has seen one too once it learns
+    /// of a newer epoch: an election happened, so a majority granted a lease to someone else. A
+    /// deposed primary that comes back therefore stands if its successor dies before it has
+    /// granted that successor a single renewal (its own old lease refuses them for a lease period).
     pub fn has_seen_a_lease(&self) -> bool {
-        self.lease_seen
+        !self.lease_gate
+            || self.lease_seen
+            || (self.ballot.candidate == self.id
+                && self.ballot.epoch > 0
+                && self.max_epoch > self.ballot.epoch)
     }
 
     /// Whether this node may become primary now: eligible and not in maintenance.
@@ -354,7 +367,7 @@ impl Elector {
             }
             Phase::Follower
                 if self.may_stand()
-                    && self.lease_seen
+                    && self.has_seen_a_lease()
                     && now_ms >= self.next_try_ms
                     && !self.ballot.lease_held_by_other(&self.id, now_ms) =>
             {
@@ -959,7 +972,7 @@ mod tests {
         };
         for (ballot, seen) in [
             (Ballot::default(), false),
-            (ballot("b", 5_000), false), // its own vote: it is not a lease from a primary
+            (ballot("b", 5_000), false), // its own vote: not a lease from a primary, until a newer epoch is seen
             (ballot("a", 5_000), true),
             (ballot("a", 0), false),
         ] {
@@ -967,5 +980,14 @@ mod tests {
             e.stand_only_after_a_lease();
             assert_eq!(e.has_seen_a_lease(), seen, "{ballot:?}");
         }
+        // A former primary (its ballot is for itself) that learns of a newer epoch has seen a
+        // lease: the election that made the epoch needed one.
+        let mut e = Elector::new("b", ids.clone(), true, ballot("b", 5_000));
+        e.stand_only_after_a_lease();
+        assert!(!e.has_seen_a_lease());
+        e.observe(1);
+        assert!(!e.has_seen_a_lease(), "its own epoch is not a newer one");
+        e.observe(2);
+        assert!(e.has_seen_a_lease());
     }
 }
