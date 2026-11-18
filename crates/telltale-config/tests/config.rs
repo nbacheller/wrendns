@@ -367,6 +367,101 @@ trust_edns_mac_from = ["192.168.1.1/32"]
     assert!(c.clients.neighbor_table);
 }
 
+// REQ: FLT-006 (T24.9, ADR-973) — `hostname:` keys and group router names are label-form router
+// names; a router name is in one group only, and a rule may name one.
+#[test]
+fn flt_006_router_names_are_labels() {
+    use telltale_config::MatchKey;
+    assert_eq!(
+        MatchKey::parse("hostname:Kitchen-Tablet").unwrap(),
+        MatchKey::Hostname("kitchen-tablet".into())
+    );
+    assert!(
+        MatchKey::parse("hostname:Kitchen Tablet").is_err(),
+        "a label, not a name"
+    );
+    assert!(MatchKey::parse("hostname:-edge").is_err());
+    assert!(MatchKey::parse("hostname:").is_err());
+    // A group's router names are case-insensitive, as the keys are: `Kids-iPad` is `kids-ipad`,
+    // so another group naming it in any case is the same duplicate.
+    assert!(
+        load_str(
+            r#"
+[[group]]
+name = "kids"
+router_names = ["Kids-iPad"]
+"#
+        )
+        .is_ok()
+    );
+    let dup = load_str(
+        r#"
+[[group]]
+name = "kids"
+router_names = ["Kids-iPad"]
+
+[[group]]
+name = "guests"
+router_names = ["kids-ipad"]
+"#,
+    )
+    .err()
+    .unwrap_or_default();
+    assert!(
+        dup.iter()
+            .any(|e| e.to_string().contains("already a router name")),
+        "a case-only duplicate is refused"
+    );
+    let errs = load_str(
+        r#"
+[[group]]
+name = "kids"
+router_names = ["kids-ipad", "Bad Name"]
+
+[[group]]
+name = "guests"
+router_names = ["kids-ipad"]
+
+[[client]]
+name = "Tablet"
+match = ["hostname:kitchen-tablet"]
+
+[[rule]]
+id = "no-games"
+action = "block"
+domain = "games.example"
+devices = ["hostname:kitchen-tablet"]
+
+[[rule]]
+id = "bad-device"
+action = "block"
+domain = "ads.example"
+devices = ["hostname:not a label"]
+"#,
+    )
+    .unwrap_err();
+    let text: Vec<String> = errs.iter().map(ToString::to_string).collect();
+    assert!(
+        text.iter().any(|e| e.contains("group[0].router_names[1]")),
+        "{text:?}"
+    );
+    assert!(
+        text.iter()
+            .any(|e| e.contains("group[1].router_names[0]") && e.contains("`kids`")),
+        "{text:?}"
+    );
+    assert!(
+        text.iter().any(|e| e.contains("rule[1].devices[0]")),
+        "{text:?}"
+    );
+    assert!(
+        !text
+            .iter()
+            .any(|e| e.contains("rule[0].devices") || e.contains("client[0].match")),
+        "{text:?}"
+    );
+}
+
 // REQ: FLT-005 (ADR-050) — a network can belong to one group; colors are #rrggbb.
 #[test]
 fn flt_005_group_networks_validation() {

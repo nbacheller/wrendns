@@ -2290,6 +2290,14 @@
             "$ref": "#/$defs/RewriteConfig"
           }
         },
+        "router_names": {
+          "description": "REQ: API-010 (T24.9, ADR-973) — router names (`kitchen-tablet`, the label form) of devices\nthat belong to this group, the way a network's devices do. A `[[client]]` that matches the\ndevice by its address or MAC still wins, and the match is by the name the router gave\nthe device at its current address.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
         "safe_search": {
           "description": "REQ: FLT-011 (T7.11) — safe search: Google, Bing, DuckDuckGo, Yandex, and Pixabay\nanswer with their safe-search service, and YouTube with Restricted Mode.",
           "type": "boolean"

@@ -643,7 +643,7 @@ pub struct ExplainClient {
     /// The configured device it was recognized as.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
-    /// `client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `ip`, `cidr`, or `default`.
+    /// `client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `router_name`, `ip`, `cidr`, or `default`.
     pub identified_by: String,
     /// Highest priority first.
     pub groups: Vec<String>,

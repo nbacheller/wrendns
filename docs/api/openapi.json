@@ -14734,7 +14734,7 @@
           },
           "identifiedBy": {
             "type": "string",
-            "description": "`client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `ip`, `cidr`, or `default`."
+            "description": "`client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `router_name`, `ip`, `cidr`, or `default`."
           },
           "ip": {
             "type": "string"

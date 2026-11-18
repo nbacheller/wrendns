@@ -4,6 +4,7 @@
   import { session, signedIn } from '../lib/session.svelte';
   import { route } from '../lib/router.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
+  import HelpButton from '../lib/components/HelpButton.svelte';
   import AuthShell from './AuthShell.svelte';
 
   let username = $state('');
@@ -84,6 +85,7 @@
     {/if}
     <ErrorNote {error} />
     <button class="primary" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+    <HelpButton id="password-reset" />
   </form>
   {/if}
 </AuthShell>

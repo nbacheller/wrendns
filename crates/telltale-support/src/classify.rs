@@ -123,6 +123,8 @@ const TABLE: &[(&str, Class)] = &[
     ("group[].lists[]", Plain),
     ("group[].name", Name(C::Group)),
     ("group[].networks[]", Scan),
+    // REQ: API-010 (T24.9, ADR-973) — a router name is a device name: a pseudonym.
+    ("group[].router_names[]", Name(C::Device)),
     ("group[].rebinding_allow[]", Free),
     ("group[].rewrite[].answer", Scan),
     ("group[].rewrite[].domain", Free),

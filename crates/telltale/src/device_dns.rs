@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use telltale_policy::{ClientTable, LocalData, device_label};
@@ -25,6 +25,9 @@ use crate::devices::Leases;
 
 /// How often the table is rebuilt (it changes when a router is read, every few minutes).
 const EVERY: Duration = Duration::from_secs(10);
+
+/// The policy the router names were last given to (held as a `Weak`, see [`run`]), and the names.
+type GivenRouterNames = (Weak<crate::pipeline::Dynamic>, HashMap<IpAddr, Arc<str>>);
 
 /// `[local] device_domain`, `device_ttl`, `device_mdns`, as the pipeline's policy holds them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +149,26 @@ pub(crate) fn names(inputs: &Inputs<'_>, domain: &str) -> (Vec<(String, Ipv4Addr
     (out, collisions)
 }
 
+/// REQ: FLT-006 (T24.9, ADR-973) — the name each address's router gave it (the label form, so
+/// `[[client]] match = ["hostname:kitchen-tablet"]` matches it), from this node's routers and the
+/// peers' (CLU-002). Offline clients publish none, as their device names don't (ADR-166).
+pub(crate) fn router_names(routers: [&Leases; 2]) -> HashMap<IpAddr, Arc<str>> {
+    let mut out: HashMap<IpAddr, Arc<str>> = HashMap::new();
+    for table in routers {
+        for l in table.values() {
+            if l.offline {
+                continue;
+            }
+            let Some(label) = l.hostname.as_deref().and_then(device_label) else {
+                continue;
+            };
+            out.entry(IpAddr::V4(l.ip))
+                .or_insert_with(|| Arc::from(label.as_str()));
+        }
+    }
+    out
+}
+
 /// The table for `names`.
 pub(crate) fn build(names: &[(String, Ipv4Addr)], ttl: u32) -> DeviceNames {
     DeviceNames {
@@ -164,6 +187,10 @@ pub(crate) async fn run(
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) {
     let mut last: Option<(Settings, Vec<(String, Ipv4Addr)>)> = None;
+    // REQ: FLT-006 (T24.9) — the router names last given to the policy in force (a reload makes
+    // a new one, so the names are given again to it). The policy is held as a `Weak`: its
+    // allocation stays reserved while it is remembered, so a new policy can't reuse its address.
+    let mut last_router_names: Option<GivenRouterNames> = None;
     let mut tick = tokio::time::interval(EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -172,6 +199,17 @@ pub(crate) async fn run(
             _ = tick.tick() => {}
         }
         let state = pipeline.current();
+        let routers = pipeline.router_leases.load();
+        let peers = pipeline.peer_names.load();
+        let names_now = router_names([&routers, &peers.routers]);
+        let current_policy = Arc::downgrade(&state);
+        let already_given = last_router_names
+            .as_ref()
+            .is_some_and(|(id, n)| id.ptr_eq(&current_policy) && *n == names_now);
+        if !already_given {
+            state.policy.clients.set_router_names(names_now.clone());
+            last_router_names = Some((current_policy, names_now));
+        }
         let Some(mut settings) = state.policy.device_dns.clone() else {
             if last.take().is_some() {
                 pipeline.device_names.store(Arc::default());
@@ -180,8 +218,6 @@ pub(crate) async fn run(
             continue;
         };
         settings.mdns &= mdns_listening;
-        let routers = pipeline.router_leases.load();
-        let peers = pipeline.peer_names.load();
         let mdns = pipeline.mdns_names.load();
         let empty = Leases::new();
         let inputs = Inputs {
@@ -341,6 +377,49 @@ mod tests {
             got,
             vec![("ipad.home.arpa".to_owned(), Ipv4Addr::new(192, 0, 2, 53))]
         );
+    }
+
+    /// REQ: FLT-006 (T24.9, ADR-973) — a router's name for a device is its label, from this node's
+    /// routers first, then the peers'; an offline client gives none, and a name that isn't
+    /// usable as a label gives none.
+    #[test]
+    fn flt_006_router_names_from_leases() {
+        let own: Leases = [
+            lease(
+                [192, 0, 2, 21],
+                "aa:bb:cc:00:00:21",
+                Some("Kitchen Tablet"),
+            ),
+            lease([192, 0, 2, 22], "aa:bb:cc:00:00:22", Some("***")),
+            lease([192, 0, 2, 23], "aa:bb:cc:00:00:23", None),
+        ]
+        .into();
+        let mut gone = lease([192, 0, 2, 24], "aa:bb:cc:00:00:24", Some("old-tv"));
+        gone.1.offline = true;
+        let peers: Leases = [
+            gone,
+            lease([192, 0, 2, 21], "aa:bb:cc:00:00:99", Some("other")),
+            lease(
+                [192, 0, 2, 30],
+                "aa:bb:cc:00:00:30",
+                Some("peer-printer"),
+            ),
+        ]
+        .into();
+        let got = router_names([&own, &peers]);
+        let ip = |d: [u8; 4]| IpAddr::from(Ipv4Addr::from(d));
+        assert_eq!(
+            got.get(&ip([192, 0, 2, 21])).map(|s| &**s),
+            Some("kitchen-tablet")
+        );
+        assert_eq!(
+            got.get(&ip([192, 0, 2, 30])).map(|s| &**s),
+            Some("peer-printer")
+        );
+        assert!(!got.contains_key(&ip([192, 0, 2, 22])), "no label");
+        assert!(!got.contains_key(&ip([192, 0, 2, 23])), "no name");
+        assert!(!got.contains_key(&ip([192, 0, 2, 24])), "offline");
+        assert_eq!(got.len(), 2);
     }
 
     /// REQ: DNS-023 — the built table answers by name and by address, and the API's reverse

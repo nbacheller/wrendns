@@ -358,6 +358,198 @@ pub(crate) fn hash_password() -> io::Result<bool> {
     }
 }
 
+/// REQ: API-003 (ADR-972) — `telltale auth reset-password <user>`: sets a local user's password
+/// on the node itself, for when nobody can sign in. Needs the node stopped: it refuses while
+/// `telltale run` holds the data directory's lock, and on a cluster replica (its users come from
+/// the primary). The new password comes from stdin (a pipe or a file, one line), or from a
+/// terminal typed twice with echo off. The user's UI sessions end, and the reset is audited.
+pub(crate) fn reset_password(cfg: &Config, username: &str) -> io::Result<bool> {
+    let dir = data_dir(cfg);
+    // A directory without a `state.db` is the wrong one (a mistyped `-c`), not an empty node:
+    // refuse, and create nothing.
+    if !dir.join("state.db").is_file() {
+        eprintln!(
+            "error: no TelltaleDNS state in {}: check the data directory in the config (-c)",
+            dir.display()
+        );
+        return Ok(false);
+    }
+    // REQ: CLU-008 (ADR-068) — the same one-process rule as the server: a running node holds it.
+    let _lock = match crate::datadir::lock(&dir, Duration::ZERO) {
+        Ok(lock) => lock,
+        Err(crate::datadir::LockError::Held(holder)) => {
+            eprintln!(
+                "error: TelltaleDNS is running on this data directory ({holder}). Stop it first: a password is reset with the node stopped"
+            );
+            return Ok(false);
+        }
+        Err(crate::datadir::LockError::Io(e)) => return Err(e),
+    };
+    // An identity that can't be read is refused, not taken for a primary: a replica's users are
+    // overwritten by the next sync, so a reset there would be lost.
+    let member_not_primary = match telltale_cluster::node::Identity::load(&dir) {
+        Ok(id) => id.is_some_and(|id| !id.is_primary()),
+        Err(e) => {
+            eprintln!(
+                "error: this node's cluster identity can't be read ({e}); the reset is refused until it can"
+            );
+            return Ok(false);
+        }
+    };
+    if member_not_primary {
+        eprintln!(
+            "error: this node takes its users from the cluster's primary; reset the password there"
+        );
+        return Ok(false);
+    }
+    let Some(password) = read_new_password()? else {
+        eprintln!(
+            "error: this terminal can't hide what you type (no `stty`). Pipe the password on stdin instead: printf '%s\\n' \"$NEW_PASSWORD\" | telltale auth reset-password {username}"
+        );
+        return Ok(false);
+    };
+    if let Err(p) = telltale_api::auth::valid_password(&password) {
+        eprintln!("error: {}", p.detail);
+        return Ok(false);
+    }
+    let state = Arc::new(open_state(cfg)?);
+    match reset_in(state, settings(cfg), username, &password, now()) {
+        Ok(ended) => {
+            writeln!(
+                io::stdout().lock(),
+                "password reset for {username}; {ended} sign-in session(s) ended"
+            )?;
+            Ok(true)
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            Ok(false)
+        }
+    }
+}
+
+/// The offline reset itself: hashes `password`, stores it for `username`, ends that user's UI
+/// sessions, and records the reset in the audit log. Returns how many sessions ended.
+pub(crate) fn reset_in(
+    state: Arc<State>,
+    settings: Settings,
+    username: &str,
+    password: &str,
+    now: u64,
+) -> Result<u64, String> {
+    let auth = Auth::new(state, settings);
+    let user = auth
+        .state()
+        .user_by_name(username)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no user named `{username}`"))?;
+    let hash = crypto::hash_password(password)?;
+    auth.state()
+        .set_password(user.id, &hash, now)
+        .map_err(|e| e.to_string())?;
+    let ended = auth
+        .state()
+        .delete_user_sessions(user.id, None)
+        .map_err(|e| e.to_string())?;
+    // REQ: API-003 (ADR-972) — the entry is written before the command returns. A failed write
+    // is an error (the command exits non-zero), not a silent gap: the password has changed, and
+    // the message says so.
+    let who = telltale_api::auth::Actor::system("auth reset-password");
+    let detail = serde_json::json!({ "by": "offline reset", "sessionsEnded": ended }).to_string();
+    auth.state()
+        .audit_append(&telltale_store::state::NewAudit {
+            ts: now,
+            actor: &who.name,
+            actor_kind: who.kind,
+            remote: who.remote.as_deref(),
+            action: "user.password",
+            target: &user.username,
+            detail: &detail,
+            reason: who.reason.as_deref(),
+        })
+        .map_err(|e| {
+            format!("the password was changed, but its audit entry could not be written: {e}")
+        })?;
+    Ok(ended)
+}
+
+/// Reads the new password: one line from a pipe or file, or from a terminal typed twice with
+/// echo off. `None` when a terminal's echo can't be turned off (nothing is shown then).
+fn read_new_password() -> io::Result<Option<zeroize::Zeroizing<String>>> {
+    use std::io::IsTerminal as _;
+    let stdin = io::stdin();
+    if !stdin.is_terminal() {
+        let mut line = zeroize::Zeroizing::new(String::new());
+        stdin.read_line(&mut line)?;
+        return Ok(Some(zeroize::Zeroizing::new(
+            line.trim_end_matches(['\r', '\n']).to_owned(),
+        )));
+    }
+    let Some(first) = read_hidden("New password: ")? else {
+        return Ok(None);
+    };
+    let Some(second) = read_hidden("Repeat it: ")? else {
+        return Ok(None);
+    };
+    if first.as_str() != second.as_str() {
+        return Err(io::Error::other("the two passwords differ"));
+    }
+    Ok(Some(first))
+}
+
+/// One hidden line from the terminal. `None` when echo can't be turned off here.
+fn read_hidden(prompt: &str) -> io::Result<Option<zeroize::Zeroizing<String>>> {
+    eprint!("{prompt}");
+    let _ = io::stderr().flush();
+    if !set_terminal(false) {
+        eprintln!();
+        return Ok(None);
+    }
+    // Echo and the interrupt keys come back on every exit from here, an error included.
+    let _restore = TerminalRestore;
+    let mut line = zeroize::Zeroizing::new(String::new());
+    let read = io::stdin().read_line(&mut line);
+    eprintln!();
+    read?;
+    // With the interrupt key off, Ctrl-C arrives as a character: it cancels the reset.
+    if line.contains('\u{3}') {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "cancelled; no password was changed",
+        ));
+    }
+    Ok(Some(zeroize::Zeroizing::new(
+        line.trim_end_matches(['\r', '\n']).to_owned(),
+    )))
+}
+
+/// Turns the terminal back to echo and the interrupt keys when dropped.
+struct TerminalRestore;
+
+impl Drop for TerminalRestore {
+    fn drop(&mut self) {
+        set_terminal(true);
+    }
+}
+
+/// Turns the terminal's echo and interrupt keys (Ctrl-C) on or off through `stty` (the image has
+/// none: then `false`). Off, Ctrl-C reaches the prompt as a character, so a cancelled reset
+/// can't leave the terminal with echo off.
+fn set_terminal(on: bool) -> bool {
+    let mode: &[&str] = if on {
+        &["echo", "isig"]
+    } else {
+        &["-echo", "-isig"]
+    };
+    std::process::Command::new("stty")
+        .args(mode)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 #[cfg(test)]
 #[path = "auth_setup_tests.rs"]
 mod tests;

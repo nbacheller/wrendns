@@ -5550,7 +5550,7 @@ export interface components {
             device?: string | null;
             /** @description Highest priority first. */
             groups: string[];
-            /** @description `client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `ip`, `cidr`, or `default`. */
+            /** @description `client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `router_name`, `ip`, `cidr`, or `default`. */
             identifiedBy: string;
             ip: string;
             mac?: string | null;

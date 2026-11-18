@@ -56,6 +56,9 @@
   const groupFields = $derived<Field[]>([
     { key: 'networks', label: 'Networks', type: 'lines', placeholder: '10.20.2.0/24',
       help: 'One per line. Every device on these networks belongs to the group.' },
+    // REQ: API-010 (T24.9, ADR-973) — the names a router gave devices.
+    { key: 'router_names', label: 'Router names', type: 'lines', placeholder: 'kitchen-tablet',
+      help: 'One per line, in the label form (Kitchen Tablet is kitchen-tablet): a device the router named this, and that no device entry names, belongs to the group, whatever its address.' },
     { key: 'lists', label: 'Lists', type: 'multi', options: listNames,
       help: 'Leave all unticked on a new group to use every enabled list.' },
     // REQ: UPS-007 (T9.25)
