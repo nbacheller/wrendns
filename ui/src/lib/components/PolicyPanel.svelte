@@ -35,6 +35,7 @@
     off: 'off',
     in_effect: 'in effect now',
     not_in_effect: 'not in effect',
+    not_applied: 'not applied',
     expired: 'expired',
     shadow: 'shadow',
   };
@@ -43,6 +44,7 @@
     in_effect: 'ok',
     off: '',
     not_in_effect: '',
+    not_applied: 'warn',
     expired: 'warn',
     shadow: 'info',
   };
@@ -65,7 +67,7 @@
       {#if policy.matchedKey}<code data-testid="policy-matched-key">{policy.matchedKey}</code>{/if}
       {#if policy.device}<span class="muted">as</span> <strong>{policy.device}</strong>{/if}
       {#if policy.address}<span class="muted mono">at {policy.address}</span>{/if}
-      {#if !compact}<HelpButton id="device-policy" />{/if}
+      <HelpButton id="device-policy" />
     </p>
     {#if policy.groups.length > 1}
       <p class="small muted">Also in {policy.groups.slice(1).join(', ')}; the first group's settings apply.</p>

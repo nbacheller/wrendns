@@ -80,7 +80,7 @@ test('flt_006 the Policy panel names the group and the key that matched, for a M
   await expect(own).toContainText('this device');
   await expect(own.getByTestId('policy-link')).toHaveAttribute('href', /#\/rules\?rule=e2e-policy/);
   // A device never seen at an address is read at a stand-in: the panel says so.
-  await expect(panel.getByTestId('policy-note').first()).toContainText('no address yet');
+  await expect(panel.getByTestId('policy-note').first()).toContainText('no single address');
   // The upstream group.
   await expect(panel.getByTestId('policy-section-upstream')).toContainText('default');
 
@@ -117,8 +117,10 @@ test('flt_006 Explain and Flow name the group and the key and link to the Policy
   await expect(line).toBeVisible();
   await expect(line.getByTestId('policy-line-group')).toHaveText('lab');
   await expect(line.getByTestId('policy-line-from')).toContainText('127.0.0.0/8');
+  await expect(line.locator('[data-help="device-policy"]')).toBeVisible();
   await line.getByTestId('policy-line-link').click();
-  await expect(page).toHaveURL(/#\/clients\?device=.*&view=policy/);
+  // The link carries the explained address, so the panel reads what Explain read.
+  await expect(page).toHaveURL(/#\/clients\?device=127\.0\.0\.1&view=policy/);
   await expect(page.getByTestId('policy-panel').getByTestId('policy-group')).toContainText('lab');
 
   // Flow: with a device chosen, the same line above the diagram.

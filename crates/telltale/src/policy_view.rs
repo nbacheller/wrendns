@@ -23,7 +23,7 @@ use telltale_upstream::Question;
 use crate::explain::{Resolved, State, mac_text, resolve_identity, source_name};
 
 /// Who the policy is for.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Subject {
     /// What was asked for (a name, an address, a workload).
     pub(crate) asked: String,
@@ -140,16 +140,18 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
     let mut notes = Vec::new();
     if subject.stand_in {
         notes.push(
-            "This device has no address yet (it is matched by a MAC or a client ID), so its network is unknown: a network group would apply once it is seen at an address."
+            "This device has no single address (it is matched by a MAC, a client ID or a network range), so its network is unknown: the group it gets depends on the address a member is seen at."
                 .to_owned(),
         );
     }
-    if let (Some(want), Some(got)) = (&subject.wanted_device, &device)
-        && !want.eq_ignore_ascii_case(got)
-    {
-        notes.push(format!(
+    match (&subject.wanted_device, &device) {
+        (Some(want), Some(got)) if !want.eq_ignore_ascii_case(got) => notes.push(format!(
             "A query with this device's keys is recognized as {got}, which ranks higher; that device's policy is shown."
-        ));
+        )),
+        (Some(want), None) => notes.push(format!(
+            "A query with {want}'s keys is not recognized as {want} (another rung, such as its network, takes it first), so the default or network policy is shown."
+        )),
+        _ => {}
     }
     if st.pause.is_paused(&group.name, || now) {
         notes.push(format!(
@@ -186,12 +188,14 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
 
     // Lists: what the filter enforces for this device (the same mask a query is checked against).
     let mut lists = Vec::new();
+    // REQ: FLT-006 — services a schedule turns on now are blocked services too.
+    let mut scheduled_services: Vec<PolicyItem> = Vec::new();
     if let Some(f) = st.filter {
         if let Some(snap) = f.matcher.snapshot() {
             let mask = f.mask(ident);
             for (i, l) in snap.manifest.lists.iter().enumerate() {
                 let Ok(id) = u16::try_from(i) else { break };
-                if telltale_config::services::of_list(&l.name).is_some() || !mask.contains(id) {
+                if !mask.contains(id) {
                     continue;
                 }
                 let scheduled = group_ids.iter().any(|g| {
@@ -200,6 +204,19 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
                         .get(usize::from(*g))
                         .is_some_and(|e| e.contains(&l.name))
                 });
+                if let Some(svc) = telltale_config::services::of_list(&l.name) {
+                    if scheduled {
+                        scheduled_services.push(PolicyItem {
+                            label: svc.name.clone(),
+                            detail: Some(svc.category.clone()),
+                            state: Some("in_effect".into()),
+                            from: Some("a schedule that is on now".to_owned()),
+                            link: plain_link("/groups"),
+                            ..PolicyItem::default()
+                        });
+                    }
+                    continue;
+                }
                 lists.push(PolicyItem {
                     label: l.name.clone(),
                     state: Some(if scheduled { "in_effect" } else { "on" }.into()),
@@ -274,6 +291,7 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
             });
         }
     }
+    services.extend(scheduled_services);
     sections.push(PolicySection {
         id: "services".into(),
         title: "Blocked services".into(),
@@ -412,7 +430,7 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
     let compiled = telltale_config::schedule::compile(cfg);
     let at = i64::try_from(now).unwrap_or(i64::MAX);
     let mut schedules = Vec::new();
-    for gname in clients.group_names(ident) {
+    for (gi, gname) in clients.group_names(ident).iter().enumerate() {
         let Some(gc) = cfg.group.iter().find(|g| g.name.as_str() == &**gname) else {
             continue;
         };
@@ -437,10 +455,24 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
                     join(sc.services.iter().map(telltale_config::SafeString::as_str))
                 );
             }
+            // The query path applies a block-all schedule of the first group only (as Explain).
+            let ignored = on && gi > 0 && sc.action == ScheduleAction::BlockAll;
+            if ignored {
+                what.push_str(" (only the first group's block-all schedule applies)");
+            }
             schedules.push(PolicyItem {
                 label: sc.name.to_string(),
                 detail: Some(format!("{what}; {}", window_text(sc))),
-                state: Some(if on { "in_effect" } else { "not_in_effect" }.into()),
+                state: Some(
+                    if ignored {
+                        "not_applied"
+                    } else if on {
+                        "in_effect"
+                    } else {
+                        "not_in_effect"
+                    }
+                    .into(),
+                ),
                 from: Some(format!("group {gname}")),
                 link: group_link(gname),
                 ..PolicyItem::default()

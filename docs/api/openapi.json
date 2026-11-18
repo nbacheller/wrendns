@@ -23467,7 +23467,7 @@
               "string",
               "null"
             ],
-            "description": "`on`, `off`, `in_effect`, `not_in_effect`, `expired`, `shadow`, or absent when a line has no\nstate of its own."
+            "description": "`on`, `off`, `in_effect`, `not_in_effect`, `not_applied`, `expired`, `shadow`, or absent when a line has no\nstate of its own."
           },
           "untilUnixSeconds": {
             "type": [

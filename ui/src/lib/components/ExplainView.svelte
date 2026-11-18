@@ -80,7 +80,7 @@
   {/if}
 
   <section class="card" data-testid="explain-flow">
-    <FlowDiagram highlight={path} device={x.client.device ?? x.client.ip} name={x.name} {detail} />
+    <FlowDiagram highlight={path} device={['neighbor_mac', 'edns_mac', 'client_id'].includes(x.client.identifiedBy) ? (x.client.device ?? x.client.ip) : x.client.ip} name={x.name} {detail} />
   </section>
 
   <section class="card">

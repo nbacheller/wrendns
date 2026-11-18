@@ -44,7 +44,7 @@ pub struct PolicyItem {
     /// More, in words (`Mon-Fri 21:00-07:00`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// `on`, `off`, `in_effect`, `not_in_effect`, `expired`, `shadow`, or absent when a line has no
+    /// `on`, `off`, `in_effect`, `not_in_effect`, `not_applied`, `expired`, `shadow`, or absent when a line has no
     /// state of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
@@ -85,6 +85,21 @@ pub struct PolicyRung {
     pub label: String,
     /// The rung that decided.
     pub matched: bool,
+}
+
+/// REQ: FLT-006, API-010 (T24.30, ADR-996) — what a replica observed of a device (its address, the
+/// MAC its neighbor table holds, a client ID), sent to the primary so the primary applies its
+/// configuration to the replica's observations and both give Explain's answer. Cluster-internal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyObservation {
+    pub ip: String,
+    #[serde(default)]
+    pub mac: Option<[u8; 6]>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// The configured device asked for by name, if one was.
+    #[serde(default)]
+    pub wanted: Option<String>,
 }
 
 /// REQ: FLT-006, API-010 (T24.30) — a device's effective policy.

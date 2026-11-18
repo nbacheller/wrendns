@@ -1977,12 +1977,42 @@ impl Backend for ApiBackend {
         client: &str,
     ) -> Result<telltale_api::policy_api::ClientPolicy, Problem> {
         let subject = self.policy_subject(client)?;
-        let cfg = self.src.config.load();
-        let now = crate::pipeline::unix_now();
-        Ok(self
-            .src
-            .pipeline
-            .with_explain_state(|st| crate::policy_view::build(st, &cfg, &subject, now)))
+        Ok(self.policy_of(&subject))
+    }
+
+    // REQ: FLT-006 (ADR-996) — this node's observations of the device, for the primary.
+    fn policy_observation(
+        &self,
+        client: &str,
+    ) -> Result<Option<telltale_api::policy_api::PolicyObservation>, Problem> {
+        let s = self.policy_subject(client)?;
+        if s.stand_in {
+            return Ok(None);
+        }
+        Ok(Some(telltale_api::policy_api::PolicyObservation {
+            ip: s.ip.to_string(),
+            mac: s.mac.or_else(|| self.src.pipeline.neighbors.get(s.ip)),
+            client_id: s.client_id,
+            wanted: s.wanted_device,
+        }))
+    }
+
+    // REQ: FLT-006 (ADR-996) — another node's observations under this node's configuration.
+    fn client_policy_observed(
+        &self,
+        client: &str,
+        observed: &telltale_api::policy_api::PolicyObservation,
+    ) -> Result<telltale_api::policy_api::ClientPolicy, Problem> {
+        let ip = observed
+            .ip
+            .parse::<IpAddr>()
+            .map_err(|_| Problem::not_found("the observed address is not an address"))?;
+        let mut subject = self.policy_subject(client)?;
+        subject.ip = ip;
+        subject.mac = observed.mac;
+        subject.client_id.clone_from(&observed.client_id);
+        subject.stand_in = false;
+        Ok(self.policy_of(&subject))
     }
 
     // REQ: OBS-025 (T13.3)
@@ -6080,6 +6110,18 @@ impl ApiBackend {
         })
     }
 
+    /// REQ: FLT-006, API-010 (T24.30) — the policy of `subject` now.
+    fn policy_of(
+        &self,
+        subject: &crate::policy_view::Subject,
+    ) -> telltale_api::policy_api::ClientPolicy {
+        let cfg = self.src.config.load();
+        let now = crate::pipeline::unix_now();
+        self.src
+            .pipeline
+            .with_explain_state(|st| crate::policy_view::build(st, &cfg, subject, now))
+    }
+
     /// REQ: FLT-006, API-010 (T24.30, ADR-996) — who a policy read is for: a workload (as one of its
     /// pods), an address, or a configured device, which is probed with the keys it is matched by
     /// (its address if it has one or the neighbor table or the routers know one, else a stand-in
@@ -6138,13 +6180,9 @@ impl ApiBackend {
                     MatchKey::Hostname(h) => clients.router_name_addresses(h).into_iter().min(),
                     _ => None,
                 })
-            })
-            .or_else(|| {
-                keys.iter().find_map(|k| match k {
-                    MatchKey::Cidr(n) => Some(n.addr),
-                    _ => None,
-                })
             });
+        // A network range names no single address: like a MAC-only device, it is probed as a
+        // stand-in (its group depends on the member's address), never at the range's own address.
         let wanted = Some(c.name.to_string());
         Ok(match ip {
             Some(ip) => subject(ip, None, client_id, wanted, false),
@@ -7935,7 +7973,7 @@ groups = ["iot"]
             (p.group.as_str(), p.group_from.as_str()),
             ("kids", "device")
         );
-        assert!(p.address.is_none() && p.notes.iter().any(|n| n.contains("no address yet")));
+        assert!(p.address.is_none() && p.notes.iter().any(|n| n.contains("no single address")));
         let ex = explain_for(&api, "10.9.9.9", Some("aa:bb:cc:dd:ee:02"));
         assert_eq!(ex.client.identified_by, p.identified_by);
         assert_eq!(ex.client.matched_key, p.matched_key);
@@ -7974,9 +8012,25 @@ groups = ["iot"]
             )
         );
         // A network-keyed device.
+        // By name it is a stand-in (no single address; never read at the range's own address) and
+        // the note says why; read at a member's address it is matched by the network.
         let pr = api.client_policy("printer").unwrap();
-        assert_eq!(pr.identified_by, "cidr");
-        assert_eq!(pr.matched_key.as_deref(), Some("10.8.0.0/24"));
+        assert!(pr.address.is_none(), "{pr:?}");
+        assert!(
+            pr.notes.iter().any(|n| n.contains("no single address")),
+            "{:?}",
+            pr.notes
+        );
+        assert!(
+            pr.notes
+                .iter()
+                .any(|n| n.contains("not recognized as printer")),
+            "{:?}",
+            pr.notes
+        );
+        let member = api.client_policy("10.8.0.9").unwrap();
+        assert_eq!(member.identified_by, "cidr");
+        assert_eq!(member.matched_key.as_deref(), Some("10.8.0.0/24"));
         // An address that is no device, and a name that is nothing.
         assert_eq!(api.client_policy("203.0.113.9").unwrap().group, "default");
         assert!(api.client_policy("nobody").is_err());

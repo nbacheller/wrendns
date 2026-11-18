@@ -1330,7 +1330,7 @@ export interface paths {
          *     (`namespace/kind/name`). The answer names the group the device lands in and the key that
          *     matched (the precedence is client ID, MAC, workload, address, network, router name, default),
          *     then lists what applies as `sections`: the block response, the group's lists and blocked
-         *     services, SafeSearch, rewrites, schedules with whether each is in effect now, the quick and
+         *     services, safe search, rewrites, schedules with whether each is in effect now, the quick and
          *     group rules with their expiry, and the upstream group. It is resolved with the same
          *     identification a query and `GET /explain` use, so the two agree. In a cluster a replica asks
          *     the primary. Needs `config:read` for an agent.
@@ -8899,7 +8899,7 @@ export interface components {
             label: string;
             link?: components["schemas"]["PolicyLink"] | null;
             /**
-             * @description `on`, `off`, `in_effect`, `not_in_effect`, `expired`, `shadow`, or absent when a line has no
+             * @description `on`, `off`, `in_effect`, `not_in_effect`, `not_applied`, `expired`, `shadow`, or absent when a line has no
              *     state of its own.
              */
             state?: string | null;

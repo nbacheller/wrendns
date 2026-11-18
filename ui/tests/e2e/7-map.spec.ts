@@ -536,6 +536,8 @@ test('obs_901 privacy hides devices', async ({ browser }) => {
   await expect(panel.getByTestId('panel-address')).toHaveCount(0);
   for (const t of ['to-queries', 'to-explain', 'to-anomalies', 'to-device']) await expect(panel.getByTestId(t)).toHaveCount(0);
   await expect(panel).toContainText('hidden at this privacy level');
+  // REQ: FLT-006 — no device policy is shown for a hidden device (the panel needs an address).
+  await expect(panel.getByTestId('policy-compact')).toHaveCount(0);
   // Nothing drawn carries an address.
   expect(await o.page.getByTestId('map-figure').innerHTML()).not.toMatch(/\d+\.\d+\.\d+\.\d+/);
   // Level 3: totals only.

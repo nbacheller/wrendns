@@ -951,6 +951,99 @@ fn flt_006_policy_schedule_flips_at_its_boundary() {
     }
 }
 
+/// REQ: FLT-010, FLT-006 (T24.30) — a block-all schedule counts only on a device's first group
+/// (the query path and Explain); on a later group the panel says "not applied", not "in effect".
+#[test]
+fn flt_006_policy_block_all_on_a_later_group_is_not_applied() {
+    const SLEEPERS: &str = r#"
+[[client]]
+name = "sleeper"
+match = ["10.0.9.9"]
+groups = ["kids", "night"]
+
+[[client]]
+name = "owl"
+match = ["10.0.9.10"]
+groups = ["night"]
+"#;
+    let extra = format!("{POLICY_EXTRA}{SLEEPERS}");
+    let (p, sources) = setup_with(&extra);
+    let cfg = telltale_config::Loader::new()
+        .toml_str("t.toml", format!("{CONFIG}{extra}"))
+        .env(Vec::<(String, String)>::new())
+        .load()
+        .unwrap()
+        .config;
+    let compiled = telltale_config::schedule::compile(&cfg);
+    let clients = telltale_policy::ClientTable::from_config(&cfg);
+    let now = 1_795_035_600_u64;
+    p.schedules
+        .store(Arc::new(crate::pipeline::ScheduleNow::compute(
+            &cfg,
+            &compiled,
+            clients.groups(),
+            i64::try_from(now).unwrap(),
+        )));
+    for (ip, state, blocked) in [
+        ("10.0.9.9", "not_applied", false),
+        ("10.0.9.10", "in_effect", true),
+    ] {
+        let subject = crate::policy_view::Subject {
+            asked: ip.to_owned(),
+            ip: ip.parse().unwrap(),
+            mac: None,
+            client_id: None,
+            wanted_device: None,
+            stand_in: false,
+        };
+        let pol = p.with_explain_state(|st| crate::policy_view::build(st, &cfg, &subject, now));
+        assert_eq!(
+            section(&pol, "schedules").items[0].state.as_deref(),
+            Some(state),
+            "{ip}"
+        );
+        let ex = explain_as(&p, &sources, ip, None, None);
+        assert_eq!(
+            ex.outcome == Outcome::Blocked,
+            blocked,
+            "{ip}: {}",
+            ex.summary
+        );
+    }
+}
+
+/// REQ: FLT-006 (T24.30) — a device keyed by a network range has no single address: it is probed as
+/// a stand-in (never at the range's own address) and the note says its group depends on the member.
+#[test]
+fn flt_006_policy_cidr_device_is_a_stand_in() {
+    let (p, _sources) = setup_with(POLICY_EXTRA);
+    let cfg = policy_cfg();
+    let subject = crate::policy_view::Subject {
+        asked: "printer".to_owned(),
+        ip: "0.0.0.0".parse().unwrap(),
+        mac: None,
+        client_id: None,
+        wanted_device: Some("printer".to_owned()),
+        stand_in: true,
+    };
+    let pol =
+        p.with_explain_state(|st| crate::policy_view::build(st, &cfg, &subject, 1_795_035_600));
+    assert!(pol.address.is_none(), "{pol:?}");
+    assert!(
+        pol.notes.iter().any(|n| n.contains("no single address")),
+        "{:?}",
+        pol.notes
+    );
+    // Not recognized as the printer at the stand-in address: the note says so.
+    assert!(
+        pol.notes
+            .iter()
+            .any(|n| n.contains("not recognized as printer")),
+        "{:?}",
+        pol.notes
+    );
+}
+
 /// REQ: FLT-005, FLT-006, API-010 (T24.30) — device-scoped, group-scoped and everyone rules show
 /// for the devices they apply to, with their expiry, and not for the others; an expired one says so.
 #[test]

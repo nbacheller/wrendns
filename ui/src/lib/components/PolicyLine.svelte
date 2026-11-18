@@ -3,6 +3,7 @@
   // from, and the key that matched, with a link to the device's Policy panel. Flow and Explain use it,
   // so each says the same thing the Clients panel does.
   import { href } from '../router.svelte';
+  import HelpButton from './HelpButton.svelte';
   import { groupFromText, matchedByText } from '../policy';
 
   let {
@@ -30,4 +31,5 @@
   · matched by <span class="badge info">{matchedByText[identifiedBy] ?? identifiedBy}</span>
   {#if matchedKey}<code data-testid="policy-line-key">{matchedKey}</code>{/if}
   · <a href={href('/clients', { device, view: 'policy' })} data-testid="policy-line-link">Device policy</a>
+  <HelpButton id="device-policy" />
 </p>

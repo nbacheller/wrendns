@@ -728,6 +728,25 @@ pub trait Backend: Send + Sync + 'static {
             "device policy isn't available on this node",
         ))
     }
+    /// REQ: FLT-006 (ADR-996) — what this node observed of the device (address, neighbor-table
+    /// MAC, client ID), for a replica to send the primary. `None`: the device has no address here.
+    fn policy_observation(
+        &self,
+        client: &str,
+    ) -> Result<Option<policy_api::PolicyObservation>, Problem> {
+        let _ = client;
+        Ok(None)
+    }
+    /// REQ: FLT-006 (ADR-996) — the policy of a device as `observed` (by another node) describes it,
+    /// under this node's configuration.
+    fn client_policy_observed(
+        &self,
+        client: &str,
+        observed: &policy_api::PolicyObservation,
+    ) -> Result<policy_api::ClientPolicy, Problem> {
+        let _ = observed;
+        self.client_policy(client)
+    }
     /// REQ: OBS-025 — one device's identity (by address, or a named device's name), with the
     /// evidence.
     fn identity(&self, client: &str) -> Result<model::DeviceIdentity, Problem> {
