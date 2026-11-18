@@ -1200,6 +1200,11 @@ impl Cluster {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
+        if lapsed.is_some() && !self.is_primary() {
+            // A deposed primary (or one switched to manual mode) is not "resuming".
+            info!("cluster: the lease lapse ended: this node is no longer the primary");
+            return;
+        }
         if let Some(at) = lapsed {
             let paused_ms = u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX);
             info!(

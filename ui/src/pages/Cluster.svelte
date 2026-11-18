@@ -148,6 +148,8 @@
     maintenance_ended: 'Back in service',
     handover: 'Maintenance handover',
     handover_failed: 'Handover failed',
+    lease_lost: 'Lease lapsed',
+    lease_renewed: 'Lease renewed',
     lease_released: 'Lease released',
     stepped_down: 'Stepped down',
     rollout_started: 'Rollout',
@@ -157,11 +159,11 @@
     unpinned: 'Unpinned',
   };
   const kindClass = (k: string) =>
-    k === 'disconnected' || k === 'sync_failed' || k === 'rejected' || k === 'handover_failed' || k === 'rollout_failed'
+    k === 'disconnected' || k === 'sync_failed' || k === 'rejected' || k === 'handover_failed' || k === 'lease_lost' || k === 'rollout_failed'
       ? 'bad'
       : k === 'restarted' || k === 'maintenance' || k === 'handover' || k === 'rollout_started' || k === 'pinned'
         ? 'warn'
-        : k === 'published' || k === 'applied' || k === 'rollout_promoted'
+        : k === 'published' || k === 'applied' || k === 'lease_renewed' || k === 'rollout_promoted'
           ? 'ok'
           : '';
   // REQ: CLU-013 — the nodes running the version baking.
@@ -213,7 +215,7 @@
   // REQ: API-005 (ADR-121) — the page in tabs, the summary above them. A tab with something
   // wrong says so: failing checks and conflicts, a pin or a version baking, problem events in
   // the last hour.
-  const problemKinds = new Set(['disconnected', 'sync_failed', 'rejected', 'handover_failed', 'rollout_failed']);
+  const problemKinds = new Set(['disconnected', 'sync_failed', 'rejected', 'handover_failed', 'lease_lost', 'rollout_failed']);
   const recentProblems = $derived.by(() => {
     const since = Date.now() - 3600_000;
     return (view?.events ?? []).filter((e) => problemKinds.has(e.kind) && Date.parse(e.at) >= since).length;

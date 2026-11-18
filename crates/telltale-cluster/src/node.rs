@@ -834,8 +834,25 @@ impl Drop for SlowStore {
     fn drop(&mut self) {
         let took = self.0.elapsed();
         if took >= std::time::Duration::from_millis(500) {
+            // At most one warning a minute, counting the ones held back.
+            static LAST_S: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            static HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            use std::sync::atomic::Ordering::Relaxed;
+            let now_s = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let last = LAST_S.load(Relaxed);
+            if now_s.saturating_sub(last) < 60
+                || LAST_S
+                    .compare_exchange(last, now_s, Relaxed, Relaxed)
+                    .is_err()
+            {
+                HELD.fetch_add(1, Relaxed);
+                return;
+            }
             tracing::warn!(
                 took_ms = u64::try_from(took.as_millis()).unwrap_or(u64::MAX),
+                held_back = HELD.swap(0, Relaxed),
                 "cluster: storing the election ballot was slow (disk); votes wait for it"
             );
         }

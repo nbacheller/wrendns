@@ -5,7 +5,7 @@
 #
 #   SOAK_S=1800 deploy/cluster3/lapse-soak.sh              # seconds to soak (default 600)
 #   DISK_DEV=/dev/sdb WRITE_BPS=65536 deploy/cluster3/lapse-soak.sh   # throttle every node's disk writes
-#   FSYNC_STALL_S=4 ...                                    # every 40 s, freeze one node's writes for N s
+#   PAUSE_S=4 ...                                    # every 40 s, freeze one node's writes for N s
 #                                                          # (docker pause of the node), as an SD card does
 #
 # Exit 0 with "lapses: 0" is a pass; the node logs are printed for any lapse, with the debug lines
@@ -60,11 +60,11 @@ sleep 15
 echo "== soaking for ${SOAK_S}s"
 end=$(( $(date +%s) + SOAK_S ))
 while [ "$(date +%s)" -lt "$end" ]; do
-  if [ -n "${FSYNC_STALL_S:-}" ]; then
+  if [ -n "${PAUSE_S:-}" ]; then
     sleep 40
     # A node whose disk stalls answers nothing for the stall: pausing it is the same to its peers.
     n=$(printf '%s\n' primary replica-a witness | shuf -n1)
-    "${C[@]}" pause "$n" >/dev/null 2>&1; sleep "$FSYNC_STALL_S"; "${C[@]}" unpause "$n" >/dev/null 2>&1
+    "${C[@]}" pause "$n" >/dev/null 2>&1; sleep "$PAUSE_S"; "${C[@]}" unpause "$n" >/dev/null 2>&1
   else
     sleep 20
   fi

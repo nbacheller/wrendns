@@ -3689,7 +3689,7 @@ For planned downtime longer than a restart, [put the node in maintenance](#takin
 In Kubernetes, pair this with a short `preStop` sleep so endpoints are removed before the drain begins (the Helm chart will set this).
 
 ## Logging
-Logs go to stderr. Set the level with `TELLTALE_LOG` (`error`, `warn`, `info` (default), `debug`, `trace`).
+Logs go to stderr. Set the level with `TELLTALE_LOG` (`error`, `warn`, `info` (default), `debug`, `trace`), or per module, for example `TELLTALE_LOG=info,telltale_cluster::failover=debug`. To trace a primary's lease lapse without debug logging for the whole server, use that example: each renewal round and each vote answer (with `took_ms`) is logged at debug. The Cluster page's event list shows `Lease lapsed` and `Lease renewed` (with how long publishing paused); a node that is no longer the primary logs that the lapse ended instead. A slow ballot store (500 ms or more) logs a warning at most once a minute.
 
 ## Error responses
 | Query | Response |
