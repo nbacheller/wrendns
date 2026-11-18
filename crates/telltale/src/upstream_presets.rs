@@ -81,7 +81,7 @@ fn ipv6_route() -> bool {
 
 /// `/proc/net/ipv6_route` lines: destination, its prefix length, source, its length, next hop,
 /// metric, ref count, use count, flags, device (all hex but the device). A default route has
-/// prefix length 0; it counts when it is up (RTF_UP), is not a reject route (RTF_REJECT, which
+/// prefix length 0; it counts when it is up (`RTF_UP`), is not a reject route (`RTF_REJECT`, which
 /// `lo` carries for "unreachable") and leaves by a device other than `lo`.
 fn default_route_in(table: &str) -> bool {
     table.lines().any(|l| {

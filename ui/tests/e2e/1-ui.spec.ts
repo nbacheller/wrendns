@@ -827,6 +827,7 @@ test('ups_004 an upstream made through the API is not labelled config file', asy
   expect(put.status(), await put.text()).toBe(200);
   try {
     await page.goto('/#/upstreams');
+    await page.reload();
     const origin = (name: string) =>
       page.locator('table tbody tr', { has: page.locator('strong', { hasText: new RegExp(`^${name}$`) }) }).first().getByTestId('upstream-origin');
     await expect(origin('ups004-api')).toHaveText('defined in: added through the API or UI');
