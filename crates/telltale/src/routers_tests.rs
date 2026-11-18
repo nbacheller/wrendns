@@ -1110,3 +1110,45 @@ async fn dns_023_fake_unifi_ipv6_names_reach_the_api_and_the_table() {
     );
     let _ = stop_tx.send(true);
 }
+
+/// REQ: DNS-023 (T24.8, ADR-983) — a fake UniFi (a client with no name, IPv6 addresses) and a
+/// fake Home Assistant (the name for the same MAC, no IPv6): the merged lease carries
+/// Home Assistant's name and UniFi's addresses, through the API and into the device-name table.
+#[tokio::test]
+async fn dns_023_home_assistant_name_takes_unifi_ipv6_addresses() {
+    const UNIFI: &str = r#"{"data":[{"mac":"AA:BB:CC:00:00:09","ip":"192.168.1.50","ipv6_addresses":["fe80::9","2001:db8:1::9"]}]}"#;
+    let unifi = fake_router(UNIFI).await;
+    let ha = fake_router(HA_ANSWER).await;
+    let h = with_secret(&format!(
+        "[local]\ndevice_domain = \"home.arpa\"\n[[router]]\nname = \"udm\"\ntype = \"unifi\"\nurl = \"http://{unifi}\"\napi_key_ref = \"ha\"\ninterval_secs = 60\n[[router]]\nname = \"hass\"\ntype = \"home_assistant\"\nurl = \"http://{ha}\"\napi_key_ref = \"ha\"\ninterval_secs = 60\n"
+    ));
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(super::run(Arc::clone(&h.src), stop_rx));
+    let ip = Ipv4Addr::new(192, 168, 1, 50);
+    let want: Vec<std::net::Ipv6Addr> = vec!["2001:db8:1::9".parse().unwrap()];
+    assert!(
+        eventually(|| {
+            let l = h.src.pipeline.router_leases.load();
+            l.get(&ip)
+                .is_some_and(|l| l.hostname.as_deref() == Some("Shelly Plug") && l.ipv6 == want)
+        })
+        .await,
+        "the merged lease did not carry the name and the addresses"
+    );
+    let state = h.src.pipeline.current();
+    let routers = h.src.pipeline.router_leases.load();
+    let empty = crate::devices::Leases::new();
+    let inputs = crate::device_dns::Inputs {
+        clients: &state.policy.clients,
+        routers: [&routers, &empty],
+        mdns: [&empty, &empty],
+    };
+    let (names, _) = crate::device_dns::names(&inputs, "home.arpa");
+    assert_eq!(names.len(), 1);
+    assert_eq!(names[0].name, "shelly-plug.home.arpa");
+    assert_eq!(names[0].v6, want);
+    let (s, _, leases) = h.call("GET", "/api/v1/dhcp/leases", None).await;
+    assert_eq!(s, StatusCode::OK, "{leases}");
+    assert_eq!(leases["items"][0]["ipv6"], json!(["2001:db8:1::9"]));
+    let _ = stop_tx.send(true);
+}
