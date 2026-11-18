@@ -355,6 +355,8 @@ export const api = {
       headers: { 'idempotency-key': newKey() },
     }),
   groups: () => get<S['Items_GroupInfo']>('/groups'),
+  // REQ: OBS-901 (T26.3), the live network map; the filters narrow it on the server.
+  map: (q: { network?: string; group?: string; device?: string; node?: string } = {}) => get<S['MapSnapshot']>('/map', q),
   // REQ: FLT-012 (T7.9) — the blockable services.
   services: () => get<S['Items_ServiceInfo']>('/services'),
   clients: () => get<S['Items_ClientInfo']>('/clients'),

@@ -27,6 +27,8 @@
     logout: 'M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10',
     analyze: 'M4 20V11M10 20V5M16 20v-6M2 20h20',
     traffic: 'M3 3h18v18H3zM11 3v18M11 12h10M3 14h8M16 12v9',
+    // REQ: OBS-901 (T26.3) — the network map: nodes joined by flows.
+    map: 'M5 5a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM19 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM19 17a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM12 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM5 9l5.3 2.4M13.8 11.2L17.4 6.2M13.8 12.8l3.8 4',
     heatmap: 'M3 3h5v5H3zM10 3h5v5h-5zM17 3h4v5h-4zM3 10h5v5H3zM10 10h5v5h-5zM17 10h4v5h-4zM3 17h5v4H3zM10 17h5v4h-5zM17 17h4v4h-4z',
     flow: 'M3 5h4c5 0 5 7 10 7h4M3 12h4c5 0 5-7 10-7h4M3 19h4c5 0 5-7 10-7',
     // REQ: OBS-035 — the wall display: a screen with panels.

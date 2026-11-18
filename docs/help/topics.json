@@ -1228,6 +1228,16 @@
       "example": "The kids group answers custom_ip with 192.168.1.2 for 60 seconds and Extended DNS Error 17 (filtered), without naming the list.",
       "caution": "custom_ip needs at least one block address. A long TTL keeps a block in clients' caches after you lift it.",
       "docs": "blocking"
+    },
+    {
+      "id": "network-map",
+      "title": "Read the network map",
+      "term": "Network map",
+      "summary": "Your gateway, networks, devices, TelltaleDNS nodes, answer kinds and upstreams, joined by the flows between them. A wider, denser pulse is more lookups a second; the shape and the word on each node (OK, Warning, Failing, Idle) say how it is doing, so the colour is never the only sign.",
+      "when": "You want to see at a glance which device, node or upstream is having trouble, then click it to open its queries, Explain or anomalies. Use the Table view for the same data as text.",
+      "example": "A device is Failing: its flow to the resolver is red because a quarter of its lookups got SERVFAIL. Open the device, then Show its queries.",
+      "caution": "The map is drawn from a sample of lookups, so the rates are estimates (a banner says 1 in N when it is thinned) and a quiet device is Idle, not healthy. At privacy level 2 devices are hidden; at 3 only totals show. No domain name appears on the map.",
+      "docs": "network-map"
     }
   ]
 }
