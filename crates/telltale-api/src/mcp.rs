@@ -1557,10 +1557,11 @@ pub fn write_tools() -> Vec<WriteTool> {
         // REQ: OBS-022, AGT-007 (T12.1) — names and devices kept out of the log, as a plan.
         WriteTool {
             name: "plan_set_exclusions",
-            description: "Plans a change (nothing changes until apply_plan). Changes which names and devices are kept out of the query log, the live view, the dashboard and top lists, anomalies, and exports (noise like connectivity checks or a monitoring probe). Their queries are still answered and still counted in /metrics. `names` covers each name and its subdomains; `clients` takes addresses or networks; both replace the current lists. `enabled` turns the exclusions off without losing the lists. Fields left out keep their current values. Applies to every node from the next query. Needs config:write:exclusions (and config:read to read the current ones).",
+            description: "Plans a change (nothing changes until apply_plan). Changes which names and devices are kept out of the query log, the live view, the dashboard and top lists, anomalies, and exports (noise like connectivity checks or a monitoring probe). Their queries are still answered and still counted in /metrics. `names` covers each name and its subdomains; `clients` takes addresses or networks; both replace the current lists. `enabled` turns the exclusions off without losing the lists. Fields left out keep their current values. `log` keeps queries out of the query log (and the live view and event sinks) only: they are still counted in the dashboard, top lists and anomalies. It has `clients` (addresses, networks or device names), `domains` (`localhost` is exactly that name, `*.lan` is every name under lan), and `own_lookups` (this node's own loopback and addresses); it replaces the current `log` settings as a whole. Applies to every node from the next query. Needs config:write:exclusions (and config:read to read the current ones).",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "enabled": {"type": "boolean", "description": "Turn the exclusions on or off (the lists are kept)."},
+                "log": {"type": "object", "description": "Kept out of the query log only (still counted in the statistics); replaces the current log settings.", "properties": {"clients": {"type": "array", "items": {"type": "string"}}, "domains": {"type": "array", "items": {"type": "string"}}, "own_lookups": {"type": "boolean"}}, "additionalProperties": false},
                 "names": {"type": "array", "items": {"type": "string"}, "description": "Names kept out, each with its subdomains (replaces the current list)."},
                 "clients": {"type": "array", "items": {"type": "string"}, "description": "Addresses or networks kept out (replaces the current list)."},
                 "reason": reason_schema()
@@ -1575,6 +1576,7 @@ pub fn write_tools() -> Vec<WriteTool> {
                         ("enabled", "enabled"),
                         ("names", "names"),
                         ("clients", "clients"),
+                        ("log", "log"),
                     ],
                 );
                 if body.is_empty() {
@@ -1590,6 +1592,9 @@ pub fn write_tools() -> Vec<WriteTool> {
                 }
                 if let Some(n) = count("clients") {
                     what.push(format!("{n} clients"));
+                }
+                if body.contains_key("log") {
+                    what.push("log-only exclusions".into());
                 }
                 Ok(Write {
                     method: "PUT",

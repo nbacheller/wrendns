@@ -896,6 +896,16 @@
       "docs": "keeping-names-and-devices-out-of-the-log"
     },
     {
+      "id": "qlog-exclusions",
+      "title": "Kept out of the query log only",
+      "term": "Log-only exclusions",
+      "summary": "Devices, domains and this node's own lookups whose queries are answered and counted in the dashboard and top lists, but never written to the query log, the live view or the event sinks.",
+      "when": "The log fills with the node's own lookups (client 127.0.0.1, name localhost) from a health check or a watchdog, or with one chatty device or domain, and you still want them in the statistics.",
+      "example": "Turn on the node's own lookups and add *.lan: the log shows only real devices asking for real names, while the dashboard's totals stay complete.",
+      "caution": "Excluded queries can't be searched later. Queries logged before stay. A device name that no client has matches nothing. To leave a query out of the statistics too, use the Names and Devices fields above.",
+      "docs": "keeping-queries-out-of-the-query-log-only"
+    },
+    {
       "id": "exemplars",
       "title": "Trace IDs",
       "term": "Exemplars and traces",

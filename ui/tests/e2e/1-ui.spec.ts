@@ -3887,6 +3887,59 @@ test('obs_022 exclusions from Settings', async () => {
   await expect(row).toContainText('config file');
 });
 
+// REQ: OBS-903 (T24.35, ADR-1014) — Settings → Query handling → "Log only" leaves a domain out of
+// the query log while it is still answered and counted (the log-excluded counter); then back to
+// the file's (nothing excluded). The node's-own-lookups switch is there, off.
+test('obs_903 log-only exclusions from Settings', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/settings?tab=queries');
+  const editor = page.getByTestId('editor-exclusions');
+  const row = editor.getByTestId('entry-row');
+  await expect(row).toContainText('nothing excluded');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  const own = page.getByRole('switch', { name: "Leave this node's own lookups out of the query log" });
+  await expect(own).not.toBeChecked();
+  await page.getByRole('textbox', { name: 'Log only: domains', exact: true }).fill('hushed.cache.e2e.test');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('entry-preview')).toBeVisible();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(row).toContainText('log only: 1 domains');
+  expect(await query('hushed.cache.e2e.test')).toBe(0);
+  expect(await query('audible.cache.e2e.test')).toBe(0);
+  const logged = async () =>
+    ((await (await page.request.get('/api/v1/queries?name=.cache.e2e.test&from=-10m')).json()).items as { name: string }[]).map(
+      (r) => r.name,
+    );
+  await expect.poll(logged, { timeout: 20_000 }).toContain('audible.cache.e2e.test');
+  expect(await logged()).not.toContain('hushed.cache.e2e.test');
+  // Answered and counted, only not logged: the counter says how many the log skipped.
+  await expect
+    .poll(async () => (await (await page.request.get('/metrics')).text()).match(/telltale_queries_log_excluded_total (\d+)/)?.[1], {
+      timeout: 20_000,
+    })
+    .not.toBe('0');
+  // Its help topic opens beside the form.
+  await page.getByRole('button', { name: 'Help: Kept out of the query log only' }).click();
+  await expect(page.getByTestId('help-panel')).toContainText('never written to the query log');
+  await page.keyboard.press('Escape');
+  await row.getByRole('button', { name: 'Revert to the file' }).click();
+  await expect(row).toContainText('nothing excluded');
+});
+
+// REQ: OPS-901 (T24.35, ADR-1014) — /readyz answers 200 only while the node's own listener answers
+// a DNS query, with nothing about the configuration in the body, and what it asks is never logged.
+test('ops_901 readyz asks the listener and is never logged', async () => {
+  for (let i = 0; i < 3; i++) {
+    const r = await page.request.get('/readyz');
+    expect(r.status()).toBe(200);
+    expect(await r.text()).toBe('{"ready":true}\n');
+    await page.waitForTimeout(1100);
+  }
+  const probes = ((await (await page.request.get('/api/v1/queries?name=probe.telltale.invalid&from=-10m')).json()).items as unknown[])
+    .length;
+  expect(probes).toBe(0);
+});
+
 // REQ: OBS-024 (T13.1) — "What would this have done?" on a quick block rule counts the queries
 // this test makes (nothing is saved); Settings → System → Change simulation turns
 // plans_by_default on, and it's reverted to the file.
