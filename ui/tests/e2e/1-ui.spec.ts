@@ -4332,10 +4332,15 @@ test('obs_035 wall', async () => {
   // Every panel renders.
   // One at a time (`layout=single`): every panel renders in turn.
   await page.goto('/#/wall?layout=single');
-  for (const id of ['map', 'flow', 'slo', 'latency', 'heat', 'kpi']) {
+  // Wait for the first measure of the area before moving, then assert the panel after each key.
+  await expect.poll(async () => (await page.getByTestId('wall-area').boundingBox())?.height ?? 0).toBeGreaterThan(0);
+  const order = ['map', 'flow', 'slo', 'latency', 'heat', 'kpi'];
+  for (const [i, id] of order.entries()) {
+    await expect(page.getByTestId('wall-slot')).toHaveAttribute('data-panel', id);
     await expect(page.getByTestId(`wall-panel-${id}`)).toBeVisible();
     await expect(page.getByTestId(`wall-${id}`)).toBeAttached();
     await page.keyboard.press('ArrowRight');
+    await expect(page.getByTestId('wall-slot')).toHaveAttribute('data-panel', order[(i + 1) % order.length]);
   }
   await expect(page.getByTestId('wall-panel-map')).toBeVisible();
   // The latency heatmap's controls are hidden on the wall.
@@ -4355,6 +4360,26 @@ test('obs_035 wall', async () => {
   await page.keyboard.press('Escape');
   await expect(page).toHaveURL(/#\/$/);
   await expect(page.locator('nav.side')).toBeVisible();
+});
+
+// REQ: OBS-035 (upstream #69) — a panel the viewer moved to stays put while the wall is measured
+// or resized: the area's size is read after the first render (and again when the layout
+// changes), and that must not send the rotation back to the first panel.
+test('obs_035 wall keeps its place when remeasured', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/wall?layout=single&every=600');
+  const slot = page.getByTestId('wall-slot');
+  await expect(slot).toHaveAttribute('data-panel', 'map');
+  await page.keyboard.press('ArrowRight');
+  await expect(slot).toHaveAttribute('data-panel', 'flow');
+  // Each resize changes the panel area's size, so the layout is computed again.
+  for (const [width, height] of [[1100, 700], [1280, 800], [1200, 760]]) {
+    await page.setViewportSize({ width, height });
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    await expect(slot).toHaveAttribute('data-panel', 'flow');
+  }
+  await page.keyboard.press('ArrowRight');
+  await expect(slot).toHaveAttribute('data-panel', 'slo');
 });
 
 // REQ: OBS-036 — a chatty loop is shown with its strip and marked informational, and the
