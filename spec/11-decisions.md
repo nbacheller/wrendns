@@ -5146,7 +5146,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** a node on several networks hears mDNS on each, lists each, and matches MAC-keyed clients behind a router. No new dependency (`libc` is already in `telltale-net`), no image delta beyond a few hundred bytes of code.
 
-## ADR-1015 — A simple upstream picker beside the technical editor; the picker's entries are named, not tracked (Proposed 2026-11-18)
+## ADR-1015 — A simple upstream picker beside the technical editor; the picker's entries are named, not tracked (Accepted 2026-11-18)
 **Context:** T24.36, fork #27. Owner request: upstreams are hard for a general user; Pi-hole's checkboxes for public providers are easier; keep the technical view. ADR-036 says the global Simple mode never hides something that changes behavior, so a page-level choice, not the global mode, decides what the Upstreams page shows first.
 
 **Decision:**
