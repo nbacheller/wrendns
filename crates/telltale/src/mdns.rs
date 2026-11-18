@@ -48,6 +48,9 @@ fn join_all(
     joined: &mut HashSet<u32>,
 ) -> usize {
     if targets.is_empty() {
+        // The interface read failed or found none: the old join on the default interface, once.
+        // A later per-interface join on that same interface then meets EADDRINUSE, which is
+        // treated as already joined.
         if joined.insert(0)
             && let Err(e) = sock.join_multicast_v4(GROUP, Ipv4Addr::UNSPECIFIED)
         {
@@ -61,9 +64,17 @@ fn join_all(
         if joined.contains(idx) {
             continue;
         }
-        joined.insert(*idx);
+        // Marked joined only on success (or when the group is already joined here), so an
+        // interface that is up but still settling its address is tried again at the next re-read.
         match sock.join_multicast_v4(GROUP, *addr) {
-            Ok(()) => new += 1,
+            Ok(()) => {
+                joined.insert(*idx);
+                new += 1;
+            }
+            Err(e) if e.raw_os_error() == Some(98) => {
+                // EADDRINUSE: already a member (for instance via the default-interface join).
+                joined.insert(*idx);
+            }
             Err(e) => {
                 warn!(error = %e, interface = %addr, "mDNS naming: can't join the mDNS group here");
             }

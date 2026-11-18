@@ -153,6 +153,7 @@ mod tests {
     #[test]
     fn dns_001_reads_the_real_interfaces() {
         let v = ipv4_interfaces().unwrap();
+        assert!(!v.is_empty(), "the container has eth0 up");
         assert!(v.iter().all(|i| i.name != "lo" && !i.addrs.is_empty()));
     }
 }

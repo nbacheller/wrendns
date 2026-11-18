@@ -186,20 +186,29 @@ What a router in the middle takes away:
 ### The direct way
 The nodes are on each VLAN themselves: a tagged interface per VLAN, an address on it, and a VIP per VLAN. Then a device queries a server on its own wire, the node reads its MAC from the neighbor table and hears its mDNS announcements, and the network's DNS does not depend on the gateway. The cost is the switch, the interfaces and one more VIP to keep for every VLAN.
 
-The listeners need nothing for this: they bind the wildcard address (`0.0.0.0` and `::`), so they answer on every interface address and every VIP. The node reads the neighbor table of every interface, joins the mDNS group on every interface (T24.32, ADR-1000), and the Networks page lists each network the node is on, marked **this node**. A listener you narrowed to one address answers only there.
+The listeners need nothing for this: they bind the wildcard address (`0.0.0.0` and `::`), so they answer on every interface address and every VIP. The node reads the neighbor table of every interface, joins the mDNS group on every interface (T24.32, ADR-1000), and the Networks page lists each network the node is on, marked **this node** (not inside a bridged Docker container, whose `eth0` is a container network, not a LAN; set `TELLTALE_HOST_NETWORK=1` if the container is on the host network. The list is that of the node answering the API, so through a replica it differs from the primary's). A listener you narrowed to one address answers only there.
 
 **1. The switch port carries the VLANs tagged.** On each Pi's port, set the native (untagged) VLAN to the main LAN and add the other VLANs as tagged (UniFi: the port profile's **Tagged VLAN Management** allows the networks you pick; other switches call it a trunk). Check this first: until the port carries the VLAN tagged, nothing below can work. This is the reason an extra address on the Pi's plain `eth0` (an alias such as `198.51.100.5` or `203.0.113.5` on the untagged interface) times out from the VLAN: its frames go out untagged, onto the main LAN's wire.
 
-**2. A tagged interface per VLAN on each node.** On Debian 12 or 13 (and Raspberry Pi OS, which uses NetworkManager since Bookworm; `nmcli general status` says if yours does), for VLAN 100 on `eth0`, address `198.51.100.<n>` where `<n>` is different on each node:
+**2. A tagged interface per VLAN on each node.** For VLAN 100 on `eth0`, address `198.51.100.<n>` where `<n>` is different on each node. **If `nmcli general status` works** (Raspberry Pi OS since Bookworm, and Debian with NetworkManager or a desktop):
 
 ```sh
-sudo nmcli con add type vlan con-name eth0.100 ifname eth0.100 dev eth0 id 100 \
-  ipv4.method manual ipv4.addresses 198.51.100.<n>/24 \
-  ipv4.never-default yes ipv6.method disabled
+sudo nmcli con add type vlan con-name eth0.100 ifname eth0.100 dev eth0 id 100   ipv4.method manual ipv4.addresses 198.51.100.<n>/24   ipv4.never-default yes ipv6.method disabled
 sudo nmcli con up eth0.100
 ```
 
-The same for each further VLAN (`eth0.200`, `203.0.113.<n>/24`). Give no gateway to a VLAN interface (`ipv4.never-default yes` says it outright): the node keeps its one default route on the main LAN, and the VLAN interface answers its own network by the connected route. A default route on a VLAN interface would send the node's own upstream queries (and every reply to a client on another network) out of the wrong interface. `ipv6.method disabled` keeps router advertisements on that VLAN from giving the node addresses; drop it if you serve IPv6 there.
+**On a plain Debian 12 or 13 server install** (no desktop) the network is ifupdown, not NetworkManager. Install the `vlan` package (it loads the `8021q` module; or `modprobe 8021q` and add `8021q` to `/etc/modules`) and add to `/etc/network/interfaces` (no `gateway` line):
+
+```
+auto eth0.100
+iface eth0.100 inet static
+    address 198.51.100.<n>/24
+    vlan-raw-device eth0
+```
+
+then `sudo ifup eth0.100`.
+
+The same for each further VLAN (`eth0.200`, `203.0.113.<n>/24`). Give no gateway to a VLAN interface (`ipv4.never-default yes` says it outright; with ifupdown, leave the `gateway` line out): the node keeps its one default route on the main LAN, and the VLAN interface answers its own network by the connected route. A default route on a VLAN interface would send the node's own upstream queries (and every reply to a client on another network) out of the wrong interface. `ipv6.method disabled` keeps router advertisements on that VLAN from giving the node addresses; drop it if you serve IPv6 there.
 
 **3. Remove the untagged alias addresses**, the addresses added to plain `eth0` for those networks, so nothing answers on the wrong wire and the node does not hold two addresses in one subnet:
 
@@ -236,9 +245,25 @@ vrrp_instance DNS_VIP_VLAN100 {
 
 [`deploy/keepalived/keepalived/node-a.conf`](../deploy/keepalived/keepalived/node-a.conf) has two such instances (the main network and a second one). Each VLAN's DHCP then hands out **that VLAN's VIP**. Do not also point a VLAN's devices at the routed address of the main LAN (`192.0.2.249`): the node would answer on the VLAN interface (it has a connected route there) a query that arrived through the gateway, so the reply takes another path than the query and a stateful firewall drops it.
 
-**6. Close the node's other ports on the VLANs.** The wildcard listeners also answer the node's API (`[api] listen`, port 8053 by default) and its cluster port (8443) on every interface, so a device on the IoT VLAN could reach them. Bind them to the main LAN address in `telltale.toml`, or drop everything but DNS in the node's firewall on the VLAN interfaces, for example with nftables: `iifname "eth0.200" tcp dport != 53 drop` and `iifname "eth0.200" udp dport != 53 drop` (add 853 and 443 if you serve encrypted DNS there), keeping `ip protocol vrrp` accepted for the unicast adverts.
+**6. Close the node's other ports on the VLANs.** The wildcard listeners also answer the node's API (`[api] listen`, port 8053 by default) and its cluster port (8443) on every interface, so a device on the IoT VLAN could reach them. Bind them to the main LAN address in `telltale.toml`, or drop everything but DNS in the node's firewall on the VLAN interfaces. With nftables (a complete table; merge the rules into yours if you already have one), allowing DNS (53), mDNS (UDP 5353, which the direct way listens to) and, if you serve encrypted DNS there, 853 and 443, and keeping VRRP for the unicast adverts:
 
-**Try it in Docker first.** [`deploy/keepalived/e2e.sh`](../deploy/keepalived/e2e.sh) runs a pair on two isolated Docker networks with a VIP on each (one interface and one VRRP instance per network, the shape of the pair above) and checks that the listeners answer UDP and TCP on both VIPs, that both VIPs move to the peer when the master is killed or in maintenance, and that both come back. It touches no other network. It does not tag VLANs (that needs a switch); the NetworkManager steps above were not run from here, on any real node or anywhere else.
+```
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy accept;
+        ct state established,related accept
+        iifname "eth0.200" ip protocol vrrp accept
+        iifname "eth0.200" tcp dport { 53, 853, 443 } accept
+        iifname "eth0.200" udp dport { 53, 5353 } accept
+        iifname "eth0.200" icmp type echo-request accept
+        iifname "eth0.200" drop
+    }
+}
+```
+
+Load it with `sudo nft -f /etc/nftables.conf` (and `systemctl enable nftables`).
+
+**Try it in Docker first.** [`deploy/keepalived/e2e.sh`](../deploy/keepalived/e2e.sh) runs a pair on two isolated Docker networks with a VIP on each (one interface and one VRRP instance per network, the shape of the pair above) and checks that the listeners answer UDP and TCP on both VIPs, that both VIPs move to the peer when the master is killed or in maintenance, and that both come back. It touches no other network. It does not tag VLANs (that needs a switch); the NetworkManager and ifupdown steps above were not run from here, on any real node or anywhere else.
 
 ### Which one
 - **Routed**: one VIP, nothing to configure on the nodes or the switch, and one place (the gateway's firewall) for the rules. It needs the gateway to carry DNS, a router integration to name devices and read their MACs, and an mDNS reflector for mDNS names. If the gateway is down, the networks it routes lose DNS with everything else. This is the owner's choice for now.

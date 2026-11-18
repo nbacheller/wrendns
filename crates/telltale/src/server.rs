@@ -310,11 +310,14 @@ pub(crate) fn merged_macs(
 fn spawn_neighbor_refresh(pipeline: Arc<Pipeline>, every: Duration) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut warned = false;
+        // The last good kernel read: a transient read error keeps it instead of wiping the map.
+        let mut last_kernel = Vec::new();
         loop {
             if pipeline.current().policy.clients.uses_macs() {
                 let kernel = match tokio::task::spawn_blocking(telltale_net::neighbors).await {
                     Ok(Ok(n)) => {
                         warned = false;
+                        last_kernel.clone_from(&n);
                         n
                     }
                     Ok(Err(e)) => {
@@ -324,9 +327,9 @@ fn spawn_neighbor_refresh(pipeline: Arc<Pipeline>, every: Duration) -> JoinHandl
                             );
                             warned = true;
                         }
-                        Vec::new()
+                        last_kernel.clone()
                     }
-                    Err(_) => Vec::new(),
+                    Err(_) => last_kernel.clone(),
                 };
                 let leases = pipeline.router_leases.load();
                 pipeline.neighbors.replace(merged_macs(&kernel, &leases));

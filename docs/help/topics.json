@@ -255,7 +255,7 @@
       "summary": "A LAN or VLAN your router reports, or one this node is directly on: its subnet, DHCP pool, domain and the group that covers it. Devices on it show how full it is.",
       "when": "You want to see which networks are filling up, or which networks no group covers yet.",
       "example": "IoT (192.168.20.0/24, VLAN 20): 42 of 254 addresses in use, 38 of them from the DHCP pool.",
-      "caution": "Networks come from your routers, from the networks this node is directly on (marked this node: its own LAN and any tagged VLAN interface), and from your groups' networks. A network nothing reports shows as group only. A VLAN reached through the gateway is not on the node, so it shows only if a router reports it."
+      "caution": "Networks come from your routers, from the networks this node is directly on (marked this node: its own LAN and any tagged VLAN interface), and from your groups' networks. A network nothing reports shows as group only. A VLAN reached through the gateway is not on the node, so it shows only if a router reports it. This node means the node answering the API, so through a replica the list differs from the primary's; inside a bridged Docker container there are none (set TELLTALE_HOST_NETWORK=1 on host networking)."
     },
     {
       "id": "network-group",

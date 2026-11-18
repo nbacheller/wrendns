@@ -68,10 +68,23 @@ pub(crate) fn from_interfaces(
     out
 }
 
-/// This node's networks now. Empty in a pod (the pod network is not a LAN) and where the
-/// interfaces cannot be read.
+/// Whether the interfaces belong to a container's own network namespace rather than a LAN: a
+/// container marker file is present (`/.dockerenv`, `/run/.containerenv`) and the operator has not
+/// said the container is on the host network (`TELLTALE_HOST_NETWORK` set). A bridged container's
+/// `eth0` holds a private 172.x address that is not a network the node serves devices on.
+pub(crate) fn in_container_network(marker_present: bool, host_network_override: bool) -> bool {
+    marker_present && !host_network_override
+}
+
+/// This node's networks now. Empty in a pod (the pod network is not a LAN), in a container that is
+/// not on the host network (ADR-1000), and where the interfaces cannot be read.
 pub(crate) fn current() -> Vec<OwnNetwork> {
     if std::env::var_os("KUBERNETES_SERVICE_HOST").is_some() {
+        return Vec::new();
+    }
+    let marker = std::path::Path::new("/.dockerenv").exists()
+        || std::path::Path::new("/run/.containerenv").exists();
+    if in_container_network(marker, std::env::var_os("TELLTALE_HOST_NETWORK").is_some()) {
         return Vec::new();
     }
     let Ok(ifaces) = telltale_net::ipv4_interfaces() else {
