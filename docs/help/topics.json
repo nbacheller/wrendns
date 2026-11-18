@@ -1208,6 +1208,16 @@
       "example": "A worker is refused because it was built from a different version than this node. Upgrade the node so both match, and the worker starts again.",
       "caution": "A worker that keeps crashing is a sign of a fault in the inventory or in a device's reply. DNS keeps answering while it is down.",
       "docs": "network-inventory-devices-that-never-ask-dns"
+    },
+    {
+      "id": "block-response",
+      "title": "How blocked names are answered",
+      "term": "Block response",
+      "summary": "What a blocked name gets back: a zero address (null_ip), no such name (NXDOMAIN), no data (NODATA), a refusal, or your own landing-page addresses (custom_ip). The block TTL says how long clients may keep it, and the Extended DNS Error code says why.",
+      "when": "You want a blocked site to show a \"blocked\" page of your own, or a family group's blocks to say they are parental controls.",
+      "example": "The kids group answers custom_ip with 192.168.1.2 for 60 seconds and Extended DNS Error 17 (filtered), without naming the list.",
+      "caution": "custom_ip needs at least one block address. A long TTL keeps a block in clients' caches after you lift it.",
+      "docs": "blocking"
     }
   ]
 }

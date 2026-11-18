@@ -7,6 +7,11 @@
     label: string;
     type: 'text' | 'number' | 'select' | 'multi' | 'lines' | 'bool' | 'secret';
     options?: string[];
+    /** REQ: API-011 (T27.4) — a help topic beside the field (its `?`). */
+    helpTopic?: string;
+    /** REQ: API-901 (T27.4) — bounds of a `number` field (the server's limits, checked by the form). */
+    min?: number;
+    max?: number;
     /** How `select`/`multi` options read (CLU-013: node IDs by their site or pod). */
     optionLabels?: Record<string, string>;
     placeholder?: string;
@@ -22,6 +27,9 @@
      *  windows as `weekdays 21:00-07:00`). `fromText` throws to report a bad line. */
     toText?: (v: unknown) => string;
     fromText?: (s: string) => unknown;
+    /** REQ: FLT-008 (T27.4) — the field applies only while this holds for the entry's values (the
+     *  others are shown disabled and left out of the body): `block_ips` only with `custom_ip`. */
+    enabledWhen?: (values: Record<string, unknown>) => boolean;
     /** REQ: API-014 (T23.2) — only an admin changes it (a file holding a credential, or where
      *  one is sent): shown read-only to others. A function decides from the entry as it was
      *  read (`{}` for a new one) and the credential paths the entry keeps (`redacted`, T24.16). */
@@ -222,6 +230,7 @@
       const x = v[f.key];
       if (x === '' || x === null || x === undefined || (Array.isArray(x) && x.length === 0 && f.type !== 'multi')) delete v[f.key];
     }
+    for (const f of fields) if (f.enabledWhen && !f.enabledWhen(v)) delete v[f.key];
     return v;
   }
 
@@ -414,6 +423,7 @@
                 placeholder={f.placeholder}
                 aria-label={f.label}
                 bind:value={texts[f.key]}
+                disabled={f.enabledWhen ? !f.enabledWhen(editing.values) : false}
               ></textarea>
             {:else if f.type === 'lines'}
               <textarea
@@ -428,12 +438,13 @@
               <input type="checkbox" role="switch" bind:checked={editing.values[f.key] as boolean} aria-label={f.label} disabled={locked(f)} />
             {:else if f.type === 'number'}
               <!-- step="any": thresholds such as 0.5 % are allowed. -->
-              <input type="number" step="any" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} />
+              <input type="number" step="any" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} min={f.min} max={f.max} disabled={f.enabledWhen ? !f.enabledWhen(editing.values) : false} />
             {:else}
               <input class="mono" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} />
             {/if}
             {#if fileSet.includes(f.key)}<span class="muted small" data-testid="set-by-file">Set by the configuration file: change it there.</span>{:else if locked(f)}<span class="muted small" data-testid="admin-only">Only an admin can change this.</span> <HelpButton id="credentials-in-forms" />{/if}
             {#if f.help}<span class="muted small">{f.help}</span>{/if}
+            {#if f.helpTopic}<HelpButton id={f.helpTopic} />{/if}
           </label>
           {/if}
         {/each}

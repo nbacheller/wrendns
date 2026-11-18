@@ -4755,3 +4755,20 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 - Keep ADR-944 whole. From b334e0f the fork takes the two-factor code box (already fixed here the same way, `pattern={"[0-9]{6}"}`), the Playwright two-factor test and `6-markup.spec.ts` (kept beside the fork's `6-totp.spec.ts`), and the wording that disable_local_login is a way in for when the provider is down.
 - Not taken: the default-list wording (`schema.rs`, `docs/config-schema.json`, `docs/running.md`, the users guide, `spec/08`), upstream's list-based start-up `break_glass_notice` and its test (the fork has its own `break_glass_notice(bool, Option<&[Cidr]>)`: a warning when the list is unset, the loopback default, or empty, and an info line when it lists networks; tested by `api_004_break_glass_notice_covers_unset_empty_and_listed`), and the ADR-944-contradicting prose in the key descriptions. Those stay or are rewritten to the loopback default.
 **Consequences:** the fork's documentation and schema say loopback; a later upstream sync that touches these lines conflicts again, and `break-glass-loopback` in the ledger lists the paths. If upstream moves to loopback, drop this ADR.
+
+## ADR-982 — Group rewrites as lines, and the block-response fields shown in Simple (Proposed 2026-11-18)
+**Context:** T27.4 (FLT-014, API-901) adds the `rewrite[]` editor and the group fields `block_ips`, `block_ttl`, `ede`, `ede_text` and `rebinding_allow` to the Groups form. Two choices were not fixed by the spec: how a list of `{domain, answer}` pairs is edited, and whether the block-response fields sit under Advanced. The owner's rule that Simple "never hides something that changes behavior" (ADR-036, API-011) decides the second.
+
+**Decision:**
+1. `rewrite[]` is edited as lines, one per line: `name answer` (two whitespace-separated words). The form checks each line with the server's rules (`validate.rs` `rewrites`): the name, `*.` for a wildcard, the answer as an address or a name, and no name rewritten twice in the group. A bad line stops Check and is named; the server's check stays authoritative.
+2. `rebinding_allow` and `block_ips` are plain line lists with the same kind of check. `block_ttl` is a number with the server's 0 to 86400 bounds (the form enforces them with `min`/`max`).
+3. `block_ips`, `block_ttl`, `ede` and `ede_text` are shown in Simple, not Advanced, because they change what a blocked name gets back. `block_mode` moves to Simple with them, so the block answer is in one place. `rebinding_protection` keeps its Advanced placement: moving it is the owner's call under the same rule (Open).
+4. No server change: the config schema, the OpenAPI document and the MCP catalog already carry these fields, so nothing is regenerated.
+
+**Consequences:** a rewrite is a short text line, easy to paste and to read in Git. The form and the server can disagree only on a rare edge the server reports on Check. The Groups page gets a longer form; the block fields are grouped with the block answer.
+
+**Alternatives rejected:** a row editor with two inputs per rewrite (more code for the same data, with no gain for a list that is usually short); keeping the block fields under Advanced (it hides behavior from Simple users, against the rule above).
+
+**Test plan:** Playwright `flt_014 add a rewrite to a group` (a malformed line, a duplicate, a valid rewrite answered by DNS and shown by Explain, then removed) and `flt_014 group block ttl and ede` (the TTL bound in the form, the TTL and EDE code in a blocked answer, the saved values read back).
+
+**Open:** whether `rebinding_protection`, `dns64` and `filter_aaaa` (Advanced today, and each changes behavior) should also move to Simple under the owner's rule.
