@@ -5146,7 +5146,26 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** a node on several networks hears mDNS on each, lists each, and matches MAC-keyed clients behind a router. No new dependency (`libc` is already in `telltale-net`), no image delta beyond a few hundred bytes of code.
 
-## ADR-1013 — One picker, and `client` takes several (Accepted 2026-11-18)
+## ADR-1015 — A simple upstream picker beside the technical editor; the picker's entries are named, not tracked (Proposed 2026-11-18)
+**Context:** T24.36, fork #27. Owner request: upstreams are hard for a general user; Pi-hole's checkboxes for public providers are easier; keep the technical view. ADR-036 says the global Simple mode never hides something that changes behavior, so a page-level choice, not the global mode, decides what the Upstreams page shows first.
+
+**Decision:**
+1. **Two views on the page, chosen by a page-local control** (Simple is the default, remembered per browser; the global Simple/Advanced mode is unchanged and still decides the extra columns). Both stay mounted, so nothing typed is lost on a switch.
+2. **The picker owns entries by name**: `pub-<preset>-<protocol>-<n>` and `pub-custom-<n>`. It reads its state back from those names and the address families in them, so there is no new storage and no new write API: it uses `PUT/DELETE /upstreams/{name}` and `PUT /upstream-groups/default`. Anything else is never rewritten or deleted and stays in the `default` group.
+3. **Transport**: Encrypted writes the provider's DNS over TLS addresses (the IP ones carry the TLS name, so no bootstrap), or its DoH address when it has no DoT one; Plain writes its `udp://` addresses and says so when it has none. DoQ is not written (Open).
+4. **IPv6** is offered only when the node has an IPv6 default route, read from `/proc/net/ipv6_route` when the page asks (off the DNS path); unknown (not Linux, unreadable) reads true. An IPv6 address already saved keeps its box ticked so it can be removed.
+5. **Group**: the picker sets the `default` group's strategy to `fastest` (the owner's choice) and keeps the members it did not make. A node that keeps configuration in Git gets the same "keep in Git" answer the other editors give.
+6. **Catalog**: `presets/upstreams.toml` gains `provider`, `variant`, `note`, `simple`; `GET /api/v1/upstream-presets` and the MCP tool `list_upstream_presets` expose it read-only (config:read). Presets stay inert templates.
+
+**Gaps and conservative choices (for the owner):** the "config file" label reported in #27 could not be reproduced (the server labels API-made upstreams `added`); each upstream now states its origin. Notes are one line from the providers' public pages and can go stale; the nightly smoke test checks addresses, not notes. With the picker saving the `default` group as an override, a later change to the group in the config file no longer applies until the override is removed (the same rule as every other API-made override).
+
+**Alternatives rejected:** a separate "simple" storage with its own table (a second source of truth for upstreams); expanding presets on the server with a write endpoint (more API for a few lines of UI logic); making the global Simple mode hide the editors (ADR-036).
+
+**Test plan:** `ups_004_simple_presets_are_complete`, `ups_004_ipv6_route_check`, `ups_004_rows_carry_endpoints_with_protocol_and_family`, `ups_004_api_made_upstream_is_not_labelled_file`; Playwright `ups_004 ...` (four).
+
+**Consequences:** a general user can set up upstreams with ticks; the technical forms are one click away. One read route and one MCP read tool; no new dependency; nothing on the query path.
+
+## ADR-1013 — One picker, and `client` takes several (Accepted 2026-11-18, T24.34)
 **Context:** Owner request (fork #26): the Query log's client filter takes one address; the UI's list selections are a mix of checkbox lists. `GET /queries` read `client` as one value; axum's query extractor does not take a repeated key.
 **Decision:**
 1. **One component** (`Picker.svelte`) with a windowed list for every list selection; checkbox lists that choose from a growing list are replaced, short fixed lists with codes beside them (agent-token scopes) are not.

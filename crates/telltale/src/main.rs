@@ -100,6 +100,7 @@ mod technitium;
 mod traces;
 mod updates;
 mod upstream_checks;
+mod upstream_presets;
 mod vqlog;
 mod warm;
 mod watchdog;

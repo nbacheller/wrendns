@@ -422,6 +422,8 @@ export const api = {
   dhcpLeases: () => get<S['Items_DhcpLease']>('/dhcp/leases'),
   // REQ: API-013 (T22.2, T24.15) - the networks the routers report, and the groups' networks.
   networks: () => get<S['Items_NetworkInfo']>('/networks'),
+  // REQ: UPS-004 (T24.36) - the public resolvers the Upstreams page's simple view offers.
+  upstreamPresets: () => get<S['UpstreamPresets']>('/upstream-presets'),
   // REQ: DNS-018 (T8.6)
   zones: () => get<S['Items_ZoneInfo']>('/zones'),
   // REQ: OBS-010 (T9.6)

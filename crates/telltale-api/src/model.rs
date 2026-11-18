@@ -61,6 +61,54 @@ pub struct NodeAddress {
     pub network: String,
 }
 
+/// REQ: UPS-004 (T24.36) — one address a public resolver answers on.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamPresetEndpoint {
+    /// `tls://1.1.1.1`, `udp://[2606:4700:4700::1111]`, `https://cloudflare-dns.com/dns-query`.
+    pub url: String,
+    /// `udp`, `tcp`, `tls`, `https` or `quic`.
+    pub protocol: String,
+    /// `v4` or `v6` for an address, `name` for a host name (which resolves to either).
+    pub family: String,
+    /// The name on the server certificate, for a `tls://` address given by IP.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_server_name: Option<String>,
+}
+
+/// REQ: UPS-004 (T24.36) — a public resolver variant the simple picker offers.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamPreset {
+    pub id: String,
+    pub name: String,
+    /// The heading it is listed under (`Cloudflare`).
+    pub provider: String,
+    /// The choice under the heading (`Malware`).
+    pub variant: String,
+    /// One line: what it filters and what it does with your queries.
+    pub note: String,
+    pub homepage: String,
+    /// `none`, `malware`, `family` or `ads`.
+    pub filtering: String,
+    pub dnssec: bool,
+    /// Offered in the simple view (false: it needs a parameter, or is for the Advanced view).
+    pub simple: bool,
+    /// Placeholders in its addresses (a NextDNS profile); empty for every simple preset.
+    pub params: Vec<String>,
+    pub endpoints: Vec<UpstreamPresetEndpoint>,
+}
+
+/// REQ: UPS-004 (T24.36) — the catalog, and what this node can reach.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamPresets {
+    /// Whether this node has a usable IPv6 default route: without one, an IPv6 upstream only
+    /// times out. Unknown (another OS) reads true.
+    pub ipv6_route: bool,
+    pub items: Vec<UpstreamPreset>,
+}
+
 /// The build identity (REQ: OPS-004, ADR-046): the same on every architecture of one commit.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]

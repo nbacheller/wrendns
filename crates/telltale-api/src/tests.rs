@@ -1871,7 +1871,8 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // /guarded/{id}/preview, /guarded/pending/{id}/confirm and /guarded/pending/{id}/cancel (T27.13);
     // 161 with FLT-004's /lists/overlap, /lists/prune-plan and /lists/prune (T24.28);
     // 162 with FLT-006's /clients/{id}/policy (T24.30).
-    assert_eq!(paths.len(), 162);
+    // 163 with UPS-004's /upstream-presets (T24.36).
+    assert_eq!(paths.len(), 163);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
