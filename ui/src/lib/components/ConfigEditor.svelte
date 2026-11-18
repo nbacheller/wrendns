@@ -15,6 +15,8 @@
     /** How `select`/`multi` options read (CLU-013: node IDs by their site or pod). */
     optionLabels?: Record<string, string>;
     placeholder?: string;
+    /** REQ: UPS-013 (T24.31) — values offered under a `text` field (a datalist; any text still works). */
+    suggest?: string[];
     help?: string;
     /** Only in the Advanced view. */
     advanced?: boolean;
@@ -472,7 +474,10 @@
               <!-- step="any": thresholds such as 0.5 % are allowed. -->
               <input type="number" step="any" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} min={f.min} max={f.max} disabled={f.enabledWhen ? !f.enabledWhen(editing.values) : false} />
             {:else}
-              <input class="mono" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} />
+              <input class="mono" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} list={f.suggest?.length ? `sg-${f.key}` : undefined} />
+              {#if f.suggest?.length}
+                <datalist id={`sg-${f.key}`}>{#each f.suggest as o (o)}<option value={o}></option>{/each}</datalist>
+              {/if}
             {/if}
             {#if fileSet.includes(f.key)}<span class="muted small" data-testid="set-by-file">Set by the configuration file: change it there.</span>{:else if locked(f)}<span class="muted small" data-testid="admin-only">Only an admin can change this.</span> <HelpButton id="credentials-in-forms" />{/if}
             {#if f.help}<span class="muted small">{f.help}</span>{/if}

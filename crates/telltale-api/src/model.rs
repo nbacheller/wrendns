@@ -44,6 +44,21 @@ pub struct SystemInfo {
     pub update: UpdateStatus,
     /// REQ: OPS-010 — this node's maintenance window, while it's in maintenance.
     pub maintenance: Option<NodeMaintenance>,
+    /// REQ: UPS-013 (T24.31, ADR-997) — this node's own interface addresses (loopback and
+    /// link-local left out), which an upstream's `source` can name. They differ per node.
+    pub addresses: Vec<NodeAddress>,
+}
+
+/// One address this node holds, for the Upstreams form's `source` suggestions.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeAddress {
+    /// The interface (`eth0`, `eth0.100`).
+    pub interface: String,
+    /// `198.51.100.252`
+    pub address: String,
+    /// The network it is in, which a shared upstream can name instead: `198.51.100.0/24`.
+    pub network: String,
 }
 
 /// The build identity (REQ: OPS-004, ADR-046): the same on every architecture of one commit.
@@ -1150,6 +1165,13 @@ pub struct UpstreamInfo {
     pub failures_by_kind: FailureKinds,
     /// Smoothed answer time.
     pub latency_ewma_ms: f64,
+    /// REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the
+    /// upstream sets a `source`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// REQ: UPS-013 — set while this node no longer holds that address: its queries fail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_problem: Option<String>,
 }
 
 /// Failed attempts by kind (their sum is `failures`).
@@ -2031,7 +2053,9 @@ pub struct NetworkInfo {
     /// The router's own word for it (UniFi: `corporate`, `guest`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
-    /// `router` (a `[[router]]` reported it) or `group` (only a `[[group]] networks` entry).
+    /// `router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example
+    /// on a tagged VLAN interface; it is named after the interface) or `group` (only a
+    /// `[[group]] networks` entry).
     pub source: String,
     /// The `[[router]]` that reported it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3251,6 +3275,20 @@ pub struct ClusterSecrets {
     pub held: u32,
 }
 
+/// REQ: CLU-009 (T24.33, ADR-1011) — a witness's part in the election, as this node sees it. A
+/// witness only votes: it has no configuration, no secrets and no DNS.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterVote {
+    /// Seconds since it last answered a vote request or lease renewal from this node (absent: this
+    /// node hasn't asked it, as in manual failover or on a node that isn't the primary).
+    pub last_reply_seconds_ago: Option<u64>,
+    /// Seconds since it last granted one.
+    pub last_grant_seconds_ago: Option<u64>,
+    /// The epoch it reported in its last reply (the epoch it voted in).
+    pub voted_epoch: Option<u64>,
+}
+
 /// One node in [`ClusterView`].
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 #[allow(clippy::struct_excessive_bools)] // independent flags of one record
@@ -3260,8 +3298,12 @@ pub struct ClusterNode {
     pub site: String,
     /// A Kubernetes resolver pod (CLU-009): dropped when no longer heard from.
     pub ephemeral: bool,
-    /// Votes in automatic failover only (ADR-056).
+    /// Votes in automatic failover only (ADR-056). A witness has no configuration version, no
+    /// secrets and no DNS: `configSeq`, `configLag`, `secrets` and `ready` mean nothing for it
+    /// (REQ: CLU-009, T24.33, ADR-1011), and the checks and alerts about them skip it.
     pub witness: bool,
+    /// REQ: CLU-009 (T24.33) — for a witness: its vote state (absent for other nodes).
+    pub vote: Option<ClusterVote>,
     /// The cluster protocol it speaks (CLU-010); nodes within one version work together.
     pub protocol: u32,
     /// The Git commit of the configuration it serves (ADR-049).

@@ -278,27 +278,61 @@ fn apex_soa_ns(
     (soa, ns)
 }
 
+/// REQ: FLT-006, DNS-001 (T24.32, ADR-1000) — the IP to MAC map for MAC-keyed clients: the kernel's
+/// neighbor table (every interface, so every VLAN the node is directly on), then, for an address the
+/// table doesn't hold, the MAC the router's DHCP leases give it. A device behind a router never has
+/// a neighbor entry of its own (the table shows the router's MAC for the router's address only), so
+/// the leases are the only source of its MAC. The kernel's entry wins where both exist; an offline
+/// lease is not a device on the network now and is left out.
+pub(crate) fn merged_macs(
+    kernel: &[telltale_net::Neighbor],
+    leases: &crate::devices::Leases,
+) -> Vec<(std::net::IpAddr, [u8; 6])> {
+    let mut out: Vec<(std::net::IpAddr, [u8; 6])> = kernel.iter().map(|n| (n.ip, n.mac)).collect();
+    let have: std::collections::HashSet<std::net::IpAddr> =
+        out.iter().map(|(ip, _)| ip.to_canonical()).collect();
+    for l in leases.values().filter(|l| !l.offline) {
+        let Some(mac) = crate::discovery::sources::parse_mac(&l.mac).filter(|m| *m != [0; 6])
+        else {
+            continue;
+        };
+        let v6 = l.ipv6.iter().map(|a| std::net::IpAddr::V6(*a));
+        for ip in std::iter::once(std::net::IpAddr::V4(l.ip)).chain(v6) {
+            if !have.contains(&ip.to_canonical()) {
+                out.push((ip, mac));
+            }
+        }
+    }
+    out
+}
+
 /// REQ: FLT-006 — keeps the IP → MAC map fresh while any client is identified by MAC.
 fn spawn_neighbor_refresh(pipeline: Arc<Pipeline>, every: Duration) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut warned = false;
+        // The last good kernel read: a transient read error keeps it instead of wiping the map.
+        let mut last_kernel = Vec::new();
         loop {
             if pipeline.current().policy.clients.uses_macs() {
-                match tokio::task::spawn_blocking(telltale_net::neighbors).await {
+                let kernel = match tokio::task::spawn_blocking(telltale_net::neighbors).await {
                     Ok(Ok(n)) => {
-                        pipeline
-                            .neighbors
-                            .replace(n.into_iter().map(|x| (x.ip, x.mac)));
                         warned = false;
+                        last_kernel.clone_from(&n);
+                        n
                     }
-                    Ok(Err(e)) if !warned => {
-                        warn!(
-                            "cannot read the neighbor table (MAC-based clients won't match): {e}"
-                        );
-                        warned = true;
+                    Ok(Err(e)) => {
+                        if !warned {
+                            warn!(
+                                "cannot read the neighbor table (MAC-based clients match only from router leases): {e}"
+                            );
+                            warned = true;
+                        }
+                        last_kernel.clone()
                     }
-                    _ => {}
-                }
+                    Err(_) => last_kernel.clone(),
+                };
+                let leases = pipeline.router_leases.load();
+                pipeline.neighbors.replace(merged_macs(&kernel, &leases));
             }
             tokio::time::sleep(every).await;
         }
@@ -1865,6 +1899,60 @@ mod tests {
 
     use super::*;
     use crate::pipeline::{Handler, Policy};
+
+    // REQ: FLT-006, DNS-001 (T24.32, ADR-1000) — a device behind a router has no neighbor entry of
+    // its own, so its MAC comes from the router's lease; the kernel's entry wins where both exist;
+    // an offline lease and an empty or zero MAC are left out; a device's IPv6 address carries it too.
+    #[test]
+    fn flt_006_routed_devices_get_their_mac_from_router_leases() {
+        use crate::devices::{Lease, Leases};
+        use std::net::{IpAddr, Ipv4Addr};
+        let kernel = [telltale_net::Neighbor {
+            ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)),
+            mac: [2, 0, 0, 0, 0, 0x20],
+            ifindex: 2,
+            state: 0x02,
+        }];
+        let lease = |last: u8, mac: &str, offline: bool, third: u8| {
+            let ip = Ipv4Addr::new(192, 168, third, last);
+            (
+                ip,
+                Lease {
+                    mac: mac.into(),
+                    ip,
+                    hostname: None,
+                    expires: 0,
+                    router: Some("udm".into()),
+                    offline,
+                    ipv6: vec![format!("2001:db8:{third}::{last}").parse().unwrap()],
+                },
+            )
+        };
+        let leases: Leases = [
+            // On the IoT VLAN, behind the router: not in the kernel table.
+            lease(41, "aa:bb:cc:dd:ee:41", false, 200),
+            // Also in the kernel table, with another MAC: the kernel's wins.
+            lease(20, "aa:bb:cc:dd:ee:99", false, 10),
+            lease(42, "aa:bb:cc:dd:ee:42", true, 200),
+            lease(43, "", false, 200),
+            lease(44, "00:00:00:00:00:00", false, 200),
+        ]
+        .into_iter()
+        .collect();
+        let n = telltale_policy::Neighbors::default();
+        n.replace(merged_macs(&kernel, &leases));
+        let mac41 = Some([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x41]);
+        assert_eq!(n.get("203.0.113.41".parse().unwrap()), mac41);
+        assert_eq!(n.get("2001:db8:200::41".parse().unwrap()), mac41);
+        assert_eq!(
+            n.get("192.0.2.20".parse().unwrap()),
+            Some([2, 0, 0, 0, 0, 0x20]),
+            "the kernel's entry wins"
+        );
+        for gone in ["203.0.113.42", "203.0.113.43", "203.0.113.44"] {
+            assert_eq!(n.get(gone.parse().unwrap()), None, "{gone}");
+        }
+    }
 
     // REQ: OBS-037 — `cluster.local` is internal only with Kubernetes on; `[telemetry]
     // internal_names` adds suffixes; private reverse lookups always are; validation refuses a
