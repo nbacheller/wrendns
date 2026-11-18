@@ -508,5 +508,8 @@ fn obs_901_sampler_throughput_ab() {
         "aggregator throughput, sampler off: median {mo:.0} events/s (spread {so:.1}%); on: median {mn:.0} events/s (spread {sn:.1}%); on/off {:.3}",
         mn / mo
     );
-    assert!(mn >= mo * 0.95, "the sampler costs more than 5%: {mn} vs {mo}");
+    assert!(
+        mn >= mo * 0.95,
+        "the sampler costs more than 5%: {mn} vs {mo}"
+    );
 }
