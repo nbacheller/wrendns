@@ -1977,13 +1977,15 @@ fn check_router_names<'a>(
     seen: &mut std::collections::HashMap<String, &'a str>,
     r: &mut Report<'_>,
 ) {
+    // REQ: API-010 (ADR-973) — case doesn't matter, as in a `hostname:` key: `KIDS` is `kids`.
     for (j, n) in g.router_names.iter().enumerate() {
-        if !router_label_ok(n.as_str()) {
+        let label = n.to_ascii_lowercase();
+        if !router_label_ok(&label) {
             r.err(
                 format!("{p}.router_names[{j}]"),
                 format!("`{n}`: use the label form, 1-63 of a-z, 0-9 and - (Kitchen Tablet is kitchen-tablet)"),
             );
-        } else if let Some(other) = seen.insert(n.as_str().to_owned(), g.name.as_str()) {
+        } else if let Some(other) = seen.insert(label, g.name.as_str()) {
             r.err(
                 format!("{p}.router_names[{j}]"),
                 format!("`{n}` is already a router name of group `{other}`"),

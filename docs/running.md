@@ -1088,6 +1088,8 @@ match = ["10.0.5.0/24"]                  # no groups: its network's group, else 
   trust_edns_mac_from = ["192.168.1.1/32"]
   ```
 - **Router names.** A router that hands out addresses (`[[router]]`, UniFi or OPNsense) names each device by its DHCP host name, and a device can keep that name when its address changes. Write the name in label form (`Kitchen Tablet` is `kitchen-tablet`, the form device names take in DNS) and match it with `match = ["hostname:kitchen-tablet"]` on a `[[client]]` beside its address, or list it in a group's `router_names`, where a device the router named this belongs to that group the way a network's devices do. A `[[client]]` naming the device by address or MAC still wins. A rule can name the device too: `devices = ["hostname:kitchen-tablet"]`. The name is read from the leases the routers report now: an offline device, or one whose name the router no longer gives, isn't matched. The query log's **Client by → router name** filter does the same: it shows the queries of the addresses that name has now.
+
+**A router name can be claimed.** The router takes the name from the device's DHCP host name, and the device chooses it, so any device on the network can call itself `kids-ipad` or `kitchen-tablet`. A device on a restricted network that takes a looser client's router name is matched as that client. Where it matters, key the rule by MAC (`aa:bb:cc:dd:ee:ff`) or by the address the device keeps (a DHCP reservation), not by its name. Router names are matched only for IPv4 addresses; an IPv6 client is never matched by one. The explain output (`router_name`) shows the name that matched.
   ```toml
   [[client]]
   name = "Kitchen tablet"

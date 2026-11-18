@@ -633,7 +633,10 @@ impl ClientTable {
         for g in &cfg.group {
             if let Some(&gi) = self.group_index.get(g.name.as_str()) {
                 for n in &g.router_names {
-                    self.host_groups.entry(n.as_str().into()).or_insert(gi);
+                    // REQ: API-010 (ADR-973) — lowercased, as the names the routers give are.
+                    self.host_groups
+                        .entry(n.as_str().to_ascii_lowercase().into())
+                        .or_insert(gi);
                 }
             }
         }

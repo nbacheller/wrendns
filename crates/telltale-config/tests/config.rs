@@ -382,6 +382,36 @@ fn flt_006_router_names_are_labels() {
     );
     assert!(MatchKey::parse("hostname:-edge").is_err());
     assert!(MatchKey::parse("hostname:").is_err());
+    // A group's router names are case-insensitive, as the keys are: `Kids-iPad` is `kids-ipad`,
+    // so another group naming it in any case is the same duplicate.
+    assert!(
+        load_str(
+            r#"
+[[group]]
+name = "kids"
+router_names = ["Kids-iPad"]
+"#
+        )
+        .is_ok()
+    );
+    let dup = load_str(
+        r#"
+[[group]]
+name = "kids"
+router_names = ["Kids-iPad"]
+
+[[group]]
+name = "guests"
+router_names = ["kids-ipad"]
+"#,
+    )
+    .err()
+    .unwrap_or_default();
+    assert!(
+        dup.iter()
+            .any(|e| e.to_string().contains("already a router name")),
+        "a case-only duplicate is refused"
+    );
     let errs = load_str(
         r#"
 [[group]]

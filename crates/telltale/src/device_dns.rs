@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use telltale_policy::{ClientTable, LocalData, device_label};
@@ -25,6 +25,9 @@ use crate::devices::Leases;
 
 /// How often the table is rebuilt (it changes when a router is read, every few minutes).
 const EVERY: Duration = Duration::from_secs(10);
+
+/// The policy the router names were last given to (held as a `Weak`, see [`run`]), and the names.
+type GivenRouterNames = (Weak<crate::pipeline::Dynamic>, HashMap<IpAddr, Arc<str>>);
 
 /// `[local] device_domain`, `device_ttl`, `device_mdns`, as the pipeline's policy holds them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,8 +188,9 @@ pub(crate) async fn run(
 ) {
     let mut last: Option<(Settings, Vec<(String, Ipv4Addr)>)> = None;
     // REQ: FLT-006 (T24.9) — the router names last given to the policy in force (a reload makes
-    // a new one, so the names are given again to it).
-    let mut last_router_names: Option<(usize, HashMap<IpAddr, Arc<str>>)> = None;
+    // a new one, so the names are given again to it). The policy is held as a `Weak`: its
+    // allocation stays reserved while it is remembered, so a new policy can't reuse its address.
+    let mut last_router_names: Option<GivenRouterNames> = None;
     let mut tick = tokio::time::interval(EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -198,13 +202,13 @@ pub(crate) async fn run(
         let routers = pipeline.router_leases.load();
         let peers = pipeline.peer_names.load();
         let names_now = router_names([&routers, &peers.routers]);
-        let policy_id = Arc::as_ptr(&state) as usize;
-        if last_router_names
+        let current_policy = Arc::downgrade(&state);
+        let already_given = last_router_names
             .as_ref()
-            .is_none_or(|(id, n)| *id != policy_id || *n != names_now)
-        {
+            .is_some_and(|(id, n)| id.ptr_eq(&current_policy) && *n == names_now);
+        if !already_given {
             state.policy.clients.set_router_names(names_now.clone());
-            last_router_names = Some((policy_id, names_now));
+            last_router_names = Some((current_policy, names_now));
         }
         let Some(mut settings) = state.policy.device_dns.clone() else {
             if last.take().is_some() {

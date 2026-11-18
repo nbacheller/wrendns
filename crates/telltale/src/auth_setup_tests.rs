@@ -119,3 +119,16 @@ fn api_003_reset_password_refuses_a_running_node() {
     drop(held);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// REQ: API-003 (ADR-972) — a data directory with no `state.db` (a mistyped `-c`) is refused, and
+// nothing is created there.
+#[test]
+fn api_003_reset_password_refuses_a_missing_state() {
+    let dir = std::env::temp_dir().join(format!("tt-reset-none-{}", crypto::random_id()));
+    let c = cfg(&dir);
+    assert!(
+        !reset_password(&c, "root").unwrap(),
+        "refused without state"
+    );
+    assert!(!dir.exists(), "no directory is created for a wrong path");
+}

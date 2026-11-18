@@ -223,7 +223,7 @@
       "summary": "Shown everywhere instead of the address, including on past queries, and usable in rules ($client='Kids tablet'). It can also match the name your router gave the device (\"Also recognize it by its router name\"), so it stays matched when the device gets a new address.",
       "when": "Always: a name you'll recognize in a month.",
       "example": "\"Kids tablet\", \"Office printer\", \"Ring doorbell\".",
-      "caution": "Names must be unique; renaming keeps the device's groups. A router name is in label form (Kitchen Tablet is kitchen-tablet) and matches the address the router gives that name now; a group or a quick rule can name it too (Router names, Device by router name).",
+      "caution": "Names must be unique; renaming keeps the device's groups. A router name is in label form (Kitchen Tablet is kitchen-tablet) and matches the address the router gives that name now; a group or a quick rule can name it too (Router names, Device by router name). A device picks its own host name, so any device on the network can claim a router name such as kids-ipad. Where it matters, match by MAC or IP address instead. Router names cover IPv4 addresses only.",
       "docs": "naming-devices-in-the-ui"
     },
     {
@@ -430,7 +430,7 @@
       "summary": "On the machine that runs TelltaleDNS, with it stopped, an admin on the machine sets a new password for any user. Their web sessions end.",
       "when": "Only when nobody can sign in: no admin remembers a password and no second admin exists.",
       "example": "Stop the service, then run: printf '%s\\n' \"$NEW_PASSWORD\" | telltale auth reset-password alice -c /etc/telltale/telltale.toml, or run it without the pipe and type the password twice.",
-      "caution": "It needs the node stopped, and it can't run on a cluster replica (reset the password on the primary). Whoever can run it controls the node, so it's for the person who runs the box.",
+      "caution": "It needs the node stopped, and it can't run on a cluster replica (reset the password on the primary). Whoever can run it controls the node, so it's for the person who runs the box. A web session ends, but API tokens and HTTP Basic logins keep working. Typing the password, Ctrl-C then Enter cancels it.",
       "docs": "users-and-sign-in"
     },
     {
