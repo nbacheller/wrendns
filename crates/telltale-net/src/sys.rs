@@ -66,7 +66,6 @@ pub(crate) fn idle_thread() -> io::Result<()> {
     }
 }
 
-<<<<<<< HEAD
 /// REQ: DSC-002, DSC-003 (ADR-908, ADR-1001) - a UDP socket connected to `target`, made without a
 /// `bind` call. A discovery worker's seccomp filter refuses `bind` (so it can't share the DNS port),
 /// and `UdpSocket::bind` is the only way std makes a UDP socket; `connect(2)` on a datagram socket
@@ -102,7 +101,8 @@ pub(crate) fn connect_udp(target: SocketAddr) -> io::Result<std::net::UdpSocket>
         return Err(io::Error::last_os_error());
     }
     Ok(std::net::UdpSocket::from(sock))
-=======
+}
+
 /// Reads every IPv4 address of every interface with `getifaddrs` (T24.32). Grouping and filtering
 /// are safe code in `iface`.
 pub(crate) fn interface_addrs() -> io::Result<Vec<crate::iface::RawAddr>> {
@@ -154,7 +154,6 @@ pub(crate) fn interface_addrs() -> io::Result<Vec<crate::iface::RawAddr>> {
     // from the list after this (names were copied).
     unsafe { libc::freeifaddrs(head) };
     Ok(out)
->>>>>>> feat/ipam-integrations
 }
 
 /// Dumps the kernel neighbor table over rtnetlink (FLT-006). Parsing is safe code in
