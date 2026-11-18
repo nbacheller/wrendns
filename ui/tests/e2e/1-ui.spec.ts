@@ -6714,3 +6714,42 @@ test('api_007 passphrase backup from settings', async () => {
     await r.delete('/api/v1/secrets/backup-ui-test', { headers: h });
   }
 });
+
+// REQ: CLU-005 (T24.26) — the Events tab names a lapsed lease and its renewal in words: "Lease
+// lapsed" in the bad colour, "Lease renewed" in the ok one (the e2e server cannot lapse a lease,
+// so the cluster view is a stub).
+test('clu_005 lease lapse and renewal events have labels', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const at = (s: number) => new Date(Date.now() - s * 1000).toISOString();
+  const view = {
+    enabled: true, clusterId: 'c1', name: 'home', thisNode: 'id-p', newestConfigSeq: 9, healthy: true,
+    checks: [{ id: 'peers_up', ok: true, summary: 'All 1 node is up' }],
+    events: [
+      { at: at(60), kind: 'lease_lost', nodeId: 'id-p', detail: 'publishing paused until a majority renews the lease' },
+      { at: at(30), kind: 'lease_renewed', nodeId: 'id-p', detail: 'publishing resumed after 4200 ms' },
+    ],
+    conflicts: [], authority: 'primary',
+    failover: { mode: 'auto', active: true, voters: 3, reachableVoters: 3, leaseHeld: true, leaseSecondsLeft: 11, votedEpoch: 1, votedFor: 'id-p' },
+    nodes: [{
+      nodeId: 'id-p', site: 'primary', ephemeral: false, witness: false, protocol: 1, role: 'primary', thisNode: true, eligible: true,
+      version: '0.8.0', up: true, connected: true, link: 'self', lastSeenSecondsAgo: 1, rttMs: null, configSeq: 9, configLag: 0, ready: true,
+      qps: 1, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, restarts: 0, cacheEntries: 5, cacheHitPercent: 80, querySharePercent: 10,
+    }],
+  };
+  await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: view }));
+  await page.route('**/api/v1/cluster/rollout', (route) => route.fulfill({ json: { fromPrimary: true, canaries: [], bakeSecs: 300, stable: '1.9', stage: 'none', nodes: [] } }));
+  await page.route('**/api/v1/cluster/versions', (route) => route.fulfill({ json: { items: [], history: 20 } }));
+  try {
+    await page.goto('/#/cluster?tab=events');
+    const items = page.locator('ol.events li');
+    await expect(items).toHaveCount(2);
+    await expect(items.nth(0).locator('.badge')).toHaveText('Lease lapsed');
+    await expect(items.nth(0).locator('.badge')).toHaveClass(/bad/);
+    await expect(items.nth(1).locator('.badge')).toHaveText('Lease renewed');
+    await expect(items.nth(1).locator('.badge')).toHaveClass(/ok/);
+  } finally {
+    await page.unroute('**/api/v1/cluster');
+    await page.unroute('**/api/v1/cluster/rollout');
+    await page.unroute('**/api/v1/cluster/versions');
+  }
+});

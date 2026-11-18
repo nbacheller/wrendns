@@ -1,0 +1,10 @@
+# The witness of the lease-lapse soak (lapse-soak.sh): it only votes (`telltale cluster witness`).
+config_version = 1
+
+[node]
+name = "witness"
+
+[cluster]
+name = "cluster3"
+site = "witness"
+listen = "0.0.0.0:8443"
