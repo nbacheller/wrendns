@@ -2691,6 +2691,15 @@ Counters are kept per thread and summed on scrape, so recording never slows a qu
 - It draws the busiest 100 names (less their blocked queries) and the busiest 100 blocked names, every node of a cluster, from the same approximate top lists as the dashboard, so it adds no work to answering queries. Each hour starts every count again, so the map looks sparse just after the hour.
 - Uptime monitors, phones checking their connection, and other background lookups can crowd it: [keep them out](#keeping-names-and-devices-out-of-the-log).
 
+### Network map
+**Monitor → Network map** draws the gateway, your networks and VLANs, devices, TelltaleDNS nodes (with their answer kinds: cache, local, blocked) and upstreams, joined by flows. It is built from a sample of lookups on the aggregator thread (never the query path), over the last 60 seconds, and refreshes every 2 seconds. The data API is `GET /api/v1/map`, `/api/v1/map/stream` and `/api/v1/map/health` (scope `analytics:read`).
+- **Pulses.** Each flow with a rate has dashes moving along it: one per half query a second (at most six), wider as the rate grows. At most the 150 busiest flows move (60 on a host with 4 cores or fewer); the rest are drawn still. Motion stops when the tab is hidden, stops for good under your system's **reduce motion** setting (the rate is then written on each flow, and there is no switch to turn motion back on), and **Pause motion** stops it for the session.
+- **States.** Every node has a shape and a word as well as a colour: a circle with a check is **OK**, a triangle **Warning**, an octagon with a cross **Failing**, a dashed circle **Idle** (too few answers in the window to say). Select a node, or Tab to it and press Enter, for its numbers, the reasons for its colour and links: a device opens its queries, Explain, anomalies and device page; an upstream opens Upstreams, a resolver Cluster, a network Networks.
+- **Filters** (network, group, node, state, and a device's name or address) are in the page's address, so a view can be linked. Network, group, node and device narrow the read on the server (the map then updates by polling, as the stream carries everything); state narrows what is drawn.
+- **Table** shows the same flows and nodes as text, for a screen reader or a quick scan.
+- **Banners.** "Sampled, 1 in N" says the rates are estimates; "Partial" lists a cluster node that didn't answer; at privacy level (`telemetry.qlog.privacy_level`) 2 devices are hidden (one node stands for them) and at 3 only totals show. No domain name ever appears on the map.
+- The page loads on its own, so the rest of the console doesn't carry its code; it uses no map tiles, fonts or scripts from outside.
+
 ### Where does time go?
 The dashboard's **Where time goes** section (Advanced view) has two views:
 - **Percentiles:** this hour's p50, p90, p99, and max per answer path and transport, and the time spent waiting for upstreams.
