@@ -1,10 +1,11 @@
 // REQ: API-004 — T3.6 acceptance: sign in through real Keycloak and Authentik (see
 // ../oidc/compose.yml). Runs when OIDC_E2E lists the providers, after 1-ui.spec.ts (which
-// creates the local admin). Each test uses a fresh browser context.
+// creates the local admin). Each test uses a fresh browser context. REQ: API-016 (T23.10) — the
+// last block (OIDC providers in the UI) needs no provider and always runs.
 import { expect, test, type Page } from '@playwright/test';
 
+// Without OIDC_E2E there are no real-provider tests (the loop below defines none).
 const providers = (process.env.OIDC_E2E ?? '').split(',').filter(Boolean);
-test.skip(providers.length === 0, 'set OIDC_E2E=keycloak,authentik with the providers running');
 test.describe.configure({ mode: 'serial' });
 
 const USERS = {
@@ -82,3 +83,194 @@ for (const id of providers) {
     await page.close();
   });
 }
+
+
+// ---- API-016 (T23.10, ADR-903 §6, ADR-967): OIDC providers added in the UI, applied without a restart.
+// These run against the suite's own server (no identity provider needed): the e2e server has no
+// `[auth.oidc] public_url`, so a provider added here is stored and shown, and is inactive on this node
+// with the reason. The tests that need a node with a public_url mock the list.
+const ADMIN = { user: 'admin', pass: 'correct horse battery' };
+
+async function adminPage(browser: import('@playwright/test').Browser): Promise<Page> {
+  const page = await browser.newPage();
+  await page.goto('/#/settings?tab=signin');
+  await page.getByLabel('Username', { exact: true }).fill(ADMIN.user);
+  await page.getByLabel('Password', { exact: true }).fill(ADMIN.pass);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByTestId('signin-tab')).toBeVisible({ timeout: 30_000 });
+  return page;
+}
+
+const csrfOf = async (page: Page) => (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+
+test.describe('api_016 OIDC providers in the UI', () => {
+  test.describe.configure({ mode: 'serial' });
+
+  test('api_016 add an OIDC provider from the UI', async ({ browser }) => {
+    const page = await adminPage(browser);
+    try {
+      await page.getByTestId('oidc-add').click();
+      await page.getByRole('textbox', { name: 'ID', exact: true }).fill('lab-sso');
+      await page.getByRole('textbox', { name: 'Button label' }).fill('Lab SSO');
+      await page.getByRole('textbox', { name: 'Issuer', exact: true }).fill('http://127.0.0.1:9/realms/lab');
+      await page.getByRole('textbox', { name: 'Client ID', exact: true }).fill('telltale');
+      // The client secret goes through SecretField: typed once, stored by name, never shown again.
+      const secret = page.getByTestId('oidc-secret');
+      await secret.getByLabel('Client secret', { exact: true }).fill('oidc-e2e-secret-4417');
+      await secret.getByRole('button', { name: 'Save secret' }).click();
+      await expect(secret).toHaveAttribute('data-mode', 'set', { timeout: 10_000 });
+      await expect(page.locator('body')).not.toContainText('oidc-e2e-secret-4417');
+      await expect(secret.getByRole('textbox')).toHaveCount(0);
+      // A group to role rule and a role for everyone else.
+      await page.getByTestId('oidc-add-rule').click();
+      await page.getByRole('textbox', { name: 'Group 1' }).fill('dns-admins');
+      await page.getByRole('combobox', { name: 'Role for group 1' }).selectOption('admin');
+      await page.getByRole('combobox', { name: 'Role for everyone else' }).selectOption('viewer');
+      await page.getByTestId('oidc-save').click();
+      const card = page.getByTestId('oidc-card').filter({ hasText: 'lab-sso' });
+      await expect(card).toBeVisible({ timeout: 10_000 });
+      await expect(card).toContainText('Lab SSO');
+      await expect(card).toContainText('From the UI');
+      await expect(card).toContainText('oidc.lab-sso.client_secret');
+      await expect(card).toContainText('dns-admins → admin');
+      await expect(page.getByTestId('oidc-notice')).toContainText('no restart');
+      // The server stored it as a reference: the answer names the secret and never carries a value.
+      const list = await page.request.get('/api/v1/oidc-providers');
+      expect(list.status()).toBe(200);
+      const text = await list.text();
+      expect(text).toContain('oidc.lab-sso.client_secret');
+      expect(text).not.toContain('oidc-e2e-secret-4417');
+    } finally {
+      await page.close();
+    }
+  });
+
+  test('api_016 provider without public_url shows inactive', async ({ browser }) => {
+    const page = await adminPage(browser);
+    try {
+      // This server has no public_url: the provider added above is stored, shown, and inactive.
+      await page.goto('/#/settings?tab=signin');
+      await page.reload();
+      await expect(page.getByTestId('oidc-no-public-url')).toContainText('public_url');
+      const card = page.getByTestId('oidc-card').filter({ hasText: 'lab-sso' });
+      await expect(card.getByTestId('oidc-state')).toHaveText('Inactive on this node');
+      await expect(card.getByTestId('oidc-reason')).toContainText('public_url');
+      // And its button isn't offered on the sign-in page.
+      const status = await (await page.request.get('/api/v1/auth/status')).json();
+      expect((status.oidc as { id: string }[]).some((p) => p.id === 'lab-sso')).toBe(false);
+    } finally {
+      await page.close();
+    }
+  });
+
+  test('api_016 a node with a public_url shows an active provider and a file provider read-only', async ({ browser }) => {
+    const page = await adminPage(browser);
+    try {
+      await page.route('**/api/v1/oidc-providers', (route) =>
+        route.request().method() === 'GET'
+          ? route.fulfill({
+              json: {
+                publicUrl: 'https://dns.example.com',
+                items: [
+                  {
+                    id: 'kc', name: 'Keycloak', issuer: 'https://kc.example/realms/home', clientId: 'telltale', source: 'file',
+                    scopes: ['openid'], usernameClaim: 'preferred_username', groupsClaim: 'groups',
+                    roles: [{ group: 'admins', role: 'admin' }], requireVerifiedEmail: false,
+                    secretSource: 'inline', active: true, redirectUri: 'https://dns.example.com/api/v1/auth/oidc/kc/callback',
+                  },
+                  {
+                    id: 'lab', name: 'Lab', issuer: 'https://lab.example', clientId: 'telltale', source: 'api',
+                    scopes: ['openid'], usernameClaim: 'preferred_username', groupsClaim: 'groups', roles: [],
+                    defaultRole: 'viewer', requireVerifiedEmail: false, secretSource: 'stored', secret: 'oidc.lab.client_secret',
+                    secretReadable: false, active: true,
+                    reason: "the new settings aren't applied yet, because the provider couldn't be read: timed out",
+                    redirectUri: 'https://dns.example.com/api/v1/auth/oidc/lab/callback',
+                  },
+                ],
+              },
+            })
+          : route.continue(),
+      );
+      await page.goto('/#/settings?tab=signin');
+      await page.reload();
+      await expect(page.getByTestId('oidc-no-public-url')).toHaveCount(0);
+      const kc = page.getByTestId('oidc-card').filter({ hasText: 'Keycloak' });
+      await expect(kc.getByTestId('oidc-state')).toHaveText('Active');
+      await expect(kc.getByTestId('oidc-file')).toHaveText('Set by file');
+      await expect(kc.getByTestId('oidc-redirect')).toHaveText('https://dns.example.com/api/v1/auth/oidc/kc/callback');
+      // A file provider can't be changed or removed here.
+      await expect(kc.getByTestId('oidc-edit')).toHaveCount(0);
+      await expect(kc.getByTestId('oidc-delete')).toHaveCount(0);
+      // A provider whose new settings could not be read yet says so; its secret issue shows.
+      const lab = page.getByTestId('oidc-card').filter({ hasText: 'Lab' }).filter({ hasText: 'oidc.lab.client_secret' });
+      await expect(lab.getByTestId('oidc-reason')).toContainText("couldn't be read");
+      await expect(lab.getByTestId('oidc-secret-issue')).toBeVisible();
+      await expect(lab.getByTestId('oidc-edit')).toBeVisible();
+    } finally {
+      await page.close();
+    }
+  });
+
+  test('api_016 change and remove a provider from the UI', async ({ browser }) => {
+    const page = await adminPage(browser);
+    try {
+      const card = page.getByTestId('oidc-card').filter({ hasText: 'lab-sso' });
+      await card.getByTestId('oidc-edit').click();
+      await expect(page.getByTestId('oidc-editor')).toBeVisible();
+      // The ID can't change; the stored secret stays referenced.
+      await expect(page.getByRole('textbox', { name: 'ID', exact: true })).toBeDisabled();
+      await expect(page.getByTestId('oidc-secret')).toHaveAttribute('data-mode', 'set');
+      await page.getByRole('textbox', { name: 'Button label' }).fill('Lab Single Sign-On');
+      await page.getByTestId('oidc-save').click();
+      await expect(page.getByTestId('oidc-card').filter({ hasText: 'Lab Single Sign-On' })).toBeVisible({ timeout: 10_000 });
+      // A second add with a taken ID is refused before anything is stored.
+      await page.getByTestId('oidc-add').click();
+      await page.getByRole('textbox', { name: 'ID', exact: true }).fill('lab-sso');
+      await expect(page.getByTestId('oidc-id-taken')).toBeVisible();
+      await expect(page.getByTestId('oidc-save')).toBeDisabled();
+      await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+      // Remove it.
+      const changed = page.getByTestId('oidc-card').filter({ hasText: 'Lab Single Sign-On' });
+      await changed.getByTestId('oidc-delete').click();
+      await changed.getByTestId('oidc-delete-confirm').click();
+      await expect(page.getByTestId('oidc-card').filter({ hasText: 'lab-sso' })).toHaveCount(0, { timeout: 10_000 });
+      await expect(page.getByTestId('oidc-notice')).toContainText('sessions it opened have ended');
+    } finally {
+      await page.close();
+    }
+  });
+
+  test('api_016 operator cannot see the sign-in tab', async ({ browser }) => {
+    const admin = await adminPage(browser);
+    try {
+      const made = await admin.request.post('/api/v1/users', {
+        headers: { 'x-csrf-token': await csrfOf(admin) },
+        data: { username: 'oidc-operator', password: 'operator oidc password', role: 'operator' },
+      });
+      expect([200, 201, 409]).toContain(made.status());
+    } finally {
+      await admin.close();
+    }
+    const op = await browser.newPage();
+    try {
+      await op.goto('/#/settings');
+      await op.getByLabel('Username', { exact: true }).fill('oidc-operator');
+      await op.getByLabel('Password', { exact: true }).fill('operator oidc password');
+      await op.getByRole('button', { name: 'Sign in' }).click();
+      await expect(op.getByRole('tablist', { name: 'Settings' })).toBeVisible({ timeout: 30_000 });
+      await expect(op.getByRole('tab', { name: 'Sign-in' })).toHaveCount(0);
+      await op.goto('/#/settings?tab=signin');
+      await expect(op.getByTestId('signin-tab')).toHaveCount(0);
+      // And the server says no whatever the page does.
+      const csrf = await csrfOf(op);
+      expect((await op.request.get('/api/v1/oidc-providers')).status()).toBe(403);
+      const put = await op.request.put('/api/v1/oidc-providers/sneaky', {
+        headers: { 'x-csrf-token': csrf },
+        data: { issuer: 'https://idp.example', client_id: 'x', default_role: 'viewer' },
+      });
+      expect(put.status()).toBe(403);
+    } finally {
+      await op.close();
+    }
+  });
+});

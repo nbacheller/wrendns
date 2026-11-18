@@ -260,6 +260,10 @@ secretsKey:
 # Secrets mounted read-only at /etc/telltale-secrets/<name>, e.g. an OIDC client secret
 # (point client_secret_file at /etc/telltale-secrets/oidc/client_secret). `optional: true`
 # lets the pod start without the Secret.
+# OIDC providers can also be added in the UI (Settings -> Sign-in), with the client secret stored
+# encrypted by name and replicated to the controllers: no mount, no values change, no restart.
+# [auth.oidc] public_url stays in `config:` (it is per node); a provider made in the UI is inactive
+# on a node without it. Resolver pods hold no stored secrets and skip such providers.
 secretMounts: []
 #  - name: oidc
 #    secretName: telltale-oidc
