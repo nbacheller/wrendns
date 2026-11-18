@@ -5951,6 +5951,41 @@ export interface components {
             source: string;
         };
         /**
+         * @description REQ: DSC-009 (T25.10, ADR-912) - one extra read of one router, as the inventory thread last saw
+         *     it. Read-only: nothing here changes a console.
+         */
+        DiscoveryRead: {
+            /**
+             * Format: int64
+             * @description When the result was recorded (Unix seconds).
+             */
+            at?: number | null;
+            /** @description Why a read did not work, in words (no credential in it). */
+            error?: string | null;
+            /**
+             * @description `client_fields`, `all_users`, `devices` or `home_assistant_all_devices`.
+             * @example all_users
+             */
+            read: string;
+            /**
+             * @description The `[[router]]` read.
+             * @example udm
+             */
+            router: string;
+            /**
+             * Format: int32
+             * @description Rows used.
+             */
+            rows: number;
+            /**
+             * @description `ok`, `refused` (the console answered 401 or 403) or `failed`.
+             * @example ok
+             */
+            state: string;
+            /** @description More rows were offered than the 8,192 cap; the rest were left out. */
+            truncated: boolean;
+        };
+        /**
          * @description REQ: DSC-014 (T25.3, ADR-908) — the network inventory's status: whether it runs on this node,
          *     and each discovery worker process. Health reasons for the workers never mark DNS unhealthy.
          */
@@ -5961,6 +5996,11 @@ export interface components {
             enabled: boolean;
             /** @description The designated node's name, when `[discovery] node` is set. */
             node?: string | null;
+            /**
+             * @description REQ: DSC-009 (T25.10, ADR-912) - the last result of each extra UniFi and Home Assistant
+             *     read: which ones work, and which the console refused. Empty unless one is on.
+             */
+            reads: components["schemas"]["DiscoveryRead"][];
             /** @description The worker processes this node runs (none unless enabled and designated). */
             workers: components["schemas"]["DiscoveryWorker"][];
         };

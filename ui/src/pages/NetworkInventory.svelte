@@ -21,6 +21,13 @@
   let node = $state('');
   let memory = $state(64);
   let subnets = $state('');
+  // REQ: DSC-009 (T25.10, ADR-912) — the extra reads. UniFi's are off until turned on; Home
+  // Assistant's is on. Each is read-only and adds to the inventory only.
+  let unifiClientFields = $state(false);
+  let unifiAllUsers = $state(false);
+  let unifiDevices = $state(false);
+  let withinHours = $state(720);
+  let haAll = $state(true);
   let preview = $state<S['ConfigChange'] | null>(null);
   // The form as Check previewed it. Apply is offered only while the form still holds exactly that.
   let previewedWith = $state<string | null>(null);
@@ -33,7 +40,8 @@
   const writable = $derived(can('admin'));
   const fileSet = $derived(entry?.setByFile ?? []);
   const setByFile = (k: string) => fileSet.includes(k);
-  const snapshot = () => JSON.stringify([enabled, node, memory, subnets]);
+  const snapshot = () =>
+    JSON.stringify([enabled, node, memory, subnets, unifiClientFields, unifiAllUsers, unifiDevices, withinHours, haAll]);
   const previewCurrent = $derived(preview !== null && previewedWith === snapshot());
   // The stored settings are in use and an override of the files' settings (DSC-001).
   const overridden = $derived(entry?.source === 'override');
@@ -45,6 +53,12 @@
     memory = Number(d.worker_memory_mib ?? 64);
     const list = Array.isArray(d.subnet) ? (d.subnet as { cidr: string }[]) : [];
     subnets = list.map((s) => s.cidr).join('\n');
+    const reads = (d.unifi_reads ?? {}) as Record<string, unknown>;
+    unifiClientFields = reads.client_fields === true;
+    unifiAllUsers = reads.all_users === true;
+    unifiDevices = reads.devices === true;
+    withinHours = Number(d.unifi_all_users_within_hours ?? 720);
+    haAll = d.home_assistant_all_devices !== false;
   }
 
   // Reads the stored settings. The form is refilled when `force` is set (after a save or a revert),
@@ -79,6 +93,9 @@
         .map((s) => s.trim())
         .filter(Boolean)
         .map((cidr) => ({ cidr })),
+      unifi_reads: { client_fields: unifiClientFields, all_users: unifiAllUsers, devices: unifiDevices },
+      unifi_all_users_within_hours: Number(withinHours),
+      home_assistant_all_devices: haAll,
     };
     for (const k of fileSet) delete all[k];
     return all;
@@ -136,6 +153,14 @@
     }
   }
 
+  const READ_LABELS: Record<string, string> = {
+    client_fields: 'UniFi client fields',
+    all_users: 'UniFi client history',
+    devices: 'UniFi devices and ports',
+    home_assistant_all_devices: 'Home Assistant devices without entities',
+  };
+  const readLabel = (r: string) => READ_LABELS[r] ?? r;
+
   const stateText = $derived(
     !status
       ? 'Loading'
@@ -188,6 +213,25 @@
     {:else}
       <p class="muted small">No worker runs on this node. DNS is unaffected either way.</p>
     {/if}
+    {#if status && (status.reads ?? []).length > 0}
+      <h3>Router reads<HelpButton id="inventory-unifi-reads" /></h3>
+      <table data-testid="inventory-reads">
+        <thead>
+          <tr><th>Router</th><th>Read</th><th>State</th><th>Rows</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          {#each status.reads ?? [] as r (r.router + '/' + r.read)}
+            <tr data-testid="read-{r.router}-{r.read}">
+              <td>{r.router}</td>
+              <td>{readLabel(r.read)}</td>
+              <td data-testid="read-state">{r.state}</td>
+              <td>{r.rows}{#if r.truncated} <span class="muted small">(cut at 8,192)</span>{/if}</td>
+              <td class="small">{#if r.error}{r.error}{/if}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
   </section>
 
   <section class="card" data-testid="inventory-settings">
@@ -239,6 +283,66 @@
         aria-label="Worker memory limit"
       />
       {#if setByFile('worker_memory_mib')}<span class="muted small" data-testid="set-by-file">(set by file)</span>{/if}
+    </label>
+
+    <h3>More from the routers<HelpButton id="inventory-unifi-reads" /></h3>
+    <p class="muted small">
+      Read-only. These add to the inventory only: they never name a device in DNS, and a console that
+      refuses one still answers the others. They run on the designated node.
+    </p>
+    <label class="row">
+      <input
+        type="checkbox"
+        role="switch"
+        bind:checked={unifiClientFields}
+        disabled={!writable || setByFile('unifi_reads')}
+        aria-label="UniFi client fields"
+      />
+      UniFi: more fields of each client (port or access point, VLAN, network, first seen)
+    </label>
+    <label class="row">
+      <input
+        type="checkbox"
+        role="switch"
+        bind:checked={unifiAllUsers}
+        disabled={!writable || setByFile('unifi_reads')}
+        aria-label="UniFi client history"
+      />
+      UniFi: clients seen before, as history (<code>stat/alluser</code>)
+    </label>
+    <label class="row">
+      <input
+        type="checkbox"
+        role="switch"
+        bind:checked={unifiDevices}
+        disabled={!writable || setByFile('unifi_reads')}
+        aria-label="UniFi devices and ports"
+      />
+      UniFi: its own devices, the switch ports' MAC tables and LLDP (<code>stat/device</code>)
+    </label>
+    {#if setByFile('unifi_reads')}<span class="muted small" data-testid="set-by-file">(set by file)</span>{/if}
+    <label>
+      How far back client history reaches (hours, 1 to 8,760)
+      <input
+        type="number"
+        min="1"
+        max="8760"
+        bind:value={withinHours}
+        disabled={!writable || setByFile('unifi_all_users_within_hours')}
+        aria-label="History window in hours"
+      />
+      {#if setByFile('unifi_all_users_within_hours')}<span class="muted small" data-testid="set-by-file">(set by file)</span>{/if}
+    </label>
+    <label class="row">
+      <input
+        type="checkbox"
+        role="switch"
+        bind:checked={haAll}
+        disabled={!writable || setByFile('home_assistant_all_devices')}
+        aria-label="Home Assistant devices without entities"
+      />
+      Home Assistant: devices that have a MAC address and no entity
+      {#if setByFile('home_assistant_all_devices')}<span class="muted small" data-testid="set-by-file">(set by file)</span>{/if}
     </label>
 
     {#if writable}
