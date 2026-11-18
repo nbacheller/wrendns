@@ -108,7 +108,13 @@ pub fn answer(cluster: &Cluster, peer: &str, body: &[u8]) -> Result<Vec<u8>, Str
     } else {
         let mut b = load_ballot(cluster, now);
         let before = b.clone();
-        let reply = decide_without_election(&mut b, &ask, now);
+        // A renewal: the asker is the primary this node follows, in the epoch it follows.
+        let renewal = ask.epoch == cluster.role().1
+            && cluster
+                .members()
+                .iter()
+                .any(|m| m.primary && m.node_id == ask.candidate && m.epoch == ask.epoch);
+        let reply = decide_without_election(&mut b, &ask, now, renewal);
         (reply, (b != before).then_some(b))
     };
     if let Some(b) = ballot {
@@ -126,11 +132,10 @@ pub fn answer(cluster: &Cluster, peer: &str, body: &[u8]) -> Result<Vec<u8>, Str
 /// grants no real vote: with `auto` just turned off on a primary that now writes without a
 /// lease, a vote from here could make a second primary. A pre-vote changes nothing, so it is
 /// still answered.
-fn decide_without_election(b: &mut Ballot, ask: &Ask, now: u64) -> Reply {
-    // A renewal (the epoch and candidate this node already voted for) is granted: it is what
+fn decide_without_election(b: &mut Ballot, ask: &Ask, now: u64, renewal: bool) -> Reply {
+    // A renewal (`renewal`: the primary this node follows, in its current epoch) is granted: it is what
     // lets a primary that has just adopted `auto` get its lease, so it can publish the record
     // that turns the replicas to `auto`. A vote for a higher epoch is refused.
-    let renewal = !b.candidate.is_empty() && ask.epoch == b.epoch && ask.candidate == b.candidate;
     if ask.pre || renewal {
         b.decide(ask, now, (0, 0))
     } else {
@@ -463,17 +468,13 @@ mod tests {
             applied: (0, 0),
         };
         let mut b = Ballot::default();
-        let r = decide_without_election(&mut b, &ask(false), 1_000);
+        let r = decide_without_election(&mut b, &ask(false), 1_000, false);
         assert!(!r.granted);
         assert_eq!(b, Ballot::default(), "the ballot moved");
-        assert!(decide_without_election(&mut b, &ask(true), 1_000).granted);
-        // A same-epoch renewal from the primary this node follows is granted; epoch + 1 is not.
-        let mut b = Ballot {
-            epoch: 1,
-            candidate: "a".into(),
-            lease_until_ms: 0,
-            clock: 0,
-        };
+        assert!(decide_without_election(&mut b, &ask(true), 1_000, false).granted);
+        // A renewal (the caller found the asker to be the primary this node follows, in its
+        // epoch) is granted even on an empty ballot, which is the state of a replica that never
+        // voted; a vote for another epoch or another candidate is refused.
         let mk = |epoch, candidate: &str| Ask {
             epoch,
             candidate: candidate.into(),
@@ -481,9 +482,11 @@ mod tests {
             pre: false,
             applied: (0, 0),
         };
-        assert!(decide_without_election(&mut b, &mk(1, "a"), 1_000).granted);
-        assert!(!decide_without_election(&mut b, &mk(2, "a"), 1_000).granted);
-        assert!(!decide_without_election(&mut b, &mk(1, "c"), 1_000).granted);
+        let mut b = Ballot::default();
+        assert!(decide_without_election(&mut b, &mk(1, "a"), 1_000, true).granted);
+        assert_eq!(b.epoch, 1);
+        assert!(!decide_without_election(&mut b, &mk(2, "a"), 1_000, false).granted);
+        assert!(!decide_without_election(&mut b, &mk(1, "c"), 1_000, false).granted);
     }
 
     // REQ: CLU-005 (ADR-960) — a primary resumes whatever its stored ballot says.
