@@ -2,7 +2,8 @@
 //! `build.rs`, plus how it was installed (from `TELLTALE_INSTALL`, which the image, the Helm
 //! chart, and the systemd unit set).
 
-/// `0.1.0` for a release, `0.1.0-edge.47` for a main build, `dev` for a local build.
+/// `0.1.0` for a release, `0.1.0-edge.47` for a main build, `0.1.0-dev` for a local build (the crate
+/// version with a `-dev` suffix; peers read it as that version, ADR-948).
 pub(crate) const VERSION: &str = env!("TELLTALE_BUILD_VERSION");
 pub(crate) const COMMIT: &str = env!("TELLTALE_BUILD_COMMIT");
 pub(crate) const DATE: &str = env!("TELLTALE_BUILD_DATE");

@@ -59,6 +59,9 @@ fn ops_004_versions_compare_within_a_channel() {
         "the release beats its edge builds"
     );
     assert_eq!(compare("dev", "0.1.0-edge.60"), "newer");
+    // REQ: CLU-005 (T21.6, ADR-948) — an unstamped build's `<version>-dev` is not an edge run, so it
+    // reads as newer than the index, the same as a bare `dev`.
+    assert_eq!(compare("0.8.0-dev", "0.8.0"), "newer");
 }
 
 #[test]

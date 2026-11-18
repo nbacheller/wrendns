@@ -59,9 +59,9 @@ Two things the owner's wording named differently, and how the test handles them:
   configured, with no counts or node labels. The per-node view is the top clients statistic,
   `/api/v1/stats/top?kind=clients&scope=node:<name>`, which the test reads.
 - Check **e** follows ADR-928 as decided: the gate refuses only a member that runs an older or an
-  unreadable version. A stopped member is not refused, and a `dev` build can't be read by its peers.
-  The test image stamps the release version (`TELLTALE_BUILD_VERSION=0.8.0`), as CI stamps a release
-  build, so the gate can read the replicas. ADR-948 records the open question.
+  unreadable version. A stopped member is not refused. The test image is an unstamped local build,
+  which reports `0.8.0-dev`; its peers read that as 0.8.0 (ADR-948, T21.6), so the gate reads every
+  member.
 
 ## Test-only settings
 
@@ -89,7 +89,8 @@ refuses connections; the test reads only the router's listing.
 
 - The log tails are printed. For more, `docker compose -p telltale-cluster3 -f deploy/cluster3/compose.yaml logs <node>`
   works while the cluster is up (`KEEP=1` keeps the temp directory and the image).
-- A failure in **e** after a `dev` build is the gate, not a bug: see the note above and ADR-948.
+- A failure in **e** after a build that reports no readable version (a bare `dev`, from a build made
+  before T21.6) is the gate, not a bug: see the note above and ADR-948.
 - The test's own timing is the only fixed wait: the bounds in `e2e.sh` (5 s for DNS in **b**,
   15 s for the reads in **g**, 5 to 40 s for the promotion in **h**, two answering nodes in **i**)
   are the requirements, not allowances.

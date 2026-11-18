@@ -167,7 +167,7 @@ telltale 0.1.0-edge.64 (commit 3f46fd4, built 2026-10-05T12:00:00Z, channel edge
 **Version formats:**
 - releases are `0.1.0`;
 - builds of `main` are `0.1.0-edge.<run>`;
-- a local build is `dev` with its commit.
+- a local build is the crate version with a `-dev` suffix (for example `0.8.0-dev`) and its commit. Its peers read it as that version, so a cluster of local builds passes the version gates.
 
 The same build identity, and how the node was installed (`native`, `container`, or `helm`), shows in the web UI's sidebar (with the node's name and, in a cluster, whether it's the **primary** or a **replica**: changes saved on a replica's UI go to the primary) and **Settings → System → Version and updates**, in `GET /api/v1/system/info` (`build`, `update`), in `telltale_build_info{version,commit,channel,target}`, and on the Cluster page for every node.
 

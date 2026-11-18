@@ -3859,7 +3859,7 @@ export interface components {
             install: string;
             /** @description Rust target, e.g. `aarch64-unknown-linux-musl`. */
             target: string;
-            /** @description `0.1.0` (release), `0.1.0-edge.47` (main build), or `dev` (local build). */
+            /** @description `0.1.0` (release), `0.1.0-edge.47` (main build), or `0.1.0-dev` (local build, read by peers as 0.1.0). */
             version: string;
         };
         /** @description One cached answer for a name. */

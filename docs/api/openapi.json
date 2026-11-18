@@ -10932,7 +10932,7 @@
           },
           "version": {
             "type": "string",
-            "description": "`0.1.0` (release), `0.1.0-edge.47` (main build), or `dev` (local build)."
+            "description": "`0.1.0` (release), `0.1.0-edge.47` (main build), or `0.1.0-dev` (local build, read by peers as 0.1.0)."
           }
         }
       },

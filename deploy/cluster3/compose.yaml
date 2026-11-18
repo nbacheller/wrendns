@@ -35,12 +35,11 @@ services:
       context: ../..
       dockerfile: Dockerfile
       args:
-        # The same build as deploy/docker-desktop/compose.yaml (thin LTO), with the version CI stamps
-        # into a release build. A dev build reports `dev`, which its peers can't read, so the cluster's
-        # version gates (the [discovery] first write, ADR-928) would refuse it for every member.
+        # The same build as deploy/docker-desktop/compose.yaml (thin LTO). Unstamped, it reports
+        # `<crate version>-dev`, which its peers read as that version, so the version gates (the
+        # [discovery] first write, ADR-928) let it through (ADR-948, T21.6).
         PROFILE: bench-fast
         TELLTALE_BUILD_CHANNEL: dev
-        TELLTALE_BUILD_VERSION: "0.8.0"
     volumes:
       - ./config/primary.toml:/etc/telltale/telltale.toml:ro
       - primary-data:/var/lib/telltale

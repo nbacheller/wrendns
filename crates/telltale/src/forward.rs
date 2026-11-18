@@ -483,19 +483,10 @@ pub(crate) const SETTINGS_KINDS_SINCE: (u64, u64, u64) = (0, 8, 0);
 /// carries the section, the same as `SETTINGS_KINDS_SINCE`; the workspace version is that release.
 pub(crate) const DISCOVERY_SINCE: (u64, u64, u64) = (0, 8, 0);
 
-/// REQ: DSC-001 (ADR-928) — the version the gate compares for `node_id`. An unreleased build reports
-/// `dev`, which no gate can read, so this node's own `dev` counts as the crate's version: the code it
-/// runs is that version and knows every kind it has. Another node's `dev` stays unreadable, so it
-/// still counts as older.
-pub(crate) fn gate_version(cluster: &Cluster, node_id: &str, version: &str) -> String {
-    if version == "dev" && cluster.identity.meta.node_id == node_id {
-        env!("CARGO_PKG_VERSION").to_owned()
-    } else {
-        version.to_owned()
-    }
-}
-
-/// Whether a version string (`0.8.0`, `v0.8.1-rc.1`) is at least `min`; unreadable is not.
+/// Whether a version string (`0.8.0`, `v0.8.1-rc.1`, `0.8.0-dev`) is at least `min`; unreadable is
+/// not. A local build reports `<crate version>-dev` (ADR-948, T21.6): the suffix after `-` is
+/// dropped, so the build reads as its crate version. A bare `dev` (a build from before that) stays
+/// unreadable.
 pub(crate) fn version_at_least(v: &str, min: (u64, u64, u64)) -> bool {
     let core = v.trim().trim_start_matches('v');
     let core = core.split(['-', '+']).next().unwrap_or_default();
@@ -529,7 +520,7 @@ fn markers_understood(
         .members()
         .into_iter()
         .find(|m| m.node_id == primary)
-        .map(|m| gate_version(cluster, &m.node_id, &m.version));
+        .map(|m| m.version);
     if version
         .as_deref()
         .is_some_and(|v| version_at_least(v, MARKERS_SINCE))
@@ -570,7 +561,7 @@ fn settings_kinds_understood(
         .members()
         .into_iter()
         .find(|m| m.node_id == primary)
-        .map(|m| gate_version(cluster, &m.node_id, &m.version));
+        .map(|m| m.version);
     if version
         .as_deref()
         .is_some_and(|v| version_at_least(v, since))
@@ -824,6 +815,16 @@ mod tests {
         for v in ["0.7.9", "0.7", "", "dev", "0.7.12-rc.1"] {
             assert!(!version_at_least(v, MARKERS_SINCE), "{v}");
         }
+    }
+
+    /// REQ: CLU-005, OPS-007 (T21.6, ADR-948) — a local build's `-dev` version is readable as its crate
+    /// version, and a bare `dev` (no version) is still unreadable.
+    #[test]
+    fn clu_005_dev_build_reports_a_readable_version() {
+        assert!(version_at_least("0.8.0-dev", DISCOVERY_SINCE));
+        assert!(!version_at_least("0.7.9-dev", DISCOVERY_SINCE));
+        assert!(!version_at_least("dev", DISCOVERY_SINCE));
+        assert!(!version_at_least("", DISCOVERY_SINCE));
     }
 
     // REQ: OBS-014 — an acknowledgement crosses the channel intact.
