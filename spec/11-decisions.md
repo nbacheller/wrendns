@@ -5146,7 +5146,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** a node on several networks hears mDNS on each, lists each, and matches MAC-keyed clients behind a router. No new dependency (`libc` is already in `telltale-net`), no image delta beyond a few hundred bytes of code.
 
-## ADR-1013 — One picker, and `client` takes several (Proposed 2026-11-18, T24.34)
+## ADR-1013 — One picker, and `client` takes several (Accepted 2026-11-18)
 **Context:** Owner request (fork #26): the Query log's client filter takes one address; the UI's list selections are a mix of checkbox lists. `GET /queries` read `client` as one value; axum's query extractor does not take a repeated key.
 **Decision:**
 1. **One component** (`Picker.svelte`) with a windowed list for every list selection; checkbox lists that choose from a growing list are replaced, short fixed lists with codes beside them (agent-token scopes) are not.
