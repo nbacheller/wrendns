@@ -612,6 +612,37 @@ test('api_005 upstream health reads in plain words', async () => {
   }
 });
 
+// REQ: UPS-006 (fork #25) — an upstream the node has no route to says so on the Upstreams page.
+test('ups_006 upstream with no route says why', async () => {
+  const upstream = (id: number, name: string, extra: object) => ({
+    breaker: 'open',
+    endpoint: `udp://192.0.2.${id}`,
+    failures: 0,
+    failuresByKind: {},
+    groups: ['default'],
+    id,
+    latencyEwmaMs: 5,
+    name,
+    requests: 10,
+    ...extra,
+  });
+  const isUpstreams = (url: URL) => url.pathname === '/api/v1/upstreams';
+  const stub = (route: Route) =>
+    route.fulfill({
+      json: { items: [upstream(1, 'up-fine', { breaker: 'closed' }), upstream(2, 'up-v6', { routeProblem: 'this node has no IPv6 route' })] },
+    });
+  await page.route(isUpstreams, stub);
+  try {
+    await page.goto('/#/upstreams');
+    await page.reload(); // the previous test left this route open, and the page polls every 10 s
+    const row = (name: string) => page.getByRole('row', { name: new RegExp(name) });
+    await expect(row('up-v6').getByTestId('route-problem')).toContainText('this node has no IPv6 route');
+    await expect(row('up-fine').getByTestId('route-problem')).toHaveCount(0);
+  } finally {
+    await page.unroute(isUpstreams, stub);
+  }
+});
+
 // REQ: UPS-013 (T24.31, ADR-997) — an upstream's source address: the Upstreams form offers this
 // node's own addresses and networks, and a source the node lost shows as a problem on its row.
 test('ups_013 upstream source address: suggestions and a lost-address problem', async () => {

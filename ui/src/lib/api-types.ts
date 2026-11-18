@@ -7942,6 +7942,11 @@ export interface components {
                 /** Format: int64 */
                 requests: number;
                 /**
+                 * @description REQ: UPS-006 — why this node can't reach it, when it can say: `this node has no IPv6
+                 *     route` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing.
+                 */
+                routeProblem?: string | null;
+                /**
                  * @description REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the
                  *     upstream sets a `source`.
                  */
@@ -8566,7 +8571,7 @@ export interface components {
             /**
              * @description Stable: `error_rate`, `slow`, `rate_limited`, `high_blocked`, `anomaly`, `breaker_open`,
              *     `breaker_half_open`, `unreachable`, `severe`, `degraded`, `router_error`,
-             *     `not_configured`, `few_samples`, `children`.
+             *     `not_configured`, `few_samples`, `children`, `member_down`, `no_route`.
              */
             code: string;
             summary: string;
@@ -10680,6 +10685,11 @@ export interface components {
             name: string;
             /** Format: int64 */
             requests: number;
+            /**
+             * @description REQ: UPS-006 — why this node can't reach it, when it can say: `this node has no IPv6
+             *     route` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing.
+             */
+            routeProblem?: string | null;
             /**
              * @description REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the
              *     upstream sets a `source`.

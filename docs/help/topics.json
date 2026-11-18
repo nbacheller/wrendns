@@ -340,6 +340,16 @@
       "docs": "encrypted-upstreams"
     },
     {
+      "id": "upstream-route",
+      "title": "\"This node has no IPv6 route\"",
+      "term": "No route to an upstream",
+      "summary": "This node can't reach the server's address: it is an IPv6 (or IPv4) address and the machine has no default route for that family. TelltaleDNS checks with a connection attempt that sends nothing, at start and every 30 seconds, never on the query path. The server fails on every query until the route exists.",
+      "when": "A server you imported from Pi-hole, or added by address, is always failing.",
+      "example": "Cloudflare's [2606:4700:4700::1111] on a Pi with only IPv4: remove it from the group, or give the host IPv6. On the map the group's resolver stays yellow while the others answer.",
+      "caution": "A server given by hostname isn't checked this way; its failures show as connection errors.",
+      "docs": "network-map"
+    },
+    {
       "id": "upstream-source",
       "title": "Send an upstream's queries from one address",
       "term": "Source address (bind address)",

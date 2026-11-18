@@ -21005,6 +21005,13 @@
                   "format": "int64",
                   "minimum": 0
                 },
+                "routeProblem": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: UPS-006 — why this node can't reach it, when it can say: `this node has no IPv6\nroute` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing."
+                },
                 "source": {
                   "type": [
                     "string",
@@ -22465,7 +22472,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable: `error_rate`, `slow`, `rate_limited`, `high_blocked`, `anomaly`, `breaker_open`,\n`breaker_half_open`, `unreachable`, `severe`, `degraded`, `router_error`,\n`not_configured`, `few_samples`, `children`."
+            "description": "Stable: `error_rate`, `slow`, `rate_limited`, `high_blocked`, `anomaly`, `breaker_open`,\n`breaker_half_open`, `unreachable`, `severe`, `degraded`, `router_error`,\n`not_configured`, `few_samples`, `children`, `member_down`, `no_route`."
           },
           "summary": {
             "type": "string"
@@ -27497,6 +27504,13 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "routeProblem": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: UPS-006 — why this node can't reach it, when it can say: `this node has no IPv6\nroute` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing."
           },
           "source": {
             "type": [

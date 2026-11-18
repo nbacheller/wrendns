@@ -1181,6 +1181,10 @@ pub struct UpstreamInfo {
     pub failures_by_kind: FailureKinds,
     /// Smoothed answer time.
     pub latency_ewma_ms: f64,
+    /// REQ: UPS-006 — why this node can't reach it, when it can say: `this node has no IPv6
+    /// route` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_problem: Option<String>,
     /// REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the
     /// upstream sets a `source`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
