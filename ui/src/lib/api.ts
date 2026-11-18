@@ -143,7 +143,7 @@ function newKey(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'discovery-settings';
+export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'discovery-settings' | 'sinks';
 
 /** REQ: API-007 (T23.9) — a backup made through the API. */
 export type BackupResult = { blob: Blob; name: string; secrets: 'included' | 'omitted'; count: number; warnings: string[] };
@@ -273,6 +273,13 @@ export const api = {
   oidcProviders: () => get<S['OidcProviderList']>('/oidc-providers'),
   putOidcProvider: (id: string, b: Record<string, unknown>) => call<unknown>('PUT', `/oidc-providers/${encodeURIComponent(id)}`, { body: b }),
   deleteOidcProvider: (id: string) => call<unknown>('DELETE', `/oidc-providers/${encodeURIComponent(id)}`),
+  // REQ: API-016, OBS-010, OBS-006 (T23.11) — event sinks (written through `putEntry`/`deleteEntry` on
+  // `sinks`) and the OTLP export: what this node runs, and the admin's write of the one OTLP entry.
+  sinks: () => get<S['SinkList']>('/sinks'),
+  otlp: () => get<S['OtlpEntry']>('/otlp'),
+  putOtlp: (b: Record<string, unknown>, dryRun = false) =>
+    call<S['ConfigChange']>('PUT', '/otlp/default', { body: b, query: { dryRun: dryRun || undefined }, headers: dryRun ? {} : { 'idempotency-key': newKey() } }),
+  deleteOtlp: () => call<S['ConfigChange']>('DELETE', '/otlp/default', { headers: { 'idempotency-key': newKey() } }),
   // REQ: OBS-035 (T14.13) — wall displays.
   displays: () => get<S['Listed_DisplayInfo']>('/displays'),
   createDisplay: (b: S['CreateDisplay']) => post<S['NewDisplay']>('/displays', b),
