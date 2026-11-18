@@ -1,0 +1,42 @@
+# One of the two TelltaleDNS nodes behind the keepalived VIP (deploy/keepalived, REQ: CLU-004, CLU-005).
+# Node a is the primary of the two-node cluster: it creates the cluster on its first start
+# ([cluster.init]), and node b and the witness join it with tokens (e2e.sh; README.md). Its shared
+# settings ([dns], [[record]], upstreams) are the cluster's configuration, so node b takes them from
+# here. The DNS listeners bind the wildcard address, so they answer on the VIP the node holds and on
+# its own address.
+#
+# This example has no upstream resolvers: the test network has no internet. Add [[upstream]] and
+# [[upstream_group]] (see deploy/compose/telltale.toml) for a real node.
+config_version = 1
+
+[node]
+name = "telltale-a"
+
+[[listen]]
+proto = "udp"
+addr = "0.0.0.0:53"
+
+[[listen]]
+proto = "tcp"
+addr = "0.0.0.0:53"
+
+[api]
+listen = "0.0.0.0:8053"
+
+# Each answer names the node that gave it in the NSID option: `dig +nsid @VIP ...` shows which
+# node holds the VIP (the answer's name is `[node] name`).
+[dns]
+nsid = true
+
+[cluster]
+name = "keepalived"
+site = "telltale-a"
+listen = "0.0.0.0:8443"
+
+[cluster.init]
+advertise = ["https://10.231.250.11:8443"]
+
+[[record]]
+name = "gateway.vip.home.arpa"
+type = "A"
+value = "192.0.2.1"

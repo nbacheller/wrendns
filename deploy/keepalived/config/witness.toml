@@ -1,0 +1,13 @@
+# The witness of the two-node cluster behind the keepalived VIP (REQ: CLU-005; deploy/keepalived).
+# A witness is a vote-only process: it holds no configuration, answers no DNS and serves no API.
+# Two nodes can't tell "the other node is down" from "the link between us is down", so automatic
+# promotion needs this third vote (docs/running.md, "Automatic failover"). It joins with a witness
+# token from node a (README.md) and then runs `cluster witness`.
+config_version = 1
+
+[node]
+name = "witness"
+data_dir = "/var/lib/telltale"
+
+[cluster]
+listen = "0.0.0.0:8443"
