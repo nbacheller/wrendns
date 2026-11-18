@@ -49,13 +49,63 @@ test.describe('dns_006 cache settings', () => {
   test('dns_006 restart-only field says pending restart', async ({ browser }) => {
     const page = await signedIn(browser, ADMIN, 'cache');
     try {
+      // This test makes its own change (it doesn't rely on the test before it), then reads the badge.
       const node = await cacheCard(page);
-      // The change made by the test before shows until the node restarts: the badge is on the card
-      // and the form says every field applies at start.
+      await node.locator('summary', { hasText: 'Settings' }).click();
+      await node.getByTestId('cache-settings-edit').click();
+      await node.getByLabel('Memory budget (MiB)').fill('40');
+      await node.getByRole('button', { name: 'Check' }).click();
+      await expect(node.getByTestId('cache-settings-preview')).toContainText('after a restart');
+      await node.getByRole('button', { name: 'Apply' }).click();
       await expect(node.getByTestId('cache-pending-restart')).toHaveText('pending restart');
+      // Applying closes the form and the details with it; wait for that before reopening it.
+      await expect(node.locator('details.settings')).not.toHaveAttribute('open');
       await node.locator('summary', { hasText: 'Settings' }).click();
       await node.getByTestId('cache-settings-edit').click();
       await expect(node.getByTestId('cache-settings-form')).toContainText('applies when this node restarts');
+      await node.getByRole('button', { name: 'Cancel' }).click();
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  test('dns_006 server refuses a shortest TTL above the longest', async ({ browser }) => {
+    // REQ: DNS-006 (T27.2) — the server checks what the form can't (cache.min_ttl must not exceed
+    // cache.max_ttl); the Check shows the refusal and no preview.
+    const page = await signedIn(browser, ADMIN, 'cache');
+    try {
+      const node = await cacheCard(page);
+      await node.locator('summary', { hasText: 'Settings' }).click();
+      await node.getByTestId('cache-settings-edit').click();
+      await node.getByLabel('Shortest TTL served (seconds)').fill('7200');
+      await node.getByLabel('Longest TTL served (seconds)').fill('300');
+      await node.getByRole('button', { name: 'Check' }).click();
+      await expect(node.getByRole('alert')).toBeVisible();
+      await expect(node.getByTestId('cache-settings-preview')).toHaveCount(0);
+      await node.getByRole('button', { name: 'Cancel' }).click();
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  test('dns_006 cache form refuses an empty or out-of-range value before the server', async ({ browser }) => {
+    // REQ: DNS-006 (T27.2) — a cleared number is refused (never saved as 0), and the refresh share
+    // of the TTL takes 1 to 99 (the server's range, when prefetch is on).
+    const page = await signedIn(browser, ADMIN, 'cache');
+    try {
+      const node = await cacheCard(page);
+      await node.locator('summary', { hasText: 'Settings' }).click();
+      await node.getByTestId('cache-settings-edit').click();
+      const threshold = node.getByLabel('Refresh when this share of the TTL is left (%)');
+      await threshold.fill('100');
+      await expect(threshold).toHaveJSProperty('validity.valid', false);
+      await threshold.fill('50');
+      await expect(threshold).toHaveJSProperty('validity.valid', true);
+      const budget = node.getByLabel('Memory budget (MiB)');
+      await budget.fill('');
+      await node.getByRole('button', { name: 'Check' }).click();
+      await expect(budget).toHaveJSProperty('validity.valueMissing', true);
+      await expect(node.getByTestId('cache-settings-preview')).toHaveCount(0);
       await node.getByRole('button', { name: 'Cancel' }).click();
     } finally {
       await page.context().close();
@@ -126,18 +176,73 @@ test.describe('settings from T27.11', () => {
     }
   });
 
-  test('flt_004 list size limit', async ({ browser }) => {
+  test('dns_011 change the DNSSEC validation mode', async ({ browser }) => {
+    // REQ: DNS-011 (T27.11) — the validation mode is checked, applied, and then put back as it was.
+    const page = await signedIn(browser, ADMIN, 'settings?tab=queries');
+    try {
+      const card = page.getByTestId('dnssec-card');
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await card.getByTestId('dnssec-edit').click();
+      const validation = card.locator('select[aria-label="Validation"]');
+      const original = await validation.inputValue();
+      const next = original === 'permissive' ? 'validate' : 'permissive';
+      await validation.selectOption(next);
+      await card.getByRole('button', { name: 'Check' }).click();
+      await expect(card.getByTestId('dnssec-preview')).toBeVisible();
+      await card.getByRole('button', { name: 'Apply' }).click();
+      await card.getByTestId('dnssec-edit').click();
+      await expect(validation).toHaveValue(next);
+      await validation.selectOption(original);
+      await card.getByRole('button', { name: 'Check' }).click();
+      await card.getByRole('button', { name: 'Apply' }).click();
+      await expect(card.getByTestId('dnssec-edit')).toBeVisible();
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  test('flt_004 list stale age and refresh', async ({ browser }) => {
     // REQ: FLT-004 (T27.11) — the list settings on the Lists page: the stale age, checked then saved.
+    // An unchanged refresh interval isn't sent, so a file's exact seconds are kept.
     const page = await signedIn(browser, ADMIN, 'lists');
     try {
       const card = page.getByTestId('filter-settings-card');
       await expect(card).toBeVisible({ timeout: 30_000 });
       await card.getByTestId('filter-settings-edit').click();
       await card.getByLabel('Flag a list as stale after (days)').fill('14');
+      const check = page.waitForRequest((r) => r.url().includes('/filter-settings/default') && r.method() === 'PUT');
       await card.getByRole('button', { name: 'Check' }).click();
+      expect((await check).postDataJSON()).not.toHaveProperty('refresh_secs');
       await expect(card.getByTestId('filter-settings-preview')).toBeVisible();
       await card.getByRole('button', { name: 'Apply' }).click();
       await expect(card.getByTestId('filter-settings-values')).toContainText('14 days');
+    } finally {
+      await page.context().close();
+    }
+  });
+
+  test('flt_004 list size limit', async ({ browser }) => {
+    // REQ: FLT-004 (T27.11) — a list's largest download is 1 KiB to 1 GiB: the server refuses a value
+    // above it at Check, and a value inside the range previews and can be added and removed.
+    const page = await signedIn(browser, ADMIN, 'lists');
+    try {
+      const lists = page.getByTestId('editor-list');
+      await expect(lists).toBeVisible({ timeout: 30_000 });
+      await lists.getByRole('button', { name: 'Add list' }).click();
+      await page.getByRole('textbox', { name: 'Name', exact: true }).fill('size-limit-e2e');
+      await page.getByRole('textbox', { name: 'Rules', exact: true }).fill('||size-limit.e2e.test^');
+      await page.getByRole('textbox', { name: 'Largest download', exact: true }).fill('2GiB');
+      await page.getByRole('button', { name: 'Check' }).click();
+      await expect(page.getByRole('dialog', { name: 'Add list' }).getByRole('alert')).toContainText('1GiB');
+      await expect(page.getByTestId('entry-preview')).toHaveCount(0);
+      await page.getByRole('textbox', { name: 'Largest download', exact: true }).fill('512MiB');
+      await page.getByRole('button', { name: 'Check' }).click();
+      await expect(page.getByTestId('entry-preview')).toBeVisible();
+      await page.getByRole('button', { name: 'Apply' }).click();
+      const row = lists.getByTestId('entry-row').filter({ hasText: 'size-limit-e2e' });
+      await expect(row).toContainText('added here');
+      await row.getByRole('button', { name: 'Remove' }).click();
+      await expect(row).toHaveCount(0);
     } finally {
       await page.context().close();
     }

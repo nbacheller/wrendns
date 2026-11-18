@@ -12,6 +12,9 @@
   let error = $state<unknown>(null);
   let notice = $state('');
   let editing = $state(false);
+  // The stored refresh interval in seconds, as read (a file's 900 or 5400 stays as it is unless the
+  // operator changes the hours field).
+  let storedSecs = $state(86_400);
   let refreshHours = $state(24);
   let staleDays = $state(30);
   let preview = $state<S['ConfigChange'] | null>(null);
@@ -34,21 +37,30 @@
     void load();
   });
 
+  // Shown as minutes below an hour, else hours (up to two decimals).
+  function everyText(secs: number): string {
+    if (secs < 3600) return `${Math.round(secs / 60)} min`;
+    return `${Number((secs / 3600).toFixed(2))} h`;
+  }
+
   function open() {
     preview = null;
     formError = null;
     notice = '';
-    refreshHours = Math.round(Number(defs.refresh_secs ?? 86_400) / 3600);
+    storedSecs = Number(defs.refresh_secs ?? 86_400);
+    refreshHours = storedSecs / 3600;
     staleDays = Number(defs.stale_after_days ?? 30);
     editing = true;
   }
 
-  // The refresh interval is in hours on the form (at least 15 minutes, as the server requires).
+  // The refresh interval is in hours on the form (at least 15 minutes, as the server requires). It is
+  // sent only when the operator changed it, so an unchanged stored value keeps its exact seconds.
   function body(): Record<string, unknown> {
     const all: Record<string, unknown> = {
-      refresh_secs: Math.round(Number(refreshHours) * 3600),
       stale_after_days: Number(staleDays),
     };
+    const secs = Math.round(Number(refreshHours) * 3600);
+    if (secs !== storedSecs) all.refresh_secs = secs;
     for (const k of fileSet) delete all[k];
     return all;
   }
@@ -90,7 +102,7 @@
   {#if entry}
     <dl class="facts small" data-testid="filter-settings-values">
       <dt>Refresh URL and file lists</dt>
-      <dd>every {Math.round(Number(defs.refresh_secs ?? 0) / 3600)} h{#if fileSet.includes('refresh_secs')} <span class="muted">(set by file)</span>{/if}</dd>
+      <dd>every {everyText(Number(defs.refresh_secs ?? 0))}{#if fileSet.includes('refresh_secs')} <span class="muted">(set by file)</span>{/if}</dd>
       <dt>Stale after</dt>
       <dd>{Number(defs.stale_after_days ?? 0) ? `${defs.stale_after_days} days without a confirmation` : 'never'}{#if fileSet.includes('stale_after_days')} <span class="muted">(set by file)</span>{/if}</dd>
     </dl>
@@ -101,12 +113,12 @@
   {#if editing}
     <form class="form" data-testid="filter-settings-form" onsubmit={check}>
       <label>
-        Refresh URL and file lists every (hours, at least 1)
-        <input type="number" min="1" aria-label="Refresh lists every (hours)" bind:value={refreshHours} readonly={fileSet.includes('refresh_secs')} />
+        Refresh URL and file lists every (hours, at least 0.25: 15 minutes)
+        <input type="number" min="0.25" step="any" required aria-label="Refresh lists every (hours)" bind:value={refreshHours} readonly={fileSet.includes('refresh_secs')} />
       </label>
       <label>
         Flag a list as stale after (days; 0: never)
-        <input type="number" min="0" aria-label="Flag a list as stale after (days)" bind:value={staleDays} readonly={fileSet.includes('stale_after_days')} />
+        <input type="number" min="0" required aria-label="Flag a list as stale after (days)" bind:value={staleDays} readonly={fileSet.includes('stale_after_days')} />
       </label>
       <ErrorNote error={formError} />
       {#if preview}

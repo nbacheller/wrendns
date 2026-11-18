@@ -205,30 +205,30 @@
         <p class="muted small">Every field here applies when this node restarts, not at once.</p>
         <label>
           Memory budget (MiB)
-          <input type="number" min="1" aria-label="Memory budget (MiB)" bind:value={form.mib} readonly={setByFile('max_bytes')} />
+          <input type="number" required min="1" aria-label="Memory budget (MiB)" bind:value={form.mib} readonly={setByFile('max_bytes')} />
           {#if setByFile('max_bytes')}<span class="muted small" data-testid="set-by-file">Set by the configuration file: change it there.</span>{/if}
           <span class="muted small">How much memory cached answers may use. <HelpButton id="cache-size" /></span>
         </label>
         <label>
           Most answers (0: no limit)
-          <input type="number" min="0" aria-label="Most answers" bind:value={form.max_entries} readonly={setByFile('max_entries')} />
+          <input type="number" required min="0" aria-label="Most answers" bind:value={form.max_entries} readonly={setByFile('max_entries')} />
         </label>
         <label>
           Shortest TTL served (seconds)
-          <input type="number" min="0" aria-label="Shortest TTL served (seconds)" bind:value={form.min_ttl} readonly={setByFile('min_ttl')} />
+          <input type="number" required min="0" aria-label="Shortest TTL served (seconds)" bind:value={form.min_ttl} readonly={setByFile('min_ttl')} />
           <span class="muted small">How long answers are kept at least. <HelpButton id="cache-ttl" /></span>
         </label>
         <label>
           Longest TTL served (seconds)
-          <input type="number" min="0" aria-label="Longest TTL served (seconds)" bind:value={form.max_ttl} readonly={setByFile('max_ttl')} />
+          <input type="number" required min="0" aria-label="Longest TTL served (seconds)" bind:value={form.max_ttl} readonly={setByFile('max_ttl')} />
         </label>
         <label>
           Longest TTL for "no such name" answers (seconds)
-          <input type="number" min="0" aria-label="Longest TTL for negative answers (seconds)" bind:value={form.negative_ttl_max} readonly={setByFile('negative_ttl_max')} />
+          <input type="number" required min="0" aria-label="Longest TTL for negative answers (seconds)" bind:value={form.negative_ttl_max} readonly={setByFile('negative_ttl_max')} />
         </label>
         <label>
           How long SERVFAIL is kept (seconds)
-          <input type="number" min="0" aria-label="How long SERVFAIL is kept (seconds)" bind:value={form.servfail_ttl} readonly={setByFile('servfail_ttl')} />
+          <input type="number" required min="0" aria-label="How long SERVFAIL is kept (seconds)" bind:value={form.servfail_ttl} readonly={setByFile('servfail_ttl')} />
         </label>
         <label class="check">
           <input type="checkbox" role="switch" aria-label="Serve stale answers when upstreams fail" bind:checked={form.serve_stale} disabled={setByFile('serve_stale')} />
@@ -236,16 +236,16 @@
         </label>
         <label>
           Keep stale answers for (seconds)
-          <input type="number" min="0" aria-label="Keep stale answers for (seconds)" bind:value={form.stale_max_age} readonly={setByFile('stale_max_age')} />
+          <input type="number" required min="0" aria-label="Keep stale answers for (seconds)" bind:value={form.stale_max_age} readonly={setByFile('stale_max_age')} />
         </label>
         <label>
           Wait for upstreams before answering stale (ms, 0: at once)
-          <input type="number" min="0" aria-label="Wait for upstreams before answering stale (ms)" bind:value={form.stale_answer_client_timeout_ms} readonly={setByFile('stale_answer_client_timeout_ms')} />
+          <input type="number" required min="0" aria-label="Wait for upstreams before answering stale (ms)" bind:value={form.stale_answer_client_timeout_ms} readonly={setByFile('stale_answer_client_timeout_ms')} />
           <span class="muted small">{stale(form.stale_answer_client_timeout_ms)}.</span>
         </label>
         <label>
           TTL of a stale answer (seconds)
-          <input type="number" min="0" aria-label="TTL of a stale answer (seconds)" bind:value={form.stale_answer_ttl} readonly={setByFile('stale_answer_ttl')} />
+          <input type="number" required min="0" aria-label="TTL of a stale answer (seconds)" bind:value={form.stale_answer_ttl} readonly={setByFile('stale_answer_ttl')} />
         </label>
         <label class="check">
           <input type="checkbox" role="switch" aria-label="Refresh hot answers before they expire" bind:checked={form.prefetch} disabled={setByFile('prefetch')} />
@@ -253,11 +253,11 @@
         </label>
         <label>
           Refresh when this share of the TTL is left (%)
-          <input type="number" min="0" max="100" aria-label="Refresh when this share of the TTL is left (%)" bind:value={form.prefetch_threshold_pct} readonly={setByFile('prefetch_threshold_pct')} />
+          <input type="number" required min="1" max="99" aria-label="Refresh when this share of the TTL is left (%)" bind:value={form.prefetch_threshold_pct} readonly={setByFile('prefetch_threshold_pct')} />
         </label>
         <label>
           Hits before an answer is refreshed
-          <input type="number" min="0" aria-label="Hits before an answer is refreshed" bind:value={form.prefetch_min_hits} readonly={setByFile('prefetch_min_hits')} />
+          <input type="number" required min="0" aria-label="Hits before an answer is refreshed" bind:value={form.prefetch_min_hits} readonly={setByFile('prefetch_min_hits')} />
         </label>
         <label class="check">
           <input type="checkbox" role="switch" aria-label="Keep the cache across restarts" bind:checked={form.persist} disabled={setByFile('persist')} />
@@ -265,7 +265,7 @@
         </label>
         <label>
           Names to warm up after a start (in a cluster)
-          <input type="number" min="0" aria-label="Names to warm up after a start" bind:value={form.warm_names} readonly={setByFile('warm_names')} />
+          <input type="number" required min="0" aria-label="Names to warm up after a start" bind:value={form.warm_names} readonly={setByFile('warm_names')} />
           <span class="muted small">0 turns the warm-up off.</span>
         </label>
         <ErrorNote error={formError} />
