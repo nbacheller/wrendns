@@ -228,6 +228,7 @@
     ['config:write:forwards', 'Send domains to other servers'],
     ['ops:pause', 'Pause and resume blocking'],
     ['ops:anomalies', 'Acknowledge device anomalies (and take it back)'],
+    ['ops:discovery_test', 'Test an SNMP agent of the network inventory (admin only)'],
     ['cluster:admin', 'Promote a node; staged rollouts and pins'],
   ];
   // REQ: API-005 (T22.4, AGT-004) — scope presets: the scopes an integration's README asks for.

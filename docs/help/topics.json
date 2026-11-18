@@ -1220,6 +1220,26 @@
       "docs": "network-inventory-devices-that-never-ask-dns"
     },
     {
+      "id": "snmp-agents",
+      "title": "SNMP agents",
+      "term": "SNMP agent",
+      "summary": "An SNMP agent is a device TelltaleDNS may ask what it knows about the network: your gateway's ARP table (which MAC address sits behind each IP address), a switch's forwarding table (which port and VLAN a device is on) and the neighbours each switch port sees. TelltaleDNS only reads: it sends read requests and has no way to change a setting on the device. It asks every few minutes, one request at a time and no more than 20 a second.",
+      "when": "Add your gateway to see every device on every VLAN with its MAC address, and your managed switches to see where each device is plugged in. Press Test to see what a device answers before you rely on it: a table the device doesn't answer is skipped, never assumed.",
+      "example": "Your gateway answers the ARP table over SNMPv3 but has no switch tables, so Test shows ARP and interfaces answering and the bridge and LLDP tables skipped. Your managed switch answers the forwarding table and LLDP, so it is added as a second agent with its own credential.",
+      "caution": "Only a private IPv4 address can be an agent, named by you; the Test button takes the agent's name, never an address. Ports that lead to another switch or the gateway are left out when placing a device, so a device isn't shown on the wrong switch. If a device still answers the default community 'public' once SNMPv3 works, turn that off on the device.",
+      "docs": "snmp-setup-the-gateway-and-the-switches"
+    },
+    {
+      "id": "snmp-setup",
+      "title": "Setting up SNMP on your devices",
+      "term": "SNMP setup",
+      "summary": "Turn SNMP on in your gateway and switches, create a read-only SNMPv3 user (SHA with AES), allow only the DNS host's address, then put the user's password in a file TelltaleDNS can read and add the agent here.",
+      "when": "Do this once per device before you add it as an agent. Prefer SNMPv3: a v2c community crosses your network in clear text.",
+      "example": "On a UniFi gateway, enable SNMPv3 in the controller's SNMP settings with a user and one password (UniFi uses it for both authentication and privacy), and allow the DNS host's address. Save the password in a file under /run/secrets, add a credential with that file, then add the gateway as an agent and press Test.",
+      "caution": "A password lives in a file under the node's secret directories, never in the settings. On Kubernetes outside the host network, devices see the node's address after address translation: allow that address. A v2c host credential tells every device in the subnet the community in clear text.",
+      "docs": "snmp-setup-the-gateway-and-the-switches"
+    },
+    {
       "id": "block-response",
       "title": "How blocked names are answered",
       "term": "Block response",

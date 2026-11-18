@@ -8,6 +8,9 @@
   import { can } from '../lib/session.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import SnmpAgents from '../lib/components/SnmpAgents.svelte';
+  import SnmpCredentials from '../lib/components/SnmpCredentials.svelte';
+  import { type AgentDraft, type CredDraft, agentBody, agentsOf, credBody, credsOf } from '../lib/snmp';
 
   type Entry = S['ConfigEntry'];
 
@@ -21,6 +24,9 @@
   let node = $state('');
   let memory = $state(64);
   let subnets = $state('');
+  // REQ: DSC-004 (T25.6) — the SNMP agents and the credentials they name, edited with the rest.
+  let agents = $state<AgentDraft[]>([]);
+  let credentials = $state<CredDraft[]>([]);
   let preview = $state<S['ConfigChange'] | null>(null);
   // The form as Check previewed it. Apply is offered only while the form still holds exactly that.
   let previewedWith = $state<string | null>(null);
@@ -33,7 +39,9 @@
   const writable = $derived(can('admin'));
   const fileSet = $derived(entry?.setByFile ?? []);
   const setByFile = (k: string) => fileSet.includes(k);
-  const snapshot = () => JSON.stringify([enabled, node, memory, subnets]);
+  const snapshot = () => JSON.stringify([enabled, node, memory, subnets, agents, credentials]);
+  // The agents as stored, so the Test button knows which agent is already saved.
+  const storedAgents = $derived(agentsOf((entry?.definition ?? {}) as Record<string, unknown>));
   const previewCurrent = $derived(preview !== null && previewedWith === snapshot());
   // The stored settings are in use and an override of the files' settings (DSC-001).
   const overridden = $derived(entry?.source === 'override');
@@ -45,6 +53,8 @@
     memory = Number(d.worker_memory_mib ?? 64);
     const list = Array.isArray(d.subnet) ? (d.subnet as { cidr: string }[]) : [];
     subnets = list.map((s) => s.cidr).join('\n');
+    agents = agentsOf(d);
+    credentials = credsOf(d);
   }
 
   // Reads the stored settings. The form is refilled when `force` is set (after a save or a revert),
@@ -79,6 +89,8 @@
         .map((s) => s.trim())
         .filter(Boolean)
         .map((cidr) => ({ cidr })),
+      snmp_agent: agents.map(agentBody),
+      snmp_credential: credentials.map(credBody),
     };
     for (const k of fileSet) delete all[k];
     return all;
@@ -240,6 +252,9 @@
       />
       {#if setByFile('worker_memory_mib')}<span class="muted small" data-testid="set-by-file">(set by file)</span>{/if}
     </label>
+
+    <SnmpCredentials bind:credentials {agents} {writable} fileSet={setByFile('snmp_credential')} />
+    <SnmpAgents bind:agents {credentials} {writable} fileSet={setByFile('snmp_agent')} status={status?.agents ?? []} saved={storedAgents} />
 
     {#if writable}
       <div class="row actions">
