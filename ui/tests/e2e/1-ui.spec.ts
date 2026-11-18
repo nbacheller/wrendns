@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { zstdDecompressSync } from 'node:zlib';
 import { BASE_URL, DNS_PORT, E2E_ROOT, MDNS_PORT, PORTS } from './ports';
 import { resolve } from 'node:path';
-import { query } from './dns';
+import { query, queryDetail } from './dns';
 import { FrameHub, Loop, PANEL_MIN, Particles, Ticker, chooseLayout, dotBudget, lerpBoxes, motionAllowed, parseEvery, parseLayout, parsePanels, screenClass, screenClassStable, type Box } from '../../src/lib/wall';
 
 test.describe.configure({ mode: 'serial' });
@@ -2820,6 +2820,92 @@ test('flt_010 schedules are edited from the UI', async () => {
   await expect(g).toContainText('config file');
   await row.getByRole('button', { name: 'Remove' }).click();
   await expect(row).toHaveCount(0);
+});
+
+// REQ: FLT-014 (T27.4, API-901) — a rewrite added in the Groups form answers the group's devices
+// (every test query comes from 127.0.0.1, so the lab group), Explain shows it, and removing it
+// stops it. The group goes back to the file at the end.
+test('flt_014 add a rewrite to a group', async () => {
+  // Two DNS waits and a reload of Explain: longer than the default 30 s.
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/groups');
+  const lab = page.getByTestId('editor-group').getByTestId('entry-row').filter({ has: page.getByText('lab', { exact: true }) });
+  await lab.getByRole('button', { name: 'Edit' }).click();
+  const rewrites = page.getByRole('textbox', { name: 'Rewrites', exact: true });
+  // A malformed line stops Check with the line named.
+  await rewrites.fill('rw.e2e.test');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('write the name and the answer');
+  await rewrites.fill('rw.e2e.test 192.0.2.88\nrw.e2e.test 192.0.2.89');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('rewritten twice');
+  await rewrites.fill('rw.e2e.test 192.0.2.88');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('entry-preview')).toBeVisible();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(lab).toContainText('overrides the file');
+
+  // The DNS answer is the rewrite (a query from 127.0.0.1 is in the lab group).
+  await expect
+    .poll(async () => (await queryDetail('rw.e2e.test')).address, { timeout: 20_000 })
+    .toBe('192.0.2.88');
+  await page.goto('/#/explain?name=rw.e2e.test&client=127.0.0.1');
+  await expect(page.locator('.explain')).toContainText('rewritten to 192.0.2.88', { timeout: 30_000 });
+
+  // Removed: the rewrite is gone from the group and from Explain.
+  await page.goto('/#/groups');
+  await lab.getByRole('button', { name: 'Edit' }).click();
+  await rewrites.fill('');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('entry-preview')).toBeVisible();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect
+    .poll(async () => JSON.stringify(await (await page.request.get('/api/v1/explain?name=rw.e2e.test&client=127.0.0.1')).json()), {
+      timeout: 20_000,
+    })
+    .not.toContain('rewritten to');
+  await lab.getByRole('button', { name: 'Revert to the file' }).click();
+  await expect(lab).toContainText('config file');
+});
+
+// REQ: FLT-008 (T27.4, API-901) — the block TTL and Extended DNS Error fields of a group: a blocked
+// name's answer carries the TTL and the EDE code the form chose, and no list name when the text is off.
+test('flt_014 group block ttl and ede', async () => {
+  // Two DNS waits and a reload of Explain: longer than the default 30 s.
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/groups');
+  const lab = page.getByTestId('editor-group').getByTestId('entry-row').filter({ has: page.getByText('lab', { exact: true }) });
+  await lab.getByRole('button', { name: 'Edit' }).click();
+  // The server's limit is checked by the form first: 86401 is refused before Check.
+  const ttl = page.getByRole('spinbutton', { name: 'Block TTL (seconds)' });
+  await ttl.fill('86401');
+  expect(await ttl.evaluate((el: HTMLInputElement) => el.validity.valid)).toBe(false);
+  await ttl.fill('120');
+  await page.getByRole('combobox', { name: 'Extended DNS Error' }).selectOption('filtered');
+  await page.getByRole('switch', { name: 'Name the list in the error' }).uncheck();
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('entry-preview')).toBeVisible();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(lab).toContainText('overrides the file');
+
+  // ads.e2e.test is on a list every test group uses: blocked, with the group's TTL and EDE code.
+  await expect
+    .poll(async () => {
+      const a = await queryDetail('ads.e2e.test');
+      return `${a.address} ${a.ttl} ${a.ede.map((e) => e.code).join(',')} ${a.ede.map((e) => e.text).join('|')}`;
+    }, { timeout: 20_000 })
+    .toBe('0.0.0.0 120 17 ');
+
+  // The form shows what was saved.
+  await lab.getByRole('button', { name: 'Edit' }).click();
+  await expect(page.getByRole('spinbutton', { name: 'Block TTL (seconds)' })).toHaveValue('120');
+  await expect(page.getByRole('combobox', { name: 'Extended DNS Error' })).toHaveValue('filtered');
+  await expect(page.getByRole('switch', { name: 'Name the list in the error' })).not.toBeChecked();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
+  await lab.getByRole('button', { name: 'Revert to the file' }).click();
+  await expect(lab).toContainText('config file');
 });
 
 // REQ: DNS-014 (review 01 q1) — the per-client rate limit is adjusted from Settings → System

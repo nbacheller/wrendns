@@ -1044,6 +1044,8 @@ block_ttl = 60              # how long clients may cache the block
 ede = "filtered"            # "blocked" (EDE 15, default) or "filtered" (EDE 17: parental controls)
 ede_text = true             # name the list in the EDE text (set false to hide list names)
 ```
+In the web UI these are the group's **Blocked answer**, **Block addresses**, **Block TTL (seconds)**, **Extended DNS Error** and **Name the list in the error** fields (Groups → Manage groups → Edit). The TTL takes 0 to 86400 seconds.
+
 `null_ip` is the default, as in Pi-hole and Technitium. Apps treat it as "unreachable" and give up quickly, while NXDOMAIN makes some apps retry or fall back to another resolver.
 
 **CNAME inspection:** if an answer leads through a CNAME to a blocked name (`www.microsoft.com` → `…edgekey.net` → `….akamaiedge.net`), the answer is replaced with the client's block answer, with EDE text `CNAME target blocked by list …`. This also applies to answers served from the cache, which is shared by every group, so one group's policy never leaks into another's.
@@ -1294,6 +1296,8 @@ answer = "cdn.example.net"           # answered as a CNAME to that name, with it
 - An exact name wins over a wildcard; the most specific wildcard wins over others. A wildcard covers names under the domain, not the domain itself.
 - An address rewrite answers the other address family and other record types with no data.
 - Blocks still win: a blocked name isn't rewritten. For a name everyone should get, use [local records](#local-records) instead.
+
+In the web UI, open Groups → Manage groups → Edit: the **Rewrites** box takes one rewrite per line, `name answer` (for example `nas.example.com 192.168.1.10`). The form checks each line before Check, as the server does, and the group's card lists its rewrites. Explain shows which rewrite answered a name.
 
 ### DNS64
 For IPv6-only devices behind a NAT64 gateway: names without an IPv6 address get one made from their IPv4 address (RFC 6147), so the gateway can reach them.

@@ -52,6 +52,49 @@
   ]);
   const serviceName = (id: string) => services.find((s) => s.id === id)?.name ?? id;
 
+  // REQ: FLT-014 (T27.4) — the same rules the server checks (validate.rs `rewrites`, the block and
+  // rebinding fields): a name is letters, digits, `-` and `_` labels of 1 to 63 characters, at most
+  // 253 in all; an address is IPv4 or IPv6. The server still checks on Check, and its message wins.
+  const isName = (s: string) => {
+    const d = s.replace(/\.+$/, '');
+    return d.length > 0 && d.length <= 253 && d.split('.').every((l) => l.length > 0 && l.length <= 63 && /^[A-Za-z0-9_-]+$/.test(l));
+  };
+  const isIp = (s: string) =>
+    /^(\d{1,3}\.){3}\d{1,3}$/.test(s) ? s.split('.').every((o) => Number(o) <= 255) : s.includes(':') && /^[0-9a-fA-F:.]+$/.test(s);
+  const linesOf = (v: unknown) => ((v as string[] | undefined) ?? []).join('\n');
+  // Each line of a `lines` field, checked; a bad line stops Check with its message.
+  function addressesFrom(s: string): string[] {
+    return s.split('\n').map((x) => x.trim()).filter(Boolean).map((x) => {
+      if (!isIp(x)) throw new Error(`"${x}": write an IP address, like 192.168.1.2 or fd00::2`);
+      return x;
+    });
+  }
+  function namesFrom(s: string): string[] {
+    return s.split('\n').map((x) => x.trim()).filter(Boolean).map((x) => {
+      if (!isName(x)) throw new Error(`"${x}": write a domain, like plex.direct`);
+      return x;
+    });
+  }
+  type Rewrite = { domain: string; answer: string };
+  const rewriteText = (v: unknown) => ((v as Rewrite[] | undefined) ?? []).map((r) => `${r.domain} ${r.answer}`).join('\n');
+  // REQ: FLT-014 (T27.4) — one rewrite per line: `name answer` (an address, or a name for a CNAME).
+  function rewritesFrom(s: string): Rewrite[] {
+    const out: Rewrite[] = [];
+    const seen = new Set<string>();
+    for (const raw of s.split('\n').map((x) => x.trim()).filter(Boolean)) {
+      const parts = raw.split(/\s+/);
+      if (parts.length !== 2) throw new Error(`"${raw}": write the name and the answer, like nas.example.com 192.168.1.10`);
+      const [domain, answer] = parts;
+      if (!isName(domain.replace(/^\*\./, ''))) throw new Error(`"${domain}": a domain, or *.domain for every name under it`);
+      const key = domain.toLowerCase();
+      if (seen.has(key)) throw new Error(`"${domain}" is rewritten twice in this group`);
+      seen.add(key);
+      if (!isIp(answer) && !isName(answer)) throw new Error(`"${answer}": an IP address or a domain`);
+      out.push({ domain, answer });
+    }
+    return out;
+  }
+
   // REQ: API-002 (T7.5) — add and change groups here.
   const groupFields = $derived<Field[]>([
     { key: 'networks', label: 'Networks', type: 'lines', placeholder: '10.20.2.0/24',
@@ -72,10 +115,18 @@
     { key: 'blocked_services', label: 'Blocked services', type: 'multi', options: services.map((s) => s.id),
       help: 'Block a whole service (all its domains) for this group, on top of its lists.' },
     // REQ: FLT-014 (T7.20), DNS-016 (T7.21) — answer filtering and DNS64 (T8.6).
-    { key: 'rebinding_protection', label: 'Rebinding protection', type: 'bool', advanced: true,
+    { key: 'rebinding_protection', label: 'Rebinding protection', type: 'bool', advanced: true, helpTopic: 'rebinding',
       help: 'Block answers from the internet that point at private addresses (DNS rebinding).' },
+    // REQ: FLT-014, FLT-015 (T27.4) — the exceptions to rebinding protection, one domain per line.
+    { key: 'rebinding_allow', label: 'Rebinding exceptions', type: 'lines', placeholder: 'plex.direct', helpTopic: 'rebinding',
+      toText: linesOf, fromText: namesFrom,
+      help: 'Domains allowed to answer with private addresses, one per line (your own domain, plex.direct).' },
     { key: 'block_answer_ips', label: 'Block answers in', type: 'lines', placeholder: '203.0.113.0/24', advanced: true,
       help: 'Answers with an address in these networks are blocked, whatever the name.' },
+    // REQ: FLT-014 (T27.4) — rewrites: the name answered with an address, or a name (a CNAME).
+    { key: 'rewrite', label: 'Rewrites', type: 'lines', placeholder: 'nas.example.com 192.168.1.10', helpTopic: 'rewrites',
+      toText: rewriteText, fromText: rewritesFrom,
+      help: 'One per line: a name, then its answer. *.example.com covers every name under it. Blocks still win.' },
     { key: 'dns64', label: 'DNS64', type: 'bool', advanced: true,
       help: 'Make IPv6 addresses for IPv4-only names, for IPv6-only networks with NAT64.' },
     { key: 'dns64_prefix', label: 'DNS64 prefix', type: 'text', placeholder: '64:ff9b::/96', advanced: true },
@@ -88,7 +139,18 @@
     // REQ: FLT-010 (T9.7)
     { key: 'schedules', label: 'Schedules', type: 'multi', options: scheduleNames,
       help: 'Schedules this group follows (make them under Schedules, below).' },
-    { key: 'block_mode', label: 'Blocked answer', type: 'select', options: ['null_ip', 'nxdomain', 'nodata', 'refused', 'custom_ip'], advanced: true },
+    { key: 'block_mode', label: 'Blocked answer', type: 'select', options: ['null_ip', 'nxdomain', 'nodata', 'refused', 'custom_ip'], helpTopic: 'block-response' },
+    // REQ: FLT-008 (T27.4) — the addresses for custom_ip (required there, the server checks), the block TTL
+    // (0 to 86400 s), the Extended DNS Error code and whether it names the list.
+    { key: 'block_ips', label: 'Block addresses (custom_ip)', type: 'lines', placeholder: '192.168.1.2', helpTopic: 'block-response',
+      toText: linesOf, fromText: addressesFrom,
+      help: 'Used only with Blocked answer = custom_ip: an IPv4 address answers A, an IPv6 address answers AAAA.' },
+    { key: 'block_ttl', label: 'Block TTL (seconds)', type: 'number', placeholder: '60', min: 0, max: 86400, helpTopic: 'block-response',
+      help: 'How long clients may keep a block: 0 to 86400 seconds.' },
+    { key: 'ede', label: 'Extended DNS Error', type: 'select', options: ['blocked', 'filtered'], helpTopic: 'block-response',
+      help: 'blocked (15) for ads and trackers; filtered (17) for parental controls, where the client asked for it.' },
+    { key: 'ede_text', label: 'Name the list in the error', type: 'bool', initial: true, helpTopic: 'block-response',
+      help: 'Off hides the name of the list that blocked the name from the error text.' },
     { key: 'priority', label: 'Priority', type: 'number', placeholder: '0', advanced: true,
       help: 'When a device matches several groups, the highest priority wins.' },
     { key: 'color', label: 'Color', type: 'text', placeholder: '#4f8cff', advanced: true },
@@ -245,7 +307,7 @@
     <h2>Settings</h2>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Group</th><th class="num">Priority</th><th>Lists<HelpButton id="lists" /></th>{#if advanced}<th>Blocked answer</th>{/if}<th>Blocking</th></tr></thead>
+        <thead><tr><th>Group</th><th class="num">Priority</th><th>Lists<HelpButton id="lists" /></th>{#if advanced}<th>Blocked answer<HelpButton id="block-response" /></th>{/if}<th>Blocking</th></tr></thead>
         <tbody>
           {#each groups as g (g.name)}
             <tr>

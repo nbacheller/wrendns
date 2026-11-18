@@ -7,6 +7,11 @@
     label: string;
     type: 'text' | 'number' | 'select' | 'multi' | 'lines' | 'bool' | 'secret';
     options?: string[];
+    /** REQ: API-011 (T27.4) — a help topic beside the field (its `?`). */
+    helpTopic?: string;
+    /** REQ: API-901 (T27.4) — bounds of a `number` field (the server's limits, checked by the form). */
+    min?: number;
+    max?: number;
     /** How `select`/`multi` options read (CLU-013: node IDs by their site or pod). */
     optionLabels?: Record<string, string>;
     placeholder?: string;
@@ -425,12 +430,13 @@
               <input type="checkbox" role="switch" bind:checked={editing.values[f.key] as boolean} aria-label={f.label} disabled={locked(f)} />
             {:else if f.type === 'number'}
               <!-- step="any": thresholds such as 0.5 % are allowed. -->
-              <input type="number" step="any" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} />
+              <input type="number" step="any" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} min={f.min} max={f.max} />
             {:else}
               <input class="mono" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} readonly={locked(f)} />
             {/if}
             {#if fileSet.includes(f.key)}<span class="muted small" data-testid="set-by-file">Set by the configuration file: change it there.</span>{:else if locked(f)}<span class="muted small" data-testid="admin-only">Only an admin can change this.</span> <HelpButton id="credentials-in-forms" />{/if}
             {#if f.help}<span class="muted small">{f.help}</span>{/if}
+            {#if f.helpTopic}<HelpButton id={f.helpTopic} />{/if}
           </label>
           {/if}
         {/each}
