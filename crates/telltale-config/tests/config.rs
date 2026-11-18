@@ -1894,6 +1894,7 @@ fn ups_013_parse_source() {
     }
     let c = telltale_config::Cidr::parse("198.51.100.252/24").unwrap();
     assert_eq!(c.network().to_string(), "198.51.100.0/24");
+}
 
 /// REQ: T24.27 — every `TELLTALE_*` variable the binary itself reads (the shipped unit,
 /// bundles and chart set `TELLTALE_SUPERVISOR`) is known: none is warned about at start.
