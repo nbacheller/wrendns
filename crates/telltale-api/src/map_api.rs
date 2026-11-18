@@ -526,6 +526,11 @@ impl Demand {
     pub fn running(&self) -> bool {
         self.running.load(Ordering::Acquire)
     }
+
+    /// Marks the gather task as not running (a caller that could not start it).
+    pub fn stop(&self) {
+        self.running.store(false, Ordering::Release);
+    }
 }
 
 /// The gather task: every `interval`, polls each peer that has no poll running (each in a task of

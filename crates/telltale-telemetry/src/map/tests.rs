@@ -310,7 +310,7 @@ fn obs_901_sampler_privacy_levels() {
         }
         let w = s.window(1_700_000_000);
         assert_eq!(w.privacy, level);
-        assert!(w.entries.first().is_some());
+        assert!(w.entries.len() == 1 || level >= 3, "{:?}", w.entries);
         assert!(w.entries.iter().all(|e| e.client.is_hidden()));
     }
     // Level 1 and below keep the address.

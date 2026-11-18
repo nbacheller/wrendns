@@ -738,8 +738,24 @@ pub(crate) fn exclusions(cfg: &Config) -> Option<telltale_telemetry::exclude::Ex
     Some(telltale_telemetry::exclude::Exclusions::new(names, &nets))
 }
 
+/// REQ: OBS-901 (T26.2, ADR-958) — the live map's sampler, from `[map]` (`None`: off, and the
+/// aggregator thread keeps no window). The slow threshold follows `[slo] latency_ms` unless
+/// `[map] warn_latency_ms` is set.
+pub(crate) fn map_sampler(cfg: &Config) -> Option<telltale_telemetry::map::Settings> {
+    cfg.map.enabled.then(|| telltale_telemetry::map::Settings {
+        event_rate: cfg.map.event_rate,
+        slow_us: cfg
+            .map
+            .warn_latency_ms
+            .unwrap_or(cfg.slo.latency_ms)
+            .saturating_mul(1000),
+    })
+}
+
 fn set_client_metrics(cfg: &Config, pipeline: &Pipeline) {
     pipeline.telemetry.set_exclusions(exclusions(cfg));
+    // REQ: OBS-901 — the map's sampler follows `[map]`, at start and on every reload.
+    pipeline.telemetry.set_map(map_sampler(cfg));
     let m = &cfg.telemetry.metrics;
     let mut agg = pipeline.telemetry.aggregates();
     agg.exported.client_cap = if m.per_client {

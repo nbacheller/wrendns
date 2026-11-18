@@ -44,6 +44,8 @@ pub(crate) const EXCLUSIONS: &str = "exclusions";
 /// REQ: OBS-024 (T13.1) — change simulation's settings: one entry, `default`, replacing
 /// `[simulate]`.
 pub(crate) const SIMULATE: &str = "simulate";
+/// REQ: OBS-901 (T26.2, ADR-958) — the live map's settings: one entry, `default`, replacing `[map]`.
+pub(crate) const MAP: &str = "map";
 /// REQ: CLU-013 (T13.2) — staged rollouts' settings: one entry, `default`, replacing
 /// `[cluster.rollout]`.
 pub(crate) const ROLLOUT: &str = "rollout";
@@ -169,6 +171,8 @@ pub(crate) struct Entries {
     pub(crate) exclusions: Option<telltale_config::ExclusionsConfig>,
     /// REQ: OBS-024 — the `[simulate]` the API or UI set, likewise.
     pub(crate) simulate: Option<telltale_config::SimulateConfig>,
+    /// REQ: OBS-901 — the `[map]` the API or UI set, likewise.
+    pub(crate) map: Option<telltale_config::MapConfig>,
     /// REQ: CLU-013 — the `[cluster.rollout]` the API or UI set, likewise.
     pub(crate) rollout: Option<telltale_config::RolloutConfig>,
     /// REQ: FLT-017 — `[[kubernetes.map]]` rules by key; they come before the files' rules.
@@ -269,6 +273,10 @@ pub(crate) fn entries(state: &State) -> Entries {
             .next()
             .map(|(_, x)| x),
         simulate: decode::<telltale_config::SimulateConfig>(state, SIMULATE)
+            .into_iter()
+            .next()
+            .map(|(_, x)| x),
+        map: decode::<telltale_config::MapConfig>(state, MAP)
             .into_iter()
             .next()
             .map(|(_, x)| x),
@@ -373,6 +381,9 @@ fn apply_one_of(cfg: &mut Config, e: &Entries) {
     }
     if let Some(x) = &e.simulate {
         cfg.simulate = x.clone();
+    }
+    if let Some(x) = &e.map {
+        cfg.map = x.clone();
     }
     if let Some(x) = &e.rollout {
         cfg.cluster.rollout = x.clone();
