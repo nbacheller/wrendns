@@ -180,6 +180,7 @@ const GROW_STEP: usize = 65_536;
 
 impl Collector {
     /// A collector that rejects the file at the first row over `max_rows` (`too_large`).
+    #[cfg(test)]
     pub(crate) fn with_max_rows(max_rows: u64) -> Self {
         Self::with_limits(max_rows, 0)
     }

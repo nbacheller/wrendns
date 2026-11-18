@@ -509,23 +509,27 @@ fn obs_902_geoip_build_memory() {
             .unwrap_or(0)
     }
     let run = |v4: u32, v6: u128| {
-        let mut c = Collector::with_limits(
-            Limits::PRODUCTION.max_rows,
-            Limits::PRODUCTION.max_rows_v6,
-        );
+        let mut c =
+            Collector::with_limits(Limits::PRODUCTION.max_rows, Limits::PRODUCTION.max_rows_v6);
         for i in 0..v4 {
             let a = IpAddr::from((i * 4 + 0x0100_0000).to_be_bytes());
             let b = IpAddr::from((i * 4 + 3 + 0x0100_0000).to_be_bytes());
             let code = [b'A' + (i % 13) as u8, b'A' + (i % 17) as u8];
-            c.push_line(&format!("{a},{b},{}", std::str::from_utf8(&code).unwrap_or("AA")))
-                .unwrap();
+            c.push_line(&format!(
+                "{a},{b},{}",
+                std::str::from_utf8(&code).unwrap_or("AA")
+            ))
+            .unwrap();
         }
         for i in 0..v6 {
             let a = std::net::Ipv6Addr::from((0x2001_0db8u128 << 96) + (i << 70));
             let b = std::net::Ipv6Addr::from((0x2001_0db8u128 << 96) + (i << 70) + (1u128 << 64));
             let code = [b'A' + (i % 13) as u8, b'A' + (i % 17) as u8];
-            c.push_line(&format!("{a},{b},{}", std::str::from_utf8(&code).unwrap_or("AA")))
-                .unwrap();
+            c.push_line(&format!(
+                "{a},{b},{}",
+                std::str::from_utf8(&code).unwrap_or("AA")
+            ))
+            .unwrap();
         }
         let before = status("VmRSS:");
         let t = c.finish(&Limits::TEST, None);
