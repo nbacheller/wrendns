@@ -1857,3 +1857,41 @@ fn obs_010_alert_conditions_match_ui() {
         "the Alerts form offers what the server doesn't accept: {unknown:?}"
     );
 }
+
+/// REQ: UPS-013 (T24.31, ADR-997) — an upstream's `source` reads as an address, `address:0`, or
+/// a network; a port, a wildcard and nonsense are refused.
+#[test]
+fn ups_013_parse_source() {
+    use telltale_config::{SourceSpec, parse_source};
+    assert!(matches!(
+        parse_source("198.51.100.252"),
+        Ok(SourceSpec::Addr(_))
+    ));
+    assert!(matches!(
+        parse_source("198.51.100.252:0"),
+        Ok(SourceSpec::Addr(_))
+    ));
+    assert!(matches!(
+        parse_source("[fd00::2]:0"),
+        Ok(SourceSpec::Addr(_))
+    ));
+    assert!(matches!(
+        parse_source("198.51.100.0/24"),
+        Ok(SourceSpec::Subnet(_))
+    ));
+    for bad in [
+        "198.51.100.252:53",
+        "0.0.0.0",
+        "::",
+        "0.0.0.0/0",
+        "224.0.0.1",
+        "fe80::1",
+        "fe80::/64",
+        "eth0",
+        "",
+    ] {
+        assert!(parse_source(bad).is_err(), "{bad}");
+    }
+    let c = telltale_config::Cidr::parse("198.51.100.252/24").unwrap();
+    assert_eq!(c.network().to_string(), "198.51.100.0/24");
+}

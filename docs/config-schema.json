@@ -4555,6 +4555,14 @@
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "source": {
+          "description": "REQ: UPS-013 (T24.31, ADR-997) — the local address this upstream's sockets are bound to\nbefore they connect (`udp://`, `tcp://`, `tls://`, `https://`): `198.51.100.252` or\n`198.51.100.252:0`, or a network, `198.51.100.0/24`, meaning \"the address this node\nholds in it\" (so a shared upstream works on nodes whose addresses differ; in a cluster\nname a network, not one node's address). The address must be on a real interface (a VLAN\ninterface, not an alias on an untagged one). Binding it does not choose the interface the\npacket leaves by: Linux routes by destination, so add a source-based routing rule for it\n(see docs/running.md). Saving an address the node doesn't hold is refused; a node that\nlacks it at start or on a replica runs only this upstream degraded.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "spki_pins": {
           "description": "Base64 SHA-256 SPKI pins: the server's key must match one (see `docs/running.md`,\n\"Pinning and client certificates\", for how to get a server's pin).",
           "type": "array",

@@ -66,6 +66,7 @@ pub(crate) fn idle_thread() -> io::Result<()> {
     }
 }
 
+<<<<<<< HEAD
 /// REQ: DSC-002, DSC-003 (ADR-908, ADR-1001) - a UDP socket connected to `target`, made without a
 /// `bind` call. A discovery worker's seccomp filter refuses `bind` (so it can't share the DNS port),
 /// and `UdpSocket::bind` is the only way std makes a UDP socket; `connect(2)` on a datagram socket
@@ -101,6 +102,59 @@ pub(crate) fn connect_udp(target: SocketAddr) -> io::Result<std::net::UdpSocket>
         return Err(io::Error::last_os_error());
     }
     Ok(std::net::UdpSocket::from(sock))
+=======
+/// Reads every IPv4 address of every interface with `getifaddrs` (T24.32). Grouping and filtering
+/// are safe code in `iface`.
+pub(crate) fn interface_addrs() -> io::Result<Vec<crate::iface::RawAddr>> {
+    let mut head: *mut libc::ifaddrs = ptr::null_mut();
+    // SAFETY: `head` is a valid out-pointer; on success the list it receives is freed below.
+    if unsafe { libc::getifaddrs(&raw mut head) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut out = Vec::new();
+    let mut cur = head;
+    while !cur.is_null() {
+        // SAFETY: `cur` is a node of the list getifaddrs returned, valid until freeifaddrs.
+        let ifa = unsafe { &*cur };
+        cur = ifa.ifa_next;
+        if ifa.ifa_addr.is_null() || ifa.ifa_netmask.is_null() {
+            continue;
+        }
+        // SAFETY: ifa_addr is non-null and points to a sockaddr whose family field is readable.
+        let family = unsafe { (*ifa.ifa_addr).sa_family };
+        if i32::from(family) != libc::AF_INET {
+            continue;
+        }
+        // SAFETY: the family is AF_INET, so both pointers address a sockaddr_in (read unaligned,
+        // to assume nothing about the allocation's alignment).
+        let (addr, mask) = unsafe {
+            (
+                ptr::read_unaligned(ifa.ifa_addr.cast::<libc::sockaddr_in>()),
+                ptr::read_unaligned(ifa.ifa_netmask.cast::<libc::sockaddr_in>()),
+            )
+        };
+        // SAFETY: ifa_name is a NUL-terminated string owned by the list.
+        let name = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) }
+            .to_string_lossy()
+            .into_owned();
+        // SAFETY: `ifa_name` is a valid C string; the call has no other preconditions.
+        let ifindex = unsafe { libc::if_nametoindex(ifa.ifa_name) };
+        let flags = ifa.ifa_flags;
+        out.push(crate::iface::RawAddr {
+            name,
+            ifindex,
+            up: flags & libc::IFF_UP as u32 != 0,
+            multicast: flags & libc::IFF_MULTICAST as u32 != 0,
+            loopback: flags & libc::IFF_LOOPBACK as u32 != 0,
+            addr: Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr)),
+            netmask: Ipv4Addr::from(u32::from_be(mask.sin_addr.s_addr)),
+        });
+    }
+    // SAFETY: `head` came from a successful getifaddrs and is freed exactly once; nothing borrows
+    // from the list after this (names were copied).
+    unsafe { libc::freeifaddrs(head) };
+    Ok(out)
+>>>>>>> feat/ipam-integrations
 }
 
 /// Dumps the kernel neighbor table over rtnetlink (FLT-006). Parsing is safe code in
