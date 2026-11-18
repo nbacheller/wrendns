@@ -986,7 +986,7 @@
       "summary": "When your router reports IPv6 addresses for a device (UniFi does for connected clients), each one answers AAAA under the device's DNS name and has an ip6.arpa reverse name, by the same rules as the IPv4 address. The Discovered list and a network's device list show them.",
       "when": "You reach a device by name over IPv6, or want to check why a name has no AAAA answer.",
       "example": "kitchen-tablet.home.arpa answers A 192.0.2.21 and AAAA 2001:db8:1::21; the reverse lookup of that IPv6 address gives kitchen-tablet.home.arpa.",
-      "caution": "Link-local addresses (fe80::) are never published: they're the same on every link. A device that left the network has none, as for IPv4. A device the router knows only by an IPv6 address isn't named yet. Devices rotate privacy addresses, so the list changes as the router's does.",
+      "caution": "Link-local addresses (fe80::) are never published: they're the same on every link. A device that left the network has none, as for IPv4. A device the router knows only by an IPv6 address isn't named yet. Devices rotate privacy addresses, so the list changes as the router's does. A device with more than four addresses publishes the four lowest by value, not the most stable, because the router doesn't say which are temporary.",
       "docs": "device-names-in-dns"
     },
     {
