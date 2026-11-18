@@ -18,7 +18,13 @@ pub(crate) mod gate;
 // import parser (T25.11); until those land, the tests are their only callers.
 #[allow(dead_code)]
 pub(crate) mod inventory;
+pub(crate) mod poller;
 pub(crate) mod runtime;
+#[cfg(test)]
+pub(crate) mod snmp_fixtures;
+pub(crate) mod snmp_job;
+pub(crate) mod snmp_poll;
+pub(crate) mod snmp_tables;
 // REQ: DSC-008, DSC-009 — the readers of these modules are used by the API (T25.12) and the
 // import parser (T25.11); until those land, the tests are their only callers.
 #[allow(dead_code)]

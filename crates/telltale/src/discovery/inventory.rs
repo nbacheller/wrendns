@@ -376,6 +376,11 @@ impl Entry {
         if self.import_bits != 0 {
             sources |= Source::Import.bit();
         }
+        // REQ: DSC-004 - a location or an LLDP neighbour comes from SNMP, so the entry shows that
+        // source even when no address or name does (a MAC the switch learned and nobody else saw).
+        if self.port.is_some() || !self.lldp.is_empty() {
+            sources |= Source::Snmp.bit();
+        }
         self.sources = sources;
     }
 
@@ -447,6 +452,9 @@ pub(crate) struct Observation {
     pub(crate) port: Option<String>,
     /// Open TCP ports (imports).
     pub(crate) ports: Vec<u16>,
+    /// REQ: DSC-004 (T25.6) - where an LLDP neighbour hangs: "<agent> <local port>", for the
+    /// neighbour's entry (at most [`MAX_LLDP`] are kept).
+    pub(crate) lldp: Vec<String>,
     /// Unix seconds.
     pub(crate) seen: u64,
 }
@@ -463,6 +471,7 @@ impl Observation {
             vlan: None,
             port: None,
             ports: Vec::new(),
+            lldp: Vec::new(),
             seen,
         }
     }
@@ -1003,6 +1012,19 @@ impl Inventory {
             if entry.ports.len() < MAX_PORTS {
                 entry.ports.push(*p);
             }
+        }
+        // REQ: DSC-004 - where an LLDP neighbour is seen: "<agent> <port>". A new sighting from an
+        // agent replaces that agent's earlier one (the neighbour moved to another port), so each
+        // agent keeps one place (the list is sorted and capped when the entry is normalized).
+        for l in o.lldp.iter().map(|l| sanitize(l, NAME_MAX)) {
+            if l.is_empty() {
+                continue;
+            }
+            let agent = l.split(' ').next().unwrap_or_default().to_owned();
+            entry
+                .lldp
+                .retain(|x| x.split(' ').next().unwrap_or_default() != agent);
+            entry.lldp.push(l);
         }
         if let Some(b) = import_bit {
             entry.import_bits |= bit16(b);

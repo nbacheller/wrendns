@@ -35,8 +35,24 @@ pub(crate) const PRIMARY_UNREACHABLE_SECONDS: u64 = 60;
 /// crashing, is degraded. It never makes DNS unhealthy: the inventory is not on the query path.
 pub(crate) fn discovery_reasons(
     workers: &[telltale_api::model::DiscoveryWorker],
+    agents: &[telltale_api::model::DiscoveryAgent],
 ) -> Vec<HealthReason> {
     let mut out = Vec::new();
+    // REQ: DSC-004, DSC-014 (T25.6) - an SNMP agent whose last three polls failed is degraded: its
+    // devices stop being refreshed. Never severe: DNS doesn't depend on the inventory.
+    for a in agents.iter().filter(|a| a.state == "failing") {
+        out.push(reason(
+            DEGRADED,
+            "discovery_agent_failing",
+            format!(
+                "the SNMP agent `{}` failed {} polls in a row ({}). DNS is unaffected",
+                a.name,
+                a.consecutive_failures,
+                a.last_error.as_deref().unwrap_or("no reply")
+            ),
+            "#/network-inventory",
+        ));
+    }
     for w in workers {
         if w.version_mismatch {
             out.push(reason(
@@ -1044,7 +1060,7 @@ mod tests {
                 ..DiscoveryWorker::default()
             },
         ];
-        let r = discovery_reasons(&workers);
+        let r = discovery_reasons(&workers, &[]);
         let codes: Vec<&str> = r.iter().map(|x| x.code.as_str()).collect();
         assert_eq!(
             codes,
@@ -1054,6 +1070,32 @@ mod tests {
             ]
         );
         assert!(r.iter().all(|x| x.level == DEGRADED), "{r:?}");
-        assert!(discovery_reasons(&[DiscoveryWorker::default()]).is_empty());
+        assert!(discovery_reasons(&[DiscoveryWorker::default()], &[]).is_empty());
+    }
+
+    /// REQ: DSC-004, DSC-014 (`dsc_014_failing_agent_is_degraded_only`) - an SNMP agent whose last three
+    /// polls failed raises `discovery_agent_failing` (degraded, never severe); one that is merely in
+    /// error, waiting or skipped does not.
+    #[test]
+    fn dsc_014_failing_agent_is_degraded_only() {
+        use telltale_api::model::DiscoveryAgent;
+        let agent = |state: &str| DiscoveryAgent {
+            name: "gateway".into(),
+            state: state.into(),
+            consecutive_failures: 3,
+            last_error: Some("no reply (timeout)".into()),
+            ..DiscoveryAgent::default()
+        };
+        let r = discovery_reasons(&[], &[agent("failing")]);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].code, "discovery_agent_failing");
+        assert_eq!(r[0].level, DEGRADED);
+        assert!(r[0].summary.contains("gateway"), "{}", r[0].summary);
+        for quiet in ["ok", "error", "waiting", "skipped"] {
+            assert!(
+                discovery_reasons(&[], &[agent(quiet)]).is_empty(),
+                "{quiet}"
+            );
+        }
     }
 }

@@ -2199,6 +2199,26 @@ impl Backend for Federated {
             None => self.local.lists_refresh(w),
         }
     }
+    // REQ: DSC-004 (ADR-1002) - the SNMP poller runs on the designated node: this one when it runs
+    // the inventory; else, with no `[discovery] node` named, the primary (a replica forwards). A
+    // node that isn't designated and can't forward answers `discovery_not_here` itself.
+    fn snmp_test(
+        &self,
+        w: telltale_api::SnmpTestWrite,
+    ) -> BoxFuture<Result<telltale_api::model::SnmpTestResult, Problem>> {
+        let st = self.local.discovery_status();
+        if st.designated || !st.enabled || self.cluster.is_primary() || st.node.is_some() {
+            return self.local.snmp_test(w);
+        }
+        match self.cluster.reachable_primary() {
+            Some(primary) => Box::pin(crate::forward::snmp_test(
+                Arc::clone(&self.cluster),
+                Some(primary),
+                w,
+            )),
+            None => self.local.snmp_test(w),
+        }
+    }
     // REQ: OBS-901 (ADR-958) — `[map]` and this node's own part are the local backend's.
     fn map_settings(&self) -> Option<telltale_api::map::MapSettings> {
         self.local.map_settings()

@@ -32,7 +32,10 @@ use std::path::Path;
 
 use toml::{Table, Value};
 
-pub use discovery::{DiscoveryConfig, DiscoverySubnet};
+pub use discovery::{
+    CredentialRole, DiscoveryConfig, DiscoverySubnet, SnmpAgent, SnmpCredential, SnmpTable,
+    SnmpVersion,
+};
 pub use env::{ENV_PREFIX, NEVER_INHERITED};
 pub use schema::*;
 pub use types::{ByteSize, Cidr, SafeString, parse_rfc3339};

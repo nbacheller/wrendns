@@ -189,6 +189,16 @@ impl Agent {
         self.engine.as_ref()
     }
 
+    /// REQ: DSC-004 — the security level this agent uses, for the capability record: `v2c`,
+    /// `authNoPriv` or `authPriv`.
+    pub fn level(&self) -> &'static str {
+        match &self.security {
+            Security::V2c { .. } => "v2c",
+            Security::V3 { user } if user.privacy.is_some() => "authPriv",
+            Security::V3 { .. } => "authNoPriv",
+        }
+    }
+
     /// Moves the learned engine's clock origin back by `by`, as if that much local time had
     /// passed without a reply: the estimate then runs ahead of a slow or paused agent. For
     /// tests of the time-window recovery (DSC-003); it has no use in a poller.

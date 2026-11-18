@@ -16,7 +16,7 @@ use telltale_api::model::{ClientChange, ClientInput, ConfigChange};
 use telltale_api::problem::{Code, Problem};
 use telltale_api::{
     AnomalyAckWrite, ClientWrite, ListsRefreshWrite, ManagedKind, ManagedWrite, Shared,
-    SimulateOpts,
+    SimulateOpts, SnmpTestWrite,
 };
 use telltale_cluster::net::Cluster;
 
@@ -67,6 +67,9 @@ pub(crate) enum Write {
     /// REQ: FLT-004, CLU-003 — "update lists now": the primary downloads the lists (not
     /// configuration either). An older primary refuses the unknown write: the replica says 503.
     ListsRefresh(ListsRefreshWrite),
+    /// REQ: DSC-004 (ADR-1002) - the SNMP **Test** runs on the designated node, the primary unless
+    /// `[discovery] node` names another. An older primary refuses the unknown write (503).
+    SnmpTest(SnmpTestWrite),
 }
 
 /// REQ: API-014 (ADR-903 §4) — what forward logging shows of a write: everything but a
@@ -114,6 +117,7 @@ impl std::fmt::Debug for Write {
                 .finish(),
             Self::AnomalyAck(a) => f.debug_tuple("AnomalyAck").field(a).finish(),
             Self::ListsRefresh(a) => f.debug_tuple("ListsRefresh").field(a).finish(),
+            Self::SnmpTest(a) => f.debug_tuple("SnmpTest").field(a).finish(),
         }
     }
 }
@@ -300,6 +304,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
         }
         Write::AnomalyAck(w) => return apply_ack(src, local, peer, via, w).await,
         Write::ListsRefresh(w) => return apply_lists_refresh(src, local, peer, via, w).await,
+        Write::SnmpTest(w) => return apply_snmp_test(src, local, peer, via, w).await,
     };
     match result {
         Ok(c) => {
@@ -401,6 +406,46 @@ async fn apply_lists_refresh(
             "lists.refresh",
             &target,
             &serde_json::json!({ "queued": res.queued, "skipped": res.skipped }),
+        );
+    }
+    match r {
+        Ok(res) => Answer::Ok(serde_json::to_value(res).unwrap_or_default()),
+        Err(p) => Answer::Err(p.into()),
+    }
+}
+
+/// REQ: DSC-004 (ADR-1002) - a forwarded SNMP test, run here (the designated node) and audited with
+/// the user and the entry node.
+async fn apply_snmp_test(
+    src: &Sources,
+    local: &Shared,
+    peer: &str,
+    via: &str,
+    mut w: SnmpTestWrite,
+) -> Answer {
+    let by = w.by.clone();
+    w.by = format!("{by} via {via}");
+    let dry_run = w.dry_run;
+    let reason = w.reason.clone();
+    let target = w.agent.clone();
+    let r = local.snmp_test(w).await;
+    if let (Ok(res), Some(auth), false) = (&r, src.auth.get(), dry_run) {
+        let actor = Actor {
+            name: format!("{by} via {via}"),
+            kind: "cluster",
+            remote: Some(format!("node {peer}")),
+            reason,
+        };
+        auth.record(
+            &actor,
+            "discovery.snmp_test",
+            &target,
+            &serde_json::json!({
+                "ok": res.ok,
+                "level": res.capability.as_ref().map(|c| c.level.clone()),
+                "error": res.error,
+                "node": res.node,
+            }),
         );
     }
     match r {
@@ -620,6 +665,15 @@ pub(crate) async fn lists_refresh(
     w: ListsRefreshWrite,
 ) -> Result<telltale_api::model::ListsRefreshResult, Problem> {
     send(&cluster, primary, Write::ListsRefresh(w)).await
+}
+
+/// REQ: DSC-004 (ADR-1002) - forwards an SNMP test to the primary.
+pub(crate) async fn snmp_test(
+    cluster: Arc<Cluster>,
+    primary: Option<String>,
+    w: SnmpTestWrite,
+) -> Result<telltale_api::model::SnmpTestResult, Problem> {
+    send(&cluster, primary, Write::SnmpTest(w)).await
 }
 
 /// Forwards a device write.

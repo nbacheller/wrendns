@@ -104,6 +104,18 @@ const TABLE: &[(&str, Class)] = &[
     // REQ: DSC-002 — the designated node is a node name; a subnet is an address range.
     ("discovery.node", Name(C::Node)),
     ("discovery.subnet[].cidr", Scan),
+    // REQ: DSC-004, DSC-007 (T25.6) - an SNMP agent is a device on the LAN (its name and address are
+    // scanned like a client's); a credential names files, never holds a secret.
+    ("discovery.snmp_agent[].address", Scan),
+    ("discovery.snmp_agent[].credential", Plain),
+    ("discovery.snmp_agent[].name", Name(C::Device)),
+    ("discovery.snmp_credential[].auth_password_file", Scan),
+    ("discovery.snmp_credential[].auth_protocol", Plain),
+    ("discovery.snmp_credential[].community_file", Scan),
+    ("discovery.snmp_credential[].name", Plain),
+    ("discovery.snmp_credential[].priv_password_file", Scan),
+    ("discovery.snmp_credential[].priv_protocol", Plain),
+    ("discovery.snmp_credential[].user", Secret),
     ("dnssec.negative_trust_anchors[]", Free),
     ("dnssec.trust_anchors_file", Scan),
     ("drill.clients[]", NameOrAddress(C::Device)),

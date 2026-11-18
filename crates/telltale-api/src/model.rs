@@ -1317,6 +1317,177 @@ pub struct DiscoveryStatus {
     pub node: Option<String>,
     /// The worker processes this node runs (none unless enabled and designated).
     pub workers: Vec<DiscoveryWorker>,
+    /// REQ: DSC-004, DSC-014 (T25.6) — each `[[discovery.snmp_agent]]` the poller runs on this
+    /// node: its last poll, its tables and its capability record.
+    #[serde(default)]
+    pub agents: Vec<DiscoveryAgent>,
+}
+
+/// REQ: DSC-004, DSC-014 (T25.6, ADR-908) — one SNMP agent as the poller sees it. Everything that
+/// came from the device (names, the sysObjectID) is device-supplied text, cut and cleaned.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryAgent {
+    /// The agent's name, as `[[discovery.snmp_agent]]` gives it.
+    #[schema(example = "gateway")]
+    pub name: String,
+    /// The address it is polled at (RFC 1918 only).
+    #[schema(example = "192.0.2.1")]
+    pub address: String,
+    /// The credential it uses (by name; the secret is never shown).
+    pub credential: String,
+    /// Seconds between polls.
+    pub interval_secs: u32,
+    /// `waiting` (no poll yet), `ok`, `error` (the last poll failed), `failing` (three polls in a
+    /// row failed) or `skipped` (its credential can't be read, or its address is refused).
+    pub state: String,
+    /// When the last poll ended (Unix seconds).
+    pub last_poll_unix: Option<u64>,
+    /// When a poll last succeeded (Unix seconds).
+    pub last_success_unix: Option<u64>,
+    /// How long the last poll took, in milliseconds.
+    pub last_duration_ms: Option<u64>,
+    /// Why the last poll failed, in words. Carries no address, credential or reply byte.
+    pub last_error: Option<String>,
+    /// Polls that failed in a row.
+    pub consecutive_failures: u32,
+    /// Polls made since start.
+    pub polls: u64,
+    /// Polls that failed since start.
+    pub failures: u64,
+    /// SNMP requests the last poll sent.
+    pub last_requests: Option<u32>,
+    /// Exchanges of the last poll that timed out.
+    pub last_timeouts: Option<u32>,
+    /// One entry per configured table.
+    pub tables: Vec<DiscoveryAgentTable>,
+    /// What the agent answered when it was last probed (the first poll, or **Test**). Never
+    /// assumed: a table that did not answer is skipped until the next test.
+    pub capability: Option<AgentCapability>,
+    /// What the last poll's rows meant.
+    pub last_counts: Option<DiscoveryAgentCounts>,
+    /// When **Test** last ran for this agent (Unix seconds); a new test waits 60 s after it.
+    pub last_test_unix: Option<u64>,
+}
+
+/// REQ: DSC-004 — a configured table of an agent and what is known of it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryAgentTable {
+    /// `arp`, `ifmib`, `bridge` or `lldp`.
+    pub table: String,
+    /// `unprobed`, `answered`, or `unanswered` (skipped until the next test).
+    pub state: String,
+    /// The rows the last poll read from the table, over every part and column.
+    pub rows: Option<u32>,
+    /// Why the last walk of the table ended: `end`, `row_cap`, `time_cap`, `error` or `skipped`.
+    pub stop: Option<String>,
+    /// The last error of the table, in words.
+    pub error: Option<String>,
+}
+
+/// REQ: DSC-004 (ADR-908 "Capability record") — what an agent answered when it was probed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCapability {
+    /// When it was probed (Unix seconds).
+    pub probed_unix: u64,
+    /// The security level reached: `v2c`, `authNoPriv` or `authPriv`.
+    pub level: String,
+    /// The v3 engine ID, in hex.
+    pub engine_id: Option<String>,
+    /// sysObjectID, when the agent answered it (device-supplied).
+    pub sys_object_id: Option<String>,
+    /// One entry per part of every configured table.
+    pub parts: Vec<AgentCapabilityPart>,
+}
+
+/// REQ: DSC-004 — one part of a table group and the MIB table that answered it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCapabilityPart {
+    /// `arp`, `ifmib`, `bridge` or `lldp`.
+    pub table: String,
+    /// The part: `arp`, `interfaces`, `addresses`, `forwarding`, `ports`, `vlans`, `neighbours`
+    /// or `local_ports`.
+    pub part: String,
+    /// The MIB table that answered (`ipNetToPhysicalTable`, `ipNetToMediaTable`, ...); none when
+    /// no alternative did.
+    pub source: Option<String>,
+}
+
+/// REQ: DSC-004, DSC-014 — what the last poll's rows meant.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryAgentCounts {
+    /// ARP entries merged into the inventory.
+    pub arp_merged: u32,
+    /// ARP entries outside every `[[discovery.subnet]]` (or naming no host).
+    pub arp_outside_subnets: u32,
+    /// IPv6 entries counted and left out (M25 is IPv4 only).
+    pub ipv6_ignored: u32,
+    /// The agent's own addresses merged.
+    pub own_merged: u32,
+    /// Forwarding entries that gave a device a port and a VLAN.
+    pub fdb_located: u32,
+    /// Forwarding entries left out because they were learned on an uplink or trunk port.
+    pub fdb_uplink: u32,
+    /// Ports counted as uplinks (more than 8 learned MACs, or a listed agent or UniFi device as
+    /// the LLDP neighbour).
+    pub uplink_ports: u32,
+    /// LLDP neighbours merged.
+    pub lldp_merged: u32,
+}
+
+/// REQ: DSC-004 (T25.6, ADR-908, ADR-1002) — `POST /api/v1/discovery/snmp/test`: the agent to
+/// test, by name. No address is ever accepted (ADR-907).
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnmpTestRequest {
+    /// The agent's name, from `[[discovery.snmp_agent]]` (`GET /api/v1/discovery/status` lists them).
+    #[schema(example = "gateway")]
+    pub agent: String,
+}
+
+/// REQ: DSC-004 — one table root a test would query (or did).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SnmpTestOid {
+    /// `arp`, `ifmib`, `bridge` or `lldp`.
+    pub table: String,
+    /// The part of the table group.
+    pub part: String,
+    /// The MIB table (an alternative; the first that answers is used).
+    pub alternative: String,
+    /// The OID the probe's one GETNEXT starts from.
+    pub probe_oid: String,
+    /// The column OIDs a poll walks when this alternative answers.
+    pub columns: Vec<String>,
+}
+
+/// REQ: DSC-004 — the answer of **Test** (`POST /api/v1/discovery/snmp/test`).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SnmpTestResult {
+    /// The agent tested.
+    pub agent: String,
+    /// True when no packet was sent (`?dryRun=true`): `oids` is what a test would query.
+    pub dry_run: bool,
+    /// Whether the agent answered (a dry run is always `true`).
+    pub ok: bool,
+    /// The OIDs a test queries: one GETNEXT on each probe root, one GET of sysObjectID.
+    pub oids: Vec<SnmpTestOid>,
+    /// What the agent answered (not for a dry run, or a test that failed).
+    pub capability: Option<AgentCapability>,
+    /// Why the test failed, in words.
+    pub error: Option<String>,
+    /// How long the test took, in milliseconds.
+    pub duration_ms: Option<u64>,
+    /// The node that ran the test (the designated node, which may not be the one asked).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// What happens next, in a sentence.
+    pub note: String,
 }
 
 /// REQ: DSC-002 (T25.3, ADR-908) — one discovery worker process, as the supervisor sees it.
@@ -2946,6 +3117,7 @@ pub struct HealthReason {
     /// `sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
     /// `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
     /// `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,
+    /// `discovery_agent_failing`,
     /// `guarded_ignored`, `guarded_bind_fallback`.
     #[schema(example = "upstream_down")]
     pub code: String,

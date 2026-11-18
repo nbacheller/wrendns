@@ -18,6 +18,7 @@ use arc_swap::ArcSwap;
 use crate::devices::Leases;
 
 use super::inventory::{Inventory, Source};
+use super::poller::{self, AgentsBoard, PollOutput, PollerCtx};
 use super::sources::{Ipv4Subnet, ifindex_names, lease_observations, neighbour_observations};
 use super::store;
 use super::supervisor::{self, Board, Requests, Spec};
@@ -32,6 +33,13 @@ pub(crate) const RETENTION_SECS: u64 = 7 * 86_400;
 pub(crate) const IMPORT_RETENTION_SECS: u64 = 30 * 86_400;
 /// The interface table the neighbour source maps indexes through.
 pub(crate) const SYS_NET: &str = "/sys/class/net";
+
+/// REQ: DSC-004 (T25.6) - the infrastructure poller: what it polls and where its board is.
+#[derive(Clone)]
+pub(crate) struct SnmpSetup {
+    pub(crate) ctx: Arc<PollerCtx>,
+    pub(crate) board: Arc<AgentsBoard>,
+}
 
 /// The sources the thread reads. A `None` view is not read.
 #[derive(Clone, Default)]
@@ -54,6 +62,8 @@ pub(crate) struct Providers {
     pub(crate) requests: Requests,
     /// Set to stop the workers (the thread's stop also does).
     pub(crate) workers_stop: Arc<AtomicBool>,
+    /// REQ: DSC-004 - the SNMP agents to poll (none: no poller task).
+    pub(crate) snmp: Option<SnmpSetup>,
 }
 
 /// A running inventory thread.
@@ -142,17 +152,43 @@ async fn run(
             ));
         }
     }
+    // REQ: DSC-004 (T25.6) - the infrastructure poller runs on this runtime too; its observations
+    // come back over a small channel and are merged here, the only place the inventory is written.
+    let mut polled = match (&providers.snmp, &providers.board) {
+        (Some(snmp), Some(board)) => {
+            let (tx, rx) = tokio::sync::mpsc::channel::<PollOutput>(4);
+            tokio::spawn(poller::run(
+                Arc::clone(&snmp.ctx),
+                Arc::clone(&snmp.board),
+                Arc::clone(&providers.requests),
+                Arc::clone(board),
+                tx,
+                Arc::clone(&providers.workers_stop),
+            ));
+            Some(rx)
+        }
+        _ => None,
+    };
     let mut next_poll = 0u64;
     let mut last_write = unix_now();
     loop {
         let now = unix_now();
+        let mut publish = false;
+        if let Some(rx) = polled.as_mut() {
+            while let Ok(out) = rx.try_recv() {
+                let report = inv.apply(&out.observations, now);
+                tracing::debug!(agent = %out.agent, merged = report.merged, "inventory: SNMP poll merged");
+                publish |= report.merged > 0;
+            }
+        }
         if now >= next_poll {
             tick(&mut inv, &providers, now);
             next_poll = now.saturating_add(POLL_SECS);
-            // Readers get a copy only when something changed; an unchanged poll publishes nothing.
-            if inv.is_dirty() {
-                shared.store(Arc::new(inv.clone()));
-            }
+            publish = true;
+        }
+        // Readers get a copy only when something changed; an unchanged poll publishes nothing.
+        if publish && inv.is_dirty() {
+            shared.store(Arc::new(inv.clone()));
         }
         // The fast-write request stays until a save has cleared the dirty flag, so a request
         // made within the 15-minute gap is not lost when the save before it failed.
@@ -212,5 +248,12 @@ pub(crate) fn tick(inv: &mut Inventory, providers: &Providers, now: u64) {
         inv.apply(&lease_observations(&leases, Source::Mdns, now), now);
         inv.expire_source(Source::Mdns, now, ROUTER_MAX_AGE_SECS);
     }
+    // REQ: DSC-004 - an agent's ARP binding is dropped when no poll has refreshed it for twice the
+    // slowest agent's interval (or 15 minutes), so one missed poll doesn't drop a host.
+    let arp_max_age = providers
+        .snmp
+        .as_ref()
+        .map_or(ROUTER_MAX_AGE_SECS, |s| s.ctx.arp_max_age_secs());
+    inv.expire_source(Source::SnmpArp, now, arp_max_age);
     inv.sweep(now, RETENTION_SECS, IMPORT_RETENTION_SECS);
 }

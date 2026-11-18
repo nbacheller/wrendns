@@ -2530,8 +2530,10 @@ impl Backend for ApiBackend {
             },
         });
         // REQ: DSC-002 (T25.3) — a discovery worker that is refused or keeps crashing: degraded.
+        let inventory = self.src.discovery.status();
         reasons.extend(crate::health::discovery_reasons(
-            &self.src.discovery.status().workers,
+            &inventory.workers,
+            &inventory.agents,
         ));
         // REQ: OPS-014 (ADR-903 §3) — a locked store, or secrets on a data directory that isn't
         // kept: degraded, DNS unaffected.
@@ -2856,6 +2858,15 @@ impl Backend for ApiBackend {
     /// REQ: DSC-014 (T25.3) — the network inventory's status on this node.
     fn discovery_status(&self) -> telltale_api::model::DiscoveryStatus {
         self.src.discovery.status()
+    }
+
+    // REQ: DSC-004 (T25.6, ADR-1002) - **Test** of one SNMP agent, run by this node's poller.
+    fn snmp_test(
+        &self,
+        w: telltale_api::SnmpTestWrite,
+    ) -> BoxFuture<Result<telltale_api::model::SnmpTestResult, Problem>> {
+        let rt = Arc::clone(&self.src.discovery);
+        Box::pin(async move { rt.snmp_test(w).await })
     }
 
     fn alerts_status(&self) -> telltale_api::model::AlertsStatus {
