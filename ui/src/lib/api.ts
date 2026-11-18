@@ -434,6 +434,8 @@ export const api = {
   identities: () => get<S['Items_DeviceIdentity']>('/clients/identities'),
   identity: (id: string) => get<S['DeviceIdentity']>(`/clients/${encodeURIComponent(id)}/identity`),
   rhythm: (id: string) => get<S['ClientRhythm']>(`/clients/${encodeURIComponent(id)}/rhythm`),
+  // REQ: FLT-006, API-010 (T24.30, ADR-996) — a device's effective policy.
+  clientPolicy: (id: string) => get<S['ClientPolicy']>(`/clients/${encodeURIComponent(id)}/policy`),
   timeline: (id: string, q: { from?: string; to?: string; bins?: number; lanes?: number } = {}) =>
     get<S['DeviceTimeline']>(`/clients/${encodeURIComponent(id)}/timeline`, q),
   // REQ: FLT-017 (T15.1) — Kubernetes workloads as devices.

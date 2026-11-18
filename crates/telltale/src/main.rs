@@ -59,6 +59,7 @@ mod own_networks;
 mod pihole;
 mod pihole_import;
 mod pipeline;
+mod policy_view;
 mod privacy;
 mod probes;
 mod qlog_cli;

@@ -337,6 +337,37 @@ test('obs_901 filters narrow the map', async ({ browser }) => {
   await o.ctx.close();
 });
 
+// REQ: FLT-006, API-010, OBS-901 (T24.30, ADR-996) — clicking a device on the map shows its policy
+// in the node panel (the group, where it came from, the key that matched) with a link to the full
+// Policy panel on the Clients page. The policy read is the real server's; the map is mocked.
+test('flt_006 clicking a device shows its policy and links to the full panel', async ({ browser }) => {
+  const o = await open(browser);
+  await go(o);
+  await o.page.locator('[data-node="dev:192.168.1.10"]').click();
+  const compact = o.page.getByTestId('node-panel').getByTestId('policy-compact');
+  await expect(compact.getByTestId('policy-group')).toBeVisible();
+  // 192.168.1.10 is no configured device and no group's network: the default group, matched by nothing.
+  await expect(compact.getByTestId('policy-group')).toContainText('default');
+  await expect(compact.getByTestId('policy-group-from')).toContainText('default');
+  await expect(compact).toContainText('Block response');
+  await expect(compact.getByTestId('policy-summary-upstream')).toBeVisible();
+  // A device on the map's iot network is a different one: the panel follows the click.
+  await o.page.locator('[data-node="dev:10.20.2.5"]').click();
+  await expect(o.page.getByTestId('node-panel').getByTestId('policy-compact').getByTestId('policy-group')).toBeVisible();
+  // The link opens the full panel for that address.
+  await o.page.locator('[data-node="dev:192.168.1.10"]').click();
+  await o.page.getByTestId('policy-full-link').click();
+  await expect(o.page).toHaveURL(/#\/clients\?device=192\.168\.1\.10&view=policy/);
+  await expect(o.page.getByTestId('policy-panel').getByTestId('policy-group')).toContainText('default');
+  await expect(o.page.getByTestId('policy-panel').getByTestId('policy-ladder')).toBeVisible();
+  // A network node has no policy to show.
+  await go(o);
+  await o.page.locator('[data-node="net:lan"]').click();
+  await expect(o.page.getByTestId('node-panel').getByTestId('policy-compact')).toHaveCount(0);
+  expect(o.problems).toEqual([]);
+  await o.ctx.close();
+});
+
 test('obs_901 click through opens queries and explain', async ({ browser }) => {
   const o = await open(browser);
   await go(o);
@@ -505,6 +536,8 @@ test('obs_901 privacy hides devices', async ({ browser }) => {
   await expect(panel.getByTestId('panel-address')).toHaveCount(0);
   for (const t of ['to-queries', 'to-explain', 'to-anomalies', 'to-device']) await expect(panel.getByTestId(t)).toHaveCount(0);
   await expect(panel).toContainText('hidden at this privacy level');
+  // REQ: FLT-006 — no device policy is shown for a hidden device (the panel needs an address).
+  await expect(panel.getByTestId('policy-compact')).toHaveCount(0);
   // Nothing drawn carries an address.
   expect(await o.page.getByTestId('map-figure').innerHTML()).not.toMatch(/\d+\.\d+\.\d+\.\d+/);
   // Level 3: totals only.

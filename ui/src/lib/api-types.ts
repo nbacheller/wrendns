@@ -1317,6 +1317,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/clients/{id}/policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A device's effective policy (FLT-006, API-010).
+         * @description `id` is a configured device's name, an address, or a Kubernetes workload
+         *     (`namespace/kind/name`). The answer names the group the device lands in and the key that
+         *     matched (the precedence is client ID, MAC, workload, address, network, router name, default),
+         *     then lists what applies as `sections`: the block response, the group's lists and blocked
+         *     services, safe search, rewrites, schedules with whether each is in effect now, the quick and
+         *     group rules with their expiry, and the upstream group. It is resolved with the same
+         *     identification a query and `GET /explain` use, so the two agree. In a cluster a replica asks
+         *     the primary. Needs `config:read` for an agent.
+         */
+        get: operations["client_policy"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clients/{id}/rhythm": {
         parameters: {
             query?: never;
@@ -5074,6 +5101,41 @@ export interface components {
              */
             name?: string | null;
         };
+        /** @description REQ: FLT-006, API-010 (T24.30) — a device's effective policy. */
+        ClientPolicy: {
+            /** @description The address the policy was resolved for. */
+            address?: string | null;
+            /**
+             * Format: int64
+             * @description When it was read (Unix seconds); schedules and rule expiry are as of then.
+             */
+            atUnixSeconds: number;
+            /** @description What was asked for: a device's name, an address, or a workload. */
+            client: string;
+            /** @description The configured device it is (a `[[client]]`'s name, or the workload's). */
+            device?: string | null;
+            /** @description The group whose settings apply. */
+            group: string;
+            /** @description Where it came from: `device`, `network`, `router_name`, `kubernetes`, `default`. */
+            groupFrom: string;
+            /** @description The network or router name that gave the group, when it isn't the device's own. */
+            groupKey?: string | null;
+            /** @description Every group it is in, the first one's settings applying (the same as Explain's). */
+            groups: string[];
+            /** @description How it was recognized: the same word Explain's `client.identifiedBy` says. */
+            identifiedBy: string;
+            mac?: string | null;
+            /** @description The key that matched, written as a `[[client]] match` is. Absent for `default`. */
+            matchedKey?: string | null;
+            missingNodes?: string[];
+            /** @description The node whose configuration answered (a replica asks the primary). */
+            node?: string | null;
+            /** @description Caveats: the address was a stand-in, another device wins, no filter snapshot yet. */
+            notes?: string[];
+            /** @description The ladder a device is matched down, with the rung that decided. */
+            precedence: components["schemas"]["PolicyRung"][];
+            sections: components["schemas"]["PolicySection"][];
+        };
         /** @description REQ: OBS-031 — a device's rhythm per domain. */
         ClientRhythm: {
             /** @description False when the anomaly engine is off (`reason: disabled`). */
@@ -6114,12 +6176,24 @@ export interface components {
         ExplainClient: {
             /** @description The configured device it was recognized as. */
             device?: string | null;
+            /** @description The group whose settings apply (the first of `groups`). */
+            group: string;
+            /** @description Where that group came from: `device`, `network`, `router_name`, `kubernetes`, `default`. */
+            groupFrom: string;
+            /** @description The network or router name that gave the group, when it isn't the device's own. */
+            groupKey?: string | null;
             /** @description Highest priority first. */
             groups: string[];
             /** @description `client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `router_name`, `ip`, `cidr`, or `default`. */
             identifiedBy: string;
             ip: string;
             mac?: string | null;
+            /**
+             * @description REQ: FLT-006, API-010 (T24.30, ADR-996) — the key it matched on, written as a
+             *     `[[client]] match` is (`id:kids`, a MAC, an address, a network, `hostname:tv`), or the
+             *     workload's name. Absent for the `default` group.
+             */
+            matchedKey?: string | null;
             workload?: components["schemas"]["ExplainWorkload"] | null;
         };
         ExplainFilter: {
@@ -9146,6 +9220,59 @@ export interface components {
             summary: string;
             /** @description The MCP tool that made it, e.g. `plan_block_domain`. */
             tool: string;
+        };
+        /** @description One line of a section: a list, a service, a schedule, a rule, a rewrite, an upstream group. */
+        PolicyItem: {
+            /** @description More, in words (`Mon-Fri 21:00-07:00`). */
+            detail?: string | null;
+            /** @description What gives the device this line: `group kids`, `device`, `everyone`, `a schedule`. */
+            from?: string | null;
+            /** @description What it is (`ads`, `tiktok`, `bedtime`, `example.com`). */
+            label: string;
+            link?: components["schemas"]["PolicyLink"] | null;
+            /**
+             * @description `on`, `off`, `in_effect`, `not_in_effect`, `not_applied`, `expired`, `shadow`, or absent when a line has no
+             *     state of its own.
+             */
+            state?: string | null;
+            /**
+             * Format: int64
+             * @description When it stops applying (a rule's expiry), Unix seconds.
+             */
+            untilUnixSeconds?: number | null;
+        };
+        /** @description A page in the UI a line comes from. */
+        PolicyLink: {
+            /** @description Its query parameters. */
+            params?: {
+                [key: string]: string;
+            };
+            /** @description A UI route (`/groups`, `/lists`, `/rules`, ...). */
+            path: string;
+        };
+        /** @description One rung of the identification ladder (ADR-973, ADR-976). */
+        PolicyRung: {
+            label: string;
+            /** @description The rung that decided. */
+            matched: boolean;
+            /**
+             * @description `client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `ip`, `cidr`, `router_name`, `default`
+             *     (the values Explain's `identifiedBy` uses).
+             */
+            source: string;
+        };
+        /** @description A titled group of lines. Sections are the panel's unit; it renders whatever arrives, in order. */
+        PolicySection: {
+            /**
+             * @description `block`, `lists`, `services`, `safe_search`, `rewrites`, `schedules`, `rules`, `upstream`;
+             *     new sections get new ids.
+             */
+            id: string;
+            items: components["schemas"]["PolicyItem"][];
+            link?: components["schemas"]["PolicyLink"] | null;
+            /** @description One sentence: what this part of the policy does for this device. */
+            summary: string;
+            title: string;
         };
         /**
          * @description REQ: OBS-020 (ADR-107) — one synthetic probe: a DNS listener asked through its own
@@ -13027,6 +13154,38 @@ export interface operations {
                 };
             };
             /** @description No named device by that name, and not an address. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    client_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description A device's name, an address, or a workload. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The effective policy. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientPolicy"];
+                };
+            };
+            /** @description Neither a configured device, an address, nor a known workload. */
             404: {
                 headers: {
                     [name: string]: unknown;

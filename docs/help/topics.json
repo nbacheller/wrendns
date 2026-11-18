@@ -135,6 +135,16 @@
       "docs": "a-devices-rhythm"
     },
     {
+      "id": "device-policy",
+      "title": "Which filters apply to this device?",
+      "term": "A device's effective policy",
+      "summary": "Every filter and rule that applies to one device, and why: the group it is in, the key that matched it (a MAC, an address, a network, a client ID, a router name), then its lists, blocked services, SafeSearch, rewrites, schedules, quick rules and upstream group, each linking to where it is set.",
+      "when": "A device is blocked, or not blocked, and you want to know which group, list, schedule or rule is responsible. Or you want to check that the right group took a new device.",
+      "example": "The kids' tablet matched by its MAC lands in group kids; its bedtime schedule is in effect now, so every name is blocked until 07:00; a quick rule for game.example ends at 22:00.",
+      "caution": "It is read the way a query from the device is matched. A device known only by a MAC that has not been seen at an address has no network, so a network group is not shown for it.",
+      "docs": "a-devices-policy"
+    },
+    {
       "id": "kubernetes-workloads",
       "title": "Pods named by what they run",
       "term": "Kubernetes workloads as devices",

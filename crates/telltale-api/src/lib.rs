@@ -41,6 +41,7 @@ pub mod oidc_providers_api;
 pub mod pihole_api;
 mod pihole_import_api;
 pub mod plans;
+pub mod policy_api;
 pub mod problem;
 pub mod rhythm_api;
 pub mod rollout_api;
@@ -720,6 +721,33 @@ pub trait Backend: Send + Sync + 'static {
             ..rhythm_api::ClientRhythm::default()
         })
     }
+    /// REQ: FLT-006, API-010 (T24.30, ADR-996) — a device's effective policy (a configured
+    /// device's name, an address, or a workload), resolved the way a query's is.
+    fn client_policy(&self, client: &str) -> Result<policy_api::ClientPolicy, Problem> {
+        let _ = client;
+        Err(Problem::unavailable(
+            "device policy isn't available on this node",
+        ))
+    }
+    /// REQ: FLT-006 (ADR-996) — what this node observed of the device (address, neighbor-table
+    /// MAC, client ID), for a replica to send the primary. `None`: the device has no address here.
+    fn policy_observation(
+        &self,
+        client: &str,
+    ) -> Result<Option<policy_api::PolicyObservation>, Problem> {
+        let _ = client;
+        Ok(None)
+    }
+    /// REQ: FLT-006 (ADR-996) — the policy of a device as `observed` (by another node) describes it,
+    /// under this node's configuration.
+    fn client_policy_observed(
+        &self,
+        client: &str,
+        observed: &policy_api::PolicyObservation,
+    ) -> Result<policy_api::ClientPolicy, Problem> {
+        let _ = observed;
+        self.client_policy(client)
+    }
     /// REQ: OBS-025 — one device's identity (by address, or a named device's name), with the
     /// evidence.
     fn identity(&self, client: &str) -> Result<model::DeviceIdentity, Problem> {
@@ -1350,6 +1378,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         // REQ: CLU-014 — the running drill, reports, and the affinity view.
         .merge(drill_api::read_routes(Arc::clone(&backend)))
         .merge(rhythm_api::routes(Arc::clone(&backend)))
+        .merge(policy_api::routes(Arc::clone(&backend)))
         .merge(timeline::routes(Arc::clone(&backend)))
         // REQ: CLU-013 — the rollout in progress and the kept versions.
         .merge(rollout_api::read_routes(Arc::clone(&backend)))
@@ -1544,7 +1573,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, system_health, system_probes, map_api::get_map, map_api::map_stream, map_api::get_world, map_api::get_health, map_api::get_settings, maintenance_api::start, maintenance_api::end, drill_api::start, drill_api::end, drill_api::active, drill_api::list, drill_api::report, drill_api::affinity, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, compare::cluster_compare, rhythm_api::client_rhythm, timeline::client_timeline, config_api::cluster_promote, config_api::backup_download, config_api::backup_create, secrets_api::list_secrets, secrets_api::get_secret, secrets_api::put_secret, secrets_api::delete_secret, pihole_api::get_status, pihole_api::put_settings, pihole_api::issue_token, pihole_api::revoke_token, pihole_api::v6_login, pihole_api::v6_session, pihole_api::v6_logout, pihole_api::v6_summary, pihole_api::v6_top_domains, pihole_api::v6_top_clients, pihole_api::v6_upstreams, pihole_api::v6_version, pihole_api::v6_blocking, pihole_api::v6_set_blocking, pihole_api::v5, support_api::make, support_api::map, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, attribution::slo_attribution, heatmap::stats_heatmap, flow::stats_flow, latency_heatmap::latency_heatmap, latency_heatmap::latency_exemplars, queries,
+        system_info, system_health, system_probes, map_api::get_map, map_api::map_stream, map_api::get_world, map_api::get_health, map_api::get_settings, maintenance_api::start, maintenance_api::end, drill_api::start, drill_api::end, drill_api::active, drill_api::list, drill_api::report, drill_api::affinity, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, compare::cluster_compare, rhythm_api::client_rhythm, policy_api::client_policy, timeline::client_timeline, config_api::cluster_promote, config_api::backup_download, config_api::backup_create, secrets_api::list_secrets, secrets_api::get_secret, secrets_api::put_secret, secrets_api::delete_secret, pihole_api::get_status, pihole_api::put_settings, pihole_api::issue_token, pihole_api::revoke_token, pihole_api::v6_login, pihole_api::v6_session, pihole_api::v6_logout, pihole_api::v6_summary, pihole_api::v6_top_domains, pihole_api::v6_top_clients, pihole_api::v6_upstreams, pihole_api::v6_version, pihole_api::v6_blocking, pihole_api::v6_set_blocking, pihole_api::v5, support_api::make, support_api::map, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, attribution::slo_attribution, heatmap::stats_heatmap, flow::stats_flow, latency_heatmap::latency_heatmap, latency_heatmap::latency_exemplars, queries,
         queries_stream,
         explain, lists, groups, services, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -1565,7 +1594,7 @@ async fn fallback(
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::ListsRefreshRequest, model::ListsRefreshResult, model::ListRefreshSkip, model::ListCover, model::ListOverlapRow, model::ListPruneCandidate, model::ListPruneKept, model::ListPrunePlan, model::ListsPruneRequest, model::ListsPruneResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, model::CredentialIssue, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, config_api::BackupRequest, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Annotation, model::AnnotationPage, model::NoteRequest, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::DrillAll, model::DrillTargets, model::DrillRequest, model::DrillMode, model::DrillCheck, model::DrillTargetDevice, model::DrillStart, model::ActiveDrill, model::DrillDevice, model::DrillNodeCount, model::DrillSummary, model::DrillReport, model::DrillPage, model::AffinityNode, model::AffinityRow, model::AffinityPage, model::GuardReadings, model::ClusterPin, model::ClusterRollout, model::RolloutFailure, model::RolloutNode, model::RolloutStatus, model::ClusterVersion, model::ClusterVersions, model::PinRequest, model::RolloutAction, model::NodeRemoval, model::SupportPackageRequest, secrets_api::SecretPut, pihole_api::PiholeApiStatus, pihole_api::PiholeApiSettings, pihole_api::PiholeApiToken, pihole_api::LoginBody, pihole_api::BlockingBody, secrets_api::SecretStamp, secrets_api::SecretsHead, secrets_api::SecretUse, secrets_api::SecretNode, secrets_api::SecretMeta, secrets_api::CredentialField, secrets_api::SecretsStore, secrets_api::SecretsStatus, secrets_api::SecretChange, model::DeviceIdentity, model::IdentityEvidence, model::WorkloadEvidence, model::ExplainWorkload, model::WorkloadInfo, model::WorkloadPod, model::WorkloadPage, model::KubernetesStatus, model::MatchedDomain, model::IdentityRunnerUp, model::Simulation, model::SimulatedClass, model::SimulatedName, model::SimulatedDevice, model::SimulatedGroup, model::SimulateRequest, model::SloStatus, attribution::SloAttribution, attribution::AttributionBudget, attribution::AttributionPoint, attribution::AttributionRow, attribution::AttributionCoverage, heatmap::Heatmap, flow::QueryFlow, flow::FlowNode, flow::FlowLink, compare::NodeCompare, compare::NodeNumbers, compare::NodeSeries, compare::NodeFinding, rhythm_api::ClientRhythm, rhythm_api::RhythmDomain, timeline::DeviceTimeline, timeline::TimelineLane, timeline::TimelineEvent, latency_heatmap::LatencyHeatmap, latency_heatmap::LatencyExemplar, latency_heatmap::LatencyExemplars, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::DiscoveryStatus, model::DiscoveryWorker, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, model::NetworkInfo, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Annotation, model::AnnotationPage, model::NoteRequest, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::DrillAll, model::DrillTargets, model::DrillRequest, model::DrillMode, model::DrillCheck, model::DrillTargetDevice, model::DrillStart, model::ActiveDrill, model::DrillDevice, model::DrillNodeCount, model::DrillSummary, model::DrillReport, model::DrillPage, model::AffinityNode, model::AffinityRow, model::AffinityPage, model::GuardReadings, model::ClusterPin, model::ClusterRollout, model::RolloutFailure, model::RolloutNode, model::RolloutStatus, model::ClusterVersion, model::ClusterVersions, model::PinRequest, model::RolloutAction, model::NodeRemoval, model::SupportPackageRequest, secrets_api::SecretPut, pihole_api::PiholeApiStatus, pihole_api::PiholeApiSettings, pihole_api::PiholeApiToken, pihole_api::LoginBody, pihole_api::BlockingBody, secrets_api::SecretStamp, secrets_api::SecretsHead, secrets_api::SecretUse, secrets_api::SecretNode, secrets_api::SecretMeta, secrets_api::CredentialField, secrets_api::SecretsStore, secrets_api::SecretsStatus, secrets_api::SecretChange, model::DeviceIdentity, model::IdentityEvidence, model::WorkloadEvidence, model::ExplainWorkload, model::WorkloadInfo, model::WorkloadPod, model::WorkloadPage, model::KubernetesStatus, model::MatchedDomain, model::IdentityRunnerUp, model::Simulation, model::SimulatedClass, model::SimulatedName, model::SimulatedDevice, model::SimulatedGroup, model::SimulateRequest, model::SloStatus, attribution::SloAttribution, attribution::AttributionBudget, attribution::AttributionPoint, attribution::AttributionRow, attribution::AttributionCoverage, heatmap::Heatmap, flow::QueryFlow, flow::FlowNode, flow::FlowLink, compare::NodeCompare, compare::NodeNumbers, compare::NodeSeries, compare::NodeFinding, rhythm_api::ClientRhythm, rhythm_api::RhythmDomain, policy_api::ClientPolicy, policy_api::PolicySection, policy_api::PolicyItem, policy_api::PolicyLink, policy_api::PolicyRung, timeline::DeviceTimeline, timeline::TimelineLane, timeline::TimelineEvent, latency_heatmap::LatencyHeatmap, latency_heatmap::LatencyExemplar, latency_heatmap::LatencyExemplars, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::DiscoveryStatus, model::DiscoveryWorker, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, model::NetworkInfo, UpstreamInfo, Step, TopKind,
         Hour, model::TopHour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
