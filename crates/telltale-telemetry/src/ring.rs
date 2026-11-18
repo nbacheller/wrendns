@@ -53,6 +53,9 @@ pub struct Hub {
     excluded: AtomicU64,
     /// REQ: FLT-017 — pod address → workload analytics key, read once per drain.
     workload_keys: Mutex<Option<Arc<crate::workload::Keys>>>,
+    /// REQ: OBS-901 (ADR-958) — the live map's sampler; `None` while the map is off. Locked by
+    /// the aggregator thread for a drain and by the API for a read, never by a worker.
+    map: Mutex<Option<crate::map::Sampler>>,
 }
 
 static NEXT_HUB: AtomicU64 = AtomicU64::new(1);
@@ -98,6 +101,7 @@ impl Hub {
             exclusions: Mutex::new(None),
             excluded: AtomicU64::new(0),
             workload_keys: Mutex::new(None),
+            map: Mutex::new(None),
         })
     }
 
@@ -146,6 +150,15 @@ impl Hub {
     /// and no client addresses (2+). The query log, tail, and sinks apply it themselves.
     pub fn set_privacy(&self, level: u8) {
         self.privacy.store(level, Ordering::Relaxed);
+        // REQ: OBS-901 — the map's sampler follows at once (and purges client keys at 2+).
+        if let Some(m) = self
+            .map
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        {
+            m.set_privacy(level);
+        }
     }
 
     /// REQ: OBS-022 (T12.1) — from the next drain on, queries these match are left out of the
@@ -166,6 +179,46 @@ impl Hub {
             .workload_keys
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = keys.map(Arc::new);
+    }
+
+    /// REQ: OBS-901 (ADR-958) — turns the map's sampler on with these settings (from the next
+    /// drain; the window is kept when it was on already), or off (`None`: it is dropped and costs
+    /// nothing).
+    pub fn set_map(&self, settings: Option<crate::map::Settings>) {
+        let mut g = self.map.lock().unwrap_or_else(PoisonError::into_inner);
+        match (settings, g.as_mut()) {
+            (None, _) => *g = None,
+            (Some(s), Some(m)) => m.configure(s),
+            (Some(s), None) => {
+                let mut m = crate::map::Sampler::new(s, self.dropped_total());
+                m.set_privacy(self.privacy.load(Ordering::Relaxed));
+                *g = Some(m);
+            }
+        }
+    }
+
+    /// REQ: OBS-901 — the last 60 seconds as the sampler holds them (`now_s`: Unix seconds);
+    /// `None` while the map is off.
+    pub fn map_window(&self, now_s: u64) -> Option<crate::map::Window> {
+        let level = self.privacy.load(Ordering::Relaxed);
+        // Copy under the lock, sum and sort outside it: the aggregator never waits on a reader.
+        let frozen = {
+            let mut g = self.map.lock().unwrap_or_else(PoisonError::into_inner);
+            let m = g.as_mut()?;
+            m.set_privacy(level);
+            m.freeze(now_s)
+        };
+        Some(frozen.window())
+    }
+
+    /// Events every ring has dropped so far (a plain sum of the rings' counters).
+    pub fn dropped_total(&self) -> u64 {
+        self.stats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|(_, s)| s.dropped.load(Ordering::Relaxed))
+            .sum()
     }
 
     /// The pod address → workload key map in force (for replays from the query log).
@@ -316,15 +369,28 @@ impl Hub {
                         let excluded = hub.exclusions();
                         let keys = hub.workload_keys();
                         let mut agg = hub.aggregates();
-                        let analytics =
-                            |agg: &mut Aggregates, sink: &mut Option<Box<dyn Sink>>, k: &Record| {
-                                agg.record_private(k, level);
-                                if let Some(s) = sink.as_mut() {
-                                    s.record_analytics(k);
-                                }
-                            };
+                        // REQ: OBS-901 (ADR-958) — the map's sampler sits beside the analytics,
+                        // after the workload keys; it applies the privacy level to what it keeps.
+                        let mut map = hub.map.lock().unwrap_or_else(PoisonError::into_inner);
+                        if let Some(m) = map.as_mut() {
+                            m.set_privacy(level);
+                        }
+                        let analytics = |agg: &mut Aggregates,
+                                         map: &mut Option<crate::map::Sampler>,
+                                         sink: &mut Option<Box<dyn Sink>>,
+                                         k: &Record| {
+                            agg.record_private(k, level);
+                            if let Some(m) = map.as_mut() {
+                                m.offer_record(k);
+                            }
+                            if let Some(s) = sink.as_mut() {
+                                s.record_analytics(k);
+                            }
+                        };
                         let now = Instant::now();
-                        hold.release(keys.as_ref(), now, |k| analytics(&mut agg, &mut sink, k));
+                        hold.release(keys.as_ref(), now, |k| {
+                            analytics(&mut agg, &mut map, &mut sink, k);
+                        });
                         drainer.drain(|r| {
                             // REQ: OBS-020 — the listener probes stay out of the analytics,
                             // the query log, and every export; so do excluded queries (OBS-022).
@@ -338,9 +404,16 @@ impl Hub {
                                 s.record_log(&r);
                             }
                             hold.offer(keys.as_deref(), r, now, |k| {
-                                analytics(&mut agg, &mut sink, k);
+                                analytics(&mut agg, &mut map, &mut sink, k);
                             });
                         });
+                        if let Some(m) = map.as_mut() {
+                            let ms = u64::try_from(hub.epoch_at.elapsed().as_millis())
+                                .unwrap_or(u64::MAX);
+                            if m.tick_due(ms) {
+                                m.tick(ms, hub.dropped_total());
+                            }
+                        }
                     }
                     if let Some(s) = sink.as_mut() {
                         s.tick(Instant::now());
@@ -375,12 +448,25 @@ impl Hub {
         let excluded = self.exclusions();
         let keys = self.workload_keys();
         let mut agg = self.aggregates();
-        drainer.drain(|r| {
+        let mut map = self.map.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(m) = map.as_mut() {
+            m.set_privacy(level);
+        }
+        let n = drainer.drain(|r| {
             if !r.is_probe() && !self.left_out(excluded.as_deref(), &r) {
                 let keyed = keyed(keys.as_deref(), &r);
-                agg.record_private(keyed.as_ref().unwrap_or(&r), level);
+                let r = keyed.as_ref().unwrap_or(&r);
+                agg.record_private(r, level);
+                if let Some(m) = map.as_mut() {
+                    m.offer_record(r);
+                }
             }
-        })
+        });
+        if let Some(m) = map.as_mut() {
+            let ms = u64::try_from(self.epoch_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            m.tick(ms, self.dropped_total());
+        }
+        n
     }
 
     /// The single consumer of this hub's rings.

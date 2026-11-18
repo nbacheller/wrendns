@@ -2308,6 +2308,137 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/map": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The live network map.
+         * @description The network as a graph: the gateway, networks and VLANs, devices (the 200 busiest; the rest
+         *     fold into `+N more` per network), one resolver per TelltaleDNS node with its answer kinds, and
+         *     the upstreams. Edges carry the rate over the last 60 seconds and the shares of slow, failing and
+         *     blocked answers. Every node and edge has a `health`: `green`, `yellow`, `red`, or `idle` (too
+         *     few answers to say). The map is built from a sample of the lookups, never from the query path;
+         *     `sampleRate` says how thin the sample is. No domain name appears anywhere. `partial` and
+         *     `missingNodes` say when a cluster node didn't answer (it is a red resolver).
+         */
+        get: operations["get_map"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/map-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The live map's settings.
+         * @description The `[map]` section as this node runs it: `enabled`, `event_rate`, `min_sample`,
+         *     `warn_latency_ms` (null: the latency objective's), and the thresholds that colour the map.
+         *     `source` is `file` (the configuration files' section or the defaults) or `override` (set
+         *     through the API or the UI). Written with `PUT /api/v1/map-settings/default`, reverted with
+         *     `DELETE`. The same entry is in `GET /api/v1/config/entries?kind=map`.
+         */
+        get: operations["get_settings"];
+        /**
+         * The live network map's settings (OBS-901).
+         * @description The body has the same fields as `[map]` in `telltale.toml`: `enabled`, `event_rate` (lookups
+         *     per second each node samples, 10 to 2,000), `min_sample` (answers before a device or edge is
+         *     coloured, 1 to 1,000), `warn_latency_ms` (unset: the latency objective's), and the percent
+         *     thresholds `warn_slow_pct`, `warn_error_pct`, `error_pct` and `warn_blocked_pct` (1 to 100;
+         *     `error_pct` at least `warn_error_pct`). It replaces the whole section until it's deleted
+         *     again, on every node of a cluster, and applies within a few seconds with no restart.
+         */
+        put: operations["put_map_settings"];
+        post?: never;
+        /**
+         * Go back to the config file's map settings (OBS-901).
+         * @description Removes what the API or UI stored, so `[map]` in the config files (or the defaults)
+         *     applies again. 404 when nothing was stored.
+         */
+        delete: operations["delete_map_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/map/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Network health in short.
+         * @description Counts by health, the red and yellow nodes with their reasons (at most 50), and the five
+         *     busiest flows. Device names appear only at privacy levels 0 and 1 (at 2 and above devices are
+         *     hidden). The same data as the MCP tool `network_health`.
+         */
+        get: operations["get_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/map/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Live map stream.
+         * @description Server-Sent Events: one `snapshot` event every 2 seconds (the same body as `GET /api/v1/map`,
+         *     unfiltered: filter it on your side) and a `ping` event every 15 seconds. One ticker builds the
+         *     snapshot for every subscriber and stops when the last one leaves. At most 8 streams per node
+         *     (`429 map_streams_busy`) and at most 2 per user or token. When the map is turned off the stream sends a `map_disabled` event and ends. Close it when the page is hidden.
+         */
+        get: operations["map_stream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/map/world": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where answers point (world view).
+         * @description `available: false` with a `reason` when it can't be drawn: `geoip_off`, `geoip_missing`, or
+         *     `address_not_recorded`. A lookup's answer address isn't kept yet (ADR-970), so until it is every
+         *     lookup counts as `unlocated`.
+         */
+        get: operations["get_world"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/networks": {
         parameters: {
             query?: never;
@@ -4972,7 +5103,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "members_too_old" | "path_not_allowed" | "set_by_file" | "secret_missing" | "secret_in_use" | "insecure_transport" | "agent_not_allowed";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "members_too_old" | "path_not_allowed" | "set_by_file" | "secret_missing" | "secret_in_use" | "insecure_transport" | "agent_not_allowed" | "map_disabled" | "map_streams_busy";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -5839,6 +5970,22 @@ export interface components {
             missingNodes?: string[];
             /** @description Every condition found, the most serious first. Empty when healthy. */
             reasons: components["schemas"]["HealthReason"][];
+        };
+        /** @description One of the busiest flows. */
+        HealthFlow: {
+            from: string;
+            health: components["schemas"]["MapHealth"];
+            /** Format: double */
+            qps: number;
+            to: string;
+        };
+        /** @description One node that isn't green, with why. */
+        HealthProblem: {
+            health: components["schemas"]["MapHealth"];
+            id: string;
+            kind: components["schemas"]["MapNodeKind"];
+            label: string;
+            reasons: components["schemas"]["MapReason"][];
         };
         /** @description REQ: OBS-015 — one condition behind [`Health`]. */
         HealthReason: {
@@ -7377,6 +7524,151 @@ export interface components {
             note?: string | null;
             window?: components["schemas"]["NodeMaintenance"] | null;
         };
+        /** @description How many nodes are in each state. */
+        MapCounts: {
+            /** Format: int32 */
+            green: number;
+            /** Format: int32 */
+            idle: number;
+            /** Format: int32 */
+            red: number;
+            /** Format: int32 */
+            yellow: number;
+        };
+        /** @description An edge `from -> to`. */
+        MapEdge: {
+            /** Format: double */
+            blockedPct: number;
+            /** Format: int64 */
+            count: number;
+            /** Format: double */
+            errPct: number;
+            from: string;
+            health: components["schemas"]["MapHealth"];
+            /** Format: double */
+            qps: number;
+            /** @description The last lookups on this edge (the busiest 64 device edges only). */
+            recent?: components["schemas"]["MapRecent"][];
+            /** Format: double */
+            slowPct: number;
+            /** @description Structural edges (gateway to network, network to device) carry no rate. */
+            structural: boolean;
+            to: string;
+        };
+        /**
+         * @description One word for a node or an edge: colour is never alone (shape and words change too).
+         * @enum {string}
+         */
+        MapHealth: "idle" | "green" | "yellow" | "red";
+        /** @description A node of the map. */
+        MapNode: {
+            /** @description A device's address (not at privacy level 2 and above). */
+            address?: string | null;
+            /**
+             * Format: int64
+             * @description Answers in the window (an estimate), and the real events behind it.
+             */
+            count: number;
+            /**
+             * Format: int32
+             * @description Devices folded into a `more` node.
+             */
+            folded?: number | null;
+            /** @description A device's client group. */
+            group?: string | null;
+            health: components["schemas"]["MapHealth"];
+            /**
+             * @description Stable within a snapshot and across them: `gateway`, `net:<name>`, `dev:<address>`,
+             *     `res:<node>`, `ans:<node>:<kind>`, `up:<name>`, `more:<network>`, `dev:hidden`.
+             */
+            id: string;
+            kind: components["schemas"]["MapNodeKind"];
+            label: string;
+            /** @description The network a device (or a fold) is in. */
+            network?: string | null;
+            /** @description The TelltaleDNS node a resolver or an answer node belongs to. */
+            node?: string | null;
+            /**
+             * Format: double
+             * @description Answers per second over the window (an estimate when the sample is thinned).
+             */
+            qps: number;
+            reasons: components["schemas"]["MapReason"][];
+            /** Format: int64 */
+            sampled: number;
+        };
+        /**
+         * @description What a node is.
+         * @enum {string}
+         */
+        MapNodeKind: "gateway" | "network" | "device" | "more" | "resolver" | "answer" | "upstream";
+        /** @description A stable reason behind a colour, in words. */
+        MapReason: {
+            /**
+             * @description Stable: `error_rate`, `slow`, `rate_limited`, `high_blocked`, `anomaly`, `breaker_open`,
+             *     `breaker_half_open`, `unreachable`, `severe`, `degraded`, `router_error`,
+             *     `not_configured`, `few_samples`, `children`.
+             */
+            code: string;
+            summary: string;
+        };
+        /** @description One recently kept lookup on an edge (no name: the map never shows one). */
+        MapRecent: {
+            /** @description The status: `cached`, `forwarded`, `blocked`, ... */
+            status: string;
+            /** Format: int32 */
+            totalMs: number;
+            /** Format: int64 */
+            tsUnixMicros: number;
+        };
+        /** @description `GET /api/v1/map`: the network as a graph, coloured by health. */
+        MapSnapshot: {
+            counts: components["schemas"]["MapCounts"];
+            /**
+             * Format: int64
+             * @description Lookups the worker rings dropped in the window (the estimate is scaled for them).
+             */
+            dropped: number;
+            edges: components["schemas"]["MapEdge"][];
+            /** @description When it was built (RFC 3339). */
+            generatedAt: string;
+            /** @description The worst health of any resolver or network (`idle` when nothing has enough answers). */
+            health: components["schemas"]["MapHealth"];
+            missingNodes: string[];
+            nodes: components["schemas"]["MapNode"][];
+            /** @description Some node's part is missing: the map is of the nodes that answered. */
+            partial: boolean;
+            /**
+             * Format: int32
+             * @description The strictest privacy level in force (0 to 3): at 2 devices are hidden, at 3 only totals.
+             */
+            privacy: number;
+            /**
+             * Format: int32
+             * @description Every Nth lookup is sampled (1: nothing is thinned); an estimate beyond that.
+             */
+            sampleRate: number;
+            /** @description Devices were folded or edges cut for the caps. */
+            truncated: boolean;
+            /**
+             * Format: int32
+             * @description The window the rates cover.
+             */
+            windowSecs: number;
+        };
+        /** @description `GET /api/v1/map/world`: where answers point. */
+        MapWorld: {
+            /**
+             * @description False when it can't be drawn; `reason` says why: `geoip_off`, `geoip_missing` or
+             *     `address_not_recorded` (the lookup's answer address isn't kept: ADR-970).
+             */
+            available: boolean;
+            markers: components["schemas"]["WorldMarker"][];
+            reason?: string | null;
+            regions: components["schemas"]["WorldRegion"][];
+            unlocated: components["schemas"]["WorldUnlocated"];
+            updatedAt: string;
+        };
         /** @description Evidence that client IPs appear masked. */
         MaskedClients: {
             /**
@@ -7438,6 +7730,25 @@ export interface components {
          * @enum {string}
          */
         NameMatch: "substring" | "exact" | "suffix" | "glob" | "regex";
+        /**
+         * @description `GET /api/v1/map/health`: counts by health, what is red or yellow and why, and the busiest
+         *     flows. Device names are left out at privacy level 2 and above (they are not in the map then).
+         */
+        NetworkHealth: {
+            /** @description The five busiest flows. */
+            busiest: components["schemas"]["HealthFlow"][];
+            counts: components["schemas"]["MapCounts"];
+            generatedAt: string;
+            health: components["schemas"]["MapHealth"];
+            missingNodes: string[];
+            partial: boolean;
+            /** Format: int32 */
+            privacy: number;
+            /** @description Red first, then yellow; at most 50. */
+            problems: components["schemas"]["HealthProblem"][];
+            /** Format: int32 */
+            sampleRate: number;
+        };
         /**
          * @description REQ: API-013 (T22.2) — a network: a LAN or VLAN a router reported, or a client group's
          *     network that no router reported, with how many known devices are in it.
@@ -9366,6 +9677,32 @@ export interface components {
             name: string;
             /** @description Deleted: its addresses stay its own for 30 seconds (queries in flight). */
             terminating?: boolean;
+        };
+        /** @description An upstream placed on the map. */
+        WorldMarker: {
+            cc?: string | null;
+            health: components["schemas"]["MapHealth"];
+            name: string;
+            /** Format: double */
+            qps: number;
+        };
+        /** @description One country of the world view. */
+        WorldRegion: {
+            cc: string;
+            /** Format: int64 */
+            count: number;
+            health: components["schemas"]["MapHealth"];
+            name: string;
+            /** Format: double */
+            qps: number;
+            /** Format: double */
+            slowPct: number;
+        };
+        /** @description Answers that have no place on the map, and why. */
+        WorldUnlocated: {
+            /** Format: int64 */
+            count: number;
+            reason?: string | null;
         };
         /** @description REQ: DNS-018 (T7.22) — an authoritative zone from `[[zone]]`. */
         ZoneInfo: {
@@ -13873,6 +14210,270 @@ export interface operations {
                 };
             };
             /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_map: {
+        parameters: {
+            query?: {
+                /** @description Only this network (a name from `GET /api/v1/networks`). */
+                network?: string;
+                /** @description Only devices of this client group. */
+                group?: string;
+                /** @description Only devices whose name or address contains this text. */
+                device?: string;
+                /** @description Only this TelltaleDNS node (its pod, site or ID, as the Cluster page shows it). */
+                node?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The map. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MapSnapshot"];
+                };
+            };
+            /** @description `map_disabled`: the map is off ([map] enabled). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The map's settings and where they come from. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigEntry"];
+                };
+            };
+        };
+    };
+    put_map_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A value is out of range (the detail names the field), or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_map_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_health: {
+        parameters: {
+            query?: {
+                /** @description Only this network (a name from `GET /api/v1/networks`). */
+                network?: string;
+                /** @description Only devices of this client group. */
+                group?: string;
+                /** @description Only devices whose name or address contains this text. */
+                device?: string;
+                /** @description Only this TelltaleDNS node (its pod, site or ID, as the Cluster page shows it). */
+                node?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The short version of the map. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkHealth"];
+                };
+            };
+            /** @description `map_disabled`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    map_stream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description `text/event-stream` of `snapshot` (MapSnapshot) events. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            /** @description `map_disabled`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `map_streams_busy`: 8 streams are open on this node. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_world: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The world view's data, or why it is unavailable. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MapWorld"];
+                };
+            };
+            /** @description `map_disabled`. */
             404: {
                 headers: {
                     [name: string]: unknown;

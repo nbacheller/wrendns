@@ -2345,6 +2345,63 @@ impl Backend for ApiBackend {
         ]
     }
 
+    // REQ: OBS-901 (T26.2, ADR-958) — `[map]` as this node runs it.
+    fn map_settings(&self) -> Option<telltale_api::map::MapSettings> {
+        let cfg = self.src.config.load();
+        Some(telltale_api::map::MapSettings {
+            enabled: cfg.map.enabled,
+            event_rate: cfg.map.event_rate,
+            thresholds: telltale_api::map::Thresholds::from_config(&cfg.map, cfg.slo.latency_ms),
+        })
+    }
+
+    // REQ: OBS-901 (T26.2, ADR-958 sections 2 and 6) — this node's window of sampled lookups
+    // and what it knows of its own health. Reads the aggregator's window under its lock for a
+    // moment; never touches a worker or a peer.
+    fn map_part(&self) -> Option<telltale_api::map::MapPart> {
+        let cfg = self.src.config.load();
+        if !cfg.map.enabled {
+            return None;
+        }
+        let now = crate::pipeline::unix_now();
+        let window = self.src.pipeline.telemetry.map_window(now)?;
+        let upstreams = self
+            .upstreams()
+            .into_iter()
+            .map(|u| telltale_api::map::PartUpstream {
+                id: u.id,
+                name: u.name,
+                breaker: u.breaker,
+            })
+            .collect();
+        let health = self.health();
+        let reasons = health
+            .reasons
+            .iter()
+            .take(5)
+            .map(|r| (r.code.clone(), r.summary.clone()))
+            .collect();
+        // Open findings nobody has acknowledged, at privacy level 0 only (ADR-958 section 7).
+        let anomalous = if window.privacy == 0 {
+            self.anomalies(now.saturating_sub(86_400))
+                .into_iter()
+                .filter(|f| f.acknowledged.is_none() && f.muted_by.is_none() && !f.informational)
+                .map(|f| f.client)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Some(telltale_api::map::MapPart {
+            node: crate::http::node_name(&cfg),
+            window,
+            upstreams,
+            level: health.level,
+            reasons,
+            groups: cfg.group.iter().map(|g| g.name.to_string()).collect(),
+            anomalous,
+        })
+    }
+
     // REQ: OBS-016 (ADR-105)
     fn slo_settings(&self) -> telltale_api::slo::Settings {
         crate::health::slo_settings(&self.src.config.load())
@@ -3310,6 +3367,19 @@ impl Backend for ApiBackend {
                 answering: None,
             });
         }
+        // REQ: OBS-901 (T26.2) — likewise, the live map's settings.
+        if want("map") {
+            out.push(telltale_api::model::ConfigEntry {
+                kind: "map".to_owned(),
+                name: "default".to_owned(),
+                source: if e.map.is_some() { "override" } else { "file" }.to_owned(),
+                definition: serde_json::to_value(&cfg.map).ok(),
+                redacted: Vec::new(),
+                credential_issues: Vec::new(),
+                set_by_file: Vec::new(),
+                answering: None,
+            });
+        }
         // REQ: FLT-010 (T9.7)
         if want("schedule") {
             rows(
@@ -4152,6 +4222,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::RateLimit => crate::managed::RATELIMIT,
         ManagedKind::Exclusions => crate::managed::EXCLUSIONS,
         ManagedKind::Simulate => crate::managed::SIMULATE,
+        ManagedKind::Map => crate::managed::MAP,
         ManagedKind::Rollout => crate::managed::ROLLOUT,
         ManagedKind::KubernetesMap => crate::managed::KUBERNETES_MAP,
         ManagedKind::Special => crate::managed::SPECIAL,
@@ -4638,6 +4709,12 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         (ManagedKind::Simulate, false) => {
             "The config file's simulation settings (or the defaults) apply again to the next simulation.".into()
         }
+        (ManagedKind::Map, true) => {
+            "Applies on every node within a few seconds, with no restart: the map's sampling rate and the thresholds that colour it change. DNS answers don't change.".into()
+        }
+        (ManagedKind::Map, false) => {
+            "The config file's map settings (or the defaults) apply again on every node within a few seconds.".into()
+        }
         (ManagedKind::Rollout, true) => {
             "Applies to the next change, on every node; this change itself is published at once, not staged.".into()
         }
@@ -4670,6 +4747,7 @@ fn plan_managed(
         ManagedKind::RateLimit
             | ManagedKind::Exclusions
             | ManagedKind::Simulate
+            | ManagedKind::Map
             | ManagedKind::Rollout
     ) {
         return plan_singleton(src, state, w);
@@ -4850,6 +4928,7 @@ fn singleton_section(kind: ManagedKind, cfg: &telltale_config::Config) -> serde_
     match kind {
         ManagedKind::Exclusions => serde_json::to_value(&cfg.exclusions),
         ManagedKind::Simulate => serde_json::to_value(&cfg.simulate),
+        ManagedKind::Map => serde_json::to_value(&cfg.map),
         ManagedKind::Rollout => serde_json::to_value(&cfg.cluster.rollout),
         _ => serde_json::to_value(&cfg.ratelimit),
     }
@@ -4861,6 +4940,7 @@ fn singleton_noun(kind: ManagedKind) -> &'static str {
     match kind {
         ManagedKind::Exclusions => "exclusions",
         ManagedKind::Simulate => "simulation settings",
+        ManagedKind::Map => "live map settings",
         ManagedKind::Rollout => "rollout settings",
         _ => "rate limit",
     }
@@ -4883,6 +4963,11 @@ fn singleton_store(
         let x: telltale_config::SimulateConfig = serde_json::from_value(v.clone()).map_err(bad)?;
         let text = serde_json::to_string(&x).unwrap_or_default();
         entries.simulate = Some(x);
+        text
+    } else if kind == ManagedKind::Map {
+        let x: telltale_config::MapConfig = serde_json::from_value(v.clone()).map_err(bad)?;
+        let text = serde_json::to_string(&x).unwrap_or_default();
+        entries.map = Some(x);
         text
     } else if kind == ManagedKind::Rollout {
         let x: telltale_config::RolloutConfig = serde_json::from_value(v.clone()).map_err(bad)?;
@@ -4915,6 +5000,7 @@ fn singleton_change(
         let had = match kind {
             ManagedKind::Exclusions => entries.exclusions.take().is_some(),
             ManagedKind::Simulate => entries.simulate.take().is_some(),
+            ManagedKind::Map => entries.map.take().is_some(),
             ManagedKind::Rollout => entries.rollout.take().is_some(),
             _ => entries.ratelimit.take().is_some(),
         };
@@ -4925,6 +5011,9 @@ fn singleton_change(
                 }
                 ManagedKind::Simulate => {
                     "the simulation settings weren't changed through the API or UI: the config file's are in effect"
+                }
+                ManagedKind::Map => {
+                    "the map settings weren't changed through the API or UI: the config file's are in effect"
                 }
                 ManagedKind::Rollout => {
                     "the rollout settings weren't changed through the API or UI: the config file's are in effect"
@@ -6193,6 +6282,7 @@ fn keep_in_git(
         ManagedKind::RateLimit => "ratelimit",
         ManagedKind::Exclusions => "exclusions",
         ManagedKind::Simulate => "simulate",
+        ManagedKind::Map => "map",
         ManagedKind::Rollout => "cluster.rollout",
         ManagedKind::KubernetesMap => "kubernetes.map",
         ManagedKind::Special => "special",
@@ -6229,6 +6319,7 @@ fn keep_in_git(
         ManagedKind::RateLimit
             | ManagedKind::Exclusions
             | ManagedKind::Simulate
+            | ManagedKind::Map
             | ManagedKind::Rollout
             | ManagedKind::Special
             | ManagedKind::Local
@@ -6933,6 +7024,77 @@ mod ratelimit_tests {
             parsed["exclusions"]["names"].as_array().map(Vec::len),
             Some(1)
         );
+    }
+
+    /// REQ: OBS-901 (T26.2, ADR-958) — `[map]` is set and reverted like the exclusions: a body
+    /// replaces the section (fields left out take their defaults), an out-of-range value is
+    /// refused with its field named, the toggle drops the sampler, and it is kept in Git as one
+    /// `[map]` table. The sampler's slow threshold follows `[slo] latency_ms` until set.
+    #[test]
+    fn obs_901_map_settings_override_toggle_and_revert() {
+        let f = file("[map]\nevent_rate = 300\n[slo]\nlatency_ms = 100\n");
+        let mut entries = crate::managed::Entries::default();
+        assert_eq!(
+            singleton_change(ManagedKind::Map, &f, &mut entries, None)
+                .unwrap_err()
+                .status,
+            404,
+            "nothing stored: the file's settings are in effect"
+        );
+        let put = singleton_change(
+            ManagedKind::Map,
+            &f,
+            &mut entries,
+            Some(&serde_json::json!({ "event_rate": 500, "error_pct": 40, "warn_latency_ms": 50 })),
+        )
+        .unwrap();
+        assert_eq!(put.before["event_rate"], 300);
+        assert_eq!(put.merged.map.event_rate, 500);
+        assert_eq!(put.merged.map.min_sample, 20, "left out: the default");
+        let s = crate::server::map_sampler(&put.merged).expect("on");
+        assert_eq!((s.event_rate, s.slow_us), (500, 50_000));
+        // Without its own threshold the sampler follows the objective.
+        let follow = singleton_change(
+            ManagedKind::Map,
+            &f,
+            &mut entries,
+            Some(&serde_json::json!({ "event_rate": 500 })),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::server::map_sampler(&follow.merged).map(|s| s.slow_us),
+            Some(100_000)
+        );
+        let off = singleton_change(
+            ManagedKind::Map,
+            &f,
+            &mut entries,
+            Some(&serde_json::json!({ "enabled": false })),
+        )
+        .unwrap();
+        assert!(
+            crate::server::map_sampler(&off.merged).is_none(),
+            "off: the aggregator keeps no window"
+        );
+        for (bad, field) in [
+            (serde_json::json!({ "event_rate": 5 }), "map.event_rate"),
+            (serde_json::json!({ "min_sample": 0 }), "map.min_sample"),
+            (serde_json::json!({ "warn_error_pct": 50 }), "map.error_pct"),
+            (
+                serde_json::json!({ "warn_slow_pct": 101 }),
+                "map.warn_slow_pct",
+            ),
+            (serde_json::json!({ "speed": 1 }), "speed"),
+        ] {
+            let e = singleton_change(ManagedKind::Map, &f, &mut entries, Some(&bad)).unwrap_err();
+            assert!(e.detail.contains(field), "{bad}: {}", e.detail);
+        }
+        let back = singleton_change(ManagedKind::Map, &f, &mut entries, None).unwrap();
+        assert_eq!(back.after["event_rate"], 300, "the file's again");
+        let after = serde_json::json!({ "enabled": true, "event_rate": 300, "min_sample": 20 });
+        let toml = keep_in_git(ManagedKind::Map, "default", Some(&after), Some(&after));
+        let parsed: toml::Table = toml::from_str(&toml).unwrap();
+        assert_eq!(parsed["map"]["event_rate"].as_integer(), Some(300));
     }
 }
 

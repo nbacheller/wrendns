@@ -71,6 +71,9 @@ pub struct Config {
     pub exclusions: ExclusionsConfig,
     /// REQ: OBS-024 (T13.1) — change simulation over the query log.
     pub simulate: SimulateConfig,
+    /// REQ: OBS-901 (T26.2, ADR-958) — the live network map: its sampler and the health
+    /// thresholds that colour it. Shared by the whole cluster.
+    pub map: MapConfig,
     /// REQ: OPS-011 (ADR-156) — the support package's settings. Node-local: it names this node's
     /// own disk.
     pub support: SupportConfig,
@@ -164,6 +167,7 @@ impl Default for Config {
             ratelimit: RateLimitConfig::default(),
             exclusions: ExclusionsConfig::default(),
             simulate: SimulateConfig::default(),
+            map: MapConfig::default(),
             support: SupportConfig::default(),
             watchdog: WatchdogConfig::default(),
             identify: IdentifyConfig::default(),
@@ -2016,6 +2020,50 @@ impl Default for SimulateConfig {
             max_secs: 20,
             max_rows: 2_000_000,
             default_window: SafeString::from("24h"),
+        }
+    }
+}
+
+/// REQ: OBS-901 (T26.2, ADR-958 section 4) — the live network map: a sampler on the aggregator
+/// thread (never on the DNS path) and the thresholds that colour the map green, yellow or red.
+/// Shared by the whole cluster; also in Settings -> Monitoring.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct MapConfig {
+    /// Off: the sampler isn't subscribed and the map routes answer `404 map_disabled`.
+    pub enabled: bool,
+    /// Lookups per second each node samples for the map (10 to 2,000). Above it the sample is
+    /// thinned and each kept lookup counts for more; the map says "sampled, 1 in N".
+    pub event_rate: u32,
+    /// Sampled answers a device, edge or upstream needs in the 60 s window before it is
+    /// coloured; fewer is grey ("idle"), not green (1 to 1,000).
+    pub min_sample: u32,
+    /// An answer slower than this many milliseconds is slow (1 to 60,000). Unset: the
+    /// latency objective's `[slo] latency_ms`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warn_latency_ms: Option<u32>,
+    /// Yellow when this percent of answers or more are slow (1 to 100).
+    pub warn_slow_pct: u32,
+    /// Yellow when this percent of answers or more are SERVFAIL or timeouts (1 to 100).
+    pub warn_error_pct: u32,
+    /// Red when this percent of answers or more are SERVFAIL or timeouts (1 to 100; at least
+    /// `warn_error_pct`).
+    pub error_pct: u32,
+    /// Yellow for a device when this percent of its answers or more are blocked (1 to 100).
+    pub warn_blocked_pct: u32,
+}
+
+impl Default for MapConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            event_rate: 200,
+            min_sample: 20,
+            warn_latency_ms: None,
+            warn_slow_pct: 10,
+            warn_error_pct: 5,
+            error_pct: 25,
+            warn_blocked_pct: 60,
         }
     }
 }

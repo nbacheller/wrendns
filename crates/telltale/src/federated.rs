@@ -184,6 +184,9 @@ enum Read {
     SecretsStatus,
     /// REQ: API-015 — the peer's own references to stored secrets, for a delete on the primary.
     SecretRefs,
+    /// REQ: OBS-901 (ADR-958) — the peer's own part of the live map (older peers do not know it:
+    /// they are missing from the map, and the map says so).
+    MapPart,
 }
 
 /// REQ: CLU-004 (upstream #7) — runs a federated read's future to completion on `rt` from
@@ -312,6 +315,7 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::ListHits => serde_json::to_vec(&b.list_hits()),
         Read::SecretsStatus => serde_json::to_vec(&b.secrets_status().map_err(text)?),
         Read::SecretRefs => serde_json::to_vec(&b.secret_refs()),
+        Read::MapPart => serde_json::to_vec(&b.map_part()),
     }
     .map_err(|e| e.to_string())
 }
@@ -750,6 +754,36 @@ pub(crate) struct Federated {
     /// REQ: AGT-011, CLU-002 (T7.3) — a read's `scope` narrowed to some nodes; `None` is the
     /// whole cluster.
     only: Option<Only>,
+    /// REQ: OBS-901 (ADR-958 section 6) — the live map's per-peer last-good parts and the gather
+    /// task that fills them, shared by every handle (each request has its own).
+    map: Arc<MapPeers>,
+}
+
+/// REQ: OBS-901 — what the cluster read of the map keeps between requests: the cache the gather
+/// task writes and the snapshot reads, and whether somebody asked lately.
+struct MapPeers {
+    cache: Arc<telltale_api::map_api::PeerCache>,
+    demand: Arc<telltale_api::map_api::Demand>,
+}
+
+impl MapPeers {
+    fn new() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            cache: Arc::new(telltale_api::map_api::PeerCache::new(now)),
+            demand: Arc::new(telltale_api::map_api::Demand::new(now)),
+        }
+    }
+}
+
+/// How a member is named on the map: its pod, else its site, else its ID (as `label_of`).
+fn member_label(m: &telltale_cluster::net::Member) -> String {
+    let l = if m.pod.is_empty() { &m.site } else { &m.pod };
+    if l.is_empty() {
+        m.node_id.clone()
+    } else {
+        l.clone()
+    }
 }
 
 /// The nodes a scoped read covers.
@@ -774,6 +808,7 @@ impl Federated {
             cluster,
             missing: Mutex::new(Vec::new()),
             only: None,
+            map: Arc::new(MapPeers::new()),
         }
     }
 
@@ -793,6 +828,7 @@ impl Federated {
             cluster: Arc::clone(&self.cluster),
             missing: Mutex::new(Vec::new()),
             only: Some(Only { me, peers }),
+            map: Arc::clone(&self.map),
         }
     }
 
@@ -903,6 +939,47 @@ impl Federated {
         } else {
             m.site.clone()
         }
+    }
+
+    /// REQ: OBS-901 — starts the map's gather task on the runtime this read runs on. Without a
+    /// runtime (a synchronous test) nothing starts and the peers stay silent.
+    fn start_map_gather(&self) {
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            self.map.demand.stop();
+            return;
+        };
+        let (cluster, list_cluster) = (Arc::clone(&self.cluster), Arc::clone(&self.cluster));
+        let peers = move || {
+            list_cluster
+                .members()
+                .into_iter()
+                .map(|m| telltale_api::map_api::PeerRef {
+                    label: member_label(&m),
+                    connected: m.connected,
+                    relayed_up: false,
+                    id: m.node_id,
+                })
+                .collect()
+        };
+        let fetch = move |peer: String| {
+            let cluster = Arc::clone(&cluster);
+            async move {
+                let body = serde_json::to_vec(&Read::MapPart).ok()?;
+                let answer = cluster.call(&peer, KIND, body, DEADLINE).await.ok()?;
+                serde_json::from_slice::<Option<telltale_api::map::MapPart>>(&answer)
+                    .ok()
+                    .flatten()
+            }
+        };
+        rt.spawn(telltale_api::map_api::gather(
+            Arc::clone(&self.map.cache),
+            Arc::clone(&self.map.demand),
+            peers,
+            fetch,
+            telltale_api::map_api::TICK,
+            DEADLINE,
+            Duration::from_secs(10),
+        ));
     }
 
     /// Sends `reads` (one per peer) concurrently and waits at most [`DEADLINE`]. Each answer
@@ -1166,6 +1243,7 @@ impl Backend for Federated {
             cluster: Arc::clone(&self.cluster),
             missing: Mutex::new(Vec::new()),
             only: Some(only),
+            map: Arc::clone(&self.map),
         }))
     }
     fn local(&self) -> Option<Shared> {
@@ -1185,6 +1263,7 @@ impl Backend for Federated {
             cluster: Arc::clone(&self.cluster),
             missing: Mutex::new(Vec::new()),
             only: self.only.clone(),
+            map: Arc::clone(&self.map),
         }))
     }
     fn promote(&self, req: PromoteRequest, by: String) -> Result<ClusterView, Problem> {
@@ -2039,6 +2118,57 @@ impl Backend for Federated {
             )),
             None => self.local.lists_refresh(w),
         }
+    }
+    // REQ: OBS-901 (ADR-958) — `[map]` and this node's own part are the local backend's.
+    fn map_settings(&self) -> Option<telltale_api::map::MapSettings> {
+        self.local.map_settings()
+    }
+    fn map_part(&self) -> Option<telltale_api::map::MapPart> {
+        self.local.map_part()
+    }
+    // REQ: OBS-901 (ADR-958 section 6) — this node's part, and the peers' last good parts from
+    // the cache. A read never waits on a peer: a separate task polls each one on its own
+    // schedule with the deadline of every federated read and files the answer; a peer not heard
+    // from for 3 intervals is missing (and the snapshot says `partial`). The task runs only while
+    // somebody reads the map and stops after 10 s without a read.
+    fn map_parts(&self) -> telltale_api::map::MapParts {
+        use telltale_api::map_api::PeerRef;
+        let mut out = telltale_api::map::MapParts::default();
+        if self.with_me()
+            && let Some(mut p) = self.local.map_part()
+        {
+            p.node = self.own_label();
+            out.parts.push(p);
+        }
+        if self.map.demand.touch(std::time::Instant::now()) {
+            // The grace of a peer not heard from starts now (the cache may be long idle).
+            self.map.cache.restart(std::time::Instant::now());
+            self.start_map_gather();
+        }
+        let relayed: std::collections::HashSet<String> = self
+            .cluster
+            .relayed_members()
+            .into_iter()
+            .map(|r| r.node_id)
+            .collect();
+        let peers: Vec<PeerRef> = self
+            .cluster
+            .members()
+            .into_iter()
+            .filter(|m| self.in_scope(&m.node_id))
+            .map(|m| PeerRef {
+                label: member_label(&m),
+                connected: m.connected,
+                relayed_up: relayed.contains(&m.node_id),
+                id: m.node_id,
+            })
+            .collect();
+        let seen = self.map.cache.view(&peers, std::time::Instant::now());
+        out.parts.extend(seen.parts);
+        out.missing = seen.missing;
+        out.unseen = seen.unseen;
+        out.pending = seen.pending;
+        out
     }
     // REQ: OBS-015 (ADR-104) — every node's own conditions, plus the cluster's (peers
     // unreachable or behind) as this node sees them.
@@ -3060,6 +3190,28 @@ mod anomaly_tests {
         assert!(!changes_state(&r));
         assert!(!changes_state(&Read::Anomalies { since_s: 5 }));
         assert!(!changes_state(&Read::Health));
+    }
+
+    // REQ: OBS-901 (ADR-958 section 6) — the map read is a plain read (it changes nothing, so an
+    // ephemeral member may send it), and a peer's answer decodes as an optional part: `null` is
+    // a node whose map is off.
+    #[test]
+    fn obs_901_map_part_read_round_trips() {
+        let text = serde_json::to_string(&Read::MapPart).unwrap();
+        assert_eq!(text, r#"{"read":"map_part"}"#);
+        let r: Read = serde_json::from_str(&text).unwrap();
+        assert!(matches!(r, Read::MapPart));
+        assert!(!changes_state(&r));
+        let off: Option<telltale_api::map::MapPart> = serde_json::from_str("null").unwrap();
+        assert!(off.is_none());
+        let part = telltale_api::map::MapPart {
+            node: "pi1".into(),
+            level: "healthy".into(),
+            ..telltale_api::map::MapPart::default()
+        };
+        let body = serde_json::to_vec(&Some(&part)).unwrap();
+        let back: Option<telltale_api::map::MapPart> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(back, Some(part));
     }
 }
 

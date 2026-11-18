@@ -285,6 +285,19 @@
         "hosts_files": []
       }
     },
+    "map": {
+      "description": "REQ: OBS-901 (T26.2, ADR-958) — the live network map: its sampler and the health\nthresholds that colour it. Shared by the whole cluster.",
+      "$ref": "#/$defs/MapConfig",
+      "default": {
+        "enabled": true,
+        "error_pct": 25,
+        "event_rate": 200,
+        "min_sample": 20,
+        "warn_blocked_pct": 60,
+        "warn_error_pct": 5,
+        "warn_slow_pct": 10
+      }
+    },
     "node": {
       "description": "This node's role and local settings.",
       "$ref": "#/$defs/NodeConfig",
@@ -2648,6 +2661,69 @@
         "type",
         "value"
       ]
+    },
+    "MapConfig": {
+      "description": "REQ: OBS-901 (T26.2, ADR-958 section 4) — the live network map: a sampler on the aggregator\nthread (never on the DNS path) and the thresholds that colour the map green, yellow or red.\nShared by the whole cluster; also in Settings -> Monitoring.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Off: the sampler isn't subscribed and the map routes answer `404 map_disabled`.",
+          "type": "boolean",
+          "default": true
+        },
+        "error_pct": {
+          "description": "Red when this percent of answers or more are SERVFAIL or timeouts (1 to 100; at least\n`warn_error_pct`).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 25,
+          "minimum": 0
+        },
+        "event_rate": {
+          "description": "Lookups per second each node samples for the map (10 to 2,000). Above it the sample is\nthinned and each kept lookup counts for more; the map says \"sampled, 1 in N\".",
+          "type": "integer",
+          "format": "uint32",
+          "default": 200,
+          "minimum": 0
+        },
+        "min_sample": {
+          "description": "Sampled answers a device, edge or upstream needs in the 60 s window before it is\ncoloured; fewer is grey (\"idle\"), not green (1 to 1,000).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 20,
+          "minimum": 0
+        },
+        "warn_blocked_pct": {
+          "description": "Yellow for a device when this percent of its answers or more are blocked (1 to 100).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 60,
+          "minimum": 0
+        },
+        "warn_error_pct": {
+          "description": "Yellow when this percent of answers or more are SERVFAIL or timeouts (1 to 100).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 5,
+          "minimum": 0
+        },
+        "warn_latency_ms": {
+          "description": "An answer slower than this many milliseconds is slow (1 to 60,000). Unset: the\nlatency objective's `[slo] latency_ms`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "warn_slow_pct": {
+          "description": "Yellow when this percent of answers or more are slow (1 to 100).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 10,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
     },
     "MetricsConfig": {
       "description": "Prometheus endpoint (OBS-005).",

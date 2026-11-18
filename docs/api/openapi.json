@@ -5929,6 +5929,380 @@
         }
       }
     },
+    "/api/v1/map": {
+      "get": {
+        "tags": [
+          "map"
+        ],
+        "summary": "The live network map.",
+        "description": "The network as a graph: the gateway, networks and VLANs, devices (the 200 busiest; the rest\nfold into `+N more` per network), one resolver per TelltaleDNS node with its answer kinds, and\nthe upstreams. Edges carry the rate over the last 60 seconds and the shares of slow, failing and\nblocked answers. Every node and edge has a `health`: `green`, `yellow`, `red`, or `idle` (too\nfew answers to say). The map is built from a sample of the lookups, never from the query path;\n`sampleRate` says how thin the sample is. No domain name appears anywhere. `partial` and\n`missingNodes` say when a cluster node didn't answer (it is a red resolver).",
+        "operationId": "get_map",
+        "parameters": [
+          {
+            "name": "network",
+            "in": "query",
+            "description": "Only this network (a name from `GET /api/v1/networks`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "description": "Only devices of this client group.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "device",
+            "in": "query",
+            "description": "Only devices whose name or address contains this text.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "node",
+            "in": "query",
+            "description": "Only this TelltaleDNS node (its pod, site or ID, as the Cluster page shows it).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The map.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MapSnapshot"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`map_disabled`: the map is off ([map] enabled).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/map-settings/default": {
+      "get": {
+        "tags": [
+          "map"
+        ],
+        "summary": "The live map's settings.",
+        "description": "The `[map]` section as this node runs it: `enabled`, `event_rate`, `min_sample`,\n`warn_latency_ms` (null: the latency objective's), and the thresholds that colour the map.\n`source` is `file` (the configuration files' section or the defaults) or `override` (set\nthrough the API or the UI). Written with `PUT /api/v1/map-settings/default`, reverted with\n`DELETE`. The same entry is in `GET /api/v1/config/entries?kind=map`.",
+        "operationId": "get_settings",
+        "responses": {
+          "200": {
+            "description": "The map's settings and where they come from.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigEntry"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The live network map's settings (OBS-901).",
+        "description": "The body has the same fields as `[map]` in `telltale.toml`: `enabled`, `event_rate` (lookups\nper second each node samples, 10 to 2,000), `min_sample` (answers before a device or edge is\ncoloured, 1 to 1,000), `warn_latency_ms` (unset: the latency objective's), and the percent\nthresholds `warn_slow_pct`, `warn_error_pct`, `error_pct` and `warn_blocked_pct` (1 to 100;\n`error_pct` at least `warn_error_pct`). It replaces the whole section until it's deleted\nagain, on every node of a cluster, and applies within a few seconds with no restart.",
+        "operationId": "put_map_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value is out of range (the detail names the field), or the configuration wouldn't be valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Go back to the config file's map settings (OBS-901).",
+        "description": "Removes what the API or UI stored, so `[map]` in the config files (or the defaults)\napplies again. 404 when nothing was stored.",
+        "operationId": "delete_map_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing was changed through the API: the file's settings are in effect already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/map/health": {
+      "get": {
+        "tags": [
+          "map"
+        ],
+        "summary": "Network health in short.",
+        "description": "Counts by health, the red and yellow nodes with their reasons (at most 50), and the five\nbusiest flows. Device names appear only at privacy levels 0 and 1 (at 2 and above devices are\nhidden). The same data as the MCP tool `network_health`.",
+        "operationId": "get_health",
+        "parameters": [
+          {
+            "name": "network",
+            "in": "query",
+            "description": "Only this network (a name from `GET /api/v1/networks`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "description": "Only devices of this client group.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "device",
+            "in": "query",
+            "description": "Only devices whose name or address contains this text.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "node",
+            "in": "query",
+            "description": "Only this TelltaleDNS node (its pod, site or ID, as the Cluster page shows it).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The short version of the map.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkHealth"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`map_disabled`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/map/stream": {
+      "get": {
+        "tags": [
+          "map"
+        ],
+        "summary": "Live map stream.",
+        "description": "Server-Sent Events: one `snapshot` event every 2 seconds (the same body as `GET /api/v1/map`,\nunfiltered: filter it on your side) and a `ping` event every 15 seconds. One ticker builds the\nsnapshot for every subscriber and stops when the last one leaves. At most 8 streams per node\n(`429 map_streams_busy`) and at most 2 per user or token. When the map is turned off the stream sends a `map_disabled` event and ends. Close it when the page is hidden.",
+        "operationId": "map_stream",
+        "responses": {
+          "200": {
+            "description": "`text/event-stream` of `snapshot` (MapSnapshot) events.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`map_disabled`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`map_streams_busy`: 8 streams are open on this node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/map/world": {
+      "get": {
+        "tags": [
+          "map"
+        ],
+        "summary": "Where answers point (world view).",
+        "description": "`available: false` with a `reason` when it can't be drawn: `geoip_off`, `geoip_missing`, or\n`address_not_recorded`. A lookup's answer address isn't kept yet (ADR-970), so until it is every\nlookup counts as `unlocated`.",
+        "operationId": "get_world",
+        "responses": {
+          "200": {
+            "description": "The world view's data, or why it is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MapWorld"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`map_disabled`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/networks": {
       "get": {
         "tags": [
@@ -13355,7 +13729,9 @@
           "secret_missing",
           "secret_in_use",
           "insecure_transport",
-          "agent_not_allowed"
+          "agent_not_allowed",
+          "map_disabled",
+          "map_streams_busy"
         ]
       },
       "ConfigChange": {
@@ -15415,6 +15791,62 @@
               "$ref": "#/components/schemas/HealthReason"
             },
             "description": "Every condition found, the most serious first. Empty when healthy."
+          }
+        }
+      },
+      "HealthFlow": {
+        "type": "object",
+        "description": "One of the busiest flows.",
+        "required": [
+          "from",
+          "to",
+          "qps",
+          "health"
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "health": {
+            "$ref": "#/components/schemas/MapHealth"
+          },
+          "qps": {
+            "type": "number",
+            "format": "double"
+          },
+          "to": {
+            "type": "string"
+          }
+        }
+      },
+      "HealthProblem": {
+        "type": "object",
+        "description": "One node that isn't green, with why.",
+        "required": [
+          "id",
+          "kind",
+          "label",
+          "health",
+          "reasons"
+        ],
+        "properties": {
+          "health": {
+            "$ref": "#/components/schemas/MapHealth"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MapNodeKind"
+          },
+          "label": {
+            "type": "string"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MapReason"
+            }
           }
         }
       },
@@ -19308,6 +19740,371 @@
           }
         }
       },
+      "MapCounts": {
+        "type": "object",
+        "description": "How many nodes are in each state.",
+        "required": [
+          "green",
+          "yellow",
+          "red",
+          "idle"
+        ],
+        "properties": {
+          "green": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "idle": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "red": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "yellow": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "MapEdge": {
+        "type": "object",
+        "description": "An edge `from -> to`.",
+        "required": [
+          "from",
+          "to",
+          "structural",
+          "qps",
+          "count",
+          "slowPct",
+          "errPct",
+          "blockedPct",
+          "health"
+        ],
+        "properties": {
+          "blockedPct": {
+            "type": "number",
+            "format": "double"
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "errPct": {
+            "type": "number",
+            "format": "double"
+          },
+          "from": {
+            "type": "string"
+          },
+          "health": {
+            "$ref": "#/components/schemas/MapHealth"
+          },
+          "qps": {
+            "type": "number",
+            "format": "double"
+          },
+          "recent": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MapRecent"
+            },
+            "description": "The last lookups on this edge (the busiest 64 device edges only)."
+          },
+          "slowPct": {
+            "type": "number",
+            "format": "double"
+          },
+          "structural": {
+            "type": "boolean",
+            "description": "Structural edges (gateway to network, network to device) carry no rate."
+          },
+          "to": {
+            "type": "string"
+          }
+        }
+      },
+      "MapHealth": {
+        "type": "string",
+        "description": "One word for a node or an edge: colour is never alone (shape and words change too).",
+        "enum": [
+          "idle",
+          "green",
+          "yellow",
+          "red"
+        ]
+      },
+      "MapNode": {
+        "type": "object",
+        "description": "A node of the map.",
+        "required": [
+          "id",
+          "kind",
+          "label",
+          "health",
+          "reasons",
+          "qps",
+          "count",
+          "sampled"
+        ],
+        "properties": {
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A device's address (not at privacy level 2 and above)."
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Answers in the window (an estimate), and the real events behind it.",
+            "minimum": 0
+          },
+          "folded": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Devices folded into a `more` node.",
+            "minimum": 0
+          },
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A device's client group."
+          },
+          "health": {
+            "$ref": "#/components/schemas/MapHealth"
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable within a snapshot and across them: `gateway`, `net:<name>`, `dev:<address>`,\n`res:<node>`, `ans:<node>:<kind>`, `up:<name>`, `more:<network>`, `dev:hidden`."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MapNodeKind"
+          },
+          "label": {
+            "type": "string"
+          },
+          "network": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The network a device (or a fold) is in."
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The TelltaleDNS node a resolver or an answer node belongs to."
+          },
+          "qps": {
+            "type": "number",
+            "format": "double",
+            "description": "Answers per second over the window (an estimate when the sample is thinned)."
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MapReason"
+            }
+          },
+          "sampled": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "MapNodeKind": {
+        "type": "string",
+        "description": "What a node is.",
+        "enum": [
+          "gateway",
+          "network",
+          "device",
+          "more",
+          "resolver",
+          "answer",
+          "upstream"
+        ]
+      },
+      "MapReason": {
+        "type": "object",
+        "description": "A stable reason behind a colour, in words.",
+        "required": [
+          "code",
+          "summary"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable: `error_rate`, `slow`, `rate_limited`, `high_blocked`, `anomaly`, `breaker_open`,\n`breaker_half_open`, `unreachable`, `severe`, `degraded`, `router_error`,\n`not_configured`, `few_samples`, `children`."
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      },
+      "MapRecent": {
+        "type": "object",
+        "description": "One recently kept lookup on an edge (no name: the map never shows one).",
+        "required": [
+          "tsUnixMicros",
+          "totalMs",
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "The status: `cached`, `forwarded`, `blocked`, ..."
+          },
+          "totalMs": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "tsUnixMicros": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "MapSnapshot": {
+        "type": "object",
+        "description": "`GET /api/v1/map`: the network as a graph, coloured by health.",
+        "required": [
+          "generatedAt",
+          "windowSecs",
+          "sampleRate",
+          "dropped",
+          "privacy",
+          "truncated",
+          "partial",
+          "missingNodes",
+          "health",
+          "counts",
+          "nodes",
+          "edges"
+        ],
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/MapCounts"
+          },
+          "dropped": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Lookups the worker rings dropped in the window (the estimate is scaled for them).",
+            "minimum": 0
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MapEdge"
+            }
+          },
+          "generatedAt": {
+            "type": "string",
+            "description": "When it was built (RFC 3339)."
+          },
+          "health": {
+            "$ref": "#/components/schemas/MapHealth",
+            "description": "The worst health of any resolver or network (`idle` when nothing has enough answers)."
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MapNode"
+            }
+          },
+          "partial": {
+            "type": "boolean",
+            "description": "Some node's part is missing: the map is of the nodes that answered."
+          },
+          "privacy": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The strictest privacy level in force (0 to 3): at 2 devices are hidden, at 3 only totals.",
+            "minimum": 0
+          },
+          "sampleRate": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Every Nth lookup is sampled (1: nothing is thinned); an estimate beyond that.",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Devices were folded or edges cut for the caps."
+          },
+          "windowSecs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The window the rates cover.",
+            "minimum": 0
+          }
+        }
+      },
+      "MapWorld": {
+        "type": "object",
+        "description": "`GET /api/v1/map/world`: where answers point.",
+        "required": [
+          "available",
+          "updatedAt",
+          "regions",
+          "markers",
+          "unlocated"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "description": "False when it can't be drawn; `reason` says why: `geoip_off`, `geoip_missing` or\n`address_not_recorded` (the lookup's answer address isn't kept: ADR-970)."
+          },
+          "markers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorldMarker"
+            }
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "regions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorldRegion"
+            }
+          },
+          "unlocated": {
+            "$ref": "#/components/schemas/WorldUnlocated"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        }
+      },
       "MaskedClients": {
         "type": "object",
         "description": "Evidence that client IPs appear masked.",
@@ -19440,6 +20237,65 @@
           "glob",
           "regex"
         ]
+      },
+      "NetworkHealth": {
+        "type": "object",
+        "description": "`GET /api/v1/map/health`: counts by health, what is red or yellow and why, and the busiest\nflows. Device names are left out at privacy level 2 and above (they are not in the map then).",
+        "required": [
+          "generatedAt",
+          "health",
+          "counts",
+          "problems",
+          "busiest",
+          "sampleRate",
+          "privacy",
+          "partial",
+          "missingNodes"
+        ],
+        "properties": {
+          "busiest": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HealthFlow"
+            },
+            "description": "The five busiest flows."
+          },
+          "counts": {
+            "$ref": "#/components/schemas/MapCounts"
+          },
+          "generatedAt": {
+            "type": "string"
+          },
+          "health": {
+            "$ref": "#/components/schemas/MapHealth"
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "partial": {
+            "type": "boolean"
+          },
+          "privacy": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HealthProblem"
+            },
+            "description": "Red first, then yellow; at most 50."
+          },
+          "sampleRate": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
       },
       "NetworkInfo": {
         "type": "object",
@@ -24034,6 +24890,89 @@
           }
         }
       },
+      "WorldMarker": {
+        "type": "object",
+        "description": "An upstream placed on the map.",
+        "required": [
+          "name",
+          "qps",
+          "health"
+        ],
+        "properties": {
+          "cc": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "health": {
+            "$ref": "#/components/schemas/MapHealth"
+          },
+          "name": {
+            "type": "string"
+          },
+          "qps": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "WorldRegion": {
+        "type": "object",
+        "description": "One country of the world view.",
+        "required": [
+          "cc",
+          "name",
+          "qps",
+          "count",
+          "slowPct",
+          "health"
+        ],
+        "properties": {
+          "cc": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "health": {
+            "$ref": "#/components/schemas/MapHealth"
+          },
+          "name": {
+            "type": "string"
+          },
+          "qps": {
+            "type": "number",
+            "format": "double"
+          },
+          "slowPct": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "WorldUnlocated": {
+        "type": "object",
+        "description": "Answers that have no place on the map, and why.",
+        "required": [
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "ZoneInfo": {
         "type": "object",
         "description": "REQ: DNS-018 (T7.22) — an authoritative zone from `[[zone]]`.",
@@ -24118,6 +25057,10 @@
     {
       "name": "queries",
       "description": "The query log and explanations of decisions."
+    },
+    {
+      "name": "map",
+      "description": "REQ: OBS-901 - the live network map: the gateway, networks, devices, TelltaleDNS nodes and upstreams, coloured by health, from a sample of the lookups (never from the query path)."
     },
     {
       "name": "config",

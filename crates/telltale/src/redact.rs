@@ -26,6 +26,7 @@ pub(crate) const fn api_kind(kind: ManagedKind) -> &'static str {
         ManagedKind::RateLimit => "ratelimit",
         ManagedKind::Exclusions => "exclusions",
         ManagedKind::Simulate => "simulate",
+        ManagedKind::Map => "map",
         ManagedKind::Rollout => "rollout_settings",
         ManagedKind::KubernetesMap => "kubernetes_map",
         ManagedKind::Special => "special",

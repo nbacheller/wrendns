@@ -246,6 +246,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                 ManagedKind::RateLimit => "ratelimit",
                 ManagedKind::Exclusions => "exclusions",
                 ManagedKind::Simulate => "simulate",
+                ManagedKind::Map => "map",
                 ManagedKind::Rollout => "rollout_settings",
                 ManagedKind::KubernetesMap => "kubernetes_map",
                 ManagedKind::Special => "special",
@@ -548,7 +549,11 @@ fn settings_kinds_understood(
 ) -> Result<(), Problem> {
     if !matches!(
         kind,
-        ManagedKind::Special | ManagedKind::Local | ManagedKind::Clients | ManagedKind::Discovery
+        ManagedKind::Special
+            | ManagedKind::Local
+            | ManagedKind::Clients
+            | ManagedKind::Discovery
+            | ManagedKind::Map
     ) {
         return Ok(());
     }

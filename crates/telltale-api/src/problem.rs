@@ -120,6 +120,10 @@ pub enum Code {
     /// REQ: API-015, AGT-004 (ADR-903 §5) — agent tokens never do this, whatever their scopes
     /// (secret values, backups, router checks: a value would sit in an agent's plan and transcript).
     AgentNotAllowed,
+    /// REQ: OBS-901 (ADR-958) — the live network map is off (`[map] enabled = false`).
+    MapDisabled,
+    /// REQ: OBS-901 (ADR-958) — 8 map streams are already open on this node.
+    MapStreamsBusy,
 }
 
 impl Code {
@@ -173,6 +177,8 @@ impl Code {
             Self::SecretInUse => "https://telltaledns.dev/problems/secret_in_use",
             Self::InsecureTransport => "https://telltaledns.dev/problems/insecure_transport",
             Self::AgentNotAllowed => "https://telltaledns.dev/problems/agent_not_allowed",
+            Self::MapDisabled => "https://telltaledns.dev/problems/map_disabled",
+            Self::MapStreamsBusy => "https://telltaledns.dev/problems/map_streams_busy",
         }
     }
 
@@ -224,13 +230,17 @@ impl Code {
             Self::SecretInUse => "Secret in use",
             Self::InsecureTransport => "HTTPS needed",
             Self::AgentNotAllowed => "Not for agents",
+            Self::MapDisabled => "The network map is off",
+            Self::MapStreamsBusy => "Too many map streams",
         }
     }
 
     const fn status(self) -> StatusCode {
         match self {
             Self::InvalidParameter | Self::UnsupportedScope => StatusCode::BAD_REQUEST,
-            Self::NotFound | Self::NodeUnknown | Self::VersionUnknown => StatusCode::NOT_FOUND,
+            Self::NotFound | Self::NodeUnknown | Self::VersionUnknown | Self::MapDisabled => {
+                StatusCode::NOT_FOUND
+            }
             Self::Unavailable | Self::NodeUnreachable | Self::SecretsLocked => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
@@ -256,7 +266,7 @@ impl Code {
             | Self::MembersTooOld
             | Self::SetByFile
             | Self::SecretInUse => StatusCode::CONFLICT,
-            Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            Self::RateLimited | Self::MapStreamsBusy => StatusCode::TOO_MANY_REQUESTS,
             Self::VersionConflict => StatusCode::PRECONDITION_FAILED,
             Self::InvalidConfig
             | Self::MaintenanceTooLong

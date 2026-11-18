@@ -7,6 +7,8 @@ use tower::ServiceExt;
 
 use super::*;
 
+mod obs_901_map;
+
 /// Records what it was asked for; returns fixed data.
 #[derive(Default)]
 struct Fake {
@@ -19,6 +21,8 @@ struct Fake {
     map_taken: std::sync::atomic::AtomicBool,
     /// REQ: API-005 (T24.10) — minutes blocking is paused for everyone, while it is.
     paused: Mutex<Option<u32>>,
+    /// REQ: OBS-901 — the map's settings (`None`: no map) and what every node reports.
+    map: Mutex<(Option<crate::map::MapSettings>, crate::map::MapParts)>,
 }
 
 /// The one finding the fake reports.
@@ -31,6 +35,31 @@ const NOW: u64 = 1_791_072_000;
 impl Backend for Fake {
     fn now_unix_seconds(&self) -> u64 {
         NOW
+    }
+    // REQ: OBS-901 — the map the test sets up.
+    fn map_settings(&self) -> Option<crate::map::MapSettings> {
+        self.map.lock().unwrap().0
+    }
+    fn map_part(&self) -> Option<crate::map::MapPart> {
+        self.map.lock().unwrap().1.parts.first().cloned()
+    }
+    fn config_entries(&self, kind: Option<&str>) -> Vec<crate::model::ConfigEntry> {
+        if kind != Some("map") {
+            return Vec::new();
+        }
+        vec![crate::model::ConfigEntry {
+            kind: "map".into(),
+            name: "default".into(),
+            source: "file".into(),
+            definition: serde_json::to_value(telltale_config::MapConfig::default()).ok(),
+            redacted: Vec::new(),
+            credential_issues: Vec::new(),
+            set_by_file: Vec::new(),
+            answering: None,
+        }]
+    }
+    fn map_parts(&self) -> crate::map::MapParts {
+        self.map.lock().unwrap().1.clone()
     }
     // REQ: API-007 (T24.18) — the test backend discards any plan (a real one answers 404 for a plan
     // it doesn't hold; the idempotency test needs a first answer that succeeds).
@@ -1705,8 +1734,9 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // /import/pihole, /import/pihole/plans/{id}/apply and /import/pihole/plans/{id}; 142 with
     // API-005's /pihole-api and /pihole-api/token (T24.10) and the Pi-hole compatible paths
     // /api/auth, /api/stats/{summary,top_domains,top_clients,upstreams}, /api/info/version,
-    // /api/dns/blocking and /admin/api.php.
-    assert_eq!(paths.len(), 142);
+    // /api/dns/blocking and /admin/api.php; 147 with OBS-901's /map, /map/stream, /map/world,
+    // /map/health and /map-settings/default (T26.2).
+    assert_eq!(paths.len(), 147);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
