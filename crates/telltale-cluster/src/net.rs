@@ -817,6 +817,9 @@ pub struct Cluster {
     /// Whether this node may publish: a primary holding a valid lease (always, in manual mode).
     lease_ok: std::sync::atomic::AtomicBool,
     failover_view: Mutex<crate::failover::FailoverView>,
+    /// REQ: CLU-009 (T24.33) — the last vote reply each voter gave this node (the Cluster page's
+    /// view of a witness).
+    voter_replies: Mutex<std::collections::BTreeMap<String, crate::failover::VoterReply>>,
     /// Bumped when this node's certificate is renewed: TLS settings are rebuilt (T5.4c).
     cert_gen: AtomicU64,
     /// The shared join secret this node accepts (CLU-009).
@@ -931,6 +934,7 @@ impl Cluster {
             // ADR-056 — a primary in automatic failover waits for its first renewal.
             lease_ok: std::sync::atomic::AtomicBool::new(!wait_for_lease),
             failover_view: Mutex::new(crate::failover::FailoverView::default()),
+            voter_replies: Mutex::new(std::collections::BTreeMap::new()),
             cert_gen: AtomicU64::new(0),
             bootstrap: std::sync::OnceLock::new(),
             started_ms: now_ms(),
@@ -1195,6 +1199,30 @@ impl Cluster {
             .failover_view
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = v;
+    }
+
+    /// REQ: CLU-009 (T24.33) — records a voter's reply to this node's vote request.
+    pub(crate) fn note_voter_reply(&self, voter: &str, granted: bool, epoch: u64) {
+        let now = wall_ms();
+        let mut map = self
+            .voter_replies
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let entry = map.entry(voter.to_owned()).or_default();
+        if granted {
+            entry.last_grant_ms = Some(now);
+        }
+        entry.at_ms = now;
+        entry.granted = granted;
+        entry.epoch = epoch;
+    }
+
+    /// REQ: CLU-009 (T24.33) — the last reply each voter gave this node.
+    pub fn voter_replies(&self) -> std::collections::BTreeMap<String, crate::failover::VoterReply> {
+        self.voter_replies
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Records a vote this node granted, in the event log.

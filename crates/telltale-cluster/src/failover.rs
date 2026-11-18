@@ -338,6 +338,7 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
         .fold(cluster.role().1, u64::max);
     let mut outs = el.observe(seen);
     if let Some((from, r)) = reply {
+        cluster.note_voter_reply(&from, r.granted, r.epoch);
         outs.extend(el.on_reply(&from, &r, now));
     }
     let jitter = rand::random::<u64>() % (LEASE_MS / 2);
@@ -438,6 +439,18 @@ fn elected(cluster: &Cluster, id: &Identity, epoch: u64) {
         }
         Err(e) => warn!("cluster: elected but can't store the new role: {e}"),
     }
+}
+
+/// REQ: CLU-009 (T24.33) — the last vote reply a voter gave this node, on the wall clock.
+#[derive(Debug, Clone, Default)]
+pub struct VoterReply {
+    /// When the reply came (Unix ms).
+    pub at_ms: u64,
+    pub granted: bool,
+    /// The epoch the voter reported.
+    pub epoch: u64,
+    /// When it last granted a vote or lease renewal (Unix ms).
+    pub last_grant_ms: Option<u64>,
 }
 
 /// What the Cluster page shows about the election (ADR-056).

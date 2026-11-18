@@ -2151,6 +2151,13 @@ telltale cluster set-failover auto
   *lease* with a majority every 5 s, and publishes only while the lease holds. If it disappears,
   the eligible nodes wait for the lease to run out, and one is elected by a majority vote in a
   new epoch, typically within 15–25 s.
+- **A witness on the Cluster page:** a witness only votes (REQ: CLU-009), so its row says
+  "witness, votes only" and shows *not applicable* for configuration, secrets and DNS. It shows
+  whether it is up and linked, its version and uptime, and its vote: when it last answered the
+  primary's vote request or lease renewal, and the epoch it voted in. It is never "behind" or
+  "not serving", and the Health checks, rollouts and Compare leave it out for those. One that
+  is unreachable still fails the "nodes up" check and raises the `node_down` health reason and
+  alert, because automatic failover needs its vote.
 - **Never two primaries writing:** a voter votes once per epoch and won't vote for anyone else
   while the lease it granted runs. A primary that loses its majority (for example, cut off by a
   network split) stops taking changes before anyone else can be elected. Proven by a simulator

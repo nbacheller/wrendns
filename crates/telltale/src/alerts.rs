@@ -321,7 +321,7 @@ fn observe(
             .cluster()
             .nodes
             .into_iter()
-            .filter(|n| !n.this_node && n.connected && n.config_lag > 0 && !Paused::node(n))
+            .filter(|n| !n.this_node && !n.witness && n.connected && n.config_lag > 0 && !Paused::node(n))
             .map(|n| {
                 let s = format!(
                     "{} is {} configuration version(s) behind the primary{}",
