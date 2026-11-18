@@ -328,14 +328,27 @@ fn obs_902_geoip_crc32_known_value() {
 /// (the database is read by position, never held).
 #[test]
 #[ignore = "writes a production-sized database and reads /proc: run by hand"]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::unreadable_literal,
+    clippy::too_many_lines
+)] // a probe, not a runtime path
 fn obs_902_geoip_probe_database() {
     fn rss_kib() -> u64 {
         std::fs::read_to_string("/proc/self/statm")
             .ok()
-            .and_then(|s| s.split_whitespace().nth(1).and_then(|p| p.parse::<u64>().ok()))
+            .and_then(|s| {
+                s.split_whitespace()
+                    .nth(1)
+                    .and_then(|p| p.parse::<u64>().ok())
+            })
             .map_or(0, |pages| pages * 4)
     }
-    let out = std::env::var_os("GEOIP_PROBE_OUT").map_or_else(|| std::env::temp_dir().join("tt-geoip-probe"), std::path::PathBuf::from);
+    let out = std::env::var_os("GEOIP_PROBE_OUT").map_or_else(
+        || std::env::temp_dir().join("tt-geoip-probe"),
+        std::path::PathBuf::from,
+    );
     let letters = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     let code = |i: u32| {
         let i = (i % 200) as usize;
@@ -348,7 +361,14 @@ fn obs_902_geoip_probe_database() {
         let len = 256 << (i % 5);
         let end = at.saturating_add(len - 1);
         let code = code(i / 3 + i % 7);
-        c.push_line(&format!("{},{},{}{}", std::net::Ipv4Addr::from(at), std::net::Ipv4Addr::from(end), code[0] as char, code[1] as char)).unwrap();
+        c.push_line(&format!(
+            "{},{},{}{}",
+            std::net::Ipv4Addr::from(at),
+            std::net::Ipv4Addr::from(end),
+            code[0] as char,
+            code[1] as char
+        ))
+        .unwrap();
         at = end.saturating_add(1 + (i % 3) * 256);
         if at > 0xdf00_0000 {
             break;
@@ -358,23 +378,40 @@ fn obs_902_geoip_probe_database() {
         let start = (0x2001_0000u128 + i * 2) << 96;
         let end = start | ((1u128 << 96) - 1);
         let code = code(i as u32);
-        c.push_line(&format!("{},{},{}{}", std::net::Ipv6Addr::from(start), std::net::Ipv6Addr::from(end), code[0] as char, code[1] as char)).unwrap();
+        c.push_line(&format!(
+            "{},{},{}{}",
+            std::net::Ipv6Addr::from(start),
+            std::net::Ipv6Addr::from(end),
+            code[0] as char,
+            code[1] as char
+        ))
+        .unwrap();
     }
     let rows = c.rows();
     let table = c.finish(&Limits::PRODUCTION, None).unwrap();
     std::fs::create_dir_all(&out).unwrap();
     let month = {
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         crate::geoip::month_of(secs)
     };
     let tmp = write_tmp(&out, &table, month, 1_000, None).unwrap();
     publish(&out, &tmp).unwrap();
     let db = Db::open(&out).unwrap();
-    println!("rows {rows}, file {} bytes ({:.2} MiB), source rows {}", db.size, db.size as f64 / 1048576.0, db.source_rows);
+    println!(
+        "rows {rows}, file {} bytes ({:.2} MiB), source rows {}",
+        db.size,
+        db.size as f64 / 1048576.0,
+        db.source_rows
+    );
     // A first batch pages in the code the lookups run (file-backed pages count in the resident set
     // too, and a debug binary is big): the growth that matters is what the next 2,000,000 add.
     for i in 0..5_000u32 {
-        let _ = db.lookup(IpAddr::V4(std::net::Ipv4Addr::from(i.wrapping_mul(2_654_435_761))));
+        let _ = db.lookup(IpAddr::V4(std::net::Ipv4Addr::from(
+            i.wrapping_mul(2_654_435_761),
+        )));
         let _ = db.lookup(IpAddr::V6(std::net::Ipv6Addr::from(u128::from(i) << 100)));
     }
     let run = |lookup: bool| {

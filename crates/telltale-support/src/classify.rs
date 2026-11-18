@@ -230,6 +230,7 @@ const TABLE: &[(&str, Class)] = &[
     ("upstream[].recursive.stub_servers[]", Scan),
     ("upstream[].recursive.stub_zone", Free),
     ("upstream[].relay", Url),
+    ("upstream[].source", Scan),
     ("upstream[].spki_pins[]", Plain),
     ("upstream[].tls_ca", Scan),
     ("upstream[].tls_client_cert", Scan),
