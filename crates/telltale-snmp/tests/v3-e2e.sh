@@ -26,6 +26,8 @@ IP=172.30.247.10
 NAME=tt-snmpv3-e2e-agent-$$
 MADE_NET=
 DEV=${TT_V3_DEV:-}
+# A hard kill (SIGKILL) skips the trap and leaves generated passwords here: clear old ones.
+rm -rf ./.v3e2e.* 2>/dev/null || true
 WORK=$(mktemp -d ./.v3e2e.XXXXXX)
 cleanup() {
   if [ -n "$DEV" ]; then docker network disconnect "$NET" "$DEV" >/dev/null 2>&1 || true; fi
@@ -84,8 +86,8 @@ fi
 
 # Runs one named test with the environment for one user.
 run_test() { # test-name user authproto authfile [privfile]
-  # Refuse to run against anything outside the throwaway range.
-  case "$IP:161" in 172.30.247.*:161) ;; *) echo "v3-e2e: bad address" >&2; exit 2 ;; esac
+  # The range guard is the Rust assertion in snmpd_interop.rs (v3_agent), which checks the
+  # TT_SNMPD_ADDR the test really receives; a shell check of a constant would prove nothing.
   local envs="TT_SNMPD_ADDR=$IP:161 TT_SNMPD_SYSNAME=tt-v3-e2e TT_SNMPD_USER=$2 TT_SNMPD_AUTH=$3 TT_SNMPD_AUTH_FILE=$WORKDEV/$4"
   if [ -n "${5:-}" ]; then envs="$envs TT_SNMPD_PRIV_FILE=$WORKDEV/$5"; fi
   envs="$envs TT_SNMPD_WRONG_FILE=$WORKDEV/wrong"

@@ -65,6 +65,8 @@ pub enum Refused {
     Aes192,
     Aes256,
     NoAuthNoPriv,
+    /// A password under 8 octets (RFC 3414 §11.2).
+    ShortPassword,
     Unknown,
 }
 
@@ -85,6 +87,9 @@ impl Refused {
             Self::Aes256 => "AES-256 is refused: RFC 3826 defines only AES-128 for SNMPv3.",
             Self::NoAuthNoPriv => {
                 "noAuthNoPriv is refused: a v3 user must authenticate. Use v2c only where the device has no v3."
+            }
+            Self::ShortPassword => {
+                "The password is refused: RFC 3414 §11.2 asks for at least 8 characters."
             }
             Self::Unknown => "This protocol is not known to TelltaleDNS, so it is refused.",
         }
@@ -147,10 +152,23 @@ impl PrivProto {
     }
 }
 
+/// The shortest password accepted (RFC 3414 §11.2).
+pub const MIN_PASSWORD: usize = 8;
+
+/// Checks a password at config and credential validation, with the reason to show.
+pub fn check_password(password: &[u8]) -> Result<(), Refused> {
+    if password.len() < MIN_PASSWORD {
+        Err(Refused::ShortPassword)
+    } else {
+        Ok(())
+    }
+}
+
 /// The password-to-key expansion (RFC 3414 A.2): the password repeated to 1 MiB, hashed.
-/// Returns `None` for an empty password, which would never end the expansion.
+/// Returns `None` for a password under `MIN_PASSWORD` octets (an empty one would never end the
+/// expansion).
 pub fn password_to_key(alg: AuthProto, password: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
-    if password.is_empty() {
+    if password.len() < MIN_PASSWORD {
         return None;
     }
     let mut ctx = digest::Context::new(alg.digest());
@@ -196,7 +214,7 @@ pub fn mac(alg: AuthProto, kul: &[u8], msg: &[u8]) -> Vec<u8> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsmError {
     Decode(DecodeError),
-    /// The password is empty, so there is no key.
+    /// The password is under 8 octets, so there is no key.
     EmptyPassword,
     /// The random source failed.
     Random,
@@ -328,6 +346,15 @@ impl Engine {
         self.boots = boots;
         self.time = time;
         self.learned = now;
+    }
+}
+
+/// Whether a discovered (unauthenticated) engine may replace the cached one: not when it is the
+/// same engine and its clock is behind what an authenticated message showed.
+pub fn discovery_allowed(trusted: Option<&Engine>, found: &Engine, now: Instant) -> bool {
+    match trusted {
+        Some(t) if t.id == found.id => t.window(found.boots, found.time, now) != Window::Stale,
+        _ => found.boots < MAX_BOOTS,
     }
 }
 
@@ -740,8 +767,64 @@ mod tests {
     }
 
     #[test]
+    fn dsc_003_rfc3414_sha256_key_vector() {
+        // The A.3 method with SHA-256 and SHA-512 (RFC 7860): password "maplesyrup", engineID
+        // 00..02. Computed by hashlib's SHA-256/512 over the A.2 stream (the same procedure that
+        // reproduces the RFC's SHA-1 values), independent of this crate.
+        let engine = hex("000000000000000000000002");
+        for (alg, ku, kul) in [
+            (
+                AuthProto::Sha256,
+                "ab51014d1e077f6017df2b12bee5f5aa72993177e9bb569c4dff5a4ca0b4afac",
+                "8982e0e549e866db361a6b625d84cccc11162d453ee8ce3a6445c2d6776f0f8b",
+            ),
+            (
+                AuthProto::Sha512,
+                "7e4396de5aadc77be853819b98c9406265b3a9c37cc3176569847a4e4f6fba63dd3a73d04924d31a63f95a601f9385af6be4ed1b37f87d040f7c6ed6f8d38a91",
+                "22a5a36cedfcc085807a128d7bc6c2382167ad6c0dbc5fdff856740f3d84c099ad1ea87a8db096714d9788bd544047c9021e4229ce27e4c0a69250adfcffbb0b",
+            ),
+        ] {
+            let k = password_to_key(alg, b"maplesyrup").unwrap_or_default();
+            assert_eq!(k.as_slice(), hex(ku).as_slice());
+            assert_eq!(localize(alg, &k, &engine).as_slice(), hex(kul).as_slice());
+        }
+    }
+
+    #[test]
+    fn dsc_003_rediscovery_cannot_move_the_clock_back() {
+        let now = Instant::now();
+        let t = Engine {
+            id: vec![1, 2],
+            boots: 5,
+            time: 1000,
+            learned: now,
+        };
+        let found = |boots, time| Engine {
+            id: vec![1, 2],
+            boots,
+            time,
+            learned: now,
+        };
+        assert!(!discovery_allowed(Some(&t), &found(4, 9999), now));
+        assert!(!discovery_allowed(Some(&t), &found(5, 100), now));
+        assert!(discovery_allowed(Some(&t), &found(5, 1000), now));
+        assert!(discovery_allowed(Some(&t), &found(6, 3), now));
+        let other = Engine {
+            id: vec![9],
+            boots: 1,
+            time: 1,
+            learned: now,
+        };
+        assert!(discovery_allowed(Some(&t), &other, now));
+    }
+
+    #[test]
     fn dsc_003_empty_password_has_no_key() {
         assert!(password_to_key(AuthProto::Sha256, b"").is_none());
+        assert!(password_to_key(AuthProto::Sha256, b"short77").is_none());
+        assert!(password_to_key(AuthProto::Sha256, b"eight888").is_some());
+        assert_eq!(check_password(b"short77"), Err(Refused::ShortPassword));
+        assert!(check_password(b"eight888").is_ok());
     }
 
     #[test]

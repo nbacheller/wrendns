@@ -4698,3 +4698,18 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 **Test plan:** `deploy/keepalived/e2e.sh` on the isolated bridge, run locally (five complete local runs with the final checks, and the hosted runs, with the same checks: the takeover took 3.2 to 6.8 s, with 0 to 2 probes lost before the first answer; the promotion to epoch 2, the VIP back on the primary, and the maintenance hand-over all passed), and the `keepalived` CI workflow on every change to the example, the sources or the Dockerfile.
 
 **Consequences:** an operator who wants a VIP runs keepalived beside TelltaleDNS (or in the example's sidecar), and restarts them together. No code, dependency or hot-path change, so no image delta. The example's keepalived image is a separate 33 MB image, used only by the example and its checks.
+
+## ADR-980 — SNMPv3: the HMAC key copy is not zeroized, passwords need 8 octets, rediscovery cannot move the clock back (Proposed)
+
+**Context:** The review of T25.5 (DSC-003, ADR-908, ADR-931) found three points the code did not settle.
+
+**Decision:**
+1. **HMAC key state.** `ring::hmac::Key` keeps key-equivalent padded state and does not zeroize it on drop. The crate builds one per MAC and drops it at once. The localized key `Kul` and `Ku` stay in `Zeroizing`. The ring copy is **accepted**: the process holds the plaintext password in a `SecretValue` anyway, ring offers no zeroizing key, and a hand-written HMAC would replace a reviewed implementation with ours.
+2. **Password minimum.** Passwords under 8 octets are refused (RFC 3414 §11.2; net-snmp does the same): `Agent::new`, `UsmUser::derive` and `usm::check_password` return a refusal with the reason `Refused::ShortPassword`, which the T25.8 credential form shows.
+3. **Rediscovery.** The agent keeps the engine as last seen in an authenticated message (`trusted`). A discovery Report (unauthenticated) for the same engine ID that is behind it (RFC 3414 §3.2.7b window) is refused (`usm::discovery_allowed`), so a spoofer cannot rewind the clock through rediscovery. A forward move (a reboot) is taken. A different engine ID drops the trusted copy.
+
+**Not done:** counting unauthenticated Report OIDs as an operator hint (review item 13, optional). A wrong password and an unknown user both show as a timeout, deliberately: an unauthenticated Report must never drive behavior, and showing it risks an oracle for user names. Open for T25.8 if the owner wants it.
+
+**Test plan:** `dsc_003_rediscovery_cannot_move_the_clock_back`, `dsc_003_empty_password_has_no_key` (short passwords), `dsc_003_rfc3414_sha256_key_vector`.
+
+**Consequences:** passwords under 8 octets in existing credentials stop working. No dependency, no hot-path change, no image delta.

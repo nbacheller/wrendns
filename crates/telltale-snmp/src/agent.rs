@@ -106,6 +106,9 @@ pub struct Agent {
     next_msg_id: i32,
     next_req_id: i32,
     engine: Option<Engine>,
+    /// The engine as last seen in an authenticated message. Rediscovery may not move it back
+    /// (RFC 3414 §3.2.7b; a spoofed discovery Report is unauthenticated).
+    trusted: Option<Engine>,
     gate: ResyncGate,
     keys: Option<RoundKeys>,
 }
@@ -142,6 +145,18 @@ impl Agent {
         if matches!(&security, Security::V3 { user } if user.auth.is_none()) {
             return Err(AgentError::BadRequest);
         }
+        // REQ: DSC-003. RFC 3414 §11.2: passwords under 8 octets are refused up front.
+        if let Security::V3 { user } = &security {
+            let short = user
+                .auth
+                .iter()
+                .map(|(_, p)| p)
+                .chain(user.privacy.iter().map(|(_, p)| p))
+                .any(|p| usm::check_password(p.expose()).is_err());
+            if short {
+                return Err(AgentError::Usm(UsmError::EmptyPassword));
+            }
+        }
         let bind: SocketAddr = match target.ip() {
             IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
             IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 0),
@@ -159,6 +174,7 @@ impl Agent {
             next_msg_id: random_start(),
             next_req_id: random_start(),
             engine: None,
+            trusted: None,
             gate: ResyncGate::default(),
             keys: None,
         })
@@ -301,8 +317,12 @@ impl Agent {
             };
             let got = self.wait_for(|this, bytes| this.accept_v3(bytes, &expect, Instant::now()));
             match got {
-                Ok(Outcome::Answer(resp)) => return Ok(resp),
-                Ok(Outcome::Resend) | Err(AgentError::Timeout) => {}
+                Ok(Outcome::Answer(resp)) => {
+                    self.trusted = self.engine.clone();
+                    return Ok(resp);
+                }
+                Ok(Outcome::Resend) => self.trusted = self.engine.clone(),
+                Err(AgentError::Timeout) => {}
                 Err(e) => return Err(e),
             }
         }
@@ -333,6 +353,14 @@ impl Agent {
                 .wait_for(|_this, bytes| accept_discovery(bytes, msg_id, req_id, Instant::now()));
             match got {
                 Ok(engine) => {
+                    // REQ: DSC-003. An unauthenticated discovery may move the clock forward
+                    // (a reboot) but never back past what an authenticated message showed.
+                    if !usm::discovery_allowed(self.trusted.as_ref(), &engine, Instant::now()) {
+                        return Err(AgentError::Usm(UsmError::NotInTimeWindow));
+                    }
+                    if self.trusted.as_ref().is_some_and(|t| t.id != engine.id) {
+                        self.trusted = None;
+                    }
                     self.engine = Some(engine);
                     return Ok(());
                 }
