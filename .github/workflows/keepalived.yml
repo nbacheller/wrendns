@@ -8,7 +8,7 @@
 name: keepalived
 on:
   push:
-    branches: [main, 'feat/**', 'test/**']
+    branches: [main, 'feat/ipam-integrations']
     paths:
       - 'crates/**'
       - 'Cargo.lock'
@@ -23,6 +23,12 @@ on:
       - 'deploy/keepalived/**'
       - '.github/workflows/keepalived.yml'
   workflow_dispatch:
+
+# A newer push to the same branch supersedes a run still in progress (it would only spend minutes and
+# the shared GitHub API limit); runs on main are never cancelled, the release workflow waits on them.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Least privilege: the job reads the repository and nothing more.
 permissions:
