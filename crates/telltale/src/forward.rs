@@ -488,6 +488,11 @@ pub(crate) const SETTINGS_KINDS_SINCE: (u64, u64, u64) = (0, 8, 0);
 /// refused while any member runs an older version (`members_too_old`). It is the release that
 /// carries the section, the same as `SETTINGS_KINDS_SINCE`; the workspace version is that release.
 pub(crate) const DISCOVERY_SINCE: (u64, u64, u64) = (0, 8, 0);
+/// REQ: FLT-901, FLT-902 (T24.29, ADR-994 item 7) — the first version that reads a group's `content`
+/// and `safe_search_engines`; the workspace version is that release. A node of the previous version
+/// rejects a group entry with a field it doesn't know, so a group entry that carries one waits until
+/// every member runs this version (409 `members_too_old`).
+pub(crate) const GROUP_CONTENT_SINCE: (u64, u64, u64) = (0, 8, 0);
 
 /// Whether a version string (`0.8.0`, `v0.8.1-rc.1`, `0.8.0-dev`) is at least `min`; unreadable is
 /// not. A local build reports `<crate version>-dev` (ADR-948, T21.6): the suffix after `-` is

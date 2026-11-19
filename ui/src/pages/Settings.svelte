@@ -78,6 +78,14 @@
     { key: 'log.domains', label: 'Log only: domains', type: 'lines', placeholder: 'localhost\n*.lan',
       help: 'One per line. localhost is that name only; *.lan is every name under lan (not lan itself). Still counted in the dashboard and top lists.' },
   ];
+  // REQ: FLT-901 (T24.29) — `[filter]`'s two category settings: how many entries the selection may add before
+  // the Categories view warns, and the size of the Ad Block list.
+  const filterFields: Field[] = [
+    { key: 'entry_budget', label: 'Entry budget', type: 'number', placeholder: '1000000', min: 1, helpTopic: 'category-budget',
+      help: 'The most distinct blocklist entries the selected categories may add before the Categories view warns. A node too small for a selection refuses it whatever this says.' },
+    { key: 'ads_tier', label: 'Ad block size', type: 'select', options: ['light', 'pro', 'pro_plus', 'ultimate'], initial: 'pro',
+      help: "Which of HaGeZi's ad and tracker lists the Ad Block checkbox of every profile uses: light, pro (the default, balanced), pro_plus or ultimate." },
+  ];
   // REQ: OBS-024 (T13.1) — the fields of `[simulate]`.
   const simulateFields: Field[] = [
     { key: 'enabled', label: 'Allow change simulations', type: 'bool', initial: true,
@@ -1004,6 +1012,14 @@
       <h2>Cache</h2>
       <p class="small">Hit rates, what's cached, settings, lookups, and flushing are on the <a href="#/cache">Cache page</a>.</p>
     </section>
+    <!-- REQ: FLT-901 (T24.29) — Filtering: the category entry budget and the ad block size. -->
+    <ConfigEditor kind="filter" path="filter-settings" singleton title="Filtering" noun="filtering settings" fields={filterFields}
+      help="category-budget"
+      summary={(d) => `entry budget ${Number(d.entry_budget ?? 1000000).toLocaleString('en-US')}, ad block size ${String(d.ads_tier ?? 'pro').replace('_', '+')}`} />
+    <p class="muted small">
+      The Categories view (Lists, Categories, and each profile) warns when the selected categories hold more entries than the budget, and a node
+      too small for a selection refuses it. The ad block size is the list every profile's Ad Block checkbox downloads.<HelpButton id="category-budget" />
+    </p>
     <!-- REQ: DNS-019 (T24.12, ADR-904, ADR-914) — the special names: switches, and the DDR name (admin). -->
     <ConfigEditor kind="special" path="special-names" singleton title="Special names" noun="special names" fields={specialFields}
       help="special-names" note={ddrNote}

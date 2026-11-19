@@ -17,7 +17,10 @@
 #   h. failover with three nodes: the node holding the lease is killed, a survivor is promoted 5 to
 #      40 s later, the other follows, DNS on both survivors keeps answering (0 SERVFAIL), an edit on
 #      the new primary reaches the other survivor, and the killed node, started again, steps down;
-#   i. a rolling restart of each node in turn keeps at least two nodes answering DNS throughout.
+#   i. a rolling restart of each node in turn keeps at least two nodes answering DNS throughout;
+#   c2. (FLT-901, T24.29) a content category chosen on a replica's API is stored by the primary, which
+#       downloads its list from the fake source once; every node blocks the list's names from the
+#       compiled snapshot, and the fake source saw no request from a replica.
 # And, between a and b, a2: in manual failover each replica reports the other as up (relayed by the
 # primary), then `set-failover auto` on the running primary is adopted with no restart: it holds a
 # lease, keeps its role and its epoch, and no replica stands for 45 s.
@@ -256,6 +259,27 @@ done
 call primary GET /api/v1/audit
 has 'replica-a' || bad "the primary's audit log doesn't name the entry node"
 pass
+
+step "c2. a category chosen on a replica is fetched by the primary only; every node blocks from the snapshot"
+put_json cat.json '{"level":"enhanced","categories":["adult"]}'
+call replica-a PUT /api/v1/groups/default/content "$E/cat.json"
+[ "$RS" = 200 ] || bad "the category write on replica-a answered $RS (not forwarded): $RB"
+for n in "${NODES[@]}"; do
+  await_dns 90000 "$n" x.blocked-by-category.example 0.0.0.0 || bad "$n doesn't block the category's name"
+done
+call primary GET /api/v1/groups/default/content
+[ "$(jget 'd["content"]["level"]')" = enhanced ] || bad "the primary doesn't hold the content a replica set: $RB"
+FS=$("${COMPOSE[@]}" logs --no-color fake-source 2>&1)
+asked=$(printf '%s\n' "$FS" | grep -c 'url:/hagezi/dns-blocklists/main/wildcard/nsfw-onlydomains.txt' || true)
+[ "$asked" -ge 1 ] || bad "the fake source was never asked for the list: $FS"
+nodeip() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$(container "$1")" | tr -d '\r'; }
+pip=$(nodeip primary)
+printf '%s\n' "$FS" | grep -qF "$pip" || bad "the primary ($pip) didn't fetch the list: $FS"
+for r in replica-a replica-b; do
+  rip=$(nodeip "$r")
+  printf '%s\n' "$FS" | grep -F 'url:' | grep -qF "[::ffff:$rip]" && bad "$r ($rip) downloaded a category list: $FS"
+done
+pass "$asked request(s), all from the primary"
 
 step "d. a secret set on the primary resolves on both replicas and is shown nowhere"
 call primary PUT /api/v1/secrets/cluster3-router-key "$E/secret.json"

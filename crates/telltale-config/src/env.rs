@@ -67,6 +67,8 @@ const RESERVED: &[&str] = &[
     // when the cgroup and the machine's RAM are not what the node should plan with (a test, or a
     // measurement on a stand-in for a smaller node).
     "MEMORY_LIMIT",
+    // REQ: FLT-901 - the cluster test's fake source (read only by a build with the `e2e` feature).
+    "E2E_CATALOG_BASE",
 ];
 
 /// REQ: OPS-014, API-014 (ADR-903 §3) — variables a process this one starts (an `exec://`

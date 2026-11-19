@@ -10,6 +10,31 @@
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
   import ClientChip from '../lib/components/ClientChip.svelte';
   import { loadWorkloads, workloads } from '../lib/workloads.svelte';
+  // REQ: FLT-902 (T24.29) - the profile list and editor.
+  import ProfileEditor from '../lib/components/ProfileEditor.svelte';
+  import { can } from '../lib/session.svelte';
+  import { ENGINES } from '../lib/categories';
+
+  // undefined: closed; null: a new profile; a name: that profile.
+  let editing = $state<string | null | undefined>(undefined);
+  // The columns' chips: the first two, then "+N" (the rest in its title).
+  type Chip = { label: string; warn?: boolean; title?: string };
+  const CHIPS = 2;
+  const privateOnly = (s: S['ProfileSource']) => (s.keys ?? []).length > 0 && (s.keys ?? []).every((k) => k.kind === 'mac' && k.randomized);
+  const sourceChips = (g: S['GroupInfo']): Chip[] =>
+    (g.sources ?? []).map((s) => ({ label: s.label, warn: s.kind === 'device' && privateOnly(s), title: s.kind === 'network' ? `Network ${s.id}` : undefined }));
+  const engineChips = (g: S['GroupInfo']): Chip[] => {
+    const ids = (g.safeSearchEngines ?? []).length ? (g.safeSearchEngines ?? []) : g.safeSearch ? ENGINES.map((e) => e.id) : [];
+    return ids.map((id) => ({ label: ENGINES.find((e) => e.id === id)?.name ?? id }));
+  };
+  const scheduleChips = (g: S['GroupInfo']): Chip[] => g.schedules.map((s) => ({ label: g.schedulesOn.includes(s) ? `${s} (on now)` : s }));
+  $effect(() => {
+    // "Use in a profile" on the Lists page's Categories tab opens a new profile.
+    if (route.path === '/groups' && route.params.get('new') === '1') {
+      editing = null;
+      navigate('/groups', undefined, true);
+    }
+  });
 
   // REQ: FLT-017 — the workloads a group holds (the default group: those without one).
   const workloadsIn = (group: string) =>
@@ -126,6 +151,9 @@
     // REQ: FLT-011 (T7.11)
     { key: 'safe_search', label: 'Safe search', type: 'bool',
       help: 'Google, Bing, DuckDuckGo, Yandex, and Pixabay show only safe results; YouTube uses Restricted Mode.' },
+    // REQ: FLT-902 (T24.29) - which engines (the profile editor sets this too).
+    { key: 'safe_search_engines', label: 'Safe search engines', type: 'multi', options: ENGINES.map((e) => e.id), advanced: true,
+      help: 'Only these engines are restricted (and safe search is on). Empty with Safe search on means every engine.' },
     { key: 'youtube_restrict', label: 'YouTube restriction', type: 'select', options: ['strict', 'moderate', 'off'], advanced: true },
     // REQ: FLT-012 (T7.9)
     { key: 'blocked_services', label: 'Blocked services', type: 'multi', options: services.map((s) => s.id),
@@ -217,6 +245,21 @@
   );
 </script>
 
+{#snippet chips(list: Chip[], empty: string)}
+  {#if list.length === 0}
+    <span class="muted small">{empty}</span>
+  {:else}
+    <span class="chiprow">
+      {#each list.slice(0, CHIPS) as c (c.label)}
+        <span class="pchip" data-testid="chip" title={c.title}>{c.label}{#if c.warn}<span class="warn-icon" data-testid="chip-private" role="img" aria-label="Private Wi-Fi address" title="Private Wi-Fi address: the profile may not follow it">⚠</span>{/if}</span>
+      {/each}
+      {#if list.length > CHIPS}
+        <span class="pchip more" data-testid="chip-more" title={list.slice(CHIPS).map((c) => c.label).join(', ')}>+{list.length - CHIPS}</span>
+      {/if}
+    </span>
+  {/if}
+{/snippet}
+
 <div class="page">
   <h1>Groups<HelpButton id="groups" /></h1>
   <ErrorNote {error} />
@@ -224,6 +267,36 @@
     A group is a kind of device: every device on a group's networks belongs to it (a named device can also be put in a
     group of its own). Groups decide which lists apply and show what each kind of device does.
   </p>
+
+  <!-- REQ: FLT-902 (T24.29) - the profile list: a profile is a group, with who it applies to and what it filters. -->
+  <section class="card" data-testid="profiles">
+    <div class="card-head">
+      <h2>Profiles<HelpButton id="filter-profiles" /></h2>
+      {#if can('operator')}
+        <button type="button" data-testid="profile-new" onclick={() => (editing = null)}>New profile</button>
+      {/if}
+    </div>
+    <div class="table-wrap">
+      <table data-testid="profile-table">
+        <thead><tr><th>Name</th><th>Source</th><th>Filter Scope</th><th>Safe Search</th><th>Schedule</th>{#if can('operator')}<th><span class="sr-only">Edit</span></th>{/if}</tr></thead>
+        <tbody>
+          {#each groups as g (g.name)}
+            <tr data-testid="profile-row" data-profile={g.name}>
+              <td><strong>{g.name}</strong></td>
+              <td data-col="source">{@render chips(sourceChips(g), 'no devices or networks')}</td>
+              <td data-col="scope">{g.filterScope || 'Off'}</td>
+              <td data-col="safe">{@render chips(engineChips(g), 'off')}</td>
+              <td data-col="schedule">{@render chips(scheduleChips(g), 'none')}</td>
+              {#if can('operator')}<td><button type="button" class="link small" data-testid="profile-edit" onclick={() => (editing = g.name)}>Edit</button></td>{/if}
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {#if editing !== undefined}
+    <ProfileEditor name={editing} onclose={() => (editing = undefined)} onsaved={load} />
+  {/if}
 
   <div class="group-grid">
     {#each groups as g (g.name)}
@@ -345,9 +418,11 @@
       </table>
     </div>
   </section>
+  <div id="manage-groups">
   <ConfigEditor kind="group" path="groups" title="Manage groups" noun="group" fields={groupFields} draft={networkDraft}
     summary={(d) => `${((d.networks as string[]) ?? []).join(', ') || 'named devices only'} · ${d.lists ? `${(d.lists as string[]).length} lists` : 'every enabled list'}`}
     onchanged={load} />
+  </div>
   <!-- REQ: FLT-010 (T9.7) — schedules made here; groups follow them through `schedules`. -->
   <ConfigEditor kind="schedule" path="schedules" title="Schedules" noun="schedule" help="schedules" fields={scheduleFields}
     summary={(d) => `${String(d.action ?? '')}: ${((d.window as { days: string[]; start: string; end: string }[]) ?? []).map((w) => `${w.days.join(',')} ${w.start}-${w.end}`).join('; ')}`}
@@ -355,6 +430,28 @@
 </div>
 
 <style>
+  .chiprow {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .pchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    font-size: 0.85em;
+    white-space: nowrap;
+  }
+  .pchip.more {
+    color: var(--muted);
+  }
+  .warn-icon {
+    color: var(--warn);
+  }
   .workloads {
     display: flex;
     flex-wrap: wrap;

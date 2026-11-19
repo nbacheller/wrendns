@@ -6037,6 +6037,28 @@ fn plan_override(
     if name.is_empty() {
         return Err(Problem::invalid("the name is empty"));
     }
+    // REQ: FLT-901, FLT-902 (ADR-994 item 7, CLU-010) — a group entry with `content` waits until
+    // every member can read it.
+    if w.kind == ManagedKind::Group
+        && let (Some(body), Some(c)) = (&w.body, &src.cluster)
+    {
+        let mut members: Vec<(String, String)> = c
+            .members()
+            .into_iter()
+            .map(|m| (m.node_id, m.version))
+            .collect();
+        members.push((
+            c.identity.meta.node_id.clone(),
+            crate::build_info::VERSION.to_owned(),
+        ));
+        if let Some(p) = crate::group_sources::content_members_too_old(
+            &members,
+            crate::forward::GROUP_CONTENT_SINCE,
+            body,
+        ) {
+            return Err(p);
+        }
+    }
     let file = src.file_config.load_full();
     let mut entries = crate::managed::entries(state);
     let before_cfg = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());

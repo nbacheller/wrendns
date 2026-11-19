@@ -11,6 +11,29 @@
   import { can } from '../lib/session.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
   import { classifyListError } from '../lib/list-failure';
+  // REQ: FLT-901 (T24.29) - the Categories tab, and the lists the categories own.
+  import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
+  import TabPanel from '../lib/components/TabPanel.svelte';
+  import Categories from '../lib/components/Categories.svelte';
+  import { navigate } from '../lib/router.svelte';
+
+  const tabs: TabItem[] = [
+    { id: 'lists', label: 'Lists' },
+    { id: 'categories', label: 'Categories' },
+  ];
+  const tab = $derived(activeTab(tabs));
+  let catView = $state<S['CategoriesView'] | null>(null);
+  let catError = $state<unknown>(null);
+  $effect(() => {
+    if (tab !== 'categories') return;
+    api.categories().then((v) => (catView = v)).catch((e) => (catError = e));
+  });
+  // The categories some group selects, shown ticked in the (read-only) catalog browser.
+  const inUse = $derived(
+    catView ? catView.groups.flatMap((g) => g.categories).filter((c) => c.groups.length > 0).map((c) => c.id) : [],
+  );
+  // The lists page shows every list, or only the ones the categories own (REQ: FLT-901).
+  let only = $state<'all' | 'categories'>('all');
 
   // REQ: API-002 (T7.5) — add and change lists here.
   const listFields: Field[] = [
@@ -207,6 +230,13 @@
       restoring = false;
     }
   }
+  const shownLists = $derived(only === 'categories' ? lists.filter((l) => (l.owners ?? []).length) : lists);
+  // REQ: FLT-901 - a category list can be put in shadow mode and back (the one thing a person sets on it).
+  async function setShadow(l: S['ListInfo']) {
+    await fix(l.name, `${l.name} is now ${l.mode === 'shadow' ? 'enforcing' : 'in shadow mode: it counts what it would block and blocks nothing'}.`, async () => {
+      await api.putEntry('lists', l.name, { mode: l.mode === 'shadow' ? 'enforce' : 'shadow' });
+    });
+  }
   const addsPercent = (l: S['ListInfo']) => (l.entries > 0 ? Math.round(((l.unique + (l.rules ?? 0)) / l.entries) * 1000) / 10 : 0);
   const pct = (n: number) => `${n}%`;
   // While lists download, check every 2 s instead of every 15 s.
@@ -320,6 +350,27 @@
       {/if}
     </div>
   </div>
+  <Tabs {tabs} active={tab} label="Lists" />
+  <TabPanel active={tab}>
+  {#if tab === 'categories'}
+    <ErrorNote error={catError} />
+    {#if catView}
+      <section class="card">
+        <h2>Categories<HelpButton id="categories" /></h2>
+        <p class="muted small">
+          Categories group the lists you can turn on for a profile: adult content, gambling, threats and more. Each is backed by an
+          open list its maintainer publishes, downloaded once and shared by every profile that uses it. This is the catalog; choose
+          categories in a profile.
+        </p>
+        <Categories view={catView} selected={inUse} readonly showAds />
+        {#if can('operator')}
+          <p><button type="button" data-testid="cat-use-in-profile" onclick={() => navigate('/groups', { new: '1' })}>Use in a profile</button></p>
+        {/if}
+      </section>
+    {:else if !catError}
+      <p class="empty muted">Loading…</p>
+    {/if}
+  {:else}
   <ErrorNote {error} />
   <ErrorNote error={refreshError} />
   <ErrorNote error={fixError} />
@@ -428,6 +479,12 @@
       </div>
     </section>
   {/if}
+  {#if lists.some((l) => (l.owners ?? []).length)}
+    <p class="chips" role="group" aria-label="Show lists">
+      <button type="button" class="chip" class:on={only === 'all'} data-testid="lists-filter-all" aria-pressed={only === 'all'} onclick={() => (only = 'all')}>All lists</button>
+      <button type="button" class="chip" class:on={only === 'categories'} data-testid="lists-filter-categories" aria-pressed={only === 'categories'} onclick={() => (only = 'categories')}>Categories</button>
+    </p>
+  {/if}
   <section class="card">
     {#if !loaded}
       <p class="empty muted">Loading…</p>
@@ -440,12 +497,17 @@
             <tr><th>List</th><th>Kind<HelpButton id="list-kind" /></th><th>State<HelpButton id="list-refresh" /></th><th class="num">Names used</th><th class="num">Unique<HelpButton id="list-overlap" /></th><th class="num">Hits</th>{#if advanced}<th class="num">Lines</th><th class="num">Size</th>{/if}<th>Checked</th><th>Changed</th><th>Confirmed current</th>{#if can('operator')}<th class="actions-head"><span class="sr-only">Actions</span></th>{/if}</tr>
           </thead>
           <tbody>
-            {#each lists as l (l.name)}
+            {#each shownLists as l (l.name)}
               {@const failure = classifyListError(l.error)}
               {@const redundant = redundantWith(l)}
               <tr class:off={!l.enabled}>
                 <td>
                   <strong>{l.name}</strong>{#if !l.enabled} <span class="badge">off</span>{/if}{#if l.mode === 'shadow'} <span class="badge info" title="Never blocks: what it would have blocked is counted below">shadow</span>{/if}
+                  <!-- REQ: FLT-901 (T24.29) - a category list: taken from the catalog, never edited or deleted here. -->
+                  {#each l.owners ?? [] as o (o.id)}<span class="badge info" data-testid="list-owner" title="This list comes from the catalog: it goes when no profile uses the category">Owned by category: {o.name}</span>{/each}
+                  {#if (l.owners ?? []).length && can('operator')}
+                    <button type="button" class="link small" data-testid="list-shadow-toggle" disabled={fixing !== null} onclick={() => setShadow(l)}>{l.mode === 'shadow' ? 'Enforce' : 'Shadow'}</button>
+                  {/if}
                   {#if advanced}<div class="muted small src">{l.source}</div>{/if}
                   {#if l.error}<div class="small err" data-testid="list-error">{l.error}</div>{/if}
                   <!-- REQ: T24.27 — a failure says what to do about it. -->
@@ -583,9 +645,28 @@
     summary={(d) => `${String(d.kind ?? 'block')} · ${d.url ? String(d.url) : `${((d.rules as string[]) ?? []).length} rules`}${d.enabled === false ? ' · off' : ''}`}
     onchanged={async () => (lists = (await api.lists()).items)} formAction={tryList} />
   <p class="muted small">"Names used" counts the names this list puts in the active snapshot; "Unique" the ones no other list of its kind has (what removing it would lose), "adds" that plus its regex and modifier rules as a share of its entries, and "also in" the lists that have the rest. <strong>Prune…</strong> turns off the lists that add little, after a preview. "Hits" counts the queries it decided since each node started, across the cluster.</p>
+  {/if}
+  </TabPanel>
 </div>
 
 <style>
+  .chips {
+    display: flex;
+    gap: 6px;
+    margin: 0 0 8px;
+  }
+  .chip {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    border-radius: 999px;
+    padding: 2px 12px;
+    cursor: pointer;
+  }
+  .chip.on {
+    background: var(--accent);
+    color: var(--on-accent, #fff);
+  }
   .head-side {
     display: flex;
     flex-wrap: wrap;

@@ -21,6 +21,12 @@ x-telltale: &telltale
   command: ["run", "-c", "/etc/telltale/telltale.toml"]
   environment:
     TELLTALE_LOG: info
+    # REQ: FLT-901 (T24.29): the image is built with the `e2e` feature, which lets this fake stand in
+    # for the hosts the category lists come from, so the test can see which node fetched what.
+    TELLTALE_E2E_CATALOG_BASE: "http://fake-source:8080/"
+  depends_on:
+    fake-source:
+      condition: service_started
   healthcheck:
     test: ["CMD", "/usr/local/bin/telltale", "health", "--url", "http://127.0.0.1:8053/readyz"]
     interval: 5s
@@ -29,6 +35,15 @@ x-telltale: &telltale
     start_period: 10s
 
 services:
+  # REQ: FLT-901 (T24.29): the category lists' host. BusyBox's httpd logs the address of every request
+  # (-vv), which e2e.sh reads to check that only the primary fetches a list.
+  fake-source:
+    image: busybox:stable
+    restart: "no"
+    command: ["httpd", "-f", "-vv", "-p", "8080", "-h", "/www"]
+    volumes:
+      - ./fake-source:/www:ro
+
   primary:
     <<: *telltale
     build:
@@ -40,6 +55,8 @@ services:
         # [discovery] first write, ADR-928) let it through (ADR-948, T21.6).
         PROFILE: bench-fast
         TELLTALE_BUILD_CHANNEL: dev
+        # The category lists' fake source (see `fake-source`); never set for a shipped image.
+        CARGO_FEATURES: e2e
     volumes:
       - ./config/primary.toml:/etc/telltale/telltale.toml:ro
       - primary-data:/var/lib/telltale

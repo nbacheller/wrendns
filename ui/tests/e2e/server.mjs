@@ -222,6 +222,9 @@ const child = spawn(bin, ['run', '-c', cfg], {
     TELLTALE_SUPERVISOR: 'systemd',
     TT_E2E_RESTART_HOOK: '1',
     TT_E2E_CONFIRM_WINDOW_SECS: '15',
+    // REQ: FLT-901 (T24.29) - a build with the `e2e` feature downloads the category lists from this fake instead of
+    // the internet (the categories spec serves it on this port).
+    TELLTALE_E2E_CATALOG_BASE: `http://127.0.0.1:${PORTS.catalog}/`,
   },
 });
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => child.kill('SIGTERM'));

@@ -827,7 +827,8 @@ pub fn expand(cfg: &Config) -> Config {
             .iter()
             .find(|l| l.name.as_str() == name)
             .map_or(ListMode::Enforce, |l| l.mode);
-        let (Ok(name), Ok(url)) = (SafeString::new(&name), SafeString::new(&s.url)) else {
+        let (Ok(name), Ok(url)) = (SafeString::new(&name), SafeString::new(source_url(&s.url)))
+        else {
             continue;
         };
         out.list.push(FilterList {
@@ -851,6 +852,30 @@ pub fn expand(cfg: &Config) -> Config {
 /// category sources groups use (`cat-`). What the fetcher, the compiler and the Lists page read.
 pub fn expand_lists(cfg: &Config) -> Config {
     expand(&crate::services::expand(cfg))
+}
+
+/// The URL a node downloads a source from: the catalog's. Only a build with the `e2e` feature
+/// (never a release build) can point the two hosts the catalog uses at a fake with
+/// `TELLTALE_E2E_CATALOG_BASE`, so the cluster test can count which node fetched what without the
+/// internet.
+#[cfg(feature = "e2e")]
+fn source_url(url: &str) -> String {
+    if let Ok(base) = std::env::var("TELLTALE_E2E_CATALOG_BASE") {
+        for host in [
+            "https://raw.githubusercontent.com/",
+            "https://cdn.jsdelivr.net/gh/",
+        ] {
+            if let Some(rest) = url.strip_prefix(host) {
+                return format!("{base}{rest}");
+            }
+        }
+    }
+    url.to_owned()
+}
+
+#[cfg(not(feature = "e2e"))]
+fn source_url(url: &str) -> &str {
+    url
 }
 
 /// What a selection costs and whether this node may take it (ADR-994 item 5).

@@ -306,6 +306,43 @@ pub(crate) fn plan(
     })
 }
 
+/// REQ: FLT-901, FLT-902 (T24.29, ADR-994 item 7, CLU-010) - a group entry that carries `content` or
+/// `safe_search_engines` is refused (409 `members_too_old`) while any cluster member runs a version
+/// that does not read them: that node would reject the group's configuration. `members` is (node ID,
+/// version) for each member, this node included.
+pub(crate) fn content_members_too_old(
+    members: &[(String, String)],
+    since: (u64, u64, u64),
+    body: &serde_json::Value,
+) -> Option<Problem> {
+    let carries = body.get("content").is_some_and(|c| !c.is_null())
+        || body
+            .get("safe_search_engines")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|a| !a.is_empty());
+    if !carries {
+        return None;
+    }
+    let old: Vec<&str> = members
+        .iter()
+        .filter(|(_, v)| !crate::forward::version_at_least(v, since))
+        .map(|(n, _)| n.as_str())
+        .collect();
+    if old.is_empty() {
+        return None;
+    }
+    Some(
+        problem(
+            telltale_api::problem::Code::MembersTooOld,
+            format!(
+                "content categories and per-engine safe search can't be set while {} runs an older version than this one: it can't read a group with those fields",
+                old.join(", ")
+            ),
+        )
+        .hint("Upgrade every node first (replicas first, then the primary), then make this change again."),
+    )
+}
+
 /// `default` reads "Default" in a sentence; any other name is as written.
 fn title(g: &str) -> String {
     if g == "default" {
@@ -510,5 +547,30 @@ match = ["10.0.9.9"]
         let out = serde_json::json!({"devices": []});
         let p = plan(&src, &state, &write("teens", out)).unwrap();
         assert!(p.impact.contains("Maya iPad leaves teens"), "{}", p.impact);
+    }
+    /// REQ: FLT-901, FLT-902 (ADR-994 item 7, CLU-010) - a group entry with `content` (or per-engine
+    /// safe search) waits for every member to read it; an entry without them never does.
+    #[test]
+    fn clu_901_content_waits_for_every_member() {
+        let members = |v: &[&str]| -> Vec<(String, String)> {
+            v.iter()
+                .enumerate()
+                .map(|(i, v)| (format!("n{i}"), (*v).to_owned()))
+                .collect()
+        };
+        let since = crate::forward::GROUP_CONTENT_SINCE;
+        let with = serde_json::json!({"content": {"level": "basic"}});
+        let engines = serde_json::json!({"safe_search_engines": ["google"]});
+        let plain = serde_json::json!({"block_mode": "nxdomain"});
+        let old = members(&["0.8.0", "0.7.9"]);
+        let e = content_members_too_old(&old, since, &with).unwrap();
+        assert_eq!(e.code, telltale_api::problem::Code::MembersTooOld);
+        assert!(e.detail.contains("n1"), "{}", e.detail);
+        assert!(content_members_too_old(&old, since, &engines).is_some());
+        assert!(content_members_too_old(&old, since, &plain).is_none());
+        assert!(
+            content_members_too_old(&old, since, &serde_json::json!({"content": null})).is_none()
+        );
+        assert!(content_members_too_old(&members(&["0.8.0", "0.8.1"]), since, &with).is_none());
     }
 }

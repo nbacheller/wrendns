@@ -1,0 +1,7 @@
+# Title: a fake list for the cluster test (REQ: FLT-901)
+# Syntax: Domains (without subdomains)
+# Number of entries: 3
+#
+blocked-by-category.example
+other-blocked.example
+third-blocked.example

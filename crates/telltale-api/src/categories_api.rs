@@ -1049,14 +1049,13 @@ fn compact_view(v: &CategoriesView) -> serde_json::Value {
 /// sources count once, across all groups. Nothing changes.
 #[utoipa::path(get, path = "/api/v1/categories/budget", tag = "config",
     params(
-        ("group" = Option<String>, Query, description = "The group the proposal is for."),
+        ("group" = Option<String>, Query, description = "The group the proposal is for (a name that does not exist yet is priced as a new group)."),
         ("level" = Option<String>, Query, description = "`off`, `basic` or `enhanced`."),
         ("categories" = Option<String>, Query, description = "Category IDs, comma separated."),
         ("tiers" = Option<String>, Query, description = "`category:tier` pairs, comma separated."),
         ("ads" = Option<bool>, Query, description = "Ad block.")),
     responses(
         (status = 200, body = BudgetView, description = "The cost."),
-        (status = 404, body = Problem, description = "No such group."),
         (status = 422, body = Problem, description = "The proposal names something the catalog doesn't have.")))]
 pub(crate) async fn categories_budget(State(b): State<Shared>, RawQuery(q): RawQuery) -> Response {
     let q = q.unwrap_or_default();
@@ -1119,7 +1118,8 @@ fn budget_read(b: &dyn Backend, q: &str) -> Result<BudgetView, Problem> {
         .iter()
         .find(|(n, _)| n == group)
         .map(|(_, c)| GroupContentInfo::from_config(c))
-        .ok_or_else(|| Problem::not_found(format!("no group `{group}`")))?;
+        // A group that does not exist yet is a new profile: priced as one more group.
+        .unwrap_or_default();
     let input = ContentInput {
         level: params.get("level").cloned(),
         categories: params.get("categories").map(|v| {

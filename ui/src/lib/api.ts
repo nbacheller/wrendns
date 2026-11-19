@@ -154,7 +154,7 @@ function newKey(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'discovery-settings' | 'sinks';
+export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'discovery-settings' | 'filter-settings' | 'sinks';
 
 /** REQ: API-007 (T23.9) — a backup made through the API. */
 export type BackupResult = { blob: Blob; name: string; secrets: 'included' | 'omitted'; count: number; warnings: string[] };
@@ -389,6 +389,24 @@ export const api = {
   listPrunePlan: (thresholdPercent?: number) => get<S['ListPrunePlan']>('/lists/prune-plan', { thresholdPercent }),
   pruneLists: (b: S['ListsPruneRequest']) => post<S['ListsPruneResult']>('/lists/prune', b),
   groups: () => get<S['Items_GroupInfo']>('/groups'),
+  // REQ: FLT-901, FLT-902 (T24.29) — the category catalog and what a selection costs, a group's content
+  // and who it applies to, and the picker's networks and devices.
+  categories: () => get<S['CategoriesView']>('/categories'),
+  categoryBudget: (q: { group?: string; level?: string; categories?: string; tiers?: string; ads?: boolean }) =>
+    get<S['BudgetView']>('/categories/budget', q),
+  groupContent: (name: string) => get<S['GroupContentView']>(`/groups/${encodeURIComponent(name)}/content`),
+  putGroupContent: (name: string, body: S['ContentInput'], opts: { dryRun?: boolean; confirm?: boolean } = {}) =>
+    call<S['ConfigChange'] & { budget?: unknown; confirmationRequired?: boolean; heavyDailyDownloadBytes?: number }>(
+      'PUT',
+      `/groups/${encodeURIComponent(name)}/content`,
+      { body, query: { dryRun: opts.dryRun || undefined, confirm: opts.confirm || undefined } },
+    ),
+  putGroupSources: (name: string, body: Record<string, unknown>, dryRun = false) =>
+    call<S['ConfigChange']>('PUT', `/groups/${encodeURIComponent(name)}/sources`, {
+      body,
+      query: { dryRun: dryRun || undefined },
+    }),
+  profileDevices: () => get<S['ProfileDevices']>('/profiles/devices'),
   // REQ: OBS-901 (T26.3), the live network map; the filters narrow it on the server.
   map: (q: { network?: string; group?: string; device?: string; node?: string } = {}) => get<S['MapSnapshot']>('/map', q),
   // REQ: FLT-012 (T7.9) — the blockable services.

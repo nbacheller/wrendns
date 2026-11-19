@@ -1103,6 +1103,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The content categories catalog (REQ: FLT-901).
+         * @description Every category the catalog offers, grouped as the picker shows them, with its description,
+         *     tiers, entry counts and weight; every source with its maintainer, licence (an SPDX
+         *     identifier and a link), format, size and cadence, and what this node has done with it
+         *     (downloaded or not, how big, any error); the presets (`basic`); the categories not offered
+         *     and why; what each group selects now and what all of them cost together (distinct sources
+         *     counted once), against the node's memory limit and `[filter] entry_budget`. In a cluster the
+         *     numbers are the primary's, which downloads and compiles. Needs `config:read` for an agent.
+         */
+        get: operations["categories"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/categories/budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What a selection costs.
+         * @description Entries, an estimate of the snapshot and compile memory, the daily download, and whether this
+         *     node may take it, for a proposed selection of one group (`group`, with `level`, `categories`
+         *     (comma separated), `tiers` (`gambling:extended,malware:full`) and `ads`; fields left out keep
+         *     the group's current value) or, with no `group`, for what the groups select now. Distinct
+         *     sources count once, across all groups. Nothing changes.
+         */
+        get: operations["categories_budget"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/checks/list": {
         parameters: {
             query?: never;
@@ -1977,6 +2027,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/filter-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the filter's category settings (FLT-901, T24.29).
+         * @description `entry_budget` is the most distinct blocklist entries the selected categories may add before
+         *     the Categories view warns (default 1,000,000; a node too small for a selection refuses it
+         *     whatever this says), and `ads_tier` is the size of the Ad Block category (`light`, `pro`,
+         *     `pro_plus`, `ultimate`). A field the config files set can't be changed here (409
+         *     `set_by_file`). Applies within a few seconds on every node; changing `ads_tier` makes the
+         *     primary download the other list. No agent can change it.
+         */
+        put: operations["put_filter_settings"];
+        post?: never;
+        /**
+         * Go back to the config file's category settings (FLT-901).
+         * @description Removes what the API or UI stored: `entry_budget` and `ads_tier` take the file's values (or the
+         *     defaults) again. Needs the operator role.
+         */
+        delete: operations["delete_filter_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/forwards": {
         parameters: {
             query?: never;
@@ -2072,6 +2152,69 @@ export interface paths {
          *     deleted in turn. The configuration is checked first (say, a group still using a list).
          */
         delete: operations["delete_group"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/groups/{name}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A group's content (REQ: FLT-902).
+         * @description The level, the categories, the tiers and the ad block switch of one group, which sources they
+         *     make the node use, and what that costs. A group with no content is `off` with nothing
+         *     selected. Needs `config:read` for an agent.
+         */
+        get: operations["get_group_content"];
+        /**
+         * Set a group's content (REQ: FLT-902).
+         * @description Changes the level, the categories, the tiers or the ad block of a group; fields left out keep
+         *     their current value. Checked against the catalog and what the node can hold: a selection the
+         *     node is too small for is refused (422 `budget_refused`, with the reason), and a heavy one, or
+         *     one over `[filter] entry_budget`, needs `?confirm=true` after the cost is shown (409
+         *     `confirm_required`; a dry run reports `confirmationRequired` instead). The node downloads
+         *     each source once however many groups select it and deletes it when the last one stops.
+         *     Operators change it; **an agent token is refused (403 `agent_not_allowed`) except for a
+         *     dry run, and `apply_plan` replays only a plan an operator approved**. A group whose config
+         *     file sets `content` is read-only here (409 `set_by_file`). In a cluster the primary stores it,
+         *     downloads and compiles. Supports `dryRun`, `If-Match` and `Idempotency-Key`.
+         */
+        put: operations["put_group_content"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/groups/{name}/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set who a group applies to (REQ: FLT-902, API-010).
+         * @description The group's networks (CIDRs) and router names, and the devices in it, as one change: a device
+         *     in `devices` is a named device (created if new, with its `match` keys) whose groups include
+         *     this one; a device that was a member and is not listed leaves the group. Fields left out are
+         *     not changed. The group and the devices are stored in one transaction under one configuration
+         *     version. The dry run says what moves ("3 devices move from Default to Kids") and what a device
+         *     that is also in another profile means (the lists are the union, the settings come from the
+         *     higher priority). A device a config file defines can't be moved (409 `set_by_file`). Operators
+         *     only; agent tokens are refused (403 `agent_not_allowed`). Supports `dryRun`, `If-Match` and
+         *     `Idempotency-Key`.
+         */
+        put: operations["put_group_sources"];
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -3021,6 +3164,29 @@ export interface paths {
          *     role; agent tokens can't reject. Audit-logged as `plan.reject`.
          */
         post: operations["reject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/profiles/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The picker's networks and devices (REQ: FLT-902).
+         * @description The networks the Networks page names and the devices the Clients page knows (configured ones
+         *     and ones only seen), each with an icon (a device class), the keys it can be recognized by, a
+         *     flag on a MAC that is a private Wi-Fi address (it can change, so a profile may stop following
+         *     it), and the group it is in now. Needs `config:read` for an agent.
+         */
+        get: operations["profile_devices"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4679,6 +4845,26 @@ export interface components {
             /** @description One node only (its site, pod, or ID); absent: every node. */
             node?: string | null;
         };
+        /** @description What a proposed selection costs. */
+        BudgetView: {
+            /** @description Sources the proposal adds that no group had selected. */
+            added: string[];
+            confirmationRequired: boolean;
+            /** @description The group the proposal is for, when there is one. */
+            group?: string | null;
+            /** @description The proposal's group alone. */
+            groupOnly?: Record<string, never> | null;
+            /** @description Heavy sources among `added`: they ask for a confirmation that states the daily download. */
+            heavyAdded: string[];
+            /**
+             * Format: int64
+             * @description The daily download of `heavyAdded`, in bytes.
+             */
+            heavyDailyDownloadBytes: number;
+            node: components["schemas"]["CategoryEnv"];
+            /** @description All groups' sources together, with the proposal in place. */
+            total: Record<string, never>;
+        };
         /** @description The build identity (REQ: OPS-004, ADR-046): the same on every architecture of one commit. */
         BuildInfo: {
             /** @description `stable`, `edge`, or `dev`. */
@@ -5005,6 +5191,87 @@ export interface components {
             loaded?: number | null;
             /** @description Why nothing was loaded (no dump, a dump from other upstreams, ...). */
             note?: string | null;
+        };
+        /** @description The catalog and this node's state (REQ: FLT-901). */
+        CategoriesView: {
+            /** @description The attribution lines to show (CC BY-SA sources). */
+            attributions: string[];
+            catalogVersion: string;
+            groups: components["schemas"]["CategoryGroupView"][];
+            node: components["schemas"]["CategoryEnv"];
+            notOffered: components["schemas"]["NotOfferedView"][];
+            presets: components["schemas"]["PresetView"][];
+            /** @description What each group selects now. */
+            selections: components["schemas"]["GroupSelection"][];
+            sources: components["schemas"]["SourceView"][];
+            /** @description What all of them cost together (distinct sources). */
+            total: Record<string, never>;
+        };
+        /**
+         * @description What the node knows that bounds a selection (read from the primary in a cluster: it fetches
+         *     and compiles, ADR-994 item 10).
+         */
+        CategoryEnv: {
+            /** @description `[filter] ads_tier`: `light`, `pro`, `pro_plus` or `ultimate`. */
+            adsTier: string;
+            /**
+             * Format: int64
+             * @description `[filter] compile_memory`, the merge budget before it is scaled to the node.
+             */
+            compileMemoryBytes: number;
+            /**
+             * Format: int64
+             * @description `[filter] entry_budget`.
+             */
+            entryBudget: number;
+            /**
+             * Format: int64
+             * @description The node's memory limit (its cgroup, else its RAM), when known.
+             */
+            memoryLimitBytes?: number | null;
+            /** @description Which node these numbers are from. */
+            node?: string | null;
+            /**
+             * Format: int64
+             * @description This process's resident memory now, when known.
+             */
+            processRssBytes?: number | null;
+        };
+        /** @description A group of categories in the picker. */
+        CategoryGroupView: {
+            categories: components["schemas"]["CategoryView"][];
+            id: string;
+            name: string;
+        };
+        /** @description One category. */
+        CategoryView: {
+            defaultTier?: string | null;
+            /** @description One line for the info icon. */
+            description: string;
+            /**
+             * Format: int64
+             * @description Entries with the default tier (distinct sources).
+             */
+            entries: number;
+            /** @description Groups that select it now. */
+            groups: string[];
+            /** @description Any source it can use is heavy. */
+            heavy: boolean;
+            id: string;
+            /** @description `list` (a maintained list behind it) or `service` (a bundle turned on with `blockedServices`). */
+            kind: string;
+            name: string;
+            /** @description For a service category: the FLT-012 service IDs to put in `blockedServices`. */
+            services: string[];
+            /** @description The sources always in use. */
+            sources: string[];
+            /** @description `adsTier`: the size is the `[filter] ads_tier` setting, not a per-profile choice. */
+            tierFrom?: string | null;
+            /** @description `exclusive` or `additive`, when it has tiers. */
+            tierKind?: string | null;
+            tiers: components["schemas"]["TierView"][];
+            /** @description A warning the confirmation repeats (a category that blocks whole top-level domains). */
+            warn?: string | null;
         };
         /** @description REQ: API-002 (T9.12) — a pre-save check of a draft upstream or list. */
         CheckResult: {
@@ -5597,7 +5864,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "members_too_old" | "path_not_allowed" | "set_by_file" | "secret_missing" | "secret_in_use" | "insecure_transport" | "agent_not_allowed" | "map_disabled" | "map_streams_busy" | "reauth_required" | "guarded_only" | "guarded_change_pending" | "preview_stale" | "primary_unreachable" | "would_disconnect_you" | "would_lock_out_admins" | "no_supervisor" | "target_not_empty" | "acknowledgement_required" | "clustered_node" | "restarting" | "rotation_incomplete" | "data_dir_not_persistent" | "not_primary";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "members_too_old" | "path_not_allowed" | "set_by_file" | "secret_missing" | "secret_in_use" | "insecure_transport" | "agent_not_allowed" | "map_disabled" | "map_streams_busy" | "reauth_required" | "guarded_only" | "guarded_change_pending" | "preview_stale" | "primary_unreachable" | "would_disconnect_you" | "would_lock_out_admins" | "no_supervisor" | "target_not_empty" | "acknowledgement_required" | "clustered_node" | "restarting" | "rotation_incomplete" | "data_dir_not_persistent" | "not_primary" | "owned_by_category" | "budget_refused" | "confirm_required";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -5672,6 +5939,19 @@ export interface components {
              *     the files' entry of that name), or `hidden` (the files' entry is left out).
              */
             source: string;
+        };
+        /** @description What to change in a group's content: fields left out keep their current value. */
+        ContentInput: {
+            /** @description Ad block on or off. */
+            ads?: boolean | null;
+            /** @description Category IDs (`GET /api/v1/categories`); replaces the current list. */
+            categories?: string[] | null;
+            /** @description `off`, `basic` or `enhanced`. */
+            level?: string | null;
+            /** @description A tier per category (`gambling` = `extended`); replaces the current tiers. */
+            tiers?: {
+                [key: string]: string;
+            } | null;
         };
         /** @description `POST /api/v1/displays`. */
         CreateDisplay: {
@@ -6168,6 +6448,11 @@ export interface components {
             name: string;
         };
         ExplainBlock: {
+            /**
+             * @description REQ: FLT-901 — the category (or categories) a `cat-` list stands for, for example "Adult
+             *     content"; absent for any other list.
+             */
+            category?: string | null;
             /** Format: int32 */
             edeCode: number;
             list: string;
@@ -6373,6 +6658,28 @@ export interface components {
              */
             stub?: boolean;
         };
+        /** @description A group's content as the API shows it. */
+        GroupContentInfo: {
+            /** @description Ad block. */
+            ads?: boolean;
+            /** @description Category IDs (kept when the level is `off`). */
+            categories?: string[];
+            /** @description `off`, `basic` or `enhanced`. */
+            level: string;
+            /** @description A tier per category. */
+            tiers?: {
+                [key: string]: string;
+            };
+        };
+        /** @description A group's content, and what it makes the node do. */
+        GroupContentView: {
+            budget: Record<string, never>;
+            content: components["schemas"]["GroupContentInfo"];
+            group: string;
+            selection: components["schemas"]["GroupSelection"];
+            /** @description "Off", "Basic", "Enhanced (3 of 21)", with "Ad block" when on. */
+            summary: string;
+        };
         /** @description A client group. */
         GroupInfo: {
             blockAnswerIps: string[];
@@ -6389,6 +6696,7 @@ export interface components {
             blockedServices: string[];
             /** @description `#rrggbb` for charts and chips (configured, or a stable pick). */
             color: string;
+            content?: components["schemas"]["GroupContentInfo"] | null;
             /**
              * Format: int64
              * @description Devices seen in the group this hour.
@@ -6402,6 +6710,8 @@ export interface components {
             dns64Prefix?: string | null;
             /** @description REQ: FLT-016 (T12.5) — AAAA questions get no data (the group's devices use IPv4). */
             filterAaaa: boolean;
+            /** @description REQ: FLT-902 — "Off", "Basic", "Enhanced (3 of 21)" and "Ad block", for the Filter Scope column. */
+            filterScope?: string;
             /** @description Lists this group uses; null means every enabled list. */
             lists?: string[] | null;
             name: string;
@@ -6431,15 +6741,33 @@ export interface components {
              *     or `off` (absent when safe search is off).
              */
             safeSearch: boolean;
+            /** @description REQ: FLT-902 — the engines safe search covers (empty with `safeSearch`: every engine). */
+            safeSearchEngines?: string[];
             /** @description REQ: FLT-010 (T7.10) — the group's schedules, and which of them are on now. */
             schedules: string[];
             schedulesOn: string[];
+            /**
+             * @description REQ: FLT-902 — who the group applies to: its networks, router names and devices, for the
+             *     profile list's Source column.
+             */
+            sources?: components["schemas"]["ProfileSource"][];
             /**
              * @description REQ: UPS-007 (T9.25) — the upstream group this group's queries go to (absent: `default`,
              *     or wherever `[[route]]` entries send them).
              */
             upstreams?: string | null;
             youtubeRestrict?: string | null;
+        };
+        /** @description What one group selects. */
+        GroupSelection: {
+            /** @description The categories in effect (the level's, plus ads), catalog order. */
+            categories: string[];
+            content: components["schemas"]["GroupContentInfo"];
+            group: string;
+            /** @description The sources they use. */
+            sources: string[];
+            /** @description IDs this version does not know: ignored, and reported. */
+            unknown: string[];
         };
         /** @description REQ: CLU-013 — the guard's readings over a bake. */
         GuardReadings: {
@@ -7283,6 +7611,7 @@ export interface components {
                 blockedServices: string[];
                 /** @description `#rrggbb` for charts and chips (configured, or a stable pick). */
                 color: string;
+                content?: components["schemas"]["GroupContentInfo"] | null;
                 /**
                  * Format: int64
                  * @description Devices seen in the group this hour.
@@ -7296,6 +7625,8 @@ export interface components {
                 dns64Prefix?: string | null;
                 /** @description REQ: FLT-016 (T12.5) — AAAA questions get no data (the group's devices use IPv4). */
                 filterAaaa: boolean;
+                /** @description REQ: FLT-902 — "Off", "Basic", "Enhanced (3 of 21)" and "Ad block", for the Filter Scope column. */
+                filterScope?: string;
                 /** @description Lists this group uses; null means every enabled list. */
                 lists?: string[] | null;
                 name: string;
@@ -7325,9 +7656,16 @@ export interface components {
                  *     or `off` (absent when safe search is off).
                  */
                 safeSearch: boolean;
+                /** @description REQ: FLT-902 — the engines safe search covers (empty with `safeSearch`: every engine). */
+                safeSearchEngines?: string[];
                 /** @description REQ: FLT-010 (T7.10) — the group's schedules, and which of them are on now. */
                 schedules: string[];
                 schedulesOn: string[];
+                /**
+                 * @description REQ: FLT-902 — who the group applies to: its networks, router names and devices, for the
+                 *     profile list's Source column.
+                 */
+                sources?: components["schemas"]["ProfileSource"][];
                 /**
                  * @description REQ: UPS-007 (T9.25) — the upstream group this group's queries go to (absent: `default`,
                  *     or wherever `[[route]]` entries send them).
@@ -7405,6 +7743,12 @@ export interface components {
                 name: string;
                 /** @description Lists it shares names with, most shared first. */
                 overlap: components["schemas"]["ListShare"][];
+                /**
+                 * @description REQ: FLT-901 (T24.29) — the categories that use this list. A list with owners is a category
+                 *     list: it takes its source from the catalog and can be refreshed and put in shadow mode, not
+                 *     edited or deleted (409 `owned_by_category`).
+                 */
+                owners?: components["schemas"]["ListOwner"][];
                 /**
                  * @description REQ: FLT-004 — a refresh asked for (`POST /api/v1/lists/refresh`) is waiting to start
                  *     or downloading this list now (also true during a scheduled download). It clears when
@@ -8144,6 +8488,12 @@ export interface components {
             /** @description Lists it shares names with, most shared first. */
             overlap: components["schemas"]["ListShare"][];
             /**
+             * @description REQ: FLT-901 (T24.29) — the categories that use this list. A list with owners is a category
+             *     list: it takes its source from the catalog and can be refreshed and put in shadow mode, not
+             *     edited or deleted (409 `owned_by_category`).
+             */
+            owners?: components["schemas"]["ListOwner"][];
+            /**
              * @description REQ: FLT-004 — a refresh asked for (`POST /api/v1/lists/refresh`) is waiting to start
              *     or downloading this list now (also true during a scheduled download). It clears when
              *     the download ends; the snapshot follows within seconds if the content changed.
@@ -8212,6 +8562,13 @@ export interface components {
              * @description Names no other list of its kind has: what turning it off would lose.
              */
             unique: number;
+        };
+        /** @description REQ: FLT-901 — a category that uses a list. */
+        ListOwner: {
+            /** @description The category's ID (`adult`). */
+            id: string;
+            /** @description Its name (`Adult content`). */
+            name: string;
         };
         /** @description A list a prune would turn off. */
         ListPruneCandidate: {
@@ -8982,6 +9339,13 @@ export interface components {
             start: number[];
             upstreamFailPct: (number | null)[];
         };
+        /** @description A category the catalog does not offer, and why. */
+        NotOfferedView: {
+            alternative?: string | null;
+            group: string;
+            name: string;
+            reason: string;
+        };
         /** @description REQ: OBS-033 — `POST /api/v1/annotations`: a note on every time chart. */
         NoteRequest: {
             /**
@@ -9282,6 +9646,13 @@ export interface components {
             summary: string;
             title: string;
         };
+        /** @description A preset (`basic`). */
+        PresetView: {
+            categories: string[];
+            description: string;
+            id: string;
+            name: string;
+        };
         /**
          * @description REQ: OBS-020 (ADR-107) — one synthetic probe: a DNS listener asked through its own
          *     protocol, or an extra target, from one node, and the listener's certificate.
@@ -9379,6 +9750,39 @@ export interface components {
             title: string;
             /** @description URI identifying the problem type. */
             type: string;
+        };
+        /** @description The picker's data. */
+        ProfileDevices: {
+            devices: components["schemas"]["ProfileSource"][];
+            networks: components["schemas"]["ProfileSource"][];
+        };
+        /** @description One way to recognize a device. */
+        ProfileKey: {
+            /** @description `mac`, `ip`, `name` (a router name), or `id` (a client ID). */
+            kind: string;
+            /** @description A MAC with the locally administered bit (a private Wi-Fi address, ADR-910): it may change. */
+            randomized?: boolean;
+            /** @description As a `[[client]] match` key is written (`aa:bb:..`, `192.168.1.5`, `hostname:tv`). */
+            value: string;
+        };
+        /** @description A network or a device the picker offers (REQ: FLT-902). */
+        ProfileSource: {
+            /** @description A configured device (a `[[client]]`), as opposed to one only seen. */
+            configured?: boolean;
+            /** @description Where the device is defined: `file` (read-only) or `api`. */
+            definedIn?: string | null;
+            /** @description The group a device is in now (its effective group), or the group that holds a network. */
+            group?: string | null;
+            /** @description A device class (`phone`, `tv`, ...), or `network`. */
+            icon: string;
+            /** @description What to write: a CIDR for a network, a configured device's name, or a seen device's address. */
+            id: string;
+            /** @description The keys the device can be selected by. */
+            keys?: components["schemas"]["ProfileKey"][];
+            /** @description `network` or `device`. */
+            kind: string;
+            /** @description The name to show: a network's name, a device's name or its address. */
+            label: string;
         };
         /** @description What promoting this node would do (`POST /cluster/promote?dryRun=true`, AGT-002). */
         PromotePlan: {
@@ -10252,6 +10656,62 @@ export interface components {
              */
             windowDays: number;
         };
+        /** @description Where a source stands on this node. */
+        SourceState: {
+            /** Format: int64 */
+            bytes: number;
+            /** @description False until a group uses it and it has downloaded. */
+            downloaded: boolean;
+            error?: string | null;
+            /** Format: int64 */
+            lastChangedUnixSeconds?: number | null;
+            /** Format: int64 */
+            lines: number;
+            /** @description The list the node keeps it in (`cat-<id>`, or a file's list with the same URL). */
+            list: string;
+            /**
+             * @description A list the config files define has this source's URL, so nothing is downloaded twice and
+             *     the checkbox says "provided by list X, set by file".
+             */
+            providedBy?: string | null;
+            /** @description `unused` (no group selects it), `pending`, `ok` or `failed`. */
+            state: string;
+        };
+        /** @description One source, with its licence and size. */
+        SourceView: {
+            /** @description A line shown next to the checkbox (CC BY-SA sources). */
+            attribution?: string | null;
+            /** Format: int64 */
+            bytes: number;
+            cadence: string;
+            /** @description Categories that can use it. */
+            categories: string[];
+            /** @description The catalog's check date and the maintainer's last push on it. */
+            checked: string;
+            /**
+             * Format: int64
+             * @description From the file's header when the catalog was built.
+             */
+            entries: number;
+            format: string;
+            homepage: string;
+            id: string;
+            /** @description SPDX identifier. */
+            licence: string;
+            licenceUrl: string;
+            maintainer: string;
+            name: string;
+            pushed: string;
+            /**
+             * Format: int32
+             * @description How often this node refreshes it.
+             */
+            refreshSeconds: number;
+            state: components["schemas"]["SourceState"];
+            url: string;
+            /** @description `light` or `heavy`. */
+            weight: string;
+        };
         /**
          * @description Time-bucket size for [`TimeseriesParams`].
          * @enum {string}
@@ -10397,6 +10857,13 @@ export interface components {
             dropped: number;
             /** @description `rate`: over this subscriber's `rate`; `lag`: the subscriber fell behind. */
             reason: string;
+        };
+        /** @description A tier of a category. */
+        TierView: {
+            id: string;
+            name: string;
+            /** @description The sources this tier adds or switches to. */
+            sources: string[];
         };
         /** @description Counts for one time bucket. */
         TimeBucket: {
@@ -12795,6 +13262,78 @@ export interface operations {
             };
         };
     };
+    categories: {
+        parameters: {
+            query?: {
+                /** @description `compact`: IDs, names, tiers, sizes and licences without the prose and the links (for agents). */
+                view?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The catalog and this node's state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CategoriesView"];
+                };
+            };
+        };
+    };
+    categories_budget: {
+        parameters: {
+            query?: {
+                /** @description The group the proposal is for. */
+                group?: string;
+                /** @description `off`, `basic` or `enhanced`. */
+                level?: string;
+                /** @description Category IDs, comma separated. */
+                categories?: string;
+                /** @description `category:tier` pairs, comma separated. */
+                tiers?: string;
+                /** @description Ad block. */
+                ads?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The cost. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BudgetView"];
+                };
+            };
+            /** @description No such group. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The proposal names something the catalog doesn't have. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     check_list: {
         parameters: {
             query?: never;
@@ -14513,6 +15052,116 @@ export interface operations {
             };
         };
     };
+    put_filter_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description `set_by_file`: the config files set that field, and they win. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong or unknown, or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_filter_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     forwards: {
         parameters: {
             query?: never;
@@ -14690,6 +15339,8 @@ export interface operations {
     put_group: {
         parameters: {
             query?: {
+                /** @description Accept the cost of a heavy `content` selection (see `PUT /groups/{name}/content`). */
+                confirm?: boolean;
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
                 /**
@@ -14802,6 +15453,214 @@ export interface operations {
                 };
             };
             /** @description Something still uses it: problem+json says what. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_group_content: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The group. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The group's content. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupContentView"];
+                };
+            };
+            /** @description No such group. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_group_content: {
+        parameters: {
+            query?: {
+                /** @description Accept the cost of a heavy selection. */
+                confirm?: boolean;
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The group. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ContentInput"];
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change); `budget` and `confirmationRequired` say what it costs. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description An agent token (`agent_not_allowed`). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such group. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `confirm_required` (heavy), or `set_by_file`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The catalog doesn't have it (`invalid_config`), or this node is too small (`budget_refused`). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_group_sources: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The group. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change): `impact` says what moves. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description An agent token (`agent_not_allowed`). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such group. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A device is defined in a config file (`set_by_file`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A network, name or key is wrong. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -16957,6 +17816,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    profile_devices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The picker's data. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileDevices"];
                 };
             };
         };

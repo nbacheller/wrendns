@@ -100,6 +100,9 @@ ARG TELLTALE_BUILD_VERSION=
 ARG TELLTALE_BUILD_COMMIT=
 ARG TELLTALE_BUILD_DATE=
 ARG TELLTALE_BUILD_CHANNEL=dev
+# Cargo features for a test image (deploy/cluster3 builds with `e2e`, which lets its fake source
+# stand in for the category lists' hosts). Empty for every shipped image.
+ARG CARGO_FEATURES=
 # REQ: NFR-005 (T10.10) — reproducible builds: C code compiled into the binary (mimalloc,
 # zstd) takes `__DATE__`/`__TIME__` from this instead of the clock (CI passes the commit's
 # time); BuildKit stamps the image layers with it too. Unset, a local build uses the clock.
@@ -119,7 +122,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     # stack from a stripped binary can be read afterwards.
     up="$(echo "${PROFILE}" | tr 'a-z-' 'A-Z_')"; \
     export "CARGO_PROFILE_${up}_STRIP=none" "CARGO_PROFILE_${up}_DEBUG=line-tables-only"; \
-    cargo auditable zigbuild --locked --profile "${PROFILE}" -p telltale --target "$t"; \
+    cargo auditable zigbuild --locked --profile "${PROFILE}" -p telltale --target "$t" ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}; \
     oc="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"; \
     "$oc" --only-keep-debug "target/$t/${PROFILE}/telltale" /debug/telltale.debug; \
     "$oc" --strip-all --keep-section=.dep-v0 --add-gnu-debuglink=/debug/telltale.debug \

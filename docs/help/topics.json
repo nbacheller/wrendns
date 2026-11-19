@@ -1389,6 +1389,46 @@
       "example": "A small list is wholly inside a bigger one you also use: turn the small one off.",
       "caution": "Unique counts names, not regex rules, and is measured on the active snapshot: if you later remove the other list, this one is no longer redundant. Lists assigned to different groups overlap on purpose, so check the groups before removing.",
       "docs": "filter-lists"
+    },
+    {
+      "id": "categories",
+      "title": "Content categories",
+      "term": "Category",
+      "summary": "A category is a named kind of site (adult content, gambling, malware, social networks, ad block) backed by an open list its maintainer publishes. A profile chooses categories; this node downloads each list once, however many profiles use it, and blocks the names in it for that profile's devices only.",
+      "when": "You want to keep a kind of site away from some devices, such as adult content and gambling on the children's tablets, without writing a list yourself.",
+      "example": "A Kids profile with Basic filtering blocks adult content, malware, phishing and scams. The Teens profile adds Gambling and Social networks. The default profile blocks none of them.",
+      "caution": "A category block is a DNS block: it stops names, not pages. A device on mobile data, a VPN or its own encrypted DNS goes around it, apps cache answers, and no list is complete. It is not a promise of child safety.",
+      "docs": "content-categories-and-filter-profiles"
+    },
+    {
+      "id": "category-sources",
+      "title": "Where category lists come from",
+      "term": "Category source",
+      "summary": "Every category is backed by lists maintained by someone else (HaGeZi, Steven Black, Perflyst, Bon-Appetit). Each row shows the maintainer, the licence and a link; the node downloads the list from the maintainer's own address while a profile uses it, and never bundles or redistributes it.",
+      "when": "You want to know who maintains a list, how it is licensed, how big it is, or why a category you looked for is not offered.",
+      "example": "Adult content is HaGeZi's NSFW list (GPL-3.0). Its Extended size adds the Bon-Appetit list, which is licensed CC BY-SA 4.0 and shows its attribution next to the checkbox.",
+      "caution": "A category is offered only when an open, maintained, licensed list backs it. Categories without one are listed under Not available, with the reason, instead of appearing as a checkbox that does nothing.",
+      "docs": "content-categories-and-filter-profiles"
+    },
+    {
+      "id": "category-budget",
+      "title": "What a selection costs",
+      "term": "Entry budget",
+      "summary": "Each blocked name takes about 12 bytes in memory, and a big list also needs memory while it is compiled. The Categories view shows the entries and the memory a selection adds, counting a list shared by several categories once, against the entry budget (Settings, Filtering). A node too small for a selection refuses it and says why.",
+      "when": "You are choosing categories on a Raspberry Pi or a small container, or choosing a heavy one (newly registered domains, the full threat feed).",
+      "example": "Basic is about 275,000 entries, about 3 MiB. Newly registered domains (7 days) is about 2.4 million entries and 40 MB to download every day: it passes the default budget by itself and is refused on a node with 128 MiB.",
+      "caution": "Heavy lists refresh once a day and ask for a confirmation that states the daily download. Raising the budget in Settings lets the view stop warning; it does not give the node more memory.",
+      "docs": "content-categories-and-filter-profiles"
+    },
+    {
+      "id": "filter-profiles",
+      "title": "Filter profiles",
+      "term": "Profile",
+      "summary": "A profile is a group with a friendlier editor: who it applies to (networks and devices), Ad Block, Safe Search for each engine, a filtering level (Off, Basic or Enhanced with the categories you tick) and a schedule. Every other setting of the group stays under Advanced settings.",
+      "when": "You want one set of rules for a kind of device: the children's devices, the smart-TV network, the guests.",
+      "example": "The Kids profile applies to the kids' VLAN and to Maya's iPad, has Basic filtering, Safe Search for Google and YouTube, and a bedtime schedule.",
+      "caution": "A device can be in several profiles: the lists are the union and the other settings come from the profile with the higher priority. A device with a private Wi-Fi address may stop matching when the address changes: select it by address or router name instead.",
+      "docs": "content-categories-and-filter-profiles"
     }
   ]
 }
