@@ -1109,6 +1109,12 @@ mod tests {
                 Forbidden,
                 "{m}"
             );
+            // REQ: DSC-901 (T31.2) — no agent scope reaches `[cmdb]` either (ADR-1005 section 9).
+            assert_eq!(
+                required(&m, "/api/v1/cmdb-settings/default"),
+                Forbidden,
+                "{m}"
+            );
         }
         assert_eq!(
             required(&Method::GET, "/api/v1/config/entries"),

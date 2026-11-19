@@ -15,6 +15,7 @@
 
 pub mod categories;
 pub mod credentials;
+pub mod cmdb;
 pub mod discovery;
 mod env;
 pub mod guarded;
@@ -33,6 +34,7 @@ use std::path::Path;
 
 use toml::{Table, Value};
 
+pub use cmdb::CmdbConfig;
 pub use discovery::{
     CredentialRole, DiscoveryConfig, DiscoverySubnet, SnmpAgent, SnmpCredential, SnmpTable,
     SnmpVersion, UnifiReads,
@@ -190,6 +192,7 @@ fn explicit_keys(root: &Table) -> Vec<String> {
         "local",
         "clients",
         "discovery",
+        "cmdb",
         "cache",
         "support",
         "updates",

@@ -287,6 +287,7 @@ pub(crate) const ADOPTED_KINDS: &[&str] = &[
     managed::LOCAL,
     managed::CLIENTS,
     managed::DISCOVERY,
+    managed::CMDB,
     managed::ROUTER,
     managed::DNSSEC,
     managed::FILTER,
@@ -701,6 +702,7 @@ pub(crate) fn derive(served: &Config, own: &Config) -> Vec<Entry> {
         (managed::LOCAL, telltale_api::ManagedKind::Local),
         (managed::CLIENTS, telltale_api::ManagedKind::Clients),
         (managed::DISCOVERY, telltale_api::ManagedKind::Discovery),
+        (managed::CMDB, telltale_api::ManagedKind::Cmdb),
         // REQ: DNS-011, FLT-004, CLU-014, OBS-016, OBS-020, OBS-019 (T27.11, T27.5) — the shared
         // tuning sections, by the fields the API edits (a field only the files set stays served).
         (managed::DNSSEC, telltale_api::ManagedKind::Dnssec),
@@ -813,6 +815,7 @@ pub(crate) fn strip(cfg: &mut Config, entries: &[Entry], own: &Config) {
             managed::ROLLOUT => cfg.cluster.rollout = own.cluster.rollout.clone(),
             managed::SPECIAL => cfg.special = own.special.clone(),
             managed::DISCOVERY => cfg.discovery = own.discovery.clone(),
+            managed::CMDB => cfg.cmdb = own.cmdb.clone(),
             managed::CLIENTS => cfg.clients.mdns = own.clients.mdns,
             managed::ZONE
             | managed::DNSSEC

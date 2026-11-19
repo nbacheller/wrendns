@@ -85,6 +85,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     cluster(cfg, &mut r);
     secret_references(cfg, &mut r);
     discovery(cfg, &mut r);
+    cmdb(cfg, &mut r);
     r.warnings
 }
 
@@ -2209,6 +2210,69 @@ fn discovery(cfg: &Config, r: &mut Report<'_>) {
     }
     snmp_credentials(cfg, r);
     snmp_agents(cfg, r);
+}
+
+// REQ: DSC-901, DSC-906 (T31.2, ADR-1005 sections 1 and 12) — `[cmdb]`: each threshold in its range,
+// and no enable at privacy level 2 or more (the CMDB names devices and holds their addresses, as
+// the network inventory does; at level 1 names are hashed).
+fn cmdb(cfg: &Config, r: &mut Report<'_>) {
+    use crate::cmdb as c;
+    let d = &cfg.cmdb;
+    let ranges: [(&str, u32, u32, u32, &str); 6] = [
+        (
+            "cmdb.disappear_after_days",
+            d.disappear_after_days,
+            c::DISAPPEAR_MIN_DAYS,
+            c::DISAPPEAR_MAX_DAYS,
+            "from 1 to 365 (days)",
+        ),
+        (
+            "cmdb.detect_settle_secs",
+            d.detect_settle_secs,
+            c::SETTLE_MIN_SECS,
+            c::SETTLE_MAX_SECS,
+            "from 60 to 86,400 (seconds)",
+        ),
+        (
+            "cmdb.unconfirmed_alert_hours",
+            d.unconfirmed_alert_hours,
+            c::ALERT_MIN_HOURS,
+            c::ALERT_MAX_HOURS,
+            "from 1 to 720 (hours)",
+        ),
+        (
+            "cmdb.plan_expiry_days",
+            d.plan_expiry_days,
+            c::PLAN_MIN_DAYS,
+            c::PLAN_MAX_DAYS,
+            "from 1 to 365 (days)",
+        ),
+        (
+            "cmdb.history_days",
+            d.history_days,
+            c::HISTORY_MIN_DAYS,
+            c::HISTORY_MAX_DAYS,
+            "from 1 to 730 (days)",
+        ),
+        (
+            "cmdb.macd_retention_days",
+            d.macd_retention_days,
+            c::MACD_MIN_DAYS,
+            c::MACD_MAX_DAYS,
+            "from 1 to 1,825 (days)",
+        ),
+    ];
+    for (path, value, lo, hi, text) in ranges {
+        if !(lo..=hi).contains(&value) {
+            r.err(path, text);
+        }
+    }
+    if d.enabled && cfg.telemetry.qlog.privacy_level >= 2 {
+        r.err(
+            "cmdb.enabled",
+            "the CMDB needs client addresses and names, which telemetry.qlog.privacy_level 2 and 3 hide: set it to 0 or 1 first",
+        );
+    }
 }
 
 // REQ: DSC-004, DSC-007 (T25.6, ADR-908, ADR-1001) — `[[discovery.snmp_credential]]`: a label name,

@@ -63,6 +63,8 @@ pub(crate) const LOCAL: &str = "local";
 pub(crate) const CLIENTS: &str = "clients";
 /// REQ: DSC-001 (T25.2, ADR-907) — `[discovery]`: the network inventory's settings, one entry.
 pub(crate) const DISCOVERY: &str = "discovery";
+/// REQ: DSC-901 (T31.2, ADR-1005) — `[cmdb]`: the CMDB's settings, one entry.
+pub(crate) const CMDB: &str = "cmdb";
 /// REQ: DNS-006 (T27.2, ADR-1006) — `[cache]` for one node, named by the node (node-managed).
 pub(crate) const CACHE: &str = "cache";
 /// REQ: OPS-011 (T27.11, ADR-1006) — `[support] persist_logs` for one node (node-managed).
@@ -257,6 +259,8 @@ pub(crate) struct Entries {
     pub(crate) clients_settings: Option<serde_json::Value>,
     /// REQ: DSC-001 (T25.2) — the stored `[discovery]` section, likewise.
     pub(crate) discovery: Option<serde_json::Value>,
+    /// REQ: DSC-901 (T31.2) — the stored `[cmdb]` section, likewise.
+    pub(crate) cmdb: Option<serde_json::Value>,
     /// REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — the per-node sections stored
     /// through the API or UI: (kind, node, body) for every node. A node applies its own rows.
     pub(crate) node_settings: Vec<(String, String, serde_json::Value)>,
@@ -488,6 +492,7 @@ pub(crate) fn entries(state: &State) -> Entries {
         local: single(state, LOCAL),
         clients_settings: single(state, CLIENTS),
         discovery: single(state, DISCOVERY),
+        cmdb: single(state, CMDB),
         node_settings: [CACHE, SUPPORT, UPDATES]
             .into_iter()
             .flat_map(|k| {

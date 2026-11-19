@@ -3862,6 +3862,8 @@ impl Backend for ApiBackend {
             ),
             // REQ: DSC-001 (T25.2) — `[discovery]`.
             (ManagedKind::Discovery, "discovery", e.discovery.is_some()),
+            // REQ: DSC-901 (T31.2) — `[cmdb]`.
+            (ManagedKind::Cmdb, "cmdb", e.cmdb.is_some()),
             // REQ: DNS-011, FLT-004, CLU-014 (T27.11, ADR-1006) — `[dnssec]`, `[filter]`, `[drill]`.
             (ManagedKind::Dnssec, "dnssec", e.dnssec.is_some()),
             (ManagedKind::Filter, "filter", e.filter.is_some()),
@@ -4947,6 +4949,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Local => crate::managed::LOCAL,
         ManagedKind::Clients => crate::managed::CLIENTS,
         ManagedKind::Discovery => crate::managed::DISCOVERY,
+        ManagedKind::Cmdb => crate::managed::CMDB,
         ManagedKind::Cache => crate::managed::CACHE,
         ManagedKind::Support => crate::managed::SUPPORT,
         ManagedKind::Updates => crate::managed::UPDATES,
@@ -5549,6 +5552,7 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
             | ManagedKind::Local
             | ManagedKind::Clients
             | ManagedKind::Discovery
+            | ManagedKind::Cmdb
             | ManagedKind::Slo
             | ManagedKind::Probe
             | ManagedKind::UpstreamCheck
@@ -5937,7 +5941,7 @@ fn plan_settings(
     let mut entries = crate::managed::entries(state);
     // REQ: DSC-001 (T25.2, ADR-907, CLU-010) — the first write of `[discovery]` waits until no member
     // runs an older version: an older member can't read the section.
-    if w.kind == ManagedKind::Discovery
+    if matches!(w.kind, ManagedKind::Discovery | ManagedKind::Cmdb)
         && w.body.is_some()
         && crate::settings_kinds::none_stored(&entries, w.kind)
         && let Some(c) = &src.cluster
@@ -5950,9 +5954,16 @@ fn plan_settings(
         // This node is a member of its own cluster, and its own version is the gate's too.
         let me = c.identity.meta.node_id.clone();
         members.push((me, crate::build_info::VERSION.to_owned()));
-        if let Some(problem) =
+        if let Some(mut problem) =
             crate::settings_kinds::members_too_old(&members, crate::forward::DISCOVERY_SINCE)
         {
+            if w.kind == ManagedKind::Cmdb {
+                // REQ: DSC-901 (T31.2) - the same gate, said for `[cmdb]`.
+                problem.detail = problem
+                    .detail
+                    .replace("the network inventory", "the CMDB")
+                    .replace("[discovery]", "[cmdb]");
+            }
             return Err(problem);
         }
     }
@@ -7637,6 +7648,7 @@ fn keep_in_git(
         ManagedKind::Local => "local",
         ManagedKind::Clients => "clients",
         ManagedKind::Discovery => "discovery",
+        ManagedKind::Cmdb => "cmdb",
         ManagedKind::Cache => "cache",
         ManagedKind::Support => "support",
         ManagedKind::Updates => "updates",
@@ -7685,6 +7697,7 @@ fn keep_in_git(
             | ManagedKind::Local
             | ManagedKind::Clients
             | ManagedKind::Discovery
+            | ManagedKind::Cmdb
             | ManagedKind::Slo
             | ManagedKind::Probe
             | ManagedKind::UpstreamCheck

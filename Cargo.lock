@@ -3025,6 +3025,7 @@ dependencies = [
  "regex-automata",
  "rusqlite",
  "serde",
+ "serde_json",
  "telltale-telemetry",
  "tempfile",
  "thiserror",

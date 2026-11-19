@@ -100,6 +100,13 @@ pub struct Config {
         skip_serializing_if = "crate::discovery::DiscoveryConfig::is_default"
     )]
     pub discovery: crate::discovery::DiscoveryConfig,
+    /// REQ: DSC-901, DSC-906 (T31.2, ADR-1005) — the CMDB (`[cmdb]`): off by default, runs on the
+    /// node `[discovery]` designates, admin-only writes. Serialized only when set (CLU-010).
+    #[serde(
+        default,
+        skip_serializing_if = "crate::cmdb::CmdbConfig::is_default"
+    )]
+    pub cmdb: crate::cmdb::CmdbConfig,
     /// Response cache.
     pub cache: CacheConfig,
     /// DNSSEC validation of forwarded answers (DNS-011).
@@ -176,6 +183,7 @@ impl Default for Config {
             dns: DnsConfig::default(),
             special: SpecialConfig::default(),
             discovery: crate::discovery::DiscoveryConfig::default(),
+            cmdb: crate::cmdb::CmdbConfig::default(),
             file_set: Vec::new(),
             cache: CacheConfig::default(),
             dnssec: DnssecConfig::default(),

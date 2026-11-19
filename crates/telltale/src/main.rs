@@ -27,6 +27,7 @@ mod ctl;
 mod datadir;
 mod device_dns;
 mod devices;
+mod cmdb;
 mod discovery;
 mod dnstap;
 mod drill;

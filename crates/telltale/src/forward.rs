@@ -265,6 +265,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                 ManagedKind::Local => "local",
                 ManagedKind::Clients => "clients",
                 ManagedKind::Discovery => "discovery",
+                ManagedKind::Cmdb => "cmdb",
                 ManagedKind::Cache => "cache",
                 ManagedKind::Support => "support",
                 ManagedKind::Updates => "updates",
@@ -624,6 +625,7 @@ fn settings_kinds_understood(
             | ManagedKind::Local
             | ManagedKind::Clients
             | ManagedKind::Discovery
+            | ManagedKind::Cmdb
             | ManagedKind::Slo
             | ManagedKind::Probe
             | ManagedKind::UpstreamCheck
@@ -635,7 +637,7 @@ fn settings_kinds_understood(
     ) {
         return Ok(());
     }
-    let since = if kind == ManagedKind::Discovery {
+    let since = if matches!(kind, ManagedKind::Discovery | ManagedKind::Cmdb) {
         DISCOVERY_SINCE
     } else {
         SETTINGS_KINDS_SINCE

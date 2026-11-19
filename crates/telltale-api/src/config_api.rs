@@ -224,6 +224,11 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/discovery-settings/default",
             put(put_discovery_settings).delete(delete_discovery_settings),
         )
+        // REQ: DSC-901, DSC-906 (T31.2, ADR-1005) — `[cmdb]`: admin-only, no agent scope.
+        .route(
+            "/api/v1/cmdb-settings/default",
+            put(put_cmdb_settings).delete(delete_cmdb_settings),
+        )
         .with_state((backend, auth))
 }
 
@@ -2378,6 +2383,71 @@ pub(crate) async fn delete_discovery_settings(
     .await
 }
 
+/// Set the CMDB's settings (DSC-901, DSC-906, T31.2, ADR-1005): whether it runs, how long a device
+/// must be gone before a delete is raised, the settle time, the alert and plan times, and how long
+/// history and change records are kept.
+///
+/// Admin only: an operator's change is 403, and no agent can change it. The CMDB runs on the node
+/// `[discovery]` designates, and `enabled` is refused at privacy level 2 and above. The first write
+/// is refused with 409 `members_too_old` while any member runs a version older than this one. The
+/// configuration files win field by field (`set_by_file`).
+#[utoipa::path(put, path = "/api/v1/cmdb-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 403, body = Problem, description = "Only an admin may change the CMDB's settings; agents never."),
+        (status = 409, body = Problem, description = "`set_by_file`, or `members_too_old`: a member runs an older version."),
+        (status = 422, body = Problem, description = "A field is unknown or out of range, or `enabled` at privacy level 2 or more."),
+    ))]
+pub(crate) async fn put_cmdb_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    put_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        b,
+        ManagedKind::Cmdb,
+        "/cmdb-settings/default",
+    )
+    .await
+}
+
+/// Go back to the config file's `[cmdb]` section (DSC-901).
+///
+/// Removes what the API stored, so the file's settings apply again. Admin only; no agent.
+#[utoipa::path(delete, path = "/api/v1/cmdb-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 403, body = Problem, description = "Only an admin may change the CMDB's settings; agents never."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+    ))]
+pub(crate) async fn delete_cmdb_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    delete_settings(
+        backend,
+        auth,
+        q,
+        headers,
+        ext,
+        ManagedKind::Cmdb,
+        "DELETE /cmdb-settings/default",
+    )
+    .await
+}
+
 /// Set the objectives (`[slo]`): the availability and latency targets, the latency threshold and the window. Operators change them; the error budget and the burn-rate alerts follow on every node within a few seconds.
 ///
 /// REQ: OBS-016 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.
@@ -3392,6 +3462,7 @@ impl Op {
             // LOW 5: not one letter from the device writes' `client.put`.
             Self::Managed(ManagedKind::Clients, _) => "clients_settings",
             Self::Managed(ManagedKind::Discovery, _) => "discovery",
+            Self::Managed(ManagedKind::Cmdb, _) => "cmdb",
             Self::Managed(ManagedKind::Cache, _) => "cache",
             Self::Managed(ManagedKind::Support, _) => "support",
             Self::Managed(ManagedKind::Updates, _) => "updates",

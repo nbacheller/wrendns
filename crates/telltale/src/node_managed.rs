@@ -68,6 +68,7 @@ pub(crate) const SHARED_KINDS: &[&str] = &[
     crate::managed::LOCAL,
     crate::managed::CLIENTS,
     crate::managed::DISCOVERY,
+    crate::managed::CMDB,
     crate::managed::ROUTER,
     // REQ: DNS-011, FLT-004, CLU-014 (T27.11, ADR-1006) — the cluster-wide `[dnssec]`, `[filter]`
     // and `[drill]` sections are shared configuration the API stores.

@@ -18,7 +18,7 @@ use serde_json::{Map, Value};
 use telltale_api::ManagedKind;
 use telltale_api::auth::Role;
 use telltale_api::problem::{Code, Problem};
-use telltale_config::{Config, DiscoveryConfig, LocalConfig, SpecialConfig};
+use telltale_config::{CmdbConfig, Config, DiscoveryConfig, LocalConfig, SpecialConfig};
 
 use crate::managed::Entries;
 
@@ -28,6 +28,7 @@ pub(crate) fn section(kind: ManagedKind) -> &'static str {
         ManagedKind::Special => "special",
         ManagedKind::Local => "local",
         ManagedKind::Discovery => "discovery",
+        ManagedKind::Cmdb => "cmdb",
         ManagedKind::Cache => "cache",
         ManagedKind::Support => "support",
         ManagedKind::Updates => "updates",
@@ -80,6 +81,7 @@ pub(crate) fn is_settings(kind: ManagedKind) -> bool {
             | ManagedKind::Local
             | ManagedKind::Clients
             | ManagedKind::Discovery
+            | ManagedKind::Cmdb
             | ManagedKind::Dnssec
             | ManagedKind::Filter
             | ManagedKind::Drill
@@ -116,6 +118,19 @@ const DISCOVERY_KEYS: &[&str] = &[
     "home_assistant_all_devices",
 ];
 
+/// REQ: DSC-901, DSC-906 (T31.2, ADR-1005) — the fields of `[cmdb]` a kind's entry carries. Every one
+/// is an admin's. `[[cmdb.precedence]]` joins them with T31.3.
+const CMDB_KEYS: &[&str] = &[
+    "enabled",
+    "disappear_after_days",
+    "detect_settle_secs",
+    "unconfirmed_alert_hours",
+    "plan_expiry_days",
+    "history_days",
+    "macd_retention_days",
+    "require_second_approver",
+];
+
 /// The fields a kind's API entry carries (what the UI edits).
 pub(crate) fn keys(kind: ManagedKind) -> &'static [&'static str] {
     match kind {
@@ -136,6 +151,7 @@ pub(crate) fn keys(kind: ManagedKind) -> &'static [&'static str] {
             "default_ttl",
         ],
         ManagedKind::Discovery => DISCOVERY_KEYS,
+        ManagedKind::Cmdb => CMDB_KEYS,
         ManagedKind::Cache => CACHE_KEYS,
         ManagedKind::Support => &["persist_logs"],
         ManagedKind::Updates => &["check"],
@@ -197,6 +213,8 @@ pub(crate) fn admin_keys(kind: ManagedKind) -> &'static [&'static str] {
         ManagedKind::Map => &["geoip"],
         // REQ: DSC-001 (T25.2, ADR-907) — every field of the network inventory is admin-only.
         ManagedKind::Discovery => DISCOVERY_KEYS,
+        // REQ: DSC-901 (T31.2) — every field of the CMDB's settings is admin-only (ADR-1005).
+        ManagedKind::Cmdb => CMDB_KEYS,
         // REQ: CLU-014 (T27.11, ADR-1006) - the drill schedule starts drills on the cluster's nodes.
         ManagedKind::Drill => &["schedule", "nodes"],
         // REQ: OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — every field of the telemetry sections.
@@ -232,6 +250,7 @@ fn section_full(kind: ManagedKind, cfg: &Config) -> Value {
         ManagedKind::Special => serde_json::to_value(&cfg.special),
         ManagedKind::Local => serde_json::to_value(&cfg.local),
         ManagedKind::Discovery => serde_json::to_value(&cfg.discovery),
+        ManagedKind::Cmdb => serde_json::to_value(&cfg.cmdb),
         ManagedKind::Cache => serde_json::to_value(&cfg.cache),
         ManagedKind::Support => serde_json::to_value(&cfg.support),
         ManagedKind::Updates => serde_json::to_value(&cfg.updates),
@@ -331,6 +350,9 @@ fn normalize(kind: ManagedKind, body: &Value) -> Result<Value, Problem> {
         }
         ManagedKind::Discovery => {
             cfg.discovery = serde_json::from_value::<DiscoveryConfig>(body.clone()).map_err(bad)?;
+        }
+        ManagedKind::Cmdb => {
+            cfg.cmdb = serde_json::from_value::<CmdbConfig>(body.clone()).map_err(bad)?;
         }
         ManagedKind::Slo => {
             cfg.slo =
@@ -478,6 +500,7 @@ pub(crate) fn apply_stored(cfg: &mut Config, own: &Config, e: &Entries) -> Vec<S
         (ManagedKind::Local, &e.local),
         (ManagedKind::Clients, &e.clients_settings),
         (ManagedKind::Discovery, &e.discovery),
+        (ManagedKind::Cmdb, &e.cmdb),
         (ManagedKind::Dnssec, &e.dnssec),
         (ManagedKind::Filter, &e.filter),
         (ManagedKind::Drill, &e.drill),
@@ -521,6 +544,9 @@ pub(crate) fn overlay(
         }
         ManagedKind::Discovery => {
             cfg.discovery = serde_json::from_value(cur).map_err(|e| e.to_string())?;
+        }
+        ManagedKind::Cmdb => {
+            cfg.cmdb = serde_json::from_value(cur).map_err(|e| e.to_string())?;
         }
         ManagedKind::Slo => {
             cfg.slo = serde_json::from_value(cur).map_err(|e| e.to_string())?;
@@ -639,6 +665,14 @@ pub(crate) fn check_admin_fields(
         )
         .hint("Ask an admin to make this change in the UI."));
     }
+    // REQ: DSC-901 (T31.2, ADR-1005 section 9) — no agent writes the CMDB's settings.
+    if kind == ManagedKind::Cmdb && agent.is_some() {
+        return Err(Problem::new(
+            Code::AgentNotAllowed,
+            "no agent can change `[cmdb]`: the CMDB holds the network's devices and their changes",
+        )
+        .hint("Ask an admin to make this change in the UI."));
+    }
     let Some(field) = admin_keys(kind)
         .iter()
         .find(|k| before.get(**k) != after.get(**k))
@@ -650,6 +684,7 @@ pub(crate) fn check_admin_fields(
         ManagedKind::Discovery => {
             "the network inventory reads the devices on the LAN, from one node"
         }
+        ManagedKind::Cmdb => "the CMDB keeps the network's devices and their changes, on one node",
         ManagedKind::Map => {
             "it makes every node that serves the console download a database from the internet"
         }
@@ -717,6 +752,7 @@ pub(crate) fn none_stored(entries: &Entries, kind: ManagedKind) -> bool {
         ManagedKind::Special => entries.special.is_none(),
         ManagedKind::Local => entries.local.is_none(),
         ManagedKind::Discovery => entries.discovery.is_none(),
+        ManagedKind::Cmdb => entries.cmdb.is_none(),
         ManagedKind::Dnssec => entries.dnssec.is_none(),
         ManagedKind::Filter => entries.filter.is_none(),
         ManagedKind::Drill => entries.drill.is_none(),
@@ -736,6 +772,7 @@ pub(crate) fn set_stored(entries: &mut Entries, kind: ManagedKind, v: Option<Val
         ManagedKind::Special => entries.special = v,
         ManagedKind::Local => entries.local = v,
         ManagedKind::Discovery => entries.discovery = v,
+        ManagedKind::Cmdb => entries.cmdb = v,
         ManagedKind::Dnssec => entries.dnssec = v,
         ManagedKind::Filter => entries.filter = v,
         ManagedKind::Drill => entries.drill = v,
@@ -755,6 +792,7 @@ pub(crate) fn noun(kind: ManagedKind) -> &'static str {
         ManagedKind::Special => "special names",
         ManagedKind::Local => "device-name settings",
         ManagedKind::Discovery => "network inventory settings",
+        ManagedKind::Cmdb => "CMDB settings",
         ManagedKind::Dnssec => "DNSSEC settings",
         ManagedKind::Filter => "list settings",
         ManagedKind::Drill => "drill schedule",
@@ -791,6 +829,9 @@ pub(crate) fn impact(kind: ManagedKind, put: bool) -> String {
         // REQ: DSC-001 (T25.2) — the inventory starts or stops on the designated node at the reload.
         (ManagedKind::Discovery, true) => "Applies on the designated node within a few seconds, with no restart: the network inventory starts or stops there. Other nodes change nothing, and no device is read until it is on.".into(),
         (ManagedKind::Discovery, false) => "The config file's network inventory settings (or the defaults: off) apply again on the designated node within a few seconds.".into(),
+        // REQ: DSC-901 (T31.2) — the CMDB starts or stops on the designated node at the reload.
+        (ManagedKind::Cmdb, true) => "Applies on the designated node within a few seconds, with no restart: the CMDB starts or stops there, and the thresholds are read again. Other nodes change nothing, and no DNS answer changes.".into(),
+        (ManagedKind::Cmdb, false) => "The config file's CMDB settings (or the defaults: off) apply again on the designated node within a few seconds. What the CMDB stored stays on disk.".into(),
         (ManagedKind::Local, true) => "Device names in DNS change within about 10 seconds on every node, with no restart.".into(),
         (ManagedKind::Local, false) => "The config file's device-name settings (or the defaults) apply again within about 10 seconds.".into(),
         // REQ: DNS-011 (T27.11) - the validator's mode and trust anchors are read on a reload.
