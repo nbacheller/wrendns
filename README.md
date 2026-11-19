@@ -1,6 +1,15 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/logos/wrendns-lockup-night.svg">
+    <img alt="WrenDNS" src="brand/logos/wrendns-lockup-day.svg" width="360">
+  </picture>
+</p>
+
+<p align="center"><strong>Put a bird on it!</strong></p>
+
 # WrenDNS
 
-> **An independent fork:** [`nbacheller/telltaledns`](https://github.com/nbacheller/telltaledns) started from [`paimonsoror/telltaledns`](https://github.com/paimonsoror/telltaledns) and, since 2026-11-19, goes its own way: it no longer merges upstream and ports only fixes (ADR-1026). It keeps upstream's licences (Apache-2.0 or MIT) and copyright notice. Everything below this box is upstream's README as of the last sync. The badges, releases, quick start and project site are upstream's too. The fork's work is on the [`feat/ipam-integrations`](https://github.com/nbacheller/telltaledns/tree/feat/ipam-integrations) branch and follows the same spec-driven process. Its decisions are numbered from ADR-901 in [`spec/11`](spec/11-decisions.md).
+> **An independent fork:** [`nbacheller/telltaledns`](https://github.com/nbacheller/telltaledns) started from [`paimonsoror/telltaledns`](https://github.com/paimonsoror/telltaledns) and, since 2026-11-19, goes its own way: it no longer merges upstream and ports only fixes (ADR-1026). It keeps upstream's licences (Apache-2.0 or MIT) and copyright notice. The project is now called **WrenDNS** (T33.2, ADR-1026): the command is `wrendns`, and the old names keep working for one release ([Upgrading to WrenDNS](docs/running.md#upgrading-to-wrendns)). The GitHub repository keeps its old name until the owner renames it. The badges, releases, quick start and project site below are this project's. The work is on the [`feat/ipam-integrations`](https://github.com/nbacheller/telltaledns/tree/feat/ipam-integrations) branch and follows the same spec-driven process. Its decisions are numbered from ADR-901 in [`spec/11`](spec/11-decisions.md).
 >
 > **What the fork adds** (milestones in the [roadmap](spec/10-roadmap-and-tasks.md)):
 > - **M22, network inventory and home integrations (done):**
@@ -45,7 +54,7 @@
 > - **M31, CMDB (planned, [fork #21](https://github.com/nbacheller/telltaledns/issues/21)):** one configuration item per device from every source, each source's record linked, a definitive source per attribute, and MACD lifecycle.
 > - **M32, away from home (planned, [fork #28](https://github.com/nbacheller/telltaledns/issues/28)):** a cloud-hosted resolver on a free or low-cost Azure tier, with DoH/DoT setup generated per device for Windows, macOS, iOS and Android, and the same policy at home and away.
 >
-> **Every feature gets a UI control**, not only config, API or MCP. Fork issues are tracked [here](https://github.com/nbacheller/telltaledns/issues). Changes from upstream are merged regularly.
+> **Every feature gets a UI control**, not only config, API or MCP. Fork issues are tracked [here](https://github.com/nbacheller/telltaledns/issues). Fixes in code the fork still shares with upstream are ported by hand, citing the upstream commit.
 >
 > **Upstream:** what the fork changed from upstream, the upstream issues it triaged, and how it syncs and watches upstream are in [`spec/upstream.md`](spec/upstream.md).
 
@@ -53,13 +62,13 @@
 [![CodeQL](https://github.com/nbacheller/telltaledns/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/nbacheller/telltaledns/security/code-scanning?query=branch%3Amain)
 [![Release](https://img.shields.io/github/v/release/nbacheller/telltaledns?sort=semver)](https://github.com/nbacheller/telltaledns/releases/latest)
 [![License: Apache-2.0 OR MIT](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#license)
-[![Dependabot](https://img.shields.io/badge/dependabot-enabled-025e8c?logo=dependabot)](https://github.com/paimonsoror/telltaledns/pulls?q=is%3Apr+author%3Aapp%2Fdependabot)
+[![Dependabot](https://img.shields.io/badge/dependabot-enabled-025e8c?logo=dependabot)](https://github.com/nbacheller/telltaledns/pulls?q=is%3Apr+author%3Aapp%2Fdependabot)
 
 **See every question. Answer on your terms.**
 
 Every connection on your network starts with a DNS lookup. WrenDNS answers it in microseconds, filters it by your rules per device, and shows you exactly who asked, what they asked, and why it answered the way it did. It runs on a Raspberry Pi, in Kubernetes, or on both as one cluster that keeps answering even when parts of it fail.
 
-> A *wrendns* is the strip of yarn sailors tie to a sail to see what the wind is really doing. DNS is your network's wrendns: it reveals what every device is up to.
+> WrenDNS is named for the wren: a tiny bird with a big, clear voice that flies with a flock. A node is one bird, the nodes together are the flock, and a flock keeps in sync.
 
 <p align="center">
   <picture>
