@@ -45,6 +45,9 @@
     z-index: 21;
     display: flex;
     flex-direction: column;
+    /* The panel takes focus only to hold it for the dialog: it isn't a control, and a ring round it
+       reads as a coloured edge. Its controls keep their own ring. */
+    outline: none;
     /* Opened from a "?" inside a page heading, it would otherwise take the heading's size and
        weight: the body text's own type (Figtree, body-sm), whatever it sits in. */
     font: var(--type-body-sm-weight) var(--type-body-sm-size) / var(--type-body-sm-line) var(--brand-font-sans);

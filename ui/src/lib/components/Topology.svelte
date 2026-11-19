@@ -492,6 +492,7 @@
   }
   .key.warn {
     border-color: var(--warn);
+    border-style: dotted;
   }
   .key.bad {
     border-color: var(--bad);
