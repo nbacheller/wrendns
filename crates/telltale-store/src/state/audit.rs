@@ -61,7 +61,7 @@ pub struct Verify {
 /// The chained hash of one entry.
 pub fn entry_hash(prev: &[u8], seq: u64, e: &NewAudit<'_>) -> Vec<u8> {
     let mut h = blake3::Hasher::new();
-    h.update(b"telltale-audit-v1");
+    h.update(b"telltale-audit-v1"); // rebrand:keep
     h.update(prev);
     h.update(&seq.to_le_bytes());
     h.update(&e.ts.to_le_bytes());

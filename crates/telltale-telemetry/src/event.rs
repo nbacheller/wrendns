@@ -116,7 +116,7 @@ pub struct UpstreamEvent {
 
 /// REQ: OBS-020 (T11.3) — the name TelltaleDNS's own listener probes ask (wire format,
 /// lowercase): under `.invalid` (RFC 6761), so it's answered NXDOMAIN without an upstream.
-pub const PROBE_NAME: &[u8] = b"\x05probe\x08telltale\x07invalid\x00";
+pub const PROBE_NAME: &[u8] = b"\x05probe\x08telltale\x07invalid\x00"; // rebrand:keep
 
 impl Record {
     /// REQ: OBS-020 — one of TelltaleDNS's own listener probes: counted in the metrics like

@@ -3,7 +3,8 @@
 //!
 //! Every node certificate carries two names: [`CLUSTER_NAME`] (what peers verify, so a node is
 //! trusted because the cluster CA signed it, whatever address it was dialed at) and
-//! `<node-id>.node.telltale.invalid` (who it is). `.invalid` names can never resolve or be
+//! `<node-id>.node.<legacy zone>` (who it is; the zone keeps its pre-WrenDNS spelling during the
+//! rolling-upgrade window, ADR-1028). `.invalid` names can never resolve or be
 //! issued by a public CA.
 
 use rcgen::{
@@ -14,7 +15,7 @@ use rcgen::{
 use time::{Duration, OffsetDateTime};
 
 /// The name every node certificate carries and every peer verifies.
-pub const CLUSTER_NAME: &str = "cluster.telltale.invalid";
+pub const CLUSTER_NAME: &str = "cluster.telltale.invalid"; // rebrand:keep
 /// Node certificates last this long; nodes renew at two thirds of it.
 pub const NODE_CERT_DAYS: i64 = 90;
 /// The CA lasts this long.
@@ -217,7 +218,7 @@ pub fn issue(
     let id = node_id(csr.public_key.der_bytes());
     let mut sans = vec![
         SanType::DnsName(CLUSTER_NAME.try_into()?),
-        SanType::DnsName(format!("{id}.node.telltale.invalid").try_into()?),
+        SanType::DnsName(format!("{id}.node.telltale.invalid").try_into()?), // rebrand:keep
     ];
     for h in advertise_hosts {
         match h.parse::<std::net::IpAddr>() {
@@ -232,7 +233,7 @@ pub fn issue(
     let p = &mut csr.params;
     p.subject_alt_names = sans;
     let mut dn = DistinguishedName::new();
-    dn.push(DnType::CommonName, format!("{id}.node.telltale.invalid"));
+    dn.push(DnType::CommonName, format!("{id}.node.telltale.invalid")); // rebrand:keep
     p.distinguished_name = dn;
     p.is_ca = IsCa::ExplicitNoCa;
     p.key_usages = vec![KeyUsagePurpose::DigitalSignature];
@@ -341,7 +342,7 @@ mod tests {
         assert!(sans.iter().any(|s| s.contains(CLUSTER_NAME)), "{sans:?}");
         assert!(
             sans.iter()
-                .any(|s| s.contains(&format!("{id}.node.telltale.invalid")))
+                .any(|s| s.contains(&format!("{id}.node.telltale.invalid"))) // rebrand:keep
         );
         assert!(sans.iter().any(|s| s.contains("pi.lan")));
         assert!(sans.iter().any(|s| s.contains("c0:a8:03:02")), "{sans:?}");

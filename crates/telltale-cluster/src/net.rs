@@ -391,13 +391,13 @@ impl ServerCertVerifier for PinnedCa {
     }
 }
 
-/// The node ID in a certificate (`<id>.node.telltale.invalid`).
+/// The node ID in a certificate (`<id>.node.<legacy zone>`).
 pub fn peer_node_id(cert: &CertificateDer<'_>) -> Option<String> {
     let (_, c) = x509_parser::parse_x509_certificate(cert).ok()?;
     let san = c.subject_alternative_name().ok()??;
     san.value.general_names.iter().find_map(|n| match n {
         x509_parser::extensions::GeneralName::DNSName(d) => {
-            d.strip_suffix(".node.telltale.invalid").map(str::to_owned)
+            d.strip_suffix(".node.telltale.invalid").map(str::to_owned) // rebrand:keep
         }
         _ => None,
     })

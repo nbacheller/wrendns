@@ -178,7 +178,7 @@ pub(crate) fn restore(
         r.files,
         file.display(),
         r.manifest.node,
-        r.manifest.telltale_version,
+        r.manifest.telltale_version, // rebrand:keep
         r.data_dir.display(),
         r.config_dir.display()
     );
@@ -222,7 +222,7 @@ pub(crate) fn show(file: &std::path::Path) -> Result<(), String> {
     let _ = writeln!(
         out,
         "TelltaleDNS {} backup of node `{}`, taken {} (unix), format {}, {} files, {} KiB, checksums OK",
-        m.telltale_version,
+        m.telltale_version, // rebrand:keep
         m.node,
         m.created,
         m.version,

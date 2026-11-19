@@ -51,9 +51,9 @@ pub(crate) const PREVIOUS_KEY_VAR: &str = "TELLTALE_SECRETS_PREVIOUS_KEY";
 /// restarts (an `emptyDir`): stored secrets would be lost at every restart (`secrets_ephemeral`).
 pub(crate) const DATA_EPHEMERAL_VAR: &str = "TELLTALE_DATA_EPHEMERAL";
 /// Subkey contexts (ADR-903 §3).
-const KEY_ID_CONTEXT: &str = "telltale secrets key-id v1";
-const IDEMPOTENCY_CONTEXT: &str = "telltale secrets idempotency v1";
-pub(crate) const AEAD_CONTEXT: &str = "telltale secrets aead v1";
+const KEY_ID_CONTEXT: &str = "telltale secrets key-id v1"; // rebrand:keep
+const IDEMPOTENCY_CONTEXT: &str = "telltale secrets idempotency v1"; // rebrand:keep
+pub(crate) const AEAD_CONTEXT: &str = "telltale secrets aead v1"; // rebrand:keep
 
 /// Where a key came from (shown in status, never the key).
 #[derive(Debug, Clone, PartialEq, Eq)]

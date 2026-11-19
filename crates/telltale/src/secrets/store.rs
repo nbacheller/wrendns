@@ -36,7 +36,7 @@ pub(crate) const MAX_SECRETS: usize = 128;
 /// How long a failed load is kept before the next use tries again.
 pub(crate) const RETRY_AFTER: Duration = Duration::from_secs(30);
 /// The associated data's prefix (its version).
-const AAD_PREFIX: &[u8] = b"telltale-secret\x01";
+const AAD_PREFIX: &[u8] = b"telltale-secret\x01"; // rebrand:keep
 
 /// Reads an environment variable (tests give their own).
 pub(crate) type EnvFn = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;

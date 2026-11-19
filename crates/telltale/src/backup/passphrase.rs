@@ -6,7 +6,7 @@
 //! - **Key:** Argon2id v1.3 from the passphrase, with a 16-byte random salt, 32 bytes out. The
 //!   parameters are recorded in the manifest (`kdf`) and bounded on restore.
 //! - **Cipher:** ChaCha20-Poly1305 (`ring`), a 12-byte random nonce (recorded in the manifest),
-//!   associated data `"telltale-backup-secrets v2" ‖ backup_id ‖ binding`, where the binding
+//!   associated data `AAD_PREFIX ‖ backup_id ‖ binding`, where the binding
 //!   is a BLAKE3 hash over the manifest's `format`, `version` and `node` and the sorted
 //!   `(path, size, blake3)` of every other entry (ADR-965 §10): an archive edited without the
 //!   passphrase (a router's URL in the configuration, say) fails like a wrong passphrase.
@@ -42,7 +42,7 @@ pub(crate) const MAX_T: u32 = 10;
 pub(crate) const MAX_P: u32 = 8;
 const SALT_LEN: usize = 16;
 /// ADR-965 §10: the prefix is `v2` since the associated data also holds the archive's binding.
-const AAD_PREFIX: &[u8] = b"telltale-backup-secrets v2";
+const AAD_PREFIX: &[u8] = b"telltale-backup-secrets v2"; // rebrand:keep
 pub(crate) const KDF_NAME: &str = "argon2id";
 pub(crate) const AEAD_NAME: &str = "chacha20-poly1305";
 /// The archive entry.
@@ -293,7 +293,7 @@ pub(crate) fn binding(
     node: &str,
     entries: &[super::Entry],
 ) -> [u8; 32] {
-    let mut h = blake3::Hasher::new_derive_key("telltale-backup-binding v1");
+    let mut h = blake3::Hasher::new_derive_key("telltale-backup-binding v1"); // rebrand:keep
     let mut field = |b: &[u8]| {
         h.update(&(b.len() as u64).to_le_bytes());
         h.update(b);

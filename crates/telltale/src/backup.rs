@@ -35,7 +35,7 @@ pub(crate) use passphrase::{
 pub(crate) use passphrase::{kdf_slot_for_tests, test_lock};
 
 /// `manifest.json`'s `format`.
-const FORMAT: &str = "telltale-backup";
+const FORMAT: &str = "telltale-backup"; // rebrand:keep
 /// A backup without secrets stays version 1 (builds before T23.9 restore it); one with
 /// `data/secrets.enc` is version 2, which they refuse (ADR-903 §8).
 const VERSION: u32 = 1;
@@ -60,7 +60,7 @@ pub(crate) struct ConfigFile {
 pub(crate) struct Manifest {
     pub format: String,
     pub version: u32,
-    pub telltale_version: String,
+    pub telltale_version: String, // rebrand:keep
     /// Unix seconds.
     pub created: u64,
     pub node: String,
@@ -560,7 +560,7 @@ fn write_into(
         } else {
             VERSION
         },
-        telltale_version: crate::build_info::VERSION.into(),
+        telltale_version: crate::build_info::VERSION.into(), // rebrand:keep
         created: unix_now(),
         node: cfg.node.name.to_string(),
         data_dir: data.display().to_string(),
