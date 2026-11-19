@@ -116,7 +116,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-step() { echo "== $1"; }
+step() { echo "== $1 ($(date +%T))"; }
 pass() { echo "ok${1:+ ($1)}"; }
 bad() { echo "FAIL: $*"; exit 1; }
 now_ms() { date +%s%3N; }
@@ -734,17 +734,24 @@ relogin() { # node
   return 1
 }
 
-# The node that is primary and holds its lease, waiting up to budget seconds; nodes named after the
-# budget are skipped (a killed one).
-wait_primary() { # budget [excluded-node...]
+# rebrand:keep-start
+# A node's metric by its new name, or by the pre-rename one when the node runs the old image.
+metric_any() { # port name-without-prefix
+  local v
+  v=$(metric "$1" "wrendns_$2")
+  [ -n "$v" ] || v=$(metric "$1" "telltale_$2")
+  echo "$v"
+}
+
+# The node that is primary and holds its lease, by either metric name; nodes named after the budget are skipped.
+wait_primary_any() { # budget [excluded-node...]
   local budget=$1 n end
   shift
   end=$(( $(date +%s) + budget ))
   while [ "$(date +%s)" -lt "$end" ]; do
     for n in "${NODES[@]}"; do
       case " $* " in *" $n "*) continue ;; esac
-      if [ "$(metric "${MET[$n]}" wrendns_cluster_primary)" = 1 ] \
-        && [ "$(metric "${MET[$n]}" wrendns_cluster_lease_held)" = 1 ]; then
+      if [ "$(metric_any "${MET[$n]}" cluster_primary)" = 1 ] && [ "$(metric_any "${MET[$n]}" cluster_lease_held)" = 1 ]; then
         echo "$n"
         return 0
       fi
@@ -753,6 +760,11 @@ wait_primary() { # budget [excluded-node...]
   done
   return 1
 }
+
+# The node that is primary and holds its lease (by either metric name: an image from before the rename
+# calls them telltale_*), waiting up to budget seconds; nodes named after the budget are skipped.
+wait_primary() { wait_primary_any "$@"; }
+# rebrand:keep-end
 
 # 0 once a node lists a list by name (present) or stops listing it (absent), within 30 s.
 list_is() { # node present|absent name
@@ -774,10 +786,10 @@ elif ! docker image inspect "$OLD_IMAGE" >/dev/null 2>&1; then
 else
   # Automatic failover on (check a2 did it in a full run; ONLY=upgrade skips a2): the failovers below
   # are leases running out.
-  if [ "$(metric "${MET[primary]}" wrendns_cluster_failover_auto)" != 1 ]; then
+  if [ "$(metric_any "${MET[primary]}" cluster_failover_auto)" != 1 ]; then
     "${COMPOSE[@]}" exec -T primary /usr/local/bin/wrendns cluster set-failover auto -c /etc/wrendns/wrendns.toml >/dev/null       || bad "couldn't turn automatic failover on"
     for _ in $(seq 60); do
-      [ "$(metric "${MET[primary]}" wrendns_cluster_lease_held)" = 1 ] && break
+      [ "$(metric_any "${MET[primary]}" cluster_lease_held)" = 1 ] && break
       sleep 0.5
     done
   fi
@@ -870,38 +882,13 @@ fi
 # are `wrendns`. A cluster of both must stay whole and keep answering through the roll.
 PRE_IMAGE=${PRE_RENAME_IMAGE:-telltale:pre-rename}
 
-# A node's metric by its new name, or by the pre-rename one when the node runs the old image.
-metric_any() { # port name-without-prefix
-  local v
-  v=$(metric "$1" "wrendns_$2")
-  [ -n "$v" ] || v=$(metric "$1" "telltale_$2")
-  echo "$v"
-}
-
-# The node that is primary and holds its lease, by either metric name; nodes named after the budget are skipped.
-wait_primary_any() { # budget [excluded-node...]
-  local budget=$1 n end
-  shift
-  end=$(( $(date +%s) + budget ))
-  while [ "$(date +%s)" -lt "$end" ]; do
-    for n in "${NODES[@]}"; do
-      case " $* " in *" $n "*) continue ;; esac
-      if [ "$(metric_any "${MET[$n]}" cluster_primary)" = 1 ] && [ "$(metric_any "${MET[$n]}" cluster_lease_held)" = 1 ]; then
-        echo "$n"
-        return 0
-      fi
-    done
-    sleep 1
-  done
-  return 1
-}
-
 # Asks every node's DNS for a name every 0.3 s, one line per round: the time, then 1 (NOERROR with the
 # address) or 0 for each node.
 PROBE_PID=
 probe_start() { # name ip
+  rm -f "$E/probe.stop"
   (
-    while :; do
+    while [ ! -e "$E/probe.stop" ]; do
       line=$(now_ms)
       for n in "${NODES[@]}"; do
         if [ "$(dnsans "$n" "$1")" = "NOERROR $2" ]; then line="$line 1"; else line="$line 0"; fi
@@ -912,8 +899,10 @@ probe_start() { # name ip
   ) >"$E/probe.log" 2>/dev/null &
   PROBE_PID=$!
 }
+# The loop ends at its next round once the stop file exists (a kill of the subshell isn't reliable under
+# Git Bash on Windows, and `wait` would then never return).
 probe_stop() {
-  [ -z "$PROBE_PID" ] || { kill "$PROBE_PID" 2>/dev/null; wait "$PROBE_PID" 2>/dev/null; }
+  [ -z "$PROBE_PID" ] || { : > "$E/probe.stop"; wait "$PROBE_PID" 2>/dev/null; }
   PROBE_PID=
 }
 
@@ -945,7 +934,7 @@ else
   put_json l-list.json '{"url":"https://lists.example/t332.txt"}'
   call "$P" PUT /api/v1/lists/t332-keep "$E/l-list.json"
   [ "$RS" = 200 ] || bad "adding a list on the pre-rename primary $P answered $RS: $RB"
-  put_json l-token.json '{"name":"t332","kind":"agent","scopes":["analytics:read"]}'
+  put_json l-token.json '{"name":"t332","kind":"agent","scopes":["analytics:read","config:read"]}'
   call "$P" POST /api/v1/tokens "$E/l-token.json"
   TOK=$(jget 'd["token"]')
   [ -n "$TOK" ] || bad "no API token from the pre-rename primary ($RS): $RB"
@@ -988,6 +977,8 @@ else
     [ "$code" = 200 ] || bad "the API token made on the old primary answered $code on $n"
   done
   # A write on the new primary reaches the others (the new nodes talk to each other as before).
+  # (The session cookie survived the roll; a CSRF token is per process, so a write signs in once more.)
+  relogin "$N1" || bad "$N1's administrator can't sign in after the roll"
   put_json l-rec2.json '{"records":[{"type":"A","value":"10.0.0.78"}]}'
   call "$N1" PUT /api/v1/records/l2.cluster3.test "$E/l-rec2.json"
   [ "$RS" = 200 ] || bad "a write on the new primary $N1 answered $RS: $RB"
