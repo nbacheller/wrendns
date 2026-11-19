@@ -26,7 +26,7 @@ ROOT = os.path.dirname(SITE)
 sys.path.insert(0, SITE)
 import brand  # noqa: E402  (the brand's tokens, fonts and logos, from brand/: checked on every build)
 
-PAGES = ["index.html", "start.html", "download.html", "support.html", "thanks.html", "faq.html", "kubernetes.html","install.html", "how-it-works.html", "groups.html", "agents.html", "monitoring.html", "map.html", "kubernetes-workloads.html", "failover-drills.html", "tour.html",
+PAGES = ["index.html", "start.html", "download.html", "support.html", "thanks.html", "privacy.html", "terms.html", "faq.html", "kubernetes.html","install.html", "how-it-works.html", "groups.html", "agents.html", "monitoring.html", "map.html", "kubernetes-workloads.html", "failover-drills.html", "tour.html",
          # ADR-122 — the Guides menu.
          "guides.html", "guide-settings.html", "guide-cluster.html", "guide-kubernetes.html", "guide-upgrades.html",
          "guide-blocking.html", "guide-devices.html", "guide-encrypted.html", "guide-changes.html", "guide-monitoring.html",
@@ -183,6 +183,65 @@ def csp_errors(out_dir, names):
             if rx.search(text):
                 errs.append("{}: has {} (the Content-Security-Policy forbids it)".format(n, what))
     return errs
+
+
+# REQ: DOC-006 (T33.3) — /terms and /privacy are the drafts in docs/legal/, rendered as they are: the owner and
+# counsel settle the `[confirm]` markers in the Markdown (shown highlighted until they do), and the next build
+# carries the change. The headings get anchors; the HTML comments (the drafts' own notes) are dropped.
+LEGAL = {"terms.html": "terms.md", "privacy.html": "privacy.md"}
+
+
+def render_legal(md):
+    out, para, bullets, rows = [], [], [], []
+
+    def inline(t):
+        return md_inline(t, set())
+
+    def flush():
+        nonlocal para, bullets, rows
+        if para:
+            out.append("<p>{}</p>".format(inline(" ".join(para))))
+        if bullets:
+            out.append("<ul>{}</ul>".format("".join("<li>{}</li>".format(inline(b)) for b in bullets)))
+        if rows:
+            out.append(md_table(rows, set()))
+        para, bullets, rows = [], [], []
+
+    title = ""
+    in_comment = False
+    for raw in md.splitlines():
+        line = raw.rstrip()
+        if in_comment:
+            in_comment = "-->" not in line
+            continue
+        if line.lstrip().startswith("<!--"):
+            in_comment = "-->" not in line
+            continue
+        m = re.match(r"^(#{1,3}) (.*)$", line)
+        if m:
+            flush()
+            level, text = len(m.group(1)), m.group(2).strip()
+            if level == 1:
+                title = text
+                continue
+            slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+            out.append('<h{0} id="{1}">{2}</h{0}>'.format(level, slug, html.escape(text)))
+        elif not line.strip():
+            flush()
+        elif line.lstrip().startswith("|"):
+            if para or bullets:
+                flush()
+            rows.append(line)
+        elif line.startswith("- "):
+            if para or rows:
+                flush()
+            bullets.append(line[2:].strip())
+        else:
+            if bullets or rows:
+                flush()
+            para.append(line.strip())
+    flush()
+    return title, "\n".join(out).replace("[confirm]", '<span class="confirm">[confirm]</span>')
 
 
 def build_stamp():
@@ -1252,6 +1311,9 @@ def main():
             page = render_standards(page, data)
         if name in ("download.html", "support.html", "thanks.html"):
             page = render_support(page, site_cfg)
+        if name in LEGAL:
+            title, body = render_legal(read(os.path.join(ROOT, "docs", "legal", LEGAL[name])))
+            page = page.replace("<!-- @legal-title -->", html.escape(title)).replace("<!-- @legal -->", body)
         if name == "nerds.html":
             page = render_nerds(page, arch, adrs, reqs)
         # The decisions index and its part pages come from one template.

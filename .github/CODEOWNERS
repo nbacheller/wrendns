@@ -1,4 +1,4 @@
 # REQ: NFR-005 — the ruleset on main requires a code-owner review for pull requests, and that rule
 # can't be met without a code owner. The maintainer owns everything; a pull request (a contributor's,
 # or Dependabot's) is merged after their review.
-* @paimonsoror
+* @nbacheller

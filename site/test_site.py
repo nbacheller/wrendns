@@ -100,6 +100,42 @@ class Support(unittest.TestCase):
         self.assertFalse(build.STRIPE_SECRET.search("https://buy.stripe.com/test_abc"))
 
 
+class Legal(unittest.TestCase):
+    def test_the_drafts_render_with_anchors_and_without_their_own_notes(self):
+        md = "# Terms\n\n<!-- DRAFT: a note\nover two lines -->\n\nIntro with **bold** and a [link](https://example.com).\n\n## 1. First\n\n- one\n- two\n\n### 1.1 Sub\n\n| a | b |\n|---|---|\n| x | [confirm] |\n"
+        title, body = build.render_legal(md)
+        self.assertEqual(title, "Terms")
+        self.assertNotIn("DRAFT", body)
+        self.assertIn('<h2 id="1-first">1. First</h2>', body)
+        self.assertIn('<h3 id="1-1-sub">1.1 Sub</h3>', body)
+        self.assertIn("<li>one</li>", body)
+        self.assertIn("<b>bold</b>", body)
+        self.assertIn('<span class="confirm">[confirm]</span>', body)
+        self.assertEqual(body.count('class="confirm"'), 1)
+
+    def test_terms_and_privacy_pages_come_from_docs_legal(self):
+        for page, md in build.LEGAL.items():
+            self.assertIn(page, build.PAGES)
+            self.assertTrue(os.path.exists(os.path.join(brand.ROOT, "docs", "legal", md)))
+            self.assertIn("<!-- @legal -->", read(page))
+        title, body = build.render_legal(open(os.path.join(brand.ROOT, "docs", "legal", "terms.md"), encoding="utf-8").read())
+        self.assertIn("4.2 Not a charitable donation", body)
+        self.assertIn("support@wrendns.com", body)
+
+    def test_every_page_has_the_footer_with_support_privacy_terms_and_the_maker(self):
+        footer = read("partials", "footer.html")
+        for needle in ('href="support.html"', 'href="privacy.html"', 'href="terms.html"', "WrenDNS is a product of MySummitKeep LLC"):
+            self.assertIn(needle, footer)
+        for name in build.PAGES:
+            self.assertIn("<!-- @footer -->", read(name), name)
+
+    def test_the_support_page_says_how_to_reach_us_and_how_to_cancel(self):
+        support = read("support.html")
+        self.assertIn("support@wrendns.com", support)
+        self.assertIn("Stopping a monthly payment", support)
+        self.assertIn("no service level", support)
+
+
 class Headers(unittest.TestCase):
     cfg = json.loads(read("staticwebapp.config.json"))
 
