@@ -4,6 +4,205 @@
  */
 
 export interface paths {
+    "/admin/api.php": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole v5: `/admin/api.php`.
+         * @description Part of the Pi-hole compatible API. The query string picks the call, as in Pi-hole v5, with
+         *     the token as `auth`: `summaryRaw` and `summary` (the 24 hour totals), `status`, `topItems`
+         *     (`topItems=N`: the top permitted and blocked names), `enable`, and `disable` or
+         *     `disable=<seconds>` (the same pause as `POST /api/v1/blocking/pause`; no number pauses for the
+         *     longest allowed, default 60 minutes). `versions` needs no token. Without a valid token a read
+         *     answers `[]` and a write 401; the API being off answers as any unknown page does. Prefer v6: v5 puts the
+         *     token in the address, which proxies and logs may keep.
+         */
+        get: operations["v5"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole v6: the current session.
+         * @description Part of the Pi-hole compatible API. With a live `X-FTL-SID` answers
+         *     `{"session": {"valid": true, "validity": 300}}` and renews it; 401 otherwise.
+         */
+        get: operations["v6_session"];
+        put?: never;
+        /**
+         * Pi-hole v6: sign in (the token is the `password`).
+         * @description Part of the Pi-hole compatible API (off unless an admin turned it on). Takes
+         *     `{"password": "<token>"}` and answers `{"session": {"valid": true, "sid": ..., "csrf": ...,
+         *     "validity": 300}}`; send `sid` as `X-FTL-SID` afterwards. 401 for a wrong password, 429 after
+         *     repeated failures, the ordinary 404 when the API is off.
+         */
+        post: operations["v6_login"];
+        /**
+         * Pi-hole v6: sign out.
+         * @description Part of the Pi-hole compatible API. Ends the session named by `X-FTL-SID`; 204.
+         */
+        delete: operations["v6_logout"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dns/blocking": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole v6: whether blocking is on.
+         * @description Part of the Pi-hole compatible API (needs a v6 session). `{"blocking": "enabled" | "disabled" |
+         *     "unknown", "timer": <seconds left or null>}`: disabled while any node has blocking paused for
+         *     everyone (the same state as `GET /api/v1/blocking`).
+         */
+        get: operations["v6_blocking"];
+        put?: never;
+        /**
+         * Pi-hole v6: turn blocking off for a while, or back on.
+         * @description Part of the Pi-hole compatible API (needs a v6 session). `{"blocking": false, "timer": 300}`
+         *     pauses blocking for everyone for the timer's seconds (rounded up to whole minutes; no timer
+         *     pauses for the longest allowed, default 60 minutes; a longer timer is cut to it), the same
+         *     pause as `POST /api/v1/blocking/pause`. `{"blocking": true}` ends every pause. Answers like
+         *     `GET /api/dns/blocking`. Audit-logged as `blocking.pause` / `blocking.resume` by
+         *     `token:pihole-api`.
+         */
+        post: operations["v6_set_blocking"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/info/version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole v6: the version.
+         * @description Part of the Pi-hole compatible API (needs a v6 session). Our version as the `core`, `web`
+         *     and `ftl` local versions; the remote (latest) versions are empty, so no update is offered.
+         */
+        get: operations["v6_version"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/stats/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole v6: the summary.
+         * @description Part of the Pi-hole compatible API (needs a v6 session). The last 24 hours: `queries` (total,
+         *     blocked, `percent_blocked`, cached, forwarded, `unique_domains`, types, status, replies),
+         *     `clients` (active, total) and `gravity.domains_being_blocked`, in Pi-hole's shape.
+         */
+        get: operations["v6_summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/stats/top_clients": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole v6: the top clients.
+         * @description Part of the Pi-hole compatible API (needs a v6 session). The busiest devices over the last 24
+         *     hours (`count`, default 10, at most 100): `{"clients": [{"ip", "name", "count"}],
+         *     "total_queries", "blocked_queries"}`; names and addresses follow the node's privacy level.
+         */
+        get: operations["v6_top_clients"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/stats/top_domains": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole v6: the top domains.
+         * @description Part of the Pi-hole compatible API (needs a v6 session). `blocked=true` ranks blocked names,
+         *     otherwise the permitted ones; `count` (default 10, at most 100). Over the last 24 hours:
+         *     `{"domains": [{"domain", "count"}], "total_queries", "blocked_queries"}`.
+         */
+        get: operations["v6_top_domains"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/stats/upstreams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole v6: the upstream servers.
+         * @description Part of the Pi-hole compatible API (needs a v6 session). Each configured upstream as
+         *     `{"ip", "name", "port", "count", "statistics": {"response", "variance"}}` (`count` is the
+         *     requests sent since start; `response` the smoothed answer time in seconds), with
+         *     `forwarded_queries` and `total_queries`.
+         */
+        get: operations["v6_upstreams"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/alerts": {
         parameters: {
             query?: never;
@@ -41,14 +240,21 @@ export interface paths {
          *     `{"type": "ntfy", "url": "https://ntfy.sh/my-topic"}`, or for email
          *     `{"type": "email", "url": "smtp://smtp.gmail.com:587", "from": "me@gmail.com", "to":
          *     ["me@gmail.com"], "username": "me@gmail.com", "password_file": "/run/secrets/smtp"}`.
-         *     Secrets stay in files on the node (`token_file`, `password_file`): only the path is sent.
-         *     A destination the config files define is overridden until this one is deleted.
+         *     Secrets stay in files on the node (`token_file`, `password_file`) or in its encrypted store
+         *     (`token_ref`, `password_ref` name a stored secret: 422 `secret_missing` when none has that
+         *     name): only the path or the name is sent, and a password in `url` reads `<redacted>` wherever
+         *     the destination is shown (API-014; send it back as it is to keep it, as long as the URL's host
+         *     is unchanged). Setting a file or a reference is an admin's (OPS-014).
+         *     A destination the config files define is overridden until this one is deleted; a credential
+         *     the files set for it stays as they set it: left out of the body, it is kept, and a body that
+         *     sets, replaces or removes it is refused (409 `set_by_file`).
          */
         put: operations["put_alert_destination"];
         post?: never;
         /**
          * Remove an alert destination (OBS-010, T9.6).
-         * @description Rules that still send to it make the configuration invalid (422 says which).
+         * @description Rules that still send to it make the configuration invalid (422 says which). A destination
+         *     the config files define, with a credential they set, can't be hidden (409 `set_by_file`).
          */
         delete: operations["delete_alert_destination"];
         options?: never;
@@ -91,7 +297,7 @@ export interface paths {
          * @description The body has the same fields as `[[alerts.rule]]` (the name comes from the path):
          *     `{"when": "upstream_down", "for_secs": 60, "to": ["phone"]}`. `when` is one of
          *     `upstream_down`, `node_down`, `list_failing`, `anomaly`, `servfail_rate`,
-         *     `update_available`, `sync_lag`, `new_device`, `disk_full`, `plan_pending`.
+         *     `update_available`, `sync_lag`, `primary_unreachable`, `new_device`, `disk_full`, `plan_pending`.
          */
         put: operations["put_alert_rule"];
         post?: never;
@@ -375,6 +581,31 @@ export interface paths {
          * @description Findings created from now on count again; ones recorded while the mute held stay muted.
          */
         delete: operations["delete_anomaly_mute"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/anomaly-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set device anomaly detection (`[telemetry.anomaly]`): on or off, the learning period, sensitivity, the device and domain limits and the NXDOMAIN storm thresholds. Admins only: the whole kind is admin-only, and no agent can change it.
+         * @description REQ: OBS-013 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.
+         *     The configuration files win field by field (`set_by_file`), and a field left out takes its default.
+         */
+        put: operations["put_anomaly_settings"];
+        post?: never;
+        /**
+         * Go back to the configuration file's `[telemetry.anomaly]` settings (ADR-1007).
+         * @description Removes what the API stored, so the file's settings apply again on every node (ADR-1007).
+         */
+        delete: operations["delete_anomaly_settings"];
         options?: never;
         head?: never;
         patch?: never;
@@ -697,14 +928,39 @@ export interface paths {
          * @description One `.ttbk` file (ADR-063) with the configuration files, users and API tokens, devices and
          *     names made through the API, the audit log, statistics history, and anomaly baselines.
          *     Sign-in sessions, lists, and the cluster identity aren't included, and neither is the
-         *     query log (use `telltale backup create --include-qlog` for that). Restore it with
+         *     query log (use `POST /api/v1/backup` with `includeQlog`, or `telltale backup create
+         *     --include-qlog`, for that). **The stored secrets are left out** (they are encrypted with this
+         *     node's key, which no backup holds): `X-Telltale-Backup-Secrets: omitted; count=N` says how
+         *     many. `POST /api/v1/backup` with a passphrase carries them. Restore it with
          *     `telltale backup restore FILE` on the new machine.
          *
          *     The file holds password hashes: keep it private. Admin only; audited as `backup.create`.
          */
         get: operations["backup_download"];
         put?: never;
-        post?: never;
+        /**
+         * Make a backup, optionally with the stored secrets.
+         * @description Like `GET /api/v1/backup` (one `.ttbk`; ADR-063), and with a body it can carry more:
+         *     - `includeQlog`: the query log too;
+         *     - `passphrase` (at least 12 characters): the node's stored secrets, encrypted under a key made
+         *       from it (Argon2id m = 19 MiB, t = 2, p = 1; ChaCha20-Poly1305), as `data/secrets.enc`.
+         *       The archive is then format 2, which builds before this one refuse. Restore needs the
+         *       passphrase (`telltale backup restore --secrets-passphrase-file`) or `--skip-secrets`.
+         *
+         *     `X-Telltale-Backup-Secrets` says `included; count=N` or `omitted; count=N` (how many were left
+         *     out), and `X-Telltale-Backup-Warnings` lists what to know (credentials held inline in the
+         *     configuration are copied as they are).
+         *
+         *     Admin only, never an agent token (403 `agent_not_allowed`), only over HTTPS or from the node
+         *     itself (403 `insecure_transport`). With a passphrase it needs an interactive session signed in
+         *     within the last 10 minutes: tokens and Basic sign-in get 403 `reauth_required`, with a hint to
+         *     run `telltale backup create` on the node. One key derivation runs at a time: a second request
+         *     gets 429. On a cluster replica a passphrase is refused (409): make it on the primary, which
+         *     holds the same secrets and raises the alert. Audited as `backup.create` (`secretsIncluded`, `count`; never the passphrase), and
+         *     a backup with secrets raises the alert event `secrets_exported`. It takes no
+         *     `Idempotency-Key`: it changes no state.
+         */
+        post: operations["backup_create"];
         delete?: never;
         options?: never;
         head?: never;
@@ -772,6 +1028,30 @@ export interface paths {
          */
         post: operations["resume"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cache-settings/{node}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * The `[cache]` section of one node (DNS-006, T27.2): the 15 fields, admins only.
+         * @description Every field takes effect after a restart of that node; the files' fields win (`set_by_file`).
+         */
+        put: operations["put_cache_settings"];
+        post?: never;
+        /**
+         * Removes the `[cache]` section the API set for one node (the files' apply again).
+         * @description The node then runs with the config files' cache settings, or the defaults, after a restart.
+         */
+        delete: operations["delete_cache_settings"];
         options?: never;
         head?: never;
         patch?: never;
@@ -872,6 +1152,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The content categories catalog (REQ: FLT-901).
+         * @description Every category the catalog offers, grouped as the picker shows them, with its description,
+         *     tiers, entry counts and weight; every source with its maintainer, licence (an SPDX
+         *     identifier and a link), format, size and cadence, and what this node has done with it
+         *     (downloaded or not, how big, any error); the presets (`basic`); the categories not offered
+         *     and why; what each group selects now and what all of them cost together (distinct sources
+         *     counted once), against the node's memory limit and `[filter] entry_budget`. In a cluster the
+         *     numbers are the primary's, which downloads and compiles. Needs `config:read` for an agent.
+         */
+        get: operations["categories"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/categories/budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What a selection costs.
+         * @description Entries, an estimate of the snapshot and compile memory, the daily download, and whether this
+         *     node may take it, for a proposed selection of one group (`group`, with `level`, `categories`
+         *     (comma separated), `tiers` (`gambling:extended,malware:full`) and `ads`; fields left out keep
+         *     the group's current value) or, with no `group`, for what the groups select now. Distinct
+         *     sources count once, across all groups. Nothing changes.
+         */
+        get: operations["categories_budget"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/checks/list": {
         parameters: {
             query?: never;
@@ -890,6 +1220,50 @@ export interface paths {
          *     lists are checked when saved. Needs the operator role (agents: `config:write:lists`).
          */
         post: operations["check_list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/checks/router": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check a router draft: one read, nothing saved.
+         * @description It needs an admin (agents never). A stored credential is sent only to the address and TLS settings
+         *     it was saved with: with another address the check runs without it (`credentialSent: false`), so a
+         *     stored key never goes to a new address (API-016, T23.8, ADR-922).
+         */
+        post: operations["check_router"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/checks/router-certificate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The certificate a router console presents at `url`.
+         * @description Its names, fingerprint and PEM, and the name to set as `tls_server_name` when it names something
+         *     else. Admin-only. The check trusts nothing it reads: the PEM is saved only when the admin submits
+         *     the form (API-016, T23.8, ADR-120).
+         */
+        post: operations["check_router_certificate"];
         delete?: never;
         options?: never;
         head?: never;
@@ -936,6 +1310,34 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/clients-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the `[clients]` setting this API changes (DNS-023, T24.13, ADR-914).
+         * @description Only `mdns` is here: when on, TelltaleDNS listens for mDNS announcements on every node, which
+         *     names devices that announce themselves (`[local] device_mdns` answers for them). `mdns_port`
+         *     stays in the file. This is admin-only: an operator's change is 403 naming `mdns`, and no agent
+         *     can change it.
+         */
+        put: operations["put_clients_settings"];
+        post?: never;
+        /**
+         * Go back to the config file's `[clients]` mdns setting (DNS-023).
+         * @description Removes what the API stored, so the file's `mdns` applies again on every node. Only an admin may
+         *     do this, and no agent can.
+         */
+        delete: operations["delete_clients_settings"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1006,6 +1408,33 @@ export interface paths {
          *     `privacy_level`, or `not_seen` (no queries from it in the last day).
          */
         get: operations["identity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/clients/{id}/policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A device's effective policy (FLT-006, API-010).
+         * @description `id` is a configured device's name, an address, or a Kubernetes workload
+         *     (`namespace/kind/name`). The answer names the group the device lands in and the key that
+         *     matched (the precedence is client ID, MAC, workload, address, network, router name, default),
+         *     then lists what applies as `sections`: the block response, the group's lists and blocked
+         *     services, safe search, rewrites, schedules with whether each is in effect now, the quick and
+         *     group rules with their expiry, and the upstream group. It is resolved with the same
+         *     identification a query and `GET /explain` use, so the two agree. In a cluster a replica asks
+         *     the primary. Needs `config:read` for an agent.
+         */
+        get: operations["client_policy"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1391,6 +1820,217 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cmdb-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the CMDB's settings (DSC-901, DSC-906, T31.2, ADR-1005): whether it runs, how long a device
+         *     must be gone before a delete is raised, the settle time, the alert and plan times, and how long
+         *     history and change records are kept.
+         * @description Admin only: an operator's change is 403, and no agent can change it. The CMDB runs on the node
+         *     `[discovery]` designates, and `enabled` is refused at privacy level 2 and above. The first write
+         *     is refused with 409 `members_too_old` while any member runs a version older than this one. The
+         *     configuration files win field by field (`set_by_file`).
+         */
+        put: operations["put_cmdb_settings"];
+        post?: never;
+        /**
+         * Go back to the config file's `[cmdb]` section (DSC-901).
+         * @description Removes what the API stored, so the file's settings apply again. Admin only; no agent.
+         */
+        delete: operations["delete_cmdb_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cmdb/cis": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * CIs.
+         * @description A page of configuration items, ordered by id. `type` limits it to one type, `q` finds text in a
+         *     name, an id, a MAC, a serial or a linked record. A device is shown with its interfaces on its own
+         *     page (`GET /api/v1/cmdb/cis/{id}`); pass `type=interface` to list those. Runs on the designated
+         *     node: another node answers 503 with a hint.
+         */
+        get: operations["cmdb_cis"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cmdb/cis/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One CI.
+         * @description The CI with the interfaces under it, every source record linked to it side by side (what each
+         *     source said, as it said it), the merge proposals that name it, the manual decisions pinned to it
+         *     and the ids merged into it that still redirect. A merged-away id answers with the CI it became.
+         *     Device-supplied text is untrusted.
+         */
+        get: operations["cmdb_ci"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cmdb/cis/{id}/link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Link a record to a device.
+         * @description Puts the record under the device in the path. A record with a MAC moves its interface, with every
+         *     record of that MAC (a MAC identifies an interface), and pins it there: a serial or a device key
+         *     will not move it. A record with no key moves alone. With `?dryRun=true` nothing is written and the
+         *     answer lists the records that would move. Operators; audit-logged as `cmdb.link` with the reason
+         *     (`X-Telltale-Reason`); `Idempotency-Key` replays the first answer for 24 hours.
+         */
+        post: operations["cmdb_link"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cmdb/cis/{id}/merge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Merge a device into another.
+         * @description Moves every interface and record of the device in the path to `into`, pins them there, and leaves
+         *     the losing id as an alias that redirects for 90 days. With `?dryRun=true` nothing is written and
+         *     the answer lists the records that would move. Operators; audit-logged as `cmdb.merge`;
+         *     `Idempotency-Key` replays the first answer.
+         */
+        post: operations["cmdb_merge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cmdb/cis/{id}/split": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Split a device.
+         * @description Moves the chosen records (a record with a MAC takes its interface and all its records) to a new
+         *     device and pins them there, so a serial or a device key does not join them back. At least one
+         *     interface stays. With `?dryRun=true` nothing is written. Operators; audit-logged as `cmdb.split`;
+         *     `Idempotency-Key` replays the first answer.
+         */
+        post: operations["cmdb_split"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cmdb/cis/{id}/unlink": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Unlink a record from a device.
+         * @description Takes the record away from the device in the path and writes a never-match pin, so the next batch
+         *     does not link it back. A record with no key may match another device, or stay on its own as an
+         *     unconfirmed CI. A record with a MAC leaves with its interface, which gets a device of its own (a
+         *     MAC identifies an interface). With `?dryRun=true` nothing is written. Operators; audit-logged as
+         *     `cmdb.unlink`; `Idempotency-Key` replays the first answer.
+         */
+        post: operations["cmdb_unlink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cmdb/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Merge proposals.
+         * @description The disagreements and the host name matches that reconciliation raised and never applies: two
+         *     devices that may be one. Apply one with `POST /api/v1/cmdb/cis/{id}/merge`.
+         */
+        get: operations["cmdb_proposals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cmdb/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * CMDB status.
+         * @description Whether the CMDB runs on this node, what it holds (CIs by type, source records, open merge
+         *     proposals), the last batch of each source, what it dropped at a cap, and its size on disk.
+         */
+        get: operations["cmdb_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/config/entries": {
         parameters: {
             query?: never;
@@ -1404,7 +2044,14 @@ export interface paths {
          *     from (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the
          *     config files' entry of the same name), or `hidden` (the files' entry is left out; listed so
          *     it can be brought back). `DELETE` on an override's or a hidden entry's path brings the
-         *     files' version back. Secrets aren't part of these sections.
+         *     files' version back.
+         *
+         *     Credentials never come back (API-014): upstream `headers` and `args`, and the password in a
+         *     URL (`https://me:<redacted>@host/`) read `<redacted>`, and `redacted` lists where. Sending
+         *     `<redacted>` back in a `PUT` keeps the stored value while the entry's destination (`url`,
+         *     `proxy`, `host`, `tls_server_name`, `tls_ca`, `bootstrap`, `tls_insecure_skip_verify`,
+         *     `spki_pins`, a destination's `type`) is unchanged; with a new destination the
+         *     credential has to be entered again (422 `credential_reentry_required`).
          */
         get: operations["config_entries"];
         put?: never;
@@ -1424,12 +2071,92 @@ export interface paths {
         };
         /**
          * Devices found on the network (API-010; T8.2, T8.3).
-         * @description The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense), then the
-         *     names devices announce over mDNS (`[clients] mdns`), each with the name the device has in
-         *     TelltaleDNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name
+         * @description The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense, and the
+         *     devices Home Assistant names), then the names devices announce over mDNS (`[clients] mdns`),
+         *     each with the name the device has in TelltaleDNS and, with `[local] device_domain`, the
+         *     name it answers as in DNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name
          *     because these are the router's DHCP leases.
          */
         get: operations["dhcp_leases"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/discovery-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the network inventory's settings (DSC-001, T25.2, ADR-907): whether it runs, the node that
+         *     runs it, the subnets it may read, and the worker memory limit.
+         * @description Admin only: an operator's change is 403, and no agent can change it. The first write is refused
+         *     with 409 `members_too_old` while any member runs a version older than this one (ADR-907, CLU-010).
+         *     The configuration files win field by field (`set_by_file`).
+         */
+        put: operations["put_discovery_settings"];
+        post?: never;
+        /**
+         * Go back to the config file's `[discovery]` section (DSC-001).
+         * @description Removes what the API stored, so the file's settings apply again. Admin only; no agent.
+         */
+        delete: operations["delete_discovery_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/discovery/snmp/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test an SNMP agent.
+         * @description Probes the agent named in the body, the way the poller's first poll does: one GETNEXT on the
+         *     root of each table it is configured for, and one GET of sysObjectID. The answer is the agent's
+         *     capability record: the security level reached, the engine ID (v3), and for each part of each
+         *     table, the MIB table that answered (or none). A table that did not answer is skipped by the
+         *     poller until the next test. Read-only: the client has no write PDU (ADR-908).
+         *
+         *     The body is `{"agent": "<name>"}` and nothing else: an address is refused (ADR-907).
+         *     `?dryRun=true` sends no packet and lists the OIDs a test would query. A test waits 60 seconds
+         *     after the previous test of the same agent (429 with `Retry-After`). It runs on the designated
+         *     node: a cluster replica forwards the request to the primary. `Idempotency-Key` replays the
+         *     first answer for 24 hours. Needs the admin role (agents: `ops:discovery_test` and a reason);
+         *     audit-logged as `discovery.snmp_test`.
+         */
+        post: operations["snmp_test"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/discovery/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The network inventory's status (DSC-014).
+         * @description Whether the inventory runs on this node, and each discovery worker process. The inventory itself
+         *     (`GET /api/v1/discovery`) comes with T25.12.
+         */
+        get: operations["discovery_status"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1482,6 +2209,54 @@ export interface paths {
          *     page). Audited as `display.revoke`.
          */
         delete: operations["revoke_display"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dnssec-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * REQ: DNS-011 (T27.11, ADR-1006) — `[dnssec]` `mode` and `negative_trust_anchors`.
+         * @description The validation mode and the domains it skips apply on every node within seconds; the files' fields win.
+         */
+        put: operations["put_dnssec_settings"];
+        post?: never;
+        /**
+         * Removes the `[dnssec]` settings the API set (the files' apply again).
+         * @description The config files' DNSSEC settings, or the defaults, apply again on every node.
+         */
+        delete: operations["delete_dnssec_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/drill-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * REQ: CLU-014 (T27.11, ADR-1006) — `[drill] schedule`. Admins only.
+         * @description The schedule and the nodes that drill themselves apply without a restart; the files' fields win.
+         */
+        put: operations["put_drill_settings"];
+        post?: never;
+        /**
+         * Removes the drill schedule the API set (the files' apply again).
+         * @description The config files' drill schedule, or off, applies again without a restart.
+         */
+        delete: operations["delete_drill_settings"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1550,8 +2325,11 @@ export interface paths {
          *     off without losing the lists), `names` (each with its subdomains, e.g.
          *     `connectivitycheck.gstatic.com`), and `clients` (addresses or networks). Their queries are
          *     still answered and still counted in `/metrics`, but left out of the query log, the live view,
-         *     the dashboard and top lists, anomalies, and every export. It replaces the whole section until
-         *     it's deleted again; it applies to every node of a cluster from the next query on.
+         *     the dashboard and top lists, anomalies, and every export. `log` (clients as addresses,
+         *     networks or device names; `domains`, exact or `*.` for everything under; `own_lookups`) keeps
+         *     queries out of the query log, the live view and the event sinks only: the statistics still
+         *     count them (OBS-903). It replaces the whole section until it's deleted again; it applies to
+         *     every node of a cluster from the next query on.
          */
         put: operations["put_exclusions"];
         post?: never;
@@ -1583,6 +2361,36 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/filter-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * REQ: FLT-004 (T27.11, ADR-1006), FLT-901 (T24.29) — `[filter]` `refresh_secs`, `stale_after_days`,
+         *     `entry_budget` and `ads_tier`.
+         * @description The list refresh interval and the stale-list age apply after a restart of every node; the files' fields win.
+         *     `entry_budget` is the most distinct blocklist entries the selected categories may add before the
+         *     Categories view warns (default 1,000,000; a node too small for a selection refuses it whatever this
+         *     says), and `ads_tier` is the size of the Ad Block category (`light`, `pro`, `pro_plus`, `ultimate`);
+         *     changing `ads_tier` makes the primary download the other list and is refused (422 `budget_refused`)
+         *     when the new selection needs more memory than the node may use. No agent can change it.
+         */
+        put: operations["put_filter_settings"];
+        post?: never;
+        /**
+         * Removes the `[filter]` settings the API set (the files' apply again).
+         * @description The config files' list settings, or the defaults, apply again after a restart of every node.
+         */
+        delete: operations["delete_filter_settings"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1688,6 +2496,184 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/groups/{name}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A group's content (REQ: FLT-902).
+         * @description The level, the categories, the tiers and the ad block switch of one group, which sources they
+         *     make the node use, and what that costs. A group with no content is `off` with nothing
+         *     selected. Needs `config:read` for an agent.
+         */
+        get: operations["get_group_content"];
+        /**
+         * Set a group's content (REQ: FLT-902).
+         * @description Changes the level, the categories, the tiers or the ad block of a group; fields left out keep
+         *     their current value. Checked against the catalog and what the node can hold: a selection the
+         *     node is too small for is refused (422 `budget_refused`, with the reason), and a heavy one, or
+         *     one over `[filter] entry_budget`, needs `?confirm=true` after the cost is shown (409
+         *     `confirm_required`; a dry run reports `confirmationRequired` instead). The node downloads
+         *     each source once however many groups select it and deletes it when the last one stops.
+         *     Operators change it; **an agent token is refused (403 `agent_not_allowed`) except for a
+         *     dry run, and `apply_plan` replays only a plan an operator approved**. A group whose config
+         *     file sets `content` is read-only here (409 `set_by_file`). In a cluster the primary stores it,
+         *     downloads and compiles. Supports `dryRun`, `If-Match` and `Idempotency-Key`.
+         */
+        put: operations["put_group_content"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/groups/{name}/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set who a group applies to (REQ: FLT-902, API-010).
+         * @description The group's networks (CIDRs) and router names, and the devices in it, as one change: a device
+         *     in `devices` is a named device (created if new, with its `match` keys) whose groups include
+         *     this one; a device that was a member and is not listed leaves the group. Fields left out are
+         *     not changed. The group and the devices are stored in one transaction under one configuration
+         *     version. The dry run says what moves ("3 devices move from Default to Kids") and what a device
+         *     that is also in another profile means (the lists are the union, the settings come from the
+         *     higher priority). A device a config file defines can't be moved (409 `set_by_file`). Operators
+         *     only; agent tokens are refused (403 `agent_not_allowed`). Supports `dryRun`, `If-Match` and
+         *     `Idempotency-Key`.
+         */
+        put: operations["put_group_sources"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/guarded": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What is guarded on each node, what a file sets, and what is pending.
+         * @description Never holds a value, a preview ID or a confirmation token: only that a change is pending, its
+         *     setting and the seconds left. `config:read` is enough, agent tokens included.
+         */
+        get: operations["guarded_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/guarded/pending/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancels a pending window change.
+         * @description The new sockets close, nothing is kept (the old ones were never touched), and the rollback is
+         *     audited as `settings.guarded_rolled_back` with the reason `cancelled`. The admin who made it, or
+         *     any admin session, can cancel; an agent token never can.
+         */
+        post: operations["guarded_cancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/guarded/pending/{id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirms a pending window change.
+         * @description The request has to arrive through the new address or certificate the change set up (what the
+         *     setting's proof says), carrying the single-use `confirmToken` or the same admin's session. A
+         *     wrong token or a request on the old address is refused and counted (5 in 10 minutes block the
+         *     session) and the window runs on. On success the node keeps the new value, closes the old
+         *     sockets and audits `settings.guarded`.
+         */
+        post: operations["guarded_confirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/guarded/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Makes a guarded change.
+         * @description Send the `previewId`, the `confirm` phrase the preview returned (the server compares it), the
+         *     same `value`, and a `reason`. The answer depends on the setting: 200 `applied` (it took effect),
+         *     202 `staged` (it waits for the node's next start; `pendingRestart`), 202 `pending` (a window
+         *     change: confirm it through the new address within `deadlineSecs` with the single-use
+         *     `confirmToken`, or it rolls back) or 202 `restarting`. A change that weakens security needs a
+         *     session signed in within the last 10 minutes (403 `reauth_required`). Audited as
+         *     `settings.guarded`; it raises the `guarded_setting_changed` alert.
+         */
+        post: operations["guarded_apply"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/guarded/{id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The dry run of a guarded change: what it would do, and the phrase to type.
+         * @description Changes nothing. The preview is bound to you, the node, the setting, the value and the
+         *     configuration version, and lives 5 minutes (a changed value is 409 `preview_stale`). Admin
+         *     session only: 403 `agent_not_allowed` for agent tokens, 403 `reauth_required` for other tokens.
+         */
+        post: operations["guarded_preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/hooks/git": {
         parameters: {
             query?: never;
@@ -1704,6 +2690,70 @@ export interface paths {
          *     the next poll. Authenticated by the `X-Hub-Signature-256` HMAC, not a session.
          */
         post: operations["git_hook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/import/pihole": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview a Pi-hole import.
+         * @description The body is the export: a Teleporter zip (v6) or tar.gz (v5), or a gravity.db. Nothing
+         *     changes. The answer is a plan (what would be added, changed or skipped) that an admin applies
+         *     with its `planId`, and with `compare` a sample resolved through both servers.
+         */
+        post: operations["preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/import/pihole/plans/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Discard a previewed Pi-hole import.
+         * @description The plan is forgotten and nothing is written. Plans also expire after ten minutes.
+         */
+        delete: operations["discard"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/import/pihole/plans/{id}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply a previewed Pi-hole import.
+         * @description The plan's entries are written as one configuration change, audited as `import.pihole`. The
+         *     configuration must be the one the preview saw; otherwise the answer is 409 and the preview
+         *     runs again. The plan belongs to the admin who previewed it.
+         */
+        post: operations["apply"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1803,11 +2853,122 @@ export interface paths {
         /**
          * Filter lists and their download state.
          * @description Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,
-         *     `pending`) and last error, size, and how many names it contributes to the active snapshot.
+         *     `pending`) and last error, size, and how many names it contributes to the active snapshot;
+         *     when it was last checked, last confirmed current, and last changed, and whether a refresh is
+         *     queued or downloading it now (`refreshing`). `hits` adds up every node's in a cluster. On a
+         *     cluster replica the download state is the primary's (it downloads and compiles the lists
+         *     every node serves). `missingNodes` names the nodes whose hits are left out and, when the
+         *     primary doesn't answer, the primary (the download state shown is then this node's own).
          */
         get: operations["lists"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/lists/overlap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * How much each filter list adds.
+         * @description Every enabled list with its entries, the names no other list of its kind has (`unique`:
+         *     what turning it off would lose), its modifier rules and regexes (counted as unique: overlap
+         *     is by name), what it adds as a share of its entries, the lists that cover the rest, and the
+         *     groups that name it. Counted while the lists are compiled, once per compile; a list not
+         *     compiled yet shows zeros. Names a block list and an allow list both have don't count as
+         *     shared.
+         */
+        get: operations["overlap"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/lists/prune": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Turn off the lists that add little.
+         * @description Recomputes the plan for `thresholdPercent` and turns the lists in it off (`enabled = false`;
+         *     each stays in the configuration with its source, so turning it on again is one edit). With
+         *     `names` (the ones the person previewed), each must still be in the plan or nothing changes
+         *     (409: preview again). Needs the operator role and a person: agent tokens are refused
+         *     (`agent_not_allowed`); they read the plan. Audit-logged as `lists.prune`.
+         */
+        post: operations["prune"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/lists/prune-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Which lists a prune would turn off.
+         * @description The block lists in enforce mode that add at most `thresholdPercent` (default 1) of their own
+         *     entries, least-adding first, chosen so that turning all of them off together still loses at
+         *     most that share of each; `kept` says why every other enabled list stays (an allow list, a
+         *     shadow list, a group names it, it adds more). `losesAtMost` is an upper bound on the names
+         *     that would stop being blocked. Changes nothing; the apply is `POST /api/v1/lists/prune`, for
+         *     a person.
+         */
+        get: operations["prune_plan"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/lists/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Update lists now.
+         * @description Downloads every enabled filter list again now (or only the lists in `names`), without
+         *     waiting for their `refresh_secs` schedule, like Pi-hole's "Update Gravity" (`pihole -g`).
+         *     Answers 202 at once with what was queued; the downloads run in the background, and
+         *     `refreshing` in `GET /api/v1/lists` is true until each list's download ends
+         *     (`lastSuccessUnixSeconds` then moves on). Unchanged sources cost one conditional request
+         *     each, and the filter snapshot is recompiled only when something changed (it then serves
+         *     within seconds). A failed download keeps the last good copy. Disabled lists are left out
+         *     (`skipped`). In a cluster the primary downloads and compiles the lists every node serves:
+         *     a replica forwards the request (503 when it can't reach the primary; replicas keep serving
+         *     the last lists). `?dryRun=true` says what would be queued and queues nothing.
+         *     `Idempotency-Key` replays the first answer for 24 hours. It changes no configuration (a
+         *     GitOps-managed cluster takes it too). Needs the operator role (agents: the
+         *     `config:write:lists` scope and a reason); audit-logged as `lists.refresh`.
+         */
+        post: operations["refresh_lists"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1839,6 +3000,317 @@ export interface paths {
          *     deleted in turn. The configuration is checked first (say, a group still using a list).
          */
         delete: operations["delete_list"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/local-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the device-name settings (DNS-023, ADR-901).
+         * @description The body has the fields of `[local]` that name devices: `device_domain` (a domain such as
+         *     `home.arpa`; `local` is refused), `device_ttl` (seconds), `device_mdns` (names devices announce
+         *     over mDNS, which needs `[clients] mdns`), `auto_ptr`, and `default_ttl`. `hosts_files` is set in
+         *     the file only. Like `PUT /special-names/default`, the file's fields win (409 `set_by_file`).
+         *     Names change within about 10 seconds on every node, with no restart.
+         */
+        put: operations["put_local"];
+        post?: never;
+        /**
+         * Go back to the config file's device-name settings (DNS-023).
+         * @description Removes what the API or UI stored: the fields the config files don't set go back to the file's
+         *     values (or the defaults), and the names change within about 10 seconds. Needs the operator role.
+         */
+        delete: operations["delete_local"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/map": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The live network map.
+         * @description The network as a graph: the gateway, networks and VLANs, devices (the 200 busiest; the rest
+         *     fold into `+N more` per network), one resolver per TelltaleDNS node with its answer kinds, and
+         *     the upstreams. Edges carry the rate over the last 60 seconds and the shares of slow, failing and
+         *     blocked answers. Every node and edge has a `health`: `green`, `yellow`, `red`, or `idle` (too
+         *     few answers to say). The map is built from a sample of the lookups, never from the query path;
+         *     `sampleRate` says how thin the sample is. No domain name appears anywhere. `partial` and
+         *     `missingNodes` say when a cluster node didn't answer (it is a red resolver).
+         */
+        get: operations["get_map"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/map-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The live map's settings.
+         * @description The `[map]` section as this node runs it: `enabled`, `event_rate`, `min_sample`,
+         *     `warn_latency_ms` (null: the latency objective's), and the thresholds that colour the map.
+         *     `source` is `file` (the configuration files' section or the defaults) or `override` (set
+         *     through the API or the UI). Written with `PUT /api/v1/map-settings/default`, reverted with
+         *     `DELETE`. The same entry is in `GET /api/v1/config/entries?kind=map`.
+         */
+        get: operations["get_settings"];
+        /**
+         * The live network map's settings (OBS-901).
+         * @description The body has the same fields as `[map]` in `telltale.toml`: `enabled`, `event_rate` (lookups
+         *     per second each node samples, 10 to 2,000), `min_sample` (answers before a device or edge is
+         *     coloured, 1 to 1,000), `warn_latency_ms` (unset: the latency objective's), and the percent
+         *     thresholds `warn_slow_pct`, `warn_error_pct`, `error_pct` and `warn_blocked_pct` (1 to 100;
+         *     `error_pct` at least `warn_error_pct`). It replaces the whole section until it's deleted
+         *     again, on every node of a cluster, and applies within a few seconds with no restart.
+         */
+        put: operations["put_map_settings"];
+        post?: never;
+        /**
+         * Go back to the config file's map settings (OBS-901).
+         * @description Removes what the API or UI stored, so `[map]` in the config files (or the defaults)
+         *     applies again. 404 when nothing was stored.
+         */
+        delete: operations["delete_map_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/map/geoip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The GeoIP database.
+         * @description This node's country database for the world view: `enabled`, `state` (`off`, `missing`,
+         *     `downloading`, `ready`, `failed`), the source's month, when it was built, its size, when the
+         *     next check is due and the last error's code. The database is never bundled and is downloaded
+         *     only after an admin turns `[map.geoip]` on; each node that serves the console keeps its own
+         *     copy. Change the settings with `PUT /map-settings/default` (admin), fetch now with `POST
+         *     /map/geoip/update`, remove it with `DELETE /map/geoip`.
+         */
+        get: operations["get_geoip"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete the GeoIP database.
+         * @description Removes this node's copy (and its `.prev`). While `[map.geoip]` stays on nothing is fetched
+         *     again until an admin presses Update now or turns it off and on; the world view says
+         *     `geoip_missing`. Admin only (never an agent); audited as `map.geoip.delete`.
+         */
+        delete: operations["delete_geoip"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/map/geoip/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fetch the GeoIP database now.
+         * @description Starts a download on this node, in the background, even when the day's check is not due (it
+         *     also lifts a "Delete database"). The status shows `downloading`, then `ready` or `failed` with
+         *     the error's code; a failed fetch keeps the old database. Admin only (never an agent); audited
+         *     as `map.geoip.update`. 409 `conflict` when a fetch is running or the toggle is off.
+         */
+        post: operations["update_geoip"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/map/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Network health in short.
+         * @description Counts by health, the red and yellow nodes with their reasons (at most 50), and the five
+         *     busiest flows. Device names appear only at privacy levels 0 and 1 (at 2 and above devices are
+         *     hidden). The same data as the MCP tool `network_health`.
+         */
+        get: operations["get_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/map/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Live map stream.
+         * @description Server-Sent Events: one `snapshot` event every 2 seconds (the same body as `GET /api/v1/map`,
+         *     unfiltered: filter it on your side) and a `ping` event every 15 seconds. One ticker builds the
+         *     snapshot for every subscriber and stops when the last one leaves. At most 8 streams per node
+         *     (`429 map_streams_busy`) and at most 2 per user or token. When the map is turned off the stream sends a `map_disabled` event and ends. Close it when the page is hidden.
+         */
+        get: operations["map_stream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/map/world": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where answers point (world view).
+         * @description Countries with the rate, count and slow share of the answers that point there, and a marker
+         *     for each upstream whose address has a country. `available: false` with a `reason` when
+         *     answers can't be placed: `geoip_off` or `geoip_missing` (the GeoIP database, `GET
+         *     /map/geoip`), `address_not_recorded` (the lookup's answer address isn't kept yet, ADR-970: the
+         *     upstream `markers` are then where the upstreams are, not where answers point) or `privacy`
+         *     (level 3 keeps nothing per event). `unlocated` counts the answers with no place: failed,
+         *     blocked and local ones, and prefixes with no country. Countries come from the database of the
+         *     node that answers.
+         */
+        get: operations["get_world"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/metrics-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the per-client metric series (`[telemetry.metrics]`): on or off, and the cap on how many clients get their own series. Admins only; no agent can change it.
+         * @description REQ: OBS-005 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.
+         *     The configuration files win field by field (`set_by_file`), and a field left out takes its default.
+         */
+        put: operations["put_metrics_settings"];
+        post?: never;
+        /**
+         * Go back to the configuration file's `[telemetry.metrics]` settings (ADR-1007).
+         * @description Removes what the API stored, so the file's settings apply again on every node (ADR-1007).
+         */
+        delete: operations["delete_metrics_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/networks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Networks on your network: subnets, VLANs, and how full they are (API-013; T22.2).
+         * @description The LANs and VLANs your routers report (`[[router]]`, UniFi: subnet, VLAN, DHCP pool,
+         *     domain), then any client group's `networks` that no router reported. Each with the group
+         *     that covers it and how many known devices are in it (the routers' DHCP clients, Home
+         *     Assistant's devices, and mDNS names), so you can see which networks are filling up. Read
+         *     where the routers are read: a replica asks the primary and adds the networks it is directly
+         *     on; with the primary away it answers from its own data and `missingNodes` names the primary.
+         */
+        get: operations["networks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/node-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The per-node sections of this node.
+         * @description The cache, support and updates settings it runs with, the fields the files set, and whether a
+         *     restart is still pending for them. Its `node` is the name the `*-settings/{node}` routes take.
+         */
+        get: operations["get_this_node_settings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/node-settings/{node}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The per-node sections of `node`.
+         * @description The cache, support and updates settings in effect there, the fields the files set, and whether a
+         *     restart is still pending for them. 404 when no node of the cluster has that ID.
+         */
+        get: operations["get_node_settings"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1928,6 +3400,174 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/oidc-providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The OIDC sign-in providers in the configuration, with their status on this node.
+         * @description Each provider comes with its settings (the client secret as a name, never a value), where it
+         *     comes from (the files or the API), and whether this node serves its sign-in button: a node
+         *     without `[auth.oidc] public_url`, or one that can't read the provider's secret or reach its
+         *     issuer, shows it as inactive with the reason (API-016). Admins only.
+         */
+        get: operations["list_oidc_providers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/oidc-providers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add or change an OIDC sign-in provider.
+         * @description API-016 (T23.10, ADR-903 §6, ADR-967). The body has the fields of `[[auth.oidc.provider]]`
+         *     (the ID comes from the path): `issuer`, `client_id`, `name`, `scopes`, the claims and the role
+         *     rules. The client secret is a name, never a value: `client_secret_ref` names a stored secret
+         *     (422 `secret_missing` when none has that name); `client_secret` and `client_secret_file` are
+         *     set in the configuration file, not through the API. Admins only: an operator or an agent is
+         *     refused (403). A provider the config files define is read-only here (409 `set_by_file`). The
+         *     provider is read and applied on every node without a restart; a node without `public_url`
+         *     shows it as inactive. Under a Git source the write is refused (409 `gitops_managed`).
+         */
+        put: operations["put_oidc_provider"];
+        post?: never;
+        /**
+         * Remove an OIDC provider that the API added.
+         * @description API-016 (T23.10). The provider stops serving sign-ins on every node at once, and the sessions
+         *     that were opened through it end. The users it created stay (they can sign in again if the
+         *     provider returns).
+         */
+        delete: operations["delete_oidc_provider"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/otlp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The OTLP export in effect on this node.
+         * @description Its collector address, interval and headers (a header's value is a stored secret's name, or
+         *     `<redacted>` when the configuration file holds it inline), where the setting comes from, and
+         *     whether the export runs here.
+         */
+        get: operations["get_otlp"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/otlp/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the OTLP export.
+         * @description API-016, OBS-006 (T23.11, ADR-984). The body has `endpoint` (the collector's base URL),
+         *     `interval_secs` and `header_refs`, a map from header name to the name of a stored secret that
+         *     holds the value (422 `secret_missing` when none has that name). Inline `headers`, the trace
+         *     settings and a password in the URL are set in the configuration file, not through the API.
+         *     Admins only. The files win: when they set an `endpoint`, `headers` or `header_refs`, this is
+         *     read-only (409 `set_by_file`). It applies on every node without a restart; the headers are read
+         *     for every export.
+         */
+        put: operations["put_otlp"];
+        post?: never;
+        /**
+         * Turn off the OTLP export the API set.
+         * @description API-016 (T23.11). Metrics stop going out on every node (unless the configuration files set a
+         *     destination).
+         */
+        delete: operations["delete_otlp"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pihole-api": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pi-hole compatible API: settings and status.
+         * @description Whether the Pi-hole compatible API (v6 `/api/...` and v5 `/admin/api.php`, for dashboards,
+         *     phone apps and the Home Assistant Pi-hole integration) is on, whether a token has been issued
+         *     and when, when it was last used, and the longest pause it may start. Never the token. Needs
+         *     the operator role (agents: `config:read`).
+         */
+        get: operations["get_status"];
+        /**
+         * Change the Pi-hole compatible API's settings.
+         * @description Turns it on or off (off ends every session and makes its paths answer 404) and sets the
+         *     longest pause it may start (`maxPauseMinutes`, 1 to 1,440, default 60). Fields left out keep
+         *     their value. Turning it on needs a token: issue one with `POST /api/v1/pihole-api/token`.
+         *     Admins only, never agent tokens; audit-logged as `pihole_api.enable`, `pihole_api.disable`
+         *     and `pihole_api.settings`.
+         */
+        put: operations["put_settings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pihole-api/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue or rotate the Pi-hole compatible API's token.
+         * @description Makes a new token (replacing any: the old one stops working and every session ends) and
+         *     returns it. **This is the only time it is shown**; only its hash is kept. It is the v6
+         *     `password` and the v5 `auth` value. Does not turn the API on. Admins only, never agent
+         *     tokens; audit-logged as `pihole_api.token_rotate`; the answer is `Cache-Control: no-store`.
+         */
+        post: operations["issue_token"];
+        /**
+         * Revoke the Pi-hole compatible API's token.
+         * @description Removes the token: nothing can sign in until a new one is issued, and the API is turned off.
+         *     Admins only, never agent tokens; audit-logged as `pihole_api.token_revoke`.
+         */
+        delete: operations["revoke_token"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/plans": {
         parameters: {
             query?: never;
@@ -1996,6 +3636,79 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/probe-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the listener checks (`[probe]`): on or off, the interval (at least 5 seconds), the timeout, extra targets and the certificate warning. Operators change them; every node applies them with the next round.
+         * @description REQ: OBS-020 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.
+         *     The configuration files win field by field (`set_by_file`), and a field left out takes its default.
+         */
+        put: operations["put_probe_settings"];
+        post?: never;
+        /**
+         * Go back to the configuration file's `[probe]` settings (ADR-1007).
+         * @description Removes what the API stored, so the file's settings apply again on every node (ADR-1007).
+         */
+        delete: operations["delete_probe_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/profiles/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The picker's networks and devices (REQ: FLT-902).
+         * @description The networks the Networks page names and the devices the Clients page knows (configured ones
+         *     and ones only seen), each with an icon (a device class), the keys it can be recognized by, a
+         *     flag on a MAC that is a private Wi-Fi address (it can change, so a profile may stop following
+         *     it), and the group it is in now. Needs `config:read` for an agent.
+         */
+        get: operations["profile_devices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/qlog-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the query log's store (`[telemetry.qlog]`): on or off, retention, the privacy level, fsync and the flush interval. Admins only, since privacy and retention are at stake; no agent can change it.
+         * @description REQ: OBS-003 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.
+         *     The configuration files win field by field (`set_by_file`), and a field left out takes its default.
+         */
+        put: operations["put_qlog_settings"];
+        post?: never;
+        /**
+         * Go back to the configuration file's `[telemetry.qlog]` settings (ADR-1007).
+         * @description Removes what the API stored, so the file's settings apply again on every node (ADR-1007).
+         */
+        delete: operations["delete_qlog_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/queries": {
         parameters: {
             query?: never;
@@ -2008,7 +3721,11 @@ export interface paths {
          * @description Newest first. Filters combine with AND: name (substring by default; `match=exact|suffix|
          *     glob|regex`), client, status, query type, response code, upstream, minimum latency, and
          *     time range. Pass `nextCursor` back as `cursor` for older rows. Example:
-         *     `GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`.
+         *     `GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`. To keep what a
+         *     filter does NOT match, add `nameNot`, `clientNot`, `statusNot`, `qtypeNot`, or `rcodeNot`
+         *     (`=true`): `?name=doubleclick&nameNot=true&from=-1h` is every query in the last hour whose
+         *     name does not contain `doubleclick`. A negated search reads every block the time range and
+         *     the other filters leave, so give a time range or another filter on a long log.
          */
         get: operations["queries"];
         put?: never;
@@ -2031,7 +3748,8 @@ export interface paths {
          * @description Server-Sent Events, newest as they happen: `event: query` carries a `QueryRow` (same
          *     fields as GET /queries), `event: dropped` a `TailDropped` when matching queries were
          *     skipped (over `rate`, or this client fell behind), and a comment every 15 s keeps the
-         *     connection open. Filters are applied on the server. In a browser:
+         *     connection open. Filters, and their `…Not` forms (`status=blocked&statusNot=true`), are
+         *     applied on the server. In a browser:
          *     `new EventSource('/api/v1/queries/stream?status=blocked')` (the session cookie signs it
          *     in). Honors the query-log privacy level; at most 16 streams per node.
          */
@@ -2126,6 +3844,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/routers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The routers in the configuration, with their status.
+         * @description Each router comes with its settings (secrets as names, never values), where it comes from (the
+         *     files or the API), and what this node's last read did (API-016, T23.8). The primary is the one
+         *     that reads a router that stores its credential, so a replica shows the primary's status of
+         *     such a router (`status.readBy` names the node); with the primary away it shows its own, and
+         *     `missingNodes` names the primary (API-016, T24.41).
+         */
+        get: operations["list_routers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/routers/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add or change a router integration.
+         * @description API-016 (T23.7, ADR-921). The body has the same fields as `[[router]]` (the name comes from the path). Secrets are
+         *     named, never sent: `api_key_ref`, `api_secret_ref` and `password_ref` name stored secrets
+         *     (422 `secret_missing` when none has that name), entered through Settings → Integrations &
+         *     secrets. A certificate is sent as text in `tls_ca_pem`. The API takes no file paths for a
+         *     router (`api_key_file`, `api_secret_file`, `password_file`, `tls_ca`): those are set in the
+         *     configuration file. Admins only: an operator or an agent is refused (403).
+         *     A router the config files define is read-only here (409 `set_by_file`).
+         */
+        put: operations["put_router"];
+        post?: never;
+        /**
+         * Remove a router integration that the API added.
+         * @description API-016 (T23.7). Its leases go with it at the next read; the routers that stay keep their last
+         *     answers.
+         */
+        delete: operations["delete_router"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/rules": {
         parameters: {
             query?: never;
@@ -2208,6 +3981,81 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/secrets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the stored secrets (never a value).
+         * @description Every stored secret with its kind, stamp, who set it when, the credential fields that name it
+         *     (`usedBy`), and which nodes hold it and can read it; names a reference uses that aren't set
+         *     come with `set: false`. Also this node's secrets store (ready, locked and why, the key's
+         *     source and ID: never the key) and every credential field of this node's configuration with
+         *     its source: `inline` or `file` (the configuration files set it, and win: the UI shows it
+         *     read-only), or `stored`, and whether this node can read it. On a replica the list is the
+         *     primary's when it answers, otherwise this node's with `stale: true`. The answer's `ETag` is the
+         *     secrets head, for `If-Match` on a write. Operators and admins; agents with `config:read`
+         *     (MCP `secrets_status`).
+         */
+        get: operations["list_secrets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/secrets/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One stored secret (never its value).
+         * @description As in the list: its kind, stamp, who set it when, which fields name it, and which nodes hold
+         *     it. 404 when no secret of that name is stored and nothing names it.
+         */
+        get: operations["get_secret"];
+        /**
+         * Set (or replace) a stored secret.
+         * @description Stores `value`, encrypted with the node's key, under `name` (lowercase letters, digits, `.`,
+         *     `_` and `-`, starting with a letter or digit, at most 63). Entries name it in their `*_ref`
+         *     fields (`api_key_ref = "unifi"`). The value is write-only: the answer, every read, the audit
+         *     entry (`secret.put`: name, kind, stamp, users) and the logs hold only metadata. In a cluster a
+         *     replica sends it to the primary (`secret.put` over the cluster channel); pins and staged
+         *     rollouts don't hold it back, and a configuration managed in Git doesn't refuse it (secrets
+         *     are state, never in Git). Refused on an emergency primary, a primary without its lease, or
+         *     with no primary reachable (409).
+         *
+         *     Admins only: agent tokens get 403 `agent_not_allowed`, whatever their scopes. Only over HTTPS
+         *     or from the node itself (403 `insecure_transport`; `[api] allow_secrets_over_http` lifts it).
+         *     `?dryRun=true` checks the name, kind and value and reports `wouldCreate`/`wouldReplace` and the
+         *     fields that would become configured, storing nothing. `Idempotency-Key` replays the first
+         *     answer for the same value (another value with the same key is 409); `If-Match` takes the
+         *     secrets head's `ETag` (412 when it moved).
+         */
+        put: operations["put_secret"];
+        post?: never;
+        /**
+         * Delete a stored secret.
+         * @description Removes the value (a deletion record stays, so members that were offline learn of it). Refused
+         *     with 409 `secret_in_use` while a field names it, on any node (the answer lists them): change
+         *     those entries first. When a full member's references can't be read now (it is offline), the
+         *     delete needs `?force=true`. Admins only (never agents), audited as `secret.delete`; the same
+         *     dry run, `Idempotency-Key`, `If-Match` and HTTPS rule as setting one.
+         */
+        delete: operations["delete_secret"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/services": {
         parameters: {
             query?: never;
@@ -2282,6 +4130,119 @@ export interface paths {
          *     applies again. 404 when nothing was stored.
          */
         delete: operations["delete_simulate_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sinks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The event sinks in the configuration, with their status.
+         * @description Each sink comes with its settings (a webhook token as a stored secret's name, never a value),
+         *     where it comes from (the files, or the API), and whether this node runs it: a resolver pod holds
+         *     no stored secrets, so a sink that needs one isn't started there. `dropped` counts the events a
+         *     sink lost since the node started (its buffer was full, or a batch was refused).
+         */
+        get: operations["list_sinks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sinks/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add or change an event sink.
+         * @description API-016, OBS-010 (T23.11, ADR-903 section 7, ADR-984). The body has the fields of
+         *     `[[telemetry.sink]]` (the name comes from the path): `type` (`file`, `syslog` or `webhook`),
+         *     `address`, `url`, `format`, `batch`, `flush_secs`, `max_buffer`, `statuses`, `spill_max_bytes`.
+         *     A file sink's `path` is a file name, written under the node's data directory (`sinks/`).
+         *     A webhook's token is a name, never a value: `token_ref` names a stored secret (422
+         *     `secret_missing` when none has that name); `token_file`, `tls_ca` and a password in a URL are
+         *     set in the configuration file, not through the API. Admins only: an operator or an agent is
+         *     refused (403). A sink the config files define is read-only here (409 `set_by_file`). The sink
+         *     starts, changes or stops on every node within seconds, without a restart. Under a Git source
+         *     the write is refused (409 `gitops_managed`).
+         */
+        put: operations["put_sink"];
+        post?: never;
+        /**
+         * Remove an event sink that the API added.
+         * @description API-016 (T23.11). The sink sends what it holds (one try, within 2 seconds) and stops on every
+         *     node; the batches it kept on disk are deleted.
+         */
+        delete: operations["delete_sink"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/slo-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the objectives (`[slo]`): the availability and latency targets, the latency threshold and the window. Operators change them; the error budget and the burn-rate alerts follow on every node within a few seconds.
+         * @description REQ: OBS-016 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.
+         *     The configuration files win field by field (`set_by_file`), and a field left out takes its default.
+         */
+        put: operations["put_slo_settings"];
+        post?: never;
+        /**
+         * Go back to the configuration file's `[slo]` settings (ADR-1007).
+         * @description Removes what the API stored, so the file's settings apply again on every node (ADR-1007).
+         */
+        delete: operations["delete_slo_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/special-names/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the special-name handling (DNS-019, ADR-904).
+         * @description The body has the fields of `[special]` in `telltale.toml`: `block_firefox_canary`, `localhost`,
+         *     `private_ptr_nxdomain`, `refuse_chaos`, `block_icloud_private_relay`, `single_label_nxdomain`,
+         *     and `ddr_name` (the name the encrypted listeners' certificates carry, for DDR). It replaces the
+         *     whole section (fields left out take the defaults), except fields the config files set: those
+         *     win, and a body that sets one to another value is 409 `set_by_file`. Applies on the next query,
+         *     with no restart. `ddr_name` is admin-only: an operator's change is 403 naming the field, and
+         *     no agent changes it.
+         */
+        put: operations["put_special"];
+        post?: never;
+        /**
+         * Go back to the config file's special-name handling (DNS-019).
+         * @description Removes what the API or UI stored, so `[special]` in the config files (or the defaults) applies
+         *     again. 404 when nothing was stored.
+         */
+        delete: operations["delete_special"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2544,6 +4505,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/support-settings/{node}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * REQ: OPS-011 (T27.11, ADR-1006) — `[support] persist_logs` for one node. Admins only.
+         * @description The node's log files are kept on disk (or not) from its next start; the files' value wins.
+         */
+        put: operations["put_support_settings"];
+        post?: never;
+        /**
+         * Removes the `[support]` setting the API set for one node.
+         * @description The node then runs with the config files' setting, or the default, after a restart.
+         */
+        delete: operations["delete_support_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/health": {
         parameters: {
             query?: never;
@@ -2646,6 +4631,11 @@ export interface paths {
          *     With `keepMap`, the answer carries `X-Support-Package-Id`, and `GET
          *     /system/support-package/{id}/map` returns the pseudonyms and the real values behind them once,
          *     within ten minutes: it is not for attaching. `?dryRun=true` answers with the manifest only.
+         *
+         *     With **`cluster`**, the package covers every reachable node: each makes and redacts its own part
+         *     under one key made for this package (sent over the cluster channel, never stored), so a device
+         *     has the same pseudonym in every node's files and no real value crosses the network. The
+         *     manifest lists each node and whether it answered; the size cap is shared. Not with `keepMap`.
          *     Free text is redacted by pattern, which is best effort: look the package over before you
          *     attach it. Admin only; audit-logged as `support.package`. Not an MCP tool.
          */
@@ -2750,6 +4740,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/updates-settings/{node}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * REQ: OPS-012 (T27.11, ADR-1006) — `[updates] check` for one node. Admins only.
+         * @description The node checks for a newer build once a day (or not), from its next start; the files' value wins.
+         */
+        put: operations["put_updates_settings"];
+        post?: never;
+        /**
+         * Removes the `[updates]` setting the API set for one node.
+         * @description The node then runs with the config files' setting, or the default, after a restart.
+         */
+        delete: operations["delete_updates_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/upstream-check-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the second opinions (`[upstream_check]`): one question in `sample_every` (0 is off), the reference group and how many disagreements are kept. Operators change them.
+         * @description REQ: OBS-019 (T27.5, ADR-1007). Admin only for the telemetry sections; operators for the rest. Agents never.
+         *     The configuration files win field by field (`set_by_file`), and a field left out takes its default.
+         */
+        put: operations["put_upstream_check_settings"];
+        post?: never;
+        /**
+         * Go back to the configuration file's `[upstream_check]` settings (ADR-1007).
+         * @description Removes what the API stored, so the file's settings apply again on every node (ADR-1007).
+         */
+        delete: operations["delete_upstream_check_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/upstream-groups/{name}": {
         parameters: {
             query?: never;
@@ -2775,6 +4814,31 @@ export interface paths {
          *     deleted in turn. The configuration is checked first (say, a group still using a list).
          */
         delete: operations["delete_upstream_group"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/upstream-presets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The public DNS resolvers the simple upstream picker offers (UPS-004; T24.36).
+         * @description The built-in catalog (`presets/upstreams.toml`), one row per provider variant: its addresses
+         *     (plain, DNS over TLS, DNS over HTTPS), the TLS name, what it filters and a line on its
+         *     privacy, and whether this node has an IPv6 route (so the picker can grey IPv6 out). The
+         *     picker writes the upstreams and the `default` group through `PUT /api/v1/upstreams/{name}`
+         *     and `PUT /api/v1/upstream-groups/{name}`; this only reads. Presets that need a parameter (a
+         *     NextDNS profile) are listed with `simple` false.
+         */
+        get: operations["upstream_presets"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2944,6 +5008,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/zones/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Create or replace an authoritative zone (DNS-010, T27.7, ADR-1007).
+         * @description Every name under `name` is answered from the zone's records, for everyone or only `groups`
+         *     (split horizon); a name the zone doesn't have gets "no such name". A zone the configuration
+         *     files define is read-only here (409 `set_by_file`), and so is its zone file (guarded, T27.17).
+         *     Needs the operator role (or the `config:write:records` agent scope, with a reason).
+         */
+        put: operations["put_zone"];
+        post?: never;
+        /**
+         * Remove a zone made through the API (DNS-010, T27.7).
+         * @description The names it answered go back to the upstreams. A zone the configuration files define can't be
+         *     removed here (409).
+         */
+        delete: operations["delete_zone"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2995,6 +5087,37 @@ export interface components {
             topNode: string;
             /** Format: double */
             topSharePercent: number;
+        };
+        /** @description REQ: DSC-004 (ADR-908 "Capability record") — what an agent answered when it was probed. */
+        AgentCapability: {
+            /** @description The v3 engine ID, in hex. */
+            engineId?: string | null;
+            /** @description The security level reached: `v2c`, `authNoPriv` or `authPriv`. */
+            level: string;
+            /** @description One entry per part of every configured table. */
+            parts: components["schemas"]["AgentCapabilityPart"][];
+            /**
+             * Format: int64
+             * @description When it was probed (Unix seconds).
+             */
+            probedUnix: number;
+            /** @description sysObjectID, when the agent answered it (device-supplied). */
+            sysObjectId?: string | null;
+        };
+        /** @description REQ: DSC-004 — one part of a table group and the MIB table that answered it. */
+        AgentCapabilityPart: {
+            /**
+             * @description The part: `arp`, `interfaces`, `addresses`, `forwarding`, `ports`, `vlans`, `neighbours`
+             *     or `local_ports`.
+             */
+            part: string;
+            /**
+             * @description The MIB table that answered (`ipNetToPhysicalTable`, `ipNetToMediaTable`, ...); none when
+             *     no alternative did.
+             */
+            source?: string | null;
+            /** @description `arp`, `ifmib`, `bridge` or `lldp`. */
+            table: string;
         };
         /** @description REQ: OBS-010 (T9.6) — the last delivery to a destination. */
         AlertDelivery: {
@@ -3374,6 +5497,29 @@ export interface components {
             setupRequired: boolean;
             user?: components["schemas"]["Me"] | null;
         };
+        /** @description REQ: API-007 (T23.9, ADR-903 §8) — the body of `POST /api/v1/backup`. */
+        BackupRequest: {
+            /** @description Also include the query log (refused when it is too big to build in memory: use the CLI). */
+            includeQlog?: boolean | null;
+            /**
+             * @description At least 12 characters. With one, the node's stored secrets are encrypted into the backup
+             *     (`data/secrets.enc`, Argon2id and ChaCha20-Poly1305), and the request needs a session
+             *     signed in within the last 10 minutes. Write-only: never answered, logged or audited.
+             * @example correct horse battery staple
+             */
+            passphrase?: string | null;
+        };
+        /** @description Body of `POST /api/dns/blocking`. */
+        BlockingBody: {
+            /** @description `true` ends every pause, `false` pauses blocking for everyone. */
+            blocking?: boolean | null;
+            /**
+             * Format: double
+             * @description Seconds to stay off (rounded up to whole minutes; none: the longest allowed). Anything but
+             *     a number counts as none: the Home Assistant integration sends `true` for "no timer".
+             */
+            timer?: number | null;
+        };
         /** @description One node's pauses (`GET /api/v1/blocking`). */
         BlockingNode: {
             /** @description Set when the node couldn't be reached. */
@@ -3399,6 +5545,26 @@ export interface components {
             /** @description One node only (its site, pod, or ID); absent: every node. */
             node?: string | null;
         };
+        /** @description What a proposed selection costs. */
+        BudgetView: {
+            /** @description Sources the proposal adds that no group had selected. */
+            added: string[];
+            confirmationRequired: boolean;
+            /** @description The group the proposal is for, when there is one. */
+            group?: string | null;
+            /** @description The proposal's group alone. */
+            groupOnly?: Record<string, never> | null;
+            /** @description Heavy sources among `added`: they ask for a confirmation that states the daily download. */
+            heavyAdded: string[];
+            /**
+             * Format: int64
+             * @description The daily download of `heavyAdded`, in bytes.
+             */
+            heavyDailyDownloadBytes: number;
+            node: components["schemas"]["CategoryEnv"];
+            /** @description All groups' sources together, with the proposal in place. */
+            total: Record<string, never>;
+        };
         /** @description The build identity (REQ: OPS-004, ADR-046): the same on every architecture of one commit. */
         BuildInfo: {
             /** @description `stable`, `edge`, or `dev`. */
@@ -3411,7 +5577,7 @@ export interface components {
             install: string;
             /** @description Rust target, e.g. `aarch64-unknown-linux-musl`. */
             target: string;
-            /** @description `0.1.0` (release), `0.1.0-edge.47` (main build), or `dev` (local build). */
+            /** @description `0.1.0` (release), `0.1.0-edge.47` (main build), or `0.1.0-dev` (local build, read by peers as 0.1.0). */
             version: string;
         };
         /** @description One cached answer for a name. */
@@ -3726,6 +5892,87 @@ export interface components {
             /** @description Why nothing was loaded (no dump, a dump from other upstreams, ...). */
             note?: string | null;
         };
+        /** @description The catalog and this node's state (REQ: FLT-901). */
+        CategoriesView: {
+            /** @description The attribution lines to show (CC BY-SA sources). */
+            attributions: string[];
+            catalogVersion: string;
+            groups: components["schemas"]["CategoryGroupView"][];
+            node: components["schemas"]["CategoryEnv"];
+            notOffered: components["schemas"]["NotOfferedView"][];
+            presets: components["schemas"]["PresetView"][];
+            /** @description What each group selects now. */
+            selections: components["schemas"]["GroupSelection"][];
+            sources: components["schemas"]["SourceView"][];
+            /** @description What all of them cost together (distinct sources). */
+            total: Record<string, never>;
+        };
+        /**
+         * @description What the node knows that bounds a selection (read from the primary in a cluster: it fetches
+         *     and compiles, ADR-994 item 10).
+         */
+        CategoryEnv: {
+            /** @description `[filter] ads_tier`: `light`, `pro`, `pro_plus` or `ultimate`. */
+            adsTier: string;
+            /**
+             * Format: int64
+             * @description `[filter] compile_memory`, the merge budget before it is scaled to the node.
+             */
+            compileMemoryBytes: number;
+            /**
+             * Format: int64
+             * @description `[filter] entry_budget`.
+             */
+            entryBudget: number;
+            /**
+             * Format: int64
+             * @description The node's memory limit (its cgroup, else its RAM), when known.
+             */
+            memoryLimitBytes?: number | null;
+            /** @description Which node these numbers are from. */
+            node?: string | null;
+            /**
+             * Format: int64
+             * @description This process's resident memory now, when known.
+             */
+            processRssBytes?: number | null;
+        };
+        /** @description A group of categories in the picker. */
+        CategoryGroupView: {
+            categories: components["schemas"]["CategoryView"][];
+            id: string;
+            name: string;
+        };
+        /** @description One category. */
+        CategoryView: {
+            defaultTier?: string | null;
+            /** @description One line for the info icon. */
+            description: string;
+            /**
+             * Format: int64
+             * @description Entries with the default tier (distinct sources).
+             */
+            entries: number;
+            /** @description Groups that select it now. */
+            groups: string[];
+            /** @description Any source it can use is heavy. */
+            heavy: boolean;
+            id: string;
+            /** @description `list` (a maintained list behind it) or `service` (a bundle turned on with `blockedServices`). */
+            kind: string;
+            name: string;
+            /** @description For a service category: the FLT-012 service IDs to put in `blockedServices`. */
+            services: string[];
+            /** @description The sources always in use. */
+            sources: string[];
+            /** @description `adsTier`: the size is the `[filter] ads_tier` setting, not a per-profile choice. */
+            tierFrom?: string | null;
+            /** @description `exclusive` or `additive`, when it has tiers. */
+            tierKind?: string | null;
+            tiers: components["schemas"]["TierView"][];
+            /** @description A warning the confirmation repeats (a category that blocks whole top-level domains). */
+            warn?: string | null;
+        };
         /** @description REQ: API-002 (T9.12) — a pre-save check of a draft upstream or list. */
         CheckResult: {
             /** @description What was seen: `answered NOERROR, 13 records` or `81,234 rules from 81,512 lines`. */
@@ -3824,6 +6071,41 @@ export interface components {
              */
             name?: string | null;
         };
+        /** @description REQ: FLT-006, API-010 (T24.30) — a device's effective policy. */
+        ClientPolicy: {
+            /** @description The address the policy was resolved for. */
+            address?: string | null;
+            /**
+             * Format: int64
+             * @description When it was read (Unix seconds); schedules and rule expiry are as of then.
+             */
+            atUnixSeconds: number;
+            /** @description What was asked for: a device's name, an address, or a workload. */
+            client: string;
+            /** @description The configured device it is (a `[[client]]`'s name, or the workload's). */
+            device?: string | null;
+            /** @description The group whose settings apply. */
+            group: string;
+            /** @description Where it came from: `device`, `network`, `router_name`, `kubernetes`, `default`. */
+            groupFrom: string;
+            /** @description The network or router name that gave the group, when it isn't the device's own. */
+            groupKey?: string | null;
+            /** @description Every group it is in, the first one's settings applying (the same as Explain's). */
+            groups: string[];
+            /** @description How it was recognized: the same word Explain's `client.identifiedBy` says. */
+            identifiedBy: string;
+            mac?: string | null;
+            /** @description The key that matched, written as a `[[client]] match` is. Absent for `default`. */
+            matchedKey?: string | null;
+            missingNodes?: string[];
+            /** @description The node whose configuration answered (a replica asks the primary). */
+            node?: string | null;
+            /** @description Caveats: the address was a stand-in, another device wins, no filter snapshot yet. */
+            notes?: string[];
+            /** @description The ladder a device is matched down, with the rung that decided. */
+            precedence: components["schemas"]["PolicyRung"][];
+            sections: components["schemas"]["PolicySection"][];
+        };
         /** @description REQ: OBS-031 — a device's rhythm per domain. */
         ClientRhythm: {
             /** @description False when the anomaly engine is off (`reason: disabled`). */
@@ -3856,7 +6138,10 @@ export interface components {
         ClusterCheck: {
             /** @description What to do about it (failing checks only). */
             fix?: string | null;
-            /** @description Stable ID: `peers_up`, `primary_present`, `in_sync`, `sync_errors`, `serving`, `certificate`. */
+            /**
+             * @description Stable ID: `peers_up`, `primary_present`, `in_sync`, `sync_errors`, `serving`, `certificate`,
+             *     `failover`, `voter_links` (a voter reached only some of the time, T24.38).
+             */
             id: string;
             ok: boolean;
             summary: string;
@@ -3908,6 +6193,12 @@ export interface components {
              * @description Voters this node has a stream to (itself included).
              */
             reachableVoters: number;
+            /**
+             * @description REQ: CLU-005 (T24.38, ADR-1018) — voters whose link to this node dropped three or more
+             *     times in the last ten minutes while both processes stayed up (a link that comes and goes;
+             *     a restart or an upgrade of either node is not counted). Empty when all are steady.
+             */
+            unstableVoters?: components["schemas"]["UnstableVoter"][];
             /**
              * Format: int64
              * @description The epoch and node this node last voted for.
@@ -4002,11 +6293,21 @@ export interface components {
             kubeNode?: string | null;
             /** Format: int64 */
             lastSeenSecondsAgo: number;
-            /** @description `self`, `inbound` (it connected to this node), or `outbound`. */
+            /**
+             * @description `self`, `inbound` (it connected to this node), `outbound`, or `relayed` (no stream: a
+             *     peer reports it up, as the primary does for a replica in manual failover).
+             */
             link: string;
             maintenance?: components["schemas"]["NodeMaintenance"] | null;
             nodeId: string;
             pod?: string | null;
+            /**
+             * Format: int64
+             * @description REQ: OBS-010 (T24.5, fork #2) — a replica's time without reaching its primary, in seconds
+             *     (the `primary_unreachable` alert and the health icon read it). Absent when it reaches the
+             *     primary, is the primary, or isn't heard from.
+             */
+            primarySilentSeconds?: number | null;
             /**
              * Format: int32
              * @description The cluster protocol it speaks (CLU-010); nodes within one version work together.
@@ -4038,6 +6339,7 @@ export interface components {
              * @description Round-trip time over the cluster link.
              */
             rttMs?: number | null;
+            secrets?: components["schemas"]["ClusterSecrets"] | null;
             /**
              * Format: double
              * @description SERVFAIL share over the last minute, percent.
@@ -4050,7 +6352,10 @@ export interface components {
             startedAt?: string | null;
             /** @description The node answering this request. */
             thisNode: boolean;
-            /** @description Heard from within 15 s (always true for this node). */
+            /**
+             * @description Heard from within 15 s (always true for this node), by this node or, for a member it has
+             *     no stream to, by a peer that says so (`link` `relayed`).
+             */
             up: boolean;
             /**
              * Format: double
@@ -4060,7 +6365,12 @@ export interface components {
             /** Format: int64 */
             uptimeSeconds: number;
             version: string;
-            /** @description Votes in automatic failover only (ADR-056). */
+            vote?: components["schemas"]["ClusterVote"] | null;
+            /**
+             * @description Votes in automatic failover only (ADR-056). A witness has no configuration version, no
+             *     secrets and no DNS: `configSeq`, `configLag`, `secrets` and `ready` mean nothing for it
+             *     (REQ: CLU-009, T24.33, ADR-1011), and the checks and alerts about them skip it.
+             */
             witness: boolean;
         };
         /** @description A peer node, as last heard over the cluster channel. */
@@ -4119,6 +6429,28 @@ export interface components {
             stage: string;
             /** @description The version baking, `epoch.seq`. */
             version?: string | null;
+        };
+        /**
+         * @description REQ: CLU-015 (ADR-903 §6) — one member's stored secrets. Stamps are `epoch.seq`; a value is
+         *     never here.
+         */
+        ClusterSecrets: {
+            /** @description The head it has applied from the primary (the primary's own, on the primary). */
+            applied?: string | null;
+            /** @description The newest stamp in its secrets head. */
+            head?: string | null;
+            /**
+             * Format: int32
+             * @description Secrets the primary holds but couldn't decrypt to send: this node keeps its own copy.
+             */
+            held: number;
+            /** @description Its applied head is the primary's head: same stamps and digest. */
+            inSync: boolean;
+            /**
+             * Format: int32
+             * @description Live secrets it can't read here (encrypted under a key it doesn't have, or damaged).
+             */
+            unreadable: number;
         };
         /** @description The cluster's configuration from Git (ADR-049): the commit in use and the last check. */
         ClusterSource: {
@@ -4216,10 +6548,348 @@ export interface components {
             thisNode?: string | null;
         };
         /**
+         * @description REQ: CLU-009 (T24.33, ADR-1011) — a witness's part in the election, as this node sees it. A
+         *     witness only votes: it has no configuration, no secrets and no DNS.
+         */
+        ClusterVote: {
+            /**
+             * Format: int64
+             * @description Seconds since it last granted one.
+             */
+            lastGrantSecondsAgo?: number | null;
+            /**
+             * Format: int64
+             * @description Seconds since it last answered a vote request or lease renewal from this node (absent: this
+             *     node hasn't asked it, as in manual failover or on a node that isn't the primary).
+             */
+            lastReplySecondsAgo?: number | null;
+            /**
+             * Format: int64
+             * @description The epoch it reported in its last reply (the epoch it voted in).
+             */
+            votedEpoch?: number | null;
+        };
+        /** @description A merged-away id that redirects for 90 days. */
+        CmdbAlias: {
+            id: string;
+            /** Format: int64 */
+            until: number;
+        };
+        /** @description The caps (ADR-1005 section 3). */
+        CmdbCaps: {
+            /** Format: int64 */
+            cis: number;
+            /** Format: int64 */
+            records: number;
+            /** Format: int64 */
+            recordsPerCi: number;
+        };
+        /** @description What a link, unlink, merge or split would do, or did. */
+        CmdbChange: {
+            /** @description Whether it was applied (`false` for `?dryRun=true`). */
+            applied: boolean;
+            /** @description The devices it touches. */
+            devices: string[];
+            /** @description The records that move. */
+            moves: components["schemas"]["CmdbMove"][];
+            /** @description What else follows: an alias that redirects, a pin that is written. */
+            notes: string[];
+            /** @description `link`, `unlink`, `merge` or `split`. */
+            op: string;
+            /**
+             * @description The device the records went to when it is new (a split or an unlink), or the one that
+             *     stayed (a merge).
+             */
+            result?: string | null;
+        };
+        /** @description One CI in a list. */
+        CmdbCi: {
+            /**
+             * Format: int64
+             * @description Distinct days a presence source saw it, at most 32.
+             */
+            daysSeen?: number | null;
+            /**
+             * Format: int64
+             * @description When the CMDB first saw it (Unix seconds).
+             */
+            firstSeen: number;
+            /**
+             * @description `ci_` and 32 hex digits, random and never reused.
+             * @example ci_0f3a9c1e5b7d42a8c6e0b1d3f5a79c21
+             */
+            id: string;
+            /** @description For an interface: `nic` or `port`. */
+            kind?: string | null;
+            /**
+             * Format: int64
+             * @description The newest time a presence source saw it, when known.
+             */
+            lastSeen?: number | null;
+            /** @description The name shown. Device-supplied text (cut and cleaned). */
+            name?: string | null;
+            /** @description For an interface: the device it belongs to. */
+            parent?: string | null;
+            /**
+             * Format: int64
+             * @description Open merge proposals that name it.
+             */
+            proposals: number;
+            /**
+             * Format: int64
+             * @description How many source records are linked to it.
+             */
+            records: number;
+            /** @description The source kinds that report it. */
+            sources: string[];
+            /** @description `device`, `interface`, `network`, `node`, `service` or `upstream`. */
+            ty: string;
+            /** @description No source confirms it yet (a query-only or import-only record). */
+            unconfirmed: boolean;
+            /** @description A port that no alias joins to another source's port. */
+            unmappedPort: boolean;
+        };
+        /**
+         * @description `GET /api/v1/cmdb/cis/{id}`: a CI with its interfaces, its records side by side and what
+         *     reconciliation decided.
+         */
+        CmdbCiDetail: {
+            /** @description Ids merged into this CI that still redirect. */
+            aliases: components["schemas"]["CmdbAlias"][];
+            ci: components["schemas"]["CmdbCi"];
+            /** @description The interfaces and ports under a device. */
+            interfaces: components["schemas"]["CmdbCi"][];
+            pins: components["schemas"]["CmdbPin"][];
+            proposals: components["schemas"]["CmdbProposal"][];
+            records: components["schemas"]["CmdbRecord"][];
+        };
+        /** @description A page of CIs. */
+        CmdbCiPage: {
+            items: components["schemas"]["CmdbCi"][];
+            /** @description Pass this as `after` for the next page; absent on the last. */
+            next?: string | null;
+        };
+        /** @description A count of CIs of one type. */
+        CmdbCount: {
+            /** Format: int64 */
+            count: number;
+            /** @description `device`, `interface`, `network`, `node`, `service` or `upstream`. */
+            ty: string;
+        };
+        /** @description What the CMDB dropped at a cap (`telltale_cmdb_dropped_total`). */
+        CmdbDropped: {
+            /**
+             * Format: int64
+             * @description Batches the sink dropped because it was full.
+             */
+            batch: number;
+            /**
+             * Format: int64
+             * @description New CIs refused because every CI left is authored (at the cap).
+             */
+            ci: number;
+            /**
+             * Format: int64
+             * @description New records dropped at the record caps.
+             */
+            record: number;
+        };
+        /**
+         * @description Body of `POST /api/v1/cmdb/cis/{id}/link`: put a record (its interface, when it has a MAC) under
+         *     the device in the path.
+         */
+        CmdbLinkRequest: {
+            record: components["schemas"]["CmdbRecordRef"];
+        };
+        /** @description Body of `POST /api/v1/cmdb/cis/{id}/merge`: fold the device in the path into another. */
+        CmdbMergeRequest: {
+            /**
+             * @description The device that stays; the one in the path becomes an alias of it for 90 days.
+             * @example ci_0f3a9c1e5b7d42a8c6e0b1d3f5a79c21
+             */
+            into: string;
+        };
+        /** @description One record a change moves. */
+        CmdbMove: {
+            /** @description The device it is on now. */
+            from?: string | null;
+            key: string;
+            source: string;
+            /** @description The device it goes to; absent for a new device. */
+            to?: string | null;
+            /** @description `its interface` (a MAC identifies an interface, so all its records go), `chosen` or `device`. */
+            why: string;
+        };
+        /** @description A manual decision pinned to a CI. */
+        CmdbPin: {
+            /** Format: int64 */
+            at: number;
+            by: string;
+            /** @description `nic_device`, `rec_device` or `rec_never`. */
+            kind: string;
+            reason: string;
+            subject: string;
+            target: string;
+        };
+        /** @description A merge proposal: raised, never applied (ADR-1004 section 4). */
+        CmdbProposal: {
+            /** @description The two CIs it names. */
+            a: string;
+            b: string;
+            detail: string;
+            /** Format: int64 */
+            firstSeen: number;
+            /** Format: int64 */
+            id: number;
+            /** @description `level_disagreement`, `host_network` or `ambiguous_record`. */
+            kind: string;
+            /** Format: int64 */
+            lastSeen: number;
+            /** @description The rule that raised it: `R3`, `R4`, `R5` or `addr`. */
+            rule: string;
+        };
+        /** @description One source record, as the source reported it. */
+        CmdbRecord: {
+            /** @description The attributes as reported: device-supplied text, untrusted. */
+            attrs: Record<string, never>;
+            device?: string | null;
+            /** Format: int64 */
+            firstSeen: number;
+            /** @description The interface and the device it is linked to. */
+            interface?: string | null;
+            /** @description The thing's identity in that source. */
+            key: string;
+            /** Format: int64 */
+            lastChanged: number;
+            /** Format: int64 */
+            lastSeen: number;
+            /**
+             * @description `auto:R2`, `auto:R3`, `auto:R4`, `auto:addr`, `auto:key`, `auto:port`, `auto:own`, `manual`
+             *     or `none`.
+             */
+            link: string;
+            source: string;
+            /** @description `present`, or `absent` after two missed complete batches. */
+            state: string;
+            /** @description `device`, `port`, `network`, `node`, `service` or `upstream`. */
+            ty: string;
+        };
+        /** @description A record by its source and key. */
+        CmdbRecordRef: {
+            /**
+             * @description The record's key in that source.
+             * @example aa:bb:cc:00:00:01
+             */
+            key: string;
+            /**
+             * @description The source instance, as `GET /api/v1/cmdb/cis/{id}` shows it.
+             * @example unifi:home
+             */
+            source: string;
+        };
+        /** @description One source instance's last batch. */
+        CmdbSourceStatus: {
+            /** Format: int64 */
+            batches: number;
+            /** @description Whether the batch listed everything the instance reports. */
+            complete: boolean;
+            /**
+             * Format: int64
+             * @description Records it holds in the database.
+             */
+            held: number;
+            /**
+             * Format: int64
+             * @description When its last batch was ingested (Unix seconds).
+             */
+            lastBatchUnix: number;
+            /**
+             * Format: int64
+             * @description Records in its last batch.
+             */
+            records: number;
+            /** @description The source instance (`unifi:home`, `snmp:core`, `neighbor`, ...). */
+            source: string;
+        };
+        /**
+         * @description Body of `POST /api/v1/cmdb/cis/{id}/split`: move chosen records of the device in the path to a
+         *     new device.
+         */
+        CmdbSplitRequest: {
+            records: components["schemas"]["CmdbRecordRef"][];
+        };
+        /**
+         * @description `GET /api/v1/cmdb/status`: whether the CMDB runs on this node, what it holds, and what it
+         *     dropped. Health reasons never mark DNS unhealthy.
+         */
+        CmdbStatus: {
+            /** @description The caps (ADR-1005 section 3). */
+            caps: components["schemas"]["CmdbCaps"];
+            /** @description CIs by type. */
+            cis: components["schemas"]["CmdbCount"][];
+            /** @description Whether this node is the designated one (the node `[discovery]` designates). */
+            designated: boolean;
+            /**
+             * Format: int64
+             * @description The database and its WAL on disk, in bytes.
+             */
+            diskBytes: number;
+            /** @description What was dropped at a cap. */
+            dropped: components["schemas"]["CmdbDropped"];
+            /** @description `[cmdb] enabled`. */
+            enabled: boolean;
+            /**
+             * Format: int64
+             * @description The newest authored-row stamp: what a standby copies.
+             */
+            headEpoch: number;
+            /** Format: int64 */
+            headSeq: number;
+            /**
+             * Format: int64
+             * @description The in-memory index, an estimate in bytes.
+             */
+            indexBytes: number;
+            /** @description The last error the CMDB logged, when it had one (it never touches DNS). */
+            lastError?: string | null;
+            /**
+             * Format: int64
+             * @description The end of the 24 h learning period (Unix seconds), while it runs.
+             */
+            learningUntil?: number | null;
+            /** @description The designated node's name, when `[discovery] node` names one. */
+            node?: string | null;
+            /**
+             * Format: int64
+             * @description Merge proposals waiting for a person.
+             */
+            proposalsOpen: number;
+            /**
+             * Format: int64
+             * @description Batches waiting in the sink.
+             */
+            queueDepth: number;
+            /**
+             * Format: int64
+             * @description Source records kept, and those `present`.
+             */
+            records: number;
+            /** Format: int64 */
+            recordsPresent: number;
+            /** @description Whether the CMDB's thread runs here. */
+            running: boolean;
+            /** @description The last batch of each source instance. */
+            sources: components["schemas"]["CmdbSourceStatus"][];
+        };
+        /** @description Body of `POST /api/v1/cmdb/cis/{id}/unlink`: take a record away from the device in the path. */
+        CmdbUnlinkRequest: {
+            record: components["schemas"]["CmdbRecordRef"];
+        };
+        /**
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled" | "drill_refused" | "drill_active" | "drill_targets" | "node_is_primary" | "node_is_up" | "lists_not_here" | "discovery_not_here" | "credential_reentry_required" | "secrets_locked" | "upgrade_required" | "members_too_old" | "path_not_allowed" | "set_by_file" | "secret_missing" | "secret_in_use" | "insecure_transport" | "agent_not_allowed" | "map_disabled" | "map_streams_busy" | "reauth_required" | "guarded_only" | "guarded_change_pending" | "preview_stale" | "primary_unreachable" | "would_disconnect_you" | "would_lock_out_admins" | "no_supervisor" | "target_not_empty" | "acknowledgement_required" | "clustered_node" | "restarting" | "rotation_incomplete" | "data_dir_not_persistent" | "not_primary" | "owned_by_category" | "budget_refused" | "confirm_required";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -4258,18 +6928,55 @@ export interface components {
          */
         ConfigEntry: {
             /**
+             * Format: int64
+             * @description REQ: DNS-023 (T24.13) — how many names this entry answers right now (the device names
+             *     for `local`).
+             */
+            answering?: number | null;
+            /**
+             * @description REQ: API-014 (T23.2, ADR-903 §4) — paths this entry sets through the UI or API that the
+             *     path rules refuse (under `/proc` or the data directory, a key file, a credential file
+             *     outside `[node] secret_file_dirs`): they aren't read until an admin sets another.
+             */
+            credentialIssues?: components["schemas"]["CredentialIssue"][];
+            /**
              * @description The definition in effect, with the same fields as in `telltale.toml` (absent when
-             *     hidden).
+             *     hidden). Credentials read `<redacted>` (API-014).
              */
             definition?: Record<string, never> | null;
             /** @description `upstream`, `upstream_group`, `list`, or `group`. */
             kind: string;
             name: string;
             /**
+             * @description REQ: API-014 — the fields of `definition` that hold a credential and read `<redacted>`
+             *     (`headers.Authorization`, `args[1]`, `url` for a URL's password). Send them back as they
+             *     are to keep the values.
+             */
+            redacted?: string[];
+            /**
+             * @description REQ: DNS-019, DNS-023 (ADR-914) — the fields of a shared settings section (`special`,
+             *     `local`, `clients`) that the config files set: the API can't change them, and the UI
+             *     shows them as "set by file".
+             */
+            setByFile?: string[];
+            /**
              * @description `file` (the config files), `added` (made through the UI or API), `override` (replaces
              *     the files' entry of that name), or `hidden` (the files' entry is left out).
              */
             source: string;
+        };
+        /** @description What to change in a group's content: fields left out keep their current value. */
+        ContentInput: {
+            /** @description Ad block on or off. */
+            ads?: boolean | null;
+            /** @description Category IDs (`GET /api/v1/categories`); replaces the current list. */
+            categories?: string[] | null;
+            /** @description `off`, `basic` or `enhanced`. */
+            level?: string | null;
+            /** @description A tier per category (`gambling` = `extended`); replaces the current tiers. */
+            tiers?: {
+                [key: string]: string;
+            } | null;
         };
         /** @description `POST /api/v1/displays`. */
         CreateDisplay: {
@@ -4316,6 +7023,33 @@ export interface components {
             password: string;
             role: components["schemas"]["Role"];
             username: string;
+        };
+        /** @description A credential field of a node's configuration, with where its value comes from. */
+        CredentialField: {
+            /** @description The file's path, or the stored secret's name (never a value). */
+            at?: string | null;
+            entry: string;
+            /** @description `api_key`, `token`, `header:api-key`, ... */
+            field: string;
+            kind: string;
+            /** @description The node this is about. */
+            node: string;
+            /**
+             * @description This node can read it (a file is opened without being read; a stored secret is judged by
+             *     its row, not decrypted).
+             */
+            readable: boolean;
+            /** @description Why not. */
+            reason?: string | null;
+            /** @description `inline` or `file` (set by the configuration files: the UI won't edit it), or `stored`. */
+            source: string;
+        };
+        /** @description REQ: API-014 (T23.2) — a stored path that isn't read, and why. */
+        CredentialIssue: {
+            /** @description The entry's field (`token_file`, `tls_ca`, `path`). */
+            field: string;
+            /** @description Why it isn't read. */
+            reason: string;
         };
         /**
          * @description REQ: OBS-025 (T13.3, ADR-117) — what a device looks like: a guess from its MAC vendor,
@@ -4401,6 +7135,11 @@ export interface components {
             /** @description The device's name in TelltaleDNS (a named client, else the host name). */
             clientName?: string | null;
             /**
+             * @description REQ: DNS-023 (T22.1) — the name it answers as in DNS (`kitchen-tablet.home.arpa`),
+             *     with `[local] device_domain` set.
+             */
+            dnsName?: string | null;
+            /**
              * Format: int64
              * @description When the router's lease ends (Unix seconds; 0 when unknown).
              */
@@ -4408,12 +7147,260 @@ export interface components {
             /** @description The name the router knows it by (its DHCP host name or alias), or the one it announces. */
             hostname?: string | null;
             ip: string;
+            /**
+             * @description REQ: DNS-023 (T24.8, ADR-983) — the IPv6 addresses the router reports for the device
+             *     (global and unique-local, never link-local), up to 4. With `[local] device_domain` set,
+             *     each answers AAAA and an `ip6.arpa` PTR under `dnsName`.
+             */
+            ipv6?: string[];
             mac: string;
+            /**
+             * @description REQ: T8.2 (ADR-166, ADR-942) — a client the router remembers but doesn't see now (UniFi's
+             *     offline clients). It is listed so the admin can see it, but it names no DNS name, gives
+             *     no discovery binding and isn't counted in a network's devices.
+             */
+            offline: boolean;
+            /**
+             * @description REQ: API-012 (T22.3) — the `[[router]]` whose answer named it (`udm`,
+             *     `home-assistant`); absent for mDNS.
+             */
+            router?: string | null;
             /**
              * @description `router` (read from a `[[router]]`) or `mdns` (the name the device announces,
              *     `[clients] mdns`; no MAC).
              */
             source: string;
+        };
+        /**
+         * @description REQ: DSC-004, DSC-014 (T25.6, ADR-908) — one SNMP agent as the poller sees it. Everything that
+         *     came from the device (names, the sysObjectID) is device-supplied text, cut and cleaned.
+         */
+        DiscoveryAgent: {
+            /**
+             * @description The address it is polled at (RFC 1918 only).
+             * @example 192.0.2.1
+             */
+            address: string;
+            capability?: components["schemas"]["AgentCapability"] | null;
+            /**
+             * Format: int32
+             * @description Polls that failed in a row.
+             */
+            consecutiveFailures: number;
+            /** @description The credential it uses (by name; the secret is never shown). */
+            credential: string;
+            /**
+             * Format: int64
+             * @description Polls that failed since start.
+             */
+            failures: number;
+            /**
+             * Format: int32
+             * @description Seconds between polls.
+             */
+            intervalSecs: number;
+            lastCounts?: components["schemas"]["DiscoveryAgentCounts"] | null;
+            /**
+             * Format: int64
+             * @description How long the last poll took, in milliseconds.
+             */
+            lastDurationMs?: number | null;
+            /** @description Why the last poll failed, in words. Carries no address, credential or reply byte. */
+            lastError?: string | null;
+            /**
+             * Format: int64
+             * @description When the last poll ended (Unix seconds).
+             */
+            lastPollUnix?: number | null;
+            /**
+             * Format: int32
+             * @description SNMP requests the last poll sent.
+             */
+            lastRequests?: number | null;
+            /**
+             * Format: int64
+             * @description When a poll last succeeded (Unix seconds).
+             */
+            lastSuccessUnix?: number | null;
+            /**
+             * Format: int64
+             * @description When **Test** last ran for this agent (Unix seconds); a new test waits 60 s after it.
+             */
+            lastTestUnix?: number | null;
+            /**
+             * Format: int32
+             * @description Exchanges of the last poll that timed out.
+             */
+            lastTimeouts?: number | null;
+            /**
+             * @description The agent's name, as `[[discovery.snmp_agent]]` gives it.
+             * @example gateway
+             */
+            name: string;
+            /**
+             * Format: int64
+             * @description Polls made since start.
+             */
+            polls: number;
+            /**
+             * @description `waiting` (no poll yet), `ok`, `error` (the last poll failed), `failing` (three polls in a
+             *     row failed) or `skipped` (its credential can't be read, or its address is refused).
+             */
+            state: string;
+            /** @description One entry per configured table. */
+            tables: components["schemas"]["DiscoveryAgentTable"][];
+        };
+        /** @description REQ: DSC-004, DSC-014 — what the last poll's rows meant. */
+        DiscoveryAgentCounts: {
+            /**
+             * Format: int32
+             * @description ARP entries merged into the inventory.
+             */
+            arpMerged: number;
+            /**
+             * Format: int32
+             * @description ARP entries outside every `[[discovery.subnet]]` (or naming no host).
+             */
+            arpOutsideSubnets: number;
+            /**
+             * Format: int32
+             * @description Forwarding entries that gave a device a port and a VLAN.
+             */
+            fdbLocated: number;
+            /**
+             * Format: int32
+             * @description Forwarding entries left out because they were learned on an uplink or trunk port.
+             */
+            fdbUplink: number;
+            /**
+             * Format: int32
+             * @description IPv6 entries counted and left out (M25 is IPv4 only).
+             */
+            ipv6Ignored: number;
+            /**
+             * Format: int32
+             * @description LLDP neighbours merged.
+             */
+            lldpMerged: number;
+            /**
+             * Format: int32
+             * @description The agent's own addresses merged.
+             */
+            ownMerged: number;
+            /**
+             * Format: int32
+             * @description Ports counted as uplinks (more than 8 learned MACs, or a listed agent or UniFi device as
+             *     the LLDP neighbour).
+             */
+            uplinkPorts: number;
+        };
+        /** @description REQ: DSC-004 — a configured table of an agent and what is known of it. */
+        DiscoveryAgentTable: {
+            /** @description The last error of the table, in words. */
+            error?: string | null;
+            /**
+             * Format: int32
+             * @description The rows the last poll read from the table, over every part and column.
+             */
+            rows?: number | null;
+            /** @description `unprobed`, `answered`, or `unanswered` (skipped until the next test). */
+            state: string;
+            /** @description Why the last walk of the table ended: `end`, `row_cap`, `time_cap`, `byte_cap`, `error` or `skipped`. */
+            stop?: string | null;
+            /** @description `arp`, `ifmib`, `bridge` or `lldp`. */
+            table: string;
+        };
+        /**
+         * @description REQ: DSC-009 (T25.10, ADR-912) - one extra read of one router, as the inventory thread last saw
+         *     it. Read-only: nothing here changes a console.
+         */
+        DiscoveryRead: {
+            /**
+             * Format: int64
+             * @description When the result was recorded (Unix seconds).
+             */
+            at?: number | null;
+            /** @description Why a read did not work, in words (no credential in it). */
+            error?: string | null;
+            /**
+             * @description `client_fields`, `all_users`, `devices` or `home_assistant_all_devices`.
+             * @example all_users
+             */
+            read: string;
+            /**
+             * @description The `[[router]]` read.
+             * @example udm
+             */
+            router: string;
+            /**
+             * Format: int32
+             * @description Rows used.
+             */
+            rows: number;
+            /**
+             * @description `ok`, `refused` (the console answered 401 or 403) or `failed`.
+             * @example ok
+             */
+            state: string;
+            /** @description More rows were offered than the 8,192 cap; the rest were left out. */
+            truncated: boolean;
+        };
+        /**
+         * @description REQ: DSC-014 (T25.3, ADR-908) — the network inventory's status: whether it runs on this node,
+         *     and each discovery worker process. Health reasons for the workers never mark DNS unhealthy.
+         */
+        DiscoveryStatus: {
+            /**
+             * @description REQ: DSC-004, DSC-014 (T25.6) — each `[[discovery.snmp_agent]]` the poller runs on this
+             *     node: its last poll, its tables and its capability record.
+             */
+            agents?: components["schemas"]["DiscoveryAgent"][];
+            /** @description Whether this node is the designated one (it runs the inventory and its workers). */
+            designated: boolean;
+            /** @description `[discovery] enabled`. */
+            enabled: boolean;
+            /** @description The designated node's name, when `[discovery] node` is set. */
+            node?: string | null;
+            /**
+             * @description REQ: DSC-009 (T25.10, ADR-912) - the last result of each extra UniFi and Home Assistant
+             *     read: which ones work, and which the console refused. Empty unless one is on.
+             */
+            reads: components["schemas"]["DiscoveryRead"][];
+            /** @description The worker processes this node runs (none unless enabled and designated). */
+            workers: components["schemas"]["DiscoveryWorker"][];
+        };
+        /** @description REQ: DSC-002 (T25.3, ADR-908) — one discovery worker process, as the supervisor sees it. */
+        DiscoveryWorker: {
+            /**
+             * Format: int64
+             * @description The worker's `RLIMIT_DATA` in MiB, as it reported it at the handshake.
+             */
+            dataLimitMib?: number | null;
+            /** @description Whether the worker reported it isn't dumpable (no core dumps, no /proc reads by others). */
+            dumpable?: boolean | null;
+            /** @description Three or more crashes in ten minutes: restarts are slowed (`discovery_worker_failing`). */
+            failing: boolean;
+            /** @description The last failure, in words (the stderr line is logged, rate-limited). */
+            lastError?: string | null;
+            /**
+             * Format: int32
+             * @description The worker's `oom_score_adj`, as it reported it.
+             */
+            oomScoreAdj?: number | null;
+            /**
+             * Format: int64
+             * @description Times the worker has been restarted since start.
+             */
+            restarts: number;
+            /** @description Running, with a handshake that matched. */
+            up: boolean;
+            /** @description The worker's build differs from this node's: it is refused (`discovery_worker_version_mismatch`). */
+            versionMismatch: boolean;
+            /**
+             * @description `snmp` (the SNMP poller) or `import` (the scan-import parser, short-lived).
+             * @example snmp
+             */
+            worker: string;
         };
         /** @description REQ: OBS-035 (T14.13) — a wall display token, as an admin sees it (never its secret). */
         DisplayInfo: {
@@ -4670,6 +7657,11 @@ export interface components {
             name: string;
         };
         ExplainBlock: {
+            /**
+             * @description REQ: FLT-901 — the category (or categories) a `cat-` list stands for, for example "Adult
+             *     content"; absent for any other list.
+             */
+            category?: string | null;
             /** Format: int32 */
             edeCode: number;
             list: string;
@@ -4681,12 +7673,24 @@ export interface components {
         ExplainClient: {
             /** @description The configured device it was recognized as. */
             device?: string | null;
+            /** @description The group whose settings apply (the first of `groups`). */
+            group: string;
+            /** @description Where that group came from: `device`, `network`, `router_name`, `kubernetes`, `default`. */
+            groupFrom: string;
+            /** @description The network or router name that gave the group, when it isn't the device's own. */
+            groupKey?: string | null;
             /** @description Highest priority first. */
             groups: string[];
-            /** @description `client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `ip`, `cidr`, or `default`. */
+            /** @description `client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `router_name`, `ip`, `cidr`, or `default`. */
             identifiedBy: string;
             ip: string;
             mac?: string | null;
+            /**
+             * @description REQ: FLT-006, API-010 (T24.30, ADR-996) — the key it matched on, written as a
+             *     `[[client]] match` is (`id:kids`, a MAC, an address, a network, `hostname:tv`), or the
+             *     workload's name. Absent for the `default` group.
+             */
+            matchedKey?: string | null;
             workload?: components["schemas"]["ExplainWorkload"] | null;
         };
         ExplainFilter: {
@@ -4753,6 +7757,13 @@ export interface components {
             pausedUntilUnixSeconds?: number | null;
             qtype: string;
             route?: components["schemas"]["ExplainRoute"] | null;
+            /**
+             * @description REQ: DNS-019 (T24.12, ADR-914) — for `special`, the special-name rule that answered:
+             *     `private_relay`, `single_label`, `resolver_arpa`, `ddr`, `firefox_canary`, `private_ptr`,
+             *     `chaos`, or `localhost`. A rule's name, not a field of `[special]`: the UI maps it to the
+             *     switch that controls it.
+             */
+            special?: string | null;
             /** @description One sentence for people. */
             summary: string;
         };
@@ -4827,8 +7838,16 @@ export interface components {
         };
         /** @description A domain sent to other servers (conditional forwarding). */
         ForwardInfo: {
+            /** @description REQ: DNS-010 (T27.7) — a DNSSEC negative trust anchor is added for the domain. */
+            dnssecNta: boolean;
             /** @example corp.example */
             domain: string;
+            /** @description REQ: DNS-010 (T27.7) — the client groups the route applies to (empty: every client). */
+            matchGroup: string[];
+            /** @description REQ: DNS-010 (T27.7) — the query types the route applies to (empty: all). */
+            matchQtype: string[];
+            /** @description REQ: CLU-006 (T27.7) — this route stays on this node. */
+            nodeOnly: boolean;
             /** @description The servers (upstream URLs), in order; a stub zone's are IP addresses. */
             servers: string[];
             /** @description `file` (read-only here) or `api`. */
@@ -4841,6 +7860,17 @@ export interface components {
         };
         /** @description The servers a domain is sent to (`PUT /api/v1/forwards/{domain}`). */
         ForwardInput: {
+            /**
+             * @description REQ: DNS-010 (T27.7) — add a DNSSEC negative trust anchor for the domain (default `true`:
+             *     local zones are usually unsigned).
+             */
+            dnssecNta?: boolean;
+            /** @description REQ: DNS-010 (T27.7) — only these client groups are sent (empty: every client). */
+            matchGroup?: string[];
+            /** @description REQ: DNS-010 (T27.7) — only these query types are sent, e.g. `["PTR"]` (empty: all). */
+            matchQtype?: string[];
+            /** @description REQ: CLU-006 (T27.7) — keep this route on this node only. */
+            nodeOnly?: boolean;
             /**
              * @description Addresses (plain DNS) or `udp://`, `tcp://`, `tls://`, `https://` URLs, tried in order.
              *     For a stub zone: the zone's own servers, as IP addresses (port 53).
@@ -4855,6 +7885,64 @@ export interface components {
              *     followed, instead of forwarding with recursion desired. Default `false`.
              */
             stub?: boolean;
+        };
+        /**
+         * @description REQ: OBS-902 (T26.4, ADR-959 section 6) - this node's GeoIP database: whether it is on, what
+         *     it holds, and how the last fetch went. Everyone who can see the map sees it.
+         */
+        GeoipStatus: {
+            /** @description The attribution the database's licence (CC BY 4.0) asks for. */
+            attribution: string;
+            /** @description `[map.geoip] enabled`. */
+            enabled: boolean;
+            /**
+             * @description A stable code (`digest_mismatch`, `overlapping_ranges`, `not_found`, ...), never a
+             *     response body.
+             */
+            lastError?: string | null;
+            /** @description When the next check is due (a check runs at most once a day). */
+            nextCheckAt?: string | null;
+            /** @description The database is more than 90 days old (it still works). */
+            old: boolean;
+            /**
+             * Format: int64
+             * @description Rows of the source file.
+             */
+            rows: number;
+            /** Format: int64 */
+            sizeBytes: number;
+            /** @description The month of the database's source, `YYYY-MM`. */
+            sourceMonth?: string | null;
+            /**
+             * @description `off`, `missing` (on, with no database on this node yet), `downloading`, `ready` or
+             *     `failed` (the last attempt was not accepted: `lastError` says why, and the previous
+             *     database, if any, is kept).
+             */
+            state: string;
+            /** @description When this node built the database. */
+            updatedAt?: string | null;
+        };
+        /** @description A group's content as the API shows it. */
+        GroupContentInfo: {
+            /** @description Ad block. */
+            ads?: boolean;
+            /** @description Category IDs (kept when the level is `off`). */
+            categories?: string[];
+            /** @description `off`, `basic` or `enhanced`; left out reads `off`, as in the TOML. */
+            level?: string;
+            /** @description A tier per category. */
+            tiers?: {
+                [key: string]: string;
+            };
+        };
+        /** @description A group's content, and what it makes the node do. */
+        GroupContentView: {
+            budget: Record<string, never>;
+            content: components["schemas"]["GroupContentInfo"];
+            group: string;
+            selection: components["schemas"]["GroupSelection"];
+            /** @description "Off", "Basic", "Enhanced (3 of 21)", with "Ad block" when on. */
+            summary: string;
         };
         /** @description A client group. */
         GroupInfo: {
@@ -4872,6 +7960,7 @@ export interface components {
             blockedServices: string[];
             /** @description `#rrggbb` for charts and chips (configured, or a stable pick). */
             color: string;
+            content?: components["schemas"]["GroupContentInfo"] | null;
             /**
              * Format: int64
              * @description Devices seen in the group this hour.
@@ -4885,6 +7974,8 @@ export interface components {
             dns64Prefix?: string | null;
             /** @description REQ: FLT-016 (T12.5) — AAAA questions get no data (the group's devices use IPv4). */
             filterAaaa: boolean;
+            /** @description REQ: FLT-902 — "Off", "Basic", "Enhanced (3 of 21)" and "Ad block", for the Filter Scope column. */
+            filterScope?: string;
             /** @description Lists this group uses; null means every enabled list. */
             lists?: string[] | null;
             name: string;
@@ -4914,15 +8005,33 @@ export interface components {
              *     or `off` (absent when safe search is off).
              */
             safeSearch: boolean;
+            /** @description REQ: FLT-902 — the engines safe search covers (empty with `safeSearch`: every engine). */
+            safeSearchEngines?: string[];
             /** @description REQ: FLT-010 (T7.10) — the group's schedules, and which of them are on now. */
             schedules: string[];
             schedulesOn: string[];
+            /**
+             * @description REQ: FLT-902 — who the group applies to: its networks, router names and devices, for the
+             *     profile list's Source column.
+             */
+            sources?: components["schemas"]["ProfileSource"][];
             /**
              * @description REQ: UPS-007 (T9.25) — the upstream group this group's queries go to (absent: `default`,
              *     or wherever `[[route]]` entries send them).
              */
             upstreams?: string | null;
             youtubeRestrict?: string | null;
+        };
+        /** @description What one group selects. */
+        GroupSelection: {
+            /** @description The categories in effect (the level's, plus ads), catalog order. */
+            categories: string[];
+            content: components["schemas"]["GroupContentInfo"];
+            group: string;
+            /** @description The sources they use. */
+            sources: string[];
+            /** @description IDs this version does not know: ignored, and reported. */
+            unknown: string[];
         };
         /** @description REQ: CLU-013 — the guard's readings over a bake. */
         GuardReadings: {
@@ -4946,6 +8055,228 @@ export interface components {
             /** @description Why the guard failed the version, when it did. */
             reason?: string | null;
         };
+        /** @description What happened to a request to change a guarded setting. */
+        GuardedApplied: {
+            /**
+             * @description `pending`: the single-use token that confirms it from the new address (put it in the
+             *     address's `#fragment`, never in a query).
+             */
+            confirmToken?: string | null;
+            /**
+             * Format: int64
+             * @description `pending`: seconds left, on the node's monotonic clock.
+             */
+            deadlineSecs?: number | null;
+            /** @description What to tell the admin, in words. */
+            message: string;
+            /** @description `pending`: where to confirm, when the confirmation has to arrive somewhere new. */
+            newAddress?: string | null;
+            node: string;
+            /** @description `pending`: the change waiting to be confirmed. */
+            pendingId?: string | null;
+            /** @description `staged`: the change waits for the node's next start. */
+            pendingRestart: boolean;
+            /**
+             * @description `pending`: what the confirming request has to prove (`new_socket`, `new_cert`,
+             *     `proxy_list`).
+             */
+            proof?: string | null;
+            setting: string;
+            /** @description `applied` (200), `staged` (202), `pending` (202) or `restarting` (202). */
+            status: string;
+        };
+        /** @description The body of `POST /api/v1/guarded/{id}`. */
+        GuardedApplyRequest: {
+            /** @description The extra acknowledgements the preview named. */
+            acknowledge?: string[];
+            /** @description The phrase the preview returned, typed by the admin. The server compares it. */
+            confirm: string;
+            /** @description The node the preview was for. */
+            node?: string | null;
+            options?: Record<string, never>;
+            previewId: string;
+            /** @description Why: kept in the audit record. */
+            reason?: string | null;
+            /**
+             * @description The same value (and options) the preview was made for: a different one is
+             *     409 `preview_stale`.
+             */
+            value?: Record<string, never>;
+        };
+        /** @description One check of a dry run. */
+        GuardedCheck: {
+            detail: string;
+            name: string;
+            ok: boolean;
+        };
+        /** @description The body of `POST /api/v1/guarded/pending/{id}/confirm`. */
+        GuardedConfirmRequest: {
+            /**
+             * @description The single-use token the change answered with. Without one, the request must be the same
+             *     admin's session.
+             */
+            confirmToken?: string | null;
+        };
+        /**
+         * @description `GET /api/v1/guarded`: what is guarded on a node and what is pending. No value, preview ID or
+         *     confirmation token is ever in it.
+         */
+        GuardedNodeStatus: {
+            /**
+             * Format: int32
+             * @description The seconds a window change waits (`[api] confirm_window_secs`).
+             */
+            confirmWindowSecs: number;
+            /**
+             * @description `TELLTALE_IGNORE_GUARDED` is set: every guarded entry is ignored (health reason
+             *     `guarded_ignored`).
+             */
+            ignored: boolean;
+            node: string;
+            /**
+             * @description The latest outcomes (newest first, at most 10): applied, confirmed, or rolled back with
+             *     the reason.
+             */
+            outcomes: components["schemas"]["GuardedOutcome"][];
+            pending?: components["schemas"]["GuardedPending"] | null;
+            /** @description Staged changes waiting for a restart (setting IDs). */
+            pendingRestart: string[];
+            /** @description A restart was accepted and the node is on its way down. */
+            restarting: boolean;
+            settings: components["schemas"]["GuardedSetting"][];
+            supervisor: components["schemas"]["Supervisor"];
+        };
+        /** @description How a guarded change ended. */
+        GuardedOutcome: {
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            at: number;
+            node: string;
+            /** @description `confirmed`, `applied` or `rolled_back`. */
+            outcome: string;
+            /**
+             * @description For `rolled_back`: `expired`, `cancelled`, `commit_failed`, `bind_failed` or
+             *     `failed_start`.
+             */
+            reason?: string | null;
+            setting: string;
+        };
+        /**
+         * @description A window change waiting to be confirmed: what it is and how long is left, never its value, a
+         *     preview ID or the confirmation token.
+         */
+        GuardedPending: {
+            /** @description Who made it. */
+            by: string;
+            /**
+             * Format: int64
+             * @description Seconds left, measured on the node's monotonic clock.
+             */
+            deadlineSecs: number;
+            /** @description The pending change's ID (what `confirm` and `cancel` name). */
+            id: string;
+            node: string;
+            setting: string;
+        };
+        /** @description The dry run's answer. Nothing was changed. */
+        GuardedPreview: {
+            /** @description A second acknowledgement the change needs (`acknowledgeNoAdmins`, ...), when it does. */
+            acknowledgements?: string[];
+            checks: components["schemas"]["GuardedCheck"][];
+            /** @description What the change does, in words. */
+            effect: string;
+            mode: string;
+            /**
+             * @description The change needs a session signed in within the last 10 minutes (it weakens security, or
+             *     it restarts the node).
+             */
+            needsRecentSignIn: boolean;
+            node: string;
+            /** @description The nodes it reaches (always one). */
+            nodes: string[];
+            /** @description What to type to confirm (`<node> <setting>`). */
+            phrase: string;
+            /**
+             * @description Send it back with the change. Bound to you, the node, the setting, the value and the
+             *     configuration version; lives 5 minutes.
+             */
+            previewId: string;
+            /**
+             * Format: int32
+             * @description For a window change that needs a temporary parallel listener (a TLS-only change): its port.
+             */
+            proofPort?: number | null;
+            restartRequired: boolean;
+            /** @description The setting is a file's: the control is locked. */
+            setByFile: boolean;
+            setting: string;
+            warnings: string[];
+            /**
+             * @description The change is weaker than what is set now: marked in red, and it needs a sign-in within
+             *     the last 10 minutes.
+             */
+            weakening: boolean;
+            /**
+             * Format: int32
+             * @description Seconds a window change would wait for its confirmation.
+             */
+            windowSecs: number;
+            /**
+             * @description Once confirmed, the node would have no API or DNS listener, or this request's listener
+             *     would go.
+             */
+            wouldDisconnect: boolean;
+        };
+        /** @description The body of `POST /api/v1/guarded/{id}/preview`. */
+        GuardedPreviewRequest: {
+            /** @description The node the change is for (its ID or name). Default: the node answering. */
+            node?: string | null;
+            /** @description Options the setting's form carries (for example `copyState`). */
+            options?: Record<string, never>;
+            /**
+             * @description The new value, in the shape the setting's configuration section has. Not needed for an
+             *     action such as `restart-now`.
+             */
+            value?: Record<string, never>;
+        };
+        /** @description The answer of a confirmation or a cancellation. */
+        GuardedResult: {
+            node: string;
+            /** @description `confirmed` or `rolled_back`. */
+            outcome: string;
+            reason?: string | null;
+            /** @description For a `proxy_list` proof: the client address the node now sees for this request. */
+            seenClient?: string | null;
+            setting: string;
+        };
+        /** @description One guarded setting, as `GET /api/v1/guarded` lists it for this node. */
+        GuardedSetting: {
+            /** @description A guarded entry holds a value for it (confirmed, applied or staged). */
+            hasEntry: boolean;
+            id: string;
+            label: string;
+            /** @description `window`, `immediate`, `staged` or `action`. */
+            mode: string;
+            /** @description A start has the entry on probation (it counts as applied once the node is healthy). */
+            onProbation: boolean;
+            /** @description The configuration paths it covers. */
+            paths: string[];
+            /** @description A staged change waits for the node to restart. */
+            pendingRestart: boolean;
+            /** @description For a `window` setting: `new_socket`, `new_cert` or `proxy_list`. */
+            proof?: string | null;
+            /** @description A file sets it, and wins: the control is locked and shows the file. */
+            setByFile: boolean;
+            /** @description A command-line clear is hiding the replicated entry until the primary's copy changes. */
+            suppressed: boolean;
+        };
+        /** @description The answer of `GET /api/v1/guarded`. */
+        GuardedStatus: {
+            /** @description This node first, then the members the primary can see. */
+            nodes: components["schemas"]["GuardedNodeStatus"][];
+        };
         /** @description REQ: OBS-015 (ADR-104) — how TelltaleDNS is doing, in one word, with the reasons. */
         Health: {
             /** @description When it was worked out (RFC 3339). */
@@ -4966,13 +8297,37 @@ export interface components {
             /** @description Every condition found, the most serious first. Empty when healthy. */
             reasons: components["schemas"]["HealthReason"][];
         };
+        /** @description One of the busiest flows. */
+        HealthFlow: {
+            from: string;
+            /**
+             * @description REQ: API-013 (T35.3) — `from` and `to` in words (a device's name, an upstream's display
+             *     label), for an agent that reads the answer to a person.
+             */
+            fromLabel?: string | null;
+            health: components["schemas"]["MapHealth"];
+            /** Format: double */
+            qps: number;
+            to: string;
+            toLabel?: string | null;
+        };
+        /** @description One node that isn't green, with why. */
+        HealthProblem: {
+            health: components["schemas"]["MapHealth"];
+            id: string;
+            kind: components["schemas"]["MapNodeKind"];
+            label: string;
+            reasons: components["schemas"]["MapReason"][];
+        };
         /** @description REQ: OBS-015 — one condition behind [`Health`]. */
         HealthReason: {
             /**
              * @description Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,
-             *     `sync_lag`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
+             *     `sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
              *     `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
-             *     `rollout_stuck`.
+             *     `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,
+             *     `discovery_agent_failing`,
+             *     `guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`, `names_in_files`.
              * @example upstream_down
              */
             code: string;
@@ -5355,13 +8710,37 @@ export interface components {
         Items_ConfigEntry: {
             items: {
                 /**
+                 * Format: int64
+                 * @description REQ: DNS-023 (T24.13) — how many names this entry answers right now (the device names
+                 *     for `local`).
+                 */
+                answering?: number | null;
+                /**
+                 * @description REQ: API-014 (T23.2, ADR-903 §4) — paths this entry sets through the UI or API that the
+                 *     path rules refuse (under `/proc` or the data directory, a key file, a credential file
+                 *     outside `[node] secret_file_dirs`): they aren't read until an admin sets another.
+                 */
+                credentialIssues?: components["schemas"]["CredentialIssue"][];
+                /**
                  * @description The definition in effect, with the same fields as in `telltale.toml` (absent when
-                 *     hidden).
+                 *     hidden). Credentials read `<redacted>` (API-014).
                  */
                 definition?: Record<string, never> | null;
                 /** @description `upstream`, `upstream_group`, `list`, or `group`. */
                 kind: string;
                 name: string;
+                /**
+                 * @description REQ: API-014 — the fields of `definition` that hold a credential and read `<redacted>`
+                 *     (`headers.Authorization`, `args[1]`, `url` for a URL's password). Send them back as they
+                 *     are to keep the values.
+                 */
+                redacted?: string[];
+                /**
+                 * @description REQ: DNS-019, DNS-023 (ADR-914) — the fields of a shared settings section (`special`,
+                 *     `local`, `clients`) that the config files set: the API can't change them, and the UI
+                 *     shows them as "set by file".
+                 */
+                setByFile?: string[];
                 /**
                  * @description `file` (the config files), `added` (made through the UI or API), `override` (replaces
                  *     the files' entry of that name), or `hidden` (the files' entry is left out).
@@ -5429,6 +8808,11 @@ export interface components {
                 /** @description The device's name in TelltaleDNS (a named client, else the host name). */
                 clientName?: string | null;
                 /**
+                 * @description REQ: DNS-023 (T22.1) — the name it answers as in DNS (`kitchen-tablet.home.arpa`),
+                 *     with `[local] device_domain` set.
+                 */
+                dnsName?: string | null;
+                /**
                  * Format: int64
                  * @description When the router's lease ends (Unix seconds; 0 when unknown).
                  */
@@ -5436,7 +8820,24 @@ export interface components {
                 /** @description The name the router knows it by (its DHCP host name or alias), or the one it announces. */
                 hostname?: string | null;
                 ip: string;
+                /**
+                 * @description REQ: DNS-023 (T24.8, ADR-983) — the IPv6 addresses the router reports for the device
+                 *     (global and unique-local, never link-local), up to 4. With `[local] device_domain` set,
+                 *     each answers AAAA and an `ip6.arpa` PTR under `dnsName`.
+                 */
+                ipv6?: string[];
                 mac: string;
+                /**
+                 * @description REQ: T8.2 (ADR-166, ADR-942) — a client the router remembers but doesn't see now (UniFi's
+                 *     offline clients). It is listed so the admin can see it, but it names no DNS name, gives
+                 *     no discovery binding and isn't counted in a network's devices.
+                 */
+                offline: boolean;
+                /**
+                 * @description REQ: API-012 (T22.3) — the `[[router]]` whose answer named it (`udm`,
+                 *     `home-assistant`); absent for mDNS.
+                 */
+                router?: string | null;
                 /**
                  * @description `router` (read from a `[[router]]`) or `mdns` (the name the device announces,
                  *     `[clients] mdns`; no MAC).
@@ -5449,8 +8850,16 @@ export interface components {
         /** @description A list wrapper used by every collection endpoint. */
         Items_ForwardInfo: {
             items: {
+                /** @description REQ: DNS-010 (T27.7) — a DNSSEC negative trust anchor is added for the domain. */
+                dnssecNta: boolean;
                 /** @example corp.example */
                 domain: string;
+                /** @description REQ: DNS-010 (T27.7) — the client groups the route applies to (empty: every client). */
+                matchGroup: string[];
+                /** @description REQ: DNS-010 (T27.7) — the query types the route applies to (empty: all). */
+                matchQtype: string[];
+                /** @description REQ: CLU-006 (T27.7) — this route stays on this node. */
+                nodeOnly: boolean;
                 /** @description The servers (upstream URLs), in order; a stub zone's are IP addresses. */
                 servers: string[];
                 /** @description `file` (read-only here) or `api`. */
@@ -5481,6 +8890,7 @@ export interface components {
                 blockedServices: string[];
                 /** @description `#rrggbb` for charts and chips (configured, or a stable pick). */
                 color: string;
+                content?: components["schemas"]["GroupContentInfo"] | null;
                 /**
                  * Format: int64
                  * @description Devices seen in the group this hour.
@@ -5494,6 +8904,8 @@ export interface components {
                 dns64Prefix?: string | null;
                 /** @description REQ: FLT-016 (T12.5) — AAAA questions get no data (the group's devices use IPv4). */
                 filterAaaa: boolean;
+                /** @description REQ: FLT-902 — "Off", "Basic", "Enhanced (3 of 21)" and "Ad block", for the Filter Scope column. */
+                filterScope?: string;
                 /** @description Lists this group uses; null means every enabled list. */
                 lists?: string[] | null;
                 name: string;
@@ -5523,9 +8935,16 @@ export interface components {
                  *     or `off` (absent when safe search is off).
                  */
                 safeSearch: boolean;
+                /** @description REQ: FLT-902 — the engines safe search covers (empty with `safeSearch`: every engine). */
+                safeSearchEngines?: string[];
                 /** @description REQ: FLT-010 (T7.10) — the group's schedules, and which of them are on now. */
                 schedules: string[];
                 schedulesOn: string[];
+                /**
+                 * @description REQ: FLT-902 — who the group applies to: its networks, router names and devices, for the
+                 *     profile list's Source column.
+                 */
+                sources?: components["schemas"]["ProfileSource"][];
                 /**
                  * @description REQ: UPS-007 (T9.25) — the upstream group this group's queries go to (absent: `default`,
                  *     or wherever `[[route]]` entries send them).
@@ -5571,15 +8990,28 @@ export interface components {
                 error?: string | null;
                 /**
                  * Format: int64
-                 * @description Queries it blocked (or allowed, for an allow list) on this node since it started.
+                 * @description Queries it blocked (or allowed, for an allow list) since each node started; in a
+                 *     cluster, every node's added up.
                  */
                 hits: number;
                 /** @description `block` or `allow`. */
                 kind: string;
-                /** Format: int64 */
+                /**
+                 * Format: int64
+                 * @description Last time the content changed (Unix seconds).
+                 */
                 lastChangedUnixSeconds?: number | null;
-                /** Format: int64 */
+                /**
+                 * Format: int64
+                 * @description Last download attempt (Unix seconds), whatever its outcome.
+                 */
                 lastCheckedUnixSeconds?: number | null;
+                /**
+                 * Format: int64
+                 * @description REQ: FLT-004 — last time the source was confirmed current: a download, a `304 Not
+                 *     Modified`, or the same content again (Unix seconds).
+                 */
+                lastSuccessUnixSeconds?: number | null;
                 /** Format: int64 */
                 lines: number;
                 /**
@@ -5591,11 +9023,29 @@ export interface components {
                 /** @description Lists it shares names with, most shared first. */
                 overlap: components["schemas"]["ListShare"][];
                 /**
+                 * @description REQ: FLT-901 (T24.29) — the categories that use this list. A list with owners is a category
+                 *     list: it takes its source from the catalog and can be refreshed and put in shadow mode, not
+                 *     edited or deleted (409 `owned_by_category`).
+                 */
+                owners?: components["schemas"]["ListOwner"][];
+                /**
+                 * @description REQ: FLT-004 — a refresh asked for (`POST /api/v1/lists/refresh`) is waiting to start
+                 *     or downloading this list now (also true during a scheduled download). It clears when
+                 *     the download ends; the snapshot follows within seconds if the content changed.
+                 */
+                refreshing?: boolean;
+                /**
                  * Format: int64
                  * @description REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot
                  *     leaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.
                  */
                 regexSkipped: number;
+                /**
+                 * Format: int64
+                 * @description REQ: FLT-004 (T24.28, ADR-992) - modifier rules and regexes it ships. The overlap counts
+                 *     names only, so these are never shown covered by another list.
+                 */
+                rules?: number;
                 /** @description URL, file path, or `inline`. */
                 source: string;
                 /**
@@ -5616,6 +9066,46 @@ export interface components {
             missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
+        Items_ListOverlapRow: {
+            items: {
+                /**
+                 * Format: double
+                 * @description `(unique + rules)` as a share of `entries`, 0-100: what this list adds. 0 when it has
+                 *     no entries compiled yet.
+                 */
+                addsPercent: number;
+                /** @description The lists it shares names with, most shared first (at most 5). */
+                coveredBy: components["schemas"]["ListCover"][];
+                /**
+                 * Format: int64
+                 * @description Entries in the active snapshot (names, regexes and modifier rules).
+                 */
+                entries: number;
+                /**
+                 * @description Groups that name this list in their own `lists` (a list they use by name is never
+                 *     proposed for turning off).
+                 */
+                groups: string[];
+                /** @description `block` or `allow`. */
+                kind: string;
+                /** @description `enforce` or `shadow`. */
+                mode: string;
+                name: string;
+                /**
+                 * Format: int64
+                 * @description Modifier rules and regexes: counted as unique, since overlap is by name.
+                 */
+                rules: number;
+                /**
+                 * Format: int64
+                 * @description Names no other list of its kind has: what turning it off would lose.
+                 */
+                unique: number;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
         Items_LocalName: {
             items: {
                 /** @example nas.home.arpa */
@@ -5623,6 +9113,61 @@ export interface components {
                 records: components["schemas"]["RecordInput"][];
                 /** @description `file` (read-only here) or `api`. */
                 source: string;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
+        Items_NetworkInfo: {
+            items: {
+                /**
+                 * Format: int64
+                 * @description Host addresses in it (without the network and broadcast addresses).
+                 */
+                addresses: number;
+                /**
+                 * Format: int64
+                 * @description Devices known in it: the routers' DHCP clients, Home Assistant's devices, and mDNS
+                 *     names.
+                 */
+                devices: number;
+                dhcpEnd?: string | null;
+                /** @description The DHCP pool, when the router serves DHCP on it. */
+                dhcpStart?: string | null;
+                /** @description The domain the router hands out on it. */
+                domain?: string | null;
+                gateway?: string | null;
+                /** @description The client group whose networks hold it (most specific), if any. */
+                group?: string | null;
+                /** @example IoT */
+                name: string;
+                /**
+                 * Format: int64
+                 * @description Of `devices`, those outside the DHCP pool (fixed addresses and reservations).
+                 */
+                outsidePool: number;
+                /** @description The router's own word for it (UniFi: `corporate`, `guest`). */
+                purpose?: string | null;
+                /** @description The `[[router]]` that reported it. */
+                router?: string | null;
+                /**
+                 * @description `router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example
+                 *     on a tagged VLAN interface; it is named after the interface) or `group` (only a
+                 *     `[[group]] networks` entry).
+                 */
+                source: string;
+                /**
+                 * @description The network in CIDR form.
+                 * @example 192.168.20.0/24
+                 */
+                subnet: string;
+                /**
+                 * Format: double
+                 * @description `devices` as a share of `addresses`, 0–100.
+                 */
+                usedPercent: number;
+                /** Format: int32 */
+                vlan?: number | null;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -5679,6 +9224,7 @@ export interface components {
         /** @description A list wrapper used by every collection endpoint. */
         Items_Plan: {
             items: {
+                /** @description The write's body as shown: credentials read `<redacted>` (API-014). */
                 body?: Record<string, never> | null;
                 /**
                  * Format: int64
@@ -6018,6 +9564,18 @@ export interface components {
                 name: string;
                 /** Format: int64 */
                 requests: number;
+                /**
+                 * @description REQ: UPS-006 — why this node can't reach it, when it can say: `this node has no IPv6
+                 *     route` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing.
+                 */
+                routeProblem?: string | null;
+                /**
+                 * @description REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the
+                 *     upstream sets a `source`.
+                 */
+                source?: string | null;
+                /** @description REQ: UPS-013 — set while this node no longer holds that address: its queries fail. */
+                sourceProblem?: string | null;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -6044,6 +9602,13 @@ export interface components {
                  * @description Records loaded (from the file and inline).
                  */
                 records: number;
+                /** @description REQ: DNS-010 (T27.7) — `file` (read-only here) or `api` (made in the UI or API). */
+                source: string;
+                /**
+                 * @description REQ: DNS-010 (T27.7) — an API zone's records, to edit them; empty for a file zone (its
+                 *     records are read-only here, and only the count shows).
+                 */
+                values: components["schemas"]["ZoneRecordInput"][];
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -6145,6 +9710,24 @@ export interface components {
             /** Format: double */
             p99Ms: number;
         };
+        /**
+         * @description REQ: FLT-004 (T24.28, ADR-992) - names a list shares with another list that does the same
+         *     thing, as a share of this list's own entries.
+         */
+        ListCover: {
+            /** @description The other list. */
+            list: string;
+            /**
+             * Format: int64
+             * @description Names both have.
+             */
+            names: number;
+            /**
+             * Format: double
+             * @description `names` as a share of this list's entries, 0-100.
+             */
+            percent: number;
+        };
         /** @description A filter list and its download state. */
         ListInfo: {
             /** Format: int64 */
@@ -6158,15 +9741,28 @@ export interface components {
             error?: string | null;
             /**
              * Format: int64
-             * @description Queries it blocked (or allowed, for an allow list) on this node since it started.
+             * @description Queries it blocked (or allowed, for an allow list) since each node started; in a
+             *     cluster, every node's added up.
              */
             hits: number;
             /** @description `block` or `allow`. */
             kind: string;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Last time the content changed (Unix seconds).
+             */
             lastChangedUnixSeconds?: number | null;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Last download attempt (Unix seconds), whatever its outcome.
+             */
             lastCheckedUnixSeconds?: number | null;
+            /**
+             * Format: int64
+             * @description REQ: FLT-004 — last time the source was confirmed current: a download, a `304 Not
+             *     Modified`, or the same content again (Unix seconds).
+             */
+            lastSuccessUnixSeconds?: number | null;
             /** Format: int64 */
             lines: number;
             /**
@@ -6178,11 +9774,29 @@ export interface components {
             /** @description Lists it shares names with, most shared first. */
             overlap: components["schemas"]["ListShare"][];
             /**
+             * @description REQ: FLT-901 (T24.29) — the categories that use this list. A list with owners is a category
+             *     list: it takes its source from the catalog and can be refreshed and put in shadow mode, not
+             *     edited or deleted (409 `owned_by_category`).
+             */
+            owners?: components["schemas"]["ListOwner"][];
+            /**
+             * @description REQ: FLT-004 — a refresh asked for (`POST /api/v1/lists/refresh`) is waiting to start
+             *     or downloading this list now (also true during a scheduled download). It clears when
+             *     the download ends; the snapshot follows within seconds if the content changed.
+             */
+            refreshing?: boolean;
+            /**
              * Format: int64
              * @description REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot
              *     leaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.
              */
             regexSkipped: number;
+            /**
+             * Format: int64
+             * @description REQ: FLT-004 (T24.28, ADR-992) - modifier rules and regexes it ships. The overlap counts
+             *     names only, so these are never shown covered by another list.
+             */
+            rules?: number;
             /** @description URL, file path, or `inline`. */
             source: string;
             /**
@@ -6198,6 +9812,122 @@ export interface components {
              * @description REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).
              */
             unique: number;
+        };
+        /** @description REQ: FLT-004 (T24.28, ADR-992) - one enabled list's overlap with the others. */
+        ListOverlapRow: {
+            /**
+             * Format: double
+             * @description `(unique + rules)` as a share of `entries`, 0-100: what this list adds. 0 when it has
+             *     no entries compiled yet.
+             */
+            addsPercent: number;
+            /** @description The lists it shares names with, most shared first (at most 5). */
+            coveredBy: components["schemas"]["ListCover"][];
+            /**
+             * Format: int64
+             * @description Entries in the active snapshot (names, regexes and modifier rules).
+             */
+            entries: number;
+            /**
+             * @description Groups that name this list in their own `lists` (a list they use by name is never
+             *     proposed for turning off).
+             */
+            groups: string[];
+            /** @description `block` or `allow`. */
+            kind: string;
+            /** @description `enforce` or `shadow`. */
+            mode: string;
+            name: string;
+            /**
+             * Format: int64
+             * @description Modifier rules and regexes: counted as unique, since overlap is by name.
+             */
+            rules: number;
+            /**
+             * Format: int64
+             * @description Names no other list of its kind has: what turning it off would lose.
+             */
+            unique: number;
+        };
+        /** @description REQ: FLT-901 — a category that uses a list. */
+        ListOwner: {
+            /** @description The category's ID (`adult`). */
+            id: string;
+            /** @description Its name (`Adult content`). */
+            name: string;
+        };
+        /** @description A list a prune would turn off. */
+        ListPruneCandidate: {
+            /**
+             * Format: double
+             * @description What it adds as a share of its entries (the same number as in the overlap).
+             */
+            addsPercent: number;
+            /** @description Lists that still have most of its names. */
+            coveredBy: components["schemas"]["ListCover"][];
+            /** Format: int64 */
+            entries: number;
+            /**
+             * Format: int64
+             * @description The most names turning it off, together with the others in this plan, could stop
+             *     blocking: its own unique names and rules, and names it shares with other lists in the
+             *     plan (an upper bound: a name another enabled list still has isn't lost).
+             */
+            losesAtMost: number;
+            name: string;
+            /** Format: int64 */
+            unique: number;
+        };
+        /** @description An enabled list a prune keeps, and why. */
+        ListPruneKept: {
+            name: string;
+            reason: string;
+        };
+        /** @description REQ: FLT-004 (T24.28, ADR-992) - what a prune would turn off at a threshold. */
+        ListPrunePlan: {
+            /** @description Lists that would be turned off, least-adding first. */
+            candidates: components["schemas"]["ListPruneCandidate"][];
+            /**
+             * @description True when the lists changed after the last compile finished (a list turned off or
+             *     edited): what each adds isn't known yet, so nothing is proposed. Preview again.
+             */
+            compilePending: boolean;
+            /**
+             * Format: int64
+             * @description Configuration version the plan was read at (send it back to apply).
+             */
+            configVersion: number;
+            /** @description Every other enabled list, with the reason it stays. */
+            kept: components["schemas"]["ListPruneKept"][];
+            /**
+             * Format: int64
+             * @description An upper bound on the names the whole plan stops blocking (a share of the snapshot is
+             *     `of_names`).
+             */
+            losesAtMost: number;
+            /** @description In a sentence. */
+            note: string;
+            /**
+             * Format: int64
+             * @description Names in the active snapshot.
+             */
+            ofNames: number;
+            /**
+             * Format: int64
+             * @description Version of the compiled snapshot the numbers come from (send it back to apply).
+             */
+            snapshotVersion: number;
+            /**
+             * Format: double
+             * @description The threshold used: lists adding at most this share of their own entries.
+             */
+            thresholdPercent: number;
+        };
+        /** @description A named list a refresh leaves out. */
+        ListRefreshSkip: {
+            name: string;
+            /** @description `disabled` (the list is off: it's never downloaded until it's turned on). */
+            reason: string;
         };
         /** @description Names a list shares with another (OBS-009). */
         ListShare: {
@@ -6264,6 +9994,72 @@ export interface components {
                 username: string;
             }[];
         };
+        /** @description REQ: FLT-004 (T24.28, ADR-992) - `POST /api/v1/lists/prune`. */
+        ListsPruneRequest: {
+            /**
+             * Format: int64
+             * @description The preview's `configVersion`: any configuration change since is a 409.
+             */
+            configVersion: number;
+            /**
+             * @description The lists the person saw in the preview. Each must still be in the plan, or nothing is
+             *     changed (409).
+             */
+            names: string[];
+            /**
+             * Format: int64
+             * @description The preview's `snapshotVersion`: another compile since is a 409.
+             */
+            snapshotVersion: number;
+            /**
+             * Format: double
+             * @description Lists adding at most this share of their entries, 0 to 50 (default 1).
+             */
+            thresholdPercent?: number | null;
+        };
+        /** @description REQ: FLT-004 (T24.28, ADR-992) - what a prune turned off. */
+        ListsPruneResult: {
+            /**
+             * Format: int64
+             * @description The configuration version after the last change.
+             */
+            configVersion: number;
+            /** @description The lists now off. They stay in the configuration: turn one on again in Manage lists. */
+            disabled: string[];
+            note: string;
+        };
+        /** @description REQ: FLT-004 — which lists to download again now (`POST /api/v1/lists/refresh`). */
+        ListsRefreshRequest: {
+            /**
+             * @description Only these lists, by name (as `GET /api/v1/lists` lists them). Absent or empty: every
+             *     enabled list.
+             * @example [
+             *       "hagezi-pro"
+             *     ]
+             */
+            names?: string[] | null;
+        };
+        /** @description REQ: FLT-004 — what a refresh queued (`202 Accepted`), or with `dryRun`, would queue. */
+        ListsRefreshResult: {
+            /**
+             * @description Of `queued`, the lists downloading already: each is downloaded once more when that
+             *     download ends.
+             */
+            alreadyRefreshing: string[];
+            /** @description True when nothing was queued (`?dryRun=true`): `queued` is what would be. */
+            dryRun: boolean;
+            /**
+             * @description The node that downloads and compiles the lists: this one, or (on a cluster replica) the
+             *     primary the request was forwarded to.
+             */
+            node?: string | null;
+            /** @description What happens next, in a sentence. */
+            note: string;
+            /** @description The lists queued for download now (or that would be), in configuration order. */
+            queued: string[];
+            /** @description Named lists left out, and why. */
+            skipped: components["schemas"]["ListRefreshSkip"][];
+        };
         /** @description A name TelltaleDNS answers itself. */
         LocalName: {
             /** @example nas.home.arpa */
@@ -6271,6 +10067,11 @@ export interface components {
             records: components["schemas"]["RecordInput"][];
             /** @description `file` (read-only here) or `api`. */
             source: string;
+        };
+        /** @description Body of `POST /api/auth`. */
+        LoginBody: {
+            /** @description The token. */
+            password?: string | null;
         };
         LoginRequest: {
             password: string;
@@ -6329,6 +10130,162 @@ export interface components {
             /** @description What to know, in one sentence (e.g. promote another node first). */
             note?: string | null;
             window?: components["schemas"]["NodeMaintenance"] | null;
+        };
+        /** @description How many nodes are in each state. */
+        MapCounts: {
+            /** Format: int32 */
+            green: number;
+            /** Format: int32 */
+            idle: number;
+            /** Format: int32 */
+            red: number;
+            /** Format: int32 */
+            yellow: number;
+        };
+        /** @description An edge `from -> to`. */
+        MapEdge: {
+            /** Format: double */
+            blockedPct: number;
+            /** Format: int64 */
+            count: number;
+            /** Format: double */
+            errPct: number;
+            from: string;
+            health: components["schemas"]["MapHealth"];
+            /** Format: double */
+            qps: number;
+            /** @description The last lookups on this edge (the busiest 64 device edges only). */
+            recent?: components["schemas"]["MapRecent"][];
+            /** Format: double */
+            slowPct: number;
+            /** @description Structural edges (gateway to network, network to device) carry no rate. */
+            structural: boolean;
+            to: string;
+        };
+        /**
+         * @description One word for a node or an edge: colour is never alone (shape and words change too).
+         * @enum {string}
+         */
+        MapHealth: "idle" | "green" | "yellow" | "red";
+        /** @description A node of the map. */
+        MapNode: {
+            /** @description A device's address (not at privacy level 2 and above). */
+            address?: string | null;
+            /**
+             * Format: int64
+             * @description Answers in the window (an estimate), and the real events behind it.
+             */
+            count: number;
+            /**
+             * Format: int32
+             * @description Devices folded into a `more` node.
+             */
+            folded?: number | null;
+            /** @description A device's client group. */
+            group?: string | null;
+            health: components["schemas"]["MapHealth"];
+            /**
+             * @description Stable within a snapshot and across them: `gateway`, `net:<name>`, `dev:<address>`,
+             *     `res:<node>`, `ans:<node>:<kind>`, `up:<name>`, `more:<network>`, `dev:hidden`.
+             */
+            id: string;
+            kind: components["schemas"]["MapNodeKind"];
+            label: string;
+            /** @description The network a device (or a fold) is in. */
+            network?: string | null;
+            /** @description The TelltaleDNS node a resolver or an answer node belongs to. */
+            node?: string | null;
+            /**
+             * Format: double
+             * @description Answers per second over the window (an estimate when the sample is thinned).
+             */
+            qps: number;
+            reasons: components["schemas"]["MapReason"][];
+            /** Format: int64 */
+            sampled: number;
+        };
+        /**
+         * @description What a node is.
+         * @enum {string}
+         */
+        MapNodeKind: "gateway" | "network" | "device" | "more" | "resolver" | "answer" | "upstream";
+        /** @description A stable reason behind a colour, in words. */
+        MapReason: {
+            /**
+             * @description Stable: `error_rate`, `slow`, `rate_limited`, `high_blocked`, `anomaly`, `breaker_open`,
+             *     `breaker_half_open`, `unreachable`, `severe`, `degraded`, `router_error`,
+             *     `not_configured`, `few_samples`, `children`, `member_down`, `no_route`.
+             */
+            code: string;
+            summary: string;
+        };
+        /** @description One recently kept lookup on an edge (no name: the map never shows one). */
+        MapRecent: {
+            /** @description The status: `cached`, `forwarded`, `blocked`, ... */
+            status: string;
+            /** Format: int32 */
+            totalMs: number;
+            /** Format: int64 */
+            tsUnixMicros: number;
+        };
+        /** @description `GET /api/v1/map`: the network as a graph, coloured by health. */
+        MapSnapshot: {
+            counts: components["schemas"]["MapCounts"];
+            /**
+             * Format: int64
+             * @description Lookups the worker rings dropped in the window (the estimate is scaled for them).
+             */
+            dropped: number;
+            edges: components["schemas"]["MapEdge"][];
+            /** @description When it was built (RFC 3339). */
+            generatedAt: string;
+            /** @description The worst health of any resolver or network (`idle` when nothing has enough answers). */
+            health: components["schemas"]["MapHealth"];
+            missingNodes: string[];
+            nodes: components["schemas"]["MapNode"][];
+            /** @description Some node's part is missing: the map is of the nodes that answered. */
+            partial: boolean;
+            /**
+             * Format: int32
+             * @description The strictest privacy level in force (0 to 3): at 2 devices are hidden, at 3 only totals.
+             */
+            privacy: number;
+            /**
+             * Format: int32
+             * @description Every Nth lookup is sampled (1: nothing is thinned); an estimate beyond that.
+             */
+            sampleRate: number;
+            /** @description Devices were folded or edges cut for the caps. */
+            truncated: boolean;
+            /**
+             * Format: int32
+             * @description The window the rates cover.
+             */
+            windowSecs: number;
+        };
+        /** @description `GET /api/v1/map/world`: where answers point. */
+        MapWorld: {
+            /**
+             * @description True when answers are placed (`regions`). False when they can't be: `reason` says why
+             *     (`geoip_off`, `geoip_missing`, `address_not_recorded` or `privacy`). With
+             *     `address_not_recorded` the upstream `markers` are still there: they are where the
+             *     upstreams are, not where answers point (the lookup's answer address isn't kept: ADR-970).
+             */
+            available: boolean;
+            /** @description The country arcs start from (`[map.geoip] home_country`); unset: "Your network". */
+            homeCountry?: string | null;
+            markers: components["schemas"]["WorldMarker"][];
+            reason?: string | null;
+            regions: components["schemas"]["WorldRegion"][];
+            unlocated: components["schemas"]["WorldUnlocated"];
+            /**
+             * Format: int64
+             * @description Upstreams with no place on the map (a host name, or an address with no country).
+             */
+            unplacedUpstreams: number;
+            updatedAt: string;
+            /** Format: double */
+            windowSecs: number;
         };
         /** @description Evidence that client IPs appear masked. */
         MaskedClients: {
@@ -6391,6 +10348,79 @@ export interface components {
          * @enum {string}
          */
         NameMatch: "substring" | "exact" | "suffix" | "glob" | "regex";
+        /**
+         * @description `GET /api/v1/map/health`: counts by health, what is red or yellow and why, and the busiest
+         *     flows. Device names are left out at privacy level 2 and above (they are not in the map then).
+         */
+        NetworkHealth: {
+            /** @description The five busiest flows. */
+            busiest: components["schemas"]["HealthFlow"][];
+            counts: components["schemas"]["MapCounts"];
+            generatedAt: string;
+            health: components["schemas"]["MapHealth"];
+            missingNodes: string[];
+            partial: boolean;
+            /** Format: int32 */
+            privacy: number;
+            /** @description Red first, then yellow; at most 50. */
+            problems: components["schemas"]["HealthProblem"][];
+            /** Format: int32 */
+            sampleRate: number;
+        };
+        /**
+         * @description REQ: API-013 (T22.2) — a network: a LAN or VLAN a router reported, or a client group's
+         *     network that no router reported, with how many known devices are in it.
+         */
+        NetworkInfo: {
+            /**
+             * Format: int64
+             * @description Host addresses in it (without the network and broadcast addresses).
+             */
+            addresses: number;
+            /**
+             * Format: int64
+             * @description Devices known in it: the routers' DHCP clients, Home Assistant's devices, and mDNS
+             *     names.
+             */
+            devices: number;
+            dhcpEnd?: string | null;
+            /** @description The DHCP pool, when the router serves DHCP on it. */
+            dhcpStart?: string | null;
+            /** @description The domain the router hands out on it. */
+            domain?: string | null;
+            gateway?: string | null;
+            /** @description The client group whose networks hold it (most specific), if any. */
+            group?: string | null;
+            /** @example IoT */
+            name: string;
+            /**
+             * Format: int64
+             * @description Of `devices`, those outside the DHCP pool (fixed addresses and reservations).
+             */
+            outsidePool: number;
+            /** @description The router's own word for it (UniFi: `corporate`, `guest`). */
+            purpose?: string | null;
+            /** @description The `[[router]]` that reported it. */
+            router?: string | null;
+            /**
+             * @description `router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example
+             *     on a tagged VLAN interface; it is named after the interface) or `group` (only a
+             *     `[[group]] networks` entry).
+             */
+            source: string;
+            /**
+             * @description The network in CIDR form.
+             * @example 192.168.20.0/24
+             */
+            subnet: string;
+            /**
+             * Format: double
+             * @description `devices` as a share of `addresses`, 0–100.
+             */
+            usedPercent: number;
+            /** Format: int32 */
+            vlan?: number | null;
+        };
         /** @description A new display: its link's code, shown only in this response. */
         NewDisplay: {
             /**
@@ -6420,6 +10450,15 @@ export interface components {
             info: components["schemas"]["TokenInfo"];
             /** @description The token, shown only now: send as `Authorization: Bearer <token>`. */
             token: string;
+        };
+        /** @description One address this node holds, for the Upstreams form's `source` suggestions. */
+        NodeAddress: {
+            /** @description `198.51.100.252` */
+            address: string;
+            /** @description The interface (`eth0`, `eth0.100`). */
+            interface: string;
+            /** @description The network it is in, which a shared upstream can name instead: `198.51.100.0/24`. */
+            network: string;
         };
         /** @description REQ: OBS-028 — every node side by side over one window. */
         NodeCompare: {
@@ -6584,6 +10623,24 @@ export interface components {
             witness: boolean;
         };
         /**
+         * @description One per-node section: the fields in effect, which of them the files set, and whether a restart
+         *     is still pending for it.
+         */
+        NodeSection: {
+            /** @description The fields in effect, with the same names as in `telltale.toml`. */
+            fields: Record<string, never>;
+            /** @description The section differs from what the node started with: it applies after a restart. */
+            pendingRestart: boolean;
+            /** @description Whether every field of the section applies only after a restart of the node. */
+            restartOnly: boolean;
+            /** @description `cache`, `support` or `updates` (the names the `*-settings` routes use). */
+            section: string;
+            /** @description The fields the configuration files set: the API can't change them (409 `set_by_file`). */
+            setByFile: string[];
+            /** @description Whether the API set this section for the node (`false`: the files' values apply). */
+            stored: boolean;
+        };
+        /**
          * @description One node's ratios over time, for the sparklines (at most 240 points: buckets summed into
          *     spans). A span without a base (no answers, no upstream exchanges) is null.
          */
@@ -6596,6 +10653,22 @@ export interface components {
             /** @description Each span's start, Unix seconds. */
             start: number[];
             upstreamFailPct: (number | null)[];
+        };
+        /**
+         * @description REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — `GET /api/v1/node-settings/{node}`:
+         *     the per-node sections of one node (`cache`, `support`, `updates`).
+         */
+        NodeSettings: {
+            /** @description The node the sections belong to. */
+            node: string;
+            sections: components["schemas"]["NodeSection"][];
+        };
+        /** @description A category the catalog does not offer, and why. */
+        NotOfferedView: {
+            alternative?: string | null;
+            group: string;
+            name: string;
+            reason: string;
         };
         /** @description REQ: OBS-033 — `POST /api/v1/annotations`: a note on every time chart. */
         NoteRequest: {
@@ -6616,10 +10689,105 @@ export interface components {
             /** @description Label. */
             name: string;
         };
+        /**
+         * @description REQ: API-016 (T23.10, ADR-903 §6, ADR-967) — one OIDC provider as the API shows it: its
+         *     settings (the client secret as a name, never a value), where it comes from, and whether this
+         *     node serves its sign-in button.
+         */
+        OidcProviderEntry: {
+            /** @description Whether the button works on this node. */
+            active: boolean;
+            clientId: string;
+            /** @description The role for people in no mapped group; absent means they can't sign in. */
+            defaultRole?: string | null;
+            groupsClaim: string;
+            /** @description The short ID used in URLs. */
+            id: string;
+            issuer: string;
+            /** @description The button label. */
+            name: string;
+            /**
+             * @description Why it doesn't (no `public_url` on this node, an unreadable secret), or what went wrong
+             *     the last time the provider was read.
+             */
+            reason?: string | null;
+            /** @description The address to register with the provider as the redirect URI; absent without `public_url`. */
+            redirectUri?: string | null;
+            requireVerifiedEmail: boolean;
+            /** @description Group to role rules, in order. */
+            roles: components["schemas"]["OidcRoleRuleInfo"][];
+            scopes: string[];
+            /** @description The stored secret's name, when `secretSource` is `stored`. */
+            secret?: string | null;
+            /** @description Whether this node can read the secret now; absent when none is set. */
+            secretReadable?: boolean | null;
+            /**
+             * @description Where the client secret comes from: `stored` (the encrypted store, by name), `file`,
+             *     `inline` (in the configuration file), or `none` (a public client).
+             */
+            secretSource: string;
+            /** @description `file` (the configuration files define it; read-only here) or `api`. */
+            source: string;
+            usernameClaim: string;
+        };
+        /** @description REQ: API-016 (T23.10) — `GET /api/v1/oidc-providers`. */
+        OidcProviderList: {
+            items: components["schemas"]["OidcProviderEntry"][];
+            /**
+             * @description This node's `[auth.oidc] public_url` (node-local, set in its file); empty when unset, and
+             *     then every provider is inactive here.
+             */
+            publicUrl: string;
+        };
+        /** @description One group to role rule of an OIDC provider. */
+        OidcRoleRuleInfo: {
+            group: string;
+            /** @description `viewer`, `operator` or `admin`. */
+            role: string;
+        };
         /** @description `POST /api/v1/auth/display`. */
         OpenDisplay: {
             /** @description The code from the display's link. */
             code: string;
+        };
+        /** @description REQ: API-016, OBS-006 (T23.11) — `GET /api/v1/otlp`: the OTLP export in effect on this node. */
+        OtlpEntry: {
+            /** @description Whether the export runs on this node. */
+            active: boolean;
+            /** @description The collector's address (a password in it removed); absent when there is none. */
+            endpoint?: string | null;
+            headers: components["schemas"]["OtlpHeader"][];
+            /** Format: int32 */
+            intervalSecs: number;
+            /** @description Why it doesn't, when an endpoint is set. */
+            reason?: string | null;
+            /**
+             * @description `none` (no export), `file` (the configuration files set the destination; read-only here)
+             *     or `api`.
+             */
+            source: string;
+            /**
+             * Format: int32
+             * @description Trace settings (a file's; read at start).
+             */
+            tracesSampleEvery: number;
+            /** Format: int32 */
+            tracesSlowMs: number;
+        };
+        /** @description REQ: API-016, OBS-006 (T23.11) — one header of the OTLP export. */
+        OtlpHeader: {
+            name: string;
+            /** @description Whether this node can read the secret now (`stored` only). */
+            readable?: boolean | null;
+            /** @description The stored secret's name, when `source` is `stored`. */
+            secret?: string | null;
+            /**
+             * @description `stored` (a stored secret, by name) or `inline` (a value in the configuration file: never
+             *     shown, `<redacted>`; enter it as a stored secret to move it to the UI).
+             */
+            source: string;
+            /** @description `<redacted>` for an inline value; absent for a stored one. */
+            value?: string | null;
         };
         /**
          * @description REQ: OBS-018 (ADR-109) — a blocked name that looks like it shouldn't be: devices kept
@@ -6668,6 +10836,38 @@ export interface components {
             /** @description When blocking turns back on (RFC 3339). */
             until: string;
         };
+        /** @description Body of `PUT /api/v1/pihole-api`: fields left out keep their value. */
+        PiholeApiSettings: {
+            enabled?: boolean | null;
+            /** Format: int32 */
+            maxPauseMinutes?: number | null;
+        };
+        /** @description The settings as the admin API shows them: never the token. */
+        PiholeApiStatus: {
+            /** @description Whether the Pi-hole compatible API answers. Off by default. */
+            enabled: boolean;
+            /**
+             * Format: int64
+             * @description When a request last carried the token (to the minute).
+             */
+            lastUsedUnixSeconds?: number | null;
+            /**
+             * Format: int32
+             * @description The longest pause it may start, in minutes (1 to 1,440). Pi-hole's "disable with no timer"
+             *     pauses for this long.
+             */
+            maxPauseMinutes: number;
+            /** Format: int64 */
+            tokenCreatedUnixSeconds?: number | null;
+            /** @description Whether a token has been issued (the token itself is shown only when it is made). */
+            tokenSet: boolean;
+        };
+        /** @description A freshly issued token: shown once. */
+        PiholeApiToken: {
+            status: components["schemas"]["PiholeApiStatus"];
+            /** @description The token. It is not stored and can't be read again: rotate to get another. */
+            token: string;
+        };
         /** @description REQ: CLU-013 — `POST /api/v1/cluster/versions/{version}/pin`. */
         PinRequest: {
             /**
@@ -6679,6 +10879,7 @@ export interface components {
         };
         /** @description A planned change (REQ: AGT-007). */
         Plan: {
+            /** @description The write's body as shown: credentials read `<redacted>` (API-014). */
             body?: Record<string, never> | null;
             /**
              * Format: int64
@@ -6715,6 +10916,69 @@ export interface components {
             summary: string;
             /** @description The MCP tool that made it, e.g. `plan_block_domain`. */
             tool: string;
+        };
+        /** @description One line of a section: a list, a service, a schedule, a rule, a rewrite, an upstream group. */
+        PolicyItem: {
+            /** @description More, in words (`Mon-Fri 21:00-07:00`). */
+            detail?: string | null;
+            /** @description What gives the device this line: `group kids`, `device`, `everyone`, `a schedule`. */
+            from?: string | null;
+            /** @description What it is (`ads`, `tiktok`, `bedtime`, `example.com`). */
+            label: string;
+            link?: components["schemas"]["PolicyLink"] | null;
+            /**
+             * @description `on`, `off`, `in_effect`, `not_in_effect`, `not_applied`, `expired`, `shadow`, or absent when a line has no
+             *     state of its own.
+             */
+            state?: string | null;
+            /**
+             * Format: int64
+             * @description When it stops applying (a rule's expiry), Unix seconds.
+             */
+            untilUnixSeconds?: number | null;
+        };
+        /** @description A page in the UI a line comes from. */
+        PolicyLink: {
+            /** @description Its query parameters. */
+            params?: {
+                [key: string]: string;
+            };
+            /** @description A UI route (`/groups`, `/lists`, `/rules`, ...). */
+            path: string;
+        };
+        /** @description One rung of the identification ladder (ADR-973, ADR-976). */
+        PolicyRung: {
+            label: string;
+            /** @description The rung that decided. */
+            matched: boolean;
+            /**
+             * @description `client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `ip`, `cidr`, `router_name`, `default`
+             *     (the values Explain's `identifiedBy` uses).
+             */
+            source: string;
+        };
+        /** @description A titled group of lines. Sections are the panel's unit; it renders whatever arrives, in order. */
+        PolicySection: {
+            /**
+             * @description `block`, `lists`, `services`, `safe_search`, `rewrites`, `schedules`, `rules`, `upstream`;
+             *     new sections get new ids.
+             */
+            id: string;
+            items: components["schemas"]["PolicyItem"][];
+            link?: components["schemas"]["PolicyLink"] | null;
+            /**
+             * @description One sentence that stands alone (T35.2): it names the group and the count, and never points at the page ("below", "these"), so the API and an agent read it as it is.
+             * @example Group kids uses the 3 lists it names.
+             */
+            summary: string;
+            title: string;
+        };
+        /** @description A preset (`basic`). */
+        PresetView: {
+            categories: string[];
+            description: string;
+            id: string;
+            name: string;
         };
         /**
          * @description REQ: OBS-020 (ADR-107) — one synthetic probe: a DNS listener asked through its own
@@ -6813,6 +11077,39 @@ export interface components {
             title: string;
             /** @description URI identifying the problem type. */
             type: string;
+        };
+        /** @description The picker's data. */
+        ProfileDevices: {
+            devices: components["schemas"]["ProfileSource"][];
+            networks: components["schemas"]["ProfileSource"][];
+        };
+        /** @description One way to recognize a device. */
+        ProfileKey: {
+            /** @description `mac`, `ip`, `name` (a router name), or `id` (a client ID). */
+            kind: string;
+            /** @description A MAC with the locally administered bit (a private Wi-Fi address, ADR-910): it may change. */
+            randomized?: boolean;
+            /** @description As a `[[client]] match` key is written (`aa:bb:..`, `192.168.1.5`, `hostname:tv`). */
+            value: string;
+        };
+        /** @description A network or a device the picker offers (REQ: FLT-902). */
+        ProfileSource: {
+            /** @description A configured device (a `[[client]]`), as opposed to one only seen. */
+            configured?: boolean;
+            /** @description Where the device is defined: `file` (read-only) or `api`. */
+            definedIn?: string | null;
+            /** @description The group a device is in now (its effective group), or the group that holds a network. */
+            group?: string | null;
+            /** @description A device class (`phone`, `tv`, ...), or `network`. */
+            icon: string;
+            /** @description What to write: a CIDR for a network, a configured device's name, or a seen device's address. */
+            id: string;
+            /** @description The keys the device can be selected by. */
+            keys?: components["schemas"]["ProfileKey"][];
+            /** @description `network` or `device`. */
+            kind: string;
+            /** @description The name to show: a network's name, a device's name or its address. */
+            label: string;
         };
         /** @description What promoting this node would do (`POST /cluster/promote?dryRun=true`, AGT-002). */
         PromotePlan: {
@@ -6921,6 +11218,8 @@ export interface components {
         };
         /** @description One record of a local name. */
         RecordInput: {
+            /** @description REQ: CLU-006 (T27.7) — keep this record on this node only (a cluster doesn't share it). */
+            nodeOnly?: boolean;
             /**
              * Format: int32
              * @description TTL in seconds (default: `[local] default_ttl`).
@@ -7096,6 +11395,108 @@ export interface components {
             /** @description Since when a change has waited for a canary (RFC 3339). */
             waitingSince?: string | null;
         };
+        /**
+         * @description REQ: API-016 (T23.8) — a router's certificate as the console presents it
+         *     (`POST /checks/router-certificate`).
+         */
+        RouterCertificate: {
+            /** @description SHA-256 of the DER, as colon-separated hex. */
+            fingerprintSha256: string;
+            /** @description The names it carries (subject and subject alternative names). */
+            names: string[];
+            /** @description The PEM text, ready to paste into `tls_ca_pem`. */
+            pem: string;
+            /**
+             * @description The name to set as `tls_server_name` when the certificate names something other than the
+             *     address.
+             */
+            suggestedTlsServerName?: string | null;
+        };
+        /** @description REQ: API-016 (T23.8) — a read-only poll of a router as a draft (`POST /checks/router`). */
+        RouterCheck: {
+            /**
+             * @description Whether a stored credential went to the address (it's sent only to the address it was
+             *     saved for; see the check's help).
+             */
+            credentialSent: boolean;
+            /** Format: int32 */
+            devices: number;
+            /** @description Why it failed, with the address's password removed. */
+            error?: string | null;
+            /** Format: int32 */
+            networks: number;
+            ok: boolean;
+        };
+        /** @description REQ: API-016 (T23.7) — one credential field of a router and where it stands on this node. */
+        RouterCredential: {
+            /** @description `api_key`, `api_secret`, or `password`. */
+            field: string;
+            /** @description Why it can't be used here (named, never valued), when it can't. */
+            issue?: string | null;
+            /** @description Whether this node can read it now; `None` when nothing is set. */
+            readable?: boolean | null;
+            /** @description The stored secret's name, when `source` is `stored`. */
+            secret?: string | null;
+            /** @description `file` (read as it is), `stored` (the encrypted store, by name), or `none`. */
+            source: string;
+        };
+        /**
+         * @description REQ: API-016 (T23.7, ADR-921) — one router integration as the API shows it: its settings
+         *     (secrets as names, never values), where it comes from, and what this node's poll of it did.
+         */
+        RouterEntry: {
+            /** @description Each credential this entry uses, where it comes from, and whether this node can read it. */
+            credentials: components["schemas"]["RouterCredential"][];
+            /** @description The settings in effect: the `[[router]]` fields as JSON, with `*_ref` names. */
+            definition: unknown;
+            /** @description `unifi`, `opnsense`, or `home_assistant`. */
+            kind: string;
+            name: string;
+            /** @description The fields the configuration files set (`api_key_file`, `tls_ca`...), shown as set by file. */
+            setByFile: string[];
+            /** @description `file` (the configuration files define it; read-only here) or `api`. */
+            source: string;
+            status: components["schemas"]["RouterStatus"];
+            /** @description The address, with any password in it removed (API-014). */
+            url: string;
+        };
+        /** @description REQ: API-016 (T23.8, ADR-903 §9) — `GET /api/v1/routers`. */
+        RouterList: {
+            items: components["schemas"]["RouterEntry"][];
+            /**
+             * @description REQ: API-016 (T24.41) - the primary, when this node reads routers through it and it
+             *     didn't answer (the statuses are this node's own then).
+             */
+            missingNodes?: string[];
+        };
+        /** @description REQ: API-016 (T23.7) — what this node's poll of a router last did. */
+        RouterStatus: {
+            /** Format: int32 */
+            devices: number;
+            /** @description Why the last read failed (the address has no password in it). */
+            error?: string | null;
+            /** Format: int32 */
+            intervalSecs: number;
+            /**
+             * Format: int64
+             * @description Unix seconds of the last read attempt.
+             */
+            lastPoll?: number | null;
+            /** Format: int32 */
+            networks: number;
+            /**
+             * @description `this node`, `the primary` (a stored credential polls there only), or `skipped` with the
+             *     reason (a resolver pod).
+             */
+            polledBy: string;
+            /**
+             * @description REQ: API-016 (T24.41) - the node whose read this status is, when it is not the node that
+             *     answered: a replica shows the primary's state of a router only the primary reads.
+             */
+            readBy?: string | null;
+            /** @description `waiting` (not read yet), `ok`, `failing` (keeping the last answer), or `skipped`. */
+            state: string;
+        };
         /** @description A quick rule (files and API), with how long it has left. */
         RuleInfo: {
             /** @description `allow` or `block`. */
@@ -7157,6 +11558,159 @@ export interface components {
          * @enum {string}
          */
         Scope: "read" | "write" | "admin";
+        /** @description REQ: API-015, AGT-002 — what a `PUT` or `DELETE` did (or, with `dryRun`, would do). */
+        SecretChange: {
+            applied: boolean;
+            dryRun: boolean;
+            /** @description The head after the change (its `etag` for the next `If-Match`). */
+            head: components["schemas"]["SecretsHead"];
+            secret: components["schemas"]["SecretMeta"];
+            /** @description The fields that name it: they become configured with it (or lose it, on delete). */
+            usedBy: components["schemas"]["SecretUse"][];
+            warnings: string[];
+            /** @description A new secret. */
+            wouldCreate: boolean;
+            wouldDelete: boolean;
+            /** @description One that was set already. */
+            wouldReplace: boolean;
+        };
+        /**
+         * @description REQ: API-015 (T24.42) - one cluster member's part in `GET /api/v1/secrets`: the same list on
+         *     every node.
+         */
+        SecretMember: {
+            /**
+             * Format: int32
+             * @description How many stored secrets it holds (0 unless it answered).
+             */
+            held: number;
+            /**
+             * @description `full` (holds every stored secret), `resolver` (a resolver pod: holds none, by design) or
+             *     `witness` (votes only: holds none, by design).
+             */
+            kind: string;
+            /** @description As the Cluster page names it. */
+            node: string;
+            /** @description `answered`, `unknown` (a full member that didn't answer, or is too old to), or `not_held`. */
+            state: string;
+        };
+        /** @description A stored secret: never its value. */
+        SecretMeta: {
+            /** @description On the answering node: `readable`, `unreadable` (another key made it) or `corrupt`. */
+            health?: string | null;
+            /** @description `text`. */
+            kind: string;
+            name: string;
+            /** @description Which nodes hold it, and whether they can read it. */
+            nodes: components["schemas"]["SecretNode"][];
+            /** @description `local` (made on this node) or `cluster` (the primary's). */
+            origin?: string | null;
+            /** @description Stored now (false: a reference names it but it isn't set, or it was deleted). */
+            set: boolean;
+            stamp: components["schemas"]["SecretStamp"];
+            /** @description When it was set or deleted (RFC 3339). */
+            updated?: string | null;
+            updatedBy?: string | null;
+            /** @description The credential fields that name it. */
+            usedBy: components["schemas"]["SecretUse"][];
+        };
+        /** @description How one node holds a secret. */
+        SecretNode: {
+            /** @description It holds this stamp. */
+            applied: boolean;
+            node: string;
+            stamp?: components["schemas"]["SecretStamp"] | null;
+            /**
+             * @description REQ: API-015 (T24.42) - how this member holds it: `applied` (the stamp the list shows,
+             *     readable), `unreadable`, `behind` (an older stamp), `ahead` (a newer one), `missing`, or
+             *     `unknown` (the member didn't answer, or is too old to say). Absent from an older node.
+             */
+            state?: string;
+            /** @description It holds it but can't read it (another key made it, or it's damaged). */
+            unreadable: boolean;
+        };
+        /** @description The body of `PUT /api/v1/secrets/{name}`. */
+        SecretPut: {
+            /** @description `text` (the default). `pem` is reserved. */
+            kind?: string | null;
+            /**
+             * @description The value: one line of text (a token, a password, an API key), at most 8 KiB, trimmed, no
+             *     control characters. Write-only: no answer, read, log, audit entry or backup without a
+             *     passphrase ever holds it.
+             * @example s3cr3t-token
+             */
+            value: string;
+        };
+        /** @description A stamp: the epoch (0 on a standalone node) and the change's number in it. */
+        SecretStamp: {
+            /** Format: int64 */
+            epoch: number;
+            /** Format: int64 */
+            seq: number;
+        };
+        /** @description A credential field that names a secret. */
+        SecretUse: {
+            /** @description The reference (`api_key_ref`, `header_refs.api-key`). */
+            field: string;
+            /** @description `router`, `alert_destination`, `oidc_provider`, `sink`, `git`, `otlp`. */
+            kind: string;
+            /** @description The entry's name (`default` for the Git source and OTLP). */
+            name: string;
+            /** @description The node whose own (node-local) configuration holds the reference; absent: the cluster's. */
+            node?: string | null;
+            /** @description `stored`: the field takes the secret. */
+            source: string;
+        };
+        /**
+         * @description REQ: API-015 (ADR-903 §2) — the secrets head: the highest stamp and a digest of every
+         *     secret's name, kind, stamp and deletion (no value, no value hash). `etag` is what `If-Match`
+         *     takes.
+         */
+        SecretsHead: {
+            /** @description BLAKE3, hex. */
+            digest: string;
+            /** Format: int64 */
+            epoch: number;
+            /** @description `"<epoch>.<seq>.<first 16 digits of digest>"`: send it as `If-Match`. */
+            etag: string;
+            /** Format: int64 */
+            seq: number;
+        };
+        /** @description REQ: API-015 — `GET /api/v1/secrets`. */
+        SecretsStatus: {
+            /** @description This node's credential fields. */
+            credentials: components["schemas"]["CredentialField"][];
+            head: components["schemas"]["SecretsHead"];
+            /** @description Stored secrets (and names a reference uses that aren't set), by name. */
+            items: components["schemas"]["SecretMeta"][];
+            /**
+             * @description REQ: API-015 (T24.42) - every member of the cluster and whether it holds the secrets, the
+             *     same on every node. Empty on a standalone node.
+             */
+            members?: components["schemas"]["SecretMember"][];
+            /** @description Full members that did not answer (offline, or an older version): their state is `unknown`. */
+            missingNodes?: string[];
+            /** @description From this node's own copy: the primary couldn't be asked. */
+            stale: boolean;
+            /** @description This node's store. */
+            store: components["schemas"]["SecretsStore"];
+            /** @description A full member that lacks a secret, holds an older one or can't read it, in words. */
+            warnings?: string[];
+        };
+        /** @description The answering node's secrets store. */
+        SecretsStore: {
+            /** @description The data directory isn't kept across restarts (stored secrets would be lost). */
+            dataEphemeral: boolean;
+            /** @description The key's ID (8 bytes, hex). */
+            keyId?: string | null;
+            /** @description Where the key came from (the environment, or a file's path); never the key. */
+            keySource?: string | null;
+            node: string;
+            previousKeyId?: string | null;
+            reason?: string | null;
+            /** @description `starting`, `ready`, `locked`, or `ephemeral` (a resolver pod: it holds none). */
+            state: string;
+        };
         /** @description REQ: FLT-012 (T7.9) — a blockable service. */
         ServiceInfo: {
             /** @description `social`, `video`, `music`, `gaming`, `messaging`, `dating`, `ai`, ... */
@@ -7316,6 +11870,51 @@ export interface components {
              */
             undetermined: number;
         };
+        /**
+         * @description REQ: API-016, OBS-010 (T23.11, ADR-984) — one event sink in the configuration: its settings
+         *     (a stored token as a name, never a value), where it comes from, and what this node does with it.
+         */
+        SinkEntry: {
+            /** @description The settings in effect: the `[[telemetry.sink]]` fields as JSON, with `token_ref` named. */
+            definition: unknown;
+            /**
+             * Format: int64
+             * @description Events dropped since this node started (the buffer was full, or a batch was refused).
+             */
+            dropped: number;
+            /**
+             * @description Where events go: the file, the syslog address or the webhook URL (a password in it
+             *     removed, API-014).
+             */
+            location: string;
+            name: string;
+            /** @description Why it doesn't (a resolver pod holds no stored secrets; its settings couldn't be used). */
+            reason?: string | null;
+            /** @description Whether the sink's thread runs on this node. */
+            running: boolean;
+            /** @description `file` (the configuration files define it; read-only here) or `api`. */
+            source: string;
+            /** @description The stored secret's name, when `tokenSource` is `stored`. */
+            token?: string | null;
+            /** @description Whether this node can read the token now; absent when none is set. */
+            tokenReadable?: boolean | null;
+            /**
+             * @description Where the webhook token comes from: `stored` (the encrypted store, by name), `file`, or
+             *     `none`.
+             */
+            tokenSource: string;
+            /** @description `file`, `syslog` or `webhook`. */
+            type: string;
+        };
+        /** @description REQ: API-016 (T23.11) — `GET /api/v1/sinks`. */
+        SinkList: {
+            /**
+             * @description Where a file sink made in the UI writes: the file name it is given goes under this
+             *     directory on every node.
+             */
+            filesDir: string;
+            items: components["schemas"]["SinkEntry"][];
+        };
         /** @description REQ: OBS-027 — who and what spent an objective's error budget. */
         SloAttribution: {
             budget: components["schemas"]["AttributionBudget"];
@@ -7432,6 +12031,119 @@ export interface components {
              */
             windowDays: number;
         };
+        /** @description REQ: DSC-004 — one table root a test would query (or did). */
+        SnmpTestOid: {
+            /** @description The MIB table (an alternative; the first that answers is used). */
+            alternative: string;
+            /** @description The column OIDs a poll walks when this alternative answers. */
+            columns: string[];
+            /** @description The part of the table group. */
+            part: string;
+            /** @description The OID the probe's one GETNEXT starts from. */
+            probeOid: string;
+            /** @description `arp`, `ifmib`, `bridge` or `lldp`. */
+            table: string;
+        };
+        /**
+         * @description REQ: DSC-004 (T25.6, ADR-908, ADR-1002) — `POST /api/v1/discovery/snmp/test`: the agent to
+         *     test, by name. No address is ever accepted (ADR-907).
+         */
+        SnmpTestRequest: {
+            /**
+             * @description The agent's name, from `[[discovery.snmp_agent]]` (`GET /api/v1/discovery/status` lists them).
+             * @example gateway
+             */
+            agent: string;
+        };
+        /** @description REQ: DSC-004 — the answer of **Test** (`POST /api/v1/discovery/snmp/test`). */
+        SnmpTestResult: {
+            /** @description The agent tested. */
+            agent: string;
+            capability?: components["schemas"]["AgentCapability"] | null;
+            /** @description True when no packet was sent (`?dryRun=true`): `oids` is what a test would query. */
+            dryRun: boolean;
+            /**
+             * Format: int64
+             * @description How long the test took, in milliseconds.
+             */
+            durationMs?: number | null;
+            /** @description Why the test failed, in words. */
+            error?: string | null;
+            /** @description The node that ran the test (the designated node, which may not be the one asked). */
+            node?: string | null;
+            /** @description What happens next, in a sentence. */
+            note: string;
+            /** @description The OIDs a test queries: one GETNEXT on each probe root, one GET of sysObjectID. */
+            oids: components["schemas"]["SnmpTestOid"][];
+            /** @description Whether the agent answered (a dry run is always `true`). */
+            ok: boolean;
+        };
+        /** @description Where a source stands on this node. */
+        SourceState: {
+            /** @description The lists that have the rest, most shared first (at most three). */
+            alsoIn: components["schemas"]["ListShare"][];
+            /** Format: int64 */
+            bytes: number;
+            /** @description False until a group uses it and it has downloaded. */
+            downloaded: boolean;
+            error?: string | null;
+            /** Format: int64 */
+            lastChangedUnixSeconds?: number | null;
+            /** Format: int64 */
+            lines: number;
+            /** @description The list the node keeps it in (`cat-<id>`, or a file's list with the same URL). */
+            list: string;
+            /**
+             * @description A list the config files define has this source's URL, so nothing is downloaded twice and
+             *     the checkbox says "provided by list X, set by file".
+             */
+            providedBy?: string | null;
+            /**
+             * Format: int64
+             * @description REQ: FLT-004 (T24.28, ADR-992) — names this source puts in the active snapshot, and how
+             *     many of them no other enabled list has (zero while it is not downloaded and compiled).
+             */
+            snapshotEntries: number;
+            /** @description `unused` (no group selects it), `pending`, `ok` or `failed`. */
+            state: string;
+            /** Format: int64 */
+            uniqueEntries: number;
+        };
+        /** @description One source, with its licence and size. */
+        SourceView: {
+            /** @description A line shown next to the checkbox (CC BY-SA sources). */
+            attribution?: string | null;
+            /** Format: int64 */
+            bytes: number;
+            cadence: string;
+            /** @description Categories that can use it. */
+            categories: string[];
+            /** @description The catalog's check date and the maintainer's last push on it. */
+            checked: string;
+            /**
+             * Format: int64
+             * @description From the file's header when the catalog was built.
+             */
+            entries: number;
+            format: string;
+            homepage: string;
+            id: string;
+            /** @description SPDX identifier. */
+            licence: string;
+            licenceUrl: string;
+            maintainer: string;
+            name: string;
+            pushed: string;
+            /**
+             * Format: int32
+             * @description How often this node refreshes it.
+             */
+            refreshSeconds: number;
+            state: components["schemas"]["SourceState"];
+            url: string;
+            /** @description `light` or `heavy`. */
+            weight: string;
+        };
         /**
          * @description Time-bucket size for [`TimeseriesParams`].
          * @enum {string}
@@ -7486,8 +12198,23 @@ export interface components {
             /** Format: int64 */
             toUnixSeconds: number;
         };
+        /** @description How a node is supervised (ADR-956 §4a): from a declaration only. */
+        Supervisor: {
+            /** @description How the node knows: `TELLTALE_SUPERVISOR`, or `not declared`. */
+            how: string;
+            /** @description `systemd`, `docker`, `kubernetes` or `none`. */
+            kind: string;
+        };
         /** @description REQ: OPS-011 (ADR-156) — `POST /system/support-package`: what the package should hold. */
         SupportPackageRequest: {
+            /**
+             * @description REQ: OPS-011 (ADR-172) — one package for the whole cluster: every reachable node makes and
+             *     redacts its own part under one key made for this package, so a device has the same
+             *     pseudonym on every node and no real name or address leaves the node it is on. Not with
+             *     `keepMap` (the names never leave their nodes, so there is no map). A node that doesn't
+             *     answer, or is older than this feature, is listed in the manifest.
+             */
+            cluster?: boolean;
             /** @description Keep the pseudonym map in memory for one download (`GET /system/support-package/{id}/map`). */
             keepMap?: boolean;
             /**
@@ -7505,6 +12232,11 @@ export interface components {
         };
         /** @description Node and build information. */
         SystemInfo: {
+            /**
+             * @description REQ: UPS-013 (T24.31, ADR-997) — this node's own interface addresses (loopback and
+             *     link-local left out), which an upstream's `source` can name. They differ per node.
+             */
+            addresses: components["schemas"]["NodeAddress"][];
             /** @description Exactly which build this is (ADR-046). */
             build: components["schemas"]["BuildInfo"];
             clientIpsMasked?: components["schemas"]["MaskedClients"] | null;
@@ -7557,6 +12289,13 @@ export interface components {
             dropped: number;
             /** @description `rate`: over this subscriber's `rate`; `lag`: the subscriber fell behind. */
             reason: string;
+        };
+        /** @description A tier of a category. */
+        TierView: {
+            id: string;
+            name: string;
+            /** @description The sources this tier adds or switches to. */
+            sources: string[];
         };
         /** @description Counts for one time bucket. */
         TimeBucket: {
@@ -7747,6 +12486,23 @@ export interface components {
             /** @description For manual entry in an authenticator app. */
             secretBase32: string;
         };
+        /** @description REQ: CLU-005 (T24.38, ADR-1018) — a voter this node reaches only some of the time. */
+        UnstableVoter: {
+            /**
+             * Format: int32
+             * @description How many times its link dropped within `windowSeconds` (not counting a drop the voter
+             *     came back from as a restarted process).
+             */
+            drops: number;
+            /**
+             * Format: int64
+             * @description Seconds since the last drop.
+             */
+            lastDropSecondsAgo: number;
+            nodeId: string;
+            /** Format: int64 */
+            windowSeconds: number;
+        };
         /** @description Update status from the signed release index (ADR-046). */
         UpdateStatus: {
             /**
@@ -7845,6 +12601,58 @@ export interface components {
             name: string;
             /** Format: int64 */
             requests: number;
+            /**
+             * @description REQ: UPS-006 — why this node can't reach it, when it can say: `this node has no IPv6
+             *     route` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing.
+             */
+            routeProblem?: string | null;
+            /**
+             * @description REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the
+             *     upstream sets a `source`.
+             */
+            source?: string | null;
+            /** @description REQ: UPS-013 — set while this node no longer holds that address: its queries fail. */
+            sourceProblem?: string | null;
+        };
+        /** @description REQ: UPS-004 (T24.36) — a public resolver variant the simple picker offers. */
+        UpstreamPreset: {
+            dnssec: boolean;
+            endpoints: components["schemas"]["UpstreamPresetEndpoint"][];
+            /** @description `none`, `malware`, `family` or `ads`. */
+            filtering: string;
+            homepage: string;
+            id: string;
+            name: string;
+            /** @description One line: what it filters and what it does with your queries. */
+            note: string;
+            /** @description Placeholders in its addresses (a NextDNS profile); empty for every simple preset. */
+            params: string[];
+            /** @description The heading it is listed under (`Cloudflare`). */
+            provider: string;
+            /** @description Offered in the simple view (false: it needs a parameter, or is for the Advanced view). */
+            simple: boolean;
+            /** @description The choice under the heading (`Malware`). */
+            variant: string;
+        };
+        /** @description REQ: UPS-004 (T24.36) — one address a public resolver answers on. */
+        UpstreamPresetEndpoint: {
+            /** @description `v4` or `v6` for an address, `name` for a host name (which resolves to either). */
+            family: string;
+            /** @description `udp`, `tcp`, `tls`, `https` or `quic`. */
+            protocol: string;
+            /** @description The name on the server certificate, for a `tls://` address given by IP. */
+            tlsServerName?: string | null;
+            /** @description `tls://1.1.1.1`, `udp://[2606:4700:4700::1111]`, `https://cloudflare-dns.com/dns-query`. */
+            url: string;
+        };
+        /** @description REQ: UPS-004 (T24.36) — the catalog, and what this node can reach. */
+        UpstreamPresets: {
+            /**
+             * @description Whether this node has a usable IPv6 default route: without one, an IPv6 upstream only
+             *     times out. Unknown (another OS) reads true.
+             */
+            ipv6Route: boolean;
+            items: components["schemas"]["UpstreamPreset"][];
         };
         /** @description REQ: OBS-019 — one upstream's answers since start. */
         UpstreamQuality: {
@@ -8028,6 +12836,34 @@ export interface components {
             /** @description Deleted: its addresses stay its own for 30 seconds (queries in flight). */
             terminating?: boolean;
         };
+        /** @description An upstream placed on the map. */
+        WorldMarker: {
+            cc?: string | null;
+            health: components["schemas"]["MapHealth"];
+            name: string;
+            /** Format: double */
+            qps: number;
+        };
+        /** @description One country of the world view. */
+        WorldRegion: {
+            /** @description The two-letter country code. */
+            cc: string;
+            /** Format: int64 */
+            count: number;
+            health: components["schemas"]["MapHealth"];
+            /** @description The code again: the console writes the country's name. */
+            name: string;
+            /** Format: double */
+            qps: number;
+            /** Format: double */
+            slowPct: number;
+        };
+        /** @description Answers that have no place on the map, and why. */
+        WorldUnlocated: {
+            /** Format: int64 */
+            count: number;
+            reason?: string | null;
+        };
         /** @description REQ: DNS-018 (T7.22) — an authoritative zone from `[[zone]]`. */
         ZoneInfo: {
             /** @description The zone file, when it has one. */
@@ -8049,6 +12885,49 @@ export interface components {
              * @description Records loaded (from the file and inline).
              */
             records: number;
+            /** @description REQ: DNS-010 (T27.7) — `file` (read-only here) or `api` (made in the UI or API). */
+            source: string;
+            /**
+             * @description REQ: DNS-010 (T27.7) — an API zone's records, to edit them; empty for a file zone (its
+             *     records are read-only here, and only the count shows).
+             */
+            values: components["schemas"]["ZoneRecordInput"][];
+        };
+        /**
+         * @description REQ: DNS-010 (T27.7) — an authoritative zone made through the API or UI
+         *     (`PUT /api/v1/zones/{name}`). The zone file is set in the configuration file (guarded, T27.17),
+         *     so a body that names one is refused.
+         */
+        ZoneInput: {
+            /** @description Groups that see the zone (split horizon); empty: everyone. */
+            groups?: string[];
+            /**
+             * Format: int32
+             * @description TTL of its NXDOMAIN and no-data answers (default 300).
+             */
+            negativeTtlSeconds?: number | null;
+            /** @description The zone's records: names under the zone. */
+            records?: components["schemas"]["ZoneRecordInput"][];
+        };
+        /**
+         * @description REQ: DNS-010 (T27.7) — one record of an API zone: the owner name, its type and value, and
+         *     an optional TTL.
+         */
+        ZoneRecordInput: {
+            /** @example printer.home.example.com */
+            name: string;
+            /**
+             * Format: int32
+             * @description TTL in seconds (default: `[local] default_ttl`).
+             */
+            ttl?: number | null;
+            /**
+             * @description `A`, `AAAA`, `CNAME`, `PTR`, `TXT`, `MX` or `SRV`.
+             * @example A
+             */
+            type: string;
+            /** @example 192.168.1.20 */
+            value: string;
         };
     };
     responses: never;
@@ -8059,6 +12938,305 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    v5: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pi-hole v5's answer for the call. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A write without a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The session is valid. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginBody"];
+            };
+        };
+        responses: {
+            /** @description A session. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Wrong password. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The API is off. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many failed attempts. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed out. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_blocking: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pi-hole's blocking object. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_set_blocking: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BlockingBody"];
+            };
+        };
+        responses: {
+            /** @description Pi-hole's blocking object, as now. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No `blocking` boolean. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_version: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pi-hole's version object. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_summary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pi-hole's summary object. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_top_clients: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pi-hole's top-clients object. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_top_domains: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pi-hole's top-domains object. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    v6_upstreams: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pi-hole's upstreams object. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     alerts_status: {
         parameters: {
             query?: never;
@@ -8119,6 +13297,15 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description `set_by_file`: the config files set this destination's credential, and they win. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
@@ -8128,7 +13315,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description A field is wrong, or the configuration wouldn't be valid: problem+json says which. */
+            /** @description A field is wrong, a reference names no stored secret (`secret_missing`), or the configuration wouldn't be valid: problem+json says which. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -8177,6 +13364,15 @@ export interface operations {
             };
             /** @description No entry by that name. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define it with a credential. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8805,6 +14001,125 @@ export interface operations {
             };
         };
     };
+    put_anomaly_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not allowed for this role, or an agent. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: a field the configuration files set. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is unknown or out of range. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_anomaly_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not allowed for this role, or an agent. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     audit_log: {
         parameters: {
             query?: {
@@ -9300,6 +14615,8 @@ export interface operations {
             /** @description The backup, as an attachment named `telltale-<node>-<time>.ttbk`. */
             200: {
                 headers: {
+                    /** @description `omitted; count=N`: how many stored secrets were left out. */
+                    "X-Telltale-Backup-Secrets"?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -9307,6 +14624,80 @@ export interface operations {
                 };
             };
             /** @description Backups aren't available on this node. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    backup_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Optional: `includeQlog`, `passphrase`. */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupRequest"];
+            };
+        };
+        responses: {
+            /** @description The backup, as an attachment named `telltale-<node>-<time>.ttbk`. */
+            200: {
+                headers: {
+                    /** @description `included; count=N` or `omitted; count=N`. */
+                    "X-Telltale-Backup-Secrets"?: string;
+                    /** @description Present when there is something to know; items separated by ` | `. */
+                    "X-Telltale-Backup-Warnings"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": number[];
+                };
+            };
+            /** @description The body isn't valid, or the passphrase is under 12 characters, or the query log is too big for the API. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not an admin, an agent token (`agent_not_allowed`), plain HTTP from another host (`insecure_transport`), or a passphrase without a recent sign-in (`reauth_required`). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A backup with a passphrase on a cluster replica: make it on the primary. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Another backup with a passphrase is deriving its key: wait for Retry-After seconds. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Backups aren't available on this node, or its secrets key can't be read (`secrets_locked`). */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -9394,6 +14785,140 @@ export interface operations {
             };
             /** @description An unknown group or node. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_cache_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The node ID the settings apply to. */
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change a node's cache settings. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No node of this cluster has that ID. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files set this field, which is read-only here. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_cache_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The node ID. */
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change a node's cache settings. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The API sets no cache settings on that node. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9524,6 +15049,69 @@ export interface operations {
             };
         };
     };
+    categories: {
+        parameters: {
+            query?: {
+                /** @description `compact`: IDs, names, tiers, sizes and licences without the prose and the links (for agents). */
+                view?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The catalog and this node's state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CategoriesView"];
+                };
+            };
+        };
+    };
+    categories_budget: {
+        parameters: {
+            query?: {
+                /** @description The group the proposal is for (a name that does not exist yet is priced as a new group). */
+                group?: string;
+                /** @description `off`, `basic` or `enhanced`. */
+                level?: string;
+                /** @description Category IDs, comma separated. */
+                categories?: string;
+                /** @description `category:tier` pairs, comma separated. */
+                tiers?: string;
+                /** @description Ad block. */
+                ads?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The cost. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BudgetView"];
+                };
+            };
+            /** @description The proposal names something the catalog doesn't have. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     check_list: {
         parameters: {
             query?: never;
@@ -9548,6 +15136,99 @@ export interface operations {
             };
             /** @description The body isn't a list (an unknown or mistyped field), or it has no url or rules. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    check_router: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description What the read found. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RouterCheck"];
+                };
+            };
+            /** @description Only an admin can check a router (agents never). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The draft is not a router. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    check_router_certificate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description The certificate. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RouterCertificate"];
+                };
+            };
+            /** @description The URL is not an https address. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Only an admin can check a router (agents never). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The console didn't answer, or presented no certificate. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9606,6 +15287,125 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_ClientInfo"];
+                };
+            };
+        };
+    };
+    put_clients_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin may change `mdns`; agents never. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files set `mdns`, and they win. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is unknown (`mdns_port` is set in the file). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_clients_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin may change `mdns`; agents never. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's setting is in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };
@@ -9684,6 +15484,38 @@ export interface operations {
                 };
             };
             /** @description No named device by that name, and not an address. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    client_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description A device's name, an address, or a workload. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The effective policy. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientPolicy"];
+                };
+            };
+            /** @description Neither a configured device, an address, nor a known workload. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -10498,6 +16330,526 @@ export interface operations {
             };
         };
     };
+    put_cmdb_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin may change the CMDB's settings; agents never. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`, or `members_too_old`: a member runs an older version. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is unknown or out of range, or `enabled` at privacy level 2 or more. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_cmdb_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin may change the CMDB's settings; agents never. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cmdb_cis: {
+        parameters: {
+            query?: {
+                /** @description Only CIs of this type: `device`, `interface`, `network`, `node`, `service` or `upstream`. */
+                type?: string;
+                /** @description Text to find in a name, an id, a MAC, a serial or a source record. */
+                q?: string;
+                /** @description The cursor: the `next` of the previous page. */
+                after?: string;
+                /** @description Page size, 1 to 500 (default 100). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmdbCiPage"];
+                };
+            };
+            /** @description An unknown `type`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The CMDB doesn't run on this node. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cmdb_ci: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The CI id. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The CI. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmdbCiDetail"];
+                };
+            };
+            /** @description No such CI, or its alias expired. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The CMDB doesn't run on this node. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cmdb_link: {
+        parameters: {
+            query?: {
+                /** @description Check and report without changing anything. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The device the record goes to. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmdbLinkRequest"];
+            };
+        };
+        responses: {
+            /** @description What moved, or with dryRun what would. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmdbChange"];
+                };
+            };
+            /** @description A malformed body or id. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such device or record. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The record is on that device already, or an Idempotency-Key reused for another request. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The CMDB doesn't run on this node. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cmdb_merge: {
+        parameters: {
+            query?: {
+                /** @description Check and report without changing anything. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The device that goes away. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmdbMergeRequest"];
+            };
+        };
+        responses: {
+            /** @description What moved, or with dryRun what would. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmdbChange"];
+                };
+            };
+            /** @description A malformed body or id. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such device. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A device cannot be merged into itself. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The CMDB doesn't run on this node. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cmdb_split: {
+        parameters: {
+            query?: {
+                /** @description Check and report without changing anything. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The device to split. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmdbSplitRequest"];
+            };
+        };
+        responses: {
+            /** @description What moved, or with dryRun what would. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmdbChange"];
+                };
+            };
+            /** @description A malformed body or id, or no record chosen. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such device or record. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A record is not on this device, or every interface would move. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The CMDB doesn't run on this node. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cmdb_unlink: {
+        parameters: {
+            query?: {
+                /** @description Check and report without changing anything. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The device the record is on. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmdbUnlinkRequest"];
+            };
+        };
+        responses: {
+            /** @description What moved, or with dryRun what would. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmdbChange"];
+                };
+            };
+            /** @description A malformed body or id. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such record. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The record is not linked, or is the only interface of its device. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The CMDB doesn't run on this node. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cmdb_proposals: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The open proposals, newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmdbProposal"][];
+                };
+            };
+            /** @description The CMDB doesn't run on this node. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cmdb_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmdbStatus"];
+                };
+            };
+        };
+    };
     config_entries: {
         parameters: {
             query?: {
@@ -10537,6 +16889,227 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_DhcpLease"];
+                };
+            };
+        };
+    };
+    put_discovery_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin may change the network inventory; agents never. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`, or `members_too_old`: a member runs an older version. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is unknown, or a subnet isn't a private IPv4 network. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_discovery_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin may change the network inventory; agents never. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    snmp_test: {
+        parameters: {
+            query?: {
+                /** @description Check and report without changing anything. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The agent's name, and nothing else. */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SnmpTestRequest"];
+            };
+        };
+        responses: {
+            /** @description The capability record (or, with dryRun, the OIDs a test would query). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnmpTestResult"];
+                };
+            };
+            /** @description A malformed body, an unknown field, or an address where a name belongs. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Needs the admin role (agents: ops:discovery_test and a reason). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No SNMP agent by that name (the hint lists them). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The inventory is off, this node isn't the designated one (`discovery_not_here`), or an Idempotency-Key reused for another request. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The agent was tested less than 60 seconds ago (Retry-After says how long). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The SNMP worker is down or busy, or a replica that can't reach the primary. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    discovery_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscoveryStatus"];
                 };
             };
         };
@@ -10641,6 +17214,226 @@ export interface operations {
                 };
             };
             /** @description Not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_dnssec_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description `set_by_file`: the config files set this field. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_dnssec_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The API sets no DNSSEC settings. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_drill_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change the drill schedule. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files set this field. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_drill_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change the drill schedule. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The API sets no drill schedule. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -10859,6 +17652,107 @@ export interface operations {
             };
         };
     };
+    put_filter_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description `set_by_file`: the config files set this field. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is out of range. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_filter_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The API sets no list settings. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     forwards: {
         parameters: {
             query?: never;
@@ -11036,6 +17930,8 @@ export interface operations {
     put_group: {
         parameters: {
             query?: {
+                /** @description Accept the cost of a heavy `content` selection (see `PUT /groups/{name}/content`). */
+                confirm?: boolean;
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
                 /**
@@ -11158,6 +18054,500 @@ export interface operations {
             };
         };
     };
+    get_group_content: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The group. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The group's content. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupContentView"];
+                };
+            };
+            /** @description No such group. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_group_content: {
+        parameters: {
+            query?: {
+                /** @description Accept the cost of a heavy selection. */
+                confirm?: boolean;
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The group. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ContentInput"];
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change); `budget` and `confirmationRequired` say what it costs. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description An agent token (`agent_not_allowed`). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such group. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `confirm_required` (heavy), or `set_by_file`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The catalog doesn't have it (`invalid_config`), or this node is too small (`budget_refused`). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_group_sources: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The group. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change): `impact` says what moves. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description An agent token (`agent_not_allowed`). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such group. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A device is defined in a config file (`set_by_file`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A network, name or key is wrong. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    guarded_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Each node's guarded settings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardedStatus"];
+                };
+            };
+        };
+    };
+    guarded_cancel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The pending change's ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rolled back. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardedResult"];
+                };
+            };
+            /** @description Not an admin session, or an agent token. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing is pending under that ID. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    guarded_confirm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The pending change's ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GuardedConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description Confirmed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardedResult"];
+                };
+            };
+            /** @description Neither a session nor a token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The token or the arrival point is wrong. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing is pending under that ID (it may have rolled back). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description primary_unreachable: the node couldn't record the change. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many failed confirmations. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    guarded_apply: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The setting. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GuardedApplyRequest"];
+            };
+        };
+        responses: {
+            /** @description Applied. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardedApplied"];
+                };
+            };
+            /** @description Staged for the next start, waiting for confirmation, or restarting. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardedApplied"];
+                };
+            };
+            /** @description The phrase doesn't match, or the request is malformed. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not an admin session, an agent token, another token, or a weakening change without a recent sign-in. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description preview_stale, set_by_file, guarded_change_pending, restarting, would_disconnect_you, no_supervisor, primary_unreachable. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Ask the primary. */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many requests, or too many failed confirmations from this session. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    guarded_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The setting (`listen`, `restart-now`, ...). */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GuardedPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description The dry run. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardedPreview"];
+                };
+            };
+            /** @description Not an admin session, an agent token, or another token. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such guarded setting. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Set by file, a change already pending, restarting, no supervisor, would disconnect you. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Ask the primary: only it forwards a request for another node. */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many requests, or too many failed confirmations from this session. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     git_hook: {
         parameters: {
             query?: never;
@@ -11185,6 +18575,172 @@ export interface operations {
             };
             /** @description Not found. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    preview: {
+        parameters: {
+            query?: {
+                /** @description REQ: API-007 (ADR-941) — resolve a sample through this Pi-hole (`ip` or `ip:port`). */
+                compare?: string;
+                /** @description The TelltaleDNS to compare with (default `127.0.0.1:53`). */
+                telltale?: string;
+                /** @description Extra names for the sample, comma-separated. */
+                samples?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The Pi-hole export: a Teleporter zip (v6) or tar.gz (v5), or a gravity.db. */
+        requestBody: {
+            content: {
+                "application/octet-stream": number[];
+            };
+        };
+        responses: {
+            /** @description The plan: what would be added, changed or skipped, and the comparison when asked. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Admins only; agents can't import. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The upload is larger than 64 MiB. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The file isn't a Pi-hole export the import can read. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    discard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The plan's ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Discarded. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Admins only; agents can't import. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such plan. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    apply: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The plan's ID, from the preview. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Applied: counts of what was added, changed and skipped. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Admins only; agents can't import. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such plan (it expired, or was applied or discarded). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the preview. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The plan no longer loads with the configuration. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The change was stored but the node couldn't reload it; the audit record says so. */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11402,6 +18958,182 @@ export interface operations {
             };
         };
     };
+    overlap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Each enabled list's overlap. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_ListOverlapRow"];
+                };
+            };
+        };
+    };
+    prune: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ListsPruneRequest"];
+            };
+        };
+        responses: {
+            /** @description The lists now off. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListsPruneResult"];
+                };
+            };
+            /** @description A malformed body, a threshold outside 0 to 50, or too many names. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Needs the operator role; agent tokens are refused. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A named list isn't in the plan any more: preview again. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    prune_plan: {
+        parameters: {
+            query?: {
+                /** @description Turn off lists adding at most this share of their entries, 0 to 50 (default 1). */
+                thresholdPercent?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What would be turned off. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListPrunePlan"];
+                };
+            };
+            /** @description A threshold outside 0 to 50. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    refresh_lists: {
+        parameters: {
+            query?: {
+                /** @description Check and report without changing anything. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Optional: `{}` or no body refreshes every enabled list. */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ListsRefreshRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Queued (or, with dryRun, what would be): the lists, the ones left out, and the node that downloads them. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListsRefreshResult"];
+                };
+            };
+            /** @description A malformed body or an empty name. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Needs the operator role (agents: config:write:lists). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No list by one of those names (the hint lists them). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description This node doesn't download lists (`lists_not_here`: role resolver), or an Idempotency-Key reused for another request. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A cluster replica that can't reach the primary (it downloads the lists). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     put_list: {
         parameters: {
             query?: {
@@ -11518,6 +19250,652 @@ export interface operations {
             };
             /** @description Something still uses it: problem+json says what. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_local: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description `set_by_file`: the config files set that field, and they win. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong or unknown (a domain `local`, for one), or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_local: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_map: {
+        parameters: {
+            query?: {
+                /** @description Only this network (a name from `GET /api/v1/networks`). */
+                network?: string;
+                /** @description Only devices of this client group. */
+                group?: string;
+                /** @description Only devices whose name or address contains this text. */
+                device?: string;
+                /** @description Only this TelltaleDNS node (its pod, site or ID, as the Cluster page shows it). */
+                node?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The map. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MapSnapshot"];
+                };
+            };
+            /** @description `map_disabled`: the map is off ([map] enabled). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The map's settings and where they come from. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigEntry"];
+                };
+            };
+        };
+    };
+    put_map_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A value is out of range (the detail names the field), or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_map_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_geoip: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The database's status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeoipStatus"];
+                };
+            };
+            /** @description This node has no GeoIP database (a resolver pod). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_geoip: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The status after the delete. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeoipStatus"];
+                };
+            };
+        };
+    };
+    update_geoip: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The fetch was started. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeoipStatus"];
+                };
+            };
+            /** @description A fetch is running already, or `[map.geoip]` is off. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_health: {
+        parameters: {
+            query?: {
+                /** @description Only this network (a name from `GET /api/v1/networks`). */
+                network?: string;
+                /** @description Only devices of this client group. */
+                group?: string;
+                /** @description Only devices whose name or address contains this text. */
+                device?: string;
+                /** @description Only this TelltaleDNS node (its pod, site or ID, as the Cluster page shows it). */
+                node?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The short version of the map. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkHealth"];
+                };
+            };
+            /** @description `map_disabled`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    map_stream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description `text/event-stream` of `snapshot` (MapSnapshot) events. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            /** @description `map_disabled`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `map_streams_busy`: 8 streams are open on this node. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_world: {
+        parameters: {
+            query?: {
+                /** @description Only this TelltaleDNS node (its pod, site or ID, as the Cluster page shows it). */
+                node?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The world view's data, or why it is unavailable. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MapWorld"];
+                };
+            };
+            /** @description `map_disabled`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_metrics_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not allowed for this role, or an agent. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: a field the configuration files set. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is unknown or out of range. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_metrics_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not allowed for this role, or an agent. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    networks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_NetworkInfo"];
+                };
+            };
+        };
+    };
+    get_this_node_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description This node's sections. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeSettings"];
+                };
+            };
+        };
+    };
+    get_node_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The node ID. */
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The node's sections. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeSettings"];
+                };
+            };
+            /** @description No node of this cluster has that ID. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11770,6 +20148,419 @@ export interface operations {
             };
         };
     };
+    list_oidc_providers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The providers, files' first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OidcProviderList"];
+                };
+            };
+            /** @description Only an admin can read the sign-in providers. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_oidc_provider: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The provider ID: 1-32 lowercase letters, digits, or -. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change an OIDC provider. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define this provider, which is read-only here. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, the reference names no stored secret (`secret_missing`), or a secret or file path is set through the API. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_oidc_provider: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The provider ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can remove an OIDC provider. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No provider by that ID. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define it. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_otlp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The OTLP export. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OtlpEntry"];
+                };
+            };
+        };
+    };
+    put_otlp: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change the OTLP export. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files set the OTLP destination. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, or a reference names no stored secret (`secret_missing`). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_otlp: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change the OTLP export. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The API sets no OTLP export. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files set the OTLP destination. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The settings, without the token. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PiholeApiStatus"];
+                };
+            };
+        };
+    };
+    put_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PiholeApiSettings"];
+            };
+        };
+        responses: {
+            /** @description The settings now. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PiholeApiStatus"];
+                };
+            };
+            /** @description `maxPauseMinutes` out of range. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    issue_token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The token, once. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PiholeApiToken"];
+                };
+            };
+        };
+    };
+    revoke_token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The settings now. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PiholeApiStatus"];
+                };
+            };
+        };
+    };
     list: {
         parameters: {
             query?: never;
@@ -11872,6 +20663,264 @@ export interface operations {
             };
         };
     };
+    put_probe_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not allowed for this role, or an agent. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: a field the configuration files set. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is unknown or out of range. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_probe_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not allowed for this role, or an agent. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    profile_devices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The picker's data. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileDevices"];
+                };
+            };
+        };
+    };
+    put_qlog_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not allowed for this role, or an agent. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: a field the configuration files set. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is unknown or out of range. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_qlog_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not allowed for this role, or an agent. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     queries: {
         parameters: {
             query?: {
@@ -11879,14 +20928,39 @@ export interface operations {
                 name?: string;
                 /** @description How to match `name`. Default: `substring`. */
                 match?: components["schemas"]["NameMatch"];
-                /** @description Client IP address. */
+                /**
+                 * @description REQ: OBS-003 (ADR-171) — keep the rows whose name does NOT match `name` and `match`:
+                 *     does not contain, is not, is not under, doesn't match the wildcard or the regex. Needs
+                 *     `name`. Default: false.
+                 */
+                nameNot?: boolean;
+                /**
+                 * @description Client IP address, or several, comma-separated (REQ: OBS-003, ADR-1013): addresses,
+                 *     `hostname:<label>` (the addresses a router gave that name now) and Kubernetes workloads
+                 *     (`namespace/kind/name`). At most 100 entries and 256 addresses; `clientTruncated` says
+                 *     when a cap cut the set.
+                 */
                 client?: string;
+                /** @description Keep the rows from every client except `client` (all of them, when several). Needs `client`. Default: false. */
+                clientNot?: boolean;
                 /** @description Statuses, comma-separated (`blocked,forwarded`). */
                 status?: string;
+                /**
+                 * @description Keep the rows whose status is none of `status` (`status=blocked&statusNot=true`: every
+                 *     query that was not blocked). Needs `status`. Default: false.
+                 */
+                statusNot?: boolean;
                 /** @description Query types, comma-separated (`A,AAAA`). */
                 qtype?: string;
+                /** @description Keep the rows whose type is none of `qtype`. Needs `qtype`. Default: false. */
+                qtypeNot?: boolean;
                 /** @description Response codes, comma-separated (`NXDOMAIN,SERVFAIL`). */
                 rcode?: string;
+                /**
+                 * @description Keep the rows whose response code is none of `rcode` (queries that got no response code
+                 *     are kept). Needs `rcode`. Default: false.
+                 */
+                rcodeNot?: boolean;
                 /**
                  * @description Upstream ID (from `/upstreams`): the forwarded queries it answered. Coalesced queries
                  *     name the upstream that answered for all of them.
@@ -11957,14 +21031,28 @@ export interface operations {
                 name?: string;
                 /** @description How to match `name`: `substring` (default), `exact`, `suffix`, or `glob` (`*`, `?`). */
                 match?: components["schemas"]["NameMatch"];
-                /** @description Client IP address. */
+                /**
+                 * @description REQ: OBS-003 (ADR-171) — only queries whose name does NOT match `name` and `match`.
+                 *     Needs `name`. Default: false.
+                 */
+                nameNot?: boolean;
+                /**
+                 * @description Client IP address, or several, comma-separated (addresses, `hostname:<label>` and
+                 *     Kubernetes workloads; REQ: OBS-003, ADR-1013).
+                 */
                 client?: string;
+                /** @description Only queries from every client except `client` (all of them, when several). Needs `client`. Default: false. */
+                clientNot?: boolean;
                 /** @description The client's group (its highest-priority group). */
                 group?: string;
                 /** @description Statuses, comma-separated (`blocked,forwarded`). */
                 status?: string;
+                /** @description Only queries whose status is none of `status`. Needs `status`. Default: false. */
+                statusNot?: boolean;
                 /** @description Query types, comma-separated (`A,AAAA`). */
                 qtype?: string;
+                /** @description Only queries whose type is none of `qtype`. Needs `qtype`. Default: false. */
+                qtypeNot?: boolean;
                 /** @description Upstream ID (from `GET /upstreams`). */
                 upstream?: number;
                 /** @description Only queries that took at least this long. */
@@ -12270,6 +21358,169 @@ export interface operations {
             };
         };
     };
+    list_routers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The routers, by name. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RouterList"];
+                };
+            };
+        };
+    };
+    put_router: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change a router. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define this router, which is read-only here. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, a reference names no stored secret (`secret_missing`), a file path is set through the API, or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_router: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can remove a router. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No router by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define it. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     rules: {
         parameters: {
             query?: never;
@@ -12540,6 +21791,223 @@ export interface operations {
             };
         };
     };
+    list_secrets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stored secrets, without values. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretsStatus"];
+                };
+            };
+            /** @description Viewers don't see them. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_secret: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The secret's name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The secret, without its value. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretMeta"];
+                };
+            };
+            /** @description No secret of that name, and nothing names one. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_secret: {
+        parameters: {
+            query?: {
+                /** @description Check and report without changing anything. */
+                dryRun?: boolean;
+                /**
+                 * @description `DELETE` only: go ahead although a full member's references can't be read now (it is
+                 *     offline). References that are known still refuse.
+                 */
+                force?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The secret's name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecretPut"];
+            };
+        };
+        responses: {
+            /** @description Stored (or, with dryRun, what would be). Metadata only. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretChange"];
+                };
+            };
+            /** @description The name, kind or value isn't acceptable (empty, over 8 KiB, a control character, `<redacted>`; a webhook secret under 16 characters), or 128 secrets are stored (`invalid_parameter`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not an admin, an agent token (`agent_not_allowed`), or plain HTTP from another host (`insecure_transport`). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No primary to take it, an emergency primary or one without its lease, a primary too old to store secrets (`upgrade_required`), the configuration files set that credential (`set_by_file`), or an Idempotency-Key reused with another value. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description If-Match: the secrets head moved. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The node's secrets key can't be read (`secrets_locked`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_secret: {
+        parameters: {
+            query?: {
+                /** @description Check and report without changing anything. */
+                dryRun?: boolean;
+                /**
+                 * @description `DELETE` only: go ahead although a full member's references can't be read now (it is
+                 *     offline). References that are known still refuse.
+                 */
+                force?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The secret's name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted (or, with dryRun, what would be). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretChange"];
+                };
+            };
+            /** @description Not an admin, an agent token, or plain HTTP from another host. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No secret of that name is stored. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Still named by a field (`secret_in_use`; or a member's references are unknown: `?force=true`), or no primary to take it. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description If-Match: the secrets head moved. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The node's secrets key can't be read (`secrets_locked`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     services: {
         parameters: {
             query?: never;
@@ -12690,6 +22158,416 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_sinks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The sinks, the files' first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SinkList"];
+                };
+            };
+        };
+    };
+    put_sink: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The sink's name: unique, used in logs and metrics. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change an event sink. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define this sink, which is read-only here. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, the reference names no stored secret (`secret_missing`), or a file path or a password in a URL is set through the API. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_sink: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The sink's name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can remove an event sink. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No sink by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files define it. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_slo_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not allowed for this role, or an agent. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: a field the configuration files set. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is unknown or out of range. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_slo_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not allowed for this role, or an agent. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_special: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description An operator changes `ddr_name` (admin-only), or an agent does. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files set that field, and they win. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong or unknown, or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_special: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The change would switch `ddr_name` off, and only an admin may. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
             /** @description Nothing was changed through the API: the file's settings are in effect already. */
@@ -13181,6 +23059,140 @@ export interface operations {
             };
         };
     };
+    put_support_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The node ID the settings apply to. */
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No node of this cluster has that ID. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files set this field. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_support_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The node ID. */
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The API sets nothing on that node. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     system_health: {
         parameters: {
             query?: never;
@@ -13434,6 +23446,259 @@ export interface operations {
             };
         };
     };
+    put_updates_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The node ID the settings apply to. */
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No node of this cluster has that ID. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: the config files set this field. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_updates_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The node ID. */
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Only an admin can change this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The API sets nothing on that node. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_upstream_check_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not allowed for this role, or an agent. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `set_by_file`: a field the configuration files set. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is unknown or out of range. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_upstream_check_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not allowed for this role, or an agent. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     put_upstream_group: {
         parameters: {
             query?: {
@@ -13555,6 +23820,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    upstream_presets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpstreamPresets"];
                 };
             };
         };
@@ -13948,6 +24233,140 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_ZoneInfo"];
+                };
+            };
+        };
+    };
+    put_zone: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The zone's apex, e.g. home.example.com. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ZoneInput"];
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Defined in the configuration files (`set_by_file`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A name, group, or record is invalid, or the body names a zone file. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_zone: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The zone's apex. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Defined in the configuration files (`set_by_file`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

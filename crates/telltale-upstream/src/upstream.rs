@@ -5,6 +5,7 @@
 
 use std::io;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -12,7 +13,7 @@ use rustls::pki_types::ServerName;
 use telltale_proto::{
     EdnsOut, FlagBit, HEADER_LEN, NameBuf, build_query, header, opt, rcode, read_name, summarize,
 };
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 
 use crate::bootstrap::Bootstrap;
 use crate::conn::{BoxIo, ConnStats, Connector, Pool, counted};
@@ -302,6 +303,12 @@ pub struct UpstreamOptions {
     pub plugin_dir: Option<std::path::PathBuf>,
     /// REQ: UPS-011 (T9.9) — DoH over GET (`?dns=`) instead of POST.
     pub doh_get: bool,
+    /// REQ: UPS-013 (T24.31, ADR-997) — the local address (already resolved and checked) that
+    /// this upstream's UDP sockets and TCP connections are bound to before they connect.
+    pub source: Option<std::net::IpAddr>,
+    /// REQ: UPS-013 — the configured `source` (an address or a network), looked up on this
+    /// node; when it names no address the node holds, the upstream starts with a problem.
+    pub source_spec: Option<String>,
     /// REQ: OBS-020 (T11.3) — TelltaleDNS asking its own listener (a synthetic probe): the
     /// query carries no loop tag (the listener would drop it as a forwarding loop, `spec/04`
     /// §7) and isn't copied to the exchange observer (dnstap's forwarder messages).
@@ -329,6 +336,8 @@ impl Default for UpstreamOptions {
             plugin_dir: None,
             tls: crate::tls::UpstreamTls::default(),
             doh_get: false,
+            source: None,
+            source_spec: None,
             self_probe: false,
         }
     }
@@ -340,6 +349,152 @@ struct Target {
     host: Host,
     port: u16,
     bootstrap: Option<Arc<Bootstrap>>,
+    /// REQ: UPS-013 — the address sockets to this target are bound to.
+    source: Option<Source>,
+}
+
+/// REQ: UPS-013 (T24.31, ADR-997 §4) — an upstream's source address. A node that doesn't hold
+/// the address (a VLAN that isn't up yet, a pod network, a replica of another shape) doesn't
+/// refuse to start: this upstream's queries fail fast with a problem the health report shows,
+/// every other upstream serves, and the address is looked up again (at most every
+/// `RESOLVE_EVERY`) so it recovers by itself when the interface comes up.
+#[derive(Debug)]
+pub(crate) struct Source {
+    spec: String,
+    /// The IP version of the address or network named: a hostname upstream is reached over it.
+    v4: bool,
+    upstream: String,
+    state: std::sync::Mutex<SourceState>,
+}
+
+#[derive(Debug, Default)]
+struct SourceState {
+    ip: Option<std::net::IpAddr>,
+    tried: Option<std::time::Instant>,
+    problem: Option<String>,
+}
+
+/// How often a missing source address is looked for again.
+const RESOLVE_EVERY: Duration = Duration::from_secs(5);
+
+impl Source {
+    fn new(spec: &str, known: Option<std::net::IpAddr>, upstream: &str) -> Result<Self, String> {
+        let v4 = match telltale_config::parse_source(spec)? {
+            telltale_config::SourceSpec::Addr(ip) => ip.is_ipv4(),
+            telltale_config::SourceSpec::Subnet(c) => c.addr.is_ipv4(),
+        };
+        let s = Self {
+            spec: spec.to_owned(),
+            v4,
+            upstream: upstream.to_owned(),
+            state: std::sync::Mutex::new(SourceState {
+                ip: known,
+                ..SourceState::default()
+            }),
+        };
+        if known.is_none() {
+            // A first look now, so the problem is visible before any query.
+            s.current().ok();
+        }
+        Ok(s)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, SourceState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn ip(&self) -> Option<std::net::IpAddr> {
+        self.lock().ip
+    }
+
+    fn problem(&self) -> Option<String> {
+        self.lock().problem.clone()
+    }
+
+    /// The address to bind now, looking it up when it isn't known (rate limited).
+    fn current(&self) -> io::Result<std::net::IpAddr> {
+        let mut st = self.lock();
+        if let Some(ip) = st.ip {
+            return Ok(ip);
+        }
+        let unavailable = |p: &Option<String>| {
+            io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                p.clone()
+                    .unwrap_or_else(|| "source address unavailable".into()),
+            )
+        };
+        if st.tried.is_some_and(|t| t.elapsed() < RESOLVE_EVERY) {
+            return Err(unavailable(&st.problem));
+        }
+        st.tried = Some(std::time::Instant::now());
+        let found = match telltale_net::local_addrs() {
+            Ok(held) => crate::source::resolve_source(&self.spec, &held),
+            Err(e) => Err(format!("couldn't list this node's addresses: {e}")),
+        };
+        match found {
+            Ok(ip) => {
+                st.ip = Some(ip);
+                Ok(ip)
+            }
+            Err(e) => {
+                let msg = format!("{e}; queries to this upstream fail until it does");
+                if st.problem.as_deref() != Some(msg.as_str()) {
+                    tracing::warn!(upstream = %self.upstream, "{msg}");
+                }
+                st.problem = Some(msg);
+                Err(unavailable(&st.problem))
+            }
+        }
+    }
+
+    /// The local socket address to bind: the source address, any port.
+    fn bind_addr(&self) -> io::Result<SocketAddr> {
+        Ok(SocketAddr::new(self.current()?, 0))
+    }
+
+    /// Records how a bind went. An address that left the node is looked up again later.
+    fn note<T>(&self, r: io::Result<T>) -> io::Result<T> {
+        let mut st = self.lock();
+        match &r {
+            Ok(_) => {
+                if st.problem.take().is_some() {
+                    tracing::info!(upstream = %self.upstream, "upstream source address is back");
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::AddrNotAvailable => {
+                let msg = format!(
+                    "its source address {} is no longer held by this node: queries to it fail until it is back",
+                    st.ip.map_or_else(|| self.spec.clone(), |ip| ip.to_string())
+                );
+                if st.problem.is_none() {
+                    tracing::warn!(upstream = %self.upstream, "{msg}");
+                }
+                st.problem = Some(msg);
+                st.ip = None;
+                st.tried = Some(std::time::Instant::now());
+            }
+            Err(_) => {}
+        }
+        r
+    }
+
+    /// The server's hostname has no address of the source's IP version.
+    fn no_family(&self, host: &str) -> io::Error {
+        let v = if self.v4 { "IPv4" } else { "IPv6" };
+        let msg = format!(
+            "the server `{host}` has no {v} address to reach from source {}",
+            self.spec
+        );
+        let mut st = self.lock();
+        if st.problem.as_deref() != Some(msg.as_str()) {
+            tracing::warn!(upstream = %self.upstream, "{msg}");
+        }
+        st.problem = Some(msg.clone());
+        io::Error::other(msg)
+    }
 }
 
 impl Target {
@@ -349,9 +504,19 @@ impl Target {
             Host::Name(name) => {
                 let bs = self.bootstrap.as_ref().ok_or(ExchangeError::Unresolved)?;
                 let ips = bs.resolve(name).await?;
-                ips.first()
-                    .map(|ip| SocketAddr::new(*ip, self.port))
-                    .ok_or(ExchangeError::Unresolved)
+                // REQ: UPS-013 — with a source address, the first address of its IP version
+                // (a v6 source can't reach a v4 destination).
+                match &self.source {
+                    Some(src) => match ips.iter().find(|ip| ip.is_ipv4() == src.v4) {
+                        Some(ip) => Ok(SocketAddr::new(*ip, self.port)),
+                        None if ips.is_empty() => Err(ExchangeError::Unresolved),
+                        None => Err(ExchangeError::Io(src.no_family(name))),
+                    },
+                    None => ips
+                        .first()
+                        .map(|ip| SocketAddr::new(*ip, self.port))
+                        .ok_or(ExchangeError::Unresolved),
+                }
             }
         }
     }
@@ -421,6 +586,46 @@ pub struct Upstream {
     self_probe: bool,
     /// REQ: UPS-008 — connections opened and closed (TCP, DoT, DoH, and UDP's TCP fallback).
     conns: Arc<ConnStats>,
+    /// REQ: UPS-006 (fork #25) — whether this node has a route to the address: 0 = not known (a
+    /// hostname, or not yet checked), 1 = routed, 2 = the family has no route. Set by
+    /// [`Self::check_route`], off the DNS path.
+    route: AtomicU8,
+}
+
+/// REQ: UPS-006 — whether this node can route to an upstream's address (fork #25).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteState {
+    /// A hostname, a local socket, or not checked yet.
+    Unknown,
+    Routed,
+    /// No route for the address family: the reason is [`RouteState::reason`].
+    NoRoute {
+        v6: bool,
+    },
+}
+
+impl RouteState {
+    /// What the UI and the map say; `None` when there is nothing to say.
+    pub fn reason(self) -> Option<&'static str> {
+        match self {
+            Self::NoRoute { v6: true } => Some("this node has no IPv6 route"),
+            Self::NoRoute { v6: false } => Some("this node has no IPv4 route"),
+            _ => None,
+        }
+    }
+}
+
+/// REQ: UPS-006 — `connect()` on a UDP socket picks a route and sends nothing, so it answers
+/// "does this host have a route to `ip`" without any traffic. An error (no route, no network,
+/// the family disabled) means no route.
+pub fn route_to(ip: std::net::IpAddr) -> bool {
+    let local = match ip {
+        std::net::IpAddr::V4(_) => std::net::SocketAddr::from(([0u8; 4], 0)),
+        std::net::IpAddr::V6(_) => std::net::SocketAddr::from(([0u16; 8], 0)),
+    };
+    std::net::UdpSocket::bind(local)
+        .and_then(|s| s.connect(SocketAddr::new(ip, 53)))
+        .is_ok()
 }
 
 /// A TCP stream to the target: directly, or through the proxy (REQ: UPS-010), which gets a
@@ -434,7 +639,20 @@ async fn open_tcp(target: &Target, proxy: Option<&crate::proxy::Proxy>) -> io::R
         p.connect(&dest).await?
     } else {
         let addr = target.addr().await.map_err(io::Error::other)?;
-        TcpStream::connect(addr).await?
+        match &target.source {
+            // REQ: UPS-013 — bound before connect, so the connection leaves from that address.
+            Some(src) => {
+                let sock = if addr.is_ipv4() {
+                    TcpSocket::new_v4()?
+                } else {
+                    TcpSocket::new_v6()?
+                };
+                let local = src.bind_addr()?;
+                src.note(sock.bind(local))?;
+                sock.connect(addr).await?
+            }
+            None => TcpStream::connect(addr).await?,
+        }
     };
     s.set_nodelay(true)?;
     Ok(s)
@@ -486,6 +704,17 @@ fn tls_connector(
 }
 
 impl Upstream {
+    /// REQ: UPS-013 — the source address sockets are bound to, if one is set.
+    pub fn source(&self) -> Option<std::net::IpAddr> {
+        self.target.source.as_ref().and_then(Source::ip)
+    }
+
+    /// REQ: UPS-013 — set while binding the source address fails because this node no longer
+    /// holds it (a health reason; cleared by the next successful bind).
+    pub fn source_problem(&self) -> Option<String> {
+        self.target.source.as_ref()?.problem()
+    }
+
     /// An upstream with default options apart from timeout and weight (tests, embedding).
     pub fn new(
         id: u16,
@@ -541,10 +770,40 @@ impl Upstream {
                 "upstream `{name}`: hostname URL needs bootstrap servers"
             ));
         }
+        // REQ: UPS-013 — a source address for the protocols that bind it, and one that fits the
+        // server's address family.
+        let mut source = None;
+        if opts.source.is_some() || opts.source_spec.is_some() {
+            if !matches!(
+                endpoint.protocol,
+                Protocol::Udp | Protocol::Tcp | Protocol::Tls | Protocol::Https
+            ) || opts.proxy.is_some()
+            {
+                return Err(format!(
+                    "upstream `{name}`: `source` works with udp://, tcp://, tls://, and https:// upstreams, without a proxy"
+                ));
+            }
+            let spec = opts
+                .source_spec
+                .clone()
+                .or_else(|| opts.source.map(|ip| ip.to_string()))
+                .unwrap_or_default();
+            let src = Source::new(&spec, opts.source, &name)
+                .map_err(|e| format!("upstream `{name}`: {e}"))?;
+            if let Host::Ip(host) = &endpoint.host
+                && host.is_ipv4() != src.v4
+            {
+                return Err(format!(
+                    "upstream `{name}`: source {spec} and server {host} are not the same IP version"
+                ));
+            }
+            source = Some(src);
+        }
         let target = Arc::new(Target {
             host: endpoint.host.clone(),
             port: endpoint.port,
             bootstrap: opts.bootstrap.clone(),
+            source,
         });
         // TLS name to verify: tls_server_name, else the URL host (DNS name or IP literal).
         let tls_name = match (&opts.tls_server_name, &endpoint.host) {
@@ -718,7 +977,28 @@ impl Upstream {
             ecs_client: opts.ecs_client,
             self_probe: opts.self_probe,
             conns,
+            route: AtomicU8::new(0),
         })
+    }
+
+    /// REQ: UPS-006 — re-checks the route to a literal address (a cheap syscall, no traffic).
+    /// Called at start and on a timer by the node, never on the query path.
+    pub fn check_route(&self) {
+        if let Host::Ip(ip) = &self.endpoint.host
+            && !matches!(self.endpoint.protocol, Protocol::Unix | Protocol::Exec)
+        {
+            self.route
+                .store(if route_to(*ip) { 1 } else { 2 }, Ordering::Relaxed);
+        }
+    }
+
+    /// REQ: UPS-006 — the last route check.
+    pub fn route_state(&self) -> RouteState {
+        match (self.route.load(Ordering::Relaxed), &self.endpoint.host) {
+            (1, _) => RouteState::Routed,
+            (2, Host::Ip(ip)) => RouteState::NoRoute { v6: ip.is_ipv6() },
+            _ => RouteState::Unknown,
+        }
     }
 
     /// REQ: UPS-008 — this upstream's connection counters.
@@ -788,6 +1068,21 @@ impl Upstream {
             .ewma()
             .map_or(self.timeout, |e| e * 3 + Duration::from_millis(50));
         self.timeout.min(adaptive).min(Duration::from_secs(1))
+    }
+
+    /// REQ: UPS-006 (ADR-165) — the timeout of an attempt; `patient` for the last healthy
+    /// member a query tries. The adaptive bound in [`Self::attempt_timeout`] exists to give up
+    /// on one member and try another; with none left to try, it would only turn a slow answer
+    /// (a name the upstream had to resolve itself, often several hundred milliseconds to over a
+    /// second) into SERVFAIL. So that attempt may use the query's whole budget, like a
+    /// recursive upstream's; the caller bounds it by what's left. `timeout_ms` (400 ms by
+    /// default) still bounds the attempts that have a member to hand over to.
+    pub fn timeout_for(&self, patient: bool) -> Duration {
+        if patient {
+            self.attempt_timeout().max(crate::DEFAULT_BUDGET)
+        } else {
+            self.attempt_timeout()
+        }
     }
 
     /// How long to wait before hedging to the next upstream (ADR-013): about 3 × EWMA,
@@ -918,7 +1213,7 @@ impl Upstream {
                     let addr = self.target.addr().await?;
                     match relay {
                         Some(r) => r.exchange(addr, query, id).await,
-                        None => udp_exchange(addr, query, id).await,
+                        None => udp_exchange(addr, query, id, self.target.source.as_ref()).await,
                     }
                 };
                 let resp = timed(tokio::time::timeout(timeout, udp).await)?;
@@ -1003,14 +1298,27 @@ impl RelayPool {
     }
 }
 
-async fn udp_exchange(addr: SocketAddr, query: &[u8], id: u16) -> Result<Vec<u8>, ExchangeError> {
-    let bind: SocketAddr = if addr.is_ipv4() {
-        (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+async fn udp_exchange(
+    addr: SocketAddr,
+    query: &[u8],
+    id: u16,
+    source: Option<&Source>,
+) -> Result<Vec<u8>, ExchangeError> {
+    // A fresh socket per query gives a random source port (RFC 5452). REQ: UPS-013 — with a
+    // source address, the socket is bound to it (port 0: still random).
+    let sock = if let Some(src) = source {
+        {
+            let local = src.bind_addr()?;
+            src.note(UdpSocket::bind(local).await)?
+        }
     } else {
-        (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+        let bind: SocketAddr = if addr.is_ipv4() {
+            (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+        } else {
+            (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+        };
+        UdpSocket::bind(bind).await?
     };
-    // A fresh socket per query gives a random source port (RFC 5452).
-    let sock = UdpSocket::bind(bind).await?;
     sock.connect(addr).await?;
     sock.send(query).await?;
     let mut buf = vec![0u8; 4096];
@@ -1124,5 +1432,36 @@ mod tests {
         assert!(!is_own_loop_tag(
             &telltale_proto::parse_query(&buf[..len]).unwrap()
         ));
+    }
+
+    /// REQ: UPS-006 (fork #25) — the route check is a `connect()` with no traffic: loopback is
+    /// routed, a hostname is not checked, and the reasons name the family.
+    #[test]
+    fn ups_006_route_check() {
+        assert!(route_to("127.0.0.1".parse().unwrap()));
+        let ep = Endpoint::parse("udp://127.0.0.1").unwrap();
+        let u = Upstream::new(1, "lo", ep, Duration::from_secs(1), 1).unwrap();
+        assert_eq!(u.route_state(), RouteState::Unknown, "not checked yet");
+        u.check_route();
+        assert_eq!(u.route_state(), RouteState::Routed);
+        let ep = Endpoint::parse("tls://dns.example.net").unwrap();
+        let named = Upstream::new(2, "n", ep, Duration::from_secs(1), 1);
+        if let Ok(n) = named {
+            n.check_route();
+            assert_eq!(
+                n.route_state(),
+                RouteState::Unknown,
+                "a hostname is never checked"
+            );
+        }
+        assert_eq!(
+            RouteState::NoRoute { v6: true }.reason(),
+            Some("this node has no IPv6 route")
+        );
+        assert_eq!(
+            RouteState::NoRoute { v6: false }.reason(),
+            Some("this node has no IPv4 route")
+        );
+        assert_eq!(RouteState::Routed.reason(), None);
     }
 }

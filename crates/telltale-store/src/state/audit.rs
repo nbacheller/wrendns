@@ -112,7 +112,7 @@ impl State {
     /// Appends an entry, linked to the newest one. Returns it.
     pub fn audit_append(&self, e: &NewAudit<'_>) -> Result<AuditEntry> {
         self.with(|c| {
-            let tx = c.unchecked_transaction()?;
+            let tx = super::write_tx(c)?;
             let last: Option<(i64, Vec<u8>)> = tx
                 .query_row("SELECT seq, hash FROM audit ORDER BY seq DESC LIMIT 1", [], |r| {
                     Ok((r.get(0)?, r.get(1)?))
@@ -180,7 +180,7 @@ impl State {
     /// is recorded by the caller (`audit.trim`), checkpoint hash included.
     pub fn audit_trim(&self, before_ts: u64) -> Result<(u64, Option<Checkpoint>)> {
         self.with(|c| {
-            let tx = c.unchecked_transaction()?;
+            let tx = super::write_tx(c)?;
             let last: Option<(i64, Vec<u8>, i64)> = tx
                 .query_row(
                     "SELECT seq, hash, ts FROM audit WHERE ts < ?1 ORDER BY seq DESC LIMIT 1",

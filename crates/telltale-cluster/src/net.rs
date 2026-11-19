@@ -45,6 +45,29 @@ use crate::wire::{
 
 /// Heartbeat interval; a peer silent for three intervals is down.
 pub const HEARTBEAT: Duration = Duration::from_secs(5);
+
+/// REQ: CLU-005 (ADR-051) — the primary sends its key share again this often, unchanged. A peer
+/// refuses a share from a node it doesn't yet know as primary: right after a promotion, the stream
+/// was opened before the election, so the Hello's flag is stale. The refusal isn't acknowledged, so
+/// the share is repeated.
+pub(crate) const KEY_SHARE_RESEND: Duration = Duration::from_secs(30);
+
+/// Whether a key share last sent at `last` is due again at `now` (never sent: due).
+pub(crate) fn key_share_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last.is_none_or(|t| now.saturating_duration_since(t) >= KEY_SHARE_RESEND)
+}
+
+/// REQ: CLU-005 (ADR-947) — whether the primary sends its key share frame (`bytes`, encoded) on
+/// this stream now: when the frame changed since the last send (a CA rotation adds the next key),
+/// or when the last send is due again ([`key_share_due`]). `shared` is the last frame sent.
+pub(crate) fn key_share_send(
+    shared: Option<&[u8]>,
+    last: Option<std::time::Instant>,
+    bytes: &[u8],
+    now: std::time::Instant,
+) -> bool {
+    shared != Some(bytes) || key_share_due(last, now)
+}
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// REQ: CLU-001 (ADR-051, GitHub issue #4) — how soon a replica whose stream is to another
@@ -58,6 +81,13 @@ const REPROBE_MAX: Duration = Duration::from_secs(30);
 const REPROBE_MIN: Duration = Duration::from_millis(100);
 #[cfg(test)]
 const REPROBE_MAX: Duration = Duration::from_millis(400);
+/// REQ: CLU-005 (T24.38, ADR-1018) — a main link to the primary that was up at least this long
+/// is redialed before any replica.
+const PRIMARY_REDIAL_MIN_UP: Duration = Duration::from_secs(3);
+/// REQ: CLU-005 (T24.38, ADR-1018) — how many link drops are remembered per peer.
+const LINK_DROPS_KEPT: usize = 16;
+/// Link-drop records older than this are forgotten (a peer that comes and goes is current).
+const LINK_DROPS_MAX_AGE: Duration = Duration::from_hours(1);
 /// A look at the primary that takes longer than this counts as no answer.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -373,6 +403,14 @@ pub fn peer_node_id(cert: &CertificateDer<'_>) -> Option<String> {
     })
 }
 
+/// This node's own (main) stream: the URL it dialed and the node ID the server's certificate
+/// names, if it named one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MainLink {
+    url: String,
+    node: Option<String>,
+}
+
 /// What this node knows about a peer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)] // a record of independent flags
@@ -403,6 +441,9 @@ pub struct Member {
     pub uptime_s: u64,
     /// Since when its applied configuration has been older than the newest known (Unix ms).
     pub behind_since_ms: Option<u64>,
+    /// REQ: OBS-010 (T24.5, fork #2) — how long it had gone without reaching its primary when it
+    /// last reported (seconds; `None` when it reached it).
+    pub primary_silent_s: Option<u64>,
     /// `gitops` or `file` (ADR-048).
     pub config_source: String,
     /// The cluster protocol it speaks (CLU-010).
@@ -438,6 +479,8 @@ pub struct Member {
     /// REQ: CLU-014 — it understands drills (older nodes: no), and the drill it runs.
     pub drills: bool,
     pub drill: Option<DrillMark>,
+    /// REQ: CLU-015 — its stored secrets, from its heartbeats (empty from older nodes).
+    pub secrets: SecretsMark,
 }
 
 /// REQ: CLU-014 (ADR-151) — a drill as heartbeats carry it.
@@ -478,6 +521,47 @@ impl MaintenanceWindow {
     }
 }
 
+/// REQ: CLU-015 (ADR-903 §6) — a secrets head as heartbeats carry it: the newest stamp and the
+/// digest of the sorted `(name, kind, stamp, deleted)` list. It holds no value.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecretsHead {
+    pub epoch: u64,
+    pub seq: u64,
+    pub digest: Vec<u8>,
+}
+
+/// REQ: CLU-015 — what a node reports about its stored secrets, from its heartbeats.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecretsMark {
+    /// The head of the node's store (the primary's is the cluster's).
+    pub head: Option<SecretsHead>,
+    /// The head after it applied the primary's rows (a replica's copy of the head).
+    pub applied: Option<SecretsHead>,
+    /// Live secrets it can't read, and secrets the primary holds but couldn't decrypt.
+    pub unreadable: u32,
+    pub held: u32,
+    /// Configuration paths it refuses to read as credentials (at most 32).
+    pub credential_issues: Vec<String>,
+    /// Names its node-local fields reference (at most 128).
+    pub secret_refs: Vec<String>,
+}
+
+fn head_of_wire(h: Option<crate::wire::SecretsHeadMsg>) -> Option<SecretsHead> {
+    h.map(|h| SecretsHead {
+        epoch: h.epoch,
+        seq: h.seq,
+        digest: h.digest,
+    })
+}
+
+fn head_to_wire(h: Option<&SecretsHead>) -> Option<crate::wire::SecretsHeadMsg> {
+    h.map(|h| crate::wire::SecretsHeadMsg {
+        epoch: h.epoch,
+        seq: h.seq,
+        digest: h.digest.clone(),
+    })
+}
+
 impl Member {
     /// REQ: CLU-013 — the stable version it's at (see [`stable_seq`]).
     pub fn stable_seq(&self) -> u64 {
@@ -494,6 +578,21 @@ impl Member {
         now_ms.saturating_sub(self.last_seen_ms)
             <= 3 * u64::try_from(HEARTBEAT.as_millis()).unwrap_or(15_000)
     }
+}
+
+/// REQ: OBS-010 (T24.5, fork #2) — the silence a replica reports about its primary: `None` while
+/// one of the primary's last heartbeats is within the `up` window (`Member::up`, three
+/// heartbeats), otherwise the whole seconds since the latest one (`started_ms` when none has been
+/// heard). Pure, so the timing can be tested without a network.
+pub(crate) fn primary_silence_secs(
+    now_ms: u64,
+    started_ms: u64,
+    primary_last_seen: impl Iterator<Item = u64>,
+) -> Option<u64> {
+    let window = 3 * u64::try_from(HEARTBEAT.as_millis()).unwrap_or(15_000);
+    let last = primary_last_seen.max().unwrap_or(started_ms);
+    let silent_ms = now_ms.saturating_sub(last);
+    (silent_ms > window).then_some(silent_ms / 1000)
 }
 
 /// Values this node reports in its Hello and heartbeats.
@@ -526,6 +625,8 @@ pub struct LocalState {
     pub canary_of: u64,
     /// REQ: CLU-014 — the drill this node runs (heartbeats carry it).
     pub drill: Option<DrillMark>,
+    /// REQ: CLU-015 — this node's stored secrets (heartbeats carry them).
+    pub secrets: SecretsMark,
 }
 
 /// REQ: CLU-013 (T13.2, ADR-116) — the canary head: a version sent only to these peers (node
@@ -560,6 +661,15 @@ pub const LEAVE: &str = "cluster.leave";
 
 /// Events kept in memory.
 const MAX_EVENTS: usize = 200;
+
+/// REQ: CLU-015 (ADR-903 §4) — why [`Cluster::primary_epoch`] gave no epoch: this node is a replica,
+/// an emergency primary (it coordinates but changes nothing), or a primary whose lease lapsed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotPrimary {
+    Replica,
+    Emergency,
+    NoLease,
+}
 
 /// Answers peers' RPCs (CLU-002): `(peer node ID, kind, body)` → body, or an error. The peer
 /// ID comes from the stream's mTLS certificate, so a handler can trust it.
@@ -596,8 +706,58 @@ type PendingCalls = HashMap<
 /// Largest RPC answer (the frame limit, less framing).
 const MAX_RPC: usize = crate::wire::MAX_FRAME - 1024;
 
-/// The last heartbeat received on a stream, echoed back on the same stream.
-type EchoSlot = Arc<Mutex<Option<(u64, tokio::time::Instant)>>>;
+/// Heartbeats kept per stream for round-trip times (a peer echoes one of the last few).
+const ECHO_KEPT: usize = 16;
+
+/// What a stream needs for round-trip times. Peers echo heartbeats by their wall-clock `ts_ms`,
+/// but the round trip is measured on the monotonic clock only: the last heartbeat received
+/// (echoed back on this stream, with how long it was held), and the heartbeats sent, as
+/// (`ts_ms`, when sent). Mixing the wall clock with the monotonic hold time gave a round trip of
+/// 0 ms when the wall clock stepped during the exchange (REQ: CLU-008).
+#[derive(Default)]
+struct EchoState {
+    received: Option<(u64, tokio::time::Instant)>,
+    sent: VecDeque<(u64, tokio::time::Instant)>,
+}
+
+/// The echo state of one stream, shared by its reader and writer.
+type EchoSlot = Arc<Mutex<EchoState>>;
+
+/// Records a heartbeat sent at `ts_ms` (sent at `at`), keeping the last [`ECHO_KEPT`].
+fn remember_sent(
+    sent: &mut VecDeque<(u64, tokio::time::Instant)>,
+    ts_ms: u64,
+    at: tokio::time::Instant,
+) {
+    sent.push_back((ts_ms, at));
+    while sent.len() > ECHO_KEPT {
+        sent.pop_front();
+    }
+}
+
+/// When the heartbeat a peer echoed (by its wall-clock `ts_ms`) was sent. Two sent in the same
+/// millisecond share a `ts_ms`; the newer one is taken, so that round trip reads a little short.
+/// An echo older than the kept window has no send instant and gives no sample (REQ: CLU-008).
+fn echoed_sent_at(
+    sent: &VecDeque<(u64, tokio::time::Instant)>,
+    echo_ms: u64,
+) -> Option<tokio::time::Instant> {
+    sent.iter()
+        .rev()
+        .find(|(ts, _)| *ts == echo_ms)
+        .map(|(_, at)| *at)
+}
+
+/// The round trip in ms: the monotonic time from `sent_at` to `now`, less how long the peer held
+/// the heartbeat. Never negative; no wall clock is involved (REQ: CLU-008).
+fn echo_round_trip_ms(
+    sent_at: tokio::time::Instant,
+    now: tokio::time::Instant,
+    echo_delay_ms: u32,
+) -> u64 {
+    let elapsed = u64::try_from(now.duration_since(sent_at).as_millis()).unwrap_or(u64::MAX);
+    elapsed.saturating_sub(u64::from(echo_delay_ms))
+}
 
 /// Where the primary reads a blob it serves.
 #[derive(Debug, Clone)]
@@ -636,8 +796,12 @@ pub struct Cluster {
     joins: Mutex<std::collections::VecDeque<u64>>,
     /// The newest manifest received from a peer (verified by whoever applies it).
     incoming: watch::Sender<Option<Arc<Signed>>>,
-    /// The primary URL of the stream that's up (blobs are fetched from there).
-    connected: Mutex<Option<String>>,
+    /// This node's own stream to the primary (or to the node it fell back to), while it's up.
+    /// Blobs are fetched over it only while it's to the primary ([`Cluster::fetch_urls`]).
+    connected: Mutex<Option<MainLink>>,
+    /// How long the last main link stayed up, in ms (0 when it never got linked): `dial` reads
+    /// it after the stream ends.
+    main_up_ms: std::sync::atomic::AtomicU64,
     /// Replication state, for the API and the Cluster page.
     sync: Mutex<SyncStatus>,
     /// Bumped when the applied version changes, so the next heartbeat goes out at once.
@@ -652,8 +816,29 @@ pub struct Cluster {
     fence: Mutex<()>,
     /// `gitops` or `file`: how this node's own configuration is managed (ADR-048).
     config_source: Mutex<String>,
-    /// Extra frames to send on the stream to each peer (RPC), by peer node ID.
-    outbox: Mutex<HashMap<String, tokio::sync::mpsc::Sender<Frame>>>,
+    /// Extra frames to send on the streams to each peer (RPC), by peer node ID. REQ: CLU-001,
+    /// CLU-005 (T24.38, ADR-1018) — a peer can have several streams at once (the one this node
+    /// dials as its main link, the one the voter mesh keeps, the one the peer dialed): each is
+    /// listed, newest last, and leaves the list only when it ends.
+    outbox: Mutex<HashMap<String, Vec<tokio::sync::mpsc::Sender<Frame>>>>,
+    /// REQ: CLU-001, CLU-005 (T24.38, ADR-1018) — how many streams are open to each peer (counted
+    /// from its Hello to the end of the stream): a peer is `connected` while there is one.
+    live_streams: Mutex<HashMap<String, u32>>,
+    /// REQ: CLU-005 (T24.38, ADR-1018) — when each peer lost its last stream (newest last, at
+    /// most [`LINK_DROPS_KEPT`]) and which process it was: a voter whose link comes and goes
+    /// shows on the Cluster page; a drop the peer comes back from as another process (a restart,
+    /// an upgrade, a graceful shutdown) is forgotten at its Hello.
+    link_drops: Mutex<LinkLog>,
+    /// REQ: CLU-005 (T24.38, ADR-1018) — this process's [`Hello::instance`].
+    instance: String,
+    /// Test hook: ends this node's main link (one drop), once per `notify_one`.
+    #[cfg(test)]
+    sever_main: Notify,
+    #[cfg(test)]
+    severed: std::sync::atomic::AtomicUsize,
+    /// Test hook: main-link dials made to a node that is not the primary (a detour).
+    #[cfg(test)]
+    detours: std::sync::atomic::AtomicUsize,
     /// RPCs awaiting an answer, by request ID.
     pending: Mutex<PendingCalls>,
     next_rpc: std::sync::atomic::AtomicU64,
@@ -662,7 +847,12 @@ pub struct Cluster {
     pub(crate) election: Mutex<Option<crate::election::Elector>>,
     /// Whether this node may publish: a primary holding a valid lease (always, in manual mode).
     lease_ok: std::sync::atomic::AtomicBool,
+    /// REQ: CLU-005 (T24.26) — when this primary's lease lapsed, until a majority renews it.
+    lease_lapsed_at: Mutex<Option<std::time::Instant>>,
     failover_view: Mutex<crate::failover::FailoverView>,
+    /// REQ: CLU-009 (T24.33) — the last vote reply each voter gave this node (the Cluster page's
+    /// view of a witness).
+    voter_replies: Mutex<std::collections::BTreeMap<String, crate::failover::VoterReply>>,
     /// Bumped when this node's certificate is renewed: TLS settings are rebuilt (T5.4c).
     cert_gen: AtomicU64,
     /// The shared join secret this node accepts (CLU-009).
@@ -676,6 +866,146 @@ pub struct Cluster {
     /// REQ: CLU-005 (ADR-154) — since when this node has left the election to a Git-managed node
     /// with no primary up (Unix ms; 0: it isn't). See [`bounded_deference`].
     defer_since_ms: AtomicU64,
+    /// REQ: OBS-010 (T24.5, fork #2) — the newest heartbeat this node has heard from a primary
+    /// (Unix ms; 0: none yet). Kept after the primary leaves the member list, so a silence counts
+    /// from when the primary was last heard, not from process start. See `primary_silent_secs`.
+    primary_heard_ms: AtomicU64,
+    /// REQ: CLU-001 (ADR-960) — members this node has no stream to, as its peers last reported them.
+    relayed: Mutex<HashMap<String, RelayedMember>>,
+}
+
+/// REQ: CLU-001 (ADR-960) — a member another node hears from and this one doesn't (a replica in
+/// manual failover has a stream only to its primary): when a peer last heard it, on this node's
+/// wall clock (Unix ms), and what that peer said of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayedMember {
+    pub node_id: String,
+    pub heard_ms: u64,
+    pub ready: bool,
+    pub applied_seq: u64,
+}
+
+impl RelayedMember {
+    /// Up when it was heard from within three heartbeats, like [`Member::up`].
+    pub fn up(&self, now_ms: u64) -> bool {
+        now_ms.saturating_sub(self.heard_ms)
+            <= 3 * u64::try_from(HEARTBEAT.as_millis()).unwrap_or(15_000)
+    }
+}
+
+/// The most members a heartbeat relays (a cluster is a handful of nodes; this bounds the frame).
+const MAX_RELAYED: usize = 64;
+
+/// REQ: CLU-001 (ADR-960) — the members to name in a heartbeat: those heard within the `up` window,
+/// with how long ago. Pure, so the rule is tested without a network.
+pub(crate) fn peer_health(members: &[Member], now_ms: u64) -> Vec<crate::wire::PeerHealth> {
+    members
+        .iter()
+        .filter(|m| m.up(now_ms))
+        .take(MAX_RELAYED)
+        .map(|m| crate::wire::PeerHealth {
+            node_id: m.node_id.clone(),
+            age_ms: now_ms.saturating_sub(m.last_seen_ms),
+            ready: m.ready,
+            applied_seq: m.applied_seq,
+        })
+        .collect()
+}
+
+/// REQ: CLU-005 (T24.38, ADR-1018) — one end of a peer's last stream.
+#[derive(Debug, Clone)]
+pub(crate) struct LinkDrop {
+    pub(crate) at: std::time::Instant,
+    /// The peer's [`Hello::instance`] on the link that ended ("" from an older peer).
+    pub(crate) instance: String,
+    /// The peer came back as the same process: the link itself dropped.
+    pub(crate) settled: bool,
+}
+
+/// REQ: CLU-005 (T24.38, ADR-1018) — the link drops this node saw, and the process each linked
+/// peer is now. Rules (the conservative side of each case):
+/// - a drop the peer comes back from with the same instance counts (the link failed while both
+///   processes stayed up);
+/// - with another instance it is forgotten (the peer restarted, was upgraded or shut down);
+/// - an older peer sends no instance: "" again counts (as before the field); "" to an id, or an
+///   id to "", is an upgrade or a downgrade, so a restart;
+/// - a drop the peer hasn't come back from yet counts until it does;
+/// - this node's own restart starts the log empty (its peers see it come back as another
+///   process and forget the drop).
+#[derive(Debug, Default)]
+pub(crate) struct LinkLog {
+    /// Each linked peer's instance, from its Hello (moved into the drop when the link ends).
+    pub(crate) instance: HashMap<String, String>,
+    pub(crate) drops: HashMap<String, VecDeque<LinkDrop>>,
+}
+
+impl LinkLog {
+    /// `peer` lost its last stream at `at`.
+    pub(crate) fn dropped(&mut self, peer: &str, at: std::time::Instant) {
+        let instance = self.instance.remove(peer).unwrap_or_default();
+        let q = self.drops.entry(peer.to_owned()).or_default();
+        q.push_back(LinkDrop {
+            at,
+            instance,
+            settled: false,
+        });
+        while q.len() > LINK_DROPS_KEPT {
+            q.pop_front();
+        }
+        // Peers (resolver pods come and go) whose newest drop is old are forgotten.
+        self.drops.retain(|_, q| {
+            q.back()
+                .is_some_and(|d| at.saturating_duration_since(d.at) <= LINK_DROPS_MAX_AGE)
+        });
+    }
+
+    /// `peer` said Hello as process `instance`: its unsettled drops are settled (the same
+    /// process) or forgotten (another one).
+    pub(crate) fn hello(&mut self, peer: &str, instance: &str) {
+        self.instance.insert(peer.to_owned(), instance.to_owned());
+        if let Some(q) = self.drops.get_mut(peer) {
+            q.retain_mut(|d| {
+                if d.settled {
+                    return true;
+                }
+                d.settled = true;
+                d.instance == instance
+            });
+            if q.is_empty() {
+                self.drops.remove(peer);
+            }
+        }
+    }
+
+    pub(crate) fn forget(&mut self, peer: &str) {
+        self.instance.remove(peer);
+        self.drops.remove(peer);
+    }
+
+    /// For each peer with drops within `window` of `now`: how many, and how long ago the last.
+    pub(crate) fn counts(
+        &self,
+        now: std::time::Instant,
+        window: Duration,
+    ) -> BTreeMap<String, (u32, Duration)> {
+        self.drops
+            .iter()
+            .filter_map(|(id, q)| {
+                let recent: Vec<_> = q
+                    .iter()
+                    .filter(|d| now.saturating_duration_since(d.at) <= window)
+                    .collect();
+                let last = recent.last()?;
+                Some((
+                    id.clone(),
+                    (
+                        u32::try_from(recent.len()).unwrap_or(u32::MAX),
+                        now.saturating_duration_since(last.at),
+                    ),
+                ))
+            })
+            .collect()
+    }
 }
 
 /// What this node has applied from the primary (replica) or published (primary).
@@ -713,6 +1043,7 @@ impl Cluster {
             served: Mutex::new(HashMap::new()),
             incoming: watch::Sender::new(None),
             connected: Mutex::new(None),
+            main_up_ms: std::sync::atomic::AtomicU64::new(0),
             sync: Mutex::new(SyncStatus::default()),
             local_changed: watch::Sender::new(0),
             events: Mutex::new(VecDeque::new()),
@@ -722,6 +1053,15 @@ impl Cluster {
             fence: Mutex::new(()),
             config_source: Mutex::new("file".into()),
             outbox: Mutex::new(HashMap::new()),
+            live_streams: Mutex::new(HashMap::new()),
+            link_drops: Mutex::new(LinkLog::default()),
+            instance: format!("{:016x}", rand::random::<u64>()),
+            #[cfg(test)]
+            sever_main: Notify::new(),
+            #[cfg(test)]
+            severed: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            detours: std::sync::atomic::AtomicUsize::new(0),
             withheld: Mutex::new(std::collections::HashSet::new()),
             ephemeral: std::sync::atomic::AtomicBool::new(false),
             joins: Mutex::new(std::collections::VecDeque::new()),
@@ -732,12 +1072,16 @@ impl Cluster {
             election: Mutex::new(None),
             // ADR-056 — a primary in automatic failover waits for its first renewal.
             lease_ok: std::sync::atomic::AtomicBool::new(!wait_for_lease),
+            lease_lapsed_at: Mutex::new(None),
             failover_view: Mutex::new(crate::failover::FailoverView::default()),
+            voter_replies: Mutex::new(std::collections::BTreeMap::new()),
             cert_gen: AtomicU64::new(0),
             bootstrap: std::sync::OnceLock::new(),
             started_ms: now_ms(),
             handover_since_ms: AtomicU64::new(0),
             defer_since_ms: AtomicU64::new(0),
+            primary_heard_ms: AtomicU64::new(0),
+            relayed: Mutex::new(HashMap::new()),
         })
     }
 
@@ -944,8 +1288,19 @@ impl Cluster {
         self.lease_ok.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// REQ: CLU-005 (ADR-960) — a running primary that adopts automatic failover waits for its
+    /// first lease: publishing pauses without the "lease lapsed" warning and event, which are for a
+    /// lease that was held and lost.
+    pub(crate) fn begin_lease(&self) {
+        self.lease_ok
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
     pub(crate) fn set_lease_ok(&self, ok: bool) {
         let was = self.lease_ok.swap(ok, std::sync::atomic::Ordering::AcqRel);
+        if ok && !was {
+            self.note_lease_renewed();
+        }
         if was && !ok && self.is_primary() && self.stepping_down() {
             // REQ: OPS-010, CLU-005 (ADR-154) — expected: the lease ran out on purpose, for
             // maintenance or because a Git-managed node asked this emergency primary to hand over.
@@ -963,6 +1318,10 @@ impl Cluster {
                 format!("handing over for {why}"),
             );
         } else if was && !ok && self.is_primary() {
+            *self
+                .lease_lapsed_at
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(std::time::Instant::now());
             warn!(
                 "cluster: this primary's lease lapsed; publishing paused until a majority renews it"
             );
@@ -971,6 +1330,46 @@ impl Cluster {
                 &self.identity.meta.node_id.clone(),
                 "publishing paused",
             );
+        }
+    }
+
+    /// REQ: CLU-005 (T24.26) — said once when a lapsed lease is renewed again, with how long
+    /// publishing was paused.
+    fn note_lease_renewed(&self) {
+        let lapsed = self
+            .lease_lapsed_at
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if lapsed.is_some() && !self.is_primary() {
+            // A deposed primary is not "resuming".
+            info!("cluster: the lease lapse ended: this node is no longer the primary");
+            return;
+        }
+        if let Some(at) = lapsed {
+            let paused_ms = u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            info!(
+                paused_ms,
+                "cluster: this primary's lease is renewed again; publishing resumes"
+            );
+            self.event(
+                "lease_renewed",
+                &self.identity.meta.node_id.clone(),
+                format!("publishing resumed after {paused_ms} ms"),
+            );
+        }
+    }
+
+    /// REQ: CLU-005 (T24.26): a node switched to manual mode no longer has a lease to lapse:
+    /// publishing resumes because the rule changed, not because a majority renewed.
+    pub(crate) fn end_lease_lapse_for_manual_mode(&self) {
+        let lapsed = self
+            .lease_lapsed_at
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if lapsed.is_some() {
+            info!("cluster: automatic failover is off; publishing resumes without a lease");
         }
     }
 
@@ -987,6 +1386,30 @@ impl Cluster {
             .failover_view
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = v;
+    }
+
+    /// REQ: CLU-009 (T24.33) — records a voter's reply to this node's vote request.
+    pub(crate) fn note_voter_reply(&self, voter: &str, granted: bool, epoch: u64) {
+        let now = wall_ms();
+        let mut map = self
+            .voter_replies
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let entry = map.entry(voter.to_owned()).or_default();
+        if granted {
+            entry.last_grant_ms = Some(now);
+        }
+        entry.at_ms = now;
+        entry.granted = granted;
+        entry.epoch = epoch;
+    }
+
+    /// REQ: CLU-009 (T24.33) — the last reply each voter gave this node.
+    pub fn voter_replies(&self) -> std::collections::BTreeMap<String, crate::failover::VoterReply> {
+        self.voter_replies
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Records a vote this node granted, in the event log.
@@ -1116,8 +1539,13 @@ impl Cluster {
             }
         }
         let mut outbox = self.outbox.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut drops = self
+            .link_drops
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         for id in ids {
             outbox.remove(id);
+            drops.forget(id);
         }
     }
 
@@ -1196,6 +1624,10 @@ impl Cluster {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(node);
+        self.link_drops
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .forget(node);
         self.event(
             "removed",
             node,
@@ -1275,8 +1707,43 @@ impl Cluster {
     /// peer that left would otherwise stay listed (and show up as a node that didn't answer).
     pub fn reachable_peers(&self) -> Vec<String> {
         let mut outbox = self.outbox.lock().unwrap_or_else(PoisonError::into_inner);
-        outbox.retain(|_, tx| !tx.is_closed());
+        Self::purge_closed(&mut outbox);
         outbox.keys().cloned().collect()
+    }
+
+    /// REQ: CLU-005 (T24.38, ADR-1018) — remembers that `peer` lost its last stream.
+    fn note_link_drop(&self, peer: &str) {
+        self.link_drops
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .dropped(peer, std::time::Instant::now());
+    }
+
+    /// REQ: CLU-005 (T24.38, ADR-1018) — for each peer that lost its link within `window` while
+    /// both processes stayed up: how many times, and how long ago the last time was. A drop the
+    /// peer came back from as another process is not counted; one it hasn't come back from yet is.
+    pub fn link_drops(&self, window: Duration) -> BTreeMap<String, (u32, Duration)> {
+        self.link_drops
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .counts(std::time::Instant::now(), window)
+    }
+
+    /// Drops the senders of streams that ended, and the peers left with none.
+    fn purge_closed(outbox: &mut HashMap<String, Vec<tokio::sync::mpsc::Sender<Frame>>>) {
+        outbox.retain(|_, v| {
+            v.retain(|tx| !tx.is_closed());
+            !v.is_empty()
+        });
+    }
+
+    /// The newest open stream to `peer` that RPCs can go out on.
+    fn rpc_sender(&self, peer: &str) -> Option<tokio::sync::mpsc::Sender<Frame>> {
+        self.outbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(peer)
+            .and_then(|v| v.iter().rev().find(|tx| !tx.is_closed()).cloned())
     }
 
     /// Calls `kind` on `peer` over its stream; fails fast when no stream is open, and after
@@ -1289,11 +1756,7 @@ impl Cluster {
         timeout: Duration,
     ) -> Result<Vec<u8>, String> {
         let tx = self
-            .outbox
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(peer)
-            .cloned()
+            .rpc_sender(peer)
             .ok_or_else(|| format!("no stream to {peer}"))?;
         let id = self
             .next_rpc
@@ -1343,13 +1806,7 @@ impl Cluster {
 
     /// Answers an RPC from a peer on its stream.
     fn on_rpc(self: &Arc<Self>, peer: &str, req: RpcRequest) {
-        let Some(tx) = self
-            .outbox
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(peer)
-            .cloned()
-        else {
+        let Some(tx) = self.rpc_sender(peer) else {
             return;
         };
         let handler = self.rpc_handler.get().map(|h| Arc::clone(&h.0));
@@ -1466,20 +1923,62 @@ impl Cluster {
         self.members().iter().any(|m| m.primary && m.connected)
     }
 
-    /// The URL to fetch blobs from: the current primary's, else the connected stream's.
-    ///
-    /// The URL this node's stream to the primary uses comes first: it's the one known to work
-    /// from here. The primary's first advertised URL can be one only some nodes reach (an
-    /// in-cluster Service name, unknown to a node outside Kubernetes), so it's the fallback.
-    fn primary_url(&self) -> Option<String> {
-        self.connected_primary().or_else(|| {
-            let mut members = self.members();
-            members.sort_by_key(|m| std::cmp::Reverse(m.epoch));
-            members
-                .iter()
-                .find(|m| m.primary && m.connected)
-                .and_then(|m| m.advertise.first().cloned())
-        })
+    /// REQ: CLU-001 (GitHub issue #43) — the URLs to fetch blobs from, in order. Only the
+    /// primary serves them, so this node's own stream is first only while it's to the primary
+    /// (it's the URL known to work from here); a stream to another replica is never used. Then
+    /// every URL the primary is believed to be at ([`Self::primary_urls`]): its first advertised
+    /// URL can be one only some nodes reach (an in-cluster Service name, unknown to a node
+    /// outside Kubernetes), so each is tried in turn.
+    fn fetch_urls(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        if self.main_link_to_primary() {
+            out.extend(self.connected_primary());
+        }
+        for u in self.primary_urls() {
+            if !out.contains(&u) {
+                out.push(u);
+            }
+        }
+        out
+    }
+
+    /// A TLS connection to fetch blobs over: the first of [`Self::fetch_urls`] that answers
+    /// with a certificate of a node not known to be a replica.
+    async fn connect_for_fetch(
+        &self,
+        cfg: &Arc<ClientConfig>,
+    ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
+        let urls = self.fetch_urls();
+        if urls.is_empty() {
+            return Err("not connected to the primary".into());
+        }
+        let mut errors = Vec::new();
+        for url in &urls {
+            let tls = match tls_connect(url, Arc::clone(cfg)).await {
+                Ok(t) => t,
+                Err(e) => {
+                    errors.push(e);
+                    continue;
+                }
+            };
+            let id = tls
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|c| c.first())
+                .and_then(peer_node_id);
+            let replica = id.as_ref().is_some_and(|id| {
+                self.members()
+                    .iter()
+                    .any(|m| &m.node_id == id && !m.primary)
+            });
+            if replica {
+                errors.push(format!("{url}: not the primary"));
+                continue;
+            }
+            return Ok(tls);
+        }
+        Err(errors.join("; "))
     }
 
     /// Changes the role (persisted in `cluster.json`) and tells every stream and task.
@@ -1616,6 +2115,33 @@ impl Cluster {
             .clone()
     }
 
+    /// REQ: OBS-010 (T24.5, fork #2) — how long this node has gone without a heartbeat from its
+    /// primary, in seconds, read from the heartbeats it already exchanges (never from the DNS
+    /// path). `None` when a primary was heard within the `up` window or this node is the
+    /// primary. Before any primary has been heard, the time counts from this process's start; once one
+    /// has been heard, it counts from the newest heartbeat from any primary, even after that primary has
+    /// left the member list (a removed or replaced primary is not "silent since boot").
+    pub fn primary_silent_secs(&self, now_ms: u64) -> Option<u64> {
+        if self.is_primary() {
+            return None;
+        }
+        let members = self.members();
+        if let Some(seen) = members
+            .iter()
+            .filter(|m| m.primary)
+            .map(|m| m.last_seen_ms)
+            .max()
+        {
+            self.primary_heard_ms.fetch_max(seen, Ordering::AcqRel);
+        }
+        let heard = self.primary_heard_ms.load(Ordering::Acquire);
+        primary_silence_secs(
+            now_ms,
+            self.started_ms,
+            (heard > 0).then_some(heard).into_iter(),
+        )
+    }
+
     /// Replication state.
     pub fn sync_status(&self) -> SyncStatus {
         self.sync
@@ -1705,6 +2231,23 @@ impl Cluster {
         true
     }
 
+    /// REQ: CLU-015, CLU-005 (ADR-903 §2, §4) — this node's epoch, if it is the primary (not an
+    /// emergency one) and its lease holds, read under the lock role changes take (so role and
+    /// epoch are one consistent pair); the reason otherwise. Nothing else runs under the lock:
+    /// the caller stamps a stored secret in this epoch afterwards (disk I/O stays outside the
+    /// role-change lock). A step-down in between leaves a row of the old epoch, which the new
+    /// primary's newer epoch outranks (§2's orphans), as with [`Cluster::publish_as`].
+    pub fn primary_epoch(&self) -> Result<u64, NotPrimary> {
+        let _fence = self.fence.lock().unwrap_or_else(PoisonError::into_inner);
+        let (role, epoch) = self.role();
+        match role {
+            Role::Replica => Err(NotPrimary::Replica),
+            Role::Emergency => Err(NotPrimary::Emergency),
+            Role::Primary if !self.may_publish() => Err(NotPrimary::NoLease),
+            Role::Primary => Ok(epoch),
+        }
+    }
+
     /// The manifest this node publishes, if any.
     pub fn published(&self) -> Option<Arc<Signed>> {
         self.published.borrow().clone()
@@ -1720,11 +2263,31 @@ impl Cluster {
         self.connected
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+            .as_ref()
+            .map(|l| l.url.clone())
     }
 
-    /// Fetches the blobs in `refs` that `store` lacks from the connected primary; returns how
-    /// many were fetched. Each is checked against its hash before it's stored.
+    /// REQ: CLU-001 (GitHub issue #43) — whether this node's own stream, the one blobs are
+    /// fetched over, is to the primary. A stream the primary opened to this node doesn't count:
+    /// the primary dials eligible nodes too, so a replica that fell back to another replica would
+    /// otherwise look attached and never move back, and every fetch would go to the replica. If
+    /// the stream's server didn't name itself, any open stream to the primary counts (as before).
+    pub fn main_link_to_primary(&self) -> bool {
+        let node = self
+            .connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|l| l.node.clone());
+        match node {
+            None => false,
+            Some(Some(id)) => self.members().iter().any(|m| m.primary && m.node_id == id),
+            Some(None) => self.connected_to_primary(),
+        }
+    }
+
+    /// Fetches the blobs in `refs` that `store` lacks from the primary; returns how many were
+    /// fetched. Each is checked against its hash before it's stored.
     pub async fn fetch(&self, refs: &[BlobRef], store: &BlobStore) -> Result<usize, String> {
         let mut missing: Vec<BlobRef> = refs.iter().filter(|b| !store.has(b)).cloned().collect();
         missing.sort_by(|a, b| a.hash.cmp(&b.hash));
@@ -1732,9 +2295,10 @@ impl Cluster {
         if missing.is_empty() {
             return Ok(0);
         }
-        let url = self.primary_url().ok_or("not connected to the primary")?;
         // The current certificate and trusted CAs: they change with renewals and CA rotations.
-        let tls = tls_connect(&url, client_config(&self.identity.reload())?).await?;
+        let tls = self
+            .connect_for_fetch(&client_config(&self.identity.reload())?)
+            .await?;
         let (send, conn) =
             hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
                 .await
@@ -1784,6 +2348,16 @@ impl Cluster {
         result
     }
 
+    /// Whether `node` is a witness in the registry (REQ: CLU-009): a voter that serves no DNS,
+    /// holds no configuration and has no drill, flush or pause handlers, so the fan-out readers
+    /// leave it out rather than list it as a node that "didn't answer".
+    pub fn is_witness(&self, node: &str) -> bool {
+        self.identity
+            .registry()
+            .iter()
+            .any(|n| n.witness && n.node_id == node)
+    }
+
     /// Peers, by node ID.
     pub fn members(&self) -> Vec<Member> {
         self.members
@@ -1792,6 +2366,50 @@ impl Cluster {
             .values()
             .cloned()
             .collect()
+    }
+
+    /// REQ: CLU-001 (ADR-960) — members this node has no stream to, as its peers report them,
+    /// those heard from within the `up` window. A member this node is connected to is never here:
+    /// its own heartbeats are the better evidence.
+    pub fn relayed_members(&self) -> Vec<RelayedMember> {
+        let now = now_ms();
+        let members = self.members.lock().unwrap_or_else(PoisonError::into_inner);
+        let relayed = self.relayed.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut out: Vec<RelayedMember> = relayed
+            .values()
+            .filter(|r| r.up(now) && !members.get(&r.node_id).is_some_and(|m| m.up(now)))
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        out
+    }
+
+    /// REQ: CLU-001 (ADR-960) — notes what `from` reports of the members it hears, keeping for
+    /// each the newest report. This node's own entry and `from` itself are left out.
+    pub(crate) fn note_relayed(&self, from: &str, peers: &[crate::wire::PeerHealth], now_ms: u64) {
+        let me = self.identity.meta.node_id.clone();
+        let mut relayed = self.relayed.lock().unwrap_or_else(PoisonError::into_inner);
+        for p in peers.iter().take(MAX_RELAYED) {
+            if p.node_id == me || p.node_id == from {
+                continue;
+            }
+            let heard_ms = now_ms.saturating_sub(p.age_ms);
+            if relayed
+                .get(&p.node_id)
+                .is_some_and(|r| r.heard_ms >= heard_ms)
+            {
+                continue;
+            }
+            relayed.insert(
+                p.node_id.clone(),
+                RelayedMember {
+                    node_id: p.node_id.clone(),
+                    heard_ms,
+                    ready: p.ready,
+                    applied_seq: p.applied_seq,
+                },
+            );
+        }
     }
 
     /// A peer's recent host samples, oldest first (T6.11).
@@ -1810,6 +2428,17 @@ impl Cluster {
         let before = (l.epoch, l.applied_seq);
         f(&mut l);
         if (l.epoch, l.applied_seq) != before {
+            self.local_changed.send_modify(|n| *n += 1);
+        }
+    }
+
+    /// REQ: CLU-015 — sets this node's secrets mark and sends a heartbeat at once, so a changed
+    /// head reaches the members without waiting for the next period.
+    pub fn set_secrets(&self, mark: SecretsMark) {
+        let mut l = self.local.lock().unwrap_or_else(PoisonError::into_inner);
+        if l.secrets != mark {
+            l.secrets = mark;
+            drop(l);
             self.local_changed.send_modify(|n| *n += 1);
         }
     }
@@ -1851,6 +2480,7 @@ impl Cluster {
                 applied_seq: l.applied_seq,
                 primary: self.is_primary(),
                 config_source: self.config_source(),
+                instance: self.instance.clone(),
             })),
         }
     }
@@ -1861,26 +2491,33 @@ impl Cluster {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        let (echo_ms, echo_delay_ms) =
-            echo.lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .map_or((0, 0), |(ts, at)| {
-                    (
-                        ts,
-                        u32::try_from(at.elapsed().as_millis()).unwrap_or(u32::MAX),
-                    )
-                });
+        let (echo_ms, echo_delay_ms) = {
+            let e = echo.lock().unwrap_or_else(PoisonError::into_inner);
+            e.received.map_or((0, 0), |(ts, at)| {
+                (
+                    ts,
+                    u32::try_from(at.elapsed().as_millis()).unwrap_or(u32::MAX),
+                )
+            })
+        };
         // T5.4c — what this node trusts, and who issued its certificate.
         let id = self.identity.reload();
         let trust_fp = crate::pki::trust_fp(&id.ca_pem);
         let issuer_fp = crate::pki::issuer_fp(&id.cert_pem, &id.ca_pem).unwrap_or_default();
+        let ts_ms = now_ms();
+        remember_sent(
+            &mut echo.lock().unwrap_or_else(PoisonError::into_inner).sent,
+            ts_ms,
+            tokio::time::Instant::now(),
+        );
         Frame {
             body: Some(Body::Heartbeat(Heartbeat {
                 source_commit: l.source_commit.clone(),
                 trust_fp,
                 issuer_fp,
-                ts_ms: now_ms(),
+                ts_ms,
                 epoch: l.epoch.max(self.role().1),
+                primary: Some(self.is_primary()),
                 applied_seq: l.applied_seq,
                 qps: l.qps,
                 queries_last_minute: Some(l.queries_last_minute),
@@ -1922,6 +2559,14 @@ impl Cluster {
                 drill_id: l.drill.as_ref().map(|d| d.id.clone()).unwrap_or_default(),
                 drill_since_ms: l.drill.as_ref().map_or(0, |d| d.since_ms),
                 drill_until_ms: l.drill.as_ref().map_or(0, |d| d.until_ms),
+                primary_silent_s: self.primary_silent_secs(now_ms()),
+                peers: peer_health(&self.members(), now_ms()),
+                secrets_head: head_to_wire(l.secrets.head.as_ref()),
+                secrets_applied: head_to_wire(l.secrets.applied.as_ref()),
+                secrets_unreadable: l.secrets.unreadable,
+                secrets_held: l.secrets.held,
+                credential_issues: l.secrets.credential_issues.clone(),
+                secret_refs: l.secrets.secret_refs.clone(),
             })),
         }
     }
@@ -1987,6 +2632,7 @@ impl Cluster {
                         p90_us: prev.as_ref().map_or(0, |p| p.p90_us),
                         uptime_s: prev.as_ref().map_or(0, |p| p.uptime_s),
                         behind_since_ms: prev.as_ref().and_then(|p| p.behind_since_ms),
+                        primary_silent_s: None,
                         config_source: h.config_source,
                         protocol: h.protocol,
                         source_commit: h.source_commit,
@@ -2019,9 +2665,16 @@ impl Cluster {
                         canary_of: prev.as_ref().map_or(0, |p| p.canary_of),
                         drills: prev.as_ref().is_some_and(|p| p.drills),
                         drill: prev.as_ref().and_then(|p| p.drill.clone()),
+                        secrets: prev.as_ref().map(|p| p.secrets.clone()).unwrap_or_default(),
                     },
                 );
                 drop(members);
+                // REQ: CLU-005 (T24.38, ADR-1018) — a drop it comes back from as another process
+                // was a restart, not a link that comes and goes.
+                self.link_drops
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .hello(&h.node_id, &h.instance);
                 self.event("connected", &h.node_id, detail);
                 self.observe_epoch(h.epoch, &h.node_id);
                 // ADR-051 — the primary keeps the registry current: nodes that joined before it
@@ -2033,7 +2686,7 @@ impl Cluster {
             }
             Some(Body::Heartbeat(mut hb)) => {
                 let id = peer.as_ref().ok_or("heartbeat before Hello")?;
-                *echo.lock().unwrap_or_else(PoisonError::into_inner) =
+                echo.lock().unwrap_or_else(PoisonError::into_inner).received =
                     Some((hb.ts_ms, tokio::time::Instant::now()));
                 let now = now_ms();
                 let own = {
@@ -2048,6 +2701,8 @@ impl Cluster {
                 let mut restarted = false;
                 let mut maintenance_changed = None;
                 if let Some(m) = members.get_mut(id) {
+                    // REQ: CLU-005 (T24.38) — a heartbeat proves a live stream.
+                    m.connected = true;
                     // REQ: OPS-010 — its maintenance window (an older node sends none).
                     let window = (hb.maintenance_until_ms > 0).then(|| MaintenanceWindow {
                         until_ms: hb.maintenance_until_ms,
@@ -2079,16 +2734,31 @@ impl Cluster {
                         since_ms: hb.drill_since_ms,
                         until_ms: hb.drill_until_ms,
                     });
+                    // REQ: CLU-015 — its secrets (an older node sends none: an empty mark).
+                    m.secrets = SecretsMark {
+                        head: head_of_wire(hb.secrets_head.take()),
+                        applied: head_of_wire(hb.secrets_applied.take()),
+                        unreadable: hb.secrets_unreadable,
+                        held: hb.secrets_held,
+                        credential_issues: std::mem::take(&mut hb.credential_issues),
+                        secret_refs: std::mem::take(&mut hb.secret_refs),
+                    };
                     m.rollouts = hb.rollouts;
                     m.sync_error = std::mem::take(&mut hb.sync_error);
                     m.probe_failing = hb.probe_failing;
                     m.canary_of = hb.canary_of;
+                    // REQ: OBS-010 (T24.5) — the peer's own view of its primary (absent: it reaches it).
+                    m.primary_silent_s = hb.primary_silent_s;
                     m.last_seen_ms = now;
                     if !hb.trust_fp.is_empty() {
                         m.trust_fp.clone_from(&hb.trust_fp);
                         m.issuer_fp.clone_from(&hb.issuer_fp);
                     }
                     m.epoch = hb.epoch;
+                    // REQ: CLU-005 — a promotion after the stream opened: the Hello's flag is stale.
+                    if let Some(primary) = hb.primary {
+                        m.primary = primary;
+                    }
                     m.applied_seq = hb.applied_seq;
                     m.qps = hb.qps;
                     m.queries_last_minute = hb
@@ -2111,10 +2781,20 @@ impl Cluster {
                     m.pod = hb.pod;
                     m.cache_entries = hb.cache_entries;
                     m.cache_hit_permille = hb.cache_hit_permille;
-                    if hb.echo_ms > 0 {
-                        let rtt = now
-                            .saturating_sub(hb.echo_ms)
-                            .saturating_sub(u64::from(hb.echo_delay_ms));
+                    // REQ: CLU-008 — the round trip: from when we sent the echoed heartbeat to
+                    // now, less how long the peer held it. Both ends are on the monotonic clock.
+                    let sent_at = if hb.echo_ms > 0 {
+                        let e = echo.lock().unwrap_or_else(PoisonError::into_inner);
+                        echoed_sent_at(&e.sent, hb.echo_ms)
+                    } else {
+                        None
+                    };
+                    if let Some(sent_at) = sent_at {
+                        let rtt = echo_round_trip_ms(
+                            sent_at,
+                            tokio::time::Instant::now(),
+                            hb.echo_delay_ms,
+                        );
                         m.rtt_ms = Some(u32::try_from(rtt).unwrap_or(u32::MAX));
                         // T6.11 — its clock was at ts_ms about half a round trip ago.
                         let theirs = i128::from(hb.ts_ms) + i128::from(rtt / 2);
@@ -2143,6 +2823,7 @@ impl Cluster {
                     };
                     self.event(kind, &id, detail);
                 }
+                self.note_relayed(&id, &hb.peers, now);
                 self.observe_epoch(hb.epoch, &id);
                 return Ok(());
             }
@@ -2227,29 +2908,97 @@ async fn read_frames(
     via: &'static str,
     echo: &EchoSlot,
 ) -> Result<(), String> {
-    let result = read_loop(cluster, body, &mut peer, via, echo).await;
-    // Streams that ended can't carry RPCs any more.
-    cluster
-        .outbox
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .retain(|_, tx| !tx.is_closed());
-    if let Some(id) = &peer {
+    // REQ: CLU-001, CLU-005 (T24.38, ADR-1018) — the guard ends this stream's part in the peer's
+    // connected state wherever the stream stops, even when the caller drops this future (a
+    // replica moving back to the primary leaves its stream to another replica that way).
+    let mut count = StreamCount::new(cluster);
+    let result = read_loop(cluster, body, &mut peer, via, echo, &mut count).await;
+    count.why = result
+        .as_ref()
+        .err()
+        .map_or("stream closed".to_owned(), Clone::clone);
+    result
+}
+
+/// One open stream's share of its peer's `connected` state. A peer can have several streams
+/// at once (the main link, the voter mesh's, the one the peer dialed): it stays connected until
+/// the last one ends, and an event says so then.
+struct StreamCount {
+    cluster: Arc<Cluster>,
+    counted: Option<String>,
+    why: String,
+}
+
+impl StreamCount {
+    fn new(cluster: &Arc<Cluster>) -> Self {
+        // Counted from the first frame the cluster accepts (a Hello), not from the
+        // certificate: a peer refused at Hello is not a link that dropped.
+        Self {
+            cluster: Arc::clone(cluster),
+            counted: None,
+            why: "stream closed".to_owned(),
+        }
+    }
+
+    /// Counts this stream for `peer`, once.
+    fn count(&mut self, peer: &str) {
+        if self.counted.is_some() {
+            return;
+        }
+        *self
+            .cluster
+            .live_streams
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(peer.to_owned())
+            .or_default() += 1;
+        self.counted = Some(peer.to_owned());
+    }
+}
+
+impl Drop for StreamCount {
+    fn drop(&mut self) {
+        let cluster = &self.cluster;
+        // Streams that ended can't carry RPCs any more.
+        Cluster::purge_closed(
+            &mut cluster
+                .outbox
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        let Some(id) = self.counted.take() else {
+            return;
+        };
+        // The members lock is taken first and the count is changed under it, so a new stream's
+        // Hello (which sets `connected` under the same lock) can't be overwritten by this one's
+        // end (heartbeats also set it, as a second guard).
         let mut members = cluster
             .members
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(m) = members.get_mut(id) {
+        let last = {
+            let mut live = cluster
+                .live_streams
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let n = live.entry(id.clone()).or_default();
+            *n = n.saturating_sub(1);
+            let last = *n == 0;
+            if last {
+                live.remove(&id);
+            }
+            last
+        };
+        if !last {
+            return;
+        }
+        if let Some(m) = members.get_mut(&id) {
             m.connected = false;
         }
         drop(members);
-        let why = result
-            .as_ref()
-            .err()
-            .map_or("stream closed".to_owned(), Clone::clone);
-        cluster.event("disconnected", id, why);
+        cluster.note_link_drop(&id);
+        cluster.event("disconnected", &id, std::mem::take(&mut self.why));
     }
-    result
 }
 
 async fn read_loop(
@@ -2258,6 +3007,7 @@ async fn read_loop(
     peer: &mut Option<String>,
     via: &'static str,
     echo: &EchoSlot,
+    count: &mut StreamCount,
 ) -> Result<(), String> {
     let mut buf = Vec::new();
     while let Some(frame) = body.frame().await {
@@ -2266,10 +3016,36 @@ async fn read_loop(
             buf.extend_from_slice(&data);
             for f in wire::decode_all(&mut buf)? {
                 cluster.on_frame(peer, f, via, echo)?;
+                if let Some(p) = peer.as_deref() {
+                    count.count(p);
+                }
             }
         }
     }
     Ok(())
+}
+
+/// A stream's entry in the outbox, removed when the stream ends (or its task is dropped).
+struct Listed {
+    cluster: Arc<Cluster>,
+    peer: String,
+    tx: tokio::sync::mpsc::Sender<Frame>,
+}
+
+impl Drop for Listed {
+    fn drop(&mut self) {
+        let mut outbox = self
+            .cluster
+            .outbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(v) = outbox.get_mut(&self.peer) {
+            v.retain(|t| !t.same_channel(&self.tx));
+            if v.is_empty() {
+                outbox.remove(&self.peer);
+            }
+        }
+    }
 }
 
 /// Sends our Hello, then heartbeats, until the receiver goes away.
@@ -2292,13 +3068,22 @@ async fn write_frames(
     let mut changed = cluster.local_changed.subscribe();
     // RPC frames for this peer go out on this stream (CLU-002).
     let (out_tx, mut outbox) = tokio::sync::mpsc::channel::<Frame>(64);
-    if let Some(p) = &peer {
+    // REQ: CLU-001, CLU-005 (T24.38, ADR-1018) — listed next to the peer's other streams, and
+    // taken off again when this one ends: it never replaces another stream's entry.
+    let _listed = peer.as_ref().map(|p| {
         cluster
             .outbox
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(p.clone(), out_tx);
-    }
+            .entry(p.clone())
+            .or_default()
+            .push(out_tx.clone());
+        Listed {
+            cluster: Arc::clone(&cluster),
+            peer: p.clone(),
+            tx: out_tx,
+        }
+    });
     let mut tick = tokio::time::interval(HEARTBEAT);
     tick.tick().await;
     // A heartbeat right away, so the peer can echo it and both sides know the round-trip
@@ -2314,6 +3099,7 @@ async fn write_frames(
     // as soon as the registry lists them (checked again on every heartbeat), and again whenever
     // the share changes (a CA rotation adds the next key, T5.4c).
     let mut key_shared: Option<Vec<u8>> = None;
+    let mut key_sent_at: Option<std::time::Instant> = None;
     // The current manifest first (a peer that just connected), then whatever happens next:
     // the head for this peer, sent again only when it changes.
     manifests.borrow_and_update();
@@ -2323,11 +3109,13 @@ async fn write_frames(
     loop {
         if let Some(frame) = peer.as_deref().and_then(|p| cluster.key_share_for(p)) {
             let bytes = wire::encode(&frame);
-            if key_shared.as_deref() != Some(bytes.as_slice()) {
+            let now = std::time::Instant::now();
+            if key_share_send(key_shared.as_deref(), key_sent_at, &bytes, now) {
                 if tx.send_data(Bytes::from(bytes.clone())).await.is_err() {
                     return;
                 }
                 key_shared = Some(bytes);
+                key_sent_at = Some(now);
             }
         }
         let frame = if let Some(m) = pending.take() {
@@ -2571,9 +3359,20 @@ fn identities_of(signed: &Signed) -> Option<String> {
 pub async fn serve(
     cluster: Arc<Cluster>,
     addr: SocketAddr,
-    mut stop: watch::Receiver<bool>,
+    stop: watch::Receiver<bool>,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
+    serve_on(cluster, listener, stop).await
+}
+
+/// [`serve`] on a listener the caller already bound. Binding ahead of time keeps the port
+/// reserved: a caller that picks a free port and binds it later can lose it to another socket.
+pub async fn serve_on(
+    cluster: Arc<Cluster>,
+    listener: TcpListener,
+    mut stop: watch::Receiver<bool>,
+) -> std::io::Result<()> {
+    let addr = listener.local_addr()?;
     let mut tls = tokio_rustls::TlsAcceptor::from(
         server_config(&cluster.identity).map_err(std::io::Error::other)?,
     );
@@ -2797,8 +3596,15 @@ pub async fn dial(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
         }
         // The candidates change: a promotion names a new primary, the registry grows.
         let mut moved = false;
+        let mut retry_primary = false;
         for url in cluster.candidate_urls() {
             let started = tokio::time::Instant::now();
+            #[cfg(test)]
+            if !cluster.primary_urls().contains(&url) {
+                cluster
+                    .detours
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             // REQ: CLU-001 (GitHub issue #4) — a stream to a node that isn't the primary (the
             // primary's URLs failed, a replica answered) is not the end of the search: while
             // it's open, look for the primary now and then, and move back when it answers.
@@ -2836,6 +3642,27 @@ pub async fn dial(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
             if started.elapsed() > Duration::from_secs(60) {
                 backoff = Duration::from_secs(1); // it was up for a while
             }
+            // REQ: CLU-001, CLU-005 (T24.38) — a main link to the primary that was up for a
+            // while and then ended is one drop, not a reason to detour through a replica (which
+            // `primary_is_back` would then have to undo): the primary's URLs are tried first
+            // again after a short wait. A primary that is really gone fails the first dial
+            // quickly, and the loop falls through to the replicas as before.
+            if Duration::from_millis(cluster.main_up_ms.load(std::sync::atomic::Ordering::SeqCst))
+                > PRIMARY_REDIAL_MIN_UP
+                && cluster.primary_urls().contains(&url)
+            {
+                retry_primary = true;
+                break;
+            }
+        }
+        if retry_primary {
+            backoff = Duration::from_secs(1);
+            let wait = Duration::from_millis(200 + u64::from(rand::random::<u16>() % 800));
+            tokio::select! {
+                _ = stop.changed() => return,
+                () = tokio::time::sleep(wait) => {}
+            }
+            continue;
         }
         if moved {
             // Not a failure: try the candidates again at once, the primary's URLs first.
@@ -2866,7 +3693,8 @@ async fn primary_is_back(cluster: &Cluster, cfg: &Arc<ClientConfig>, current: &s
         let jitter = 0.5 + f64::from(rand::random::<u16>()) / f64::from(u16::MAX) / 2.0;
         tokio::time::sleep(wait.mul_f64(jitter)).await;
         wait = (wait * 2).min(REPROBE_MAX);
-        if cluster.is_primary() || cluster.connected_to_primary() {
+        // REQ: CLU-001 (GitHub issue #43) — only this node's own stream says it's attached.
+        if cluster.is_primary() || cluster.main_link_to_primary() {
             continue;
         }
         for url in cluster.primary_urls() {
@@ -2890,6 +3718,11 @@ async fn stream_once(
     main: bool,
     switch: Arc<Notify>,
 ) -> Result<(), String> {
+    if main {
+        cluster
+            .main_up_ms
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+    }
     let tls = tls_connect(url, cfg).await?;
     let server_id = tls
         .get_ref()
@@ -2924,24 +3757,75 @@ async fn stream_once(
         writer.abort();
         return Err(format!("{url}: {}", r.status()));
     }
-    // Only the main link (to the primary) is what replication fetches from.
+    // The main link is the one replication follows (and fetches over while it's to the
+    // primary). REQ: CLU-001 (GitHub issue #43) — logged, so where it went can be seen.
     if main {
+        info!(
+            %url,
+            node = server_id.as_deref().unwrap_or("unknown"),
+            "cluster: linked to a peer"
+        );
         *cluster
             .connected
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(url.to_owned());
+            .unwrap_or_else(PoisonError::into_inner) = Some(MainLink {
+            url: url.to_owned(),
+            node: server_id.clone(),
+        });
     }
+    let linked_at = std::time::Instant::now();
+    let node_for_log = server_id.clone();
+    let mut switched = false;
     let result = tokio::select! {
         done = read_frames(&cluster, r.into_body(), server_id, "outbound", &echo) => done,
-        () = switch.notified() => Ok(()),
+        () = switch.notified() => { switched = true; Ok(()) },
+        () = test_sever(&cluster, main) => Err("test: the link was cut".to_owned()),
     };
+    // REQ: CLU-005 (T24.38, ADR-1018) — the end of a main link is said at info level with how
+    // long it lasted and why, so a link that comes and goes can be read from the log.
+    if main {
+        cluster.main_up_ms.store(
+            u64::try_from(linked_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        info!(
+            %url,
+            node = node_for_log.as_deref().unwrap_or("unknown"),
+            up_s = linked_at.elapsed().as_secs(),
+            switched,
+            reason = result.as_ref().err().map_or("stream closed", String::as_str),
+            "cluster: the main link ended"
+        );
+    }
     writer.abort();
-    cluster
-        .connected
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take_if(|u| u == url);
+    // REQ: CLU-005 (T24.38) — only the main link owns the main-link record: a voter-mesh
+    // stream to the same URL ending must not clear it.
+    if main {
+        cluster
+            .connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take_if(|l| l.url == url);
+    }
     result
+}
+
+/// Test hook: resolves when the test cuts this node's main link.
+#[cfg(test)]
+async fn test_sever(cluster: &Cluster, main: bool) {
+    if main {
+        cluster.sever_main.notified().await;
+        cluster
+            .severed
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    } else {
+        std::future::pending::<()>().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn test_sever(_cluster: &Cluster, _main: bool) {
+    std::future::pending::<()>().await;
 }
 
 /// Runs futures concurrently and returns their outputs in order (no `futures` dependency).

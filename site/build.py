@@ -23,12 +23,15 @@ import tempfile
 
 SITE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SITE)
-PAGES = ["index.html", "start.html", "faq.html", "kubernetes.html","install.html", "how-it-works.html", "groups.html", "agents.html", "monitoring.html", "kubernetes-workloads.html", "failover-drills.html", "tour.html",
+PAGES = ["index.html", "start.html", "faq.html", "kubernetes.html","install.html", "how-it-works.html", "groups.html", "agents.html", "monitoring.html", "map.html", "kubernetes-workloads.html", "failover-drills.html", "tour.html",
          # ADR-122 — the Guides menu.
          "guides.html", "guide-settings.html", "guide-cluster.html", "guide-kubernetes.html", "guide-upgrades.html",
          "guide-blocking.html", "guide-devices.html", "guide-encrypted.html", "guide-changes.html", "guide-monitoring.html",
          "guide-users.html",
-         "config.html", "helm-values.html", "glossary.html", "performance.html", "standards.html", "decisions.html", "nerds.html"]
+         "config.html", "helm-values.html", "glossary.html", "performance.html", "standards.html", "decisions.html", "nerds.html",
+         # The Developers section (Reference menu): how to work on and extend TelltaleDNS.
+         "developers.html", "dev-gates.html", "dev-budgets.html", "dev-api.html", "dev-cluster.html", "dev-icons.html",
+         "dev-ui-tests.html", "dev-svelte.html"]
 STATUS_ORDER = {"supported": 0, "partial": 1, "planned": 2}
 
 
@@ -715,13 +718,17 @@ def render_glossary(page):
             if t.get("docs") else ""
         )
         path = ' <span class="pill supported">{}</span>'.format(FLOW_TEXT[t["diagram"]]) if t.get("diagram") else ""
+        # REQ: OBS-010 (T27.1) — a topic's list (the alert conditions), one line each.
+        items = "<ul>{}</ul>".format("".join(
+            "<li><code>{}</code>: {}</li>".format(html.escape(i["name"]), html.escape(i["line"])) for i in t["items"]
+        )) if t.get("items") else ""
         out.append(
             '<article class="card term" id="{id}"><h3><a href="#{id}">{title}</a>{path}</h3>'
             '<p class="muted small">{term}</p><p>{summary}</p>'
-            "<p><b>When:</b> {when}</p><p><b>Example:</b> {example}</p><p><b>Careful:</b> {caution}{docs}</p></article>".format(
+            "<p><b>When:</b> {when}</p><p><b>Example:</b> {example}</p><p><b>Careful:</b> {caution}{docs}</p>{items}</article>".format(
                 id=html.escape(t["id"]), title=html.escape(t["title"]), term=html.escape(t["term"]),
                 summary=html.escape(t["summary"]), when=html.escape(t["when"]), example=html.escape(t["example"]),
-                caution=html.escape(t["caution"]), docs=docs, path=path,
+                caution=html.escape(t["caution"]), docs=docs, path=path, items=items,
             )
         )
     return page.replace("<!-- @glossary -->", "\n".join(out))

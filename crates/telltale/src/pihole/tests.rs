@@ -91,6 +91,18 @@ fn load(toml: &str) -> telltale_config::Config {
     }
 }
 
+// REQ: UPS-006 (fork #25) — the preview notes an IPv6 upstream, with the hint to drop it when the
+// hosts have no IPv6, and says nothing of the IPv4 ones.
+#[test]
+fn ups_006_pihole_import_notes_ipv6_upstreams() {
+    let src = Source::from_entries(v5_entries()).unwrap();
+    let im = convert(&src, "teleporter.tar.gz").unwrap();
+    let v6: Vec<&String> = im.notes.iter().filter(|n| n.contains("IPv6")).collect();
+    assert_eq!(v6.len(), 1, "{:?}", im.notes);
+    assert!(v6[0].contains("2620:fe::fe") && v6[0].contains("no IPv6 route"));
+    assert!(v6[0].contains("pihole-3"), "{}", v6[0]);
+}
+
 // REQ: API-007 — a v5 Teleporter archive becomes a configuration that loads, with groups,
 // clients, lists, records, upstreams, and conditional forwarding carried over.
 #[test]
@@ -367,6 +379,76 @@ INSERT INTO client_by_group VALUES (1,1);"#,
     );
 }
 
+/// REQ: DNS-019, API-007 (ADR-904) — Pi-hole's domain-needed, iCloud Private Relay, and
+/// Firefox canary settings carry over (v6 `pihole.toml`, v5 `setupVars.conf` and
+/// `pihole-FTL.conf`); left at Pi-hole's defaults, no `[special]` section is written.
+#[test]
+fn dns_019_pihole_special_names() {
+    let v6 = |toml: &str| {
+        let mut e = archive::Entries::new();
+        e.insert("etc/pihole/pihole.toml".into(), toml.as_bytes().to_vec());
+        convert(&Source::from_entries(e).unwrap(), "pihole.toml").unwrap()
+    };
+    let im = v6(r#"[dns]
+  upstreams = [ "9.9.9.9" ] ### CHANGED, default = []
+  domainNeeded = true ### CHANGED, default = false
+
+  [dns.specialDomains]
+    mozillaCanary = true
+    iCloudPrivateRelay = false ### CHANGED, default = true
+    designatedResolver = true
+"#);
+    let cfg = load(&im.toml);
+    assert!(cfg.special.single_label_nxdomain);
+    assert!(!cfg.special.block_icloud_private_relay);
+    assert!(cfg.special.block_firefox_canary);
+    let notes = im.notes.join("\n");
+    for mapped in ["domainNeeded", "iCloudPrivateRelay"] {
+        assert!(!notes.contains(mapped), "{mapped} is imported:\n{notes}");
+    }
+
+    let im = v6(
+        "[dns]\n  upstreams = [ \"9.9.9.9\" ] ### CHANGED, default = []\n  domainNeeded = false\n",
+    );
+    assert!(!im.toml.contains("[special]"), "defaults: nothing to write");
+    assert_eq!(
+        load(&im.toml).special,
+        telltale_config::SpecialConfig::default()
+    );
+
+    let v5 = |setup: &str, ftl: &str| {
+        let mut e = archive::Entries::new();
+        e.insert("setupVars.conf".into(), setup.as_bytes().to_vec());
+        e.insert("pihole-FTL.conf".into(), ftl.as_bytes().to_vec());
+        convert(&Source::from_entries(e).unwrap(), "teleporter.tar.gz").unwrap()
+    };
+    let im = v5(
+        "PIHOLE_DNS_1=9.9.9.9\nDNS_FQDN_REQUIRED=true\n",
+        "BLOCK_ICLOUD_PR=false\nMOZILLA_CANARY=false\n",
+    );
+    let cfg = load(&im.toml);
+    assert!(cfg.special.single_label_nxdomain);
+    assert!(!cfg.special.block_icloud_private_relay);
+    assert!(!cfg.special.block_firefox_canary);
+    let notes = im.notes.join("\n");
+    for mapped in ["DNS_FQDN_REQUIRED", "BLOCK_ICLOUD_PR", "MOZILLA_CANARY"] {
+        assert!(!notes.contains(mapped), "{mapped} is imported:\n{notes}");
+    }
+    let im = v5(
+        "PIHOLE_DNS_1=9.9.9.9\nDNS_FQDN_REQUIRED=false\n",
+        "BLOCK_ICLOUD_PR=true\n",
+    );
+    assert!(!im.toml.contains("[special]"));
+    // These default to on: anything but an explicit `false` keeps the block.
+    let im = v5(
+        "PIHOLE_DNS_1=9.9.9.9\n",
+        "BLOCK_ICLOUD_PR=yes\nMOZILLA_CANARY=FALSE \n",
+    );
+    let cfg = load(&im.toml);
+    assert!(cfg.special.block_icloud_private_relay);
+    assert!(!cfg.special.block_firefox_canary);
+}
+
 #[test]
 fn api_007_reverse_zones() {
     assert_eq!(reverse_zones("10.0.0.0/8").unwrap(), ["10.in-addr.arpa"]);
@@ -397,5 +479,345 @@ fn api_007_not_a_pihole() {
             b"junk".to_vec()
         )]))
         .is_err()
+    );
+}
+
+// REQ: API-007 (T24.6) — dnsmasq.d lines: `address=` answers and blocks, `server=/domain/`
+// forwards, `host-record=` and `cname=` records; the rest is named in the report.
+#[test]
+fn api_007_pihole_dnsmasq_lines() {
+    let mut e = v5_entries();
+    e.insert(
+        "etc/dnsmasq.d/99-custom.conf".into(),
+        b"# a comment\naddress=/tv.lan/192.168.1.40\naddress=/ads.example/0.0.0.0\naddress=/v6.lan/fd00::40\nserver=/corp.example/10.9.0.53#5353\nserver=/bare.example/\nserver=192.168.1.1\nhost-record=printer.lan,192.168.1.70,fd00::70\ncname=alias.lan,nas.lan\ndomain-needed\nforeign-directive=1\n".to_vec(),
+    );
+    let src = Source::from_entries(e).unwrap();
+    let im = convert(&src, "teleporter.tar.gz").unwrap();
+    let cfg = load(&im.toml);
+
+    let recs: Vec<(&str, &str, &str)> = cfg
+        .record
+        .iter()
+        .map(|r| (r.name.as_str(), r.rtype.as_str(), r.value.as_str()))
+        .collect();
+    for want in [
+        ("tv.lan", "A", "192.168.1.40"),
+        ("v6.lan", "AAAA", "fd00::40"),
+        ("printer.lan", "A", "192.168.1.70"),
+        ("printer.lan", "AAAA", "fd00::70"),
+        ("alias.lan", "CNAME", "nas.lan"),
+    ] {
+        assert!(recs.contains(&want), "{want:?} missing from {recs:?}");
+    }
+
+    let route = cfg
+        .route
+        .iter()
+        .find(|r| strs(&r.match_suffix).contains(&"corp.example"))
+        .expect("the dnsmasq server= forward");
+    let group = cfg
+        .upstream_group
+        .iter()
+        .find(|g| g.name.as_str() == route.upstream_group.as_str())
+        .unwrap();
+    let up = cfg
+        .upstream
+        .iter()
+        .find(|u| group.members.iter().any(|m| m.as_str() == u.name.as_str()))
+        .unwrap();
+    assert_eq!(up.url.as_str(), "udp://10.9.0.53:5353");
+
+    // The blocking address= line is a deny list in the default group, which also covers
+    // every group Pi-hole had.
+    let block = cfg
+        .list
+        .iter()
+        .find(|l| l.name.as_str() == "pihole-dnsmasq-address")
+        .expect("the address= block list");
+    assert_eq!(strs(&block.rules), ["ads.example"]);
+    let default = cfg
+        .group
+        .iter()
+        .find(|g| g.name.as_str() == "default")
+        .unwrap();
+    let lists = default.lists.clone().unwrap_or_default();
+    assert!(
+        strs(&lists).contains(&"pihole-dnsmasq-address"),
+        "{default:?}"
+    );
+
+    assert!(im.samples.iter().any(|s| s == "tv.lan"), "{:?}", im.samples);
+    let notes = im.notes.join("\n");
+    assert!(notes.contains("server=/bare.example/"), "{notes}");
+    assert!(notes.contains("subdomains"), "{notes}");
+    assert!(notes.contains("foreign-directive"), "{notes}");
+    assert!(!notes.contains("domain-needed"), "{notes}");
+}
+
+// REQ: API-007 (T24.6) — a domain named by a v5 reverse server and by a dnsmasq `server=/domain/`
+// is routed once: the first route keeps it, and the conflict is noted.
+#[test]
+fn api_007_pihole_forward_named_twice_is_routed_once() {
+    let mut e = v5_entries();
+    e.insert(
+        "setupVars.conf".into(),
+        b"PIHOLE_DNS_1=192.168.1.1\nREV_SERVER=true\nREV_SERVER_CIDR=192.168.1.0/24\nREV_SERVER_TARGET=192.168.1.1\nREV_SERVER_DOMAIN=lan\n".to_vec(),
+    );
+    e.insert(
+        "etc/dnsmasq.d/01-pihole.conf".into(),
+        b"server=/lan/192.168.1.1\n".to_vec(),
+    );
+    let src = Source::from_entries(e).unwrap();
+    let im = convert(&src, "teleporter.tar.gz").unwrap();
+    let cfg = load(&im.toml);
+    let routed = cfg
+        .route
+        .iter()
+        .filter(|r| r.match_suffix.iter().any(|s| s.as_str() == "lan"))
+        .count();
+    assert_eq!(routed, 1, "{}", im.toml);
+    assert!(
+        im.notes.join("\n").contains("named twice"),
+        "{:?}",
+        im.notes
+    );
+}
+
+// REQ: API-007 (T24.6) — a broken `pihole.toml` is reported by line and message, never with the
+// line's text, which can be a password hash or a TOTP secret.
+#[test]
+fn api_007_pihole_toml_error_hides_the_line() {
+    let err = v6_settings("pwhash = \"secret-hash-xyz\"\n[dns\n")
+        .err()
+        .unwrap_or_default();
+    assert!(!err.contains("secret-hash-xyz"), "{err}");
+    assert!(err.contains("pihole.toml"), "{err}");
+}
+
+/// REQ: OBS-903, API-007 (T24.35, ADR-1014) — Pi-hole's excluded domains and clients become
+/// `[exclusions.log]` (v6 regexes: `^name$`, `^.*\.suffix$`, `^192\.168\.1\.5$`; v5 plain
+/// values), shown in the preview's notes; patterns that aren't plain are named, not imported;
+/// left empty, nothing is written.
+#[test]
+fn obs_903_pihole_excluded_domains_and_clients() {
+    let v6 = |toml: &str| {
+        let mut e = archive::Entries::new();
+        e.insert("etc/pihole/pihole.toml".into(), toml.as_bytes().to_vec());
+        convert(&Source::from_entries(e).unwrap(), "pihole.toml").unwrap()
+    };
+    let im = v6(r#"[dns]
+  upstreams = [ "9.9.9.9" ] ### CHANGED, default = []
+
+[webserver.api]
+  excludeClients = [ "^192\\.168\\.1\\.5$", "^10\\.0\\.0\\.7$", "^kitchen-.*$", "nas" ] ### CHANGED, default = []
+  excludeDomains = [ "^localhost$", "^.*\\.lan$", "^(.*\\.)?corp\\.example$", "^(ads|trk)\\..*$", "internal" ] ### CHANGED, default = []
+"#);
+    let cfg = load(&im.toml);
+    let log = &cfg.exclusions.log;
+    assert_eq!(
+        log.domains
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["localhost", "*.lan", "corp.example", "*.corp.example"]
+    );
+    assert_eq!(
+        log.clients
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["192.168.1.5", "10.0.0.7"]
+    );
+    assert!(!log.own_lookups, "never switched on by an import");
+    let notes = im.notes.join("\n");
+    assert!(
+        notes.contains("4 domain(s) and 2 client(s) are imported"),
+        "{notes}"
+    );
+    for skipped in ["kitchen-.*", "nas", "internal", "(ads|trk)"] {
+        assert!(
+            notes.contains(skipped),
+            "{skipped} is named as not imported:\n{notes}"
+        );
+    }
+    assert!(
+        !notes.contains("webserver.api"),
+        "mapped keys aren't 'unmapped':\n{notes}"
+    );
+
+    let im = v6("[dns]\n  upstreams = [ \"9.9.9.9\" ] ### CHANGED, default = []\n");
+    assert!(
+        !im.toml.contains("exclusions"),
+        "nothing excluded: nothing written"
+    );
+
+    let mut e = archive::Entries::new();
+    e.insert(
+        "setupVars.conf".into(),
+        b"PIHOLE_DNS_1=9.9.9.9\nAPI_EXCLUDE_DOMAINS=localhost, printer.lan\nAPI_EXCLUDE_CLIENTS=192.168.1.9,tv\n"
+            .to_vec(),
+    );
+    let im = convert(&Source::from_entries(e).unwrap(), "teleporter.tar.gz").unwrap();
+    let cfg = load(&im.toml);
+    assert_eq!(cfg.exclusions.log.domains.len(), 2);
+    assert_eq!(
+        cfg.exclusions
+            .log
+            .clients
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["192.168.1.9", "tv"]
+    );
+    let notes = im.notes.join("\n");
+    assert!(!notes.contains("API_EXCLUDE"), "{notes}");
+}
+
+// REQ: T24.27 — a GitHub page URL becomes the raw file URL.
+#[test]
+fn t24_27_github_page_url_becomes_raw() {
+    assert_eq!(
+        github_raw("https://github.com/mmotti/pihole-regex/blob/master/regex.list").as_deref(),
+        Some("https://raw.githubusercontent.com/mmotti/pihole-regex/master/regex.list")
+    );
+    assert_eq!(
+        github_raw("https://github.com/o/r/raw/main/dir/hosts.txt?raw=true#L3").as_deref(),
+        Some("https://raw.githubusercontent.com/o/r/main/dir/hosts.txt")
+    );
+    for not in [
+        "https://raw.githubusercontent.com/o/r/main/hosts",
+        "https://github.com/o/r",
+        "https://github.com/o/r/tree/main/dir",
+        "https://github.com/o/r/blob/main",
+        "https://example.com/github.com/o/r/blob/main/x",
+    ] {
+        assert_eq!(github_raw(not), None, "{not}");
+    }
+}
+
+// REQ: T24.27 — the import rewrites a GitHub page adlist and says so; a regex list is not
+// imported and the preview says why.
+#[test]
+fn t24_27_import_rewrites_github_and_skips_regex_lists() {
+    let mut e = v5_entries();
+    e.insert(
+        "adlist.json".to_owned(),
+        br#"[{"id":1,"address":"https://github.com/o/r/blob/master/hosts.txt","enabled":1,"comment":""},
+ {"id":2,"address":"https://github.com/mmotti/pihole-regex/blob/master/regex.list","enabled":1,"comment":""}]"#
+            .to_vec(),
+    );
+    e.insert(
+        "adlist_by_group.json".to_owned(),
+        br#"[{"adlist_id":1,"group_id":0},{"adlist_id":2,"group_id":0}]"#.to_vec(),
+    );
+    let src = Source::from_entries(e).unwrap();
+    let im = convert(&src, "teleporter.tar.gz").unwrap();
+    let cfg = load(&im.toml);
+    let urls: Vec<_> = cfg.list.iter().filter_map(|l| l.url.as_deref()).collect();
+    assert!(urls.contains(&"https://raw.githubusercontent.com/o/r/master/hosts.txt"));
+    assert!(
+        !urls.iter().any(|u| u.contains("regex.list")),
+        "a regex list isn't imported: {urls:?}"
+    );
+    assert!(
+        im.notes
+            .iter()
+            .any(|n| n.contains("GitHub page") && n.contains("raw.githubusercontent.com/o/r"))
+    );
+    assert!(
+        im.notes
+            .iter()
+            .any(|n| n.contains("regular expressions") && n.contains("regex.list"))
+    );
+}
+
+// REQ: API-007, DSC-901 (T35.1, ADR-1032) — Pi-hole stores comments HTML-escaped: the importer
+// decodes them once, tells devices of one name apart by their address tail (not " (2)"), and
+// lists a name that lost characters in the report.
+#[test]
+fn api_007_t35_1_import_decodes_names_and_tells_duplicates_apart() {
+    let mut e = archive::Entries::new();
+    let mut put = |k: &str, v: &str| {
+        e.insert(k.to_owned(), v.as_bytes().to_vec());
+    };
+    put(
+        "group.json",
+        r#"[{"id":0,"enabled":1,"name":"Default"},{"id":1,"enabled":1,"name":"Kids &amp; Teens","description":"it&#039;s"}]"#,
+    );
+    put(
+        "client.json",
+        r#"[{"id":1,"ip":"192.168.1.20","comment":"Alex&#039;s PC"},
+            {"id":2,"ip":"192.168.1.21","comment":"Alex&#039;s PC"},
+            {"id":3,"ip":"AA:BB:CC:DD:EE:0F","comment":"Alex&#039;s PC"},
+            {"id":4,"ip":"192.168.1.22","comment":"Double&amp;#039;d"},
+            {"id":5,"ip":"192.168.1.23","comment":"IoT - Google -?"},
+            {"id":6,"ip":"192.168.1.24","comment":"Tom &amp; Jerry"}]"#,
+    );
+    put(
+        "client_by_group.json",
+        r#"[{"client_id":1,"group_id":1},{"client_id":2,"group_id":1},{"client_id":3,"group_id":1}]"#,
+    );
+    put(
+        "adlist.json",
+        r#"[{"id":1,"address":"https://lists.example/a.txt","enabled":1,"comment":"Tom &amp; Jerry&#039;s list"}]"#,
+    );
+    put("adlist_by_group.json", r#"[{"adlist_id":1,"group_id":0}]"#);
+    let src = Source::from_entries(e).unwrap();
+    let im = convert(&src, "test").unwrap();
+    let cfg = telltale_config::Loader::new()
+        .toml_str("t", &im.toml)
+        .load()
+        .unwrap()
+        .config;
+    let names: Vec<&str> = cfg.client.iter().map(|c| c.name.as_str()).collect();
+    assert!(names.contains(&"Alex's PC"), "{names:?}");
+    assert!(names.contains(&"Alex's PC (1.21)"), "{names:?}");
+    assert!(names.contains(&"Alex's PC (ee:0f)"), "{names:?}");
+    assert!(names.contains(&"Double&#039;d"), "decoded once: {names:?}");
+    assert!(names.contains(&"Tom & Jerry"), "{names:?}");
+    assert!(names.iter().all(|n| !n.contains("(2)")), "{names:?}");
+    assert!(cfg.group.iter().any(|g| g.name.as_str() == "Kids & Teens"));
+    assert!(
+        im.toml.contains("Tom & Jerry's list"),
+        "the list note is decoded: {}",
+        im.toml
+    );
+    assert!(
+        im.notes
+            .iter()
+            .any(|n| n.contains("IoT - Google -?") && n.contains("lost characters")),
+        "{:?}",
+        im.notes
+    );
+    assert!(
+        !im.notes.iter().any(|n| n.contains("Alex")),
+        "a decoded name lost nothing: {:?}",
+        im.notes
+    );
+}
+
+// REQ: API-007 (T35.1) — domain and regex columns are never decoded.
+#[test]
+fn api_007_t35_1_import_leaves_domain_columns_alone() {
+    let mut e = archive::Entries::new();
+    let mut put = |k: &str, v: &str| {
+        e.insert(k.to_owned(), v.as_bytes().to_vec());
+    };
+    put("group.json", r#"[{"id":0,"enabled":1,"name":"Default"}]"#);
+    put(
+        "blacklist.regex.json",
+        r#"[{"id":4,"type":3,"domain":"^a&amp;b[0-9]+\\.example$","enabled":1}]"#,
+    );
+    put(
+        "domainlist_by_group.json",
+        r#"[{"domainlist_id":4,"group_id":0}]"#,
+    );
+    let src = Source::from_entries(e).unwrap();
+    let im = convert(&src, "test").unwrap();
+    assert!(
+        im.toml.contains("a&amp;b") || im.notes.iter().any(|n| n.contains("a&amp;b")),
+        "the regex keeps its text: {}\n{:?}",
+        im.toml,
+        im.notes
     );
 }

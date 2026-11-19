@@ -49,7 +49,8 @@ pub struct Config {
     pub anomaly_mute: Vec<AnomalyMuteConfig>,
     /// REQ: OBS-010 (T7.12) — alert rules and where they go.
     pub alerts: AlertsConfig,
-    /// REQ: T8.2 — routers whose DHCP names devices (UniFi, OPNsense).
+    /// REQ: T8.2 — routers whose DHCP names devices (UniFi, OPNsense), and (API-012, T22.3)
+    /// Home Assistant's device registry.
     pub router: Vec<RouterConfig>,
     /// Known devices and how to recognize them (FLT-006).
     pub client: Vec<ClientConfig>,
@@ -70,6 +71,9 @@ pub struct Config {
     pub exclusions: ExclusionsConfig,
     /// REQ: OBS-024 (T13.1) — change simulation over the query log.
     pub simulate: SimulateConfig,
+    /// REQ: OBS-901 (T26.2, ADR-958) — the live network map: its sampler and the health
+    /// thresholds that colour it. Shared by the whole cluster.
+    pub map: MapConfig,
     /// REQ: OPS-011 (ADR-156) — the support package's settings. Node-local: it names this node's
     /// own disk.
     pub support: SupportConfig,
@@ -89,6 +93,17 @@ pub struct Config {
     pub dns: DnsConfig,
     /// Special-name handling (RFC 6761 etc.).
     pub special: SpecialConfig,
+    /// REQ: DSC-001 (T25.2, ADR-907) — the network inventory (`[discovery]`): off by default,
+    /// one designated node, admin-only writes. Serialized only when set (CLU-010).
+    #[serde(
+        default,
+        skip_serializing_if = "crate::discovery::DiscoveryConfig::is_default"
+    )]
+    pub discovery: crate::discovery::DiscoveryConfig,
+    /// REQ: DSC-901, DSC-906 (T31.2, ADR-1005) — the CMDB (`[cmdb]`): off by default, runs on the
+    /// node `[discovery]` designates, admin-only writes. Serialized only when set (CLU-010).
+    #[serde(default, skip_serializing_if = "crate::cmdb::CmdbConfig::is_default")]
+    pub cmdb: crate::cmdb::CmdbConfig,
     /// Response cache.
     pub cache: CacheConfig,
     /// DNSSEC validation of forwarded answers (DNS-011).
@@ -113,6 +128,12 @@ pub struct Config {
     pub api: ApiConfig,
     /// Sign-in: sessions, HTTP Basic, two-factor policy (API-003).
     pub auth: AuthConfig,
+    /// REQ: API-010 (ADR-914) — the dotted keys (`special.ddr_name`, `local.device_domain`,
+    /// `clients.mdns`) that the config files or environment set explicitly, filled in by
+    /// [`crate::Loader::load`]. A value set here wins over one made through the API, which is
+    /// shown as "set by file" (ADR-040, ADR-914). Not part of the TOML.
+    #[serde(skip)]
+    pub file_set: Vec<String>,
 }
 
 impl Default for Config {
@@ -150,6 +171,7 @@ impl Default for Config {
             ratelimit: RateLimitConfig::default(),
             exclusions: ExclusionsConfig::default(),
             simulate: SimulateConfig::default(),
+            map: MapConfig::default(),
             support: SupportConfig::default(),
             watchdog: WatchdogConfig::default(),
             identify: IdentifyConfig::default(),
@@ -157,6 +179,9 @@ impl Default for Config {
             drill: DrillConfig::default(),
             dns: DnsConfig::default(),
             special: SpecialConfig::default(),
+            discovery: crate::discovery::DiscoveryConfig::default(),
+            cmdb: crate::cmdb::CmdbConfig::default(),
+            file_set: Vec::new(),
             cache: CacheConfig::default(),
             dnssec: DnssecConfig::default(),
             agents: AgentsConfig::default(),
@@ -203,7 +228,25 @@ pub struct NodeConfig {
     /// seconds: 60 to 86400 (a day). Maintenance itself is started from the Cluster page,
     /// `telltale ctl maintenance start`, or the API; it's the node's state, not configuration.
     pub maintenance_default_secs: u32,
+    /// REQ: OPS-014, API-014 (ADR-903 §3) — a file holding this node's secrets key
+    /// (`ttsk1:...`), for example a mounted Kubernetes Secret. It keys the hashes kept for
+    /// `Idempotency-Key` retries. Empty: the `TELLTALE_SECRETS_KEY` variable, else
+    /// `<data_dir>/secrets.key` (made, mode 0600, on first start). Set it from the environment as
+    /// `TELLTALE_NODE_SECRETS_KEY_FILE`.
+    pub secrets_key_file: SafeString,
+    /// REQ: OPS-014 — the key before a rotation, in a file (or `TELLTALE_SECRETS_PREVIOUS_KEY`).
+    pub secrets_previous_key_file: SafeString,
+    /// REQ: API-014 (ADR-903 §4) — where a file holding a credential (an alert destination's
+    /// `token_file` or `password_file`, an upstream's `tls_client_key`) set through the UI or
+    /// API may be. Paths in the config files aren't limited. Only this node's own files set it:
+    /// the cluster never shares it.
+    pub secret_file_dirs: Vec<SafeString>,
 }
+
+/// REQ: API-014 — `[node] secret_file_dirs` when not set: where Docker, Kubernetes and the
+/// packages put secrets.
+pub const DEFAULT_SECRET_FILE_DIRS: &[&str] =
+    &["/run/secrets", "/var/run/secrets", "/etc/telltale/secrets"];
 
 impl Default for NodeConfig {
     fn default() -> Self {
@@ -214,6 +257,12 @@ impl Default for NodeConfig {
             data_dir: SafeString::from("/var/lib/telltale"),
             drain_delay_secs: 0,
             maintenance_default_secs: 3600,
+            secrets_key_file: SafeString::default(),
+            secrets_previous_key_file: SafeString::default(),
+            secret_file_dirs: DEFAULT_SECRET_FILE_DIRS
+                .iter()
+                .map(|d| SafeString::from(*d))
+                .collect(),
         }
     }
 }
@@ -314,6 +363,9 @@ pub struct GitSourceConfig {
     /// A file with an access token (or `user:password`) for private repositories.
     #[serde(default)]
     pub credentials_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding it (Settings → Integrations & secrets); at most one of `credentials_file` and `credentials_ref`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials_ref: Option<SafeString>,
     /// How often to check the ref, in seconds.
     #[serde(default = "default_git_poll")]
     pub poll_secs: u32,
@@ -333,6 +385,9 @@ pub struct GitSourceConfig {
     /// which checks the ref at once instead of at the next poll.
     #[serde(default)]
     pub webhook_secret_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding it; at most one of `webhook_secret_file` and `webhook_secret_ref`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook_secret_ref: Option<SafeString>,
 }
 
 fn default_git_ref() -> SafeString {
@@ -519,6 +574,17 @@ pub struct Upstream {
     /// Extra HTTP headers for DoH (e.g. an auth token).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<SafeString, SafeString>,
+    /// REQ: UPS-013 (T24.31, ADR-997) — the local address this upstream's sockets are bound to
+    /// before they connect (`udp://`, `tcp://`, `tls://`, `https://`): `198.51.100.252` or
+    /// `198.51.100.252:0`, or a network, `198.51.100.0/24`, meaning "the address this node
+    /// holds in it" (so a shared upstream works on nodes whose addresses differ; in a cluster
+    /// name a network, not one node's address). The address must be on a real interface (a VLAN
+    /// interface, not an alias on an untagged one). Binding it does not choose the interface the
+    /// packet leaves by: Linux routes by destination, so add a source-based routing rule for it
+    /// (see docs/running.md). Saving an address the node doesn't hold is refused; a node that
+    /// lacks it at start or on a replica runs only this upstream degraded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SafeString>,
     /// Max pooled connections for TCP/DoT/DoH.
     #[serde(default = "default_pool_size")]
     pub pool_size: u16,
@@ -713,6 +779,17 @@ pub struct LocalConfig {
     pub auto_ptr: bool,
     /// TTL for local records without their own.
     pub default_ttl: u32,
+    /// REQ: DNS-023 (T22.1) — answer A and PTR records for the devices TelltaleDNS knows by
+    /// name (named devices with one address, routers' DHCP clients, Home Assistant, and with
+    /// `device_mdns` the names devices announce) as `<name>.<device_domain>`, such as
+    /// `kitchen-tablet.home.arpa`. Off when unset. Records in `[[record]]`, hosts files, and
+    /// zones win over these.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_domain: Option<SafeString>,
+    /// TTL of those answers, in seconds (they follow DHCP, so keep it short).
+    pub device_ttl: u32,
+    /// Also answer for names devices announce over mDNS (`[clients] mdns`).
+    pub device_mdns: bool,
 }
 
 impl Default for LocalConfig {
@@ -721,6 +798,9 @@ impl Default for LocalConfig {
             hosts_files: Vec::new(),
             auto_ptr: true,
             default_ttl: 300,
+            device_domain: None,
+            device_ttl: 60,
+            device_mdns: false,
         }
     }
 }
@@ -760,6 +840,12 @@ pub struct GroupConfig {
     /// matching network; a `[[client]]` entry with its own `groups` still wins.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub networks: Vec<Cidr>,
+    /// REQ: API-010 (T24.9, ADR-973) — router names (`kitchen-tablet`, the label form) of devices
+    /// that belong to this group, the way a network's devices do. A `[[client]]` that matches the
+    /// device by its address or MAC still wins, and the match is by the name the router gave
+    /// the device at its current address.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub router_names: Vec<SafeString>,
     /// Color for this group in charts and chips (`#rrggbb`); one is picked when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<SafeString>,
@@ -817,6 +903,51 @@ pub struct GroupConfig {
     /// suggested. Nothing moves on its own. A kind can be claimed by one group only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub device_classes: Vec<DeviceClass>,
+    /// REQ: FLT-902 (T24.29, ADR-994) — which engines safe search covers (`google`, `bing`,
+    /// `youtube`, `duckduckgo`, `yandex`, `pixabay`: `presets/safesearch.toml`). Empty with
+    /// `safe_search = true` means every engine, as before; a non-empty list is the set of
+    /// engines (and turns safe search on). `youtube_restrict` applies to YouTube whenever it is
+    /// set, whatever this list says.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub safe_search_engines: Vec<SafeString>,
+    /// REQ: FLT-901, FLT-902 (T24.29, ADR-994) — content categories and ad block for this group
+    /// (see [`GroupContent`]). Absent = never set: nothing is selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<GroupContent>,
+}
+
+/// REQ: FLT-902 (ADR-994) — a group's filtering level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentLevel {
+    /// No category applies (the selection is kept, so switching back loses nothing).
+    #[default]
+    Off,
+    /// The catalog's `basic` preset (adult content, malware, phishing and scam).
+    Basic,
+    /// The categories in `categories`.
+    Enhanced,
+}
+
+/// REQ: FLT-901, FLT-902 (T24.29, ADR-994, ADR-995) — what a group filters by category. A group's
+/// category lists are fetched once for every group that uses them and are never part of another
+/// group's "every enabled list" default.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupContent {
+    /// `off` (default), `basic` or `enhanced`.
+    #[serde(default)]
+    pub level: ContentLevel,
+    /// With `enhanced`: category IDs from the catalog (`GET /api/v1/categories`). An ID this
+    /// version does not know (a newer node wrote it) is ignored and reported.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<SafeString>,
+    /// A tier per category (`gambling = "extended"`); a category without one uses its default.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub tiers: std::collections::BTreeMap<String, String>,
+    /// Ad block: the `ads` category, whose size is `[filter] ads_tier`. Independent of `level`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ads: bool,
 }
 
 /// REQ: OBS-025 (T13.3, ADR-117) — the kinds of device identification tells apart (a fixed
@@ -1227,36 +1358,52 @@ const fn default_zone_negative_ttl() -> u32 {
     300
 }
 
-/// REQ: T8.2 — a router whose DHCP clients name devices.
+/// REQ: T8.2 — a router whose DHCP clients name devices; or (API-012, T22.3) a Home Assistant
+/// whose device registry names them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RouterConfig {
     /// Unique name (logs, the leases' source).
     pub name: SafeString,
-    /// `unifi` (UniFi OS consoles and the Network application) or `opnsense`.
+    /// `unifi` (UniFi OS consoles and the Network application), `opnsense`, or
+    /// `home_assistant`.
     #[serde(rename = "type")]
     pub kind: RouterKind,
     /// The console or controller: `https://192.168.1.1` (UniFi OS), `https://controller:8443`
-    /// (Network application), `https://opnsense.lan`.
+    /// (Network application), `https://opnsense.lan`, `http://homeassistant.local:8123`.
     pub url: SafeString,
     /// UniFi: the site (default `default`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site: Option<SafeString>,
-    /// UniFi: an API key (UniFi Network 9+), or OPNsense: the API key. A file holding it.
+    /// UniFi: an API key (UniFi Network 9+); OPNsense: the API key; Home Assistant: a
+    /// long-lived access token. A file holding it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding it (`api_key_ref = "unifi"`); at most one of `api_key_file` and `api_key_ref`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_ref: Option<SafeString>,
     /// OPNsense: the API secret (a file).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_secret_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_secret_ref: Option<SafeString>,
     /// UniFi without an API key: a local (read-only is enough) user and a file holding its
     /// password.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<SafeString>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding the password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_ref: Option<SafeString>,
     /// A PEM file with the console's certificate (or its CA), for self-signed consoles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_ca: Option<SafeString>,
+    /// REQ: API-016 (T23.7, ADR-921) — the same certificate as PEM text, for a router entered
+    /// through the API or UI (16 KiB at most). Exclusive with `tls_ca`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_ca_pem: Option<String>,
     /// The name the console's certificate is checked against, when `url` uses another (its
     /// address). A UniFi console's own certificate names `unifi.local`: with that here and the
     /// certificate as `tls_ca`, it's verified.
@@ -1268,10 +1415,29 @@ pub struct RouterConfig {
     /// Seconds between reads.
     #[serde(default = "default_router_interval")]
     pub interval_secs: u32,
+    /// UniFi: also name the clients that are offline now, if UniFi saw them within this many
+    /// days (their queries then show a name, not a bare address); at most 1,024 of them, most
+    /// recently seen first. 0: only the connected clients.
+    #[serde(
+        default = "default_router_offline_days",
+        skip_serializing_if = "is_default_offline_days"
+    )]
+    pub offline_days: u32,
 }
 
 const fn default_router_interval() -> u32 {
     300
+}
+
+const fn default_router_offline_days() -> u32 {
+    30
+}
+
+// REQ: T8.2, CLU-003 — not written while it is the default, so a node that doesn't know the
+// field (a rolling upgrade; the section refuses unknown fields) still reads the shared config.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` takes a reference
+const fn is_default_offline_days(d: &u32) -> bool {
+    *d == default_router_offline_days()
 }
 
 /// A router integration's kind.
@@ -1280,6 +1446,9 @@ const fn default_router_interval() -> u32 {
 pub enum RouterKind {
     Unifi,
     Opnsense,
+    /// REQ: API-012 (T22.3) — Home Assistant: device names from its device registry, matched
+    /// by MAC address; read-only.
+    HomeAssistant,
 }
 
 /// REQ: OBS-010 (T7.12, `spec/06` §8) — alerts: rules checked on the primary (or a standalone
@@ -1323,6 +1492,9 @@ pub struct AlertDestination {
     /// out of the config and Git.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding the token; at most one of `token_file` and `token_ref`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_ref: Option<SafeString>,
     /// REQ: OBS-010 (T9.4) — `email`: the sender address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<SafeString>,
@@ -1335,6 +1507,9 @@ pub struct AlertDestination {
     pub username: Option<SafeString>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding the password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_ref: Option<SafeString>,
     /// `email`: a PEM file with the mail server's certificate (or its CA), for a private
     /// server; public ones are trusted already.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1401,6 +1576,10 @@ pub enum AlertWhen {
     /// REQ: OBS-010 (T9.5) — a replica is behind the primary's configuration (one alert per
     /// node; `for_secs` says for how long).
     SyncLag,
+    /// REQ: OBS-010 (T24.5, fork #2) — a replica hasn't reached its primary for `threshold`
+    /// seconds (default 60; 15 to 86400), so a silent split is seen (one alert per replica).
+    /// Witnesses and resolver pods are left out.
+    PrimaryUnreachable,
     /// A device TelltaleDNS has never seen starts asking (once per device; quiet for the
     /// first day after a fresh start, while every device is new).
     NewDevice,
@@ -1434,6 +1613,20 @@ pub enum AlertWhen {
     /// REQ: CLU-014 — a failover drill's report is ready (scheduled or started by hand; once
     /// per drill): who followed, who was stuck, coverage.
     DrillReport,
+    /// REQ: API-014 (T23.2, ADR-903 §4) — an admin changed where an entry's credential is sent
+    /// (an upstream's URL or TLS name, an alert destination's URL): once per change, from the
+    /// audit log's `credential.redirect` records.
+    CredentialRedirected,
+    /// REQ: API-007 (T23.9, ADR-903 §8) — a backup with the stored secrets was made (through the
+    /// API; once per backup, from the audit log's `backup.create` records): the secrets left the
+    /// node, under a passphrase.
+    SecretsExported,
+    /// REQ: API-902 (T27.13, ADR-956 §6) — an admin changed a guarded setting (a listener, the API
+    /// address, TLS, proxies, secret keys, cluster, restart): once when it is applied or staged and
+    /// again on its outcome (confirmed, rolled back with the reason, restarting), from the audit
+    /// log's `settings.guarded*` records, so a second channel sees what an attacker with an admin
+    /// session does.
+    GuardedSettingChanged,
 }
 
 /// REQ: FLT-014 (T7.20) — one rewrite.
@@ -1715,6 +1908,36 @@ pub struct FilterConfig {
     /// "stale": its source may be abandoned while still answering (health reason `list_stale`,
     /// alert rule `list_stale`). 0 = never. Per list: `stale_after_days`.
     pub stale_after_days: u32,
+    /// REQ: FLT-901 (T24.29, ADR-994 item 5) — the most distinct blocklist entries the selected
+    /// categories may add before the Categories view warns (a soft limit; default 1,000,000, the
+    /// NFR number). A node too small for a selection refuses it whatever this says.
+    pub entry_budget: u64,
+    /// REQ: FLT-901 (T24.29) — the size of the Ad Block category: `light`, `pro` (default, the
+    /// list the bundles used to name by hand), `pro_plus` or `ultimate`.
+    pub ads_tier: AdsTier,
+}
+
+/// REQ: FLT-901 (T24.29) — which of `HaGeZi`'s ad and tracker lists the `ads` category uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AdsTier {
+    Light,
+    #[default]
+    Pro,
+    ProPlus,
+    Ultimate,
+}
+
+impl AdsTier {
+    /// The tier ID in the catalog's `ads` category.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Pro => "pro",
+            Self::ProPlus => "pro-plus",
+            Self::Ultimate => "ultimate",
+        }
+    }
 }
 
 impl Default for FilterConfig {
@@ -1733,6 +1956,8 @@ impl Default for FilterConfig {
             compile_memory: ByteSize::mib(128),
             fsync: true,
             stale_after_days: 30,
+            entry_budget: 1_000_000,
+            ads_tier: AdsTier::Pro,
         }
     }
 }
@@ -1846,6 +2071,11 @@ pub struct ExclusionsConfig {
     pub names: Vec<SafeString>,
     /// Devices left out: addresses or networks.
     pub clients: Vec<Cidr>,
+    /// REQ: OBS-903 (T24.35, ADR-1014) — queries kept out of the query log (and the live view and
+    /// event sinks) only. Unlike the lists above they are still counted in the statistics
+    /// (dashboard, top lists, anomalies) and `/metrics`.
+    #[serde(skip_serializing_if = "LogExclusions::is_default")]
+    pub log: LogExclusions,
 }
 
 impl Default for ExclusionsConfig {
@@ -1854,6 +2084,7 @@ impl Default for ExclusionsConfig {
             enabled: true,
             names: Vec::new(),
             clients: Vec::new(),
+            log: LogExclusions::default(),
         }
     }
 }
@@ -1863,9 +2094,36 @@ impl ExclusionsConfig {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }
-    /// Whether anything is excluded at all.
+    /// Whether anything is excluded from the statistics too (`names` and `clients`).
     pub fn active(&self) -> bool {
         self.enabled && !(self.names.is_empty() && self.clients.is_empty())
+    }
+    /// Whether anything is kept out of the query log only (`log`).
+    pub fn log_active(&self) -> bool {
+        self.enabled && !self.log.is_default()
+    }
+}
+
+/// REQ: OBS-903 (T24.35, ADR-1014) — what stays out of the query log but still counts in the
+/// statistics. Applied when the event is written, on the aggregator thread.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct LogExclusions {
+    /// Clients left out of the log: addresses (`192.168.1.10`), networks (`10.20.0.0/24`), or
+    /// device names (`[[client]] name`, resolved on every reload).
+    pub clients: Vec<SafeString>,
+    /// Domains left out of the log: `localhost` is that name only; `*.lan` is every name under it
+    /// (not `lan` itself).
+    pub domains: Vec<SafeString>,
+    /// This node's own lookups (loopback and the node's own addresses: a health check, a
+    /// watchdog, programs on the host) stay out of the log.
+    pub own_lookups: bool,
+}
+
+impl LogExclusions {
+    /// Whether nothing is left out (the default; not written back).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
     }
 }
 
@@ -1898,6 +2156,78 @@ impl Default for SimulateConfig {
             max_secs: 20,
             max_rows: 2_000_000,
             default_window: SafeString::from("24h"),
+        }
+    }
+}
+
+/// REQ: OBS-901 (T26.2, ADR-958 section 4) — the live network map: a sampler on the aggregator
+/// thread (never on the DNS path) and the thresholds that colour the map green, yellow or red.
+/// Shared by the whole cluster; also in Settings -> Monitoring.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct MapConfig {
+    /// Off: the sampler isn't subscribed and the map routes answer `404 map_disabled`.
+    pub enabled: bool,
+    /// Lookups per second each node samples for the map (10 to 2,000). Above it the sample is
+    /// thinned and each kept lookup counts for more; the map says "sampled, 1 in N".
+    pub event_rate: u32,
+    /// Sampled answers a device, edge or upstream needs in the 60 s window before it is
+    /// coloured; fewer is grey ("idle"), not green (1 to 1,000).
+    pub min_sample: u32,
+    /// An answer slower than this many milliseconds is slow (1 to 60,000). Unset: the
+    /// latency objective's `[slo] latency_ms`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warn_latency_ms: Option<u32>,
+    /// Yellow when this percent of answers or more are slow (1 to 100).
+    pub warn_slow_pct: u32,
+    /// Yellow when this percent of answers or more are SERVFAIL or timeouts (1 to 100).
+    pub warn_error_pct: u32,
+    /// Red when this percent of answers or more are SERVFAIL or timeouts (1 to 100; at least
+    /// `warn_error_pct`).
+    pub error_pct: u32,
+    /// Yellow for a device when this percent of its answers or more are blocked (1 to 100).
+    pub warn_blocked_pct: u32,
+    /// REQ: OBS-902 (T26.4, ADR-959) - the GeoIP database the world view places answers with.
+    /// Admin-only: an operator's change to it is refused, and a request that leaves it out keeps
+    /// the current one.
+    pub geoip: MapGeoipConfig,
+}
+
+/// REQ: OBS-902 (T26.4, ADR-959) - the optional country database for the world view: nothing is
+/// downloaded until an admin turns this on, and it is never bundled. Each node that serves the
+/// console fetches its own copy from the source below, at most once a day, in the background.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct MapGeoipConfig {
+    /// Off (the default): nothing is fetched and the world view says GeoIP is off. On: this node
+    /// downloads the database and keeps it current.
+    pub enabled: bool,
+    /// Where the CSV (`start,end,CC`, gzip) comes from: an HTTPS URL. Unset: DB-IP's "IP to
+    /// Country Lite" for this month (CC BY 4.0), falling back to the month before. Set it to your
+    /// own HTTPS mirror for an air-gapped site.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<SafeString>,
+    /// Pin the download to this SHA-256 (64 hex digits). Useful only with a fixed mirror URL
+    /// whose content you control: the publisher's monthly file changes digest every month.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<SafeString>,
+    /// Two-letter country code arcs start from. Unset: arcs start at "Your network".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub home_country: Option<SafeString>,
+}
+
+impl Default for MapConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            event_rate: 200,
+            min_sample: 20,
+            warn_latency_ms: None,
+            warn_slow_pct: 10,
+            warn_error_pct: 5,
+            error_pct: 25,
+            warn_blocked_pct: 60,
+            geoip: MapGeoipConfig::default(),
         }
     }
 }
@@ -1995,6 +2325,21 @@ pub struct SpecialConfig {
     pub private_ptr_nxdomain: bool,
     /// CHAOS-class `version.bind`, `id.server`, ... → REFUSED.
     pub refuse_chaos: bool,
+    /// `mask.icloud.com` and `mask-h2.icloud.com` → NXDOMAIN, so Apple devices turn iCloud
+    /// Private Relay off on this network and their queries keep coming here, filtered
+    /// (ADR-904; Pi-hole's `iCloudPrivateRelay`).
+    pub block_icloud_private_relay: bool,
+    /// Single-label names (`nas`, no dot) asked for A, AAAA, or HTTPS that no local record,
+    /// zone, or device name answers → NXDOMAIN instead of forwarding them, unless a
+    /// `[[route]]` matches them (ADR-904; Pi-hole and dnsmasq `domain-needed`).
+    pub single_label_nxdomain: bool,
+    /// The name the certificates of this node's DoT, DoH, and DoQ listeners carry (such as
+    /// `dns.example.com`). Set, `_dns.resolver.arpa` SVCB answers advertise those listeners
+    /// for Discovery of Designated Resolvers (RFC 9462), except listeners bound to loopback or
+    /// with `proxy_protocol` on; unset, `resolver.arpa` queries get no data. `resolver.arpa`
+    /// is never forwarded (ADR-904).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ddr_name: Option<SafeString>,
 }
 
 impl Default for SpecialConfig {
@@ -2004,6 +2349,9 @@ impl Default for SpecialConfig {
             localhost: true,
             private_ptr_nxdomain: true,
             refuse_chaos: true,
+            block_icloud_private_relay: true,
+            single_label_nxdomain: false,
+            ddr_name: None,
         }
     }
 }
@@ -2220,6 +2568,51 @@ pub struct TelemetryConfig {
     /// addresses always do, and so does `cluster.local` with `[kubernetes] enabled`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub internal_names: Vec<SafeString>,
+    /// REQ: API-016 (T23.11, ADR-984) — the sinks made in the UI (a `node_managed` kind),
+    /// merged by this node at load. Never in a file, never serialized and never part of the
+    /// shared configuration (the primary publishes them in the manifest's `node_managed`
+    /// blob); a file's sink of the same name wins. Read through [`Self::all_sinks`].
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub managed_sink: Vec<SinkConfig>,
+    /// REQ: API-016 (T23.11, ADR-984) — the OTLP export made in the UI, likewise; used only
+    /// while the files set no `endpoint`, `headers` or `header_refs`. Read through
+    /// [`Self::otlp_effective`].
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub managed_otlp: Option<OtlpConfig>,
+}
+
+impl TelemetryConfig {
+    /// Every sink in effect: the files' first, then the ones made in the UI.
+    pub fn all_sinks(&self) -> impl Iterator<Item = &SinkConfig> {
+        self.sink.iter().chain(&self.managed_sink)
+    }
+
+    /// Whether the files set the OTLP destination (`endpoint`, `headers` or `header_refs`):
+    /// then they win over an entry made in the UI (ADR-040).
+    #[must_use]
+    pub fn otlp_set_by_file(&self) -> bool {
+        self.otlp.endpoint.is_some()
+            || !self.otlp.headers.is_empty()
+            || !self.otlp.header_refs.is_empty()
+    }
+
+    /// The OTLP settings in effect: the files', or, when they set no destination, the UI's
+    /// `endpoint`, `interval_secs` and `header_refs` over the files' trace settings.
+    #[must_use]
+    pub fn otlp_effective(&self) -> std::borrow::Cow<'_, OtlpConfig> {
+        match &self.managed_otlp {
+            Some(m) if !self.otlp_set_by_file() => {
+                let mut o = self.otlp.clone();
+                o.endpoint.clone_from(&m.endpoint);
+                o.interval_secs = m.interval_secs;
+                o.header_refs.clone_from(&m.header_refs);
+                std::borrow::Cow::Owned(o)
+            }
+            _ => std::borrow::Cow::Borrowed(&self.otlp),
+        }
+    }
 }
 
 /// Thresholds the latency objective may use, in milliseconds: the `/metrics` latency
@@ -2365,6 +2758,10 @@ pub struct OtlpConfig {
     /// Extra headers (an API key for a hosted collector).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<SafeString, SafeString>,
+    /// REQ: OPS-014 (ADR-903 §2) — headers whose values are stored secrets, by header:
+    /// `header_refs = { api-key = "otlp" }`. A header may be in `headers` or here, not both.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub header_refs: BTreeMap<SafeString, SafeString>,
     /// REQ: OBS-017 (T11.6) — send 1 in this many queries as a trace to
     /// `<endpoint>/v1/traces` (0: none). Needs `endpoint`.
     pub traces_sample_every: u32,
@@ -2378,6 +2775,7 @@ impl Default for OtlpConfig {
             endpoint: None,
             interval_secs: 60,
             headers: BTreeMap::new(),
+            header_refs: BTreeMap::new(),
             traces_sample_every: 0,
             traces_slow_ms: 0,
         }
@@ -2397,6 +2795,8 @@ impl Default for TelemetryConfig {
             otlp: OtlpConfig::default(),
             dnstap: DnstapConfig::default(),
             internal_names: Vec::new(),
+            managed_sink: Vec::new(),
+            managed_otlp: None,
         }
     }
 }
@@ -2441,6 +2841,9 @@ pub struct SinkConfig {
     /// `webhook`: a file holding a token sent as `Authorization: <token_scheme> <token>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-903 §2) — `webhook`: or the name of a stored secret holding the token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_ref: Option<SafeString>,
     /// `webhook`: the scheme for the token (`Bearer`; Splunk HEC uses `Splunk`).
     #[serde(default = "default_token_scheme")]
     pub token_scheme: SafeString,
@@ -2594,7 +2997,8 @@ pub struct ApiConfig {
     /// `X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log), and
     /// `X-Forwarded-Proto: https` counts as HTTPS (HTTP Basic, the `Secure` cookie flag); from
     /// anyone else that header is ignored. Loopback always counts for `X-Forwarded-Proto`, so
-    /// a TLS terminator on the same host needs nothing here. Default: none (the connection's
+    /// a TLS terminator on the same host needs nothing here (except to take stored secrets'
+    /// values, see `allow_secrets_over_http`). Default: none (the connection's
     /// address is the client).
     pub trusted_proxies: Vec<Cidr>,
     /// REQ: API-003 (ADR-149) — serve the web UI and API over HTTPS on `listen`: with
@@ -2605,7 +3009,23 @@ pub struct ApiConfig {
     /// probes. Default: none (plain HTTP, for a TLS proxy or ingress in front).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls: Option<ApiTls>,
+    /// REQ: API-015 (ADR-903 §4) — accept stored secrets' values (`PUT /api/v1/secrets`) over
+    /// plain HTTP from other hosts. Off (the default): a value is taken only over HTTPS (`tls`
+    /// above, or a proxy in `trusted_proxies` saying `X-Forwarded-Proto: https`) or from the node
+    /// itself (loopback, with no `X-Forwarded-For`/`Forwarded`/`X-Real-IP`), since over plain
+    /// HTTP it would cross the network in clear. A forwarded request's `X-Forwarded-Proto` counts
+    /// only from `trusted_proxies` here, loopback included: list `127.0.0.1/32` for a TLS proxy
+    /// on the same host. Read from this node's own files; the API can't set it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub allow_secrets_over_http: bool,
+    /// REQ: API-902 (T27.13, ADR-956 §3) — how long a guarded change to an address, certificate
+    /// or proxy list waits to be confirmed through the new address before it is rolled back, in
+    /// seconds: 30 to 600. Read from this node's own files; the API can't set it.
+    pub confirm_window_secs: u32,
 }
+
+/// REQ: API-902 — `[api] confirm_window_secs` when not set (ADR-956 §3).
+pub const DEFAULT_CONFIRM_WINDOW_SECS: u32 = 120;
 
 impl Default for ApiConfig {
     fn default() -> Self {
@@ -2614,6 +3034,8 @@ impl Default for ApiConfig {
             listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8053),
             trusted_proxies: Vec::new(),
             tls: None,
+            allow_secrets_over_http: false,
+            confirm_window_secs: DEFAULT_CONFIRM_WINDOW_SECS,
         }
     }
 }
@@ -2673,7 +3095,7 @@ impl Default for AuthConfig {
 /// `OpenID Connect` sign-in (API-004, `spec/08` §6, ADR-034). Each provider gets a "Sign in
 /// with ..." button; users are created on first sign-in and their role comes from a claim
 /// (groups) at every sign-in. Changes need a restart.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct OidcConfig {
     /// Where people open the UI, e.g. `https://dns.example.com` or `http://192.168.1.2:8053`.
@@ -2681,10 +3103,18 @@ pub struct OidcConfig {
     /// after sign-out the provider returns to `<public_url>/`; register both with it.
     pub public_url: SafeString,
     /// Turn off password sign-in (and HTTP Basic) except for admins signing in from
-    /// `allowed_admin_networks` (break-glass, for when the provider is down).
+    /// `allowed_admin_networks` (break-glass, for when the provider is down). Unless you set that
+    /// list, it is loopback only (ADR-944), so the sign-in form is hidden from the rest of your
+    /// network; set it to your LAN to keep a password way in from other devices, or to `[]` to turn
+    /// password sign-in off for everyone (then nobody can sign in with a password while the
+    /// provider is down).
     pub disable_local_login: bool,
-    /// Where break-glass admin sign-in is allowed. Default: private networks and loopback.
-    pub allowed_admin_networks: Vec<Cidr>,
+    /// Where break-glass admin sign-in is allowed. Absent: loopback only (`127.0.0.0/8`,
+    /// `::1`), so a reverse proxy or a Docker port publish on this host needs its own entry
+    /// here or `[api] trusted_proxies`. Set (even to `[]`, which allows nothing): exactly this
+    /// list. REQ: API-004 (ADR-944).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_admin_networks: Option<Vec<Cidr>>,
     pub provider: Vec<OidcProvider>,
     /// REQ: AGT-008 (T7.4) — MCP clients (AI assistants) sign in through this provider (its
     /// `id`) with OAuth 2.1: TelltaleDNS accepts the provider's JWT access tokens issued for
@@ -2692,18 +3122,33 @@ pub struct OidcConfig {
     pub mcp_provider: SafeString,
     /// The audience (`aud`) MCP access tokens must carry. Default: `<public_url>/mcp`.
     pub mcp_audience: SafeString,
+    /// REQ: API-016 (T23.10, ADR-903 §6) — the providers made in the UI (a `node_managed`
+    /// kind), merged by this node at load. Never in a file, never serialized and never
+    /// replicated as part of the shared configuration (the primary publishes them in the
+    /// manifest's `node_managed` blob); a file's provider of the same id wins. Kept out of
+    /// `provider` so that a node without `public_url` shows them as inactive instead of
+    /// failing the whole configuration (CLU-004).
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub managed_provider: Vec<OidcProvider>,
 }
 
-impl Default for OidcConfig {
-    fn default() -> Self {
-        Self {
-            public_url: SafeString::default(),
-            disable_local_login: false,
-            allowed_admin_networks: AccessConfig::default().allowed_networks,
-            provider: Vec::new(),
-            mcp_provider: SafeString::default(),
-            mcp_audience: SafeString::default(),
-        }
+impl OidcConfig {
+    /// The networks break-glass admin sign-in is allowed from: the configured list, or
+    /// loopback when none is set (ADR-944). REQ: API-004.
+    pub fn break_glass_networks(&self) -> Vec<Cidr> {
+        self.allowed_admin_networks.clone().unwrap_or_else(|| {
+            vec![
+                Cidr {
+                    addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    prefix: 8,
+                },
+                Cidr {
+                    addr: IpAddr::V6(Ipv6Addr::LOCALHOST),
+                    prefix: 128,
+                },
+            ]
+        })
     }
 }
 
@@ -2725,6 +3170,9 @@ pub struct OidcProvider {
     /// ... a file holding it (a mounted Kubernetes Secret). Neither: a public client (PKCE).
     #[serde(default)]
     pub client_secret_file: Option<SafeString>,
+    /// REQ: OPS-014 (ADR-903 §2) — ... or the name of a stored secret holding it. At most one of the three.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret_ref: Option<SafeString>,
     /// Scopes to request. Default: `openid`, `profile`, `email`.
     #[serde(default = "default_oidc_scopes")]
     pub scopes: Vec<SafeString>,
@@ -2807,5 +3255,61 @@ impl Default for MetricsConfig {
             per_client_cap: 100,
             exemplars: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod api_004_break_glass_tests {
+    use super::OidcConfig;
+    use crate::types::Cidr;
+
+    // REQ: API-004 (ADR-944) - break-glass defaults to loopback; an explicit list wins, and
+    // an empty list is a choice too (absent and set differ).
+    #[test]
+    fn api_004_break_glass_defaults_to_loopback() {
+        let o = OidcConfig::default();
+        assert_eq!(o.allowed_admin_networks, None);
+        let nets = o.break_glass_networks();
+        assert!(
+            nets.iter()
+                .any(|n| n.contains("127.0.0.1".parse().unwrap()))
+        );
+        assert!(nets.iter().any(|n| n.contains("::1".parse().unwrap())));
+        assert!(
+            !nets
+                .iter()
+                .any(|n| n.contains("192.168.1.20".parse().unwrap()))
+        );
+    }
+
+    #[test]
+    fn api_004_set_break_glass_networks_are_not_overwritten() {
+        let lan = Cidr::parse("192.168.1.0/24").unwrap();
+        let set = OidcConfig {
+            allowed_admin_networks: Some(vec![lan]),
+            ..OidcConfig::default()
+        };
+        assert_eq!(set.break_glass_networks(), vec![lan]);
+        let none = OidcConfig {
+            allowed_admin_networks: Some(Vec::new()),
+            ..OidcConfig::default()
+        };
+        assert!(
+            none.break_glass_networks().is_empty(),
+            "an empty list allows nothing"
+        );
+    }
+
+    #[test]
+    fn api_004_absent_and_empty_parse_differently() {
+        let absent: OidcConfig = toml::from_str("disable_local_login = true").unwrap();
+        assert_eq!(absent.allowed_admin_networks, None);
+        let empty: OidcConfig = toml::from_str("allowed_admin_networks = []").unwrap();
+        assert_eq!(empty.allowed_admin_networks, Some(Vec::new()));
+        let back = toml::to_string(&absent).unwrap();
+        assert!(
+            !back.contains("allowed_admin_networks"),
+            "absent stays absent"
+        );
     }
 }

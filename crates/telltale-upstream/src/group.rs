@@ -89,13 +89,19 @@ impl Group {
 
     /// Attempt order: admitted members in strategy order (probes marked), then the rest
     /// least-recently-failed first as a last resort. Each entry: `(upstream, must_hedge)`.
-    fn attempt_order(&self, now: Instant) -> Vec<(Arc<Upstream>, bool)> {
+    /// Also the position of the last member with a closed breaker, whose attempt is patient
+    /// ([`Upstream::timeout_for`], ADR-165): `None` when every breaker is open or probing.
+    fn attempt_order(&self, now: Instant) -> (Vec<(Arc<Upstream>, bool)>, Option<usize>) {
         let mut ready = Vec::with_capacity(self.members.len());
         let mut rest = Vec::new();
+        let mut closed = Vec::with_capacity(self.members.len());
         for (i, m) in self.members.iter().enumerate() {
             match m.health.admit(now) {
                 // Hedge right away behind a member whose last attempt failed.
-                Admission::Yes => ready.push((i, m.health.consecutive_failures() > 0)),
+                Admission::Yes => {
+                    closed.push(i);
+                    ready.push((i, m.health.consecutive_failures() > 0));
+                }
                 Admission::Probe => ready.push((i, true)),
                 Admission::No => rest.push(i),
             }
@@ -125,14 +131,16 @@ impl Group {
             Strategy::Failover | Strategy::RoundRobin | Strategy::Weighted => {}
         }
         rest.sort_by_key(|&i| self.members[i].health.last_failure());
-        ready
+        let patient = ready.iter().rposition(|(i, _)| closed.contains(i));
+        let order = ready
             .into_iter()
             .map(|(i, hedge)| (Arc::clone(&self.members[i]), hedge))
             .chain(
                 rest.into_iter()
                     .map(|i| (Arc::clone(&self.members[i]), true)),
             )
-            .collect()
+            .collect();
+        (order, patient)
     }
 
     /// Smooth weighted round robin (nginx algorithm) over the admitted members.
@@ -164,7 +172,7 @@ impl Group {
     /// fallback while other members are tried.
     pub async fn resolve(&self, q: Question, budget: Duration) -> Result<Answer, ResolveError> {
         let start = Instant::now();
-        let order = self.attempt_order(start);
+        let (order, patient) = self.attempt_order(start);
         if order.is_empty() {
             return Err(ResolveError::Empty);
         }
@@ -181,10 +189,12 @@ impl Group {
                       attempts: &mut u8|
          -> Option<(Duration, bool)> {
             let (up, hedge_now) = order.get(*next)?.clone();
+            // REQ: UPS-006 (ADR-165) — the last healthy member has nobody to hand over to.
+            let timeout = up.timeout_for(patient == Some(*next));
             *next += 1;
             *attempts = attempts.saturating_add(1);
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            let timeout = up.attempt_timeout().min(remaining);
+            let timeout = timeout.min(remaining);
             let delay = if hedge_now {
                 Duration::ZERO
             } else {

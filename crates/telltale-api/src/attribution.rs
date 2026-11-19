@@ -435,7 +435,7 @@ pub(crate) async fn slo_attribution(
     Query(p): Query<AttributionParams>,
 ) -> Result<Json<SloAttribution>, Problem> {
     let kind = kind_of(p.objective.as_deref())?;
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&crate::request_backend(&b), p.scope.as_deref())?;
     let settings = b.slo_settings();
     let now = b.now_unix_seconds();
     let window = u64::from(settings.window_days) * 86_400;

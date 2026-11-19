@@ -77,6 +77,10 @@ pub(crate) enum CtlCommand {
     /// pin; promote or abort.
     #[command(subcommand)]
     Rollout(RolloutCmd),
+    /// Stored secrets (API-015): list them (never a value), set one, or clear one. Admins only,
+    /// over HTTPS or on the node itself.
+    #[command(subcommand)]
+    Secrets(SecretsCmd),
     /// The cluster versions the primary keeps, newest first (what to pin back to).
     Versions,
     /// Pin the cluster to a kept version: every node serves its configuration and filter
@@ -138,8 +142,12 @@ pub(crate) enum CtlCommand {
         #[arg(long)]
         client: Option<String>,
     },
-    /// Filter lists, with download state, unique names, and hits.
-    Lists,
+    /// Filter lists, with download state, unique names, and hits; `lists refresh` downloads
+    /// them again now.
+    Lists {
+        #[command(subcommand)]
+        cmd: Option<ListsCmd>,
+    },
     Groups,
     Clients,
     Upstreams,
@@ -178,6 +186,77 @@ pub(crate) enum CtlCommand {
     /// DELETE any API path.
     Delete {
         path: String,
+    },
+}
+
+/// REQ: FLT-004 — the nodes `GET /lists` names as unanswering (`missingNodes`).
+fn missing_nodes(v: &Value) -> Vec<String> {
+    v["missingNodes"]
+        .as_array()
+        .map(|m| {
+            m.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// REQ: FLT-004 — whether the primary is among the unanswering nodes. The downloads are the
+/// primary's, so only its silence stops `--wait`. `names` are the primary's names as
+/// `missingNodes` may spell them (see `primary_names`); no known name counts as silent.
+fn primary_missing(missing: &[String], names: &[String]) -> bool {
+    if missing.is_empty() {
+        return false;
+    }
+    names.is_empty() || names.iter().any(|n| missing.contains(n))
+}
+
+/// REQ: FLT-004 — the names `missingNodes` may use for the primary, from `GET /cluster`: its
+/// pod, site and node ID, the non-empty ones (the API names it by the first it has, as
+/// `label_of` does). Empty when the cluster can't be read or has no primary.
+fn primary_names(cluster: &Value) -> Vec<String> {
+    cluster["nodes"]
+        .as_array()
+        .and_then(|nodes| nodes.iter().find(|n| n["role"].as_str() == Some("primary")))
+        .map(|n| {
+            ["pod", "site", "nodeId"]
+                .iter()
+                .filter_map(|k| n[*k].as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Reads the primary's names (see `primary_names`); empty when the cluster can't be read.
+async fn read_primary_names(api: &Api) -> Vec<String> {
+    api.get("cluster")
+        .await
+        .map(|c| primary_names(&c))
+        .unwrap_or_default()
+}
+
+/// REQ: FLT-004 — `telltale ctl lists`.
+#[derive(Debug, Subcommand)]
+pub(crate) enum ListsCmd {
+    /// Download every enabled list again now (or only the ones named), like `pihole -g`. In a
+    /// cluster the primary downloads them (a replica forwards). Unchanged lists cost one
+    /// conditional request; the filter is recompiled only if something changed.
+    Refresh {
+        /// Only these lists (default: every enabled list).
+        names: Vec<String>,
+        /// Show what would be downloaded without downloading anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Wait until the downloads end (at most 5 minutes; exits non-zero if they haven't),
+        /// then print the lists.
+        #[arg(long)]
+        wait: bool,
+        /// Why, for the audit log (sent as `X-Telltale-Reason`; agent tokens must give one).
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 
@@ -250,6 +329,176 @@ pub(crate) enum DrillCmd {
     },
     /// The newest drills, or one drill's report.
     Report { id: Option<String> },
+}
+
+/// REQ: API-015, API-008 — `telltale ctl secrets`.
+#[derive(Debug, Subcommand)]
+pub(crate) enum SecretsCmd {
+    /// The stored secrets (name, kind, when and by whom set, which fields use them), the node's
+    /// store, and every credential field with its source. Never a value.
+    List,
+    /// Set (or replace) a secret. The value comes from a file, or from standard input (`-`, or
+    /// no `--from-file`), never from the command line (it would be in the shell's history).
+    Set {
+        /// The secret's name (lowercase letters, digits, `.`, `_` and `-`), as `*_ref` fields
+        /// name it.
+        name: String,
+        /// Read the value from this file (`-`: standard input). Surrounding space is trimmed.
+        #[arg(long, value_name = "FILE")]
+        from_file: Option<std::path::PathBuf>,
+        /// `text` (the default).
+        #[arg(long, default_value = "text")]
+        kind: String,
+        /// Check it and say what would change, storing nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Delete a secret (refused while a field names it).
+    Clear {
+        name: String,
+        /// Go ahead although a cluster member's references can't be read now (it is offline).
+        #[arg(long)]
+        force: bool,
+        /// Say what would happen, deleting nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+/// REQ: API-015 — a secret's value from `file` (`-` or none: standard input), wiped after use.
+fn secret_value(file: Option<&std::path::Path>) -> Result<zeroize::Zeroizing<String>, String> {
+    use std::io::Read as _;
+    let mut text = zeroize::Zeroizing::new(String::new());
+    match file {
+        Some(p) if p != std::path::Path::new("-") => {
+            let mut f = std::fs::File::open(p).map_err(|e| format!("{}: {e}", p.display()))?;
+            f.read_to_string(&mut text)
+                .map_err(|e| format!("{}: {e}", p.display()))?;
+        }
+        _ => {
+            // A terminal would echo the value and keep it in the scrollback.
+            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                return Err("standard input is a terminal, which would show the value: give it with --from-file FILE, or pipe it in (`... | telltale ctl secrets set NAME`)".into());
+            }
+            std::io::stdin()
+                .read_to_string(&mut text)
+                .map_err(|e| format!("standard input: {e}"))?;
+        }
+    }
+    if text.trim().is_empty() {
+        return Err(
+            "the value is empty (give it with --from-file FILE, or on standard input)".into(),
+        );
+    }
+    Ok(text)
+}
+
+/// REQ: API-015 — the stored secrets as text.
+fn secrets_text(v: &Value) -> String {
+    let st = &v["store"];
+    let mut out = format!(
+        "store on {}: {}{}{}\n",
+        s(st, "node"),
+        s(st, "state"),
+        if s(st, "keyId").is_empty() {
+            String::new()
+        } else {
+            format!(" (key {} from {})", s(st, "keyId"), s(st, "keySource"))
+        },
+        if s(st, "reason").is_empty() {
+            String::new()
+        } else {
+            format!(": {}", s(st, "reason"))
+        },
+    );
+    if v["stale"] == true {
+        out.push_str("the primary couldn't be asked: this is this node's own copy\n");
+    }
+    let rows: Vec<Vec<String>> = items(v)
+        .iter()
+        .map(|i| {
+            let used: Vec<String> = i["usedBy"]
+                .as_array()
+                .map_or(&[][..], Vec::as_slice)
+                .iter()
+                .map(|u| format!("{} {}.{}", s(u, "kind"), s(u, "name"), s(u, "field")))
+                .collect();
+            vec![
+                s(i, "name"),
+                if i["set"] == true {
+                    s(i, "health")
+                } else {
+                    "not set".into()
+                },
+                s(i, "updated"),
+                s(i, "updatedBy"),
+                used.join(", "),
+            ]
+        })
+        .collect();
+    out.push_str(&table(
+        &["NAME", "STATE", "UPDATED", "BY", "USED BY"],
+        &rows,
+    ));
+    let creds: Vec<Vec<String>> = v["credentials"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .map(|c| {
+            vec![
+                format!("{} {}", s(c, "kind"), s(c, "entry")),
+                s(c, "field"),
+                s(c, "source"),
+                s(c, "at"),
+                if c["readable"] == true {
+                    "yes".into()
+                } else {
+                    format!("no: {}", s(c, "reason"))
+                },
+            ]
+        })
+        .collect();
+    if !creds.is_empty() {
+        out.push('\n');
+        out.push_str(&table(
+            &["ENTRY", "FIELD", "SOURCE", "AT", "READABLE"],
+            &creds,
+        ));
+    }
+    out
+}
+
+/// REQ: API-015 — what a set or clear did.
+fn secret_change_text(v: &Value) -> String {
+    let name = s(&v["secret"], "name");
+    let mut out = if v["applied"] == true {
+        if v["wouldDelete"] == true {
+            format!("deleted `{name}`\n")
+        } else if v["wouldReplace"] == true {
+            format!("replaced `{name}`\n")
+        } else {
+            format!("stored `{name}`\n")
+        }
+    } else if v["wouldDelete"] == true {
+        format!("would delete `{name}` (dry run)\n")
+    } else if v["wouldReplace"] == true {
+        format!("would replace `{name}` (dry run)\n")
+    } else {
+        format!("would store `{name}` (dry run)\n")
+    };
+    for u in v["usedBy"].as_array().map_or(&[][..], Vec::as_slice) {
+        let _ = writeln!(
+            out,
+            "  used by {} {}.{}",
+            s(u, "kind"),
+            s(u, "name"),
+            s(u, "field")
+        );
+    }
+    for w in v["warnings"].as_array().map_or(&[][..], Vec::as_slice) {
+        let _ = writeln!(out, "note: {}", w.as_str().unwrap_or_default());
+    }
+    out
 }
 
 /// REQ: CLU-013 — `telltale ctl rollout`.
@@ -339,12 +588,26 @@ impl Api {
         path: &str,
         body: Option<&Value>,
     ) -> Result<Value, String> {
+        self.call_with_reason(method, path, body, None).await
+    }
+
+    /// [`Self::call`] with an `X-Telltale-Reason` header (AGT-005: agent tokens must say why).
+    async fn call_with_reason(
+        &self,
+        method: http::Method,
+        path: &str,
+        body: Option<&Value>,
+        reason: Option<&str>,
+    ) -> Result<Value, String> {
         let url = self.url(path);
         let mut req = http::Request::builder()
             .method(method)
             .uri(url.as_str())
             .header("authorization", format!("Bearer {}", self.token))
             .header("accept", "application/json");
+        if let Some(r) = reason.map(str::trim).filter(|r| !r.is_empty()) {
+            req = req.header(telltale_api::auth::routes::REASON, r);
+        }
         let bytes = match body {
             Some(b) => {
                 req = req.header("content-type", "application/json");
@@ -680,6 +943,49 @@ pub(crate) async fn run(
         ),
         // REQ: CLU-013
         CtlCommand::Rollout(c) => rollout(&api, c).await?,
+        // REQ: API-015
+        CtlCommand::Secrets(SecretsCmd::List) => {
+            (api.get("secrets").await?, Some(Box::new(secrets_text)))
+        }
+        CtlCommand::Secrets(SecretsCmd::Set {
+            name,
+            from_file,
+            kind,
+            dry_run,
+        }) => {
+            let value = secret_value(from_file.as_deref())?;
+            let body = json!({"value": value.trim(), "kind": kind});
+            drop(value);
+            (
+                api.call(
+                    http::Method::PUT,
+                    &format!(
+                        "secrets/{}{}",
+                        path_segment(&name),
+                        if dry_run { "?dryRun=true" } else { "" }
+                    ),
+                    Some(&body),
+                )
+                .await?,
+                Some(Box::new(secret_change_text)),
+            )
+        }
+        CtlCommand::Secrets(SecretsCmd::Clear {
+            name,
+            force,
+            dry_run,
+        }) => (
+            api.call(
+                http::Method::DELETE,
+                &format!(
+                    "secrets/{}?force={force}&dryRun={dry_run}",
+                    path_segment(&name)
+                ),
+                None,
+            )
+            .await?,
+            Some(Box::new(secret_change_text)),
+        ),
         CtlCommand::Versions => (
             api.get("cluster/versions").await?,
             Some(Box::new(versions_text)),
@@ -978,25 +1284,88 @@ pub(crate) async fn run(
             .await?,
             Some(Box::new(|v: &Value| format!("{}\n", s(v, "summary")))),
         ),
-        CtlCommand::Lists => (
-            api.get("lists").await?,
-            Some(Box::new(|v: &Value| {
-                let rows: Vec<Vec<String>> = items(v)
-                    .iter()
-                    .map(|r| {
-                        vec![
-                            s(r, "name"),
-                            s(r, "kind"),
-                            s(r, "state"),
-                            s(r, "entries"),
-                            s(r, "unique"),
-                            s(r, "hits"),
-                        ]
+        CtlCommand::Lists { cmd: None } => (api.get("lists").await?, Some(Box::new(lists_text))),
+        // REQ: FLT-004 — "update lists now".
+        CtlCommand::Lists {
+            cmd:
+                Some(ListsCmd::Refresh {
+                    names,
+                    dry_run,
+                    wait,
+                    reason,
+                }),
+        } => {
+            let body = if names.is_empty() {
+                json!({})
+            } else {
+                json!({ "names": names })
+            };
+            let r = api
+                .call_with_reason(
+                    http::Method::POST,
+                    &format!("lists/refresh{}", if dry_run { "?dryRun=true" } else { "" }),
+                    Some(&body),
+                    reason.as_deref(),
+                )
+                .await?;
+            if wait && !dry_run {
+                let queued: Vec<String> = r["queued"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_owned))
+                            .collect()
                     })
-                    .collect();
-                table(&["LIST", "KIND", "STATE", "NAMES", "UNIQUE", "HITS"], &rows)
-            })),
-        ),
+                    .unwrap_or_default();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+                let mut primary = read_primary_names(&api).await;
+                let mut polls: u32 = 0;
+                let lists = loop {
+                    let v = api.get("lists").await?;
+                    // A replica whose primary didn't answer shows its own view: it can't tell
+                    // whether the downloads ended. A peer that misses only its hits doesn't stop
+                    // the wait (REQ: FLT-004). The primary's names are read once and again only
+                    // when unknown or every 10 polls (a failover moves them).
+                    let missing = missing_nodes(&v);
+                    if !missing.is_empty() {
+                        polls += 1;
+                        if primary.is_empty() || polls.is_multiple_of(10) {
+                            primary = read_primary_names(&api).await;
+                        }
+                    }
+                    if !missing.is_empty() && primary_missing(&missing, &primary) {
+                        return Err(format!(
+                            "{}can't follow the downloads: {} didn't answer; check again with `telltale ctl lists`",
+                            refresh_text(&r),
+                            missing.join(", ")
+                        ));
+                    }
+                    let busy = items(&v).iter().any(|l| {
+                        l["refreshing"].as_bool() == Some(true)
+                            && queued.iter().any(|q| l["name"].as_str() == Some(q))
+                    });
+                    if !busy {
+                        break v;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(format!(
+                            "{}{}lists still downloading after 5 minutes; check again with `telltale ctl lists`",
+                            refresh_text(&r),
+                            lists_text(&v)
+                        ));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                };
+                (
+                    json!({ "refresh": r, "lists": lists }),
+                    Some(Box::new(|v: &Value| {
+                        format!("{}{}", refresh_text(&v["refresh"]), lists_text(&v["lists"]))
+                    })),
+                )
+            } else {
+                (r, Some(Box::new(refresh_text)))
+            }
+        }
         CtlCommand::Groups => {
             named(&api, "groups", &["name", "lists", "blockMode", "networks"]).await?
         }
@@ -1062,6 +1431,54 @@ pub(crate) async fn run(
 }
 
 type Rendered = (Value, Option<Box<dyn Fn(&Value) -> String>>);
+
+/// REQ: FLT-004 — `telltale ctl lists`: one row per list.
+fn lists_text(v: &Value) -> String {
+    let rows: Vec<Vec<String>> = items(v)
+        .iter()
+        .map(|r| {
+            vec![
+                s(r, "name"),
+                s(r, "kind"),
+                if r["refreshing"].as_bool() == Some(true) {
+                    "refreshing".to_owned()
+                } else {
+                    s(r, "state")
+                },
+                s(r, "entries"),
+                s(r, "unique"),
+                s(r, "hits"),
+            ]
+        })
+        .collect();
+    table(&["LIST", "KIND", "STATE", "NAMES", "UNIQUE", "HITS"], &rows)
+}
+
+/// REQ: FLT-004 — what a refresh queued.
+fn refresh_text(v: &Value) -> String {
+    let mut out = String::new();
+    let queued = s(v, "queued");
+    let node = s(v, "node");
+    let on = if node.is_empty() {
+        String::new()
+    } else {
+        format!(" on {node}")
+    };
+    if v["dryRun"].as_bool() == Some(true) {
+        let _ = writeln!(out, "would refresh{on}: {}", or_none(&queued));
+    } else {
+        let _ = writeln!(out, "refreshing{on}: {}", or_none(&queued));
+    }
+    for k in v["skipped"].as_array().map_or(&[][..], Vec::as_slice) {
+        let _ = writeln!(out, "skipped {} ({})", s(k, "name"), s(k, "reason"));
+    }
+    let _ = writeln!(out, "{}", s(v, "note"));
+    out
+}
+
+fn or_none(v: &str) -> &str {
+    if v.is_empty() { "nothing" } else { v }
+}
 
 /// REQ: OBS-024 — a simulation as text: the counts, then the top names of each kind.
 fn simulation_text(v: &Value) -> String {
@@ -1395,6 +1812,45 @@ async fn named(
 mod tests {
     use super::*;
 
+    /// REQ: FLT-004 — `--wait` follows the primary's downloads: a replica missing its hits
+    /// doesn't stop it, the primary missing does, and an unnamed primary does.
+    #[test]
+    fn flt_004_wait_follows_the_primary_not_a_replica_that_misses_its_hits() {
+        let replica = vec!["node-b".to_owned()];
+        let primary = vec!["home-pi".to_owned()];
+        let home_pi = vec!["home-pi".to_owned()];
+        assert!(!primary_missing(&replica, &home_pi));
+        assert!(primary_missing(&primary, &home_pi));
+        assert!(primary_missing(&replica, &[]));
+        assert!(!primary_missing(&[], &[]));
+        let v = json!({ "missingNodes": ["node-b"], "items": [] });
+        assert_eq!(missing_nodes(&v), replica);
+        assert_eq!(missing_nodes(&json!({ "items": [] })), Vec::<String>::new());
+    }
+
+    /// REQ: FLT-004 — the primary is named as `missingNodes` names it: by its pod on Kubernetes
+    /// (pods share a site, so a replica pod at that site isn't the primary), and by node ID
+    /// when its site is empty (an empty name would never match).
+    #[test]
+    fn flt_004_wait_names_the_primary_as_missing_nodes_does() {
+        let k8s = json!({ "nodes": [
+            { "role": "primary", "nodeId": "n-0", "site": "home", "pod": "tt-0" },
+            { "role": "resolver", "nodeId": "n-1", "site": "home", "pod": "tt-1" },
+        ] });
+        let names = primary_names(&k8s);
+        assert!(primary_missing(&["tt-0".to_owned()], &names));
+        assert!(!primary_missing(&["tt-1".to_owned()], &names));
+        let no_site = json!({ "nodes": [
+            { "role": "primary", "nodeId": "n-0", "site": "", "pod": null },
+        ] });
+        let names = primary_names(&no_site);
+        assert!(primary_missing(&["n-0".to_owned()], &names));
+        assert!(!primary_missing(&["node-b".to_owned()], &names));
+        // A cluster that can't be read names no primary, so a missing node stops the wait.
+        assert_eq!(primary_names(&json!({})), Vec::<String>::new());
+        assert!(primary_missing(&["node-b".to_owned()], &[]));
+    }
+
     /// REQ: API-008 — paths, queries, IDs, and tables.
     #[test]
     fn api_008_helpers() {
@@ -1422,6 +1878,24 @@ mod tests {
             api.url("/api/v1/stats/top?kind=blocked"),
             "http://127.0.0.1:8053/api/v1/stats/top?kind=blocked"
         );
+    }
+
+    /// REQ: FLT-004 — what a refresh queued, as text.
+    #[test]
+    fn flt_004_ctl_refresh_text() {
+        let v = json!({"dryRun": false, "queued": ["hagezi", "mine"], "skipped": [{"name": "old", "reason": "disabled"}],
+            "alreadyRefreshing": [], "node": "pi", "note": "2 lists queued."});
+        let t = refresh_text(&v);
+        assert!(t.starts_with("refreshing on pi: hagezi, mine\n"), "{t}");
+        assert!(t.contains("skipped old (disabled)"), "{t}");
+        let dry = refresh_text(
+            &json!({"dryRun": true, "queued": [], "skipped": [], "note": "Nothing to download."}),
+        );
+        assert!(dry.starts_with("would refresh: nothing\n"), "{dry}");
+        let l = lists_text(
+            &json!({"items": [{"name": "mine", "kind": "block", "state": "ok", "refreshing": true, "entries": 3, "unique": 1, "hits": 0}]}),
+        );
+        assert!(l.contains("refreshing"), "{l}");
     }
 
     /// REQ: OPS-010 — `--for` takes seconds or a unit; node names go into the path safely.

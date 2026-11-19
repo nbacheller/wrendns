@@ -124,6 +124,10 @@ wait_metric 29101 telltale_cluster_lease_held 1 30 || fail "the primary never he
 # The replica must hold the cluster key to be able to win.
 for _ in $(seq 40); do [ -f "$E/r/cluster/ca.key" ] && break; sleep 0.25; done
 [ -f "$E/r/cluster/ca.key" ] || fail "the eligible replica never received the cluster key"
+# REQ: CLU-005 (ADR-960) — a replica stands only after it has seen a lease from the primary: it has
+# granted a renewal once its ballot names the primary (a renewal comes every 5 s).
+for _ in $(seq 120); do grep -q '"candidate":"[0-9a-f]' "$E/r/cluster/ballot.json" 2>/dev/null && break; sleep 0.25; done
+grep -q '"candidate":"[0-9a-f]' "$E/r/cluster/ballot.json" 2>/dev/null || fail "the replica never granted the primary a lease"
 echo "ok (epoch $(metric 29101 telltale_cluster_epoch))"
 
 # An admin, made on the primary; users reach every node (T9.1), for the maintenance steps.

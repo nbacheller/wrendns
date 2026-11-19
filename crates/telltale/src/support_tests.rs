@@ -32,6 +32,7 @@ fn req(level: &str, sample: u32, keep_map: bool) -> SupportPackageRequest {
         reveal: Vec::new(),
         query_sample: sample,
         keep_map,
+        cluster: false,
     }
 }
 
@@ -265,6 +266,7 @@ fn ops_011_a_slow_collector_is_left_behind_and_the_rest_carry_on() {
             created_unix: 0,
             created: "t".to_owned(),
             max_bytes: MAX_BYTES,
+            keyed_labels: false,
         },
         &known,
     )
@@ -346,4 +348,22 @@ fn ops_012_the_newest_watchdog_dump_is_in_the_package_and_its_log_waits_for_stan
     // A node that never wrote one has no such file.
     let plain = build(&backend(TOML), &req("strict", 0, false), false).unwrap();
     assert!(!paths(&plain).iter().any(|p| p.starts_with("watchdog/")));
+}
+
+// REQ: OBS-009 — `lists()` carries this node's own hits, by list name. The package reads `lists()`
+// directly (`GET /api/v1/lists` swaps in the cluster's totals), so without this every list in a
+// package would say it had no hits.
+#[test]
+fn obs_009_lists_carry_this_nodes_hits_by_name() {
+    let b = backend(
+        "[[list]]\nname = \"ads\"\nrules = [\"ads.example.com\"]\n\
+         [[list]]\nname = \"quiet\"\nrules = [\"quiet.example.com\"]\n",
+    );
+    b.src.shadow.note_decided("ads");
+    b.src.shadow.note_decided("ads");
+    let hits: Vec<(String, u64)> = telltale_api::Backend::lists(&b)
+        .into_iter()
+        .map(|l| (l.name, l.hits))
+        .collect();
+    assert_eq!(hits, [("ads".to_owned(), 2), ("quiet".to_owned(), 0)]);
 }

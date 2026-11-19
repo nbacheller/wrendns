@@ -27,6 +27,99 @@ const MIN_QUERIES: u64 = 50;
 pub(crate) const DISK_FULL: f64 = 90.0;
 /// A replica behind the primary's configuration for this long degrades.
 const SYNC_LAG_SECONDS: u64 = 60;
+/// REQ: OBS-010 (T24.5, fork #2) — the health icon's fixed threshold for a replica that hasn't
+/// reached its primary (ADR-104 fixed thresholds; the alert rule's `threshold` is its own).
+pub(crate) const PRIMARY_UNREACHABLE_SECONDS: u64 = 60;
+
+/// REQ: DSC-002 (T25.3, DSC-014) — a discovery worker that is refused for its build, or that keeps
+/// crashing, is degraded. It never makes DNS unhealthy: the inventory is not on the query path.
+pub(crate) fn discovery_reasons(
+    workers: &[telltale_api::model::DiscoveryWorker],
+    agents: &[telltale_api::model::DiscoveryAgent],
+) -> Vec<HealthReason> {
+    let mut out = Vec::new();
+    // REQ: DSC-004, DSC-014 (T25.6) - an SNMP agent whose last three polls failed is degraded: its
+    // devices stop being refreshed. Never severe: DNS doesn't depend on the inventory.
+    for a in agents.iter().filter(|a| a.state == "failing") {
+        out.push(reason(
+            DEGRADED,
+            "discovery_agent_failing",
+            format!(
+                "the SNMP agent `{}` failed {} polls in a row ({}). DNS is unaffected",
+                a.name,
+                a.consecutive_failures,
+                a.last_error.as_deref().unwrap_or("no reply")
+            ),
+            "#/network-inventory",
+        ));
+    }
+    for w in workers {
+        if w.version_mismatch {
+            out.push(reason(
+                DEGRADED,
+                "discovery_worker_version_mismatch",
+                format!(
+                    "the {} discovery worker is refused: its build differs from this node's ({})",
+                    w.worker,
+                    w.last_error.as_deref().unwrap_or("unknown")
+                ),
+                "#/network-inventory",
+            ));
+        }
+        if w.failing {
+            out.push(reason(
+                DEGRADED,
+                "discovery_worker_failing",
+                format!(
+                    "the {} discovery worker keeps stopping ({} restarts); its restarts are slowed. DNS is unaffected",
+                    w.worker, w.restarts
+                ),
+                "#/network-inventory",
+            ));
+        }
+    }
+    out
+}
+
+/// REQ: DSC-906 (T31.2, ADR-1005 section 13) — the CMDB dropping things at a cap, or failing to write, is
+/// degraded. It never makes DNS unhealthy: the CMDB is not on the query path (CLU-004).
+pub(crate) fn cmdb_reasons(s: &telltale_api::cmdb_api::CmdbStatus) -> Vec<HealthReason> {
+    let mut out = Vec::new();
+    if !s.running {
+        return out;
+    }
+    if s.dropped.ci > 0 {
+        out.push(reason(
+            DEGRADED,
+            "cmdb_ci_cap",
+            format!(
+                "the CMDB refused {} new CIs: it holds the most it keeps and every one is authored. DNS is unaffected",
+                s.dropped.ci
+            ),
+            "#/cmdb",
+        ));
+    }
+    if s.dropped.record > 0 || s.dropped.batch > 0 {
+        out.push(reason(
+            DEGRADED,
+            "cmdb_dropping",
+            format!(
+                "the CMDB dropped {} records and {} batches at its caps. DNS is unaffected",
+                s.dropped.record, s.dropped.batch
+            ),
+            "#/cmdb",
+        ));
+    }
+    if let Some(e) = &s.last_error {
+        out.push(reason(
+            DEGRADED,
+            "cmdb_failing",
+            format!("the CMDB's last error: {e}. DNS is unaffected"),
+            "#/cmdb",
+        ));
+    }
+    out
+}
 
 fn reason(level: &str, code: &str, summary: String, link: &str) -> HealthReason {
     HealthReason {
@@ -54,6 +147,9 @@ pub(crate) struct Local<'a> {
     /// REQ: FLT-017 — this node watches Kubernetes and its table is this many seconds old
     /// (`None`: it doesn't watch, or the table is fresh).
     pub(crate) kubernetes_stale_s: Option<u64>,
+    /// REQ: FLT-901 (ADR-994 item 7) — category IDs a group names that this version does not
+    /// know (a newer node wrote them): `(group, id)`. They are ignored, and reported.
+    pub(crate) unknown_categories: &'a [(String, String)],
 }
 
 /// REQ: OBS-020 (ADR-107) — listeners (or extra targets) that failed their probe twice in a
@@ -127,6 +223,7 @@ fn probe_reasons(l: &Local<'_>, out: &mut Vec<HealthReason>) {
 }
 
 /// One node's own conditions.
+#[allow(clippy::too_many_lines)] // one check after another
 pub(crate) fn local_reasons(l: &Local<'_>) -> Vec<HealthReason> {
     let mut out = Vec::new();
     if !l.serving {
@@ -201,6 +298,25 @@ pub(crate) fn local_reasons(l: &Local<'_>) -> Vec<HealthReason> {
             ));
         }
     }
+    // REQ: FLT-901 (ADR-994 item 7) — a category this version doesn't know is ignored, never an
+    // error: DNS keeps answering from the categories it does know.
+    if !l.unknown_categories.is_empty() {
+        let names: Vec<String> = l
+            .unknown_categories
+            .iter()
+            .map(|(g, c)| format!("{c} (group {g})"))
+            .collect();
+        out.push(reason(
+            DEGRADED,
+            "category_unknown",
+            format!(
+                "this version doesn't know the categor{} {}: ignored until the node is upgraded",
+                if names.len() == 1 { "y" } else { "ies" },
+                names.join(", ")
+            ),
+            "#/groups",
+        ));
+    }
     // REQ: FLT-017 (ADR-150) — the API server unreachable for 15 minutes: pods keep their
     // last names, new pods are plain addresses until it's back. DNS is unaffected.
     if let Some(s) = l.kubernetes_stale_s {
@@ -254,6 +370,29 @@ fn upstream_reasons(upstreams: &[UpstreamInfo], out: &mut Vec<HealthReason>) {
             covered.extend(down_names.iter().copied());
         }
     }
+    // REQ: UPS-013 (T24.31) — an upstream whose source address left the node.
+    for u in upstreams {
+        if let Some(p) = &u.source_problem {
+            out.push(reason(
+                DEGRADED,
+                "upstream_source_lost",
+                format!("upstream {}: {p}", u.name),
+                "#/upstreams",
+            ));
+        }
+    }
+    // REQ: UPS-006 — no route to the address while the breaker is still closed (a spare nobody
+    // has asked yet): the map shows it yellow, so say why here too.
+    for u in upstreams.iter().filter(|u| !down(u)) {
+        if let Some(p) = &u.route_problem {
+            out.push(reason(
+                DEGRADED,
+                "upstream_no_route",
+                format!("upstream {}: {p}", u.name),
+                "#/upstreams",
+            ));
+        }
+    }
     for u in upstreams
         .iter()
         .filter(|u| down(u) && !covered.contains(u.name.as_str()))
@@ -262,9 +401,14 @@ fn upstream_reasons(upstreams: &[UpstreamInfo], out: &mut Vec<HealthReason>) {
             DEGRADED,
             "upstream_down",
             format!(
-                "upstream {} isn't answering (its circuit breaker is {}); the rest of its group answers",
+                "upstream {} isn't answering (its circuit breaker is {}{}); the rest of its group answers",
                 u.name,
-                u.breaker.replace('_', "-")
+                u.breaker.replace('_', "-"),
+                // REQ: UPS-006 — say why when it is the route.
+                u.route_problem
+                    .as_deref()
+                    .map(|p| format!(": {p}"))
+                    .unwrap_or_default()
             ),
             "#/upstreams",
         ));
@@ -315,7 +459,30 @@ pub(crate) fn cluster_reasons(view: &ClusterView) -> Vec<HealthReason> {
     if !view.enabled {
         return out;
     }
-    for n in view.nodes.iter().filter(|n| !n.this_node && !n.witness) {
+    // REQ: OBS-010 (T24.5, fork #2) — a replica that hasn't reached its primary for a minute
+    // (a silent split). Witnesses, resolver pods and nodes in maintenance are left out, as the
+    // alert leaves them out.
+    for n in view.nodes.iter().filter(|n| {
+        n.role == "replica" && n.up && !n.witness && !n.ephemeral && n.maintenance.is_none()
+    }) {
+        if let Some(s) = n
+            .primary_silent_seconds
+            .filter(|s| *s >= PRIMARY_UNREACHABLE_SECONDS)
+        {
+            let name = node_name(n);
+            let mut r = reason(
+                DEGRADED,
+                "primary_unreachable",
+                format!("{name} hasn't reached its primary for {s} s"),
+                "#/cluster",
+            );
+            r.node = Some(name);
+            out.push(r);
+        }
+    }
+    // REQ: CLU-009 (T24.33) — a witness that is unreachable still counts (automatic failover needs
+    // its vote); it is never "behind" or "not serving", as it has no configuration and no DNS.
+    for n in view.nodes.iter().filter(|n| !n.this_node) {
         let name = node_name(n);
         if !n.ephemeral && !n.connected {
             let mut r = reason(
@@ -330,6 +497,7 @@ pub(crate) fn cluster_reasons(view: &ClusterView) -> Vec<HealthReason> {
             r.node = Some(name);
             out.push(r);
         } else if n.connected
+            && !n.witness
             && n.config_lag > 0
             && n.behind_seconds.is_some_and(|s| s >= SYNC_LAG_SECONDS)
         {
@@ -347,6 +515,79 @@ pub(crate) fn cluster_reasons(view: &ClusterView) -> Vec<HealthReason> {
             out.push(r);
         }
     }
+    out
+}
+
+/// REQ: API-015, OBS-015 (T24.42) - a full member that has not applied the primary's stored
+/// secrets for this long is degraded (a secret write reaches the members within seconds).
+pub(crate) const SECRETS_LAG_SECONDS: u64 = 60;
+
+/// When each node was first seen out of step with the primary's stored secrets, by node ID.
+pub(crate) type SecretsSince = std::collections::HashMap<String, std::time::Instant>;
+
+/// REQ: API-015, OBS-015 (T24.42) - a full member (never a witness or a resolver pod, which hold
+/// none by design) whose applied secrets head differs from the primary's, or that can't read some
+/// secret, for [`SECRETS_LAG_SECONDS`]: `secret_not_held`, degraded and never severe. DNS doesn't
+/// depend on a stored secret, so this never marks DNS unhealthy. `since` remembers when each node
+/// first looked out of step, so a write in flight isn't reported.
+pub(crate) fn secret_reasons(
+    view: &ClusterView,
+    since: &mut SecretsSince,
+    now: std::time::Instant,
+) -> Vec<HealthReason> {
+    let primary_head = view
+        .nodes
+        .iter()
+        .find(|n| n.role == "primary")
+        .and_then(|n| n.secrets.as_ref())
+        .and_then(|s| s.head.clone());
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    if !view.enabled || primary_head.is_none() {
+        since.clear();
+        return out;
+    }
+    for n in view
+        .nodes
+        .iter()
+        .filter(|n| !n.witness && !n.ephemeral && (n.this_node || n.connected))
+    {
+        let Some(s) = n.secrets.as_ref() else {
+            continue;
+        };
+        if s.in_sync && s.unreadable == 0 {
+            continue;
+        }
+        seen.insert(n.node_id.clone());
+        let first = *since.entry(n.node_id.clone()).or_insert(now);
+        if now.saturating_duration_since(first).as_secs() < SECRETS_LAG_SECONDS {
+            continue;
+        }
+        let name = node_name(n);
+        let what = if s.in_sync {
+            format!(
+                "{name} can't read {} of the stored secrets it holds",
+                s.unreadable
+            )
+        } else {
+            format!(
+                "{name} hasn't received all the stored secrets (it holds {}, the primary {})",
+                s.applied.as_deref().unwrap_or("none"),
+                primary_head.as_deref().unwrap_or("none")
+            )
+        };
+        let mut r = reason(
+            DEGRADED,
+            "secret_not_held",
+            format!(
+                "{what}; a router or webhook that needs one can't be read there after a failover. DNS is unaffected"
+            ),
+            "#/settings?tab=secrets",
+        );
+        r.node = Some(name);
+        out.push(r);
+    }
+    since.retain(|k, _| seen.contains(k));
     out
 }
 
@@ -480,6 +721,9 @@ mod tests {
             failures: 0,
             failures_by_kind: FailureKinds::default(),
             latency_ewma_ms: 0.0,
+            route_problem: None,
+            source: None,
+            source_problem: None,
         }
     }
 
@@ -493,7 +737,45 @@ mod tests {
             probes: &[],
             cert_warn_days: 14,
             kubernetes_stale_s: None,
+            unknown_categories: &[],
         }
+    }
+
+    /// REQ: FLT-901 (ADR-994 item 7) — a category id this version doesn't know is reported as
+    /// degraded, naming the id and the group; nothing else changes.
+    #[test]
+    fn flt_901_unknown_category_ignored_and_reported() {
+        let (ups, recent) = (Vec::new(), Vec::new());
+        let unknown = [("kids".to_owned(), "from-the-future".to_owned())];
+        let l = Local {
+            unknown_categories: &unknown,
+            ..local(&ups, &recent)
+        };
+        let r = local_reasons(&l);
+        assert_eq!(r.len(), 1);
+        assert_eq!(
+            (r[0].level.as_str(), r[0].code.as_str()),
+            (DEGRADED, "category_unknown")
+        );
+        assert!(
+            r[0].summary.contains("from-the-future (group kids)"),
+            "{}",
+            r[0].summary
+        );
+    }
+
+    // REQ: UPS-006 — an upstream with no route and a closed breaker is a warning, as on the map.
+    #[test]
+    fn ups_006_no_route_with_closed_breaker_degrades() {
+        let mut u = up("spare", &["g"], "closed");
+        u.route_problem = Some("no route to 10.9.9.9".into());
+        let mut out = Vec::new();
+        upstream_reasons(&[u], &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            (out[0].level.as_str(), out[0].code.as_str()),
+            (DEGRADED, "upstream_no_route")
+        );
     }
 
     // REQ: FLT-017 (ADR-150) — a watcher's table older than 15 minutes degrades, with the
@@ -689,6 +971,125 @@ mod tests {
         assert_eq!(h.level, "healthy", "too few queries to judge");
     }
 
+    // REQ: OBS-010 (T24.5, fork #2) — a replica that hasn't reached its primary for a minute
+    // gives a degraded reason naming it (the exact boundary counts); witnesses, resolver pods
+    // and replicas out of contact don't; the reason is gone once it reaches the primary again.
+    #[test]
+    fn obs_010_t24_5_health_names_a_replica_that_cannot_reach_its_primary() {
+        use telltale_api::model::ClusterNode;
+        let node = |id: &str, silent: Option<u64>| ClusterNode {
+            node_id: id.into(),
+            site: id.into(),
+            role: "replica".into(),
+            connected: true,
+            up: true,
+            primary_silent_seconds: silent,
+            ..ClusterNode::default()
+        };
+        let mut primary = node("p", None);
+        primary.role = "primary".into();
+        primary.this_node = true;
+        let codes = |nodes: Vec<ClusterNode>| {
+            let view = ClusterView {
+                enabled: true,
+                cluster_id: None,
+                name: None,
+                this_node: Some("p".into()),
+                newest_config_seq: 1,
+                healthy: true,
+                checks: Vec::new(),
+                nodes,
+                events: Vec::new(),
+                authority: None,
+                conflicts: Vec::new(),
+                failover: None,
+                source: None,
+                rollout: None,
+                host: None,
+            };
+            cluster_reasons(&view)
+        };
+        assert!(codes(vec![primary.clone(), node("r", Some(59))]).is_empty());
+        let r = codes(vec![primary.clone(), node("r", Some(60))]);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].code, "primary_unreachable");
+        assert_eq!(r[0].node.as_deref(), Some("r"));
+        assert_eq!(r[0].link.as_deref(), Some("#/cluster"));
+        assert_eq!(r[0].summary, "r hasn't reached its primary for 60 s");
+        // The answering node's own replica state counts too (it is in the view).
+        let mut me = node("me", Some(120));
+        me.this_node = true;
+        assert_eq!(codes(vec![primary.clone(), me]).len(), 1);
+        // Witnesses, resolver pods and replicas out of contact: no reason.
+        let mut witness = node("w", Some(600));
+        witness.witness = true;
+        let mut pod = node("pod", Some(600));
+        pod.ephemeral = true;
+        let mut away = node("away", Some(600));
+        away.up = false;
+        assert!(codes(vec![primary.clone(), witness, pod, away]).is_empty());
+        // A replica in a maintenance window: no reason either (as the alert leaves it out).
+        let mut maint = node("m", Some(600));
+        maint.maintenance = Some(telltale_api::model::NodeMaintenance {
+            until: "2026-10-09T14:00:00Z".into(),
+            reason: "disk swap".into(),
+            by: "alice".into(),
+            seconds_left: 600,
+            ..telltale_api::model::NodeMaintenance::default()
+        });
+        assert!(codes(vec![primary.clone(), maint]).is_empty());
+        // Reconnected: the value is absent, so the reason clears.
+        assert!(codes(vec![primary, node("r", None)]).is_empty());
+    }
+
+    // REQ: CLU-009 (T24.33) — an unreachable witness is a degraded reason (automatic failover
+    // needs its vote); a connected one is never "behind", whatever it reports.
+    #[test]
+    fn clu_009_t24_33_health_counts_a_witness_only_as_a_voter() {
+        use telltale_api::model::ClusterNode;
+        let node = |id: &str, connected: bool| ClusterNode {
+            node_id: id.into(),
+            site: id.into(),
+            role: "replica".into(),
+            connected,
+            up: connected,
+            ..ClusterNode::default()
+        };
+        let mut primary = node("p", true);
+        primary.role = "primary".into();
+        primary.this_node = true;
+        let view = |nodes: Vec<ClusterNode>| ClusterView {
+            enabled: true,
+            cluster_id: None,
+            name: None,
+            this_node: Some("p".into()),
+            newest_config_seq: 14,
+            healthy: true,
+            checks: Vec::new(),
+            nodes,
+            events: Vec::new(),
+            authority: None,
+            conflicts: Vec::new(),
+            failover: None,
+            source: None,
+            rollout: None,
+            host: None,
+        };
+        let mut witness = node("w", true);
+        witness.witness = true;
+        witness.config_lag = 13;
+        witness.behind_seconds = Some(1920);
+        assert!(cluster_reasons(&view(vec![primary.clone(), witness.clone()])).is_empty());
+        witness.connected = false;
+        witness.up = false;
+        let r = cluster_reasons(&view(vec![primary, witness]));
+        assert_eq!(r.len(), 1);
+        assert_eq!(
+            (r[0].code.as_str(), r[0].node.as_deref()),
+            ("node_down", Some("w"))
+        );
+    }
+
     // REQ: OPS-010 (ADR-118) — a node in maintenance that went silent: its `node_down` and
     // its own reasons are left out, it isn't "missing", and it's listed under `maintenance`;
     // the level stays healthy. Another node's reasons still count.
@@ -790,9 +1191,13 @@ mod tests {
             regex_skipped: 0,
             hits: 0,
             overlap: Vec::new(),
+            rules: 0,
             last_checked_unix_seconds: None,
+            last_success_unix_seconds: None,
             last_changed_unix_seconds: None,
+            refreshing: false,
             stale_days: None,
+            owners: Vec::new(),
         };
         let stale = ListInfo {
             name: "old".into(),
@@ -887,5 +1292,144 @@ mod tests {
         };
         assert_eq!(code_list(&view(Some(offline(120)))), Vec::<String>::new());
         assert_eq!(code_list(&view(Some(offline(700)))), vec!["rollout_stuck"]);
+    }
+
+    /// REQ: DSC-002 (T25.3, DSC-014) — a discovery worker that is refused or keeps crashing is
+    /// degraded, under the two codes, and never severe: the inventory is off the query path.
+    #[test]
+    fn dsc_002_discovery_reasons_are_degraded_only() {
+        use telltale_api::model::DiscoveryWorker;
+        let workers = vec![
+            DiscoveryWorker {
+                worker: "snmp".into(),
+                version_mismatch: true,
+                last_error: Some("build `x` (this node is `y`)".into()),
+                ..DiscoveryWorker::default()
+            },
+            DiscoveryWorker {
+                worker: "import".into(),
+                failing: true,
+                restarts: 3,
+                ..DiscoveryWorker::default()
+            },
+            DiscoveryWorker {
+                worker: "snmp".into(),
+                up: true,
+                ..DiscoveryWorker::default()
+            },
+        ];
+        let r = discovery_reasons(&workers, &[]);
+        let codes: Vec<&str> = r.iter().map(|x| x.code.as_str()).collect();
+        assert_eq!(
+            codes,
+            [
+                "discovery_worker_version_mismatch",
+                "discovery_worker_failing"
+            ]
+        );
+        assert!(r.iter().all(|x| x.level == DEGRADED), "{r:?}");
+        assert!(discovery_reasons(&[DiscoveryWorker::default()], &[]).is_empty());
+    }
+
+    /// REQ: DSC-004, DSC-014 (`dsc_014_failing_agent_is_degraded_only`) - an SNMP agent whose last three
+    /// polls failed raises `discovery_agent_failing` (degraded, never severe); one that is merely in
+    /// error, waiting or skipped does not.
+    #[test]
+    fn dsc_014_failing_agent_is_degraded_only() {
+        use telltale_api::model::DiscoveryAgent;
+        let agent = |state: &str| DiscoveryAgent {
+            name: "gateway".into(),
+            state: state.into(),
+            consecutive_failures: 3,
+            last_error: Some("no reply (timeout)".into()),
+            ..DiscoveryAgent::default()
+        };
+        let r = discovery_reasons(&[], &[agent("failing")]);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].code, "discovery_agent_failing");
+        assert_eq!(r[0].level, DEGRADED);
+        assert!(r[0].summary.contains("gateway"), "{}", r[0].summary);
+        for quiet in ["ok", "error", "waiting", "skipped"] {
+            assert!(
+                discovery_reasons(&[], &[agent(quiet)]).is_empty(),
+                "{quiet}"
+            );
+        }
+    }
+
+    /// REQ: API-015, OBS-015 (T24.42) - a full member that has not applied the primary's secrets
+    /// for a minute is `secret_not_held` (degraded, never severe); a witness and a resolver pod
+    /// never are; a member that catches up is forgotten; a write in flight is not reported.
+    #[test]
+    fn api_015_t24_42_a_member_without_the_secrets_is_degraded() {
+        use super::{SECRETS_LAG_SECONDS, SecretsSince, secret_reasons};
+        use telltale_api::model::{ClusterNode, ClusterSecrets};
+        let node = |id: &str, role: &str, in_sync: bool| ClusterNode {
+            node_id: id.into(),
+            site: id.into(),
+            role: role.into(),
+            connected: true,
+            up: true,
+            secrets: Some(ClusterSecrets {
+                head: Some("1.3".into()),
+                applied: (!in_sync).then(|| "1.1".into()),
+                in_sync,
+                ..ClusterSecrets::default()
+            }),
+            ..ClusterNode::default()
+        };
+        let mut witness = node("w", "replica", false);
+        witness.witness = true;
+        let mut pod = node("pod", "replica", false);
+        pod.ephemeral = true;
+        let view = |nodes: Vec<ClusterNode>| ClusterView {
+            enabled: true,
+            cluster_id: None,
+            name: None,
+            this_node: Some("p".into()),
+            newest_config_seq: 14,
+            healthy: true,
+            checks: Vec::new(),
+            nodes,
+            events: Vec::new(),
+            authority: None,
+            conflicts: Vec::new(),
+            failover: None,
+            source: None,
+            rollout: None,
+            host: None,
+        };
+        let v = view(vec![
+            node("p", "primary", true),
+            node("a", "replica", true),
+            node("b", "replica", false),
+            witness,
+            pod,
+        ]);
+        let mut since = SecretsSince::new();
+        let t0 = std::time::Instant::now();
+        // Just seen: not reported yet.
+        assert!(secret_reasons(&v, &mut since, t0).is_empty());
+        let later = t0 + std::time::Duration::from_secs(SECRETS_LAG_SECONDS + 1);
+        let r = secret_reasons(&v, &mut since, later);
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert_eq!(
+            (
+                r[0].code.as_str(),
+                r[0].level.as_str(),
+                r[0].node.as_deref()
+            ),
+            ("secret_not_held", DEGRADED, Some("b"))
+        );
+        assert!(r[0].summary.contains("DNS is unaffected"));
+        // It catches up: forgotten, and a later lapse starts a new window.
+        let v2 = view(vec![node("p", "primary", true), node("b", "replica", true)]);
+        assert!(secret_reasons(&v2, &mut since, later).is_empty());
+        assert!(since.is_empty());
+        // No secrets stored anywhere (the primary has no head): nothing to lack.
+        let mut p = node("p", "primary", true);
+        p.secrets = Some(ClusterSecrets::default());
+        let v3 = view(vec![p, node("b", "replica", false)]);
+        assert!(secret_reasons(&v3, &mut since, later).is_empty());
     }
 }

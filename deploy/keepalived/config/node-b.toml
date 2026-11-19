@@ -1,0 +1,25 @@
+# The second TelltaleDNS node behind the keepalived VIP (deploy/keepalived, REQ: CLU-004, CLU-006).
+# Only local settings live here: [node], the listeners, the API and this node's cluster identity.
+# It joins node a's cluster with a token (e2e.sh does this; README.md). Once joined, the shared
+# settings (upstreams, records, [dns]) come from the primary, so they are left out here: a node that
+# set them would be told they are ignored.
+config_version = 1
+
+[node]
+name = "telltale-b"
+
+[[listen]]
+proto = "udp"
+addr = "0.0.0.0:53"
+
+[[listen]]
+proto = "tcp"
+addr = "0.0.0.0:53"
+
+[api]
+listen = "0.0.0.0:8053"
+
+[cluster]
+name = "keepalived"
+site = "telltale-b"
+listen = "0.0.0.0:8443"

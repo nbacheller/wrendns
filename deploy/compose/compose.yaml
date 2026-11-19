@@ -29,6 +29,12 @@ services:
       - ./data:/var/lib/telltale
     environment:
       TELLTALE_LOG: info
+      # REQ: API-013 (ADR-1000) - this container is on the host network, so its interfaces are the Pi's own
+      # networks (VLANs); without this the Networks page treats it as a bridged container and lists none.
+      TELLTALE_HOST_NETWORK: "1"
+      # REQ: API-902 (T27.13, ADR-956 §4a) - `restart: unless-stopped` starts the container again after
+      # any exit, so the UI may offer "Restart now" (exit status 75).
+      TELLTALE_SUPERVISOR: docker
     healthcheck:
       test: ["CMD", "/usr/local/bin/telltale", "health", "--url", "http://127.0.0.1:8053/readyz"]
       interval: 30s

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// One sample line: labels and value.
 #[derive(Debug, Clone, PartialEq)]
@@ -280,7 +280,7 @@ pub(crate) fn logs_body(lines: &[String], resource: &Value) -> String {
 /// The collector's base URL (no trailing slash), when OTLP export is configured.
 pub(crate) fn endpoint(cfg: &telltale_config::Config) -> Option<String> {
     cfg.telemetry
-        .otlp
+        .otlp_effective()
         .endpoint
         .as_ref()
         .map(|e| e.trim_end_matches('/').to_owned())
@@ -305,12 +305,24 @@ pub(crate) async fn post(
     url: &str,
     cfg: &telltale_config::Config,
     body: String,
+    store: &crate::secrets::SecretStore,
 ) -> Result<(), String> {
     let mut req = http::Request::post(url)
         .header("content-type", "application/json")
         .header("user-agent", "TelltaleDNS");
-    for (k, v) in &cfg.telemetry.otlp.headers {
+    let o = cfg.telemetry.otlp_effective();
+    for (k, v) in &o.headers {
         req = req.header(k.as_str(), v.as_str());
+    }
+    // REQ: OPS-014 (ADR-903 §2) — headers whose values are stored secrets, read per request
+    // (REQ: OBS-006, T23.11: so a rotated secret is sent from the next export on).
+    for (k, name) in &o.header_refs {
+        let v = crate::secrets::Credential::of(None, Some(name))
+            .resolve(Some(store))?
+            .map(|r| r.value);
+        if let Some(v) = v {
+            req = req.header(k.as_str(), v.expose());
+        }
     }
     let req = req.body(body.into_bytes()).map_err(|e| e.to_string())?;
     match tokio::time::timeout(Duration::from_secs(10), client.request(req, 64 * 1024)).await {
@@ -321,28 +333,53 @@ pub(crate) async fn post(
     }
 }
 
-/// The metrics export task.
+/// The metrics export task. REQ: API-016, OBS-006 (T23.11, ADR-984) — it follows the
+/// configuration: an endpoint added, changed or removed (in a file, or made in the UI) applies
+/// without a restart, and the headers are read for every export.
 pub(crate) async fn run(
     sources: Arc<crate::http::Sources>,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) {
-    let cfg = sources.config.load_full();
-    let Some(endpoint) = endpoint(&cfg) else {
-        return;
-    };
     let Some(client) = client() else {
         return;
     };
     let start_ns = crate::pipeline::unix_now().saturating_mul(1_000_000_000);
-    let url = format!("{endpoint}/v1/metrics");
     let mut failing = false;
+    let mut said_pod = false;
     loop {
         let cfg = sources.config.load_full();
-        let interval = Duration::from_secs(u64::from(cfg.telemetry.otlp.interval_secs.max(5)));
+        let o = cfg.telemetry.otlp_effective();
+        let interval = Duration::from_secs(u64::from(o.interval_secs.max(5)));
+        let endpoint = endpoint(&cfg);
+        // A resolver pod holds no stored secrets: an export that needs one isn't made here.
+        let pod_skips = cfg.cluster.ephemeral && !o.header_refs.is_empty();
+        if pod_skips && !said_pod {
+            said_pod = true;
+            info!(
+                "this resolver pod holds no stored secrets: the OTLP export that needs one isn't made here"
+            );
+        }
+        if endpoint.is_none() || pod_skips {
+            tokio::select! {
+                _ = stop.changed() => return,
+                () = sources.otlp_changed.notified() => {}
+            }
+            continue;
+        }
+        drop(o);
         tokio::select! {
             _ = stop.changed() => return,
+            // A change of settings starts the interval over with them.
+            () = sources.otlp_changed.notified() => { failing = false; continue; }
             () = tokio::time::sleep(interval) => {}
         }
+        // One snapshot for the address and the headers: a change that landed during the sleep
+        // is picked up whole, never half (the old address with the new credentials).
+        let cfg = sources.config.load_full();
+        let Some(endpoint) = self::endpoint(&cfg) else {
+            continue;
+        };
+        let url = format!("{}/v1/metrics", endpoint.trim_end_matches('/'));
         let text = crate::http::render(&sources);
         let now_ns = crate::pipeline::unix_now().saturating_mul(1_000_000_000);
         let body = metrics_body(
@@ -352,7 +389,7 @@ pub(crate) async fn run(
             now_ns,
         )
         .to_string();
-        match post(&client, &url, &cfg, body).await {
+        match post(&client, &url, &cfg, body, &sources.secrets).await {
             Ok(()) => {
                 if failing {
                     debug!("OTLP export: delivered again");

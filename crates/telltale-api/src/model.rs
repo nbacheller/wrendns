@@ -44,13 +44,76 @@ pub struct SystemInfo {
     pub update: UpdateStatus,
     /// REQ: OPS-010 — this node's maintenance window, while it's in maintenance.
     pub maintenance: Option<NodeMaintenance>,
+    /// REQ: UPS-013 (T24.31, ADR-997) — this node's own interface addresses (loopback and
+    /// link-local left out), which an upstream's `source` can name. They differ per node.
+    pub addresses: Vec<NodeAddress>,
+}
+
+/// One address this node holds, for the Upstreams form's `source` suggestions.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeAddress {
+    /// The interface (`eth0`, `eth0.100`).
+    pub interface: String,
+    /// `198.51.100.252`
+    pub address: String,
+    /// The network it is in, which a shared upstream can name instead: `198.51.100.0/24`.
+    pub network: String,
+}
+
+/// REQ: UPS-004 (T24.36) — one address a public resolver answers on.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamPresetEndpoint {
+    /// `tls://1.1.1.1`, `udp://[2606:4700:4700::1111]`, `https://cloudflare-dns.com/dns-query`.
+    pub url: String,
+    /// `udp`, `tcp`, `tls`, `https` or `quic`.
+    pub protocol: String,
+    /// `v4` or `v6` for an address, `name` for a host name (which resolves to either).
+    pub family: String,
+    /// The name on the server certificate, for a `tls://` address given by IP.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_server_name: Option<String>,
+}
+
+/// REQ: UPS-004 (T24.36) — a public resolver variant the simple picker offers.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamPreset {
+    pub id: String,
+    pub name: String,
+    /// The heading it is listed under (`Cloudflare`).
+    pub provider: String,
+    /// The choice under the heading (`Malware`).
+    pub variant: String,
+    /// One line: what it filters and what it does with your queries.
+    pub note: String,
+    pub homepage: String,
+    /// `none`, `malware`, `family` or `ads`.
+    pub filtering: String,
+    pub dnssec: bool,
+    /// Offered in the simple view (false: it needs a parameter, or is for the Advanced view).
+    pub simple: bool,
+    /// Placeholders in its addresses (a NextDNS profile); empty for every simple preset.
+    pub params: Vec<String>,
+    pub endpoints: Vec<UpstreamPresetEndpoint>,
+}
+
+/// REQ: UPS-004 (T24.36) — the catalog, and what this node can reach.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamPresets {
+    /// Whether this node has a usable IPv6 default route: without one, an IPv6 upstream only
+    /// times out. Unknown (another OS) reads true.
+    pub ipv6_route: bool,
+    pub items: Vec<UpstreamPreset>,
 }
 
 /// The build identity (REQ: OPS-004, ADR-046): the same on every architecture of one commit.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildInfo {
-    /// `0.1.0` (release), `0.1.0-edge.47` (main build), or `dev` (local build).
+    /// `0.1.0` (release), `0.1.0-edge.47` (main build), or `0.1.0-dev` (local build, read by peers as 0.1.0).
     pub version: String,
     /// Short commit SHA.
     pub commit: String,
@@ -493,14 +556,31 @@ pub struct QueryParams {
     #[serde(rename = "match")]
     #[param(rename = "match")]
     pub name_match: Option<NameMatch>,
-    /// Client IP address.
+    /// REQ: OBS-003 (ADR-171) — keep the rows whose name does NOT match `name` and `match`:
+    /// does not contain, is not, is not under, doesn't match the wildcard or the regex. Needs
+    /// `name`. Default: false.
+    pub name_not: Option<bool>,
+    /// Client IP address, or several, comma-separated (REQ: OBS-003, ADR-1013): addresses,
+    /// `hostname:<label>` (the addresses a router gave that name now) and Kubernetes workloads
+    /// (`namespace/kind/name`). At most 100 entries and 256 addresses; `clientTruncated` says
+    /// when a cap cut the set.
     pub client: Option<String>,
+    /// Keep the rows from every client except `client` (all of them, when several). Needs `client`. Default: false.
+    pub client_not: Option<bool>,
     /// Statuses, comma-separated (`blocked,forwarded`).
     pub status: Option<String>,
+    /// Keep the rows whose status is none of `status` (`status=blocked&statusNot=true`: every
+    /// query that was not blocked). Needs `status`. Default: false.
+    pub status_not: Option<bool>,
     /// Query types, comma-separated (`A,AAAA`).
     pub qtype: Option<String>,
+    /// Keep the rows whose type is none of `qtype`. Needs `qtype`. Default: false.
+    pub qtype_not: Option<bool>,
     /// Response codes, comma-separated (`NXDOMAIN,SERVFAIL`).
     pub rcode: Option<String>,
+    /// Keep the rows whose response code is none of `rcode` (queries that got no response code
+    /// are kept). Needs `rcode`. Default: false.
+    pub rcode_not: Option<bool>,
     /// Upstream ID (from `/upstreams`): the forwarded queries it answered. Coalesced queries
     /// name the upstream that answered for all of them.
     pub upstream: Option<u16>,
@@ -522,6 +602,22 @@ pub struct QueryParams {
     /// REQ: OBS-017 (ADR-110) — the query a trace ID names (32 hex digits, from an exemplar
     /// on `/metrics` or an exported trace). Replaces `from` and `to`.
     pub trace: Option<String>,
+}
+
+impl QueryParams {
+    /// REQ: OBS-003 (ADR-171) — whether any filter is negated. A negated search goes to peers
+    /// as a read that an older node doesn't know (it would ignore the flags and answer rows
+    /// that were not negated).
+    pub fn negates(&self) -> bool {
+        [
+            self.name_not,
+            self.client_not,
+            self.status_not,
+            self.qtype_not,
+            self.rcode_not,
+        ]
+        .contains(&Some(true))
+    }
 }
 
 /// One logged query.
@@ -612,6 +708,12 @@ pub struct Explanation {
     pub client: ExplainClient,
     /// `refused`, `special`, `local`, `blocked`, `allowed`, or `resolved`.
     pub outcome: String,
+    /// REQ: DNS-019 (T24.12, ADR-914) — for `special`, the special-name rule that answered:
+    /// `private_relay`, `single_label`, `resolver_arpa`, `ddr`, `firefox_canary`, `private_ptr`,
+    /// `chaos`, or `localhost`. A rule's name, not a field of `[special]`: the UI maps it to the
+    /// switch that controls it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub special: Option<String>,
     /// One sentence for people.
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -637,8 +739,20 @@ pub struct ExplainClient {
     /// The configured device it was recognized as.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
-    /// `client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `ip`, `cidr`, or `default`.
+    /// `client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `router_name`, `ip`, `cidr`, or `default`.
     pub identified_by: String,
+    /// REQ: FLT-006, API-010 (T24.30, ADR-996) — the key it matched on, written as a
+    /// `[[client]] match` is (`id:kids`, a MAC, an address, a network, `hostname:tv`), or the
+    /// workload's name. Absent for the `default` group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_key: Option<String>,
+    /// The group whose settings apply (the first of `groups`).
+    pub group: String,
+    /// Where that group came from: `device`, `network`, `router_name`, `kubernetes`, `default`.
+    pub group_from: String,
+    /// The network or router name that gave the group, when it isn't the device's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_key: Option<String>,
     /// Highest priority first.
     pub groups: Vec<String>,
     /// REQ: FLT-017 — the Kubernetes workload a pod address belongs to.
@@ -662,6 +776,10 @@ pub struct ExplainWorkload {
 #[serde(rename_all = "camelCase")]
 pub struct ExplainBlock {
     pub list: String,
+    /// REQ: FLT-901 — the category (or categories) a `cat-` list stands for, for example "Adult
+    /// content"; absent for any other list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
     /// `null_ip`, `nxdomain`, `nodata`, `refused`, or `custom_ip`.
     pub mode: String,
     pub ttl_seconds: u32,
@@ -719,7 +837,7 @@ pub struct ExplainRoute {
 }
 
 /// A filter list and its download state.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ListInfo {
     pub name: String,
@@ -744,18 +862,90 @@ pub struct ListInfo {
     /// REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot
     /// leaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.
     pub regex_skipped: u64,
-    /// Queries it blocked (or allowed, for an allow list) on this node since it started.
+    /// Queries it blocked (or allowed, for an allow list) since each node started; in a
+    /// cluster, every node's added up.
     pub hits: u64,
     /// Lists it shares names with, most shared first.
     pub overlap: Vec<ListShare>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// REQ: FLT-004 (T24.28, ADR-992) - modifier rules and regexes it ships. The overlap counts
+    /// names only, so these are never shown covered by another list.
+    #[serde(default)]
+    pub rules: u64,
+    /// Last download attempt (Unix seconds), whatever its outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_checked_unix_seconds: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// REQ: FLT-004 — last time the source was confirmed current: a download, a `304 Not
+    /// Modified`, or the same content again (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_success_unix_seconds: Option<u64>,
+    /// Last time the content changed (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_changed_unix_seconds: Option<u64>,
+    /// REQ: FLT-004 — a refresh asked for (`POST /api/v1/lists/refresh`) is waiting to start
+    /// or downloading this list now (also true during a scheduled download). It clears when
+    /// the download ends; the snapshot follows within seconds if the content changed.
+    #[serde(default)]
+    pub refreshing: bool,
     /// REQ: OBS-023 — days since a URL list's content last changed, when that's longer than its
     /// `stale_after_days`: the source may be abandoned while still answering.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale_days: Option<u64>,
+    /// REQ: FLT-901 (T24.29) — the categories that use this list. A list with owners is a category
+    /// list: it takes its source from the catalog and can be refreshed and put in shadow mode, not
+    /// edited or deleted (409 `owned_by_category`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owners: Vec<ListOwner>,
+}
+
+/// REQ: FLT-901 — a category that uses a list.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListOwner {
+    /// The category's ID (`adult`).
+    pub id: String,
+    /// Its name (`Adult content`).
+    pub name: String,
+}
+
+/// REQ: FLT-004 — which lists to download again now (`POST /api/v1/lists/refresh`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListsRefreshRequest {
+    /// Only these lists, by name (as `GET /api/v1/lists` lists them). Absent or empty: every
+    /// enabled list.
+    #[schema(example = json!(["hagezi-pro"]))]
+    #[serde(default)]
+    pub names: Option<Vec<String>>,
+}
+
+/// A named list a refresh leaves out.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListRefreshSkip {
+    pub name: String,
+    /// `disabled` (the list is off: it's never downloaded until it's turned on).
+    pub reason: String,
+}
+
+/// REQ: FLT-004 — what a refresh queued (`202 Accepted`), or with `dryRun`, would queue.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListsRefreshResult {
+    /// True when nothing was queued (`?dryRun=true`): `queued` is what would be.
+    pub dry_run: bool,
+    /// The lists queued for download now (or that would be), in configuration order.
+    pub queued: Vec<String>,
+    /// Named lists left out, and why.
+    pub skipped: Vec<ListRefreshSkip>,
+    /// Of `queued`, the lists downloading already: each is downloaded once more when that
+    /// download ends.
+    pub already_refreshing: Vec<String>,
+    /// The node that downloads and compiles the lists: this one, or (on a cluster replica) the
+    /// primary the request was forwarded to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// What happens next, in a sentence.
+    pub note: String,
 }
 
 /// A client group.
@@ -811,6 +1001,19 @@ pub struct GroupInfo {
     /// or wherever `[[route]]` entries send them).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upstreams: Option<String>,
+    /// REQ: FLT-902 (T24.29) — what the group filters by category (absent: nothing set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<crate::categories_api::GroupContentInfo>,
+    /// REQ: FLT-902 — the engines safe search covers (empty with `safeSearch`: every engine).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub safe_search_engines: Vec<String>,
+    /// REQ: FLT-902 — who the group applies to: its networks, router names and devices, for the
+    /// profile list's Source column.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<crate::categories_api::ProfileSource>,
+    /// REQ: FLT-902 — "Off", "Basic", "Enhanced (3 of 21)" and "Ad block", for the Filter Scope column.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub filter_scope: String,
 }
 
 /// A group's rewrite: `domain` (or `*.domain`) answered with `answer`.
@@ -840,6 +1043,46 @@ pub struct ZoneInfo {
     pub file: Option<String>,
     /// TTL of its NXDOMAIN and no-data answers.
     pub negative_ttl_seconds: u32,
+    /// REQ: DNS-010 (T27.7) — `file` (read-only here) or `api` (made in the UI or API).
+    pub source: String,
+    /// REQ: DNS-010 (T27.7) — an API zone's records, to edit them; empty for a file zone (its
+    /// records are read-only here, and only the count shows).
+    pub values: Vec<ZoneRecordInput>,
+}
+
+/// REQ: DNS-010 (T27.7) — one record of an API zone: the owner name, its type and value, and
+/// an optional TTL.
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ZoneRecordInput {
+    #[schema(example = "printer.home.example.com")]
+    pub name: String,
+    /// `A`, `AAAA`, `CNAME`, `PTR`, `TXT`, `MX` or `SRV`.
+    #[serde(rename = "type")]
+    #[schema(example = "A")]
+    pub rtype: String,
+    #[schema(example = "192.168.1.20")]
+    pub value: String,
+    /// TTL in seconds (default: `[local] default_ttl`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<u32>,
+}
+
+/// REQ: DNS-010 (T27.7) — an authoritative zone made through the API or UI
+/// (`PUT /api/v1/zones/{name}`). The zone file is set in the configuration file (guarded, T27.17),
+/// so a body that names one is refused.
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ZoneInput {
+    /// Groups that see the zone (split horizon); empty: everyone.
+    #[serde(default)]
+    pub groups: Vec<String>,
+    /// TTL of its NXDOMAIN and no-data answers (default 300).
+    #[serde(default)]
+    pub negative_ttl_seconds: Option<u32>,
+    /// The zone's records: names under the zone.
+    #[serde(default)]
+    pub records: Vec<ZoneRecordInput>,
 }
 
 /// REQ: FLT-012 (T7.9) — a blockable service.
@@ -1061,6 +1304,17 @@ pub struct UpstreamInfo {
     pub failures_by_kind: FailureKinds,
     /// Smoothed answer time.
     pub latency_ewma_ms: f64,
+    /// REQ: UPS-006 — why this node can't reach it, when it can say: `this node has no IPv6
+    /// route` (or IPv4). Checked at start and every 30 s with a `connect()` that sends nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_problem: Option<String>,
+    /// REQ: UPS-013 (T24.31, ADR-997) — the local address its sockets are bound to, when the
+    /// upstream sets a `source`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// REQ: UPS-013 — set while this node no longer holds that address: its queries fail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_problem: Option<String>,
 }
 
 /// Failed attempts by kind (their sum is `failures`).
@@ -1104,14 +1358,24 @@ pub struct TailParams {
     #[serde(rename = "match")]
     #[param(rename = "match")]
     pub name_match: Option<NameMatch>,
-    /// Client IP address.
+    /// REQ: OBS-003 (ADR-171) — only queries whose name does NOT match `name` and `match`.
+    /// Needs `name`. Default: false.
+    pub name_not: Option<bool>,
+    /// Client IP address, or several, comma-separated (addresses, `hostname:<label>` and
+    /// Kubernetes workloads; REQ: OBS-003, ADR-1013).
     pub client: Option<String>,
+    /// Only queries from every client except `client` (all of them, when several). Needs `client`. Default: false.
+    pub client_not: Option<bool>,
     /// The client's group (its highest-priority group).
     pub group: Option<String>,
     /// Statuses, comma-separated (`blocked,forwarded`).
     pub status: Option<String>,
+    /// Only queries whose status is none of `status`. Needs `status`. Default: false.
+    pub status_not: Option<bool>,
     /// Query types, comma-separated (`A,AAAA`).
     pub qtype: Option<String>,
+    /// Only queries whose type is none of `qtype`. Needs `qtype`. Default: false.
+    pub qtype_not: Option<bool>,
     /// Upstream ID (from `GET /upstreams`).
     pub upstream: Option<u16>,
     /// Only queries that took at least this long.
@@ -1122,6 +1386,19 @@ pub struct TailParams {
     /// `cluster` (default: every reachable node's queries, each row naming its node),
     /// `site:<name>`, `node:<id or site>`, or `node:local` (this node only).
     pub scope: Option<String>,
+}
+
+impl TailParams {
+    /// REQ: OBS-003 (ADR-171) — whether any filter is negated (see [`QueryParams::negates`]).
+    pub fn negates(&self) -> bool {
+        [
+            self.name_not,
+            self.client_not,
+            self.status_not,
+            self.qtype_not,
+        ]
+        .contains(&Some(true))
+    }
 }
 
 /// Sent as an SSE `dropped` event when matching queries weren't delivered.
@@ -1193,6 +1470,244 @@ pub struct AlertDelivery {
     pub error: Option<String>,
 }
 
+/// REQ: DSC-014 (T25.3, ADR-908) — the network inventory's status: whether it runs on this node,
+/// and each discovery worker process. Health reasons for the workers never mark DNS unhealthy.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryStatus {
+    /// `[discovery] enabled`.
+    pub enabled: bool,
+    /// Whether this node is the designated one (it runs the inventory and its workers).
+    pub designated: bool,
+    /// The designated node's name, when `[discovery] node` is set.
+    pub node: Option<String>,
+    /// The worker processes this node runs (none unless enabled and designated).
+    pub workers: Vec<DiscoveryWorker>,
+    /// REQ: DSC-004, DSC-014 (T25.6) — each `[[discovery.snmp_agent]]` the poller runs on this
+    /// node: its last poll, its tables and its capability record.
+    #[serde(default)]
+    pub agents: Vec<DiscoveryAgent>,
+    /// REQ: DSC-009 (T25.10, ADR-912) - the last result of each extra UniFi and Home Assistant
+    /// read: which ones work, and which the console refused. Empty unless one is on.
+    pub reads: Vec<DiscoveryRead>,
+}
+
+/// REQ: DSC-004, DSC-014 (T25.6, ADR-908) — one SNMP agent as the poller sees it. Everything that
+/// came from the device (names, the sysObjectID) is device-supplied text, cut and cleaned.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryAgent {
+    /// The agent's name, as `[[discovery.snmp_agent]]` gives it.
+    #[schema(example = "gateway")]
+    pub name: String,
+    /// The address it is polled at (RFC 1918 only).
+    #[schema(example = "192.0.2.1")]
+    pub address: String,
+    /// The credential it uses (by name; the secret is never shown).
+    pub credential: String,
+    /// Seconds between polls.
+    pub interval_secs: u32,
+    /// `waiting` (no poll yet), `ok`, `error` (the last poll failed), `failing` (three polls in a
+    /// row failed) or `skipped` (its credential can't be read, or its address is refused).
+    pub state: String,
+    /// When the last poll ended (Unix seconds).
+    pub last_poll_unix: Option<u64>,
+    /// When a poll last succeeded (Unix seconds).
+    pub last_success_unix: Option<u64>,
+    /// How long the last poll took, in milliseconds.
+    pub last_duration_ms: Option<u64>,
+    /// Why the last poll failed, in words. Carries no address, credential or reply byte.
+    pub last_error: Option<String>,
+    /// Polls that failed in a row.
+    pub consecutive_failures: u32,
+    /// Polls made since start.
+    pub polls: u64,
+    /// Polls that failed since start.
+    pub failures: u64,
+    /// SNMP requests the last poll sent.
+    pub last_requests: Option<u32>,
+    /// Exchanges of the last poll that timed out.
+    pub last_timeouts: Option<u32>,
+    /// One entry per configured table.
+    pub tables: Vec<DiscoveryAgentTable>,
+    /// What the agent answered when it was last probed (the first poll, or **Test**). Never
+    /// assumed: a table that did not answer is skipped until the next test.
+    pub capability: Option<AgentCapability>,
+    /// What the last poll's rows meant.
+    pub last_counts: Option<DiscoveryAgentCounts>,
+    /// When **Test** last ran for this agent (Unix seconds); a new test waits 60 s after it.
+    pub last_test_unix: Option<u64>,
+}
+
+/// REQ: DSC-004 — a configured table of an agent and what is known of it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryAgentTable {
+    /// `arp`, `ifmib`, `bridge` or `lldp`.
+    pub table: String,
+    /// `unprobed`, `answered`, or `unanswered` (skipped until the next test).
+    pub state: String,
+    /// The rows the last poll read from the table, over every part and column.
+    pub rows: Option<u32>,
+    /// Why the last walk of the table ended: `end`, `row_cap`, `time_cap`, `byte_cap`, `error` or `skipped`.
+    pub stop: Option<String>,
+    /// The last error of the table, in words.
+    pub error: Option<String>,
+}
+
+/// REQ: DSC-004 (ADR-908 "Capability record") — what an agent answered when it was probed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCapability {
+    /// When it was probed (Unix seconds).
+    pub probed_unix: u64,
+    /// The security level reached: `v2c`, `authNoPriv` or `authPriv`.
+    pub level: String,
+    /// The v3 engine ID, in hex.
+    pub engine_id: Option<String>,
+    /// sysObjectID, when the agent answered it (device-supplied).
+    pub sys_object_id: Option<String>,
+    /// One entry per part of every configured table.
+    pub parts: Vec<AgentCapabilityPart>,
+}
+
+/// REQ: DSC-004 — one part of a table group and the MIB table that answered it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCapabilityPart {
+    /// `arp`, `ifmib`, `bridge` or `lldp`.
+    pub table: String,
+    /// The part: `arp`, `interfaces`, `addresses`, `forwarding`, `ports`, `vlans`, `neighbours`
+    /// or `local_ports`.
+    pub part: String,
+    /// The MIB table that answered (`ipNetToPhysicalTable`, `ipNetToMediaTable`, ...); none when
+    /// no alternative did.
+    pub source: Option<String>,
+}
+
+/// REQ: DSC-004, DSC-014 — what the last poll's rows meant.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryAgentCounts {
+    /// ARP entries merged into the inventory.
+    pub arp_merged: u32,
+    /// ARP entries outside every `[[discovery.subnet]]` (or naming no host).
+    pub arp_outside_subnets: u32,
+    /// IPv6 entries counted and left out (M25 is IPv4 only).
+    pub ipv6_ignored: u32,
+    /// The agent's own addresses merged.
+    pub own_merged: u32,
+    /// Forwarding entries that gave a device a port and a VLAN.
+    pub fdb_located: u32,
+    /// Forwarding entries left out because they were learned on an uplink or trunk port.
+    pub fdb_uplink: u32,
+    /// Ports counted as uplinks (more than 8 learned MACs, or a listed agent or UniFi device as
+    /// the LLDP neighbour).
+    pub uplink_ports: u32,
+    /// LLDP neighbours merged.
+    pub lldp_merged: u32,
+}
+
+/// REQ: DSC-004 (T25.6, ADR-908, ADR-1002) — `POST /api/v1/discovery/snmp/test`: the agent to
+/// test, by name. No address is ever accepted (ADR-907).
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnmpTestRequest {
+    /// The agent's name, from `[[discovery.snmp_agent]]` (`GET /api/v1/discovery/status` lists them).
+    #[schema(example = "gateway")]
+    pub agent: String,
+}
+
+/// REQ: DSC-004 — one table root a test would query (or did).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SnmpTestOid {
+    /// `arp`, `ifmib`, `bridge` or `lldp`.
+    pub table: String,
+    /// The part of the table group.
+    pub part: String,
+    /// The MIB table (an alternative; the first that answers is used).
+    pub alternative: String,
+    /// The OID the probe's one GETNEXT starts from.
+    pub probe_oid: String,
+    /// The column OIDs a poll walks when this alternative answers.
+    pub columns: Vec<String>,
+}
+
+/// REQ: DSC-004 — the answer of **Test** (`POST /api/v1/discovery/snmp/test`).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SnmpTestResult {
+    /// The agent tested.
+    pub agent: String,
+    /// True when no packet was sent (`?dryRun=true`): `oids` is what a test would query.
+    pub dry_run: bool,
+    /// Whether the agent answered (a dry run is always `true`).
+    pub ok: bool,
+    /// The OIDs a test queries: one GETNEXT on each probe root, one GET of sysObjectID.
+    pub oids: Vec<SnmpTestOid>,
+    /// What the agent answered (not for a dry run, or a test that failed).
+    pub capability: Option<AgentCapability>,
+    /// Why the test failed, in words.
+    pub error: Option<String>,
+    /// How long the test took, in milliseconds.
+    pub duration_ms: Option<u64>,
+    /// The node that ran the test (the designated node, which may not be the one asked).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// What happens next, in a sentence.
+    pub note: String,
+}
+
+/// REQ: DSC-009 (T25.10, ADR-912) - one extra read of one router, as the inventory thread last saw
+/// it. Read-only: nothing here changes a console.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryRead {
+    /// The `[[router]]` read.
+    #[schema(example = "udm")]
+    pub router: String,
+    /// `client_fields`, `all_users`, `devices` or `home_assistant_all_devices`.
+    #[schema(example = "all_users")]
+    pub read: String,
+    /// `ok`, `refused` (the console answered 401 or 403) or `failed`.
+    #[schema(example = "ok")]
+    pub state: String,
+    /// Rows used.
+    pub rows: u32,
+    /// More rows were offered than the 8,192 cap; the rest were left out.
+    pub truncated: bool,
+    /// Why a read did not work, in words (no credential in it).
+    pub error: Option<String>,
+    /// When the result was recorded (Unix seconds).
+    pub at: Option<u64>,
+}
+
+/// REQ: DSC-002 (T25.3, ADR-908) — one discovery worker process, as the supervisor sees it.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryWorker {
+    /// `snmp` (the SNMP poller) or `import` (the scan-import parser, short-lived).
+    #[schema(example = "snmp")]
+    pub worker: String,
+    /// Running, with a handshake that matched.
+    pub up: bool,
+    /// Times the worker has been restarted since start.
+    pub restarts: u64,
+    /// The worker's build differs from this node's: it is refused (`discovery_worker_version_mismatch`).
+    pub version_mismatch: bool,
+    /// Three or more crashes in ten minutes: restarts are slowed (`discovery_worker_failing`).
+    pub failing: bool,
+    /// The last failure, in words (the stderr line is logged, rate-limited).
+    pub last_error: Option<String>,
+    /// The worker's `RLIMIT_DATA` in MiB, as it reported it at the handshake.
+    pub data_limit_mib: Option<u64>,
+    /// Whether the worker reported it isn't dumpable (no core dumps, no /proc reads by others).
+    pub dumpable: Option<bool>,
+    /// The worker's `oom_score_adj`, as it reported it.
+    pub oom_score_adj: Option<i32>,
+}
+
 /// REQ: OBS-010 (T9.6) — alerts now: what fires, and how deliveries went.
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -1237,6 +1752,9 @@ pub struct RecordInput {
     /// TTL in seconds (default: `[local] default_ttl`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl: Option<u32>,
+    /// REQ: CLU-006 (T27.7) — keep this record on this node only (a cluster doesn't share it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub node_only: bool,
 }
 
 /// A local name's records (`PUT /api/v1/records/{name}`).
@@ -1270,6 +1788,23 @@ pub struct ForwardInput {
     /// followed, instead of forwarding with recursion desired. Default `false`.
     #[serde(default)]
     pub stub: bool,
+    /// REQ: DNS-010 (T27.7) — only these client groups are sent (empty: every client).
+    #[serde(default)]
+    pub match_group: Vec<String>,
+    /// REQ: DNS-010 (T27.7) — only these query types are sent, e.g. `["PTR"]` (empty: all).
+    #[serde(default)]
+    pub match_qtype: Vec<String>,
+    /// REQ: DNS-010 (T27.7) — add a DNSSEC negative trust anchor for the domain (default `true`:
+    /// local zones are usually unsigned).
+    #[serde(default = "default_true")]
+    pub dnssec_nta: bool,
+    /// REQ: CLU-006 (T27.7) — keep this route on this node only.
+    #[serde(default)]
+    pub node_only: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// REQ: DNS-006 (T6.13) — one node's cache counters.
@@ -1470,9 +2005,38 @@ pub struct ConfigEntry {
     /// the files' entry of that name), or `hidden` (the files' entry is left out).
     pub source: String,
     /// The definition in effect, with the same fields as in `telltale.toml` (absent when
-    /// hidden).
+    /// hidden). Credentials read `<redacted>` (API-014).
     #[schema(value_type = Option<Object>)]
     pub definition: Option<serde_json::Value>,
+    /// REQ: API-014 — the fields of `definition` that hold a credential and read `<redacted>`
+    /// (`headers.Authorization`, `args[1]`, `url` for a URL's password). Send them back as they
+    /// are to keep the values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redacted: Vec<String>,
+    /// REQ: API-014 (T23.2, ADR-903 §4) — paths this entry sets through the UI or API that the
+    /// path rules refuse (under `/proc` or the data directory, a key file, a credential file
+    /// outside `[node] secret_file_dirs`): they aren't read until an admin sets another.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_issues: Vec<CredentialIssue>,
+    /// REQ: DNS-019, DNS-023 (ADR-914) — the fields of a shared settings section (`special`,
+    /// `local`, `clients`) that the config files set: the API can't change them, and the UI
+    /// shows them as "set by file".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub set_by_file: Vec<String>,
+    /// REQ: DNS-023 (T24.13) — how many names this entry answers right now (the device names
+    /// for `local`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answering: Option<u64>,
+}
+
+/// REQ: API-014 (T23.2) — a stored path that isn't read, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialIssue {
+    /// The entry's field (`token_file`, `tls_ca`, `path`).
+    pub field: String,
+    /// Why it isn't read.
+    pub reason: String,
 }
 
 /// `GET /api/v1/config/entries` parameters.
@@ -1645,6 +2209,14 @@ pub struct ForwardInfo {
     pub stub: bool,
     /// `file` (read-only here) or `api`.
     pub source: String,
+    /// REQ: DNS-010 (T27.7) — the client groups the route applies to (empty: every client).
+    pub match_group: Vec<String>,
+    /// REQ: DNS-010 (T27.7) — the query types the route applies to (empty: all).
+    pub match_qtype: Vec<String>,
+    /// REQ: DNS-010 (T27.7) — a DNSSEC negative trust anchor is added for the domain.
+    pub dnssec_nta: bool,
+    /// REQ: CLU-006 (T27.7) — this route stays on this node.
+    pub node_only: bool,
 }
 
 /// What a change to local names or forwarded domains did (or would do, with `dryRun`).
@@ -1791,7 +2363,7 @@ pub struct SimulateRequest {
 }
 
 /// A device named by a router's DHCP or by mDNS (REQ: API-010; T8.2, T8.3).
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DhcpLease {
     pub mac: String,
@@ -1807,6 +2379,69 @@ pub struct DhcpLease {
     /// `router` (read from a `[[router]]`) or `mdns` (the name the device announces,
     /// `[clients] mdns`; no MAC).
     pub source: String,
+    /// REQ: API-012 (T22.3) — the `[[router]]` whose answer named it (`udm`,
+    /// `home-assistant`); absent for mDNS.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub router: Option<String>,
+    /// REQ: DNS-023 (T22.1) — the name it answers as in DNS (`kitchen-tablet.home.arpa`),
+    /// with `[local] device_domain` set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dns_name: Option<String>,
+    /// REQ: T8.2 (ADR-166, ADR-942) — a client the router remembers but doesn't see now (UniFi's
+    /// offline clients). It is listed so the admin can see it, but it names no DNS name, gives
+    /// no discovery binding and isn't counted in a network's devices.
+    pub offline: bool,
+    /// REQ: DNS-023 (T24.8, ADR-983) — the IPv6 addresses the router reports for the device
+    /// (global and unique-local, never link-local), up to 4. With `[local] device_domain` set,
+    /// each answers AAAA and an `ip6.arpa` PTR under `dnsName`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ipv6: Vec<String>,
+}
+
+/// REQ: API-013 (T22.2) — a network: a LAN or VLAN a router reported, or a client group's
+/// network that no router reported, with how many known devices are in it.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkInfo {
+    #[schema(example = "IoT")]
+    pub name: String,
+    /// The network in CIDR form.
+    #[schema(example = "192.168.20.0/24")]
+    pub subnet: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vlan: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
+    /// The DHCP pool, when the router serves DHCP on it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dhcp_start: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dhcp_end: Option<String>,
+    /// The domain the router hands out on it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    /// The router's own word for it (UniFi: `corporate`, `guest`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+    /// `router` (a `[[router]]` reported it), `interface` (this node is directly on it, for example
+    /// on a tagged VLAN interface; it is named after the interface) or `group` (only a
+    /// `[[group]] networks` entry).
+    pub source: String,
+    /// The `[[router]]` that reported it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub router: Option<String>,
+    /// The client group whose networks hold it (most specific), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Host addresses in it (without the network and broadcast addresses).
+    pub addresses: u64,
+    /// Devices known in it: the routers' DHCP clients, Home Assistant's devices, and mDNS
+    /// names.
+    pub devices: u64,
+    /// `devices` as a share of `addresses`, 0–100.
+    pub used_percent: f64,
+    /// Of `devices`, those outside the DHCP pool (fixed addresses and reservations).
+    pub outside_pool: u64,
 }
 
 /// Names a list shares with another (OBS-009).
@@ -1815,6 +2450,131 @@ pub struct DhcpLease {
 pub struct ListShare {
     pub list: String,
     pub names: u64,
+}
+
+/// REQ: FLT-004 (T24.28, ADR-992) - names a list shares with another list that does the same
+/// thing, as a share of this list's own entries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListCover {
+    /// The other list.
+    pub list: String,
+    /// Names both have.
+    pub names: u64,
+    /// `names` as a share of this list's entries, 0-100.
+    pub percent: f64,
+}
+
+/// REQ: FLT-004 (T24.28, ADR-992) - one enabled list's overlap with the others.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListOverlapRow {
+    pub name: String,
+    /// `block` or `allow`.
+    pub kind: String,
+    /// `enforce` or `shadow`.
+    pub mode: String,
+    /// Entries in the active snapshot (names, regexes and modifier rules).
+    pub entries: u64,
+    /// Names no other list of its kind has: what turning it off would lose.
+    pub unique: u64,
+    /// Modifier rules and regexes: counted as unique, since overlap is by name.
+    pub rules: u64,
+    /// `(unique + rules)` as a share of `entries`, 0-100: what this list adds. 0 when it has
+    /// no entries compiled yet.
+    pub adds_percent: f64,
+    /// The lists it shares names with, most shared first (at most 5).
+    pub covered_by: Vec<ListCover>,
+    /// Groups that name this list in their own `lists` (a list they use by name is never
+    /// proposed for turning off).
+    pub groups: Vec<String>,
+}
+
+/// A list a prune would turn off.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPruneCandidate {
+    pub name: String,
+    pub entries: u64,
+    pub unique: u64,
+    /// What it adds as a share of its entries (the same number as in the overlap).
+    pub adds_percent: f64,
+    /// The most names turning it off, together with the others in this plan, could stop
+    /// blocking: its own unique names and rules, and names it shares with other lists in the
+    /// plan (an upper bound: a name another enabled list still has isn't lost).
+    pub loses_at_most: u64,
+    /// Lists that still have most of its names.
+    pub covered_by: Vec<ListCover>,
+}
+
+/// An enabled list a prune keeps, and why.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPruneKept {
+    pub name: String,
+    pub reason: String,
+}
+
+/// REQ: FLT-004 (T24.28, ADR-992) - what a prune would turn off at a threshold.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPrunePlan {
+    /// The threshold used: lists adding at most this share of their own entries.
+    pub threshold_percent: f64,
+    /// Lists that would be turned off, least-adding first.
+    pub candidates: Vec<ListPruneCandidate>,
+    /// Every other enabled list, with the reason it stays.
+    pub kept: Vec<ListPruneKept>,
+    /// An upper bound on the names the whole plan stops blocking (a share of the snapshot is
+    /// `of_names`).
+    pub loses_at_most: u64,
+    /// Names in the active snapshot.
+    pub of_names: u64,
+    /// In a sentence.
+    pub note: String,
+    /// True when the lists changed after the last compile finished (a list turned off or
+    /// edited): what each adds isn't known yet, so nothing is proposed. Preview again.
+    pub compile_pending: bool,
+    /// Version of the compiled snapshot the numbers come from (send it back to apply).
+    pub snapshot_version: u64,
+    /// Configuration version the plan was read at (send it back to apply).
+    pub config_version: u64,
+}
+
+/// `GET /api/v1/lists/overlap` and `GET /api/v1/lists/prune-plan` parameters.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct PruneParams {
+    /// Turn off lists adding at most this share of their entries, 0 to 50 (default 1).
+    #[serde(rename = "thresholdPercent")]
+    pub threshold_percent: Option<f64>,
+}
+
+/// REQ: FLT-004 (T24.28, ADR-992) - `POST /api/v1/lists/prune`.
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListsPruneRequest {
+    /// Lists adding at most this share of their entries, 0 to 50 (default 1).
+    #[serde(default)]
+    pub threshold_percent: Option<f64>,
+    /// The lists the person saw in the preview. Each must still be in the plan, or nothing is
+    /// changed (409).
+    pub names: Vec<String>,
+    /// The preview's `snapshotVersion`: another compile since is a 409.
+    pub snapshot_version: u64,
+    /// The preview's `configVersion`: any configuration change since is a 409.
+    pub config_version: u64,
+}
+
+/// REQ: FLT-004 (T24.28, ADR-992) - what a prune turned off.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListsPruneResult {
+    /// The lists now off. They stay in the configuration: turn one on again in Manage lists.
+    pub disabled: Vec<String>,
+    /// The configuration version after the last change.
+    pub config_version: u64,
+    pub note: String,
 }
 
 /// `GET /analytics/vqlog` parameters (REQ: AGT-012).
@@ -1984,6 +2744,41 @@ pub struct SupportPackageRequest {
     /// Keep the pseudonym map in memory for one download (`GET /system/support-package/{id}/map`).
     #[serde(default)]
     pub keep_map: bool,
+    /// REQ: OPS-011 (ADR-172) — one package for the whole cluster: every reachable node makes and
+    /// redacts its own part under one key made for this package, so a device has the same
+    /// pseudonym on every node and no real name or address leaves the node it is on. Not with
+    /// `keepMap` (the names never leave their nodes, so there is no map). A node that doesn't
+    /// answer, or is older than this feature, is listed in the manifest.
+    #[serde(default)]
+    pub cluster: bool,
+}
+
+/// REQ: OPS-011 (ADR-172) — what a node is asked for when a cluster package is made. It goes over
+/// the cluster channel only (never as an API request body), with the key of this one package.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SupportCollectRequest {
+    /// `strict`, `standard`, or `none`, as in [`SupportPackageRequest`].
+    pub level: Option<String>,
+    pub reveal: Vec<String>,
+    pub query_sample: u32,
+    /// The package's key: 64 hex digits, held in memory for the call and never stored.
+    pub key: String,
+    /// The most bytes of file content this node's part may hold (its share of the cap).
+    pub max_bytes: usize,
+}
+
+// The key is the one secret of the request: whatever prints a read (a debug log, a panic message)
+// must not print it.
+impl std::fmt::Debug for SupportCollectRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SupportCollectRequest")
+            .field("level", &self.level)
+            .field("reveal", &self.reveal.len())
+            .field("query_sample", &self.query_sample)
+            .field("key", &"<hidden>")
+            .field("max_bytes", &self.max_bytes)
+            .finish()
+    }
 }
 
 /// REQ: OBS-014 (ADR-103) — a finding's stable ID: its window start (Unix seconds, 8 hex
@@ -2667,9 +3462,11 @@ pub struct HealthReason {
     /// `degraded` or `severe`.
     pub level: String,
     /// Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,
-    /// `sync_lag`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
+    /// `sync_lag`, `primary_unreachable`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
     /// `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
-    /// `rollout_stuck`.
+    /// `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,
+    /// `discovery_agent_failing`,
+    /// `guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`, `names_in_files`.
     #[schema(example = "upstream_down")]
     pub code: String,
     /// In words, with the numbers.
@@ -2878,6 +3675,24 @@ pub struct ClusterFailover {
     /// The epoch and node this node last voted for.
     pub voted_epoch: u64,
     pub voted_for: Option<String>,
+    /// REQ: CLU-005 (T24.38, ADR-1018) — voters whose link to this node dropped three or more
+    /// times in the last ten minutes while both processes stayed up (a link that comes and goes;
+    /// a restart or an upgrade of either node is not counted). Empty when all are steady.
+    #[serde(default)]
+    pub unstable_voters: Vec<UnstableVoter>,
+}
+
+/// REQ: CLU-005 (T24.38, ADR-1018) — a voter this node reaches only some of the time.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UnstableVoter {
+    pub node_id: String,
+    /// How many times its link dropped within `windowSeconds` (not counting a drop the voter
+    /// came back from as a restarted process).
+    pub drops: u32,
+    pub window_seconds: u64,
+    /// Seconds since the last drop.
+    pub last_drop_seconds_ago: u64,
 }
 
 /// A version an old primary published after a newer primary took over: never applied
@@ -2957,6 +3772,37 @@ pub struct NodeRemoval {
     pub notes: Vec<String>,
 }
 
+/// REQ: CLU-015 (ADR-903 §6) — one member's stored secrets. Stamps are `epoch.seq`; a value is
+/// never here.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterSecrets {
+    /// The newest stamp in its secrets head.
+    pub head: Option<String>,
+    /// The head it has applied from the primary (the primary's own, on the primary).
+    pub applied: Option<String>,
+    /// Its applied head is the primary's head: same stamps and digest.
+    pub in_sync: bool,
+    /// Live secrets it can't read here (encrypted under a key it doesn't have, or damaged).
+    pub unreadable: u32,
+    /// Secrets the primary holds but couldn't decrypt to send: this node keeps its own copy.
+    pub held: u32,
+}
+
+/// REQ: CLU-009 (T24.33, ADR-1011) — a witness's part in the election, as this node sees it. A
+/// witness only votes: it has no configuration, no secrets and no DNS.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterVote {
+    /// Seconds since it last answered a vote request or lease renewal from this node (absent: this
+    /// node hasn't asked it, as in manual failover or on a node that isn't the primary).
+    pub last_reply_seconds_ago: Option<u64>,
+    /// Seconds since it last granted one.
+    pub last_grant_seconds_ago: Option<u64>,
+    /// The epoch it reported in its last reply (the epoch it voted in).
+    pub voted_epoch: Option<u64>,
+}
+
 /// One node in [`ClusterView`].
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 #[allow(clippy::struct_excessive_bools)] // independent flags of one record
@@ -2966,8 +3812,12 @@ pub struct ClusterNode {
     pub site: String,
     /// A Kubernetes resolver pod (CLU-009): dropped when no longer heard from.
     pub ephemeral: bool,
-    /// Votes in automatic failover only (ADR-056).
+    /// Votes in automatic failover only (ADR-056). A witness has no configuration version, no
+    /// secrets and no DNS: `configSeq`, `configLag`, `secrets` and `ready` mean nothing for it
+    /// (REQ: CLU-009, T24.33, ADR-1011), and the checks and alerts about them skip it.
     pub witness: bool,
+    /// REQ: CLU-009 (T24.33) — for a witness: its vote state (absent for other nodes).
+    pub vote: Option<ClusterVote>,
     /// The cluster protocol it speaks (CLU-010); nodes within one version work together.
     pub protocol: u32,
     /// The Git commit of the configuration it serves (ADR-049).
@@ -2978,11 +3828,13 @@ pub struct ClusterNode {
     pub this_node: bool,
     pub eligible: bool,
     pub version: String,
-    /// Heard from within 15 s (always true for this node).
+    /// Heard from within 15 s (always true for this node), by this node or, for a member it has
+    /// no stream to, by a peer that says so (`link` `relayed`).
     pub up: bool,
     /// A stream to it is open (this node: n/a, true).
     pub connected: bool,
-    /// `self`, `inbound` (it connected to this node), or `outbound`.
+    /// `self`, `inbound` (it connected to this node), `outbound`, or `relayed` (no stream: a
+    /// peer reports it up, as the primary does for a replica in manual failover).
     pub link: String,
     pub last_seen_seconds_ago: u64,
     /// Round-trip time over the cluster link.
@@ -2992,6 +3844,10 @@ pub struct ClusterNode {
     pub config_lag: u64,
     /// How long it has been behind (absent when in sync).
     pub behind_seconds: Option<u64>,
+    /// REQ: OBS-010 (T24.5, fork #2) — a replica's time without reaching its primary, in seconds
+    /// (the `primary_unreachable` alert and the health icon read it). Absent when it reaches the
+    /// primary, is the primary, or isn't heard from.
+    pub primary_silent_seconds: Option<u64>,
     /// Serving DNS (listeners bound, not shutting down).
     pub ready: bool,
     /// Queries per second over the last minute, to two decimals (a node one minor version older
@@ -3008,6 +3864,9 @@ pub struct ClusterNode {
     pub config_source: Option<String>,
     /// The machine it runs on (T6.11); absent from older nodes and before the first sample.
     pub host: Option<HostReport>,
+    /// REQ: CLU-015 (ADR-903 §6) — its stored secrets: stamps and counts, never a value. Absent
+    /// from older nodes and from nodes not heard from.
+    pub secrets: Option<ClusterSecrets>,
     /// REQ: CLU-008 (T6.14) — the Kubernetes node and pod it runs in (absent elsewhere and
     /// from older nodes).
     pub kube_node: Option<String>,
@@ -3045,7 +3904,8 @@ pub struct ClusterEvent {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ClusterCheck {
-    /// Stable ID: `peers_up`, `primary_present`, `in_sync`, `sync_errors`, `serving`, `certificate`.
+    /// Stable ID: `peers_up`, `primary_present`, `in_sync`, `sync_errors`, `serving`, `certificate`,
+    /// `failover`, `voter_links` (a voter reached only some of the time, T24.38).
     pub id: String,
     pub ok: bool,
     pub summary: String,
@@ -3478,4 +4338,347 @@ pub struct KubernetesStatus {
     pub source: Option<String>,
     /// Pod addresses left out past the table's cap (20,000).
     pub addresses_dropped: u64,
+}
+
+/// REQ: API-016 (T23.7, ADR-921) — one router integration as the API shows it: its settings
+/// (secrets as names, never values), where it comes from, and what this node's poll of it did.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterEntry {
+    pub name: String,
+    /// `unifi`, `opnsense`, or `home_assistant`.
+    pub kind: String,
+    /// The address, with any password in it removed (API-014).
+    pub url: String,
+    /// `file` (the configuration files define it; read-only here) or `api`.
+    pub source: String,
+    /// The settings in effect: the `[[router]]` fields as JSON, with `*_ref` names.
+    pub definition: serde_json::Value,
+    /// The fields the configuration files set (`api_key_file`, `tls_ca`...), shown as set by file.
+    pub set_by_file: Vec<String>,
+    /// Each credential this entry uses, where it comes from, and whether this node can read it.
+    pub credentials: Vec<RouterCredential>,
+    pub status: RouterStatus,
+}
+
+/// REQ: API-016 (T23.7) — one credential field of a router and where it stands on this node.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterCredential {
+    /// `api_key`, `api_secret`, or `password`.
+    pub field: String,
+    /// `file` (read as it is), `stored` (the encrypted store, by name), or `none`.
+    pub source: String,
+    /// The stored secret's name, when `source` is `stored`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// Whether this node can read it now; `None` when nothing is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readable: Option<bool>,
+    /// Why it can't be used here (named, never valued), when it can't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issue: Option<String>,
+}
+
+/// REQ: API-016 (T23.7) — what this node's poll of a router last did.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterStatus {
+    /// `this node`, `the primary` (a stored credential polls there only), or `skipped` with the
+    /// reason (a resolver pod).
+    pub polled_by: String,
+    /// `waiting` (not read yet), `ok`, `failing` (keeping the last answer), or `skipped`.
+    pub state: String,
+    /// Unix seconds of the last read attempt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_poll: Option<u64>,
+    /// Why the last read failed (the address has no password in it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub devices: u32,
+    pub networks: u32,
+    pub interval_secs: u32,
+    /// REQ: API-016 (T24.41) - the node whose read this status is, when it is not the node that
+    /// answered: a replica shows the primary's state of a router only the primary reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_by: Option<String>,
+}
+
+/// REQ: API-016 (T23.8, ADR-903 §9) — `GET /api/v1/routers`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterList {
+    pub items: Vec<RouterEntry>,
+    /// REQ: API-016 (T24.41) - the primary, when this node reads routers through it and it
+    /// didn't answer (the statuses are this node's own then).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_nodes: Vec<String>,
+}
+
+/// REQ: API-016 (T23.8) — a read-only poll of a router as a draft (`POST /checks/router`).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterCheck {
+    pub ok: bool,
+    pub devices: u32,
+    pub networks: u32,
+    /// Why it failed, with the address's password removed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Whether a stored credential went to the address (it's sent only to the address it was
+    /// saved for; see the check's help).
+    pub credential_sent: bool,
+}
+
+/// REQ: API-016 (T23.8) — a router's certificate as the console presents it
+/// (`POST /checks/router-certificate`).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterCertificate {
+    /// The names it carries (subject and subject alternative names).
+    pub names: Vec<String>,
+    /// SHA-256 of the DER, as colon-separated hex.
+    pub fingerprint_sha256: String,
+    /// The PEM text, ready to paste into `tls_ca_pem`.
+    pub pem: String,
+    /// The name to set as `tls_server_name` when the certificate names something other than the
+    /// address.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested_tls_server_name: Option<String>,
+}
+
+#[cfg(test)]
+mod dhcp_lease_tests {
+    use super::DhcpLease;
+
+    /// REQ: T8.2 (ADR-942) — every lease carries `offline`, true for a client the router only
+    /// remembers and false for a connected one, so a client can show the marker either way.
+    #[test]
+    fn t8_2_dhcp_lease_offline_is_always_serialized() {
+        let lease = |offline| DhcpLease {
+            mac: "02:00:00:00:00:04".into(),
+            ip: "192.168.1.53".into(),
+            hostname: None,
+            client_name: None,
+            expires_unix_seconds: 0,
+            source: "router".into(),
+            router: Some("udm".into()),
+            dns_name: None,
+            offline,
+            ipv6: Vec::new(),
+        };
+        let on = serde_json::to_value(lease(true)).expect("serializes");
+        let off = serde_json::to_value(lease(false)).expect("serializes");
+        assert_eq!(on["offline"], serde_json::json!(true));
+        assert_eq!(off["offline"], serde_json::json!(false));
+    }
+}
+
+/// REQ: API-016 (T23.10, ADR-903 §6, ADR-967) — one OIDC provider as the API shows it: its
+/// settings (the client secret as a name, never a value), where it comes from, and whether this
+/// node serves its sign-in button.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OidcProviderEntry {
+    /// The short ID used in URLs.
+    pub id: String,
+    /// The button label.
+    pub name: String,
+    pub issuer: String,
+    pub client_id: String,
+    /// `file` (the configuration files define it; read-only here) or `api`.
+    pub source: String,
+    pub scopes: Vec<String>,
+    pub username_claim: String,
+    pub groups_claim: String,
+    /// Group to role rules, in order.
+    pub roles: Vec<OidcRoleRuleInfo>,
+    /// The role for people in no mapped group; absent means they can't sign in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_role: Option<String>,
+    pub require_verified_email: bool,
+    /// Where the client secret comes from: `stored` (the encrypted store, by name), `file`,
+    /// `inline` (in the configuration file), or `none` (a public client).
+    pub secret_source: String,
+    /// The stored secret's name, when `secretSource` is `stored`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// Whether this node can read the secret now; absent when none is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_readable: Option<bool>,
+    /// Whether the button works on this node.
+    pub active: bool,
+    /// Why it doesn't (no `public_url` on this node, an unreadable secret), or what went wrong
+    /// the last time the provider was read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The address to register with the provider as the redirect URI; absent without `public_url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redirect_uri: Option<String>,
+}
+
+/// One group to role rule of an OIDC provider.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct OidcRoleRuleInfo {
+    pub group: String,
+    /// `viewer`, `operator` or `admin`.
+    pub role: String,
+}
+
+/// REQ: API-016 (T23.10) — `GET /api/v1/oidc-providers`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OidcProviderList {
+    pub items: Vec<OidcProviderEntry>,
+    /// This node's `[auth.oidc] public_url` (node-local, set in its file); empty when unset, and
+    /// then every provider is inactive here.
+    pub public_url: String,
+}
+
+/// REQ: API-016, OBS-010 (T23.11, ADR-984) — one event sink in the configuration: its settings
+/// (a stored token as a name, never a value), where it comes from, and what this node does with it.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SinkEntry {
+    pub name: String,
+    /// `file`, `syslog` or `webhook`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// `file` (the configuration files define it; read-only here) or `api`.
+    pub source: String,
+    /// Where events go: the file, the syslog address or the webhook URL (a password in it
+    /// removed, API-014).
+    pub location: String,
+    /// The settings in effect: the `[[telemetry.sink]]` fields as JSON, with `token_ref` named.
+    pub definition: serde_json::Value,
+    /// Where the webhook token comes from: `stored` (the encrypted store, by name), `file`, or
+    /// `none`.
+    pub token_source: String,
+    /// The stored secret's name, when `tokenSource` is `stored`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// Whether this node can read the token now; absent when none is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_readable: Option<bool>,
+    /// Whether the sink's thread runs on this node.
+    pub running: bool,
+    /// Why it doesn't (a resolver pod holds no stored secrets; its settings couldn't be used).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Events dropped since this node started (the buffer was full, or a batch was refused).
+    pub dropped: u64,
+}
+
+/// REQ: API-016 (T23.11) — `GET /api/v1/sinks`.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SinkList {
+    pub items: Vec<SinkEntry>,
+    /// Where a file sink made in the UI writes: the file name it is given goes under this
+    /// directory on every node.
+    pub files_dir: String,
+}
+
+/// REQ: API-016, OBS-006 (T23.11) — one header of the OTLP export.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OtlpHeader {
+    pub name: String,
+    /// `stored` (a stored secret, by name) or `inline` (a value in the configuration file: never
+    /// shown, `<redacted>`; enter it as a stored secret to move it to the UI).
+    pub source: String,
+    /// The stored secret's name, when `source` is `stored`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// Whether this node can read the secret now (`stored` only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readable: Option<bool>,
+    /// `<redacted>` for an inline value; absent for a stored one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+/// REQ: API-016, OBS-006 (T23.11) — `GET /api/v1/otlp`: the OTLP export in effect on this node.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OtlpEntry {
+    /// `none` (no export), `file` (the configuration files set the destination; read-only here)
+    /// or `api`.
+    pub source: String,
+    /// The collector's address (a password in it removed); absent when there is none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    pub interval_secs: u32,
+    pub headers: Vec<OtlpHeader>,
+    /// Trace settings (a file's; read at start).
+    pub traces_sample_every: u32,
+    pub traces_slow_ms: u32,
+    /// Whether the export runs on this node.
+    pub active: bool,
+    /// Why it doesn't, when an endpoint is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// REQ: OBS-902 (T26.4, ADR-959 section 6) - this node's GeoIP database: whether it is on, what
+/// it holds, and how the last fetch went. Everyone who can see the map sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GeoipStatus {
+    /// `[map.geoip] enabled`.
+    pub enabled: bool,
+    /// `off`, `missing` (on, with no database on this node yet), `downloading`, `ready` or
+    /// `failed` (the last attempt was not accepted: `lastError` says why, and the previous
+    /// database, if any, is kept).
+    pub state: String,
+    /// The month of the database's source, `YYYY-MM`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_month: Option<String>,
+    /// When this node built the database.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    /// Rows of the source file.
+    pub rows: u64,
+    pub size_bytes: u64,
+    /// When the next check is due (a check runs at most once a day).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_check_at: Option<String>,
+    /// A stable code (`digest_mismatch`, `overlapping_ranges`, `not_found`, ...), never a
+    /// response body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// The database is more than 90 days old (it still works).
+    pub old: bool,
+    /// The attribution the database's licence (CC BY 4.0) asks for.
+    pub attribution: String,
+}
+
+/// REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — `GET /api/v1/node-settings/{node}`:
+/// the per-node sections of one node (`cache`, `support`, `updates`).
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeSettings {
+    /// The node the sections belong to.
+    pub node: String,
+    pub sections: Vec<NodeSection>,
+}
+
+/// One per-node section: the fields in effect, which of them the files set, and whether a restart
+/// is still pending for it.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeSection {
+    /// `cache`, `support` or `updates` (the names the `*-settings` routes use).
+    pub section: String,
+    /// The fields in effect, with the same names as in `telltale.toml`.
+    #[schema(value_type = Object)]
+    pub fields: serde_json::Value,
+    /// The fields the configuration files set: the API can't change them (409 `set_by_file`).
+    pub set_by_file: Vec<String>,
+    /// Whether the API set this section for the node (`false`: the files' values apply).
+    pub stored: bool,
+    /// The section differs from what the node started with: it applies after a restart.
+    pub pending_restart: bool,
+    /// Whether every field of the section applies only after a restart of the node.
+    pub restart_only: bool,
 }

@@ -90,6 +90,10 @@ impl Scope {
     }
 }
 
+/// REQ: API-007 (T23.9, ADR-903 §8) — how recently a session must have been signed in for a
+/// step that hands over every stored secret: 10 minutes.
+pub const RECENT_SIGN_IN_SECS: u64 = 600;
+
 /// How a request authenticated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Via {
@@ -239,8 +243,13 @@ pub struct Settings {
     /// OIDC only: password sign-in and HTTP Basic just for admins from `admin_networks`
     /// (break-glass, API-004).
     pub disable_local_login: bool,
-    /// `(network, prefix length)`.
+    /// `(network, prefix length)`. The break-glass networks (ADR-944): loopback unless the
+    /// operator set `allowed_admin_networks`.
     pub admin_networks: Vec<(IpAddr, u8)>,
+    /// True when `admin_networks` is the loopback default (no `allowed_admin_networks` set).
+    /// Then a request that carries forwarding headers from an untrusted peer is never
+    /// break-glass: it may be a proxied client that arrived as loopback (ADR-944).
+    pub break_glass_default: bool,
     /// Proxies (ingress, reverse proxy) whose `X-Forwarded-For` names the real client.
     pub trusted_proxies: Vec<(IpAddr, u8)>,
 }
@@ -278,6 +287,7 @@ impl Default for Settings {
             setup_token_file: None,
             disable_local_login: false,
             admin_networks: Vec::new(),
+            break_glass_default: false,
             trusted_proxies: Vec::new(),
         }
     }
@@ -312,7 +322,16 @@ pub struct Auth {
     basic_cache: Mutex<HashMap<Vec<u8>, (i64, u64)>>,
     basic_salt: [u8; 16],
     /// OIDC providers, when configured (API-004).
-    oidc: std::sync::OnceLock<Arc<oidc::Oidc>>,
+    oidc: arc_swap::ArcSwapOption<oidc::Oidc>,
+    /// REQ: API-016 (T23.10) — the sign-ins in progress and the discovery cache, which outlive a
+    /// rebuild of the providers.
+    oidc_shared: Arc<oidc::Shared>,
+    /// Rebuilds ask for a ticket; only the newest one's result is used.
+    oidc_gen: std::sync::atomic::AtomicU64,
+    /// One rebuild at a time.
+    oidc_gate: tokio::sync::Mutex<()>,
+    /// Each provider's status as of the last rebuild.
+    oidc_status: Mutex<Vec<oidc::ProviderStatus>>,
     /// `[agents]`: the kill switch and rate limits (AGT-009).
     agents: agent::Policy,
     /// REQ: AGT-007 — agents' change plans on this node.
@@ -325,6 +344,8 @@ pub struct Auth {
     audit_gap: Mutex<Option<(u64, String)>>,
     /// Password checks in flight (at most [`MAX_PASSWORD_CHECKS`]).
     password_checks: std::sync::atomic::AtomicU32,
+    /// REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API's settings and sessions.
+    pihole: crate::pihole_api::PiholeCompat,
 }
 
 /// A slot for one password check; given back when dropped.
@@ -395,19 +416,29 @@ pub struct Presented<'a> {
 impl Auth {
     pub fn new(state: Arc<State>, settings: Settings) -> Self {
         Self {
+            pihole: crate::pihole_api::PiholeCompat::load(Arc::clone(&state)),
             state,
             settings,
             setup_token: Mutex::new(None),
             failures: Mutex::new(HashMap::new()),
             basic_cache: Mutex::new(HashMap::new()),
             basic_salt: rand::random(),
-            oidc: std::sync::OnceLock::new(),
+            oidc: arc_swap::ArcSwapOption::empty(),
+            oidc_shared: Arc::default(),
+            oidc_gen: std::sync::atomic::AtomicU64::new(0),
+            oidc_gate: tokio::sync::Mutex::new(()),
+            oidc_status: Mutex::new(Vec::new()),
             agents: agent::Policy::default(),
             plans: crate::plans::Plans::default(),
             identity_primary: Mutex::new(None),
             password_checks: std::sync::atomic::AtomicU32::new(0),
             audit_gap: Mutex::new(None),
         }
+    }
+
+    /// REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API.
+    pub fn pihole(&self) -> &crate::pihole_api::PiholeCompat {
+        &self.pihole
     }
 
     /// REQ: CLU-003 (T9.1) — the replication sets where identities come from (`None`: here).
@@ -461,15 +492,6 @@ impl Auth {
         &self.settings
     }
 
-    /// Attaches OIDC providers (once, at startup).
-    pub fn set_oidc(&self, o: oidc::Oidc) {
-        let _ = self.oidc.set(Arc::new(o));
-    }
-
-    pub fn oidc(&self) -> Option<&Arc<oidc::Oidc>> {
-        self.oidc.get()
-    }
-
     /// Password sign-in (and HTTP Basic) may be tried from `ip`: always, unless local
     /// sign-in is off, then only from the break-glass admin networks.
     pub fn local_login_allowed(&self, ip: IpAddr) -> bool {
@@ -481,7 +503,8 @@ impl Auth {
                 .any(|(n, l)| in_network(ip, *n, *l))
     }
 
-    fn local_login_refused() -> Problem {
+    /// The refusal for password sign-in from an address outside the break-glass networks.
+    pub(crate) fn local_login_refused() -> Problem {
         Problem::new(Code::Forbidden, "password sign-in is off on this server")
             .hint("Use your sign-in provider. Admins can still sign in with a password from the break-glass networks.")
     }
@@ -636,14 +659,14 @@ impl Auth {
     }
 
     /// Seconds until `key` may try again, if it's locked.
-    fn locked(&self, key: &str, now: u64) -> Option<u64> {
+    pub(crate) fn locked(&self, key: &str, now: u64) -> Option<u64> {
         let f = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
         f.get(key)
             .filter(|x| x.locked_until > now)
             .map(|x| x.locked_until - now)
     }
 
-    fn fail(&self, key: &str, now: u64) {
+    pub(crate) fn fail(&self, key: &str, now: u64) {
         let locked = {
             let mut map = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
             let f = map.entry(key.to_owned()).or_default();
@@ -655,7 +678,7 @@ impl Auth {
             let mut locked = None;
             if f.count > FREE_ATTEMPTS {
                 let exp = (f.count - FREE_ATTEMPTS - 1).min(10);
-                f.locked_until = now + (30u64 << exp).min(MAX_LOCK_SECS);
+                f.locked_until = now.saturating_add((30u64 << exp).min(MAX_LOCK_SECS));
                 locked = Some((f.count, f.locked_until - now));
             }
             // Bound the map: forget the stalest entries when an address sprays usernames.
@@ -686,7 +709,7 @@ impl Auth {
         }
     }
 
-    fn succeed(&self, key: &str) {
+    pub(crate) fn succeed(&self, key: &str) {
         self.failures
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -847,6 +870,65 @@ impl Auth {
         Ok(())
     }
 
+    /// REQ: API-007 (T23.9, ADR-903 §8) — a step that hands over every stored secret (a backup
+    /// with a passphrase) needs an interactive session signed in within the last
+    /// [`RECENT_SIGN_IN_SECS`]. A token or Basic credential never has one: 403 `reauth_required`,
+    /// naming the CLI as the way for those. Blocking (reads the session).
+    pub fn recent_sign_in(&self, p: &Principal, now: u64) -> Result<(), Problem> {
+        let Via::Session { id_hash, .. } = &p.via else {
+            return Err(Problem::new(
+                Code::ReauthRequired,
+                "this needs a session you signed in to just now; API tokens and Basic credentials can't do it",
+            )
+            .hint("Run `telltale backup create --secrets-passphrase-file FILE` on the node, or sign in to the web UI and make the backup from Settings."));
+        };
+        match self.state.session(id_hash) {
+            Ok(Some(s))
+                if s.display_token.is_none()
+                    && now.saturating_sub(s.created) <= RECENT_SIGN_IN_SECS =>
+            {
+                Ok(())
+            }
+            Ok(_) => Err(Problem::new(
+                Code::ReauthRequired,
+                format!(
+                    "this needs a sign-in within the last {} minutes; yours is older",
+                    RECENT_SIGN_IN_SECS / 60
+                ),
+            )
+            .hint("Sign in again (POST /api/v1/auth/login), then retry.")),
+            Err(e) => Err(db(e)),
+        }
+    }
+
+    /// REQ: API-902 (T27.13, ADR-956 §3) — when this principal's session was created (Unix
+    /// seconds), for the guarded framework's own recency check at apply (a weakening change and a
+    /// restart need it within [`RECENT_SIGN_IN_SECS`]). `None` for a token, Basic sign-in, a
+    /// display session or a session that is gone. Blocking (reads the session).
+    pub fn sign_in_time(&self, p: &Principal) -> Option<u64> {
+        let Via::Session { id_hash, .. } = &p.via else {
+            return None;
+        };
+        match self.state.session(id_hash) {
+            Ok(Some(s)) if s.display_token.is_none() => Some(s.created),
+            _ => None,
+        }
+    }
+
+    /// REQ: API-902 — a short, stable name for a session that is safe to keep in memory and in
+    /// logs (a prefix of the hash of its identifier; never the cookie).
+    pub fn session_key(p: &Principal) -> Option<String> {
+        use std::fmt::Write as _;
+        let Via::Session { id_hash, .. } = &p.via else {
+            return None;
+        };
+        let mut key = String::new();
+        for b in id_hash.iter().take(8) {
+            let _ = write!(key, "{b:02x}");
+        }
+        Some(key)
+    }
+
     /// REQ: API-003 (T10.7, ADR-142) — changes to the account itself (its password, two-factor
     /// sign-in, its API tokens) come only from a signed-in session. A leaked token or Basic
     /// credential can then use the account but can't take it over, mint more tokens to outlive
@@ -894,7 +976,7 @@ impl Auth {
     ) -> Result<NewSession, Problem> {
         let cookie = crypto::random_secret();
         let csrf = crypto::random_secret();
-        let expires = now + self.settings.session_ttl_secs;
+        let expires = now.saturating_add(self.settings.session_ttl_secs);
         self.state
             .create_session(
                 &crypto::secret_hash(&cookie),
@@ -944,11 +1026,23 @@ impl Auth {
     }
 
     fn active_user(&self, id: i64) -> Result<User, Problem> {
-        self.state
+        let user = self
+            .state
             .user(id)
             .map_err(db)?
             .filter(|u| !u.disabled)
-            .ok_or_else(|| Problem::new(Code::Unauthorized, "this account is disabled or gone"))
+            .ok_or_else(|| Problem::new(Code::Unauthorized, "this account is disabled or gone"))?;
+        // REQ: API-016 (ADR-967 point 7) — a user of a provider this node no longer names
+        // can't use a session or a token, whether or not the removal's sweep ran here.
+        if let Some(p) = &user.oidc_provider
+            && !self.oidc_provider_named(p)
+        {
+            return Err(Problem::new(
+                Code::Unauthorized,
+                "this account's sign-in provider was removed",
+            ));
+        }
+        Ok(user)
     }
 
     fn by_session(
@@ -1089,7 +1183,9 @@ impl Auth {
         self.succeed(&akey);
         let cookie = crypto::random_secret();
         let csrf = crypto::random_secret();
-        let expires = token.expires.unwrap_or(now + DISPLAY_SESSION_SECS);
+        let expires = token
+            .expires
+            .unwrap_or(now.saturating_add(DISPLAY_SESSION_SECS));
         let hash = crypto::secret_hash(&cookie);
         self.state
             .create_session(
@@ -1245,7 +1341,7 @@ impl Auth {
             if c.len() > 1000 {
                 c.retain(|_, (_, exp)| *exp > now);
             }
-            c.insert(key, (u.id, now + BASIC_CACHE_SECS));
+            c.insert(key, (u.id, now.saturating_add(BASIC_CACHE_SECS)));
             u
         };
         if !user.allow_basic_api {

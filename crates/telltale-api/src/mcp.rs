@@ -21,6 +21,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
+use crate::problem::{Code, Problem};
+
 /// The protocol revision this server speaks.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 /// Older revisions clients may ask for; the answer is then in their terms.
@@ -174,15 +176,20 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "search_queries",
-            description: "Read-only. Search the query log, newest first: who asked for what, the answer, and timings. Filter by client, group, name (substring), status (blocked, cached, forwarded, local, ...), qtype, rcode, minimum latency, and time, or find the one query a trace ID names (from an exemplar or an exported trace). Pages with `cursor` (from the previous result's nextCursor). Needs the querylog:read scope; subject to the privacy level.",
+            description: "Read-only. Search the query log, newest first: who asked for what, the answer, and timings. Filter by client, group, name (substring), status (blocked, cached, forwarded, local, ...), qtype, rcode, minimum latency, and time, or find the one query a trace ID names (from an exemplar or an exported trace). Each of name, client, status, qtype, and rcode can be turned around with its Not flag (name with nameNot: every query whose name does not contain the text; on a long log give a time range too). Pages with `cursor` (from the previous result's nextCursor). Needs the querylog:read scope; subject to the privacy level.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "name": {"type": "string", "description": "Part of the queried name."},
-                "client": {"type": "string", "description": "Client IP or device name."},
+                "client": {"type": "string", "description": "A client IP, or several comma-separated (addresses, `hostname:<router name>`, Kubernetes workloads as namespace/kind/name; at most 100). With clientNot, every client except these."},
                 "group": {"type": "string", "description": "Client group."},
                 "status": {"type": "string", "description": "blocked, cached, forwarded, local, refused, error, ..."},
                 "qtype": {"type": "string", "description": "A, AAAA, HTTPS, ..."},
                 "rcode": {"type": "string", "description": "NOERROR, NXDOMAIN, SERVFAIL, ..."},
+                "nameNot": {"type": "boolean", "description": "Keep the queries whose name does NOT contain `name`. Needs `name`."},
+                "clientNot": {"type": "boolean", "description": "Keep the queries from every client except those in `client`. Needs `client`."},
+                "statusNot": {"type": "boolean", "description": "Keep the queries whose status is none of `status`. Needs `status`."},
+                "qtypeNot": {"type": "boolean", "description": "Keep the queries whose type is none of `qtype`. Needs `qtype`."},
+                "rcodeNot": {"type": "boolean", "description": "Keep the queries whose response code is none of `rcode` (queries with no response code are kept). Needs `rcode`."},
                 "minLatencyMs": {"type": "integer", "description": "Only queries slower than this."},
                 "from": {"type": "string", "description": "Start (relative like -1h, or RFC 3339). Default: all retained."},
                 "to": {"type": "string", "description": "End (default now)."},
@@ -203,6 +210,11 @@ pub fn tools() -> Vec<Tool> {
                         ("status", "status"),
                         ("qtype", "qtype"),
                         ("rcode", "rcode"),
+                        ("nameNot", "nameNot"),
+                        ("clientNot", "clientNot"),
+                        ("statusNot", "statusNot"),
+                        ("qtypeNot", "qtypeNot"),
+                        ("rcodeNot", "rcodeNot"),
                         ("minLatencyMs", "minLatencyMs"),
                         ("from", "from"),
                         ("to", "to"),
@@ -218,7 +230,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "explain_decision",
-            description: "Read-only. Why a name is (or isn't) blocked or routed for a client: the client's identity and groups, the rules that match, which one wins, and the upstream route. Answers 'why was X blocked for Y?'.",
+            description: "Read-only. Why a name is (or isn't) blocked or routed for a client: the client's identity, the key it matched on and where its group came from, the groups, the rules that match, which one wins, and the upstream route. Answers 'why was X blocked for Y?'. For everything that applies to a device, use get_client_policy.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "name": {"type": "string", "description": "The domain name."},
@@ -242,7 +254,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "get_client_profile",
-            description: "Read-only. A device's profile: its identity, groups, top domains this hour, its rhythm (per tracked domain, how regularly it's queried: the dominant period such as 'every 2.5 s' and its share), and its most recent queries (with latency and status). Give a device name or IP. Recent queries need the querylog:read scope; without it that part is reported as not allowed.",
+            description: "Read-only. A device's profile: its identity, groups, the policy that applies to it (policy: the group and the key that matched, lists, services, schedules, rules; needs config:read), top domains this hour, its rhythm (per tracked domain, how regularly it's queried: the dominant period such as 'every 2.5 s' and its share), and its most recent queries (with latency and status). Give a device name or IP. Recent queries need the querylog:read scope; without it that part is reported as not allowed.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "client": {"type": "string", "description": "Device name (as in the device list) or IP."},
@@ -254,6 +266,61 @@ pub fn tools() -> Vec<Tool> {
                 s(a, "client").ok_or("`client` is required")?;
                 // The device's queries follow in `call_tool`, by its IP.
                 Ok(vec![("devices".into(), "/api/v1/clients".into())])
+            },
+        },
+        // REQ: API-013 (T22.2)
+        Tool {
+            name: "list_networks",
+            description: "Read-only. The network inventory: the LANs and VLANs the routers report (subnet, VLAN, gateway, DHCP pool, domain), and client groups' networks no router reported, each with the group that covers it, its host addresses, the known devices in it, how full it is, and how many devices sit outside the DHCP pool; then every device found by the routers, Home Assistant, and mDNS (MAC, IP, the name the router or Home Assistant gave it, which [[router]] named it, its name in TelltaleDNS, and with [local] device_domain the name it answers as in DNS). Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![
+                    ("networks".into(), "/api/v1/networks".into()),
+                    ("devices".into(), "/api/v1/dhcp/leases".into()),
+                ])
+            },
+        },
+        // REQ: UPS-004, AGT-001 (T24.36)
+        Tool {
+            name: "list_upstream_presets",
+            description: "Read-only. The public DNS resolvers TelltaleDNS knows by name (Cloudflare, Cloudflare for Families, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing and others): each variant's addresses (plain, DNS over TLS, DNS over HTTPS) and TLS name, what it filters, a line on its privacy, and whether the Upstreams page's simple view offers it; also whether this node has an IPv6 route (without one, IPv6 upstreams only time out). Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("presets".into(), "/api/v1/upstream-presets".into())]),
+        },
+        // REQ: API-015, AGT-001 (ADR-903 §5) — metadata only; setting a value is for people.
+        Tool {
+            name: "secrets_status",
+            description: "Read-only. The stored secrets (routers', alert destinations', OIDC providers', sinks', Git's and OTLP's credentials entered in the UI): each one's name, kind, when and by whom it was set, the credential fields that name it (usedBy), and which nodes hold it and can read it. Never a value. Also this node's secrets store (ready, or locked and why; the key's source and ID, never the key) and every credential field of its configuration with its source: inline or file (set by the configuration files, which win) or stored, and whether this node can read it. On a replica, stale=true means the primary couldn't be asked. There is no tool to set or clear a secret: a person does that (Settings → Integrations & secrets, or telltale ctl secrets). Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("secrets".into(), "/api/v1/secrets".into())]),
+        },
+        // REQ: API-005, AGT-001 (T24.10, ADR-961 §7) — the status only; the token is a credential,
+        // so no tool issues, rotates or reads one, and none turns the API on.
+        Tool {
+            name: "pihole_api_status",
+            description: "Read-only. Whether the Pi-hole compatible API is on (the part of Pi-hole's v6 and v5 interfaces that dashboards, phone apps and the Home Assistant Pi-hole integration use: statistics, and turning blocking off for a while and on again), whether a token has been issued and when, when it was last used, and the longest pause it may start (`maxPauseMinutes`). Never the token. There is no tool to turn it on or to issue or rotate its token: an admin does that in Settings → Pi-hole. Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("piholeApi".into(), "/api/v1/pihole-api".into())]),
+        },
+        // REQ: API-016 (T23.7, ADR-903 §5) — router settings and status, secrets by name only; no
+        // tool sets a router (admin-only, no agent scope).
+        Tool {
+            name: "list_routers",
+            description: "Read-only. The router integrations in the configuration (UniFi, OPNsense, Home Assistant): each one's name, kind and address (no password), its settings with stored secrets named (never their values), whether the configuration files define it, each credential's source and whether this node can read it, and the last read: its state (ok, failing, waiting, or skipped and why), when, the error, and the devices and networks it reported. There is no tool to add, change or check a router: an admin does that in Settings or the Routers page. Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("routers".into(), "/api/v1/routers".into())]),
+        },
+        // REQ: API-016 (T23.11, ADR-984) - event sinks and the OTLP export, tokens by name only; no
+        // tool sets one (admin-only, no agent scope).
+        Tool {
+            name: "list_event_sinks",
+            description: "Read-only. Where this node sends query events and metrics: each event sink (file, syslog or webhook) with its settings (a webhook token named, never valued), whether the configuration files define it, whether this node runs it and why not, and how many events it dropped since start; and the OTLP export (collector address, interval, header names, whether it runs). Use it to answer why events are not reaching a collector.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![
+                    ("sinks".into(), "/api/v1/sinks".into()),
+                    ("otlp".into(), "/api/v1/otlp".into()),
+                ])
             },
         },
         // REQ: FLT-017 (T15.1)
@@ -347,6 +414,72 @@ pub fn tools() -> Vec<Tool> {
                 )])
             },
         },
+        // REQ: FLT-006, API-010, AGT-001 (T24.30, ADR-996)
+        Tool {
+            name: "get_client_policy",
+            description: "Read-only. Every filter and rule that applies to one device, and why: the group it lands in and the key that matched (client ID, MAC, workload, address, network or router name, with the precedence ladder), then sections for the block response, the group's lists and blocked services, SafeSearch and YouTube, answer filtering, rewrites, schedules (and whether each is in effect now), the quick rules that apply (with expiry) and the upstream group. It is resolved the way a query and explain_decision resolve the device, so the two agree. Give a device name, an IP, or a Kubernetes workload. Needs config:read; a group-restricted token sees its group's devices only.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "client": {"type": "string", "description": "A device's name, its IP, or a workload (namespace/kind/name)."}
+            }, "required": ["client"], "additionalProperties": false})
+            },
+            calls: |a| {
+                let c = s(a, "client").ok_or("`client` is required")?;
+                Ok(vec![(
+                    "policy".into(),
+                    format!("/api/v1/clients/{}/policy", enc(&c)),
+                )])
+            },
+        },
+        // REQ: FLT-901, FLT-902, AGT-001 (T24.29): the category catalog and a group's content.
+        Tool {
+            name: "categories_list",
+            description: "Read-only. The content categories this node offers (adult content, gambling, malware, ad block, ...), grouped as the picker shows them, each with its description, tiers, entries and whether it is heavy; every source with its maintainer, licence (SPDX), format, size and what this node has downloaded; the presets (basic); the categories not offered and why; what each group selects now; and what all of them cost together against the node's memory limit. Use it before plan_set_group_content. Needs config:read.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![(
+                    "categories".into(),
+                    "/api/v1/categories?view=compact".into(),
+                )])
+            },
+        },
+        Tool {
+            name: "get_group_content",
+            description: "Read-only. One group's content filtering: the level (off, basic, enhanced), its categories and tiers, whether ad block is on, the sources they make the node download, and what that costs. With the optional proposal fields (level, categories, ads) it also says what the cost would be if the group were set that way, without changing anything. Needs config:read.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "group": {"type": "string", "description": "The group's name."},
+                "level": {"type": "string", "enum": ["off", "basic", "enhanced"], "description": "A proposal: price this level."},
+                "categories": {"type": "array", "items": {"type": "string"}, "description": "A proposal: price these category IDs."},
+                "ads": {"type": "boolean", "description": "A proposal: price ad block on or off."}
+            }, "required": ["group"], "additionalProperties": false})
+            },
+            calls: |a| {
+                let g = s(a, "group").ok_or("`group` is required")?;
+                let mut calls = vec![(
+                    "content".into(),
+                    format!("/api/v1/groups/{}/content", enc(&g)),
+                )];
+                if a.get("level").is_some()
+                    || a.get("categories").is_some()
+                    || a.get("ads").is_some()
+                {
+                    let mut q = format!("/api/v1/categories/budget?group={}", enc(&g));
+                    if let Some(l) = s(a, "level") {
+                        let _ = write!(q, "&level={}", enc(&l));
+                    }
+                    if a.get("categories").is_some() {
+                        let cats = strings(a, "categories");
+                        let _ = write!(q, "&categories={}", enc(&cats.join(",")));
+                    }
+                    if let Some(on) = a.get("ads").and_then(Value::as_bool) {
+                        let _ = write!(q, "&ads={on}");
+                    }
+                    calls.push(("proposal".into(), q));
+                }
+                Ok(calls)
+            },
+        },
         Tool {
             name: "latency_breakdown",
             description: "Read-only. Latency percentiles (p50/p90/p99/p99.9/max in ms) broken down by pipeline stage, upstream, client, or query type, for the current or previous hour. Find where time goes. With histogram: true, also the last hour's answers per latency bucket per minute (boundsUs, per path or per upstream when by is upstream), to see a tail's shape.",
@@ -396,9 +529,35 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "list_effectiveness",
-            description: "Read-only. Filter lists: size, last update, errors, hits since start, unique names (only that list has them), and which lists overlap. Find dead, failing, or redundant lists.",
+            description: "Read-only. Filter lists: size, last check, last confirmed current, last change, errors, whether a refresh is downloading it now (`refreshing`), hits since start, unique names (only that list has them), and which lists overlap. Find dead, failing, or redundant lists.",
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("lists".into(), "/api/v1/lists".into())]),
+        },
+        // REQ: FLT-004, AGT-001 (T24.28, ADR-992) - which lists add little. Read-only: turning
+        // lists off is a person's (`POST /api/v1/lists/prune` refuses agent tokens).
+        Tool {
+            name: "list_overlap",
+            description: "Read-only. Which filter lists add little: each enabled list's entries, the names no other list of its kind has (unique), its regexes and modifier rules (counted as unique), the share it adds, the lists covering the rest of it, and the groups that name it; plus the prune plan: the block lists that add at most thresholdPercent of their own entries (default 1), with the most names turning them all off could stop blocking, and why every other list stays. Allow lists, shadow lists, lists a group names, and lists not compiled yet are never proposed. Changes nothing: a person turns the lists off in the UI after previewing; propose it to them with the numbers.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "thresholdPercent": {"type": "number", "minimum": 0, "maximum": 50, "description": "Propose lists adding at most this percent of their own entries. Default 1."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                let plan = match a.get("thresholdPercent") {
+                    None | Some(Value::Null) => "/api/v1/lists/prune-plan".to_owned(),
+                    Some(v) => match v.as_f64() {
+                        Some(t) if t.is_finite() => {
+                            format!("/api/v1/lists/prune-plan?thresholdPercent={t}")
+                        }
+                        _ => return Err("`thresholdPercent` must be a number from 0 to 50".into()),
+                    },
+                };
+                Ok(vec![
+                    ("overlap".into(), "/api/v1/lists/overlap".into()),
+                    ("plan".into(), plan),
+                ])
+            },
         },
         Tool {
             name: "find_anomalies",
@@ -439,6 +598,34 @@ pub fn tools() -> Vec<Tool> {
             description: "Read-only. Is TelltaleDNS OK? One word for the whole cluster (healthy, degraded, or severe) and every reason, each with its node and where to look: upstreams down (severe when a whole upstream group is), nodes unreachable or not serving, replicas behind, lists failing, devices rate-limited, SERVFAIL rate, full disks. Start here when someone asks whether something is wrong.",
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("health".into(), "/api/v1/system/health".into())]),
+        },
+        // REQ: OBS-901 (T26.2, ADR-958)
+        Tool {
+            name: "network_health",
+            description: "Read-only. How is the network doing, as the live map sees it? Counts of nodes by health (green, yellow, red, idle), the red and yellow nodes with their reasons (at most 50: a device failing lookups, a slow or benched upstream, a resolver node that is down, a router integration that is failing), and the five busiest flows. The map is built from a sample of recent lookups (sampleRate says how thin; 'idle' means too few answers to say). Device names and addresses appear at query-log privacy levels 0 and 1; at level 2 and above devices are hidden and only networks, nodes and upstreams are listed. No domain name is ever in it. Optional filters narrow it to one network, group, device or node. Needs analytics:read. Answers map_disabled when [map] is off.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "network": {"type": "string", "description": "Only this network (a name from list_networks / GET /api/v1/networks)."},
+                "group": {"type": "string", "description": "Only devices of this client group."},
+                "device": {"type": "string", "description": "Only devices whose name or address contains this text."},
+                "node": {"type": "string", "description": "Only this TelltaleDNS node (pod, site or ID)."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                Ok(vec![(
+                    "networkHealth".into(),
+                    query(
+                        "/api/v1/map/health",
+                        a,
+                        &[
+                            ("network", "network"),
+                            ("group", "group"),
+                            ("device", "device"),
+                            ("node", "node"),
+                        ],
+                    ),
+                )])
+            },
         },
         // REQ: OBS-018 (ADR-109)
         Tool {
@@ -526,6 +713,24 @@ pub fn tools() -> Vec<Tool> {
             description: "Read-only. Is each node's cache the right size? Per node: hit rate, memory used and its budget, the estimated extra hits a cache 25%, 50%, and 100% larger would have served (from a sample of evicted names), the peak memory used, and the advice: grow (with the max_bytes to try), shrink (it never filled), ok, or learning (too few lookups yet).",
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("caches".into(), "/api/v1/cache/stats".into())]),
+        },
+        // REQ: DNS-006, DNS-011, FLT-004, CLU-014, OPS-011, OPS-012 (ADR-1006) — read-only; the
+        // writes behind these settings refuse agents.
+        Tool {
+            name: "node_settings",
+            description: "Read-only. The settings that operators change from the UI, per node (this node when none is named): the cache sizing and TTLs, the list refresh and stale settings, DNSSEC mode and negative trust anchors, the drill schedule, and the support and update switches. Each section lists its fields, the fields the configuration files set (setByFile), and whether a restart is pending. Agents can read these but not change them.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "node": {"type": "string", "description": "The node's name (default: this node)."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                let path = match s(a, "node") {
+                    Some(n) => format!("/api/v1/node-settings/{}", enc(&n)),
+                    None => "/api/v1/node-settings".into(),
+                };
+                Ok(vec![("node_settings".into(), path)])
+            },
         },
         // REQ: OBS-016 (ADR-105)
         Tool {
@@ -1335,13 +1540,104 @@ pub fn write_tools() -> Vec<WriteTool> {
                 })
             },
         },
+        // REQ: DNS-019 (T24.12, ADR-904, ADR-914), AGT-007 — the special-name switches, as a plan.
+        WriteTool {
+            name: "plan_set_special_names",
+            description: "Plans a change (nothing changes until apply_plan). Changes the special-name handling: iCloud Private Relay names answered NXDOMAIN (blockIcloudPrivateRelay), single-label names kept off upstreams (singleLabelNxdomain, domain-needed), the Firefox canary, private reverse lookups, CHAOS queries, localhost, and ddrName (the name the encrypted listeners' certificates carry, for DDR). Fields left out keep their current values. A field the config files set can't be changed here. ddrName is admin-only: an agent can't plan it (refused). Applies on the next query, with no restart. Needs config:write:special (and config:read to read the current settings).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "blockIcloudPrivateRelay": {"type": "boolean", "description": "mask.icloud.com and mask-h2.icloud.com answer NXDOMAIN, so Apple devices turn Private Relay off here."},
+                "singleLabelNxdomain": {"type": "boolean", "description": "One-label names asked for A, AAAA or HTTPS that nothing local answers get NXDOMAIN without upstreams."},
+                "blockFirefoxCanary": {"type": "boolean", "description": "use-application-dns.net answers NXDOMAIN, so Firefox keeps the network's DNS."},
+                "privatePtrNxdomain": {"type": "boolean", "description": "Reverse lookups for private addresses answer NXDOMAIN unless local data or a route covers them."},
+                "refuseChaos": {"type": "boolean", "description": "CHAOS-class queries (version.bind, id.server) are REFUSED."},
+                "localhost": {"type": "boolean", "description": "localhost names answer loopback addresses."},
+                "ddrName": {"type": "string", "description": "The host name on the encrypted listeners' certificates (DDR). Admin-only: an agent can't set it."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let body = pick(
+                    a,
+                    &[
+                        ("blockIcloudPrivateRelay", "block_icloud_private_relay"),
+                        ("singleLabelNxdomain", "single_label_nxdomain"),
+                        ("blockFirefoxCanary", "block_firefox_canary"),
+                        ("privatePtrNxdomain", "private_ptr_nxdomain"),
+                        ("refuseChaos", "refuse_chaos"),
+                        ("localhost", "localhost"),
+                        ("ddrName", "ddr_name"),
+                    ],
+                );
+                if body.is_empty() {
+                    return Err("give at least one setting to change".into());
+                }
+                let summary = format!(
+                    "Set the special names ({})",
+                    body.keys().cloned().collect::<Vec<_>>().join(", ")
+                );
+                Ok(Write {
+                    method: "PUT",
+                    path: "/api/v1/special-names/default".to_owned(),
+                    summary,
+                    body: Some(Value::Object(body)),
+                    merge: Some(("special", "default".to_owned())),
+                })
+            },
+        },
+        // REQ: DNS-023 (T24.13, ADR-901, AGT-007) — the device-name settings, as a plan.
+        WriteTool {
+            name: "plan_set_device_names",
+            description: "Plans a change (nothing changes until apply_plan). Changes the device-name settings: the domain devices get names under (deviceDomain, e.g. home.arpa; local is refused), the TTL of those answers (deviceTtl), whether names devices announce over mDNS count (deviceMdns; needs the mDNS switch on, which an admin sets), automatic reverse names (autoPtr), and the TTL of other local names (defaultTtl). Fields left out keep their current values; a field the config files set can't be changed here. Names change within about 10 seconds, with no restart. Needs config:write:local (and config:read to read the current settings).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "deviceDomain": {"type": "string", "description": "The domain, such as home.arpa (not local). Empty turns device names off."},
+                "deviceTtl": {"type": "integer", "minimum": 0, "description": "Seconds for device names (they follow DHCP, so keep it short; 60 by default)."},
+                "deviceMdns": {"type": "boolean", "description": "Also name devices by the names they announce over mDNS."},
+                "autoPtr": {"type": "boolean", "description": "Make reverse names for every local address record."},
+                "defaultTtl": {"type": "integer", "minimum": 0, "description": "Seconds for local names without their own TTL."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let body = pick(
+                    a,
+                    &[
+                        ("deviceDomain", "device_domain"),
+                        ("deviceTtl", "device_ttl"),
+                        ("deviceMdns", "device_mdns"),
+                        ("autoPtr", "auto_ptr"),
+                        ("defaultTtl", "default_ttl"),
+                    ],
+                );
+                if body.is_empty() {
+                    return Err("give at least one setting to change".into());
+                }
+                let summary = format!(
+                    "Set the device-name settings ({})",
+                    body.keys().cloned().collect::<Vec<_>>().join(", ")
+                );
+                Ok(Write {
+                    method: "PUT",
+                    path: "/api/v1/local-settings/default".to_owned(),
+                    summary,
+                    body: Some(Value::Object(body)),
+                    merge: Some(("local", "default".to_owned())),
+                })
+            },
+        },
         // REQ: OBS-022, AGT-007 (T12.1) — names and devices kept out of the log, as a plan.
         WriteTool {
             name: "plan_set_exclusions",
-            description: "Plans a change (nothing changes until apply_plan). Changes which names and devices are kept out of the query log, the live view, the dashboard and top lists, anomalies, and exports (noise like connectivity checks or a monitoring probe). Their queries are still answered and still counted in /metrics. `names` covers each name and its subdomains; `clients` takes addresses or networks; both replace the current lists. `enabled` turns the exclusions off without losing the lists. Fields left out keep their current values. Applies to every node from the next query. Needs config:write:exclusions (and config:read to read the current ones).",
+            description: "Plans a change (nothing changes until apply_plan). Changes which names and devices are kept out of the query log, the live view, the dashboard and top lists, anomalies, and exports (noise like connectivity checks or a monitoring probe). Their queries are still answered and still counted in /metrics. `names` covers each name and its subdomains; `clients` takes addresses or networks; both replace the current lists. `enabled` turns the exclusions off without losing the lists. Fields left out keep their current values. `log` keeps queries out of the query log (and the live view and event sinks) only: they are still counted in the dashboard, top lists and anomalies. It has `clients` (addresses, networks or device names), `domains` (`localhost` is exactly that name, `*.lan` is every name under lan), and `own_lookups` (this node's own loopback and addresses); it replaces the current `log` settings as a whole. Applies to every node from the next query. Needs config:write:exclusions (and config:read to read the current ones).",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "enabled": {"type": "boolean", "description": "Turn the exclusions on or off (the lists are kept)."},
+                "log": {"type": "object", "description": "Kept out of the query log only (still counted in the statistics); replaces the current log settings.", "properties": {"clients": {"type": "array", "items": {"type": "string"}}, "domains": {"type": "array", "items": {"type": "string"}}, "own_lookups": {"type": "boolean"}}, "additionalProperties": false},
                 "names": {"type": "array", "items": {"type": "string"}, "description": "Names kept out, each with its subdomains (replaces the current list)."},
                 "clients": {"type": "array", "items": {"type": "string"}, "description": "Addresses or networks kept out (replaces the current list)."},
                 "reason": reason_schema()
@@ -1356,6 +1652,7 @@ pub fn write_tools() -> Vec<WriteTool> {
                         ("enabled", "enabled"),
                         ("names", "names"),
                         ("clients", "clients"),
+                        ("log", "log"),
                     ],
                 );
                 if body.is_empty() {
@@ -1372,12 +1669,65 @@ pub fn write_tools() -> Vec<WriteTool> {
                 if let Some(n) = count("clients") {
                     what.push(format!("{n} clients"));
                 }
+                if body.contains_key("log") {
+                    what.push("log-only exclusions".into());
+                }
                 Ok(Write {
                     method: "PUT",
                     path: "/api/v1/exclusions/default".to_owned(),
                     summary: format!("Set the query-log exclusions ({})", what.join(", ")),
                     body: Some(Value::Object(body)),
                     merge: Some(("exclusions", "default".to_owned())),
+                })
+            },
+        },
+        // REQ: OBS-901, AGT-007 (T26.2, ADR-958) — the live map's sampling and thresholds, as a plan.
+        WriteTool {
+            name: "plan_set_map",
+            description: "Plans a change (nothing changes until apply_plan). Changes the live network map's settings: whether it runs, how many lookups per second each node samples (`eventRate`, 10 to 2,000), how many sampled answers a device or edge needs before it is coloured (`minSample`), what counts as slow (`warnLatencyMs`; null follows the latency objective), and the percent thresholds that turn it yellow or red (`warnSlowPct`, `warnErrorPct`, `errorPct`, `warnBlockedPct`, 1 to 100; `errorPct` at least `warnErrorPct`). Fields left out keep their current values. It changes only what the map shows, never an answer. Applies to every node within a few seconds. Needs config:write:map (and config:read to read the current settings).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "enabled": {"type": "boolean", "description": "Turn the map on or off (off: no sampling, and the map routes answer map_disabled)."},
+                "eventRate": {"type": "integer", "minimum": 10, "maximum": 2000, "description": "Lookups per second each node samples."},
+                "minSample": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "Sampled answers needed before something is coloured (fewer is idle)."},
+                "warnLatencyMs": {"type": ["integer", "null"], "minimum": 1, "maximum": 60000, "description": "An answer slower than this is slow; null follows [slo] latency_ms."},
+                "warnSlowPct": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Yellow at this percent of slow answers."},
+                "warnErrorPct": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Yellow at this percent of SERVFAIL or timeouts."},
+                "errorPct": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Red at this percent of SERVFAIL or timeouts (at least warnErrorPct)."},
+                "warnBlockedPct": {"type": "integer", "minimum": 1, "maximum": 100, "description": "A device turns yellow at this percent of blocked answers."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let mut body = pick(
+                    a,
+                    &[
+                        ("enabled", "enabled"),
+                        ("eventRate", "event_rate"),
+                        ("minSample", "min_sample"),
+                        ("warnLatencyMs", "warn_latency_ms"),
+                        ("warnSlowPct", "warn_slow_pct"),
+                        ("warnErrorPct", "warn_error_pct"),
+                        ("errorPct", "error_pct"),
+                        ("warnBlockedPct", "warn_blocked_pct"),
+                    ],
+                );
+                // An explicit null goes back to following the latency objective.
+                if a.get("warnLatencyMs").is_some_and(Value::is_null) {
+                    body.insert("warn_latency_ms".to_owned(), Value::Null);
+                }
+                if body.is_empty() {
+                    return Err("give at least one setting to change".into());
+                }
+                let what: Vec<&str> = body.keys().map(String::as_str).collect();
+                Ok(Write {
+                    method: "PUT",
+                    path: "/api/v1/map-settings/default".to_owned(),
+                    summary: format!("Set the live map's settings ({})", what.join(", ")),
+                    body: Some(Value::Object(body)),
+                    merge: Some(("map", "default".to_owned())),
                 })
             },
         },
@@ -1428,9 +1778,53 @@ pub fn write_tools() -> Vec<WriteTool> {
                 })
             },
         },
+        // REQ: FLT-901, AGT-007 (T24.29, ADR-994 item 8): a content change makes the server download
+        // lists, so it is a plan an operator approves, whatever `require_approval` says.
+        WriteTool {
+            name: "plan_set_group_content",
+            description: "Plans a change (nothing changes until apply_plan). **An operator must approve it first, whatever [agents] require_approval says**: choosing categories makes the node download lists (tens of megabytes a day), which an agent never starts on its own, so this tool only plans and apply_plan works after an operator approves the plan (Agent changes in the web UI); applying an unapproved plan answers 403 agent_not_allowed. Sets a group's content filtering: `level` (off, basic: adult content, malware, phishing and scam; enhanced: the `categories` you list), `categories` (IDs from categories_list), `tiers` (category to tier, such as gambling extended) and `ads` (ad block). Fields left out keep their current values. A heavy selection (newly registered domains, the full threat feed) or one over the entry budget is refused to an agent at planning time: the owner confirms that cost. Needs config:write:groups (and config:read).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "group": {"type": "string", "description": "The group (profile) to change."},
+                "level": {"type": "string", "enum": ["off", "basic", "enhanced"], "description": "Filtering level."},
+                "categories": {"type": "array", "items": {"type": "string"}, "description": "With enhanced: category IDs (replaces the current list)."},
+                "tiers": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Tier per category, for example gambling: extended."},
+                "ads": {"type": "boolean", "description": "Ad block."},
+                "reason": reason_schema()
+            }, "required": ["group", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let group = need(a, "group")?;
+                let body = pick(
+                    a,
+                    &[
+                        ("level", "level"),
+                        ("categories", "categories"),
+                        ("tiers", "tiers"),
+                        ("ads", "ads"),
+                    ],
+                );
+                if body.is_empty() {
+                    return Err("give at least one of level, categories, tiers or ads".into());
+                }
+                let what: Vec<&str> = body.keys().map(String::as_str).collect();
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/groups/{}/content", enc(&group)),
+                    summary: format!(
+                        "Set the content filtering of group {group} ({})",
+                        what.join(", ")
+                    ),
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
         WriteTool {
             name: "plan_update_upstreams",
-            description: "Plans a change (nothing changes until apply_plan). Changes (or adds) an upstream server (`url`) or an upstream group (`members`, `strategy`: failover, round_robin, weighted, fastest, parallel). Fields left out keep their current values. Needs config:write:upstreams (and config:read to read the current entry).",
+            description: "Plans a change (nothing changes until apply_plan). Changes (or adds) an upstream server (`url`) or an upstream group (`members`, `strategy`: failover, round_robin, weighted, fastest, parallel). Fields left out keep their current values. Needs config:write:upstreams (and config:read to read the current entry). Moving an upstream that holds a credential (headers, a client key, a password in its URL) and exec:// or unix:// upstreams are an admin's in the UI: such a plan is refused (403).",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "kind": {"type": "string", "enum": ["upstream", "upstream_group"], "description": "A server or a group."},
@@ -1546,6 +1940,48 @@ pub fn write_tools() -> Vec<WriteTool> {
                         || "Empty the cache".into(),
                         |n| format!("Flush {n} from the cache"),
                     ),
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
+        // REQ: FLT-004 — "update lists now" (like `pihole -g`).
+        WriteTool {
+            name: "refresh_lists",
+            description: "Changes at once (audited, no plan; no configuration changes). Downloads the filter lists again now instead of waiting for their schedule: every enabled list, or only `names`. Returns the lists queued, the named ones left out (disabled), and the node that downloads them (the primary, in a cluster). The downloads run in the background: `refreshing` in list_effectiveness clears when each list is done. Unchanged lists cost one conditional request; the filter is recompiled only if something changed. With dryRun, says what would be queued and queues nothing. Needs the config:write:lists scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "names": {"type": "array", "items": {"type": "string"}, "maxItems": 256, "description": "Only these lists, by name (default: every enabled list)."},
+                "dryRun": {"type": "boolean", "description": "Say what would be downloaded; download nothing."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: false,
+            write: |a| {
+                let names = strings(a, "names");
+                let dry = a.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
+                let what = if names.is_empty() {
+                    "every enabled filter list".to_owned()
+                } else {
+                    format!("the lists {}", names.join(", "))
+                };
+                let mut body = serde_json::Map::new();
+                if !names.is_empty() {
+                    body.insert("names".into(), json!(names));
+                }
+                Ok(Write {
+                    method: "POST",
+                    path: if dry {
+                        "/api/v1/lists/refresh?dryRun=true".into()
+                    } else {
+                        "/api/v1/lists/refresh".into()
+                    },
+                    summary: if dry {
+                        format!("Check what refreshing {what} would download")
+                    } else {
+                        format!("Download {what} again now")
+                    },
                     body: Some(Value::Object(body)),
                     merge: None,
                 })
@@ -2007,6 +2443,10 @@ const SIMULATE_KINDS: &[&str] = &[
 /// REQ: CLU-013 — plans that need a person's approval: they change what every node serves.
 const APPROVAL_ONLY: &[&str] = &["plan_pin_version", "plan_unpin"];
 
+/// REQ: FLT-901: the plan tool whose plans are always pending and whose replay carries the
+/// approval.
+const CONTENT_PLAN: &str = "plan_set_group_content";
+
 /// A plan tool's schema with the `simulate` parameter.
 fn with_simulate(mut schema: Value) -> Value {
     if let Some(props) = schema.get_mut("properties").and_then(Value::as_object_mut) {
@@ -2247,7 +2687,28 @@ impl Mcp {
         client: Option<&str>,
         extra: &[(&str, String)],
     ) -> (StatusCode, Value) {
+        self.send_as(method, path, body, auth, client, extra, false)
+            .await
+    }
+
+    /// [`Self::send`], for the replay of a content plan an operator approved when
+    /// `approved_content` is set: the request then carries the marker that lets an agent token's
+    /// content write through (REQ: FLT-901; a request extension, so no client can send it).
+    #[allow(clippy::too_many_arguments)] // `send` plus one flag
+    async fn send_as(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        auth: &HeaderMap,
+        client: Option<&str>,
+        extra: &[(&str, String)],
+        approved_content: bool,
+    ) -> (StatusCode, Value) {
         let mut req = Request::builder().method(method).uri(path);
+        if approved_content {
+            req = req.extension(crate::categories_api::ApprovedContentPlan);
+        }
         for h in ["authorization", "cookie", "x-csrf-token", "x-forwarded-for"] {
             if let Some(v) = auth.get(h) {
                 req = req.header(h, v);
@@ -2404,6 +2865,14 @@ impl Mcp {
             Ok(w) => w,
             Err(e) => return tool_error(format!("{}: {e}", tool.name)),
         };
+        // REQ: API-902 (ADR-956 §7) — no tool plans or makes a guarded change: the plan store
+        // refuses guarded paths, so `apply_plan` can't replay one.
+        if crate::guarded::is_guarded_path(&w.path) {
+            return tool_error(format!(
+                "{}: guarded settings are for people; no plan can change them",
+                tool.name
+            ));
+        }
         if let Err(e) = self.merge(&mut w, auth, client).await {
             return tool_error(format!("{}: {e}", tool.name));
         }
@@ -2435,7 +2904,9 @@ impl Mcp {
                 tool.name
             ));
         };
-        let needs_approval = self.auth.agents().require_approval();
+        // REQ: FLT-901 (ADR-994 item 8): a content plan is always `pending`: an operator approves
+        // it, whatever `[agents] require_approval` is (an exception to ADR-070).
+        let needs_approval = self.auth.agents().require_approval() || tool.name == CONTENT_PLAN;
         let now = crate::plans::now();
         let plan = self.auth.plans().add(crate::plans::Plan {
             id: format!("plan_{}", crate::auth::crypto::random_id()),
@@ -2444,6 +2915,7 @@ impl Mcp {
             method: w.method.to_owned(),
             path: w.path,
             body: w.body,
+            write_body: None,
             preview,
             config_version: version,
             reason,
@@ -2583,6 +3055,20 @@ impl Mcp {
                 Err(e) => tool_result(serde_json::to_value(&e).unwrap_or_default(), true),
             };
         }
+        // REQ: FLT-901 (ADR-994 item 8): a content plan no operator has approved is refused with
+        // 403 `agent_not_allowed`, whatever `require_approval` is.
+        if let Some(p) = plans.get(&id)
+            && p.tool == CONTENT_PLAN
+            && p.owner == caller.owner
+            && p.state == "pending"
+        {
+            let e = Problem::new(
+                Code::AgentNotAllowed,
+                "this content plan needs an operator's approval before it can be applied",
+            )
+            .hint("An operator approves it in the web UI (Agent changes); then apply_plan works until it expires.");
+            return tool_result(serde_json::to_value(&e).unwrap_or_default(), true);
+        }
         let plan = match plans.transition(
             &id,
             &["ready", "approved"],
@@ -2593,6 +3079,16 @@ impl Mcp {
             Ok(p) => p,
             Err(e) => return tool_result(serde_json::to_value(&e).unwrap_or_default(), true),
         };
+        let approved_content = plan.tool == CONTENT_PLAN && plan.decided_by.is_some();
+        // REQ: API-902 — a plan for a guarded path is never replayed (none is ever stored).
+        if crate::guarded::is_guarded_path(&plan.path) {
+            plans.finish(
+                &id,
+                "failed",
+                json!({"error": "guarded settings are for people; a plan can't change them"}),
+            );
+            return tool_error("guarded settings are for people; a plan can't change them");
+        }
         // The write as planned: refused (412) if the configuration changed since; the plan ID
         // makes a retry return the first answer.
         let extra = [
@@ -2601,13 +3097,15 @@ impl Mcp {
             ("idempotency-key", plan.id.clone()),
         ];
         let (status, body) = self
-            .send(
+            .send_as(
                 &plan.method,
                 &plan.path,
-                plan.body.as_ref(),
+                // REQ: API-014 — the body as the agent gave it (`body` is shown redacted).
+                plan.write_body.as_ref(),
                 auth,
                 client,
                 &extra,
+                approved_content,
             )
             .await;
         let state = if status.is_success() {
@@ -2753,6 +3251,14 @@ impl Mcp {
                 "rhythm".into(),
                 if ok { body } else { json!({"error": body}) },
             );
+            // REQ: FLT-006, API-010 (T24.30) — the group and key it matched, and what applies.
+            let (ok, body) = self
+                .get(&format!("/api/v1/clients/{}/policy", enc(&c)), auth, client)
+                .await;
+            out.insert(
+                "policy".into(),
+                if ok { body } else { json!({"error": body}) },
+            );
             if let Some(ip) = ip {
                 let from = s(&args, "window").unwrap_or_else(|| "-24h".into());
                 for (key, extra) in [
@@ -2877,7 +3383,7 @@ impl Mcp {
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}, "resources": {"listChanged": false}, "prompts": {"listChanged": false}},
                     "serverInfo": {"name": "telltaledns", "title": "TelltaleDNS", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": "TelltaleDNS is a filtering DNS resolver. Start with get_overview, then narrow down with top_items, search_queries, get_client_profile, latency_breakdown, and upstream_health; explain_decision says why a name was blocked or routed. Times take relative offsets like -1h. To change something, a plan_* tool returns a planId and a preview without changing anything; apply_plan makes the change (an operator may have to approve it first). flush_cache, pause_blocking, and resume_blocking act at once. Every write needs a `reason`.",
+                    "instructions": "TelltaleDNS is a filtering DNS resolver. Start with get_overview, then narrow down with top_items, search_queries, get_client_profile, latency_breakdown, and upstream_health; explain_decision says why a name was blocked or routed. Times take relative offsets like -1h. To change something, a plan_* tool returns a planId and a preview without changing anything; apply_plan makes the change (an operator may have to approve it first). flush_cache, refresh_lists, pause_blocking, and resume_blocking act at once. Every write needs a `reason`.",
                 });
                 return (Some(rpc_ok(&id, &result)), Some(sid));
             }
@@ -3145,6 +3651,21 @@ mod tests {
         assert_eq!(g.body.unwrap()["block_mode"], "nxdomain");
         assert_eq!(g.merge, Some(("group", "kids".to_owned())));
         assert!((find("pause_blocking").write)(&json!({})).is_err());
+        // REQ: FLT-004 — refresh_lists: every list by default, some by name, or a dry run.
+        let r = (find("refresh_lists").write)(&json!({"reason": "r"})).unwrap();
+        assert_eq!(
+            (r.method, r.path.as_str()),
+            ("POST", "/api/v1/lists/refresh")
+        );
+        assert_eq!(r.body, Some(json!({})));
+        let r = (find("refresh_lists").write)(
+            &json!({"names": ["hagezi"], "dryRun": true, "reason": "r"}),
+        )
+        .unwrap();
+        assert_eq!(r.path, "/api/v1/lists/refresh?dryRun=true");
+        assert_eq!(r.body, Some(json!({"names": ["hagezi"]})));
+        assert!(r.summary.contains("hagezi"), "{}", r.summary);
+        assert_eq!(find("refresh_lists").effect, Effect::Immediate);
     }
 }
 

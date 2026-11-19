@@ -29,15 +29,20 @@ does, what to check, and what to do when a step fails. Decision record: ADR-097.
 1. **Write the notes** on `main`: `deploy/release/notes/vX.Y.Z.md`, a short Markdown summary
    for people upgrading (highlights, anything to do when upgrading, known issues). GitHub
    appends its generated changelog below it. Commit and push; wait for CI to pass on that
-   commit.
-2. **Run the workflow:** GitHub → Actions → **release** → Run workflow, version `X.Y.Z`
+   commit. Tasks may start the file early, with upgrade items, under a first line beginning
+   `_Draft`: preflight refuses the notes until that line is gone.
+2. **Re-check DB-IP's terms** (ADR-959 section 1): open the DB-IP.com IP to Country Lite page,
+   confirm the licence is still CC BY 4.0 with free redistribution of the derived file and the
+   attribution wording in `docs/third-party-notices.md` is still what they ask for. If it
+   changed, stop here, before the workflow, and open an issue: the GeoIP feature's source needs a new ADR.
+3. **Run the workflow:** GitHub → Actions → **release** → Run workflow, version `X.Y.Z`
    (`next` is optional; the default is `X.Y+1.0`).
-3. **Watch two runs:**
+4. **Watch two runs:**
    - **release** (about a minute): preflight, tag, start the tag's build, move `main` on.
    - **image** on ref `vX.Y.Z` (about 30 minutes): build and test every architecture, push
      the image tags, publish the chart, sign and publish the GitHub release, then
      **verify**. The release is done when `verify` is green.
-4. **After:** the README's release badge updates itself. Deployments that follow edge pin
+5. **After:** the README's release badge updates itself. Deployments that follow edge pin
    the next edge chart as usual.
 
 ### What preflight checks

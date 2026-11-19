@@ -31,6 +31,55 @@ impl Drop for Supervisor {
     }
 }
 
+/// The plugin's command line and environment. REQ: OPS-014, API-014 (ADR-903 §3) — it inherits
+/// the server's environment, but no `TELLTALE_*` variable (they can carry configuration with
+/// credentials, `TELLTALE_UPSTREAM_*` headers or an OIDC `client_secret`, besides the secrets
+/// keys, the bootstrap admin's password, and an API token: `telltale_config::NEVER_INHERITED`)
+/// except the two it is given.
+fn command(
+    program: &std::path::Path,
+    args: &[String],
+    socket: &std::path::Path,
+    name: &str,
+) -> Command {
+    command_from(
+        program,
+        args,
+        socket,
+        name,
+        std::env::vars_os().map(|(k, _)| k),
+    )
+}
+
+/// [`command`] with the names of the environment it would inherit given (tests).
+fn command_from(
+    program: &std::path::Path,
+    args: &[String],
+    socket: &std::path::Path,
+    name: &str,
+    inherited: impl Iterator<Item = std::ffi::OsString>,
+) -> Command {
+    let mut c = Command::new(program);
+    for v in telltale_config::NEVER_INHERITED {
+        c.env_remove(v);
+    }
+    for k in inherited {
+        if k.to_str()
+            .is_none_or(|k| k.starts_with(telltale_config::ENV_PREFIX))
+        {
+            c.env_remove(k);
+        }
+    }
+    c.args(args)
+        .env("TELLTALE_PLUGIN_SOCKET", socket)
+        .env("TELLTALE_UPSTREAM", name)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    c
+}
+
 /// Starts `program args` with `TELLTALE_PLUGIN_SOCKET=socket`, restarting it when it exits
 /// (1 s, doubling to 60 s; back to 1 s after a minute of running). Without a Tokio runtime
 /// (config checks), nothing is started.
@@ -52,15 +101,7 @@ pub(crate) fn supervise(
             }
             let _ = std::fs::remove_file(&socket);
             let started = Instant::now();
-            let child = Command::new(&program)
-                .args(&args)
-                .env("TELLTALE_PLUGIN_SOCKET", &socket)
-                .env("TELLTALE_UPSTREAM", &name)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true)
-                .spawn();
+            let child = command(&program, &args, &socket, &name).spawn();
             match child {
                 Ok(mut child) => {
                     info!(upstream = %name, program = %program.display(), "plugin started");
@@ -112,5 +153,62 @@ impl Either {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::*;
+
+    /// REQ: OPS-014, API-014 (ADR-903 §3) — a plugin is started without the secrets keys, the
+    /// bootstrap password, or the API token, and with its own socket and name.
+    #[test]
+    fn ops_014_plugin_env_has_no_secrets_key() {
+        let c = command_from(
+            std::path::Path::new("/usr/local/bin/plugin"),
+            &["--flag".to_owned()],
+            std::path::Path::new("/run/telltale/p.sock"),
+            "plug",
+            [
+                "PATH",
+                "TELLTALE_AUTH_OIDC_PROVIDER",
+                "TELLTALE_PLUGIN_SOCKET",
+                "HTTPS_PROXY",
+            ]
+            .into_iter()
+            .map(std::ffi::OsString::from),
+        );
+        let envs: Vec<(String, Option<String>)> = c
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        for k in [
+            "TELLTALE_SECRETS_KEY",
+            "TELLTALE_SECRETS_PREVIOUS_KEY",
+            "TELLTALE_BOOTSTRAP_ADMIN_PASSWORD",
+            "TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH",
+            "TELLTALE_TOKEN",
+            // Any other TELLTALE_* variable too (configuration that may hold a credential).
+            "TELLTALE_AUTH_OIDC_PROVIDER",
+        ] {
+            assert!(
+                envs.contains(&(k.to_owned(), None)),
+                "{k} removed: {envs:?}"
+            );
+        }
+        for k in ["PATH", "HTTPS_PROXY"] {
+            assert!(!envs.iter().any(|(e, _)| e == k), "{k} inherited: {envs:?}");
+        }
+        assert!(envs.contains(&("TELLTALE_UPSTREAM".to_owned(), Some("plug".to_owned()))));
+        assert!(envs.contains(&(
+            "TELLTALE_PLUGIN_SOCKET".to_owned(),
+            Some("/run/telltale/p.sock".to_owned())
+        )));
     }
 }

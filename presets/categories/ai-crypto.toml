@@ -1,0 +1,19 @@
+# TelltaleDNS content-category catalog: AI and Crypto (REQ: FLT-901, ADR-995).
+# Data, not code: compiled into the binary. Lists are never bundled: a node downloads
+# each source from its maintainer only while a group uses it.
+
+[[group]]
+id = "ai-crypto"
+name = "AI & Crypto"
+order = 2
+
+# An authored bundle (presets/services/ai.toml, FLT-012). A person turns it on with the group's
+# `blocked_services`, so the picker shows it as a Services entry (ADR-994 section 4.4).
+[[category]]
+id = "ai"
+name = "AI services and chatbots"
+group = "ai-crypto"
+description = "ChatGPT, Claude, Gemini, Copilot, Perplexity and similar chat services. A hand-written bundle of their domains, not a maintained list: new services arrive in later releases."
+kind = "service"
+service_category = "ai"
+

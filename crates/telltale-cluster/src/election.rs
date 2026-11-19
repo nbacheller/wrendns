@@ -92,6 +92,34 @@ impl Ballot {
         true
     }
 
+    /// REQ: CLU-005 (T24.26, ADR-990) — whether `self` differs from `before` in a way that must
+    /// reach the disk before a reply leaves: a vote (a new epoch or candidate), or a first lease.
+    /// A renewal only moves `lease_until_ms`, which is on this process's clock and is never read
+    /// back by another process ([`Ballot::adopt`] gives a restarted node a full lease), so it
+    /// isn't stored: renewing every [`RENEW_MS`] used to cost every voter an fsync each round,
+    /// and a slow one (an SD card) stalled the answer past the primary's deadline.
+    pub fn must_persist_since(&self, before: &Ballot) -> bool {
+        self.epoch != before.epoch
+            || self.candidate != before.candidate
+            || self.clock != before.clock
+            || (before.lease_until_ms == 0 && self.lease_until_ms > 0)
+    }
+
+    /// REQ: CLU-005 (T24.26, ADR-990) — the ballot a new elector starts from. The running
+    /// elector's own ballot, when there is one, is exact (renewals extend it in memory only).
+    /// A ballot read from disk has the lease of its last *stored* change, which may be older
+    /// than the last renewal, so a lease it records is taken to run a full [`LEASE_MS`] from
+    /// `now_ms`: never shorter than what was promised.
+    pub fn for_new_elector(previous: Option<Ballot>, stored: Ballot, now_ms: u64) -> Ballot {
+        previous.unwrap_or_else(|| {
+            let mut b = stored;
+            if b.lease_until_ms > 0 {
+                b.lease_until_ms = b.lease_until_ms.max(now_ms + LEASE_MS);
+            }
+            b
+        })
+    }
+
     /// Whether the lease granted to someone other than `who` is still running.
     pub fn lease_held_by_other(&self, who: &str, now_ms: u64) -> bool {
         now_ms < self.lease_until_ms && self.candidate != who
@@ -162,6 +190,7 @@ pub enum Out {
 
 /// One node's election driver.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)] // independent flags of one state machine
 pub struct Elector {
     pub id: String,
     /// Every voter's ID (this node's included when it votes).
@@ -183,9 +212,26 @@ pub struct Elector {
     next_round: u64,
     /// No new election before this (backoff with jitter).
     next_try_ms: u64,
+    /// REQ: CLU-005 (ADR-960) — whether this node has seen a lease from a primary. A server's
+    /// node stands only once it has ([`Elector::stand_only_after_a_lease`], which turns
+    /// `lease_gate` on); the protocol alone (the simulator, a first election from nothing)
+    /// doesn't need it.
+    lease_seen: bool,
+    lease_gate: bool,
+    /// REQ: CLU-005 (ADR-960) — a primary that took the role without an election (it adopted
+    /// automatic failover while running) renews at its next tick, not after a full interval.
+    renew_now: bool,
 }
 
 impl Elector {
+    /// REQ: CLU-005 (ADR-947) — the first try waits until `until_ms`. A node that starts an election
+    /// (or sees its voters change) has no lease to go by: none was granted yet, so a candidate with
+    /// no wait stands at once, even against a primary that is up and about to renew (the three-node
+    /// run deposed a fresh primary 70 ms after the third voter joined).
+    pub fn defer_first_try(&mut self, until_ms: u64) {
+        self.next_try_ms = self.next_try_ms.max(until_ms);
+    }
+
     pub fn new(id: &str, voters: Vec<String>, eligible: bool, ballot: Ballot) -> Self {
         Self {
             id: id.to_owned(),
@@ -199,7 +245,43 @@ impl Elector {
             stepping_down: false,
             next_round: 1,
             next_try_ms: 0,
+            lease_seen: false,
+            lease_gate: false,
+            renew_now: false,
         }
+    }
+
+    /// REQ: CLU-005 (ADR-960) — numbers this elector's rounds from `first`. A rebuilt elector
+    /// must not reuse a round number that a delayed reply to its predecessor still carries.
+    pub fn start_rounds_at(&mut self, first: u64) {
+        self.next_round = first.max(1);
+    }
+
+    /// REQ: CLU-005 (ADR-960) — from now on this node stands for election only after it has
+    /// seen a lease from another primary (its ballot holds one from before, or a vote it
+    /// granted since) and that lease has lapsed. A node that never saw one (a primary that
+    /// adopted automatic failover a moment ago and has not renewed yet) is never the one that
+    /// deposes it.
+    pub fn stand_only_after_a_lease(&mut self) {
+        self.lease_gate = true;
+        self.lease_seen = !self.ballot.candidate.is_empty()
+            && self.ballot.candidate != self.id
+            && self.ballot.lease_until_ms > 0;
+    }
+
+    /// Whether this node has seen a lease from another primary (see
+    /// [`Elector::stand_only_after_a_lease`]).
+    ///
+    /// A node whose own ballot is for itself (it was the primary) has seen one too once it learns
+    /// of a newer epoch: an election happened, so a majority granted a lease to someone else. A
+    /// deposed primary that comes back therefore stands if its successor dies before it has
+    /// granted that successor a single renewal (its own old lease refuses them for a lease period).
+    pub fn has_seen_a_lease(&self) -> bool {
+        !self.lease_gate
+            || self.lease_seen
+            || (self.ballot.candidate == self.id
+                && self.ballot.epoch > 0
+                && self.max_epoch > self.ballot.epoch)
     }
 
     /// Whether this node may become primary now: eligible and not in maintenance.
@@ -219,6 +301,7 @@ impl Elector {
     /// epoch): it renews at once and writes again once a majority still grants it.
     pub fn resume(&mut self, epoch: u64) {
         self.max_epoch = self.max_epoch.max(epoch);
+        self.renew_now = true;
         let round = self.round();
         self.phase = Phase::Leader {
             epoch,
@@ -251,7 +334,7 @@ impl Elector {
             if self.ballot.decide(ask, now_ms, applied).granted {
                 grants.insert(self.id.clone());
             }
-            if self.ballot != before {
+            if self.ballot.must_persist_since(&before) {
                 out.push(Out::Persist);
             }
         }
@@ -283,7 +366,10 @@ impl Elector {
                 ..
             } => {
                 // REQ: OPS-010 — a primary handing over lets its lease run out.
-                if !self.stepping_down && now_ms.saturating_sub(round_started_ms) >= RENEW_MS {
+                if !self.stepping_down
+                    && (self.renew_now || now_ms.saturating_sub(round_started_ms) >= RENEW_MS)
+                {
+                    self.renew_now = false;
                     let round = self.round();
                     let ask = Ask {
                         epoch,
@@ -315,6 +401,7 @@ impl Elector {
             }
             Phase::Follower
                 if self.may_stand()
+                    && self.has_seen_a_lease()
                     && now_ms >= self.next_try_ms
                     && !self.ballot.lease_held_by_other(&self.id, now_ms) =>
             {
@@ -347,8 +434,12 @@ impl Elector {
         let mut out = Vec::new();
         let before = self.ballot.clone();
         let reply = self.ballot.decide(ask, now_ms, self.applied);
-        if self.ballot != before {
+        if self.ballot.must_persist_since(&before) {
             out.push(Out::Persist);
+        }
+        // REQ: CLU-005 (ADR-960) — a lease granted to another candidate is a lease seen.
+        if reply.granted && !ask.pre && ask.candidate != self.id {
+            self.lease_seen = true;
         }
         if !ask.pre && reply.granted {
             self.observe_epoch(ask.epoch, &mut out);
@@ -393,13 +484,15 @@ impl Elector {
             {
                 grants.insert(from.to_owned());
             }
+            // A granted real vote for the epoch led carries that epoch (a stale reply from an
+            // earlier pre-vote round carries the voter's lower one).
             Phase::Leader {
+                epoch,
                 round,
                 grants,
                 round_started_ms,
                 lease_until_ms,
-                ..
-            } if *round == r.round => {
+            } if *round == r.round && r.epoch == *epoch => {
                 grants.insert(from.to_owned());
                 if grants.len() > self.voters.len() / 2 {
                     *lease_until_ms =
@@ -467,6 +560,90 @@ impl Elector {
 
 #[cfg(test)]
 mod tests {
+    // REQ: CLU-005 (T24.26, ADR-990) — a renewal of a lease already granted (same epoch, same
+    // candidate) is answered without storing the ballot. Before the fix every renewal changed
+    // `lease_until_ms`, so every voter fsynced `ballot.json` each 5 s round, and one slow fsync
+    // (an SD card) held an answer past the primary's 2 s deadline.
+    #[test]
+    fn clu_005_t24_26_a_renewal_is_not_stored() {
+        let voters: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_owned()).collect();
+        let mut v = Elector::new("c", voters, false, Ballot::default());
+        let ask = |round| Ask {
+            epoch: 1,
+            candidate: "a".into(),
+            round,
+            pre: false,
+            applied: (0, 0),
+        };
+        let (r, outs) = v.on_ask(&ask(1), 1_000);
+        assert!(r.granted);
+        assert!(outs.contains(&Out::Persist), "the vote itself is stored");
+        let lease = v.ballot.lease_until_ms;
+        for k in 1..=10u64 {
+            let (r, outs) = v.on_ask(&ask(k + 1), 1_000 + k * RENEW_MS);
+            assert!(r.granted);
+            assert!(!outs.contains(&Out::Persist), "renewal {k} is not stored");
+        }
+        assert!(
+            v.ballot.lease_until_ms > lease,
+            "the lease still extends in memory"
+        );
+        // A newer epoch is a vote again.
+        let newer = Ask {
+            epoch: 2,
+            candidate: "b".into(),
+            ..ask(99)
+        };
+        let (r, outs) = v.on_ask(&newer, 1_000 + 10 * RENEW_MS + LEASE_MS + 1);
+        assert!(r.granted && outs.contains(&Out::Persist));
+    }
+
+    // REQ: CLU-005 (T24.26, ADR-990) — the primary's own grant of its renewal is not stored either.
+    #[test]
+    fn clu_005_t24_26_the_primarys_own_renewal_is_not_stored() {
+        let voters: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_owned()).collect();
+        let mut a = Elector::new("a", voters, true, Ballot::default());
+        a.resume(1);
+        let persists = |outs: &[Out]| outs.iter().filter(|o| **o == Out::Persist).count();
+        // The first round grants the primary its own vote for the epoch: stored once.
+        let first = a.tick(0, 0);
+        assert_eq!(persists(&first), 1);
+        for k in 1..=5u64 {
+            assert_eq!(persists(&a.tick(k * RENEW_MS, 0)), 0, "round {k}");
+        }
+    }
+
+    // REQ: CLU-005 (T24.26, ADR-990) — a stored ballot's lease is older than the last renewal, so a
+    // new elector built from it takes a full lease from now; one built from a running elector's
+    // ballot keeps that ballot's exact lease.
+    #[test]
+    fn clu_005_t24_26_a_new_elector_never_shortens_a_lease() {
+        let stored = Ballot {
+            epoch: 3,
+            candidate: "a".into(),
+            lease_until_ms: 15_000,
+            clock: 1,
+        };
+        let b = Ballot::for_new_elector(None, stored.clone(), 100_000);
+        assert_eq!(b.lease_until_ms, 100_000 + LEASE_MS);
+        let live = Ballot {
+            lease_until_ms: 104_000,
+            ..stored.clone()
+        };
+        assert_eq!(
+            Ballot::for_new_elector(Some(live.clone()), stored.clone(), 100_000),
+            live
+        );
+        let none = Ballot {
+            lease_until_ms: 0,
+            ..stored
+        };
+        assert_eq!(
+            Ballot::for_new_elector(None, none, 100_000).lease_until_ms,
+            0
+        );
+    }
+
     use super::*;
 
     fn ask(epoch: u64, who: &str, pre: bool) -> Ask {
@@ -549,6 +726,27 @@ mod tests {
 
     // Two eligible nodes and a witness: the primary renews; when it dies, the other wins
     // only after the lease ran out.
+    /// REQ: CLU-005 (ADR-947) — a node that starts its election waits one lease before its first try,
+    /// so a primary that is up renews its lease first; after the wait it may stand.
+    #[test]
+    fn clu_005_d_a_new_candidate_waits_a_lease_before_its_first_try() {
+        let voters: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_owned()).collect();
+        let mut a = Elector::new("a", voters, true, Ballot::default());
+        a.defer_first_try(LEASE_MS);
+        let _ = a.tick(0, 0);
+        assert!(matches!(a.phase, Phase::Follower), "still waiting at 0");
+        let _ = a.tick(LEASE_MS - 1, 0);
+        assert!(
+            matches!(a.phase, Phase::Follower),
+            "still waiting just before the lease"
+        );
+        let _ = a.tick(LEASE_MS, 0);
+        assert!(
+            matches!(a.phase, Phase::PreCandidate { .. }),
+            "it may stand once the lease has been given its chance"
+        );
+    }
+
     #[test]
     fn clu_005_witness_failover_waits_for_the_lease() {
         let voters = vec!["a".to_owned(), "b".to_owned(), "w".to_owned()];
@@ -797,5 +995,177 @@ mod tests {
         assert_eq!(c.phase, Phase::Follower, "c never stood");
         assert_eq!(c.ballot.candidate, "b", "c voted for the Git-managed node");
         assert!(b.writable(90_000));
+    }
+
+    fn trio() -> Vec<Elector> {
+        let ids: Vec<String> = ["a", "b", "c"].iter().map(|v| (*v).to_owned()).collect();
+        ids.iter()
+            .map(|id| Elector::new(id, ids.clone(), true, Ballot::default()))
+            .collect()
+    }
+
+    // REQ: CLU-005 (ADR-960, T21.7) — automatic failover turned on under a running primary: the
+    // primary (role epoch 1, no ballot, no lease) renews at its first tick, holds a lease within
+    // one interval, and no replica stands while it renews, over a minute of renewals.
+    #[test]
+    fn clu_005_t21_7_a_running_primary_adopts_auto_and_is_not_deposed() {
+        let mut nodes = trio();
+        let (a, rest) = nodes.split_first_mut().unwrap();
+        let (b, c) = rest.split_at_mut(1);
+        let (b, c) = (&mut b[0], &mut c[0]);
+        for n in [&mut *b, &mut *c] {
+            n.stand_only_after_a_lease();
+            n.defer_first_try(1_000_000 + LEASE_MS);
+            assert!(!n.has_seen_a_lease());
+        }
+        a.stand_only_after_a_lease();
+        a.resume(1);
+        let t0 = 1_000_000;
+        assert!(!a.writable(t0), "no lease held yet");
+        let outs = a.tick(t0, 0);
+        assert!(
+            outs.iter().any(|o| matches!(o, Out::Send { .. })),
+            "it renews at its first tick, not after an interval: {outs:?}"
+        );
+        let (ev, _) = exchange(a, outs, &mut [&mut *b, &mut *c], t0);
+        assert!(
+            !ev.iter().any(|o| matches!(o, Out::Elected { .. })),
+            "no new election: {ev:?}"
+        );
+        assert!(a.writable(t0 + 1), "a lease within one interval");
+        assert_eq!(a.leading(), Some(1), "it keeps its epoch");
+        assert!(b.has_seen_a_lease() && c.has_seen_a_lease());
+        for t in (t0 + 250..=t0 + 60_000).step_by(250) {
+            let outs = a.tick(t, 0);
+            exchange(a, outs, &mut [&mut *b, &mut *c], t);
+            for r in [&mut *b, &mut *c] {
+                let outs = r.tick(t, 0);
+                assert!(outs.is_empty(), "a replica stood at {t} ms: {outs:?}");
+            }
+            assert!(a.writable(t), "the lease lapsed at {t} ms");
+        }
+        assert_eq!(a.leading(), Some(1));
+    }
+
+    // REQ: CLU-005 (ADR-960, T21.7) — a primary that resumes with no ballot asks at its very
+    // first tick even when the clock reads under one renewal interval (a fresh boot), writes
+    // only once a majority grants, and keeps its epoch.
+    #[test]
+    fn clu_005_t21_7_a_resumed_primary_renews_at_once_even_early_on_the_clock() {
+        let mut nodes = trio();
+        let (a, rest) = nodes.split_first_mut().unwrap();
+        let (b, c) = rest.split_at_mut(1);
+        a.stand_only_after_a_lease();
+        a.resume(3);
+        assert_eq!(a.leading(), Some(3));
+        assert!(!a.writable(100), "no lease before a majority grants");
+        let outs = a.tick(100, 0);
+        assert!(
+            outs.iter().any(|o| matches!(o, Out::Send { .. })),
+            "no renewal at 100 ms: {outs:?}"
+        );
+        exchange(a, outs, &mut [&mut b[0], &mut c[0]], 100);
+        assert!(a.writable(101));
+    }
+
+    // REQ: CLU-005 (ADR-960) — a grant that carries a lower epoch (a pre-vote's) gives no
+    // lease, and a rebuilt elector numbers its rounds apart from its predecessor's.
+    #[test]
+    fn clu_005_t21_7_a_stale_reply_gives_no_lease() {
+        let mut nodes = trio();
+        let a = &mut nodes[0];
+        a.stand_only_after_a_lease();
+        a.resume(3);
+        let outs = a.tick(1_000, 0);
+        let round = outs
+            .iter()
+            .find_map(|o| match o {
+                Out::Send { ask, .. } => Some(ask.round),
+                _ => None,
+            })
+            .unwrap();
+        for from in ["b", "c"] {
+            let stale = Reply {
+                round,
+                granted: true,
+                epoch: 2,
+            };
+            a.on_reply(from, &stale, 1_010);
+        }
+        assert!(!a.writable(1_020), "a stale grant gave a lease");
+        let ids: Vec<String> = ["a", "b", "c"].iter().map(|v| (*v).to_owned()).collect();
+        let mut fresh = Elector::new("a", ids, true, Ballot::default());
+        fresh.start_rounds_at(1 << 20);
+        fresh.resume(3);
+        let outs = fresh.tick(2_000, 0);
+        assert!(
+            outs.iter()
+                .any(|o| matches!(o, Out::Send { ask, .. } if ask.round >= 1 << 20)),
+            "{outs:?}"
+        );
+    }
+
+    // REQ: CLU-005 (ADR-960, T21.7) — a replica that never saw a lease from a primary doesn't
+    // stand, however long it waits; one that did stands once that lease has lapsed.
+    #[test]
+    fn clu_005_t21_7_a_replica_stands_only_after_a_lease_it_saw_lapses() {
+        let mut nodes = trio();
+        let (_a, rest) = nodes.split_first_mut().unwrap();
+        let (b, c) = rest.split_at_mut(1);
+        let (b, c) = (&mut b[0], &mut c[0]);
+        b.stand_only_after_a_lease();
+        c.stand_only_after_a_lease();
+        // b never hears from a primary: it waits for ever.
+        for t in (0..=600_000).step_by(1_000) {
+            assert!(
+                b.tick(t, 0).is_empty(),
+                "b stood at {t} ms with no lease seen"
+            );
+        }
+        // c grants a's lease at 100 s (a renewal), then a goes quiet.
+        let (reply, _) = c.on_ask(&ask(1, "a", false), 100_000);
+        assert!(reply.granted);
+        assert!(c.has_seen_a_lease());
+        assert!(
+            c.tick(110_000, 0).is_empty(),
+            "the lease it granted still runs at 110 s"
+        );
+        let outs = c.tick(116_000, 0);
+        assert!(
+            outs.iter().any(|o| matches!(o, Out::Send { .. })),
+            "the lease lapsed at 115 s: {outs:?}"
+        );
+    }
+
+    // REQ: CLU-005 (ADR-960, T21.7) — the lease a node saw survives a restart in its ballot, and
+    // a ballot for itself, or none, counts as no lease seen.
+    #[test]
+    fn clu_005_t21_7_a_stored_ballot_counts_as_a_lease_seen() {
+        let ids: Vec<String> = ["a", "b", "c"].iter().map(|v| (*v).to_owned()).collect();
+        let ballot = |who: &str, until| Ballot {
+            epoch: 1,
+            candidate: who.into(),
+            lease_until_ms: until,
+            clock: 7,
+        };
+        for (ballot, seen) in [
+            (Ballot::default(), false),
+            (ballot("b", 5_000), false), // its own vote: not a lease from a primary, until a newer epoch is seen
+            (ballot("a", 5_000), true),
+            (ballot("a", 0), false),
+        ] {
+            let mut e = Elector::new("b", ids.clone(), true, ballot.clone());
+            e.stand_only_after_a_lease();
+            assert_eq!(e.has_seen_a_lease(), seen, "{ballot:?}");
+        }
+        // A former primary (its ballot is for itself) that learns of a newer epoch has seen a
+        // lease: the election that made the epoch needed one.
+        let mut e = Elector::new("b", ids.clone(), true, ballot("b", 5_000));
+        e.stand_only_after_a_lease();
+        assert!(!e.has_seen_a_lease());
+        e.observe(1);
+        assert!(!e.has_seen_a_lease(), "its own epoch is not a newer one");
+        e.observe(2);
+        assert!(e.has_seen_a_lease());
     }
 }

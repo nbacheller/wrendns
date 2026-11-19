@@ -75,6 +75,10 @@ spec:
             # REQ: OPS-004 (ADR-046) — how this node updates (shown with the update status).
             - name: TELLTALE_INSTALL
               value: helm
+            # REQ: API-902 (T27.13, ADR-956 §4a) - the kubelet restarts an exited container, so the UI may
+            # offer "Restart now" (exit status 75).
+            - name: TELLTALE_SUPERVISOR
+              value: kubernetes
             # REQ: OPS-003 — node addresses count as infrastructure for the masked-client-IP check.
             - name: TELLTALE_NODE_IPS
               valueFrom:
@@ -100,6 +104,18 @@ spec:
             - name: TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH
               valueFrom:
                 secretKeyRef: { name: {{ . }}, key: {{ $.Values.auth.bootstrapAdmin.passwordHashKey }}, optional: true }
+            {{- end }}
+            {{- if include "telltale.secretsKeySecret" . }}
+            # REQ: OPS-014 (ADR-903 §3) — the secrets store's key, from a Secret mounted read-only
+            # (this pod only: resolver pods hold no stored secrets).
+            - name: TELLTALE_NODE_SECRETS_KEY_FILE
+              value: /etc/telltale-secrets-key/{{ .Values.secretsKey.key }}
+            {{- end }}
+            {{- if not .Values.persistence.enabled }}
+            # REQ: OPS-014 — the data directory isn't kept: stored secrets don't survive a restart
+            # (health: `secrets_ephemeral`).
+            - name: TELLTALE_DATA_EPHEMERAL
+              value: "1"
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -179,6 +195,11 @@ spec:
               mountPath: /etc/telltale-secrets/{{ .name }}
               readOnly: true
             {{- end }}
+            {{- if include "telltale.secretsKeySecret" . }}
+            - name: secrets-key
+              mountPath: /etc/telltale-secrets-key
+              readOnly: true
+            {{- end }}
             {{- if include "telltale.scaled" . }}
             - name: cluster-secret
               mountPath: /etc/telltale-cluster
@@ -203,6 +224,15 @@ spec:
           secret:
             secretName: {{ .secretName }}
             optional: {{ .optional | default false }}
+        {{- end }}
+        {{- with include "telltale.secretsKeySecret" . }}
+        - name: secrets-key
+          secret:
+            secretName: {{ . }}
+            defaultMode: 0440
+            items:
+              - key: {{ $.Values.secretsKey.key }}
+                path: {{ $.Values.secretsKey.key }}
         {{- end }}
         {{- if not .Values.persistence.enabled }}
         - name: data

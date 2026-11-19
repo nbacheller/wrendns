@@ -14,10 +14,11 @@
 //!   throughout (CLU-004): none of this is on the query path.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::election::{Ask, Ballot, Elector, LEASE_MS, Out, Reply};
 use crate::net::Cluster;
@@ -47,6 +48,9 @@ pub fn voters(id: &Identity) -> Vec<String> {
     v.dedup();
     v
 }
+
+/// Counts the electors built in this process (see `Elector::start_rounds_at`).
+static ELECTOR_GEN: AtomicU64 = AtomicU64::new(0);
 
 /// Whether automatic failover runs on this node: `auto` mode, three or more voters, and this
 /// node one of them.
@@ -104,7 +108,13 @@ pub fn answer(cluster: &Cluster, peer: &str, body: &[u8]) -> Result<Vec<u8>, Str
     } else {
         let mut b = load_ballot(cluster, now);
         let before = b.clone();
-        let reply = b.decide(&ask, now, (0, 0));
+        // A renewal: the asker is the primary this node follows, in the epoch it follows.
+        let renewal = ask.epoch == cluster.role().1
+            && cluster
+                .members()
+                .iter()
+                .any(|m| m.primary && m.node_id == ask.candidate && m.epoch == ask.epoch);
+        let reply = decide_without_election(&mut b, &ask, now, renewal);
         (reply, (b != before).then_some(b))
     };
     if let Some(b) = ballot {
@@ -116,6 +126,30 @@ pub fn answer(cluster: &Cluster, peer: &str, body: &[u8]) -> Result<Vec<u8>, Str
         cluster.note_vote(&ask.candidate, ask.epoch);
     }
     serde_json::to_vec(&reply).map_err(|e| e.to_string())
+}
+
+/// REQ: CLU-005 (ADR-960) — a node with no running election (manual mode, or not a voter)
+/// grants no real vote: with `auto` just turned off on a primary that now writes without a
+/// lease, a vote from here could make a second primary. A pre-vote changes nothing, so it is
+/// still answered.
+fn decide_without_election(b: &mut Ballot, ask: &Ask, now: u64, renewal: bool) -> Reply {
+    // A renewal (`renewal`: the primary this node follows, in its current epoch) is granted: it is what
+    // lets a primary that has just adopted `auto` get its lease, so it can publish the record
+    // that turns the replicas to `auto`. A vote for a higher epoch is refused.
+    if ask.pre || renewal {
+        b.decide(ask, now, (0, 0))
+    } else {
+        Reply {
+            round: ask.round,
+            granted: false,
+            epoch: b.epoch,
+        }
+    }
+}
+
+/// Whether a primary resumes its epoch under a new election (see `step`).
+fn resumes_as_primary(role: Role, epoch: u64, can_lead: bool) -> bool {
+    matches!(role, Role::Primary | Role::Emergency) && epoch > 0 && can_lead
 }
 
 /// REQ: CLU-005 (ADR-154, GitHub issue #3) — why an emergency primary refuses to hand over, on
@@ -186,19 +220,32 @@ pub async fn run(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
     let mut tick = tokio::time::interval(TICK);
     let mut id = cluster.identity.reload();
     let mut reloaded = tokio::time::Instant::now();
+    let mut stamp = meta_stamp(&cluster);
     loop {
         let reply = tokio::select! {
             _ = stop.changed() => return,
             _ = tick.tick() => None,
             Some(r) = rx.recv() => Some(r),
         };
-        if reloaded.elapsed() >= RELOAD {
+        // REQ: CLU-005 (ADR-960) — a change to `cluster.json` (`set-failover`, a signed record
+        // adopted from the primary) is taken up on this tick, not at the next reload: a running
+        // primary starts renewing its lease within one tick of the mode turning `auto`.
+        let now_stamp = meta_stamp(&cluster);
+        if reloaded.elapsed() >= RELOAD || now_stamp != stamp {
             id = cluster.identity.reload();
             reloaded = tokio::time::Instant::now();
+            stamp = now_stamp;
         }
         let outs = step(&cluster, &id, reply, now_ms());
         dispatch(&cluster, &id, outs, &tx);
     }
+}
+
+/// When `cluster.json` last changed (one `stat` per tick, on the cluster task).
+fn meta_stamp(cluster: &Cluster) -> Option<std::time::SystemTime> {
+    std::fs::metadata(cluster.identity.dir.join("cluster.json"))
+        .and_then(|m| m.modified())
+        .ok()
 }
 
 /// One turn of the election, under its lock: returns what to send and do.
@@ -211,6 +258,8 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
         // Manual mode: roles change only by `promote` (ADR-051).
         *guard = None;
         drop(guard);
+        // REQ: CLU-005 (T24.26): leaving automatic mode ends a lapse without a "renewed" claim.
+        cluster.end_lease_lapse_for_manual_mode();
         cluster.set_lease_ok(true);
         return Vec::new();
     }
@@ -221,19 +270,43 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
         .as_ref()
         .is_none_or(|e| e.voters != voters || e.eligible != can_lead)
     {
-        let mut el = Elector::new(
-            &id.meta.node_id,
-            voters,
-            can_lead,
-            load_ballot(cluster, now),
-        );
-        // A primary that restarts resumes its epoch if its own ballot is for it.
+        // REQ: CLU-005 (T24.26, ADR-990) — renewals extend a lease in memory only, so a new elector
+        // starts from the running one's ballot, or from a stored one with a full lease from now.
+        let previous = guard.as_ref().map(|e| e.ballot.clone());
+        let ballot = Ballot::for_new_elector(previous, load_ballot(cluster, now), now);
+        let mut el = Elector::new(&id.meta.node_id, voters, can_lead, ballot);
+        // A reply to the previous elector may still arrive: number this one's rounds apart.
+        el.start_rounds_at(1 + (ELECTOR_GEN.fetch_add(1, Ordering::Relaxed) << 20));
+        // REQ: CLU-005 (ADR-947) — a node that isn't the primary waits one lease period before its
+        // first try: no lease exists yet, so without the wait it would stand against a primary that is
+        // up and about to take its lease. The primary itself doesn't wait: it stands at once and
+        // takes the lease (waiting too let a replica win the race, in the three-node run).
+        if !cluster.is_primary() {
+            el.defer_first_try(now + LEASE_MS);
+        }
+        // REQ: CLU-005 (ADR-960) — a node stands only after it has seen a lease from another
+        // primary lapse. A primary that never held a lease under `auto` is never deposed.
+        el.stand_only_after_a_lease();
+        // A primary resumes its epoch whenever its election starts: after a restart, and when
+        // `auto` is turned on under it while it runs. It renews at once and writes again once a
+        // majority grants it. A primary that is stale (a newer epoch exists) is refused by the
+        // voters and steps down, as in any election.
         let (role, epoch) = cluster.role();
-        if role == Role::Primary
-            && el.ballot.epoch == epoch
-            && el.ballot.candidate == id.meta.node_id
-        {
+        if matches!(role, Role::Primary | Role::Emergency) && epoch > 0 && !can_lead {
+            warn!(
+                epoch,
+                "cluster: this primary can't lead under automatic failover (not eligible, or without the cluster key) and stops publishing until another node is elected"
+            );
+        }
+        if resumes_as_primary(role, epoch, can_lead) {
             el.resume(epoch);
+            // The primary was writing in manual mode; it pauses for the first round (a lease it
+            // never held can't be assumed) and says so once, not as a lost lease.
+            cluster.begin_lease();
+            info!(
+                epoch,
+                "cluster: this primary adopts automatic failover and renews its lease"
+            );
         }
         info!(voters = el.voters.len(), can_lead, "automatic failover on");
         *guard = Some(el);
@@ -266,10 +339,14 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
         .fold(cluster.role().1, u64::max);
     let mut outs = el.observe(seen);
     if let Some((from, r)) = reply {
+        cluster.note_voter_reply(&from, r.granted, r.epoch);
         outs.extend(el.on_reply(&from, &r, now));
     }
     let jitter = rand::random::<u64>() % (LEASE_MS / 2);
+    // REQ: CLU-005 (T24.26) — the round a leader is about to leave, for the debug line below.
+    let before = leader_round(el);
     outs.extend(el.tick(now, jitter));
+    log_round(el, before, now);
     // A primary writes only while its lease holds.
     cluster.set_lease_ok(!cluster.is_primary() || el.writable(now));
     cluster.set_failover_view(FailoverView {
@@ -294,6 +371,51 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
     outs
 }
 
+/// REQ: CLU-005 (T24.26) — debug lines for a leader's renewal rounds: when one is sent, and when
+/// it is left, with the grants it had (`before` is the round at the start of the turn).
+fn log_round(el: &Elector, before: Option<(u64, usize, u64)>, now: u64) {
+    let after = leader_round(el);
+    if let (Some((round, grants, started)), Some((next, ..))) = (before, after)
+        && round != next
+    {
+        debug!(
+            round,
+            grants,
+            need = el.voters.len() / 2 + 1,
+            voters = el.voters.len(),
+            round_age_ms = now.saturating_sub(started),
+            lease_ms_left = lease_left(el, now),
+            "cluster: lease renewal round ended"
+        );
+    }
+    if let Some((round, ..)) = after
+        && before.is_none_or(|(r, ..)| r != round)
+    {
+        debug!(round, "cluster: lease renewal round sent");
+    }
+}
+
+/// `(round, grants so far, started_ms)` of a leader's current renewal round.
+fn leader_round(el: &Elector) -> Option<(u64, usize, u64)> {
+    match &el.phase {
+        crate::election::Phase::Leader {
+            round,
+            grants,
+            round_started_ms,
+            ..
+        } => Some((*round, grants.len(), *round_started_ms)),
+        _ => None,
+    }
+}
+
+/// How long a leader's lease still runs.
+fn lease_left(el: &Elector, now: u64) -> u64 {
+    match el.phase {
+        crate::election::Phase::Leader { lease_until_ms, .. } => lease_until_ms.saturating_sub(now),
+        _ => 0,
+    }
+}
+
 /// Sends vote requests (their replies come back on `tx`) and applies role changes.
 fn dispatch(
     cluster: &Arc<Cluster>,
@@ -307,10 +429,31 @@ fn dispatch(
                 let (c, tx) = (Arc::clone(cluster), tx.clone());
                 tokio::spawn(async move {
                     let body = serde_json::to_vec(&ask).unwrap_or_default();
-                    if let Ok(b) = c.call(&to, KIND, body, ASK_DEADLINE).await
-                        && let Ok(r) = serde_json::from_slice::<Reply>(&b)
-                    {
-                        let _ = tx.send((to, r)).await;
+                    let sent = tokio::time::Instant::now();
+                    // REQ: CLU-005 (T24.26) — each vote request and renewal logs how long its
+                    // answer took (debug), so a lapse shows which voter was slow or silent.
+                    match c.call(&to, KIND, body, ASK_DEADLINE).await {
+                        Ok(b) => match serde_json::from_slice::<Reply>(&b) {
+                            Ok(r) => {
+                                debug!(
+                                    voter = %to,
+                                    round = ask.round,
+                                    pre = ask.pre,
+                                    granted = r.granted,
+                                    took_ms = u64::try_from(sent.elapsed().as_millis()).unwrap_or(u64::MAX),
+                                    "cluster: vote answer"
+                                );
+                                let _ = tx.send((to, r)).await;
+                            }
+                            Err(e) => debug!(voter = %to, "cluster: vote answer unreadable: {e}"),
+                        },
+                        Err(e) => debug!(
+                            voter = %to,
+                            round = ask.round,
+                            pre = ask.pre,
+                            took_ms = u64::try_from(sent.elapsed().as_millis()).unwrap_or(u64::MAX),
+                            "cluster: no vote answer: {e}"
+                        ),
                     }
                 });
             }
@@ -368,6 +511,18 @@ fn elected(cluster: &Cluster, id: &Identity, epoch: u64) {
     }
 }
 
+/// REQ: CLU-009 (T24.33) — the last vote reply a voter gave this node, on the wall clock.
+#[derive(Debug, Clone, Default)]
+pub struct VoterReply {
+    /// When the reply came (Unix ms).
+    pub at_ms: u64,
+    pub granted: bool,
+    /// The epoch the voter reported.
+    pub epoch: u64,
+    /// When it last granted a vote or lease renewal (Unix ms).
+    pub last_grant_ms: Option<u64>,
+}
+
 /// What the Cluster page shows about the election (ADR-056).
 #[derive(Debug, Clone, Default)]
 pub struct FailoverView {
@@ -384,6 +539,48 @@ pub struct FailoverView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // REQ: CLU-005 (ADR-960) — a node in manual mode refuses a real vote but answers a pre-vote.
+    #[test]
+    fn clu_005_t21_7_manual_mode_refuses_real_votes() {
+        let ask = |pre| Ask {
+            epoch: 2,
+            candidate: "c".into(),
+            round: 1,
+            pre,
+            applied: (0, 0),
+        };
+        let mut b = Ballot::default();
+        let r = decide_without_election(&mut b, &ask(false), 1_000, false);
+        assert!(!r.granted);
+        assert_eq!(b, Ballot::default(), "the ballot moved");
+        assert!(decide_without_election(&mut b, &ask(true), 1_000, false).granted);
+        // A renewal (the caller found the asker to be the primary this node follows, in its
+        // epoch) is granted even on an empty ballot, which is the state of a replica that never
+        // voted; a vote for another epoch or another candidate is refused.
+        let mk = |epoch, candidate: &str| Ask {
+            epoch,
+            candidate: candidate.into(),
+            round: 1,
+            pre: false,
+            applied: (0, 0),
+        };
+        let mut b = Ballot::default();
+        assert!(decide_without_election(&mut b, &mk(1, "a"), 1_000, true).granted);
+        assert_eq!(b.epoch, 1);
+        assert!(!decide_without_election(&mut b, &mk(2, "a"), 1_000, false).granted);
+        assert!(!decide_without_election(&mut b, &mk(1, "c"), 1_000, false).granted);
+    }
+
+    // REQ: CLU-005 (ADR-960) — a primary resumes whatever its stored ballot says.
+    #[test]
+    fn clu_005_t21_7_a_primary_resumes_whatever_its_ballot() {
+        assert!(resumes_as_primary(Role::Primary, 1, true));
+        assert!(resumes_as_primary(Role::Emergency, 4, true));
+        assert!(!resumes_as_primary(Role::Replica, 1, true));
+        assert!(!resumes_as_primary(Role::Primary, 0, true));
+        assert!(!resumes_as_primary(Role::Primary, 1, false));
+    }
 
     /// REQ: CLU-005 (ADR-154, GitHub issue #3) — an emergency primary hands over only under
     /// automatic failover and the `GitOps` authority, only when it is an emergency primary, and

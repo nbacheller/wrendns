@@ -7,17 +7,46 @@
   import { poll } from '../lib/poll';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import TuningSettings from '../lib/components/TuningSettings.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
   import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
   import TabPanel from '../lib/components/TabPanel.svelte';
   import WallDisplays from '../lib/components/WallDisplays.svelte';
+  import BackupCard from '../lib/components/BackupCard.svelte';
+  // REQ: OPS-011, OPS-012 (T27.11) — this node's support-log and update switches (admins).
+  import NodeSwitches from '../lib/components/NodeSwitches.svelte';
+  // REQ: DNS-011 (T27.11) — DNSSEC mode and negative trust anchors, under Query handling.
+  import DnssecCard from '../lib/components/DnssecCard.svelte';
+  import GuardedCard from '../lib/components/GuardedCard.svelte';
   import SupportPackage from '../lib/components/SupportPackage.svelte';
+  import SecretsPanel from '../lib/components/SecretsPanel.svelte';
+  import MapSettingsCard from '../lib/components/MapSettingsCard.svelte';
+  import OidcProviders from '../lib/components/OidcProviders.svelte';
+  import TelemetryOutputs from '../lib/components/TelemetryOutputs.svelte';
+  import DomainIcon from '../lib/icons/DomainIcon.svelte';
+  import { iconPrefs, setIconPrefs } from '../lib/icons/prefs.svelte';
+
+  // OBS-039 — what the Domain icons card previews: a brand, an ordinary name, a name of the network.
+  const ICON_PREVIEW = ['www.netflix.com', 'cdn.example.org', 'nas.home.arpa'];
+  import PiholeImport from '../lib/components/PiholeImport.svelte';
+  import PiholeApi from '../lib/components/PiholeApi.svelte';
+  // REQ: OBS-902 (T26.4, ADR-959) — the GeoIP database for the world view: status for all, controls for admins.
+  import GeoipCard from '../lib/components/GeoipCard.svelte';
 
   const tabs = $derived<TabItem[]>(
     [
       { id: 'account', label: 'Account' },
       { id: 'tokens', label: 'API tokens' },
+      // REQ: API-015 (T23.6) — stored secrets: operators see them, admins set them.
+      ...(can('operator') ? [{ id: 'secrets', label: 'Integrations & secrets' }] : []),
       ...(can('admin') ? [{ id: 'users', label: 'Users' }, { id: 'audit', label: 'Audit log' }] : []),
+      // REQ: API-016 (T23.10) — the OIDC providers people sign in with: an admin's, applied without a restart.
+      ...(can('admin') ? [{ id: 'signin', label: 'Sign-in' }] : []),
+      // REQ: API-016 (T23.11) — where events and metrics go: operators see it, an admin changes it.
+      ...(can('operator') ? [{ id: 'telemetry', label: 'Telemetry' }] : []),
+      // REQ: API-007 (T24.18) — importing a Pi-hole export is an admin's (never an agent's); REQ: API-005
+      // (T24.10) — so is the Pi-hole compatible API (statistics and blocking on/off for Pi-hole clients).
+      ...(can('admin') ? [{ id: 'pihole', label: 'Pi-hole' }] : []),
       { id: 'system', label: 'System' },
       // REQ: API-005 (ADR-121) — how queries are handled (cache, rate limit, what's kept out of
       // the log, simulation), apart from the node's own housekeeping.
@@ -49,6 +78,13 @@
       help: 'One per line; each covers its subdomains too. Noise like connectivity checks, time servers, or a monitoring probe.' },
     { key: 'clients', label: 'Devices', type: 'lines', placeholder: '192.168.1.10\n10.20.0.0/24',
       help: 'Addresses or networks, one per line (a monitoring host, say).' },
+    // REQ: OBS-903 (T24.35, ADR-1014) — kept out of the query log only; the statistics still count them.
+    { key: 'log.own_lookups', label: "Leave this node's own lookups out of the query log", type: 'bool', initial: false,
+      help: "Loopback (127.0.0.1, ::1) and this node's own addresses: a health check, a watchdog, programs on the host. They are answered and counted in the statistics; only the log skips them." },
+    { key: 'log.clients', label: 'Log only: devices', type: 'lines', placeholder: 'kitchen-tablet\n192.168.1.10\n10.20.0.0/24',
+      help: 'Addresses, networks or device names (as named under Clients), one per line, kept out of the query log, the live view and event sinks. Still counted in the dashboard and top lists.' },
+    { key: 'log.domains', label: 'Log only: domains', type: 'lines', placeholder: 'localhost\n*.lan',
+      help: 'One per line. localhost is that name only; *.lan is every name under lan (not lan itself). Still counted in the dashboard and top lists.' },
   ];
   // REQ: OBS-024 (T13.1) — the fields of `[simulate]`.
   const simulateFields: Field[] = [
@@ -63,6 +99,8 @@
     { key: 'max_rows', label: 'Most logged queries read per node', type: 'number', placeholder: '2000000', advanced: true,
       help: 'At least 1,000. Newest first.' },
   ];
+  // REQ: OBS-901, OBS-902 — bumped when the GeoIP card saves `[map]`, to remount the map card.
+  let mapSettingsRev = $state(0);
   // REQ: CLU-013 (T13.2) — `[cluster.rollout]`: a canary picker over the cluster's nodes, sites,
   // and its resolver pods, the bake, and the guard.
   let clusterView = $state<S['ClusterView'] | null>(null);
@@ -98,6 +136,41 @@
     const secs = Number(v.bake_secs ?? 300);
     return `Changes reach ${named} (and the primary) first, and the rest after ${secs >= 120 ? `${Math.round(secs / 60)} minutes` : `${secs} s`} if nothing fails.`;
   };
+  // REQ: DNS-019 (T24.12, ADR-904, ADR-914) — the fields of `[special]`. `ddr_name` is an admin's.
+  const specialFields: Field[] = [
+    { key: 'block_icloud_private_relay', label: 'Block iCloud Private Relay names', type: 'bool', initial: true,
+      help: "mask.icloud.com and mask-h2.icloud.com answer NXDOMAIN. Apple devices then turn Private Relay off on this network and keep using this resolver, so the filters apply (Pi-hole's default)." },
+    { key: 'single_label_nxdomain', label: 'Keep one-label names off the internet', type: 'bool', initial: false,
+      help: 'A name with no dot (nas) that nothing local answers gets NXDOMAIN, instead of a lookup on the internet. A route for it still applies.' },
+    { key: 'block_firefox_canary', label: "Answer Firefox's DoH canary NXDOMAIN", type: 'bool', initial: true, advanced: true,
+      help: "use-application-dns.net. Firefox then keeps the network's DNS instead of switching to its own encrypted resolver." },
+    { key: 'private_ptr_nxdomain', label: 'Private reverse lookups get NXDOMAIN', type: 'bool', initial: true, advanced: true,
+      help: "Reverse lookups for private addresses don't go to the internet, unless a local record or a route covers them (RFC 6303)." },
+    { key: 'refuse_chaos', label: 'Refuse CHAOS queries', type: 'bool', initial: true, advanced: true,
+      help: 'version.bind, id.server, and the like get REFUSED.' },
+    { key: 'localhost', label: 'Answer localhost', type: 'bool', initial: true, advanced: true,
+      help: 'localhost and *.localhost answer 127.0.0.1 and ::1.' },
+    { key: 'ddr_name', label: 'Encrypted DNS name (DDR)', type: 'text', placeholder: 'dns.example.com', admin: true,
+      help: "The name on this node's encrypted listeners' certificates. Windows 11, iOS, and macOS then find those listeners by themselves. Only an admin sets it: it is one name for the whole cluster." },
+  ];
+  // REQ: DNS-019 (ADR-904) — the DDR hint: the encrypted listeners of every node, and whether the
+  // name is on their certificates (the listener checks' results).
+  function ddrHint(name: string, results: S['ProbeResult'][] | null): string {
+    if (results === null) return 'Checking the listeners…';
+    const enc = results.filter((p) => p.listener && ['dot', 'doh', 'doq', 'doh3'].includes(p.proto));
+    const where = (p: S['ProbeResult']) => `${p.node ?? 'this node'} ${p.proto}`;
+    if (enc.length === 0) {
+      return name
+        ? "Can't check the certificates: the listener checks are off or have no results yet ([probe] enabled)."
+        : 'No encrypted listeners on this node: nothing to advertise.';
+    }
+    const list = enc.map(where).join(', ');
+    if (!name) return `Encrypted listeners: ${list}. Enter a name to advertise them.`;
+    const missing = enc.filter((p) => !(p.certNames ?? []).some((n) => n.toLowerCase() === name.toLowerCase()));
+    if (missing.length === 0) return `Every encrypted listener's certificate covers ${name}: ${list}.`;
+    return `Not on the certificate of ${missing.map(where).join(', ')}: a device that uses ${name} would refuse it. Listeners: ${list}.`;
+  }
+  const ddrNote = (v: Record<string, unknown>) => ddrHint(String(v.ddr_name ?? '').trim(), probes);
   const tab = $derived(activeTab(tabs));
 
   // ---- account
@@ -170,8 +243,27 @@
     ['config:write:clients', 'Name and regroup devices'],
     ['config:write:records', 'Change names on my network'],
     ['config:write:forwards', 'Send domains to other servers'],
+    ['ops:pause', 'Pause and resume blocking'],
+    ['ops:anomalies', 'Acknowledge device anomalies (and take it back)'],
+    ['ops:discovery_test', 'Test an SNMP agent of the network inventory (admin only)'],
     ['cluster:admin', 'Promote a node; staged rollouts and pins'],
   ];
+  // REQ: API-005 (T22.4, AGT-004) — scope presets: the scopes an integration's README asks for.
+  const agentPresets: Record<string, { label: string; name: string; scopes: string[] }> = {
+    'home-assistant': {
+      label: 'Home Assistant',
+      name: 'home-assistant',
+      scopes: ['analytics:read', 'config:read', 'ops:pause', 'ops:anomalies', 'config:write:clients'],
+    },
+  };
+  let tokenPreset = $state('');
+  function applyPreset(id: string) {
+    tokenPreset = id;
+    const p = agentPresets[id];
+    if (!p) return;
+    tokenScopes = [...p.scopes];
+    if (!tokenName.trim()) tokenName = p.name;
+  }
   let tokenScopes = $state<string[]>(['analytics:read', 'config:read']);
   let tokenGroup = $state('');
   let newToken = $state('');
@@ -388,6 +480,9 @@
   $effect(() => {
     if (tab === 'system') return poll(loadProbes, 10_000);
   });
+  $effect(() => {
+    if (tab === 'queries') void loadProbes();
+  });
   const certText = (p: S['ProbeResult']) =>
     p.certDaysLeft == null
       ? (p.certError ?? '')
@@ -462,8 +557,9 @@
             </li>
             <li>Enter the 6-digit code it shows.</li>
           </ol>
+          <!-- REQ: API-003 (issue #64) — in a quoted attribute Svelte reads `{6}` as an expression, so the pattern is one. -->
           <form class="row" onsubmit={enableTotp}>
-            <input inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required placeholder="123456" bind:value={totpCode} />
+            <input inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern={"[0-9]{6}"} required placeholder="123456" bind:value={totpCode} />
             <button class="primary" type="submit">Turn on</button>
             <button type="button" onclick={() => (totp = null)}>Cancel</button>
           </form>
@@ -471,6 +567,35 @@
           <p class="muted">Ask for a code from an authenticator app when signing in, on top of the password.</p>
           <div><button onclick={startTotp}>Set up two-factor sign-in</button></div>
         {/if}
+      </section>
+
+      <!-- REQ: OBS-039 (ADR-167) — how this browser draws the mark left of a domain name. -->
+      <section class="card stack-card" data-testid="icons-card">
+        <h2>Domain icons<HelpButton id="domain-icons" /></h2>
+        <p class="muted">
+          The small mark left of a domain name in the dashboard's lists and the query log. It's drawn from what TelltaleDNS already
+          knows, so nothing about your queries is sent to anyone. Remembered for you in this browser.
+        </p>
+        <div class="icon-row">
+          <span class="icon-lbl" id="icons-style-lbl">Style</span>
+          <span class="seg small" role="group" aria-labelledby="icons-style-lbl">
+            <button aria-pressed={iconPrefs.style === 'brand'} onclick={() => setIconPrefs({ style: 'brand' })}>Brand and monogram</button>
+            <button aria-pressed={iconPrefs.style === 'mono'} onclick={() => setIconPrefs({ style: 'mono' })}>Monogram only</button>
+            <button aria-pressed={iconPrefs.style === 'off'} onclick={() => setIconPrefs({ style: 'off' })}>Off</button>
+          </span>
+        </div>
+        <div class="icon-row">
+          <span class="icon-lbl" id="icons-size-lbl">Size</span>
+          <span class="seg small" role="group" aria-labelledby="icons-size-lbl">
+            <button aria-pressed={iconPrefs.size === 'default'} disabled={iconPrefs.style === 'off'} onclick={() => setIconPrefs({ size: 'default' })}>Default</button>
+            <button aria-pressed={iconPrefs.size === 'small'} disabled={iconPrefs.style === 'off'} onclick={() => setIconPrefs({ size: 'small' })}>Small</button>
+          </span>
+        </div>
+        <ul class="icon-preview" aria-label="Preview">
+          {#each ICON_PREVIEW as n (n)}
+            <li><DomainIcon name={n} /><span class="mono small">{n}</span></li>
+          {/each}
+        </ul>
       </section>
     </div>
   {:else if tab === 'tokens'}
@@ -506,6 +631,12 @@
       {#if tokenKind === 'agent'}
         <fieldset class="agent-scopes">
           <legend>What the agent may do<HelpButton id="agent-tokens" /></legend>
+          <label>Preset:
+            <select aria-label="Scope preset" value={tokenPreset} onchange={(e) => applyPreset((e.currentTarget as HTMLSelectElement).value)}>
+              <option value="">Custom</option>
+              {#each Object.entries(agentPresets) as [id, p] (id)}<option value={id}>{p.label}</option>{/each}
+            </select>
+          </label>
           {#each agentScopes as [id, label] (id)}
             <label><input type="checkbox" value={id} bind:group={tokenScopes} /> {label} <code class="small">{id}</code></label>
           {/each}
@@ -553,9 +684,31 @@
         </div>
       {/if}
     </section>
+  {:else if tab === 'secrets' && can('operator')}
+    <!-- REQ: API-015 (T23.6, ADR-903 §9) — the Integrations & secrets tab. -->
+    <section class="card" data-testid="secrets-tab">
+      <h2>Integrations &amp; secrets</h2>
+      <p class="muted">
+        Passwords and tokens that integrations use (a router's API key, an alert's token, an OIDC client secret), kept encrypted on
+        this node. They are never shown again after they're saved.
+      </p>
+    </section>
+    <SecretsPanel />
+  {:else if tab === 'signin' && can('admin')}
+    <!-- REQ: API-016 (T23.10, ADR-967) — the Sign-in tab (admins only): OIDC providers. -->
+    <OidcProviders />
+  {:else if tab === 'telemetry' && can('operator')}
+    <!-- REQ: API-016 (T23.11, ADR-984) — the Telemetry tab: event sinks and the OTLP export (admins change them). -->
+    <TelemetryOutputs />
+  {:else if tab === 'pihole' && can('admin')}
+    <!-- REQ: API-007 (T24.18, ADR-940) — the Pi-hole tab (admins only): the import, and (REQ: API-005,
+         T24.10, ADR-961) the Pi-hole compatible API. -->
+    <PiholeApi />
+    <PiholeImport />
   {:else if tab === 'users' && can('admin')}
     <section class="card">
       <h2>Users<HelpButton id="users" /></h2>
+      <p class="muted">Password sign-in can be limited by the server's <code>[auth.oidc]</code> settings. Without <code>allowed_admin_networks</code>, break-glass sign-in is from this computer only.<HelpButton id="break-glass" /></p>
       <ErrorNote error={userError} />
       <div class="table-wrap">
         <table>
@@ -712,6 +865,7 @@
       </p>
     {/if}
   {:else if tab === 'system'}
+    <NodeSwitches />
     <section class="card">
       <h2>System<HelpButton id="system" /></h2>
       {#if info}
@@ -731,8 +885,12 @@
       <p class="muted small">API reference: <a href="/api/v1/openapi.json" target="_blank" rel="noreferrer">/api/v1/openapi.json</a> (OpenAPI 3.1).</p>
     </section>
     <!-- REQ: OBS-020 (ADR-107) — can clients reach each listener? -->
+    <!-- REQ: OBS-005 (T27.5, ADR-1007) — the per-client series, an admin's setting. -->
+    <TuningSettings which="metrics" />
     <section class="card" data-testid="probes">
       <h2>Listener checks<HelpButton id="probes" /></h2>
+      <!-- REQ: OBS-020 (T27.5, ADR-1007) — the probes' interval and targets. -->
+      <TuningSettings which="probe" />
       {#if probes == null}
         <p class="empty">Loading…</p>
       {:else if probes.length === 0}
@@ -849,28 +1007,34 @@
       </section>
     {/if}
     {#if can('admin')}
-      <!-- REQ: API-007 (T6.7) -->
-      <section class="card">
-        <h2>Backup<HelpButton id="backup" /></h2>
-        <p>
-          One file with your settings, users and API tokens, the devices and names you added here, the audit log, and
-          statistics history. Restore it on a new machine with <code>telltale backup restore FILE</code>.
-        </p>
-        <p><a class="button" href="/api/v1/backup" download>Download a backup</a></p>
-        <p class="muted small">
-          It holds password hashes, so keep it private. The query log isn't included; for that, run
-          <code>telltale backup create --include-qlog</code> on the server.
-        </p>
-      </section>
+      <!-- REQ: API-902 (T27.13, ADR-956) - the guarded settings' state, the restart, and the recovery steps. -->
+      <GuardedCard />
+      <!-- REQ: API-007 (T6.7, T23.9) -->
+      <BackupCard />
       <!-- REQ: OPS-011 (ADR-156) — one redacted file for a bug report. -->
       <SupportPackage />
     {/if}
   {:else if tab === 'queries'}
+    <DnssecCard />
     <!-- REQ: DNS-006 (T6.15) — the cache has its own page now. -->
     <section class="card">
       <h2>Cache</h2>
       <p class="small">Hit rates, what's cached, settings, lookups, and flushing are on the <a href="#/cache">Cache page</a>.</p>
     </section>
+    <!-- REQ: FLT-901 (T24.29) — the category entry budget and the ad block size are in the list settings (Lists page). -->
+    <section class="card" data-testid="filtering-moved">
+      <h2>Filtering</h2>
+      <p class="small">The category entry budget and the ad block size are with the other list settings on the <a href="#/lists">Lists page</a>.<HelpButton id="category-budget" /></p>
+    </section>
+    <!-- REQ: DNS-019 (T24.12, ADR-904, ADR-914) — the special names: switches, and the DDR name (admin). -->
+    <ConfigEditor kind="special" path="special-names" singleton title="Special names" noun="special names" fields={specialFields}
+      help="special-names" note={ddrNote}
+      summary={(d) =>
+        `${d.block_icloud_private_relay === false ? 'Private Relay allowed' : 'Private Relay blocked'}, ${d.single_label_nxdomain ? 'bare names kept local' : 'bare names go upstream'}, ${d.ddr_name ? `DDR name ${String(d.ddr_name)}` : 'no DDR name'}`} />
+    <p class="muted small">
+      Names with a special meaning, answered without asking the internet. A change applies to the next query on every node, with no restart.
+      Lists and rules still apply to everything else.<HelpButton id="special-names" /> The encrypted DNS name is how devices find this node's encrypted listeners by themselves.<HelpButton id="ddr" />
+    </p>
     <!-- REQ: DNS-014 (review 01 q1) — the per-client rate limit, adjustable here and in the config file. -->
     <ConfigEditor kind="ratelimit" path="ratelimit" singleton title="Rate limit" noun="rate limit" fields={rateLimitFields}
       summary={(d) => (d.enabled === false ? 'off' : `${String(d.queries)} queries per ${String(d.window_secs)} s per client, then ${String(d.action)}`)} />
@@ -882,12 +1046,18 @@
     <ConfigEditor kind="exclusions" path="exclusions" singleton title="Kept out of the log" noun="exclusions" fields={exclusionFields}
       summary={(d) => {
         const n = (k: string) => (Array.isArray(d[k]) ? (d[k] as unknown[]).length : 0);
-        if (n('names') + n('clients') === 0) return 'nothing excluded';
-        return `${d.enabled === false ? 'off: ' : ''}${n('names')} names, ${n('clients')} devices`;
+        const log = (d.log ?? {}) as Record<string, unknown>;
+        const ln = (k: string) => (Array.isArray(log[k]) ? (log[k] as unknown[]).length : 0);
+        const logOnly = ln('clients') + ln('domains') + (log.own_lookups ? 1 : 0);
+        if (n('names') + n('clients') + logOnly === 0) return 'nothing excluded';
+        const own = log.own_lookups ? ", this node's own lookups" : '';
+        return `${d.enabled === false ? 'off: ' : ''}${n('names')} names, ${n('clients')} devices; log only: ${ln('domains')} domains, ${ln('clients')} devices${own}`;
       }} />
     <p class="muted small">
       Their queries are still answered and still counted in <code>/metrics</code>, but left out of the query log, the live view,
       the dashboard and top lists, anomalies, and exports, on every node. Queries logged before stay.<HelpButton id="exclusions" />
+      The "Log only" fields leave queries out of the query log, the live view and event sinks alone: the dashboard and top lists
+      still count them.<HelpButton id="qlog-exclusions" />
     </p>
     <!-- REQ: OBS-024 (T13.1) — change simulation's switches and bounds. -->
     <ConfigEditor kind="simulate" path="simulate-settings" singleton title="Change simulation" noun="simulation settings" fields={simulateFields}
@@ -900,11 +1070,42 @@
       A simulation replays the query log with and without a change and shows what would have been answered differently. It never
       touches DNS answers and runs at background priority; at query-log privacy level 1 or above names can't be replayed.
     </p>
+    <!-- REQ: OBS-901 (T26.6, ADR-958) — the live network map's sampling and thresholds. -->
+    <!-- Re-read after a GeoIP save: both cards write the one `[map]` entry, and a stale map card
+         would put the old `geoip` back (or be refused for an operator). -->
+    {#key mapSettingsRev}
+      <MapSettingsCard />
+    {/key}
+    <!-- REQ: OBS-902 (T26.4, ADR-959) — the GeoIP database: everyone sees its status, an admin controls it. -->
+    <GeoipCard onsaved={() => mapSettingsRev++} />
   {/if}
   </TabPanel>
 </div>
 
 <style>
+  .icon-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    margin: 10px 0;
+  }
+  .icon-lbl {
+    width: 3.2em;
+    color: var(--muted);
+  }
+  .icon-preview {
+    list-style: none;
+    margin: 14px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 8px;
+  }
+  .icon-preview li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
   .change-filters {
     display: flex;
     flex-wrap: wrap;

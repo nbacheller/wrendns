@@ -736,6 +736,7 @@ pub(crate) async fn cluster_compare(
     State(b): State<Shared>,
     Query(p): Query<CompareParams>,
 ) -> Result<Json<NodeCompare>, Problem> {
+    let b = crate::request_backend(&b);
     let now = b.now_unix_seconds();
     let from = time_param(p.from.as_deref(), now.saturating_sub(86_400), now, "from")?;
     let to = time_param(p.to.as_deref(), now + 1, now, "to")?;

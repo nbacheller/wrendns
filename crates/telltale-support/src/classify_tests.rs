@@ -25,6 +25,101 @@ fn ops_011_every_string_field_of_the_schema_has_a_class() {
     );
 }
 
+/// REQ: API-014 (ADR-903 §4) — every field the support package keeps out as a secret is either
+/// in the credential table every API read surface redacts (`telltale_config::credentials::PATHS`)
+/// or in its reasoned list of fields that aren't credentials (usernames, a public client ID).
+/// The table's paths are real fields too.
+#[test]
+fn api_014_credential_paths_cover_secret_class() {
+    use telltale_config::credentials::{NOT_CREDENTIALS, PATHS};
+    let norm = |p: &str| p.trim_end_matches(".*").replace("[*]", "[]");
+    let covered: Vec<String> = PATHS.iter().map(|c| norm(c.path)).collect();
+    let uncovered: Vec<&str> = TABLE
+        .iter()
+        .filter(|(_, c)| *c == Class::Secret)
+        .map(|(p, _)| *p)
+        .filter(|p| !covered.iter().any(|c| c == p))
+        .filter(|p| !NOT_CREDENTIALS.iter().any(|(n, _)| n == p))
+        .collect();
+    assert!(
+        uncovered.is_empty(),
+        "secret-class fields neither redacted by the API (telltale-config credentials::PATHS) nor listed as not credentials (NOT_CREDENTIALS, with a reason): {uncovered:#?}"
+    );
+    // REQ: API-014 (review of T23.1) — and every field classed `url` has its password redacted.
+    let url_covered: Vec<String> = PATHS
+        .iter()
+        .filter(|c| c.part == telltale_config::credentials::Part::UrlPassword)
+        .map(|c| norm(c.path))
+        .collect();
+    let urls: Vec<&str> = TABLE
+        .iter()
+        .filter(|(_, c)| *c == Class::Url)
+        .map(|(p, _)| *p)
+        .filter(|p| !url_covered.iter().any(|c| c == p))
+        .collect();
+    assert!(
+        urls.is_empty(),
+        "url-class fields whose password the API doesn't redact (add them to credentials::PATHS as UrlPassword): {urls:#?}"
+    );
+    let info = schema_info();
+    for p in &covered {
+        assert!(info.needs_class.contains(p), "PATHS names no field: {p}");
+    }
+    for (p, why) in NOT_CREDENTIALS {
+        assert_eq!(class_of(p), Some(Class::Secret), "{p}");
+        assert!(why.len() > 20, "{p}: say why");
+    }
+}
+
+/// REQ: API-014 (T23.2, ADR-903 §4) — every file path an API entry can set is held to the path
+/// rules (`telltale_config::credentials::API_PATHS`): the fields of the API's entry kinds classed
+/// `scan` are either in it or named here as not paths.
+#[test]
+fn api_014_api_paths_cover_path_fields() {
+    use telltale_config::credentials::API_PATHS;
+    const NOT_PATHS: &[&str] = &[
+        "alerts.destination[].from",
+        "alerts.destination[].to[]",
+        "upstream[].bootstrap[]",
+        "upstream[].ecs",
+        "upstream[].recursive.stub_servers[]",
+        // An address the upstream binds (UPS-013), not a file.
+        "upstream[].source",
+        "upstream[].tls_server_name",
+    ];
+    let prefix = |kind: &str| match kind {
+        "upstream" => "upstream[]",
+        "alert_destination" => "alerts.destination[]",
+        _ => "list[]",
+    };
+    let listed: Vec<String> = API_PATHS
+        .iter()
+        .map(|(k, f, _)| format!("{}.{f}", prefix(k)))
+        .collect();
+    let missing: Vec<&str> = TABLE
+        .iter()
+        .filter(|(p, c)| {
+            *c == Class::Scan
+                && ["upstream[].", "alerts.destination[].", "list[]."]
+                    .iter()
+                    .any(|x| p.starts_with(x))
+        })
+        .map(|(p, _)| *p)
+        .filter(|p| !listed.iter().any(|l| l == p) && !NOT_PATHS.contains(p))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "path fields of API entries not held to the path rules (add them to credentials::API_PATHS): {missing:#?}"
+    );
+    let info = schema_info();
+    for p in &listed {
+        assert!(
+            info.needs_class.contains(p),
+            "API_PATHS names no field: {p}"
+        );
+    }
+}
+
 #[test]
 fn ops_011_every_table_entry_names_a_real_field() {
     let info = schema_info();

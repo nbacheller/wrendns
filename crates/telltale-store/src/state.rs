@@ -7,8 +7,9 @@
 
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 /// Schema migrations, applied in order; `meta.schema` records how many ran.
 const MIGRATIONS: &[&str] = &[
@@ -125,7 +126,111 @@ const MIGRATIONS: &[&str] = &[
     // `display`, optionally limited to some networks, exchanged once for a display session.
     "ALTER TABLE tokens ADD COLUMN display_networks TEXT;
     ALTER TABLE sessions ADD COLUMN display_token TEXT;",
+    // 10: REQ: API-014 (ADR-903 §4) — idempotency records used to keep the request's text, which
+    // could hold an upstream's headers; they now keep a keyed hash. The old ones go (with
+    // `secure_delete` on, their pages are overwritten; `init` then truncates the WAL).
+    "DELETE FROM idempotency;",
+    // 11: REQ: OPS-014 (ADR-903 §2) — secrets entered in the UI, encrypted under the node's key
+    // (`key_id`), stamped `(epoch, seq)`; a deleted one is a tombstone without ciphertext.
+    "CREATE TABLE secrets (
+        name TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        key_id BLOB,
+        nonce BLOB,
+        ciphertext BLOB,
+        stamp_epoch INTEGER NOT NULL,
+        stamp_seq INTEGER NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        origin TEXT NOT NULL,
+        updated INTEGER NOT NULL,
+        updated_by TEXT NOT NULL
+    );",
+    // 12: REQ: CLU-015 (ADR-903 §6) — replication: a cluster row the new primary doesn't hold
+    // is flagged `orphaned` (never deleted); a standalone or local row a cluster row of the same
+    // name displaced is kept in `secrets_shadow` (never dropped), and comes back when the
+    // cluster rows are purged.
+    "ALTER TABLE secrets ADD COLUMN orphaned INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE secrets_shadow (
+        name TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        key_id BLOB,
+        nonce BLOB,
+        ciphertext BLOB,
+        stamp_epoch INTEGER NOT NULL,
+        stamp_seq INTEGER NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        origin TEXT NOT NULL,
+        updated INTEGER NOT NULL,
+        updated_by TEXT NOT NULL,
+        orphaned INTEGER NOT NULL DEFAULT 0
+    );",
+    // 13: REQ: CLU-015 (ADR-917 point 4) — a shadow slot is per name and origin: a `local` row a
+    // cluster row displaced, and a `cluster` row (an older copy, or a tombstone) a newer listing
+    // displaced. A stale copy can no longer replace a user's local shadow. The rows move over.
+    "CREATE TABLE secrets_shadow_v13 (
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        key_id BLOB,
+        nonce BLOB,
+        ciphertext BLOB,
+        stamp_epoch INTEGER NOT NULL,
+        stamp_seq INTEGER NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        origin TEXT NOT NULL,
+        updated INTEGER NOT NULL,
+        updated_by TEXT NOT NULL,
+        orphaned INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (name, origin)
+    );
+    INSERT INTO secrets_shadow_v13 SELECT * FROM secrets_shadow;
+    DROP TABLE secrets_shadow;
+    ALTER TABLE secrets_shadow_v13 RENAME TO secrets_shadow;",
+    // 14: REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API: one row, off by default,
+    // a hashed token (never the token), and the longest pause it may ask for. Node-local.
+    "CREATE TABLE pihole_api (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        enabled INTEGER NOT NULL DEFAULT 0,
+        token_hash BLOB,
+        token_created INTEGER,
+        last_used INTEGER,
+        max_pause_minutes INTEGER NOT NULL DEFAULT 60,
+        changed INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO pihole_api (id) VALUES (1);",
+    // 15: REQ: API-016 (T23.10, ADR-967 point 7) — the issuer a user is linked at and a session
+    // was opened through, so a provider repointed to another issuer neither keeps the old
+    // issuer's sessions nor maps its subjects onto existing users. NULL: made before this.
+    "ALTER TABLE users ADD COLUMN oidc_issuer TEXT;
+    ALTER TABLE sessions ADD COLUMN oidc_issuer TEXT;",
 ];
+
+/// REQ: API-014 — the migration that purges the old idempotency records.
+const PURGE_IDEMPOTENCY: usize = 10;
+
+/// REQ: OPS-014 — serializes `State::init` across threads of this process.
+static FIRST_OPEN: Mutex<()> = Mutex::new(());
+
+/// REQ: OPS-014 — `journal_mode=WAL` needs the write lock, and SQLite does not always run the
+/// busy handler for it, so a busy answer is retried with a bounded backoff (50 × 20 ms).
+fn enable_wal(conn: &Connection) -> Result<()> {
+    const TRIES: u32 = 50;
+    for attempt in 1..=TRIES {
+        match conn.pragma_update(None, "journal_mode", "WAL") {
+            Ok(()) => return Ok(()),
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if attempt < TRIES
+                    && matches!(
+                        e.code,
+                        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                    ) =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
 
 /// REQ: OBS-035 (T14.13) — the pseudo agent scope that marks a display token. An older node
 /// reads it as an agent scope that allows nothing, so a display token can't act as a token there.
@@ -134,14 +239,34 @@ pub const DISPLAY_SCOPE: &str = "display";
 /// Stored for OIDC users: no password matches it (they sign in at their provider).
 pub const NO_PASSWORD: &str = "!oidc";
 
+/// `PRAGMA wal_checkpoint(TRUNCATE)` (a no-op on a database in memory). `false` when another
+/// connection kept it from finishing within the busy timeout (`busy` = 1): pages of the WAL may
+/// then survive until a later checkpoint (REQ: OPS-014, ADR-903 §3).
+fn checkpoint_truncate(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .map(|busy| busy == 0)
+}
+
+/// REQ: CLU-004, OPS-014 — a write transaction that takes the write lock when it begins
+/// (`BEGIN IMMEDIATE`). A deferred one that reads and then writes gets `SQLITE_BUSY` at once,
+/// without the busy timeout, when another connection committed in between (WAL): a replica's
+/// step-down reload and the identity import then failed with "database is locked".
+fn write_tx(conn: &Connection) -> rusqlite::Result<rusqlite::Transaction<'_>> {
+    rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+}
+
 pub mod acks;
 pub mod audit;
 pub mod identity;
 pub mod managed;
+pub mod secrets;
 pub use acks::AnomalyAck;
 pub use audit::{AuditEntry, NewAudit, Verify};
 pub use identity::{IdRecovery, IdToken, IdUser, Identities, ImportReport};
 pub use managed::{Managed, ManagedError, Replay};
+pub use secrets::{SecretRow, Stamp};
 
 /// A user row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,6 +288,8 @@ pub struct User {
     pub password_changed: u64,
     /// The OIDC provider this user signs in with (no local password), if any.
     pub oidc_provider: Option<String>,
+    /// The issuer that link was made at (`None`: made before issuers were recorded).
+    pub oidc_issuer: Option<String>,
 }
 
 /// A session row (the session ID itself is never stored, only its hash).
@@ -209,6 +336,18 @@ impl Token {
     }
 }
 
+/// REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API's settings row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PiholeApiRow {
+    pub enabled: bool,
+    /// BLAKE3 of the token; the token itself is shown once and never stored.
+    pub token_hash: Option<Vec<u8>>,
+    pub token_created: Option<u64>,
+    pub last_used: Option<u64>,
+    /// The longest pause a request may ask for, in minutes (1 to 1,440).
+    pub max_pause_minutes: u32,
+}
+
 /// Errors from the state database.
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
@@ -246,37 +385,62 @@ impl State {
         Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+    fn init(mut conn: Connection) -> Result<Self> {
+        // REQ: OPS-014 — one first open at a time in this process (the secrets store and the user
+        // database open the same file from different threads at start). The busy timeout is set
+        // before any statement: a journal-mode change can return SQLITE_BUSY without the handler.
+        let _first_open = FIRST_OPEN.lock().unwrap_or_else(PoisonError::into_inner);
+        conn.busy_timeout(Duration::from_secs(5))?;
+        enable_wal(&conn)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         // ADR-124 — no temp files (read-only root filesystems have nowhere to put them).
         conn.pragma_update(None, "temp_store", "MEMORY")?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // REQ: API-014 (ADR-903 §4) — deleted rows are overwritten, not left in free pages.
+        conn.pragma_update(None, "secure_delete", "ON")?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
             [],
         )?;
-        let done: usize = conn
-            .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
-                r.get::<_, String>(0)
-            })
-            .optional()?
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
-        for (n, sql) in MIGRATIONS.iter().enumerate().skip(done) {
-            let tx = conn.unchecked_transaction()?;
+        // REQ: OPS-014, API-003 — each migration reads the schema version and applies itself in
+        // one immediate transaction: the secrets store and the user database open this file from
+        // different threads at start, and a read taken outside the write lock let both apply
+        // migration 1 (`table users already exists`, and the API stayed off).
+        loop {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let done: usize = tx
+                .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .optional()?
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            let Some(sql) = MIGRATIONS.get(done) else {
+                break;
+            };
             tx.execute_batch(sql)?;
             tx.execute(
                 "INSERT INTO meta (key, value) VALUES ('schema', ?1)
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [(n + 1).to_string()],
+                [(done + 1).to_string()],
             )?;
             tx.commit()?;
+            // REQ: API-014 — and their old page images leave the WAL too.
+            if done + 1 == PURGE_IDEMPOTENCY {
+                checkpoint_truncate(&conn)?;
+            }
         }
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// REQ: API-014 (ADR-903 §4) — copies the WAL into the database and truncates it, so pages
+    /// overwritten by `secure_delete` don't survive there (after the idempotency purge; the
+    /// secrets store's rotation and deletes use it too). `false`: another connection kept it from
+    /// finishing.
+    pub fn checkpoint(&self) -> Result<bool> {
+        self.with(checkpoint_truncate)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -286,6 +450,70 @@ impl State {
     fn with<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T> {
         let conn = self.conn.lock().unwrap_or_else(PoisonError::into_inner);
         Ok(f(&conn)?)
+    }
+
+    // ---- the Pi-hole compatible API (REQ: API-005, T24.10, ADR-961)
+
+    pub fn pihole_api(&self) -> Result<PiholeApiRow> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT enabled, token_hash, token_created, last_used, max_pause_minutes
+                 FROM pihole_api WHERE id = 1",
+                [],
+                |r| {
+                    Ok(PiholeApiRow {
+                        enabled: r.get::<_, i64>(0)? != 0,
+                        token_hash: r.get(1)?,
+                        token_created: r.get::<_, Option<i64>>(2)?.map(u),
+                        last_used: r.get::<_, Option<i64>>(3)?.map(u),
+                        max_pause_minutes: u32::try_from(r.get::<_, i64>(4)?).unwrap_or(60),
+                    })
+                },
+            )
+        })
+    }
+
+    pub fn set_pihole_enabled(&self, enabled: bool, now: u64) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE pihole_api SET enabled = ?1, changed = ?2 WHERE id = 1",
+                rusqlite::params![i64::from(enabled), i64::try_from(now).unwrap_or(0)],
+            )
+        })
+        .map(|_| ())
+    }
+
+    pub fn set_pihole_max_pause(&self, minutes: u32, now: u64) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE pihole_api SET max_pause_minutes = ?1, changed = ?2 WHERE id = 1",
+                rusqlite::params![i64::from(minutes), i64::try_from(now).unwrap_or(0)],
+            )
+        })
+        .map(|_| ())
+    }
+
+    /// Stores a new token's hash (`None` revokes the token).
+    pub fn set_pihole_token(&self, hash: Option<&[u8]>, now: u64) -> Result<()> {
+        let now = i64::try_from(now).unwrap_or(0);
+        self.with(|c| {
+            c.execute(
+                "UPDATE pihole_api SET token_hash = ?1, token_created = ?2, last_used = NULL,
+                 changed = ?3 WHERE id = 1",
+                rusqlite::params![hash, hash.map(|_| now), now],
+            )
+        })
+        .map(|_| ())
+    }
+
+    pub fn touch_pihole(&self, now: u64) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE pihole_api SET last_used = ?1 WHERE id = 1",
+                [i64::try_from(now).unwrap_or(0)],
+            )
+        })
+        .map(|_| ())
     }
 
     // ---- users
@@ -337,7 +565,7 @@ impl State {
     }
 
     const USER_COLS: &'static str = "id, username, password_hash, role, totp_secret, totp_enabled, \
-        totp_last_step, allow_basic_api, disabled, created, password_changed, oidc_provider";
+        totp_last_step, allow_basic_api, disabled, created, password_changed, oidc_provider, oidc_issuer";
 
     fn row_user(r: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
         Ok(User {
@@ -353,6 +581,7 @@ impl State {
             created: u(r.get(9)?),
             password_changed: u(r.get(10)?),
             oidc_provider: r.get(11)?,
+            oidc_issuer: r.get(12)?,
         })
     }
 
@@ -581,11 +810,11 @@ impl State {
     }
 
     /// Marks a session as started through an OIDC provider.
-    pub fn set_session_provider(&self, id_hash: &[u8], provider: &str) -> Result<()> {
+    pub fn set_session_provider(&self, id_hash: &[u8], provider: &str, issuer: &str) -> Result<()> {
         self.with(|c| {
             c.execute(
-                "UPDATE sessions SET oidc_provider = ?2 WHERE id_hash = ?1",
-                params![id_hash, provider],
+                "UPDATE sessions SET oidc_provider = ?2, oidc_issuer = ?3 WHERE id_hash = ?1",
+                params![id_hash, provider, issuer],
             )
             .map(|_| ())
         })
@@ -620,6 +849,57 @@ impl State {
             )
         })
         .map(|n| n as u64)
+    }
+
+    /// REQ: API-016 (T23.10) — ends every session that was opened through OIDC provider
+    /// `provider` (it was removed). The users stay.
+    pub fn delete_provider_sessions(&self, provider: &str) -> Result<u64> {
+        self.with(|c| c.execute("DELETE FROM sessions WHERE oidc_provider = ?1", [provider]))
+            .map(|n| n as u64)
+    }
+
+    /// REQ: API-016 — settles the issuers of `provider`, now at `issuer`. `was` is the issuer it
+    /// was served at before this rebuild, when this process knew one. Rows made before issuers
+    /// were recorded (NULL) belong to `was`, or, with no earlier issuer known, to `issuer`.
+    /// When the provider was repointed (`was` differs), the sessions opened at any other issuer
+    /// (NULL ones included) end, and a user keeps the issuer it was linked at, so its `sub`
+    /// isn't mapped at the new one. Returns the number of sessions ended.
+    pub fn reconcile_provider_issuer(
+        &self,
+        provider: &str,
+        issuer: &str,
+        was: Option<&str>,
+    ) -> Result<u64> {
+        self.with(|c| {
+            let owner = was.unwrap_or(issuer);
+            c.execute(
+                "UPDATE users SET oidc_issuer = ?2 WHERE oidc_provider = ?1 AND oidc_issuer IS NULL",
+                [provider, owner],
+            )?;
+            if was.is_none_or(|w| w == issuer) {
+                c.execute(
+                    "UPDATE sessions SET oidc_issuer = ?2 WHERE oidc_provider = ?1 AND oidc_issuer IS NULL",
+                    [provider, issuer],
+                )?;
+            }
+            c.execute(
+                "DELETE FROM sessions WHERE oidc_provider = ?1
+                   AND (oidc_issuer IS NULL OR oidc_issuer != ?2)",
+                [provider, issuer],
+            )
+        })
+        .map(|n| n as u64)
+    }
+
+    /// REQ: API-016 — records the issuer a user's OIDC link was made at.
+    pub fn set_user_issuer(&self, id: i64, issuer: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE users SET oidc_issuer = ?2 WHERE id = ?1",
+                params![id, issuer],
+            )
+            .map(|_| ())
+        })
     }
 
     /// Deletes sessions that expired or were idle since before `idle_before`.
@@ -785,6 +1065,216 @@ impl State {
 mod tests {
     use super::*;
 
+    /// REQ: CLU-015 (T24.40, ADR-1019) - `insert_missing_managed_noted` adds only the rows a node
+    /// does not hold, leaves its own rows and every other kind alone, records the note in the same
+    /// step, and does nothing the second time.
+    #[test]
+    fn clu_015_t24_40_insert_missing_keeps_own_rows_and_runs_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = State::open(&tmp.path().join("state.db")).unwrap();
+        s.put_managed("list", "own", "{\"v\":1}", None, None, 1, "t")
+            .unwrap();
+        s.put_managed(
+            "upstream",
+            "lan",
+            "{\"node_only\":true}",
+            None,
+            None,
+            1,
+            "t",
+        )
+        .unwrap();
+        let before = s.config_version().unwrap();
+        let rows = [
+            ("list", "own", "{\"v\":2}"),
+            ("list", "new", "{}"),
+            ("client", "tv", "{}"),
+        ];
+        let added = s
+            .insert_missing_managed_noted(&rows, 5, "adopted:7", ("managed-seeded", "served:x"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(added, ["list", "client"]);
+        assert_eq!(s.config_version().unwrap(), before + 1);
+        let by = |k: &str| {
+            s.managed(k)
+                .unwrap()
+                .into_iter()
+                .map(|m| (m.name, m.body, m.updated_by))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(by("list").len(), 2);
+        assert!(by("list").contains(&("own".into(), "{\"v\":1}".into(), "t".into())));
+        assert!(by("list").contains(&("new".into(), "{}".into(), "adopted:7".into())));
+        assert_eq!(by("upstream").len(), 1, "another kind is untouched");
+        assert_eq!(
+            s.meta_get("managed-seeded").unwrap().as_deref(),
+            Some("served:x")
+        );
+        // Again: the note matches, nothing happens.
+        assert!(
+            s.insert_missing_managed_noted(&rows, 6, "adopted:7", ("managed-seeded", "served:x"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(s.config_version().unwrap(), before + 1);
+    }
+
+    /// REQ: CLU-015 (T24.37) - `replace_managed` makes the named kinds exactly the rows given,
+    /// leaves other kinds alone, and moves the version once.
+    #[test]
+    fn clu_015_replace_managed_is_exact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = State::open(&tmp.path().join("state.db")).unwrap();
+        s.put_managed("upstream", "old", "{}", None, None, 1, "t")
+            .unwrap();
+        s.put_managed("upstream", "keep", "{\"v\":1}", None, None, 1, "t")
+            .unwrap();
+        s.put_managed("oidc_provider", "sso", "{}", None, None, 1, "t")
+            .unwrap();
+        let before = s.config_version().unwrap();
+        let v = s
+            .replace_managed(
+                &["upstream", "list"],
+                &[
+                    ("upstream", "keep", "{\"v\":2}"),
+                    ("list", "ads", "{}"),
+                    ("group", "x", "{}"),
+                ],
+                5,
+                "promotion",
+            )
+            .unwrap();
+        assert_eq!(v, before + 1);
+        let names = |k: &str| {
+            s.managed(k)
+                .unwrap()
+                .into_iter()
+                .map(|m| (m.name, m.body))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names("upstream"),
+            [("keep".to_owned(), "{\"v\":2}".to_owned())]
+        );
+        assert_eq!(names("list").len(), 1);
+        assert_eq!(names("group").len(), 0, "a kind not named is not written");
+        assert_eq!(
+            names("oidc_provider").len(),
+            1,
+            "a kind not named is left alone"
+        );
+    }
+
+    /// REQ: API-014 (ADR-903 §4) — a `state.db` from before migration 10 had idempotency records
+    /// holding request text (an upstream's headers): after the upgrade, neither the database nor
+    /// its WAL holds a byte of it, and replays start over. Deletes overwrite from then on.
+    #[test]
+    fn api_014_idempotency_purge_leaves_no_residue() {
+        const PLANTED: &str = "Bearer planted-s3cret-0123456789";
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+            for sql in &MIGRATIONS[..PURGE_IDEMPOTENCY - 1] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute("INSERT INTO meta (key, value) VALUES ('schema', '9')", [])
+                .unwrap();
+            let body =
+                format!("PUT /upstreams/x {{\"headers\":{{\"Authorization\":\"{PLANTED}\"}}}}");
+            for i in 0..50 {
+                conn.execute(
+                    "INSERT INTO idempotency (key, request, status, response, created) VALUES (?1, ?2, 200, ?3, 1)",
+                    params![format!("1:k{i}"), body.as_bytes(), body],
+                )
+                .unwrap();
+            }
+        }
+        let raw = |p: &Path| std::fs::read(p).unwrap_or_default();
+        let wal = tmp.path().join("state.db-wal");
+        let has = |b: &[u8]| b.windows(PLANTED.len()).any(|w| w == PLANTED.as_bytes());
+        assert!(
+            has(&raw(&path)) || has(&raw(&wal)),
+            "planted before the upgrade"
+        );
+        let s = State::open(&path).unwrap();
+        assert!(!has(&raw(&path)), "state.db holds the old request");
+        assert!(!has(&raw(&wal)), "the WAL holds the old request");
+        assert_eq!(s.idempotent("1:k0", 2).unwrap(), None);
+        let secure: i64 = s
+            .lock()
+            .query_row("PRAGMA secure_delete", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(secure, 1);
+        s.checkpoint().unwrap();
+    }
+
+    /// REQ: API-016 (ADR-967 point 7) — users and sessions from before issuers were recorded
+    /// (NULL) are settled: with no earlier issuer known they take the current one; when the
+    /// provider is repointed they belong to the old one, so their sessions end and the user is
+    /// not adopted by the new issuer.
+    #[test]
+    fn api_016_null_issuer_rows_follow_the_old_issuer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = State::open(&tmp.path().join("state.db")).unwrap();
+        let make = |name: &str| {
+            let u = s.create_user(name, "h", "viewer", false, 1).unwrap();
+            s.lock()
+                .execute(
+                    "UPDATE users SET oidc_provider = 'p', oidc_subject = ?2 WHERE id = ?1",
+                    params![u.id, name],
+                )
+                .unwrap();
+            s.create_session(name.as_bytes(), u.id, "c", 1, 9_999_999_999, None)
+                .unwrap();
+            s.set_session_provider(name.as_bytes(), "p", "https://a.test")
+                .unwrap();
+            s.lock()
+                .execute("UPDATE sessions SET oidc_issuer = NULL", [])
+                .unwrap();
+            u.id
+        };
+        let issuer_of = |id: i64| -> Option<String> {
+            s.lock()
+                .query_row("SELECT oidc_issuer FROM users WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        let sessions = || -> i64 {
+            s.lock()
+                .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+                .unwrap()
+        };
+        // First rebuild after the upgrade: the rows take the current issuer and stay.
+        let a = make("ana");
+        assert_eq!(
+            s.reconcile_provider_issuer("p", "https://a.test", None)
+                .unwrap(),
+            0
+        );
+        assert_eq!(issuer_of(a).as_deref(), Some("https://a.test"));
+        assert_eq!(sessions(), 1);
+        // A user and session still NULL when the provider is repointed in process: they belong to
+        // the old issuer, the session ends, and the user keeps the old issuer.
+        let b = make("bob");
+        assert_eq!(
+            s.reconcile_provider_issuer("p", "https://b.test", Some("https://a.test"))
+                .unwrap(),
+            2
+        );
+        assert_eq!(issuer_of(b).as_deref(), Some("https://a.test"));
+        assert_eq!(issuer_of(a).as_deref(), Some("https://a.test"));
+        assert_eq!(sessions(), 0);
+    }
+
     // REQ: OPS-001, ADR-124 — no temp files: the image's root filesystem is read-only.
     #[test]
     fn ops_001_state_db_keeps_temporary_data_in_memory() {
@@ -857,5 +1347,86 @@ mod tests {
         // Reopening keeps data and doesn't re-run migrations.
         let s = State::open(&path).unwrap();
         assert_eq!(s.user_count().unwrap(), 1);
+    }
+
+    /// REQ: OPS-014, API-003 — connections opened on a fresh file at the same time (the secrets
+    /// store and the user database at start) all come up, and the schema is the latest once.
+    #[test]
+    fn ops_014_concurrent_first_open_migrates_once() {
+        for _ in 0..5 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.db");
+            let opened: Vec<_> = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..4)
+                    .map(|_| scope.spawn(|| State::open(&path).map(drop)))
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            assert!(opened.iter().all(Result::is_ok), "{opened:?}");
+            let conn = Connection::open(&path).unwrap();
+            let v: String = conn
+                .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(v, MIGRATIONS.len().to_string());
+        }
+    }
+
+    /// REQ: CLU-004, OPS-014 — writers on separate connections to one file (a replica's
+    /// step-down reload, the identity import, the names repair, the secrets store) that read and
+    /// then write all wait for one another within the busy timeout: none fails with "database is
+    /// locked", and every version bump lands.
+    #[test]
+    fn clu_004_concurrent_read_then_write_transactions_wait_for_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        drop(State::open(&path).unwrap());
+        let start = State::open(&path).unwrap().config_version().unwrap();
+        let threads = 4u64;
+        let rounds = 60u64;
+        let errors: Vec<String> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..threads)
+                .map(|t| {
+                    let path = &path;
+                    scope.spawn(move || {
+                        let s = State::open(path).unwrap();
+                        let mut errs = Vec::new();
+                        for r in 0..rounds {
+                            let name = format!("n{t}-{r}");
+                            if let Err(e) = s.put_and_remove_managed(
+                                &[("zone", &name, "{}")],
+                                &[],
+                                None,
+                                1,
+                                "test",
+                                Some(("names_repair_test", &name)),
+                            ) {
+                                errs.push(format!("put_and_remove_managed: {e}"));
+                            }
+                            if let Err(e) = s.import_identities(&identity::Identities::default()) {
+                                errs.push(format!("import_identities: {e}"));
+                            }
+                            if let Err(e) = s.next_secret_stamp(1) {
+                                errs.push(format!("next_secret_stamp: {e}"));
+                            }
+                        }
+                        errs
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap())
+                .collect()
+        });
+        assert!(
+            errors.is_empty(),
+            "{} failed: {:?}",
+            errors.len(),
+            &errors[..errors.len().min(5)]
+        );
+        let end = State::open(&path).unwrap().config_version().unwrap();
+        assert_eq!(end, start + threads * rounds);
     }
 }

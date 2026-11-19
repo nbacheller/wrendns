@@ -17,6 +17,8 @@
   import AgentChanges from './pages/AgentChanges.svelte';
   import { navigate } from './lib/router.svelte';
   import { currentMode, loadMode, setMode } from './lib/mode.svelte';
+  import { loadIconPrefs } from './lib/icons/prefs.svelte';
+  import GuardedConfirm from './pages/GuardedConfirm.svelte';
   import Login from './pages/Login.svelte';
   import Setup from './pages/Setup.svelte';
   import Dashboard from './pages/Dashboard.svelte';
@@ -27,6 +29,15 @@
   import Explain from './pages/Explain.svelte';
   import Analyze from './pages/Analyze.svelte';
   import Clients from './pages/Clients.svelte';
+  import Routers from './pages/Routers.svelte';
+  import Networks from './pages/Networks.svelte';
+  // REQ: DSC-001 (T25.2) — the network inventory's settings and status, a lazy chunk.
+  import NetworkInventoryRoute from './pages/NetworkInventoryRoute.svelte';
+  import CmdbRoute from './pages/CmdbRoute.svelte';
+  // REQ: OBS-901 (T26.3, ADR-958) — the live network map, a lazy chunk.
+  import MapRoute from './pages/MapRoute.svelte';
+  // REQ: OBS-902 (T26.5, ADR-958) — the world view, a lazy chunk with its map data.
+  import WorldRoute from './pages/WorldRoute.svelte';
   import Anomalies from './pages/Anomalies.svelte';
   import Cluster from './pages/Cluster.svelte';
   import Cache from './pages/Cache.svelte';
@@ -42,6 +53,8 @@
   const pages: { path: string; label: string; page: Component; icon: string; section: string }[] = [
     { path: '/', label: 'Dashboard', page: Dashboard, icon: 'dashboard', section: 'Monitor' },
     { path: '/traffic', label: 'Traffic map', page: Traffic, icon: 'traffic', section: 'Monitor' },
+    { path: '/map', label: 'Network map', page: MapRoute, icon: 'map', section: 'Monitor' },
+    { path: '/world', label: 'World view', page: WorldRoute, icon: 'world', section: 'Monitor' },
     { path: '/heatmap', label: 'Heatmap', page: Heatmap, icon: 'heatmap', section: 'Monitor' },
     { path: '/flow', label: 'Flow', page: Flow, icon: 'flow', section: 'Monitor' },
     { path: '/queries', label: 'Query log', page: Queries, icon: 'queries', section: 'Monitor' },
@@ -49,7 +62,16 @@
     { path: '/explain', label: 'Explain', page: Explain, icon: 'explain', section: 'Monitor' },
     { path: '/anomalies', label: 'Anomalies', page: Anomalies, icon: 'anomalies', section: 'Monitor' },
     { path: '/clients', label: 'Clients', page: Clients, icon: 'clients', section: 'Devices' },
+    // REQ: API-013 (T24.15) — the networks the routers report, beside Clients.
+    { path: '/networks', label: 'Networks', page: Networks, icon: 'networks', section: 'Devices' },
+    // REQ: DSC-001 (T25.2, ADR-907) — the network inventory: its settings (admins) and status.
+    { path: '/network-inventory', label: 'Network inventory', page: NetworkInventoryRoute, icon: 'networks', section: 'Devices' },
+    // REQ: DSC-901, DSC-902, DSC-903 (T31.2) — the CMDB: one record for each thing on the network, its sources
+    // side by side, and the link, unlink, merge and split that fix a wrong one.
+    { path: '/cmdb', label: 'CMDB', page: CmdbRoute, icon: 'clients', section: 'Devices' },
     { path: '/groups', label: 'Groups', page: Groups, icon: 'groups', section: 'Devices' },
+    // REQ: API-016 (T23.8) — router integrations: the devices' names come from them.
+    { path: '/routers', label: 'Routers', page: Routers, icon: 'cluster', section: 'Devices' },
     { path: '/lists', label: 'Lists', page: Lists, icon: 'lists', section: 'Filtering & DNS' },
     { path: '/rules', label: 'Quick rules', page: Rules, icon: 'rules', section: 'Filtering & DNS' },
     { path: '/upstreams', label: 'Upstreams', page: Upstreams, icon: 'upstreams', section: 'Filtering & DNS' },
@@ -108,10 +130,11 @@
 
   void refreshSession();
 
-  // Each user has their own Simple/Advanced choice.
+  // Each user has their own Simple/Advanced choice, and their own domain icon choice (OBS-039).
   $effect(() => {
     void session.user?.username;
     loadMode();
+    loadIconPrefs();
   });
 
   $effect(() => {
@@ -184,6 +207,10 @@
 {:else if route.path === '/display'}
   <!-- REQ: OBS-035 (T14.13) — a wall display's link, signed in or not. -->
   <Display />
+{:else if route.path === '/guarded-confirm'}
+  <!-- REQ: API-902 (T27.13) - a guarded window change's confirm step, opened on the new address: the
+       single-use token in the fragment stands in for a session there. -->
+  <GuardedConfirm />
 {:else if session.setupRequired}
   <Setup />
 {:else if !session.user}

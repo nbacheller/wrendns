@@ -1,0 +1,161 @@
+# TelltaleDNS content-category catalog: Adult and Sensitive Content (REQ: FLT-901, ADR-995).
+# Data, not code: compiled into the binary. Lists are never bundled: a node downloads
+# each source from its maintainer only while a group uses it.
+
+[[group]]
+id = "adult"
+name = "Adult and Sensitive Content"
+order = 1
+
+[[category]]
+id = "adult"
+name = "Adult content"
+group = "adult"
+description = "Pornography and sexually explicit sites. A DNS block: it stops names, not pages, and a device on mobile data or a VPN is not covered."
+sources = ["hagezi-nsfw"]
+tier_kind = "additive"
+[[category.tier]]
+id = "extended"
+name = "Extended (adds Bon-Appetit)"
+sources = ["bonappetit-porn"]
+
+[[category]]
+id = "gambling"
+name = "Gambling"
+group = "adult"
+description = "Casinos, betting and lottery sites."
+tier_kind = "exclusive"
+default_tier = "standard"
+[[category.tier]]
+id = "light"
+name = "Light"
+sources = ["hagezi-gambling-mini"]
+[[category.tier]]
+id = "standard"
+name = "Standard"
+sources = ["hagezi-gambling-medium"]
+[[category.tier]]
+id = "extended"
+name = "Extended (full list, heavy)"
+sources = ["hagezi-gambling-full"]
+
+[[category]]
+id = "piracy"
+name = "Piracy"
+group = "adult"
+description = "Torrent, warez and pirate streaming sites."
+sources = ["hagezi-anti-piracy"]
+
+[[category]]
+id = "dating"
+name = "Dating"
+group = "adult"
+description = "Dating apps and sites (a hand-written bundle of each service's domains)."
+kind = "service"
+service_category = "dating"
+
+[[source]]
+id = "hagezi-nsfw"
+name = "HaGeZi NSFW"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/nsfw-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 85282
+bytes = 1386014
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "bonappetit-porn"
+name = "Bon-Appetit porn domains"
+maintainer = "Bon-Appetit contributors"
+url = "https://raw.githubusercontent.com/Bon-Appetit/porn-domains/main/meta.json"
+resolve = "meta-json"
+url_prefix = "https://raw.githubusercontent.com/Bon-Appetit/porn-domains/"
+format = "domains"
+licence = "CC-BY-SA-4.0"
+licence_url = "https://github.com/Bon-Appetit/porn-domains/blob/main/LICENSE"
+attribution = "Licensed CC BY-SA 4.0, (c) Bon-Appetit contributors. Fetched by your node and never redistributed."
+homepage = "https://github.com/Bon-Appetit/porn-domains"
+cadence = "daily"
+entries = 438863
+bytes = 7007915
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-gambling-mini"
+name = "HaGeZi Gambling (mini)"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/gambling.mini-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 51679
+bytes = 914346
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-gambling-medium"
+name = "HaGeZi Gambling (medium)"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/gambling.medium-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 102937
+bytes = 1843316
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-gambling-full"
+name = "HaGeZi Gambling (full)"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/gambling-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 669823
+bytes = 11843831
+weight = "heavy"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-anti-piracy"
+name = "HaGeZi Anti-Piracy"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/anti.piracy-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 62383
+bytes = 1230787
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+

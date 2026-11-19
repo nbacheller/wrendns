@@ -1,14 +1,16 @@
 // Starts a real TelltaleDNS for the Playwright suite (REQ: API-005, T3.9 AC): a fresh data
-// directory, DNS on 127.0.0.1:15354, the API and UI on 127.0.0.1:18054, an inline blocklist,
-// and a local record, so tests don't depend on the internet.
+// directory, DNS, the API and UI and every other e2e port from ports.ts (one base, E2E_HTTP_PORT),
+// an inline blocklist, and a local record, so tests don't depend on the internet.
 import { spawn } from 'node:child_process';
 import { createSocket } from 'node:dgram';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// REQ: T24.19: every port comes from ports.ts (one base, E2E_HTTP_PORT, and offsets).
+import { E2E_ROOT, HTTP_PORT, PORTS } from './ports.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const root = resolve(here, '../../.e2e');
+const root = E2E_ROOT;
 rmSync(root, { recursive: true, force: true });
 mkdirSync(resolve(root, 'data'), { recursive: true });
 
@@ -21,7 +23,7 @@ name = "home-dns"
 
 [[listen]]
 proto = "udp"
-addr = "127.0.0.1:15354"
+addr = "127.0.0.1:${PORTS.dns}"
 
 # Nothing listens here: tests use only blocked and local names.
 [[upstream]]
@@ -35,7 +37,7 @@ members = ["nowhere"]
 # T6.13 — a stub (below) that answers every name with 192.0.2.7, so there's something to cache.
 [[upstream]]
 name = "router"
-url = "udp://127.0.0.1:15399"
+url = "udp://127.0.0.1:${PORTS.upstream}"
 
 [[upstream_group]]
 name = "router"
@@ -88,18 +90,18 @@ type = "A"
 value = "192.168.1.10"
 
 [telemetry.metrics]
-listen = "127.0.0.1:19154"
+listen = "127.0.0.1:${PORTS.metrics}"
 
 # T8.6 — mDNS naming on a test port (the test sends an announcement there).
 [clients]
 mdns = true
-mdns_port = 15353
+mdns_port = ${PORTS.mdns}
 
 [telemetry.qlog]
 flush_interval_secs = 1
 
 [api]
-listen = "127.0.0.1:18054"
+listen = "127.0.0.1:${HTTP_PORT}"
 
 # REQ: AGT-007 — agents' plans wait for an operator (the Agent changes test).
 [agents]
@@ -109,13 +111,26 @@ require_approval = true
 [alerts]
 interval_secs = 5
 
-# T11.3 — the listener probe runs every 5 s, so the System tab shows it soon.
+# T23.6 — a destination whose token file the configuration sets: the UI shows it read-only.
+[[alerts.destination]]
+name = "file-ntfy"
+type = "ntfy"
+url = "http://127.0.0.1:${PORTS.ntfy}/file"
+token_file = "/run/secrets/e2e-ntfy-token"
+
+# T11.3 — the listener probe's first round runs a few seconds after start. The interval is left to
+# the default so the UI can change it (obs_020 change probe interval, T27.5).
 [probe]
-interval_secs = 5
+enabled = true
 
 # REQ: FLT-017 — Kubernetes workloads, from the fixture below (no API server).
 [kubernetes]
 enabled = true
+
+# REQ: DSC-906 (T31.2) — the CMDB's settings: one field set here shows "set by file" and is locked in the
+# UI; the test turns the CMDB itself on and off through the settings panel.
+[cmdb]
+history_days = 120
 `,
 );
 
@@ -164,7 +179,7 @@ if (oidc.length) {
     keycloak: [`http://${host}:8080/realms/telltale`, 'Keycloak'],
     authentik: [`http://${host}:9000/application/o/telltale/`, 'Authentik'],
   };
-  let extra = '\n[auth.oidc]\npublic_url = "http://127.0.0.1:18054"\n';
+  let extra = `\n[auth.oidc]\npublic_url = "http://127.0.0.1:${HTTP_PORT}"\n`;
   for (const id of oidc) {
     const [issuer, name] = issuers[id];
     extra += `
@@ -198,12 +213,30 @@ stub.on('message', (q, from) => {
   const answer = Buffer.from([0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 1, 0x2c, 0, 4, 192, 0, 2, 7]);
   stub.send(Buffer.concat([head, q.subarray(12, end), answer]), from.port, from.address);
 });
-stub.bind(15399, '127.0.0.1');
+stub.bind(PORTS.upstream, '127.0.0.1');
 
 const bin = process.env.TELLTALE_BIN ?? resolve(here, '../../../target/debug/telltale');
 const child = spawn(bin, ['run', '-c', cfg], {
   stdio: 'inherit',
-  env: { ...process.env, TELLTALE_KUBERNETES_FIXTURE: fixture },
+  env: {
+    ...process.env,
+    TELLTALE_KUBERNETES_FIXTURE: fixture,
+    // REQ: API-902 (T27.13, ADR-956 §3, §4a) - the guarded framework's end-to-end hooks, which exist only
+    // in a server built with the cargo feature `e2e` (`cargo build -p telltale --features e2e`): a
+    // declared supervisor (so "Restart now" is offered), the simulated restart (the test never kills its
+    // own server), and a short confirmation window (a rollback can be watched).
+    TELLTALE_SUPERVISOR: 'systemd',
+    // REQ: OBS-902 (T26.4, ADR-959 section 8) - the GeoIP tests' allowances, honoured only by a debug build
+    // (a release build ignores both): a small fake database is accepted, and the fake source's
+    // certificate is trusted besides the built-in roots.
+    TELLTALE_GEOIP_TEST: '1',
+    TELLTALE_GEOIP_TEST_CA: resolve(here, 'fixtures/geoip-source-cert.pem'),
+    TT_E2E_RESTART_HOOK: '1',
+    TT_E2E_CONFIRM_WINDOW_SECS: '15',
+    // REQ: FLT-901 (T24.29) - a build with the `e2e` feature downloads the category lists from this fake instead of
+    // the internet (the categories spec serves it on this port).
+    TELLTALE_E2E_CATALOG_BASE: `http://127.0.0.1:${PORTS.catalog}/`,
+  },
 });
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => child.kill('SIGTERM'));
 child.on('exit', (code) => process.exit(code ?? 0));

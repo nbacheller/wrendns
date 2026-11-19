@@ -16,24 +16,43 @@ pub mod attribution;
 pub mod auth;
 pub mod blocking_api;
 pub mod cache_api;
+pub mod categories_api;
 pub mod cluster_nodes_api;
+pub mod cmdb_api;
 pub mod compare;
 pub mod config_api;
+pub mod discovery_api;
 pub mod drill_api;
 pub mod federation;
 pub mod flow;
+pub mod guarded;
+pub mod guarded_api;
+#[cfg(test)]
+mod guarded_tests;
 pub mod heatmap;
 pub mod identify_api;
 pub mod kubernetes_api;
 pub mod latency_heatmap;
+pub mod lists_api;
+pub mod lists_overlap;
 pub mod maintenance_api;
+pub mod map;
+pub mod map_api;
 pub mod mcp;
 pub mod model;
+pub mod node_settings_api;
+pub mod oidc_providers_api;
+pub mod pihole_api;
+mod pihole_import_api;
 pub mod plans;
+pub mod policy_api;
 pub mod problem;
 pub mod rhythm_api;
 pub mod rollout_api;
+pub mod routers_api;
+pub mod secrets_api;
 pub mod simulate_api;
+pub mod sinks_api;
 pub mod slo;
 pub mod support_api;
 pub mod time;
@@ -60,9 +79,24 @@ use crate::model::{
     NameMatch, NewDomain, NewDomainParams, PromoteRequest, QueryPage, QueryParams, QueryRow,
     RecordInput, RecordsInput, ScanStats, Step, Summary, SummaryParams, SystemInfo, TailDropped,
     TailItem, TailParams, TimeBucket, TimeseriesParams, TopItem, TopKind, TopParams, UpstreamInfo,
-    VqlogCost, VqlogParams, VqlogResult, ZoneInfo,
+    VqlogCost, VqlogParams, VqlogResult, ZoneInfo, ZoneInput, ZoneRecordInput,
 };
 use crate::problem::Problem;
+
+/// REQ: API-007 (T23.9) — a backup as the API hands it over.
+#[derive(Debug)]
+pub struct BackupOutput {
+    /// `telltale-<node>-<time>.ttbk`.
+    pub name: String,
+    pub bytes: Vec<u8>,
+    /// The archive holds the node's stored secrets (encrypted with the passphrase).
+    pub secrets_included: bool,
+    /// Included: how many are in it. Left out: how many the node stores.
+    pub secrets_count: usize,
+    /// Things worth telling the admin (inline credentials copied as they are, secrets that
+    /// couldn't be read).
+    pub warnings: Vec<String>,
+}
 
 /// What the API needs from the server. Implemented by the `telltale` binary; calls may block
 /// (query-log search reads files) and run on a blocking thread.
@@ -79,9 +113,17 @@ pub trait Backend: Send + Sync + 'static {
     fn local(&self) -> Option<Shared> {
         None
     }
-    /// Cluster nodes that couldn't be read just now (shown as `missingNodes`).
+    /// Cluster nodes that couldn't be read just now (shown as `missingNodes`). A clustered
+    /// node answers for the handle a request holds (see [`request_backend`]), never for
+    /// another request.
     fn missing_nodes(&self) -> Vec<String> {
         Vec::new()
+    }
+    /// REQ: CLU-003, T24.11 — a handle of its own for one request: its reads and its
+    /// [`Backend::missing_nodes`] are that request's alone. `None` when reads keep no
+    /// per-request state (a standalone node).
+    fn for_request(&self) -> Option<Shared> {
+        None
     }
     /// REQ: AGT-011, CLU-002 (T7.3) — the same reads over the nodes `scope` names
     /// (`site:<name>`, `node:<id, site, or pod>`). A standalone node has no other nodes.
@@ -102,9 +144,17 @@ pub trait Backend: Send + Sync + 'static {
         let _ = req;
         Err(Problem::unavailable("this node isn't in a cluster"))
     }
-    /// A backup of this node (ADR-063) without the query log: a file name and the archive.
-    /// May take a moment (it copies the databases); called on a blocking thread.
-    fn backup(&self) -> Result<(String, Vec<u8>), Problem> {
+    /// A backup of this node (ADR-063, ADR-903 §8): a file name and the archive. With a
+    /// `passphrase` (at least 12 characters) the node's stored secrets are encrypted into it;
+    /// with `include_qlog` the query log too (refused above a size the API won't hold in memory).
+    /// May take a moment (it copies the databases, and a passphrase runs a key derivation, one at
+    /// a time: a second is [`Code::RateLimited`]); called on a blocking thread.
+    fn backup_create(
+        &self,
+        include_qlog: bool,
+        passphrase: Option<zeroize::Zeroizing<String>>,
+    ) -> Result<BackupOutput, Problem> {
+        let _ = (include_qlog, passphrase);
         Err(Problem::unavailable(
             "backups aren't available on this node",
         ))
@@ -117,6 +167,15 @@ pub trait Backend: Send + Sync + 'static {
         dry_run: bool,
     ) -> Result<SupportPackageOutput, Problem> {
         let _ = (req, dry_run);
+        Err(Problem::unavailable(
+            "support packages aren't available on this node",
+        ))
+    }
+    /// REQ: OPS-011 (ADR-172) — this node's part of a cluster support package, made and redacted
+    /// here under the asking node's key: gzip-compressed JSON that fits one cluster answer
+    /// (about a mebibyte). May take a few seconds; called on a blocking thread.
+    fn support_part(&self, req: &model::SupportCollectRequest) -> Result<Vec<u8>, Problem> {
+        let _ = req;
         Err(Problem::unavailable(
             "support packages aren't available on this node",
         ))
@@ -200,6 +259,37 @@ pub trait Backend: Send + Sync + 'static {
     }
     fn latency(&self, by: LatencyBy, hour: Hour) -> Vec<LatencyRow>;
     /// REQ: OBS-010 (T9.6) — alerts firing now and the last delivery per destination.
+    /// REQ: DSC-014 (T25.3) — the network inventory's status (off unless the node runs it).
+    fn discovery_status(&self) -> model::DiscoveryStatus {
+        model::DiscoveryStatus::default()
+    }
+    /// REQ: DSC-906 (T31.2) — the CMDB's status (off unless the node runs it).
+    fn cmdb_status(&self) -> cmdb_api::CmdbStatus {
+        cmdb_api::CmdbStatus::default()
+    }
+    /// REQ: DSC-902 (T31.2) — a page of CIs; a node that doesn't run the CMDB says 503.
+    fn cmdb_cis(&self, q: cmdb_api::CmdbQuery) -> BoxFuture<Result<cmdb_api::CmdbCiPage, Problem>> {
+        let _ = q;
+        Box::pin(async { Err(cmdb_api::not_here(false, None)) })
+    }
+    /// REQ: DSC-902 (T31.2) — one CI with its records.
+    fn cmdb_ci(&self, id: String) -> BoxFuture<Result<cmdb_api::CmdbCiDetail, Problem>> {
+        let _ = id;
+        Box::pin(async { Err(cmdb_api::not_here(false, None)) })
+    }
+    /// REQ: DSC-903 (T31.2) — the open merge proposals.
+    fn cmdb_proposals(&self) -> BoxFuture<Result<Vec<cmdb_api::CmdbProposal>, Problem>> {
+        Box::pin(async { Err(cmdb_api::not_here(false, None)) })
+    }
+    /// REQ: DSC-903 (T31.2) — a manual link, unlink, merge or split (or its dry run), run by the
+    /// node that runs the CMDB.
+    fn cmdb_manual(
+        &self,
+        w: cmdb_api::CmdbWrite,
+    ) -> BoxFuture<Result<cmdb_api::CmdbChange, Problem>> {
+        let _ = w;
+        Box::pin(async { Err(cmdb_api::not_here(false, None)) })
+    }
     fn alerts_status(&self) -> model::AlertsStatus {
         model::AlertsStatus::default()
     }
@@ -262,8 +352,38 @@ pub trait Backend: Send + Sync + 'static {
         limit: usize,
     ) -> Result<QueryPage, Problem>;
     fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem>;
+    /// Configured lists; `GET /api/v1/lists` fills each one's `hits` from
+    /// [`Backend::list_hits`].
     fn lists(&self) -> Vec<ListInfo>;
+    /// REQ: OBS-009 (T7.14) — queries each list blocked or allowed since start, by list name:
+    /// this node's, and in a cluster every node's added up (the nodes serving DNS needn't be
+    /// the one serving the API).
+    fn list_hits(&self) -> std::collections::BTreeMap<String, u64> {
+        self.lists().into_iter().map(|l| (l.name, l.hits)).collect()
+    }
+    /// REQ: FLT-004, OBS-009, T24.11 — the lists and every node's hits, with the nodes that
+    /// didn't answer, from one read round (a clustered node asks the primary and the peers
+    /// together, so the answer takes one deadline).
+    fn lists_and_hits(&self) -> ListsAndHits {
+        ListsAndHits {
+            lists: self.lists(),
+            hits: self.list_hits(),
+            missing: self.missing_nodes(),
+        }
+    }
     fn groups(&self) -> Vec<GroupInfo>;
+    /// REQ: API-013, CLU-004 (T24.42) - the groups from this node alone: for the callers that
+    /// only need their contents (the category and list pages, the support package), so they never
+    /// wait on the primary's router read. A backend with no remote data answers as `groups`.
+    fn groups_local(&self) -> Vec<GroupInfo> {
+        self.groups()
+    }
+    /// REQ: API-013 (T24.41) - the groups over the networks the caller read (a replica's include
+    /// the primary's routers'); a backend without its own router data ignores them.
+    fn groups_with(&self, networks: &[model::NetworkInfo]) -> Vec<GroupInfo> {
+        let _ = networks;
+        self.groups()
+    }
     fn clients(&self) -> Vec<ClientInfo>;
     fn upstreams(&self) -> Vec<UpstreamInfo>;
     /// The configuration version (bumped by every change made through the API; ADR-040).
@@ -290,6 +410,23 @@ pub trait Backend: Send + Sync + 'static {
             ))
         })
     }
+    /// REQ: FLT-004 — queues a download of `w.names` (or every enabled list) now, regardless
+    /// of schedule, where lists are downloaded: this node, or in a cluster the primary (a
+    /// replica forwards). With `w.dry_run`, says what it would queue.
+    fn lists_refresh(
+        &self,
+        w: ListsRefreshWrite,
+    ) -> BoxFuture<Result<model::ListsRefreshResult, Problem>> {
+        let _ = w;
+        Box::pin(async { Err(lists_api::not_here()) })
+    }
+    /// REQ: DSC-004 (T25.6, ADR-1002) — probes one configured SNMP agent (`w.agent` is a name, never
+    /// an address) on the node that runs the poller, or with `w.dry_run` lists the OIDs it would
+    /// query. A node that doesn't run the poller says so (`discovery_not_here`).
+    fn snmp_test(&self, w: SnmpTestWrite) -> BoxFuture<Result<model::SnmpTestResult, Problem>> {
+        let _ = w;
+        Box::pin(async { Err(discovery_api::not_here(false, None)) })
+    }
     /// REQ: OBS-020 (ADR-107) — the synthetic probes' latest results (every node, in a
     /// cluster).
     fn probes(&self) -> Vec<model::ProbeResult> {
@@ -308,6 +445,46 @@ pub trait Backend: Send + Sync + 'static {
         Err(Problem::unavailable(
             "change markers aren't available on this node",
         ))
+    }
+    /// REQ: OBS-901 (ADR-958) — `[map]` as this node has it; `None`: this backend has no map.
+    fn map_settings(&self) -> Option<map::MapSettings> {
+        None
+    }
+    /// REQ: OBS-901 (ADR-958) — this node's own part of the map (its window of sampled lookups
+    /// and what it knows of its own health); `None` while the map is off. Never waits on a peer.
+    fn map_part(&self) -> Option<map::MapPart> {
+        None
+    }
+    /// REQ: OBS-901 (ADR-958 section 6) — every node's part, from what the cluster read has
+    /// last heard (the snapshot never waits on a peer), and the nodes that didn't answer.
+    fn map_parts(&self) -> map::MapParts {
+        map::MapParts {
+            parts: self.map_part().into_iter().collect(),
+            missing: Vec::new(),
+            unseen: Vec::new(),
+            pending: Vec::new(),
+        }
+    }
+    /// REQ: OBS-902 (T26.4, ADR-959) - this node's GeoIP database: its state. `None`: this
+    /// backend has none (a resolver pod never fetches one).
+    fn geoip_status(&self) -> Option<model::GeoipStatus> {
+        None
+    }
+    /// REQ: OBS-902 (T26.4) - "Update now": starts a fetch on this node (it runs in the
+    /// background; the status says how it went). 409 `conflict` when one is running and
+    /// `geoip_off` when the toggle is off.
+    fn geoip_update(&self) -> Result<model::GeoipStatus, Problem> {
+        Err(Problem::not_found("this node has no GeoIP database"))
+    }
+    /// REQ: OBS-902 (T26.4) - "Delete database": removes this node's copy.
+    fn geoip_delete(&self) -> Result<model::GeoipStatus, Problem> {
+        Err(Problem::not_found("this node has no GeoIP database"))
+    }
+    /// REQ: OBS-902 (T26.4, T26.5) - the countries of `ips` from this node's database, read by
+    /// position from the file (blocking: call it inside `blocking()`).
+    fn geoip_locate(&self, ips: &[std::net::IpAddr]) -> map::GeoAnswer {
+        let _ = ips;
+        map::GeoAnswer::default()
     }
     /// REQ: OBS-018 (ADR-109) — what the shadow lists would have blocked (every node, merged).
     fn shadow_lists(&self) -> Vec<model::ShadowListStats> {
@@ -346,6 +523,11 @@ pub trait Backend: Send + Sync + 'static {
     fn qlog_privacy_level(&self) -> u8 {
         0
     }
+    /// REQ: OBS-029 (ADR-129) — the network's queries (or blocked queries) per slot, from the
+    /// time buckets (every node's, summed; each node sums its own).
+    fn heatmap_network(&self, q: &heatmap::NetworkQuery) -> Vec<u64> {
+        q.slots_of(&self.timeseries(q.step(), q.from_s, q.to_s))
+    }
     /// REQ: OBS-029 (ADR-129) — a device's or a name's hours from the hourly top lists (every
     /// node's, summed); `privacy_level` when the privacy level hides them.
     fn heatmap_key(&self, q: &heatmap::KeyQuery) -> Result<heatmap::KeyPart, Problem> {
@@ -371,6 +553,83 @@ pub trait Backend: Send + Sync + 'static {
     /// REQ: API-010 (T8.2, T8.3) — devices named by the routers' DHCP and by mDNS.
     fn dhcp_leases(&self) -> Vec<DhcpLease> {
         Vec::new()
+    }
+    /// REQ: API-013 (T22.2) — the networks the routers reported and the groups' networks.
+    fn networks(&self) -> Vec<model::NetworkInfo> {
+        Vec::new()
+    }
+    /// REQ: FLT-901 (T24.29, ADR-994 item 10) — what bounds a category selection: `[filter]
+    /// entry_budget` and `ads_tier`, the merge budget and the node's memory. In a cluster the
+    /// primary's, which fetches and compiles.
+    fn category_env(&self) -> categories_api::CategoryEnv {
+        categories_api::CategoryEnv::default()
+    }
+    /// REQ: API-010, API-013 (T24.41) - the picker over the networks and leases the caller read.
+    fn profile_devices_with(
+        &self,
+        networks: &[model::NetworkInfo],
+        leases: &[DhcpLease],
+    ) -> categories_api::ProfileDevices {
+        let _ = (networks, leases);
+        self.profile_devices()
+    }
+    /// REQ: FLT-902 (T24.29) — the picker's networks and devices.
+    fn profile_devices(&self) -> categories_api::ProfileDevices {
+        categories_api::ProfileDevices {
+            networks: Vec::new(),
+            devices: Vec::new(),
+        }
+    }
+    /// REQ: UPS-004, API-002 (T24.36) — the public resolvers the simple picker offers, and whether
+    /// this node has an IPv6 route.
+    fn upstream_presets(&self) -> model::UpstreamPresets {
+        model::UpstreamPresets::default()
+    }
+    /// REQ: API-016 (T23.7, T23.8) — the router integrations in the configuration, with each one's
+    /// status on this node.
+    fn router_entries(&self) -> Vec<model::RouterEntry> {
+        Vec::new()
+    }
+    /// REQ: API-016 (T23.8) — one read of a router draft (`POST /checks/router`).
+    fn check_router(
+        &self,
+        draft: serde_json::Value,
+    ) -> BoxFuture<Result<model::RouterCheck, Problem>> {
+        let _ = draft;
+        Box::pin(async { Err(Problem::unavailable("checks aren't available on this node")) })
+    }
+    /// REQ: API-016 (T23.8) — the certificate a router console presents at `url`.
+    fn router_certificate(
+        &self,
+        url: String,
+    ) -> BoxFuture<Result<model::RouterCertificate, Problem>> {
+        let _ = url;
+        Box::pin(async { Err(Problem::unavailable("checks aren't available on this node")) })
+    }
+    /// REQ: API-016 (T23.10) — the OIDC providers in the configuration (the files' and the ones
+    /// made in the UI), with their status on this node.
+    fn oidc_provider_entries(&self) -> model::OidcProviderList {
+        model::OidcProviderList {
+            items: Vec::new(),
+            public_url: String::new(),
+        }
+    }
+    /// REQ: API-016 (T23.11) — the event sinks in the configuration (the files' and the ones made
+    /// in the UI), with what this node does with each.
+    fn sink_entries(&self) -> model::SinkList {
+        model::SinkList::default()
+    }
+    /// REQ: API-016 (T23.11) — the OTLP export in effect on this node.
+    fn otlp_entry(&self) -> model::OtlpEntry {
+        model::OtlpEntry::default()
+    }
+    /// REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — the per-node sections of `node`
+    /// (`[cache]`, `[support]`, `[updates]`) in effect there.
+    fn node_settings(&self, node: Option<&str>) -> Result<model::NodeSettings, problem::Problem> {
+        let _ = node;
+        Err(problem::Problem::not_found(
+            "the node settings aren't available here",
+        ))
     }
     /// REQ: AGT-012 — runs a parsed `vqlog` query over `[from_us, to_us)` (or only
     /// estimates its cost).
@@ -477,8 +736,59 @@ pub trait Backend: Send + Sync + 'static {
             ))
         })
     }
+    /// REQ: API-007 (T24.18, ADR-940) — reads a Pi-hole export and keeps the plan it makes;
+    /// changes nothing. The answer is the plan (see `pihole_import_api`).
+    fn pihole_import_preview(
+        &self,
+        req: PiholeImportRequest,
+    ) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        let _ = req;
+        Box::pin(async {
+            Err(Problem::unavailable(
+                "importing a Pi-hole configuration isn't available on this node",
+            ))
+        })
+    }
+    /// REQ: API-007 (T24.18, ADR-940) — applies a previewed plan as one configuration change.
+    fn pihole_import_apply(
+        &self,
+        id: String,
+        by: String,
+    ) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        let _ = (id, by);
+        Box::pin(async {
+            Err(Problem::unavailable(
+                "importing a Pi-hole configuration isn't available on this node",
+            ))
+        })
+    }
+    /// REQ: API-007 (T24.18) — discards a previewed plan.
+    fn pihole_import_discard(&self, id: &str, by: &str) -> Result<serde_json::Value, Problem> {
+        let _ = by;
+        let _ = id;
+        Err(Problem::unavailable(
+            "importing a Pi-hole configuration isn't available on this node",
+        ))
+    }
     fn config_version(&self) -> u64 {
         0
+    }
+    /// REQ: API-014 (ADR-903 §4, AGT-003) — what an `Idempotency-Key` record keeps of a write:
+    /// never its text, a hash of it. The node keys it under its secrets key; `kind` and `body`
+    /// say whether the body sets a credential, which can't be kept without that key (503
+    /// `secrets_locked`). This default (an unkeyed hash) is for backends that hold no
+    /// configuration.
+    fn idempotency_request(
+        &self,
+        kind: Option<ManagedKind>,
+        request: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<Vec<u8>, Problem> {
+        let _ = (kind, body);
+        Ok(blake3::hash(request.as_bytes())
+            .to_hex()
+            .as_bytes()
+            .to_vec())
     }
     /// REQ: OBS-025 (T13.3) — what each device seen lately looks like.
     fn identities(&self) -> Vec<model::DeviceIdentity> {
@@ -516,6 +826,33 @@ pub trait Backend: Send + Sync + 'static {
             reason: Some("disabled".into()),
             ..rhythm_api::ClientRhythm::default()
         })
+    }
+    /// REQ: FLT-006, API-010 (T24.30, ADR-996) — a device's effective policy (a configured
+    /// device's name, an address, or a workload), resolved the way a query's is.
+    fn client_policy(&self, client: &str) -> Result<policy_api::ClientPolicy, Problem> {
+        let _ = client;
+        Err(Problem::unavailable(
+            "device policy isn't available on this node",
+        ))
+    }
+    /// REQ: FLT-006 (ADR-996) — what this node observed of the device (address, neighbor-table
+    /// MAC, client ID), for a replica to send the primary. `None`: the device has no address here.
+    fn policy_observation(
+        &self,
+        client: &str,
+    ) -> Result<Option<policy_api::PolicyObservation>, Problem> {
+        let _ = client;
+        Ok(None)
+    }
+    /// REQ: FLT-006 (ADR-996) — the policy of a device as `observed` (by another node) describes it,
+    /// under this node's configuration.
+    fn client_policy_observed(
+        &self,
+        client: &str,
+        observed: &policy_api::PolicyObservation,
+    ) -> Result<policy_api::ClientPolicy, Problem> {
+        let _ = observed;
+        self.client_policy(client)
     }
     /// REQ: OBS-025 — one device's identity (by address, or a named device's name), with the
     /// evidence.
@@ -626,6 +963,103 @@ pub trait Backend: Send + Sync + 'static {
     fn remove_node(&self, w: NodeRemoveWrite) -> BoxFuture<Result<model::NodeRemoval, Problem>> {
         let _ = w;
         Box::pin(async { Err(cluster_nodes_api::no_cluster()) })
+    }
+    /// REQ: API-015 (ADR-903 §4) — the stored secrets (never a value), this node's store and its
+    /// credential fields; on a replica, the primary's list when it answers. Called on a blocking
+    /// thread.
+    fn secrets_status(&self) -> Result<secrets_api::SecretsStatus, Problem> {
+        Err(Problem::unavailable(
+            "stored secrets aren't available on this node",
+        ))
+    }
+    /// REQ: API-015 (ADR-903 §4, §6) — the references this node's own configuration makes to
+    /// stored secrets, each with the secret's name (what a delete on the primary checks across
+    /// nodes).
+    fn secret_refs(&self) -> Vec<(String, secrets_api::SecretUse)> {
+        Vec::new()
+    }
+    /// REQ: API-015 — sets or deletes a stored secret (on the primary; a replica forwards it).
+    fn secret_write(
+        &self,
+        w: secrets_api::SecretWrite,
+    ) -> BoxFuture<Result<secrets_api::SecretChange, Problem>> {
+        let _ = w;
+        secrets_api::unavailable()
+    }
+    /// REQ: AGT-003 (ADR-903 §4) — what an `Idempotency-Key` record of a secret write keeps:
+    /// `request` and the keyed hash of the value under the node key's idempotency subkey.
+    fn secret_idempotency(
+        &self,
+        request: &str,
+        value: Option<&secrets_api::SecretText>,
+    ) -> Result<Vec<u8>, Problem> {
+        let _ = (request, value);
+        Err(Problem::unavailable(
+            "stored secrets aren't available on this node",
+        ))
+    }
+    /// REQ: API-902 (T27.13, ADR-956) — what is guarded on each node, what is pending.
+    fn guarded_status(&self) -> BoxFuture<Result<guarded::GuardedStatus, Problem>> {
+        Box::pin(std::future::ready(Err(Problem::unavailable(
+            "guarded settings aren't available here",
+        ))))
+    }
+    /// REQ: API-902 — the dry run of a guarded change on `node` (default: this one).
+    fn guarded_preview(
+        &self,
+        caller: guarded::GuardedCaller,
+        id: String,
+        req: guarded::GuardedPreviewRequest,
+    ) -> BoxFuture<Result<guarded::GuardedPreview, Problem>> {
+        let _ = (caller, id, req);
+        Box::pin(std::future::ready(Err(Problem::unavailable(
+            "guarded settings aren't available here",
+        ))))
+    }
+    /// REQ: API-902 — makes a guarded change (the routes have checked who is asking).
+    fn guarded_apply(
+        &self,
+        caller: guarded::GuardedCaller,
+        id: String,
+        req: guarded::GuardedApplyRequest,
+    ) -> BoxFuture<Result<guarded::GuardedApplied, Problem>> {
+        let _ = (caller, id, req);
+        Box::pin(std::future::ready(Err(Problem::unavailable(
+            "guarded settings aren't available here",
+        ))))
+    }
+    /// REQ: API-902 — confirms the pending window change `id` with the single-use token (or the
+    /// same admin's session).
+    fn guarded_confirm(
+        &self,
+        caller: guarded::GuardedCaller,
+        id: String,
+        token: Option<String>,
+    ) -> BoxFuture<Result<guarded::GuardedResult, Problem>> {
+        let _ = (caller, id, token);
+        Box::pin(std::future::ready(Err(Problem::unavailable(
+            "guarded settings aren't available here",
+        ))))
+    }
+    /// REQ: API-902 — cancels the pending window change `id`.
+    fn guarded_cancel(
+        &self,
+        caller: guarded::GuardedCaller,
+        id: String,
+    ) -> BoxFuture<Result<guarded::GuardedResult, Problem>> {
+        let _ = (caller, id);
+        Box::pin(std::future::ready(Err(Problem::unavailable(
+            "guarded settings aren't available here",
+        ))))
+    }
+    /// REQ: API-902 (ADR-956 §3) — the trusted-proxy list a pending `trusted-proxies` change
+    /// would put in force: only the confirm route's address evaluation uses it.
+    fn guarded_pending_proxies(&self) -> Option<Vec<(IpAddr, u8)>> {
+        None
+    }
+    /// REQ: API-015 — `[api] allow_secrets_over_http`: secret values may come over plain HTTP.
+    fn secrets_over_http_allowed(&self) -> bool {
+        false
     }
 }
 
@@ -740,6 +1174,21 @@ pub enum DrillWrite {
 
 pub type Shared = Arc<dyn Backend>;
 
+/// REQ: CLU-003, T24.11 — the backend one request reads through: its own handle when the
+/// backend keeps per-request state ([`Backend::for_request`]), else the shared one.
+pub fn request_backend(b: &Shared) -> Shared {
+    b.for_request().unwrap_or_else(|| Arc::clone(b))
+}
+
+/// What [`Backend::lists_and_hits`] answers: the lists, every node's hits by list name, and
+/// the nodes that didn't answer.
+#[derive(Debug)]
+pub struct ListsAndHits {
+    pub lists: Vec<ListInfo>,
+    pub hits: std::collections::BTreeMap<String, u64>,
+    pub missing: Vec<String>,
+}
+
 /// REQ: OPS-011 — a support package made by the backend.
 #[derive(Debug)]
 pub struct SupportPackageOutput {
@@ -762,6 +1211,25 @@ pub type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 
 pub enum ManagedKind {
     /// A local name and its records (`/records/{name}`).
     Record,
+    /// REQ: OBS-016 (T27.5, ADR-1007) — `[slo]` (`/slo-settings/default`): one entry; operators.
+    Slo,
+    /// REQ: OBS-020 (T27.5, ADR-1007) — `[probe]` (`/probe-settings/default`): one entry; operators.
+    Probe,
+    /// REQ: OBS-019 (T27.5, ADR-1007) — `[upstream_check]` (`/upstream-check-settings/default`):
+    /// one entry; operators.
+    UpstreamCheck,
+    /// REQ: OBS-013 (T27.5, ADR-1007) — `[telemetry.anomaly]` (`/anomaly-settings/default`): a
+    /// node-managed entry, admin-only (the whole kind; the files win field by field).
+    TelemetryAnomaly,
+    /// REQ: OBS-003 (T27.5, ADR-1007) — `[telemetry.qlog]` (`/qlog-settings/default`): a
+    /// node-managed entry, admin-only (privacy and retention are at stake).
+    TelemetryQlog,
+    /// REQ: OBS-005 (T27.5, ADR-1007) — `[telemetry.metrics]` (`/metrics-settings/default`):
+    /// `per_client` and its cap; a node-managed entry, admin-only.
+    TelemetryMetrics,
+    /// REQ: DNS-010 (T27.7, ADR-1007) — an authoritative zone (`/zones/{name}`): its records
+    /// and groups, made through the API; a zone the files define is read-only here.
+    Zone,
     /// A domain sent to other servers (`/forwards/{domain}`).
     Forward,
     /// A quick rule (`/rules/{id}`, T6.12).
@@ -775,10 +1243,25 @@ pub enum ManagedKind {
     List,
     /// A client group (`/groups/{name}`).
     Group,
+    /// REQ: FLT-902, API-010 (T24.29) — who a group applies to (`/groups/{name}/sources`): its
+    /// networks and router names and the devices that name it, written as one change.
+    GroupSources,
     /// REQ: OBS-010 (T9.6) — an alert destination (`/alerts/destinations/{name}`).
     AlertDestination,
     /// An alert rule (`/alerts/rules/{name}`).
     AlertRule,
+    /// REQ: API-016 (T23.7, ADR-921) — a router integration (`/routers/{name}`): admin-only; a
+    /// router the config files define is read-only through the API (ADR-040).
+    Router,
+    /// REQ: API-016 (T23.10, ADR-967) — an OIDC provider (`/oidc-providers/{id}`): admin-only, a
+    /// node-managed kind (ADR-903 §6); a provider the config files define is read-only here.
+    OidcProvider,
+    /// REQ: API-016, OBS-010 (T23.11, ADR-984) — an event sink (`/sinks/{name}`): admin-only, a
+    /// node-managed kind; a sink the config files define is read-only here.
+    Sink,
+    /// REQ: API-016, OBS-006 (T23.11, ADR-984) — the OTLP export (`/otlp/default`): one entry,
+    /// admin-only, a node-managed kind; the files win when they set a destination.
+    Otlp,
     /// REQ: FLT-010 (T9.7) — a schedule (`/schedules/{name}`).
     Schedule,
     /// REQ: OBS-038 (ADR-161) — an anomaly mute (`/anomaly-mutes/{name}`): kinds of finding that
@@ -793,12 +1276,49 @@ pub enum ManagedKind {
     /// REQ: OBS-024 (T13.1) — `[simulate]` (`/simulate-settings/default`): change simulation's
     /// switches and bounds; one entry, like the rate limit.
     Simulate,
+    /// REQ: OBS-901 (T26.2, ADR-958) — `[map]` (`/map-settings/default`): the live map's sampler
+    /// and the thresholds that colour it; one entry, like the rate limit. Operators.
+    Map,
     /// REQ: CLU-013 (T13.2) — `[cluster.rollout]` (`/cluster/rollout-settings/default`): staged
     /// rollouts' canaries, bake, and guard; one entry, like the rate limit. Admins only.
     Rollout,
     /// REQ: FLT-017 (T15.1) — a `[[kubernetes.map]]` rule (`/kubernetes/map/{namespace}/{kind}/{name}`,
     /// `*` for any): the group of the workloads it matches. API rules come before the files'.
     KubernetesMap,
+    /// REQ: DNS-019 (T24.12, ADR-904, ADR-914) — `[special]` (`/special-names/default`): one
+    /// entry, like the rate limit; the files' fields win; `ddr_name` is admin-only.
+    Special,
+    /// REQ: DNS-023 (T24.13, ADR-901, ADR-914) — `[local]` (`/local-settings/default`): the
+    /// device-name settings, without `hosts_files`; one entry, the files' fields win.
+    Local,
+    /// REQ: DNS-023 (T24.13, ADR-914) — `[clients]` (`/clients-settings/default`): `mdns` only,
+    /// admin-only; one entry, the files' fields win.
+    Clients,
+    /// REQ: DSC-001 (T25.2, ADR-907) — `[discovery]` (`/discovery-settings/default`): the network
+    /// inventory's switch, node and subnets; admin-only, no agent scope; one entry, the files' fields win.
+    Discovery,
+    /// REQ: DSC-901, DSC-906 (T31.2, ADR-1005) — `[cmdb]` (`/cmdb-settings/default`): the CMDB's
+    /// switch and thresholds; admin-only, no agent scope; one entry, the files' fields win.
+    Cmdb,
+    /// REQ: DNS-006 (T27.2, ADR-914, ADR-1006) — `[cache]` for one node (`/cache-settings/{node}`):
+    /// a node-managed kind named by the node it applies to; admins only.
+    Cache,
+    /// REQ: OPS-011 (T27.11, ADR-1006) — `[support] persist_logs` for one node
+    /// (`/support-settings/{node}`): node-managed, admins only.
+    Support,
+    /// REQ: OPS-012 (T27.11, ADR-1006) — `[updates] check` for one node (`/updates-settings/{node}`):
+    /// node-managed, admins only.
+    Updates,
+    /// REQ: DNS-011 (T27.11, ADR-1006) — `[dnssec]` `mode` and negative trust anchors
+    /// (`/dnssec-settings/default`): one entry, the files' fields win.
+    Dnssec,
+    /// REQ: FLT-004 (T27.11, ADR-1006), FLT-901 (T24.29) — `[filter]` `refresh_secs`,
+    /// `stale_after_days`, `entry_budget` and `ads_tier` (`/filter-settings/default`): one entry,
+    /// the files' fields win.
+    Filter,
+    /// REQ: CLU-014 (T27.11, ADR-1006) — `[drill] schedule` (`/drill-settings/default`): one
+    /// entry, the files' fields win; admins only.
+    Drill,
 }
 
 /// A write to a local name or a forwarded domain.
@@ -815,6 +1335,28 @@ pub struct ManagedWrite {
     pub by: String,
     /// REQ: OBS-024 — with `dry_run`: also replay the query log (`simulation`).
     pub simulate: Option<SimulateOpts>,
+    /// REQ: API-014, CLU-010 (T23.2, ADR-903 §4) — the role of whoever asks (a token's scope
+    /// applied). `None`: not known, as for a write an older node forwarded; a change that
+    /// touches a credential is then refused (409 `upgrade_required`).
+    pub role: Option<auth::Role>,
+    /// REQ: API-014 — the agent token's name when an agent asks: agents never make the
+    /// admin-only credential changes, whatever their scopes.
+    pub agent: Option<String>,
+}
+
+/// REQ: API-007 (T24.18, ADR-940) — an uploaded Pi-hole export to preview.
+#[derive(Debug, Clone)]
+pub struct PiholeImportRequest {
+    /// The export's bytes (a Teleporter zip or tar.gz, or a gravity.db). Shared, not copied.
+    pub data: axum::body::Bytes,
+    /// A Pi-hole address (`ip` or `ip:port`) to compare a sample with (ADR-941).
+    pub compare: Option<String>,
+    /// The TelltaleDNS to compare with (`ip` or `ip:port`; default `127.0.0.1:53`).
+    pub telltale: Option<String>,
+    /// Names to add to the comparison's sample.
+    pub samples: Vec<String>,
+    /// Who asked (the audit actor's name).
+    pub by: String,
 }
 
 /// REQ: OBS-024 (T13.1) — a dry run's `simulate` and `simulateUntil` parameters.
@@ -827,6 +1369,36 @@ pub struct SimulateOpts {
     pub auto: bool,
     /// The window ends here (Unix seconds); `None`: now.
     pub until_s: Option<u64>,
+}
+
+/// REQ: FLT-004 — a list refresh, as the API checked it (and as it crosses the cluster channel
+/// to the primary).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ListsRefreshWrite {
+    /// The lists named; `None` is every enabled list.
+    pub names: Option<Vec<String>>,
+    /// Say what would be queued; queue nothing.
+    pub dry_run: bool,
+    /// Who asked: the actor's name.
+    pub by: String,
+    /// Why, as the user gave it (`X-Telltale-Reason`), for the primary's audit entry (AGT-005).
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// REQ: DSC-004 (ADR-1002) — an SNMP agent test, as the API checked it (and as it crosses the
+/// cluster channel to the primary).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SnmpTestWrite {
+    /// The agent's name (checked: never an address).
+    pub agent: String,
+    /// List the OIDs a test would query; send no packet.
+    pub dry_run: bool,
+    /// Who asked: the actor's name.
+    pub by: String,
+    /// Why, as the user gave it (`X-Telltale-Reason`), for the audit entry (AGT-005).
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// REQ: OBS-014 — an acknowledge (`ack`) or unacknowledge of findings by ID.
@@ -947,9 +1519,12 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route("/api/v1/analytics/shadow-lists", get(shadow_lists))
         .route("/api/v1/analytics/overblocking", get(overblocking))
         .route("/api/v1/dhcp/leases", get(dhcp_leases))
+        .route("/api/v1/networks", get(networks))
+        .route("/api/v1/upstream-presets", get(upstream_presets))
         .route("/api/v1/records", get(local_names))
         .route("/api/v1/zones", get(zones))
         .route("/api/v1/alerts", get(alerts_status))
+        .route("/api/v1/discovery/status", get(discovery_status))
         .route("/api/v1/forwards", get(forwards))
         .route("/api/v1/rules", get(rules))
         .route("/api/v1/config/entries", get(config_entries))
@@ -960,22 +1535,76 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .merge(plans::read_routes(Arc::clone(&auth)))
         // REQ: OBS-024 — a simulation changes nothing: viewers may run one.
         .merge(simulate_api::routes(Arc::clone(&backend)))
+        // REQ: API-016 (T23.8) — the admin-only checks of a router draft.
+        .merge(routers_api::check_routes(Arc::clone(&backend)))
         // REQ: OBS-025 — what kind of device each address is.
         .merge(identify_api::routes(Arc::clone(&backend)))
         // REQ: FLT-017 — Kubernetes workloads and the watcher's status.
         .merge(kubernetes_api::routes(Arc::clone(&backend)))
+        // REQ: DSC-902 (T31.2) — the CMDB's reads: viewers; no agent scope reaches them (T31.5).
+        .merge(cmdb_api::read_routes(Arc::clone(&backend)))
         // REQ: CLU-014 — the running drill, reports, and the affinity view.
         .merge(drill_api::read_routes(Arc::clone(&backend)))
         .merge(rhythm_api::routes(Arc::clone(&backend)))
+        .merge(policy_api::routes(Arc::clone(&backend)))
+        // REQ: FLT-901, FLT-902 (T24.29) — the category catalog, what a selection costs, a group's
+        // content and the picker's data.
+        .merge(categories_api::read_routes(Arc::clone(&backend)))
         .merge(timeline::routes(Arc::clone(&backend)))
         // REQ: CLU-013 — the rollout in progress and the kept versions.
         .merge(rollout_api::read_routes(Arc::clone(&backend)))
+        // REQ: API-016 (T23.8) — router integrations and their status.
+        .merge(routers_api::read_routes(Arc::clone(&backend)))
+        // REQ: OBS-901 (T26.2, ADR-958) — the live network map: snapshot, stream, world, health.
+        .merge(map_api::read_routes(Arc::clone(&backend)))
+        // REQ: API-016 (T23.10) — OIDC providers and their status (admin-only, by the handler).
+        .merge(oidc_providers_api::read_routes(Arc::clone(&backend)))
+        // REQ: FLT-004 (T24.28) — which lists add little, and the plan to turn them off.
+        .merge(lists_overlap::read_routes(Arc::clone(&backend)))
+        // REQ: API-016 (T23.11) — event sinks and the OTLP export (read: any signed-in role).
+        .merge(sinks_api::read_routes(Arc::clone(&backend)))
+        .merge(node_settings_api::read_routes(Arc::clone(&backend)))
+        // REQ: API-902 (T27.13) — what is guarded and what is pending (no value, ever).
+        .merge(guarded_api::read_routes(Arc::clone(&backend)))
         .route_layer(from_fn(auth::routes::require_viewer));
     let protected = data
         .merge(auth::routes::self_service(Arc::clone(&auth)))
         // REQ: API-002, API-010 — configuration changes need operator (or a `write` token).
         .merge(
             config_api::routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_operator)),
+        )
+        // REQ: DNS-006, OPS-011, OPS-012, DNS-011, FLT-004, CLU-014 (T27.2, T27.11, ADR-1006) — the
+        // per-node sections and the small settings: operators at least (the plans refuse the rest).
+        .merge(
+            config_api::node_settings_routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_operator)),
+        )
+        // REQ: FLT-004 — "update lists now" needs operator (agents: config:write:lists).
+        .merge(
+            lists_api::routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_operator)),
+        )
+        // REQ: FLT-901 (T24.29) — a group's content: operators (agents plan, an operator approves).
+        .merge(
+            categories_api::write_routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_operator)),
+        )
+        // REQ: DSC-903 (T31.2) — link, unlink, merge and split: operators (no agent scope, T31.5).
+        .merge(
+            cmdb_api::write_routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_operator)),
+        )
+        // REQ: DSC-004 (T25.6, ADR-1002) — the SNMP test sends packets to a device: admin (agents:
+        // ops:discovery_test).
+        .merge(
+            discovery_api::routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_admin)),
+        )
+        // REQ: FLT-004 (T24.28) — turning the lists a prune plan names off needs operator, and a
+        // person: agent tokens only read the plan.
+        .merge(
+            lists_overlap::write_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_operator)),
         )
         // REQ: DNS-006 (T6.13) — flushing the cache needs operator (agents: ops:cache).
@@ -1056,6 +1685,37 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
             support_api::admin_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_admin)),
         )
+        // REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API's settings: operators read
+        // the status (agents: config:read), admins change it (never agents: the token is a
+        // credential).
+        .merge(
+            pihole_api::read_routes(Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_operator)),
+        )
+        .merge(
+            pihole_api::admin_routes(Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_admin)),
+        )
+        // REQ: API-007 (T24.18, ADR-940) — importing a Pi-hole export: admins only, never agents.
+        .merge(
+            pihole_import_api::admin_routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_admin)),
+        )
+        // REQ: API-902 (T27.13, ADR-956) — guarded changes: admin sessions only (never agents,
+        // never another token); the handlers refuse those again.
+        .merge(
+            guarded_api::admin_routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_admin)),
+        )
+        // REQ: OBS-902 (T26.4, ADR-959) - the GeoIP database's "Update now" and "Delete": admin
+        // sessions only, no agent scope (a node downloading from the internet is an admin's call).
+        .merge(
+            map_api::admin_routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_admin)),
+        )
+        // REQ: API-015 (ADR-903 §4) — stored secrets: operators read metadata, admins set and
+        // clear values (never agents); each route checks its own role.
+        .merge(secrets_api::routes(Arc::clone(&backend), Arc::clone(&auth)))
         .layer(from_fn_with_state(
             Arc::clone(&auth),
             auth::routes::authenticate,
@@ -1066,6 +1726,22 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route(
             "/api/v1/hooks/git",
             axum::routing::post(git_hook).with_state(Arc::clone(&backend)),
+        )
+        // REQ: API-005 (T24.10, ADR-961) — Pi-hole's own paths, authenticated by the token (or a
+        // session made with it) and answering 404 while the setting is off.
+        .merge(pihole_api::compat_routes(
+            Arc::clone(&backend),
+            Arc::clone(&auth),
+        ))
+        // REQ: API-902 (ADR-956 §3) — the confirm route of a guarded change: a session of the same
+        // admin, or the single-use token on the new address (no session exists there).
+        .merge(
+            guarded_api::confirm_routes(Arc::clone(&backend), Arc::clone(&auth)).layer(
+                axum::middleware::from_fn_with_state(
+                    Arc::clone(&auth),
+                    auth::routes::authenticate_confirm,
+                ),
+            ),
         )
         .merge(auth::routes::public(auth))
         .merge(protected)
@@ -1097,7 +1773,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, system_health, system_probes, maintenance_api::start, maintenance_api::end, drill_api::start, drill_api::end, drill_api::active, drill_api::list, drill_api::report, drill_api::affinity, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, compare::cluster_compare, rhythm_api::client_rhythm, timeline::client_timeline, config_api::cluster_promote, config_api::backup_download, support_api::make, support_api::map, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, attribution::slo_attribution, heatmap::stats_heatmap, flow::stats_flow, latency_heatmap::latency_heatmap, latency_heatmap::latency_exemplars, queries,
+        system_info, system_health, system_probes, map_api::get_map, map_api::map_stream, map_api::get_world, map_api::get_geoip, map_api::update_geoip, map_api::delete_geoip, map_api::get_health, map_api::get_settings, maintenance_api::start, maintenance_api::end, drill_api::start, drill_api::end, drill_api::active, drill_api::list, drill_api::report, drill_api::affinity, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, compare::cluster_compare, rhythm_api::client_rhythm, policy_api::client_policy, categories_api::categories, categories_api::categories_budget, categories_api::get_group_content, categories_api::put_group_content, categories_api::put_group_sources, categories_api::profile_devices, timeline::client_timeline, config_api::cluster_promote, config_api::backup_download, config_api::backup_create, secrets_api::list_secrets, secrets_api::get_secret, secrets_api::put_secret, secrets_api::delete_secret, pihole_api::get_status, pihole_api::put_settings, pihole_api::issue_token, pihole_api::revoke_token, pihole_api::v6_login, pihole_api::v6_session, pihole_api::v6_logout, pihole_api::v6_summary, pihole_api::v6_top_domains, pihole_api::v6_top_clients, pihole_api::v6_upstreams, pihole_api::v6_version, pihole_api::v6_blocking, pihole_api::v6_set_blocking, pihole_api::v5, support_api::make, support_api::map, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, attribution::slo_attribution, heatmap::stats_heatmap, flow::stats_flow, latency_heatmap::latency_heatmap, latency_heatmap::latency_exemplars, queries,
         queries_stream,
         explain, lists, groups, services, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -1108,14 +1784,21 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
+        local_names, zones, alerts_status, config_api::put_zone, config_api::delete_zone, config_api::put_alert_destination,
+        config_api::put_slo_settings, config_api::delete_slo_settings, config_api::put_probe_settings, config_api::delete_probe_settings,
+        config_api::put_upstream_check_settings, config_api::delete_upstream_check_settings, config_api::put_anomaly_settings, config_api::delete_anomaly_settings,
+        config_api::put_qlog_settings, config_api::delete_qlog_settings, config_api::put_metrics_settings, config_api::delete_metrics_settings,
+        config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_anomaly_mute, config_api::delete_anomaly_mute, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_map_settings, config_api::delete_map_settings, config_api::put_special, config_api::delete_special, config_api::put_local, config_api::delete_local, config_api::put_clients_settings, config_api::delete_clients_settings, config_api::put_discovery_settings, config_api::delete_discovery_settings, config_api::put_cmdb_settings, config_api::delete_cmdb_settings, cmdb_api::cmdb_status, cmdb_api::cmdb_cis, cmdb_api::cmdb_ci, cmdb_api::cmdb_proposals, cmdb_api::cmdb_link, cmdb_api::cmdb_unlink, cmdb_api::cmdb_merge, cmdb_api::cmdb_split, discovery_status, discovery_api::snmp_test, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, cluster_nodes_api::remove_node, simulate_api::simulate, identify_api::identities, identify_api::identity, kubernetes_api::workloads, kubernetes_api::status, config_api::put_kubernetes_map, config_api::delete_kubernetes_map, forwards, rules, anomalies, annotations_api::list_annotations, annotations_api::add_note, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, networks, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, lists_api::refresh_lists, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, upstream_presets, pihole_import_api::preview, pihole_import_api::apply, pihole_import_api::discard, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule, config_api::put_router, config_api::delete_router, routers_api::list_routers, routers_api::check_router, routers_api::check_router_certificate, oidc_providers_api::list_oidc_providers, config_api::put_oidc_provider, config_api::delete_oidc_provider, guarded_api::guarded_status, guarded_api::guarded_preview, guarded_api::guarded_apply, guarded_api::guarded_confirm, guarded_api::guarded_cancel, sinks_api::list_sinks, sinks_api::get_otlp, node_settings_api::get_node_settings, node_settings_api::get_this_node_settings, config_api::put_cache_settings, config_api::delete_cache_settings, config_api::put_support_settings, config_api::delete_support_settings, config_api::put_updates_settings, config_api::delete_updates_settings, config_api::put_dnssec_settings, config_api::delete_dnssec_settings, config_api::put_filter_settings, config_api::delete_filter_settings, config_api::put_drill_settings, config_api::delete_drill_settings, config_api::put_sink, config_api::delete_sink, config_api::put_otlp, config_api::delete_otlp, lists_overlap::overlap, lists_overlap::prune_plan, lists_overlap::prune,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
+        guarded::GuardedStatus, guarded::GuardedNodeStatus, guarded::GuardedSetting, guarded::GuardedPending, guarded::GuardedOutcome, guarded::Supervisor, guarded::GuardedPreviewRequest, guarded::GuardedPreview, guarded::GuardedCheck, guarded::GuardedApplyRequest, guarded::GuardedApplied, guarded::GuardedConfirmRequest, guarded::GuardedResult,
+        map::MapSnapshot, map::MapNode, map::MapEdge, map::MapHealth, map::MapNodeKind, map::MapReason, map::MapRecent, map::MapCounts, map::MapWorld, model::GeoipStatus, map::WorldRegion, map::WorldMarker, map::WorldUnlocated, map::NetworkHealth, map::HealthProblem, map::HealthFlow,
+        model::RouterEntry, model::RouterCredential, model::RouterStatus, model::RouterList, model::RouterCheck, model::RouterCertificate, model::OidcProviderEntry, model::OidcRoleRuleInfo, model::OidcProviderList, model::SinkEntry, model::SinkList, model::OtlpEntry, model::OtlpHeader,
+        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::ListsRefreshRequest, model::ListsRefreshResult, model::ListRefreshSkip, model::ListCover, model::ListOverlapRow, model::ListPruneCandidate, model::ListPruneKept, model::ListPrunePlan, model::ListsPruneRequest, model::ListsPruneResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, model::CredentialIssue, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, config_api::BackupRequest, Summary, TimeBucket, TopItem, model::ClientStatusCounts, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Annotation, model::AnnotationPage, model::NoteRequest, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::DrillAll, model::DrillTargets, model::DrillRequest, model::DrillMode, model::DrillCheck, model::DrillTargetDevice, model::DrillStart, model::ActiveDrill, model::DrillDevice, model::DrillNodeCount, model::DrillSummary, model::DrillReport, model::DrillPage, model::AffinityNode, model::AffinityRow, model::AffinityPage, model::GuardReadings, model::ClusterPin, model::ClusterRollout, model::RolloutFailure, model::RolloutNode, model::RolloutStatus, model::ClusterVersion, model::ClusterVersions, model::PinRequest, model::RolloutAction, model::NodeRemoval, model::SupportPackageRequest, model::DeviceIdentity, model::IdentityEvidence, model::WorkloadEvidence, model::ExplainWorkload, model::WorkloadInfo, model::WorkloadPod, model::WorkloadPage, model::KubernetesStatus, model::MatchedDomain, model::IdentityRunnerUp, model::Simulation, model::SimulatedClass, model::SimulatedName, model::SimulatedDevice, model::SimulatedGroup, model::SimulateRequest, model::SloStatus, attribution::SloAttribution, attribution::AttributionBudget, attribution::AttributionPoint, attribution::AttributionRow, attribution::AttributionCoverage, heatmap::Heatmap, flow::QueryFlow, flow::FlowNode, flow::FlowLink, compare::NodeCompare, compare::NodeNumbers, compare::NodeSeries, compare::NodeFinding, rhythm_api::ClientRhythm, rhythm_api::RhythmDomain, timeline::DeviceTimeline, timeline::TimelineLane, timeline::TimelineEvent, latency_heatmap::LatencyHeatmap, latency_heatmap::LatencyExemplar, latency_heatmap::LatencyExemplars, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ZoneInput, ZoneRecordInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Annotation, model::AnnotationPage, model::NoteRequest, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::DrillAll, model::DrillTargets, model::DrillRequest, model::DrillMode, model::DrillCheck, model::DrillTargetDevice, model::DrillStart, model::ActiveDrill, model::DrillDevice, model::DrillNodeCount, model::DrillSummary, model::DrillReport, model::DrillPage, model::AffinityNode, model::AffinityRow, model::AffinityPage, model::GuardReadings, model::ClusterPin, model::ClusterRollout, model::RolloutFailure, model::RolloutNode, model::RolloutStatus, model::ClusterVersion, model::ClusterVersions, model::PinRequest, model::RolloutAction, model::NodeRemoval, model::SupportPackageRequest, secrets_api::SecretPut, pihole_api::PiholeApiStatus, pihole_api::PiholeApiSettings, pihole_api::PiholeApiToken, pihole_api::LoginBody, pihole_api::BlockingBody, secrets_api::SecretStamp, secrets_api::SecretsHead, secrets_api::SecretUse, secrets_api::SecretNode, secrets_api::SecretMeta, secrets_api::CredentialField, secrets_api::SecretsStore, secrets_api::SecretsStatus, secrets_api::SecretChange, model::DeviceIdentity, model::IdentityEvidence, model::WorkloadEvidence, model::ExplainWorkload, model::WorkloadInfo, model::WorkloadPod, model::WorkloadPage, model::KubernetesStatus, model::MatchedDomain, model::IdentityRunnerUp, model::Simulation, model::SimulatedClass, model::SimulatedName, model::SimulatedDevice, model::SimulatedGroup, model::SimulateRequest, model::SloStatus, attribution::SloAttribution, attribution::AttributionBudget, attribution::AttributionPoint, attribution::AttributionRow, attribution::AttributionCoverage, heatmap::Heatmap, flow::QueryFlow, flow::FlowNode, flow::FlowLink, compare::NodeCompare, compare::NodeNumbers, compare::NodeSeries, compare::NodeFinding, rhythm_api::ClientRhythm, rhythm_api::RhythmDomain, categories_api::CategoryEnv, categories_api::GroupContentInfo, categories_api::ContentInput, categories_api::TierView, categories_api::CategoryView, categories_api::CategoryGroupView, categories_api::SourceState, categories_api::SourceView, categories_api::PresetView, categories_api::NotOfferedView, categories_api::GroupSelection, categories_api::CategoriesView, categories_api::BudgetView, categories_api::GroupContentView, categories_api::ProfileSource, categories_api::ProfileKey, categories_api::ProfileDevices, model::ListOwner, policy_api::ClientPolicy, policy_api::PolicySection, policy_api::PolicyItem, policy_api::PolicyLink, policy_api::PolicyRung, timeline::DeviceTimeline, timeline::TimelineLane, timeline::TimelineEvent, latency_heatmap::LatencyHeatmap, latency_heatmap::LatencyExemplar, latency_heatmap::LatencyExemplars, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, cmdb_api::CmdbStatus, cmdb_api::CmdbCount, cmdb_api::CmdbSourceStatus, cmdb_api::CmdbDropped, cmdb_api::CmdbCaps, cmdb_api::CmdbCi, cmdb_api::CmdbCiPage, cmdb_api::CmdbRecord, cmdb_api::CmdbProposal, cmdb_api::CmdbPin, cmdb_api::CmdbAlias, cmdb_api::CmdbCiDetail, cmdb_api::CmdbRecordRef, cmdb_api::CmdbLinkRequest, cmdb_api::CmdbUnlinkRequest, cmdb_api::CmdbMergeRequest, cmdb_api::CmdbSplitRequest, cmdb_api::CmdbMove, cmdb_api::CmdbChange, model::DiscoveryStatus, model::DiscoveryWorker, model::DiscoveryRead, model::DiscoveryAgent, model::DiscoveryAgentTable, model::AgentCapability, model::AgentCapabilityPart, model::DiscoveryAgentCounts, model::SnmpTestRequest, model::SnmpTestOid, model::SnmpTestResult, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, model::NetworkInfo, model::UpstreamPresets, model::UpstreamPreset, model::UpstreamPresetEndpoint, UpstreamInfo, Step, TopKind,
         Hour, model::TopHour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
@@ -1133,8 +1816,10 @@ async fn fallback(
             windows in memory (15 minutes per second, 48 hours per minute) plus rollups on disk \
             (7 days per minute, 400 days per hour, days forever)."),
         (name = "queries", description = "The query log and explanations of decisions."),
+        (name = "map", description = "REQ: OBS-901 - the live network map: the gateway, networks, devices, TelltaleDNS nodes and upstreams, coloured by health, from a sample of the lookups (never from the query path)."),
         (name = "config", description = "Lists, groups, clients, and upstreams as running."),
         (name = "agents", description = "Changes AI agents planned through MCP, and their approval."),
+        (name = "pihole-compat", description = "REQ: API-005 (T24.10, ADR-961) - the part of Pi-hole's v6             (`/api/...`) and v5 (`/admin/api.php`) interfaces that dashboards, phone apps and the             Home Assistant Pi-hole integration use. Off unless an admin turns it on (Settings,             Pi-hole); authenticated by its own token, not by the sign-in methods under the auth             tag; it reads the statistics and turns blocking off for a while and on again, and             changes nothing else."),
         (name = "auth", description = "Sign-in, two-factor, API tokens, and users. Everything \
             else needs one of: the session cookie from POST /auth/login (plus X-CSRF-Token on \
             changes), Authorization: Bearer <token>, or HTTP Basic for users who allow it.")
@@ -1171,9 +1856,18 @@ impl utoipa::Modify for Security {
     }
 }
 
-/// The document as pretty JSON (what `GET /api/v1/openapi.json` serves and what the
-/// committed `docs/api/openapi.json` must equal).
-pub fn openapi_document() -> String {
+/// The document as pretty JSON, what `GET /api/v1/openapi.json` serves. REQ: API-001, NFR-001
+/// (ADR-168) — it is the committed `docs/api/openapi.json`, compiled in, and not built from
+/// [`ApiDoc`] while running: building it linked utoipa's whole document builder (about 0.6 MiB
+/// of the compressed image) and made a 677 KB document on every request. The test
+/// `api_001_committed_openapi_matches_the_code` keeps the file equal to what the code generates.
+pub fn openapi_document() -> &'static str {
+    include_str!("../../../docs/api/openapi.json").trim_end()
+}
+
+/// What the code generates (tests only: the drift check, and `UPDATE_OPENAPI=1`).
+#[cfg(test)]
+pub(crate) fn generated_openapi_document() -> String {
     ApiDoc::openapi().to_pretty_json().unwrap_or_default()
 }
 
@@ -1241,6 +1935,14 @@ async fn blocking<T: Send + 'static>(
         .unwrap_or_else(|e| Err(Problem::internal(format!("request worker failed: {e}"))))
 }
 
+/// The configuration version as an `ETag` (ADR-040, for `If-Match`). A replica asks its
+/// primary for the version, so it is read off the runtime (CLU-004, upstream #7).
+async fn config_etag(b: &Shared) -> Result<String, Problem> {
+    let bk = Arc::clone(b);
+    let version = blocking(move || Ok(bk.config_version())).await?;
+    Ok(format!("\"{version}\""))
+}
+
 /// Node and build information.
 ///
 /// Version, role, uptime, listeners, whether the query log is on, and the active filter
@@ -1284,6 +1986,7 @@ async fn system_health(State(b): State<Shared>) -> Result<Json<model::Health>, P
 async fn system_probes(
     State(b): State<Shared>,
 ) -> Result<Json<Items<model::ProbeResult>>, Problem> {
+    let b = request_backend(&b);
     let bk = Arc::clone(&b);
     let items = blocking(move || Ok(bk.probes())).await?;
     Ok(Json(Items {
@@ -1305,6 +2008,7 @@ async fn system_probes(
 async fn shadow_lists(
     State(b): State<Shared>,
 ) -> Result<Json<Items<model::ShadowListStats>>, Problem> {
+    let b = request_backend(&b);
     let bk = Arc::clone(&b);
     let items = blocking(move || Ok(bk.shadow_lists())).await?;
     Ok(Json(Items {
@@ -1327,6 +2031,7 @@ async fn overblocking(
     State(b): State<Shared>,
     Query(p): Query<model::LimitParam>,
 ) -> Result<Json<Items<model::OverblockSuspect>>, Problem> {
+    let b = request_backend(&b);
     let limit = p.limit.unwrap_or(50).clamp(1, 500);
     let bk = Arc::clone(&b);
     let items = blocking(move || Ok(bk.overblocking(limit))).await?;
@@ -1350,6 +2055,7 @@ async fn overblocking(
 async fn upstream_checks(
     State(b): State<Shared>,
 ) -> Result<Json<Items<model::UpstreamChecks>>, Problem> {
+    let b = request_backend(&b);
     let bk = Arc::clone(&b);
     let items = blocking(move || Ok(bk.upstream_checks())).await?;
     Ok(Json(Items {
@@ -1420,7 +2126,7 @@ async fn stats_summary(
     State(b): State<Shared>,
     Query(p): Query<SummaryParams>,
 ) -> Result<Json<Summary>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&request_backend(&b), p.scope.as_deref())?;
     let now = b.now_unix_seconds();
     let from = time_param(p.from.as_deref(), now.saturating_sub(86_400), now, "from")?;
     let to = time_param(p.to.as_deref(), now + 1, now, "to")?;
@@ -1487,7 +2193,7 @@ async fn stats_slo(
     State(b): State<Shared>,
     Query(p): Query<model::ScopeParam>,
 ) -> Result<Json<model::SloStatus>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&request_backend(&b), p.scope.as_deref())?;
     let now = b.now_unix_seconds();
     let s = b.slo_settings();
     if !s.enabled {
@@ -1524,7 +2230,7 @@ async fn stats_timeseries(
     State(b): State<Shared>,
     Query(p): Query<TimeseriesParams>,
 ) -> Result<Json<Items<TimeBucket>>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&request_backend(&b), p.scope.as_deref())?;
     let now = b.now_unix_seconds();
     let step = p.step.unwrap_or(Step::Minute);
     let default_from = now.saturating_sub(match step {
@@ -1548,7 +2254,8 @@ async fn stats_timeseries(
 /// Server-Sent Events, newest as they happen: `event: query` carries a `QueryRow` (same
 /// fields as GET /queries), `event: dropped` a `TailDropped` when matching queries were
 /// skipped (over `rate`, or this client fell behind), and a comment every 15 s keeps the
-/// connection open. Filters are applied on the server. In a browser:
+/// connection open. Filters, and their `…Not` forms (`status=blocked&statusNot=true`), are
+/// applied on the server. In a browser:
 /// `new EventSource('/api/v1/queries/stream?status=blocked')` (the session cookie signs it
 /// in). Honors the query-log privacy level; at most 16 streams per node.
 #[utoipa::path(get, path = "/api/v1/queries/stream", tag = "queries", params(TailParams),
@@ -1566,6 +2273,17 @@ async fn queries_stream(
     if p.rate.is_some_and(|r| !(1..=2000).contains(&r)) {
         return Err(Problem::invalid("`rate`: 1 to 2000 events per second"));
     }
+    check_negations(&[
+        ("nameNot", p.name_not, "name", p.name.is_some()),
+        ("clientNot", p.client_not, "client", p.client.is_some()),
+        (
+            "statusNot",
+            p.status_not,
+            "status",
+            listed(p.status.as_ref()),
+        ),
+        ("qtypeNot", p.qtype_not, "qtype", listed(p.qtype.as_ref())),
+    ])?;
     let rx = b.tail(&p)?;
     let stream = futures_util::stream::unfold(rx, |mut rx| async move {
         let event = match rx.recv().await? {
@@ -1599,7 +2317,7 @@ async fn stats_top(
     State(b): State<Shared>,
     Query(p): Query<TopParams>,
 ) -> Result<Json<Items<TopItem>>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&request_backend(&b), p.scope.as_deref())?;
     let limit = p.limit.unwrap_or(10).clamp(1, 100);
     let client = match &p.client {
         None => None,
@@ -1679,7 +2397,7 @@ async fn stats_latency(
     State(b): State<Shared>,
     Query(p): Query<LatencyParams>,
 ) -> Result<Json<Items<LatencyRow>>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&request_backend(&b), p.scope.as_deref())?;
     let bk = Arc::clone(&b);
     let (by, hour) = (p.by, p.hour.unwrap_or_default());
     let items = blocking(move || Ok(bk.latency(by, hour))).await?;
@@ -1689,12 +2407,34 @@ async fn stats_latency(
     }))
 }
 
+/// REQ: OBS-003 (ADR-171) — a `…Not` flag keeps what its filter does not match, so it needs
+/// that filter.
+fn check_negations(flags: &[(&str, Option<bool>, &str, bool)]) -> Result<(), Problem> {
+    for &(flag, on, filter, given) in flags {
+        if on == Some(true) && !given {
+            return Err(Problem::invalid(format!("`{flag}` needs `{filter}`")).hint(format!(
+                "`{flag}=true` keeps the rows that do not match `{filter}`: give `{filter}` too, or drop `{flag}`."
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a comma-separated filter names anything.
+fn listed(v: Option<&String>) -> bool {
+    v.is_some_and(|s| s.split(',').any(|x| !x.trim().is_empty()))
+}
+
 /// Search the query log.
 ///
 /// Newest first. Filters combine with AND: name (substring by default; `match=exact|suffix|
 /// glob|regex`), client, status, query type, response code, upstream, minimum latency, and
 /// time range. Pass `nextCursor` back as `cursor` for older rows. Example:
-/// `GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`.
+/// `GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`. To keep what a
+/// filter does NOT match, add `nameNot`, `clientNot`, `statusNot`, `qtypeNot`, or `rcodeNot`
+/// (`=true`): `?name=doubleclick&nameNot=true&from=-1h` is every query in the last hour whose
+/// name does not contain `doubleclick`. A negated search reads every block the time range and
+/// the other filters leave, so give a time range or another filter on a long log.
 #[utoipa::path(get, path = "/api/v1/queries", tag = "queries", params(QueryParams),
     responses((status = 200, body = QueryPage, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it."),
         (status = 503, body = Problem, description = "The query log is off.")))]
@@ -1702,7 +2442,7 @@ async fn queries(
     State(b): State<Shared>,
     Query(p): Query<QueryParams>,
 ) -> Result<Json<QueryPage>, Problem> {
-    let b = pick(&b, p.scope.as_deref())?;
+    let b = pick(&request_backend(&b), p.scope.as_deref())?;
     let now = b.now_unix_seconds();
     let from = time_param(p.from.as_deref(), 0, now, "from")?;
     let to = time_param(p.to.as_deref(), 0, now, "to")?;
@@ -1710,6 +2450,18 @@ async fn queries(
     if p.name_match.is_some_and(|m| m != NameMatch::Substring) && p.name.is_none() {
         return Err(Problem::invalid("`match` needs `name`"));
     }
+    check_negations(&[
+        ("nameNot", p.name_not, "name", p.name.is_some()),
+        ("clientNot", p.client_not, "client", p.client.is_some()),
+        (
+            "statusNot",
+            p.status_not,
+            "status",
+            listed(p.status.as_ref()),
+        ),
+        ("qtypeNot", p.qtype_not, "qtype", listed(p.qtype.as_ref())),
+        ("rcodeNot", p.rcode_not, "rcode", listed(p.rcode.as_ref())),
+    ])?;
     // REQ: OBS-017 (ADR-110) — a trace ID names the microsecond its query started; of the rows
     // logged then, the one whose fields give the same ID. Checked here, after every node
     // answered, so nodes that don't know `trace` still help.
@@ -1757,14 +2509,31 @@ async fn explain(
 /// Filter lists and their download state.
 ///
 /// Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,
-/// `pending`) and last error, size, and how many names it contributes to the active snapshot.
+/// `pending`) and last error, size, and how many names it contributes to the active snapshot;
+/// when it was last checked, last confirmed current, and last changed, and whether a refresh is
+/// queued or downloading it now (`refreshing`). `hits` adds up every node's in a cluster. On a
+/// cluster replica the download state is the primary's (it downloads and compiles the lists
+/// every node serves). `missingNodes` names the nodes whose hits are left out and, when the
+/// primary doesn't answer, the primary (the download state shown is then this node's own).
 #[utoipa::path(get, path = "/api/v1/lists", tag = "config",
     responses((status = 200, body = Items<ListInfo>, description = "The result.")))]
-async fn lists(State(b): State<Shared>) -> Json<Items<ListInfo>> {
-    Json(Items {
-        missing_nodes: Vec::new(),
-        items: b.lists(),
-    })
+async fn lists(State(b): State<Shared>) -> Result<Json<Items<ListInfo>>, Problem> {
+    // REQ: FLT-004, OBS-009 (T24.11) — a cluster replica asks the primary for the download state
+    // and every node for its hits in one round (both block on cluster calls); the nodes that
+    // didn't answer come back with the result, for this request alone.
+    let b = request_backend(&b);
+    let ListsAndHits {
+        lists: mut items,
+        hits,
+        missing,
+    } = blocking(move || Ok(b.lists_and_hits())).await?;
+    for l in &mut items {
+        l.hits = hits.get(&l.name).copied().unwrap_or(0);
+    }
+    Ok(Json(Items {
+        items,
+        missing_nodes: missing,
+    }))
 }
 
 /// Blockable services.
@@ -1800,10 +2569,16 @@ async fn groups(State(b): State<Shared>) -> Json<Items<GroupInfo>> {
 /// priority order (the first group's settings apply). Unknown devices use the `default` group.
 #[utoipa::path(get, path = "/api/v1/clients", tag = "config",
     responses((status = 200, body = Items<ClientInfo>, description = "The result.")))]
-async fn clients(State(b): State<Shared>, ext: axum::http::Extensions) -> impl IntoResponse {
-    // The config version for `If-Match` on writes (ADR-040).
-    let etag = format!("\"{}\"", b.config_version());
-    let mut items = b.clients();
+async fn clients(State(b): State<Shared>, ext: axum::http::Extensions) -> axum::response::Response {
+    // The config version for `If-Match` on writes (ADR-040), and the devices: both are
+    // federated reads that wait on the cluster, so they run off the runtime (CLU-004).
+    let bk = Arc::clone(&b);
+    let (version, mut items) = match blocking(move || Ok((bk.config_version(), bk.clients()))).await
+    {
+        Ok(read) => read,
+        Err(e) => return e.into_response(),
+    };
+    let etag = format!("\"{version}\"");
     // REQ: AGT-004 — a group-restricted agent sees its group's devices only.
     if let Some(g) = ext
         .get::<auth::Principal>()
@@ -1821,6 +2596,7 @@ async fn clients(State(b): State<Shared>, ext: axum::http::Extensions) -> impl I
             items,
         }),
     )
+        .into_response()
 }
 
 /// Device anomalies: rate spikes, heavy volume to one domain, drift, beaconing (OBS-013).
@@ -1840,6 +2616,7 @@ async fn anomalies(
     State(b): State<Shared>,
     Query(p): Query<AnomalyParams>,
 ) -> Result<Json<Items<AnomalyFinding>>, Problem> {
+    let b = request_backend(&b);
     let now = b.now_unix_seconds();
     let since = time_param(
         p.since.as_deref(),
@@ -1869,17 +2646,65 @@ async fn anomalies(
 
 /// Devices found on the network (API-010; T8.2, T8.3).
 ///
-/// The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense), then the
-/// names devices announce over mDNS (`[clients] mdns`), each with the name the device has in
-/// TelltaleDNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name
+/// The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense, and the
+/// devices Home Assistant names), then the names devices announce over mDNS (`[clients] mdns`),
+/// each with the name the device has in TelltaleDNS and, with `[local] device_domain`, the
+/// name it answers as in DNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name
 /// because these are the router's DHCP leases.
 #[utoipa::path(get, path = "/api/v1/dhcp/leases", tag = "config",
     responses((status = 200, body = Items<DhcpLease>, description = "The result.")))]
 async fn dhcp_leases(State(b): State<Shared>) -> Json<Items<DhcpLease>> {
-    Json(Items {
-        missing_nodes: Vec::new(),
-        items: b.dhcp_leases(),
+    // REQ: API-010, CLU-002 (T24.41) - a replica asks the primary, which reads the routers.
+    let b = request_backend(&b);
+    let (items, missing_nodes) = tokio::task::spawn_blocking(move || {
+        let items = b.dhcp_leases();
+        (items, b.missing_nodes())
     })
+    .await
+    .unwrap_or_default();
+    Json(Items {
+        items,
+        missing_nodes,
+    })
+}
+
+/// Networks on your network: subnets, VLANs, and how full they are (API-013; T22.2).
+///
+/// The LANs and VLANs your routers report (`[[router]]`, UniFi: subnet, VLAN, DHCP pool,
+/// domain), then any client group's `networks` that no router reported. Each with the group
+/// that covers it and how many known devices are in it (the routers' DHCP clients, Home
+/// Assistant's devices, and mDNS names), so you can see which networks are filling up. Read
+/// where the routers are read: a replica asks the primary and adds the networks it is directly
+/// on; with the primary away it answers from its own data and `missingNodes` names the primary.
+#[utoipa::path(get, path = "/api/v1/networks", tag = "config",
+    responses((status = 200, body = Items<model::NetworkInfo>, description = "The result.")))]
+async fn networks(State(b): State<Shared>) -> Json<Items<model::NetworkInfo>> {
+    // REQ: API-013 (T24.41) - a replica asks the primary, which reads the routers.
+    let b = request_backend(&b);
+    let (items, missing_nodes) = tokio::task::spawn_blocking(move || {
+        let items = b.networks();
+        (items, b.missing_nodes())
+    })
+    .await
+    .unwrap_or_default();
+    Json(Items {
+        items,
+        missing_nodes,
+    })
+}
+
+/// The public DNS resolvers the simple upstream picker offers (UPS-004; T24.36).
+///
+/// The built-in catalog (`presets/upstreams.toml`), one row per provider variant: its addresses
+/// (plain, DNS over TLS, DNS over HTTPS), the TLS name, what it filters and a line on its
+/// privacy, and whether this node has an IPv6 route (so the picker can grey IPv6 out). The
+/// picker writes the upstreams and the `default` group through `PUT /api/v1/upstreams/{name}`
+/// and `PUT /api/v1/upstream-groups/{name}`; this only reads. Presets that need a parameter (a
+/// NextDNS profile) are listed with `simple` false.
+#[utoipa::path(get, path = "/api/v1/upstream-presets", tag = "config",
+    responses((status = 200, body = model::UpstreamPresets, description = "The result.")))]
+async fn upstream_presets(State(b): State<Shared>) -> Json<model::UpstreamPresets> {
+    Json(b.upstream_presets())
 }
 
 /// Domains devices contacted for the first time (OBS-009).
@@ -1929,6 +2754,7 @@ async fn vqlog_query(
     State(b): State<Shared>,
     Query(p): Query<VqlogParams>,
 ) -> Result<Json<VqlogResult>, Problem> {
+    let b = request_backend(&b);
     let q = vqlog::parse(&p.q).map_err(|e| {
         let p = Problem::invalid(format!("`q`: {}", e.message));
         if e.hint.is_empty() { p } else { p.hint(e.hint) }
@@ -1956,6 +2782,16 @@ async fn alerts_status(State(b): State<Shared>) -> Json<model::AlertsStatus> {
     Json(b.alerts_status())
 }
 
+/// The network inventory's status (DSC-014).
+///
+/// Whether the inventory runs on this node, and each discovery worker process. The inventory itself
+/// (`GET /api/v1/discovery`) comes with T25.12.
+#[utoipa::path(get, path = "/api/v1/discovery/status", tag = "stats",
+    responses((status = 200, body = model::DiscoveryStatus, description = "The result.")))]
+async fn discovery_status(State(b): State<Shared>) -> Json<model::DiscoveryStatus> {
+    Json(b.discovery_status())
+}
+
 /// Authoritative zones (DNS-018).
 ///
 /// The zones from `[[zone]]` in the configuration files: TelltaleDNS answers everything under
@@ -1976,8 +2812,11 @@ async fn zones(State(b): State<Shared>) -> Json<Items<ZoneInfo>> {
 /// editable with `PUT /records/{name}`). The `ETag` is the config version for `If-Match`.
 #[utoipa::path(get, path = "/api/v1/records", tag = "config",
     responses((status = 200, body = Items<LocalName>, description = "The result.")))]
-async fn local_names(State(b): State<Shared>) -> impl IntoResponse {
-    let etag = format!("\"{}\"", b.config_version());
+async fn local_names(State(b): State<Shared>) -> axum::response::Response {
+    let etag = match config_etag(&b).await {
+        Ok(etag) => etag,
+        Err(e) => return e.into_response(),
+    };
     (
         [(axum::http::header::ETAG, etag)],
         Json(Items {
@@ -1985,6 +2824,7 @@ async fn local_names(State(b): State<Shared>) -> impl IntoResponse {
             items: b.local_names(),
         }),
     )
+        .into_response()
 }
 
 /// Domains sent to other DNS servers (conditional forwarding).
@@ -1993,8 +2833,11 @@ async fn local_names(State(b): State<Shared>) -> impl IntoResponse {
 /// with where it's defined (`file` or `api`). The `ETag` is the config version for `If-Match`.
 #[utoipa::path(get, path = "/api/v1/forwards", tag = "config",
     responses((status = 200, body = Items<ForwardInfo>, description = "The result.")))]
-async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
-    let etag = format!("\"{}\"", b.config_version());
+async fn forwards(State(b): State<Shared>) -> axum::response::Response {
+    let etag = match config_etag(&b).await {
+        Ok(etag) => etag,
+        Err(e) => return e.into_response(),
+    };
     (
         [(axum::http::header::ETAG, etag)],
         Json(Items {
@@ -2002,6 +2845,7 @@ async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
             items: b.forwards(),
         }),
     )
+        .into_response()
 }
 
 /// The configuration's upstreams, upstream groups, lists, and groups, with their sources.
@@ -2010,18 +2854,37 @@ async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
 /// from (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the
 /// config files' entry of the same name), or `hidden` (the files' entry is left out; listed so
 /// it can be brought back). `DELETE` on an override's or a hidden entry's path brings the
-/// files' version back. Secrets aren't part of these sections.
+/// files' version back.
+///
+/// Credentials never come back (API-014): upstream `headers` and `args`, and the password in a
+/// URL (`https://me:<redacted>@host/`) read `<redacted>`, and `redacted` lists where. Sending
+/// `<redacted>` back in a `PUT` keeps the stored value while the entry's destination (`url`,
+/// `proxy`, `host`, `tls_server_name`, `tls_ca`, `bootstrap`, `tls_insecure_skip_verify`,
+/// `spki_pins`, a destination's `type`) is unchanged; with a new destination the
+/// credential has to be entered again (422 `credential_reentry_required`).
 #[utoipa::path(get, path = "/api/v1/config/entries", tag = "config",
     params(EntriesQuery),
     responses((status = 200, body = Items<ConfigEntry>, description = "The entries, by kind and name.")))]
 async fn config_entries(
     State(b): State<Shared>,
     Query(q): Query<EntriesQuery>,
-) -> Json<Items<ConfigEntry>> {
-    Json(Items {
+) -> Result<Json<Items<ConfigEntry>>, Problem> {
+    // REQ: API-902 (ADR-956 §2) — the reserved kind `guarded` is read and written only through
+    // `/api/v1/guarded`: the generic kind routes refuse it.
+    if q.kind.as_deref() == Some("guarded") {
+        return Err(Problem::new(
+            crate::problem::Code::GuardedOnly,
+            "`guarded` is a reserved kind: guarded settings are changed only through /api/v1/guarded",
+        )
+        .hint("GET /api/v1/guarded lists what is guarded and what is pending."));
+    }
+    // A replica's entries come from its primary (CLU-002): the read waits on the cluster.
+    let bk = Arc::clone(&b);
+    let items = blocking(move || Ok(bk.config_entries(q.kind.as_deref()))).await?;
+    Ok(Json(Items {
         missing_nodes: Vec::new(),
-        items: b.config_entries(q.kind.as_deref()),
-    })
+        items,
+    }))
 }
 
 /// Quick rules: per-device and per-group allow and block (T6.12, ADR-067).
@@ -2032,8 +2895,11 @@ async fn config_entries(
 /// `If-Match`.
 #[utoipa::path(get, path = "/api/v1/rules", tag = "config",
     responses((status = 200, body = Items<crate::model::RuleInfo>, description = "The result.")))]
-async fn rules(State(b): State<Shared>) -> impl IntoResponse {
-    let etag = format!("\"{}\"", b.config_version());
+async fn rules(State(b): State<Shared>) -> axum::response::Response {
+    let etag = match config_etag(&b).await {
+        Ok(etag) => etag,
+        Err(e) => return e.into_response(),
+    };
     (
         [(axum::http::header::ETAG, etag)],
         Json(Items {
@@ -2041,6 +2907,7 @@ async fn rules(State(b): State<Shared>) -> impl IntoResponse {
             items: b.rules(),
         }),
     )
+        .into_response()
 }
 
 /// Upstream servers with health and latency.

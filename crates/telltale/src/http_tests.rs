@@ -65,7 +65,6 @@ pub(crate) fn sources_in(dir: &std::path::Path) -> Sources {
         started: Instant::now(),
         lists: ArcSwapOption::empty(),
         qlog: None,
-        config: ArcSwap::from_pointee(cfg),
         file_config: ArcSwap::from_pointee(telltale_config::Config::default()),
         config_files: Vec::new(),
         update: Arc::new(std::sync::Mutex::new(crate::updates::initial(false))),
@@ -81,12 +80,30 @@ pub(crate) fn sources_in(dir: &std::path::Path) -> Sources {
         cluster: None,
         ship: Arc::default(),
         git_poke: Arc::default(),
+        routers: Arc::default(),
+        routers_changed: Arc::default(),
+        oidc_changed: Arc::default(),
+        telemetry_changed: Arc::default(),
+        otlp_changed: Arc::default(),
+        sinks: crate::sinks::Manager::new().0,
+        oidc_fetch: crate::auth_setup::FetchSlot::default(),
         reload: tokio::sync::mpsc::channel(1).0,
         config_writes: tokio::sync::Mutex::new(()),
         allowed: Vec::new(),
         probes: Arc::default(),
         shadow: Arc::new(crate::shadow::Shadow::new(0, 0)),
         traces: Arc::default(),
+        discovery: Arc::default(),
+        cmdb: Arc::default(),
+        guarded: crate::guarded::Slot::new(),
+        geoip: Arc::default(),
+        secrets: Arc::new(crate::secrets::SecretStore::with_env(
+            &cfg,
+            Arc::new(|_: &str| None),
+            true,
+            false,
+        )),
+        config: ArcSwap::from_pointee(cfg),
     }
 }
 
@@ -365,6 +382,45 @@ fn obs_005_ring_series_are_unique_per_thread_name() {
     assert_eq!(text.matches("ring=\"twin\"").count(), 2, "{text}");
 }
 
+// REQ: FLT-004 — an inline list is never fetched, so it reports no last-success time (it would
+// trip the "> 48 h" list alert two days after every config edit); its other gauges remain.
+#[test]
+fn flt_004_inline_lists_report_no_last_success() {
+    let meta = |source: &str| ListMeta {
+        source: source.into(),
+        content_hash: Some("h".into()),
+        bytes: 10,
+        last_success: Some(1_000),
+        last_changed: Some(900),
+        ..ListMeta::default()
+    };
+    let status = vec![
+        ("remote".to_owned(), meta("https://example.com/l.txt")),
+        ("allowed".to_owned(), meta("inline:0123456789abcdef")),
+    ];
+    let mut w = PromWriter::new();
+    render_list_status(&mut w, &status);
+    let text = w.finish();
+    assert!(
+        text.contains("telltale_list_last_success_timestamp_seconds{list=\"remote\"} 1000"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("telltale_list_last_success_timestamp_seconds{list=\"allowed\"}"),
+        "{text}"
+    );
+    for family in [
+        "telltale_list_source_bytes",
+        "telltale_list_last_change_timestamp_seconds",
+        "telltale_list_fetch_consecutive_failures",
+    ] {
+        assert!(
+            text.contains(&format!("{family}{{list=\"allowed\"}}")),
+            "{text}"
+        );
+    }
+}
+
 // REQ: CLU-002 (ADR-125) — a node without the router (a resolver pod) names a device by
 // what the other nodes' routers know; this node's own sources still come first.
 #[test]
@@ -377,6 +433,9 @@ fn clu_002_device_names_fall_back_to_the_peers() {
         ip,
         hostname: Some(name.into()),
         expires: 0,
+        router: None,
+        offline: false,
+        ipv6: Vec::new(),
     };
     let name = || crate::api_backend::device_name(&src, ip.to_ipv6_mapped().octets());
     assert_eq!(name(), None);
@@ -389,4 +448,70 @@ fn clu_002_device_names_fall_back_to_the_peers() {
         .mdns_names
         .store(Arc::new([(ip, lease("k8s-local"))].into()));
     assert_eq!(name().as_deref(), Some("k8s-local"), "own sources first");
+}
+
+/// REQ: OPS-901 (T24.35, ADR-1014) — `/readyz` answers 200 only while the node's own UDP
+/// listener answers a query; when it doesn't, 503 `dns_unanswered`, and the body says nothing
+/// about the configuration. The check names the probe, which the query log never keeps (OBS-020).
+#[tokio::test]
+async fn ops_901_readyz_asks_the_listener() {
+    let fake = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let addr = fake.local_addr().unwrap();
+    let asked = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let seen = Arc::clone(&asked);
+    let t = std::thread::spawn(move || {
+        let mut buf = [0u8; 512];
+        // One question, answered as a resolver would (QR set, NXDOMAIN).
+        if let Ok((n, from)) = fake.recv_from(&mut buf) {
+            *seen.lock().unwrap() = buf[..n].to_vec();
+            let mut reply = buf[..n].to_vec();
+            reply[2] |= 0x80;
+            reply[3] = (reply[3] & 0xf0) | 3;
+            let _ = fake.send_to(&reply, from);
+        }
+    });
+    let mut src = sources();
+    let listener: telltale_config::Listener =
+        serde_json::from_value(serde_json::json!({"proto": "udp", "addr": addr.to_string()}))
+            .unwrap();
+    let cfg = telltale_config::Config {
+        listen: vec![listener],
+        ..telltale_config::Config::default()
+    };
+    src.config = ArcSwap::from_pointee(cfg);
+    let src = Arc::new(src);
+    let ask = |src: &Arc<Sources>| {
+        let src = Arc::clone(src);
+        async move {
+            let r = readyz(
+                State(src),
+                axum::extract::Query(ReadyQuery { startup: None }),
+            )
+            .await;
+            let status = r.status().as_u16();
+            let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, String::from_utf8(body.to_vec()).unwrap())
+        }
+    };
+    // Off until the real listeners are up: no question is asked.
+    assert_eq!(ask(&src).await, (200, "{\"ready\":true}\n".into()));
+    assert!(asked.lock().unwrap().is_empty(), "nothing was asked yet");
+    src.readiness.enable_dns_check();
+    assert_eq!(ask(&src).await, (200, "{\"ready\":true}\n".into()));
+    t.join().unwrap();
+    let q = asked.lock().unwrap().clone();
+    assert!(
+        q.windows(telltale_telemetry::event::PROBE_NAME.len())
+            .any(|w| w == telltale_telemetry::event::PROBE_NAME),
+        "the question names the probe, which the log never keeps"
+    );
+    // The answer is reused for a second: no second question, still 200.
+    assert_eq!(ask(&src).await.0, 200);
+    // Then the listener is gone: nothing answers, so not ready, and the body says only why.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let (status, body) = ask(&src).await;
+    assert_eq!(status, 503);
+    assert_eq!(body, "{\"ready\":false,\"reason\":\"dns_unanswered\"}\n");
 }

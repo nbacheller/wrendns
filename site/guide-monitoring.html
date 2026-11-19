@@ -38,6 +38,7 @@
     <div class="card">
       <h3>Dashboard</h3>
       <p>Queries, blocks, cache hits, latency, and top lists. History is saved to <code>&lt;data_dir&gt;/rollups.db</code> (per minute for 7 days, per hour for 400 days, per day after that), so it survives restarts and upgrades. The <b>Service level</b> card is in the <b>Advanced</b> view.</p>
+      <p>Each name in the top lists, and in the query log, has a small mark beside it: a brand's logo for names TelltaleDNS knows, a letter in a steady colour for the rest, a house for names of your own network. It is drawn by the page, so nothing is fetched and no one is told what you look up. Change or turn it off under <b>Settings → Account → Domain icons</b>.</p>
     </div>
     <div class="card">
       <h3>Query log</h3>
@@ -183,12 +184,14 @@ to = ["phone"]</code></pre>
         <li><code>PUT</code> / <code>DELETE /api/v1/alerts/destinations/{name}</code> and <code>/api/v1/alerts/rules/{name}</code>: the same fields as the configuration, with <code>?dryRun=true</code>, <code>If-Match</code>, and <code>Idempotency-Key</code>.</li>
         <li><code>POST /api/v1/alerts/destinations/{name}/test</code>: send a test message.</li>
       </ul>
-      <p class="muted">Agent tokens need <code>config:write:alerts</code>. Only file paths for secrets go through the API.</p>
+      <p class="muted">Agent tokens need <code>config:write:alerts</code>. Only file paths for secrets go through the API, and a password in a destination's URL never comes back: the API, the audit log, and MCP show <code>https://me:&lt;redacted&gt;@host/</code>. Sending it back as it is keeps the password, as long as the URL still points at the same host; a new host needs the password typed again (<code>422 credential_reentry_required</code>).</p>
+      <p class="muted"><b>Stored tokens and passwords.</b> The Alerts page's token and password fields are secret fields: an admin types the value once (it's kept encrypted on the node as <code>alert.&lt;destination&gt;.token</code> or <code>.password</code>, and never shown again), and the destination then sends it as <code>token_ref</code> or <code>password_ref</code>. Operators see that a secret is set.</p>
+      <p class="muted"><b>Admins only:</b> a destination's <code>token_file</code> and <code>password_file</code>, and the address of one that has a credential (a token file, a password file, or a password in its URL), are changed by an admin; operators see them read-only and agents get <code>403</code>. A file set through the UI or API must be in <code>[node] secret_file_dirs</code> (<code>/run/secrets</code>, <code>/var/run/secrets</code>, <code>/etc/telltale/secrets</code> by default) and never under <code>/proc</code>, the data directory or <code>/var/run/secrets/kubernetes.io</code> (<code>422 path_not_allowed</code>). An admin's change of where a credential goes is audited as <code>credential.redirect</code> and sent by the <code>credential_redirected</code> condition.</p>
     </div>
   </div>
   <p><b>Rules worth starting with:</b> <code>upstream_down</code>, <code>servfail_rate</code>, <code>list_failing</code>, <code>disk_full</code>, <code>slo_burn</code>, <code>probe_failing</code>, and <code>cert_expiring</code> if you serve encrypted DNS. In a cluster add <code>node_down</code>, and <code>sync_lag</code> with <code>for_secs</code> around 300 so a normal sync stays quiet. Every condition, and what each sends one alert per, is in the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#alerts">Alerts docs</a>.</p>
   <ul>
-    <li>A condition must hold for <code>for_secs</code> (60 by default) before it alerts, and a "Resolved" message follows when it clears. Anomalies, updates, new devices, pending plans, and failed rollouts go out once each.</li>
+    <li>A condition must hold for <code>for_secs</code> (60 by default) before it alerts, and a "Resolved" message follows when it clears. Anomalies, updates, new devices, pending plans, failed rollouts, credential redirects, and secret exports go out once each.</li>
     <li>In a cluster the primary checks the rules for the whole cluster, so you get one message, not one per node. Nodes in maintenance are left out of per-node rules.</li>
   </ul>
   <h3>Email</h3>
@@ -210,7 +213,7 @@ password_file = "/run/secrets/smtp-password"</code></pre>
 
 <section id="export">
   <h2>Send events and traces elsewhere</h2>
-  <p class="muted">All of these are config-file settings, read at startup: restart after changing them. Event sinks and traces follow the query log's privacy level (names hashed at 1 and above, no client addresses at 2 and above).</p>
+  <p class="muted">Event sinks and the OTLP metrics export are changed without a restart: an admin adds, edits or removes them in <b>Settings → Telemetry</b> (operators see them read-only), or in the config file followed by a reload, and every node applies the change within seconds. A token or an API key is a stored secret, entered once in a write-only field and read again for every batch or export. A sink or an export the config file defines is read-only in the UI. Trace settings and dnstap are config-file settings, read at startup. Event sinks and traces follow the query log's privacy level (names hashed at 1 and above, no client addresses at 2 and above).</p>
   <div class="table-wrap"><table class="std wrap">
     <thead><tr><th>You want</th><th>Use</th><th>Goes to</th></tr></thead>
     <tbody>
@@ -232,7 +235,7 @@ name = "siem"
 type = "syslog"                           # RFC 5424
 address = "udp://192.168.1.20:514"        # or tcp://, or tls://host:6514
 statuses = ["blocked"]                    # only blocks; empty means every event</code></pre>
-  <p class="muted">A destination that's slow or down drops events and counts them (<code>telltale_sink_dropped_total</code>, <code>telltale_dnstap_dropped_total</code>, <code>telltale_traces_total{result="dropped"}</code>). Webhook sinks can keep refused batches on disk with <code>spill_max_bytes</code>. Every option: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#opentelemetry-otlp">OpenTelemetry</a>, <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#event-sinks">Event sinks</a>, <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#dnstap">dnstap</a>.</p>
+  <p class="muted">A destination that's slow or down drops events and counts them (<code>telltale_sink_dropped_total</code>, <code>telltale_dnstap_dropped_total</code>, <code>telltale_traces_total{result="dropped"}</code>). Webhook sinks can keep refused batches on disk with <code>spill_max_bytes</code>; they belong to the sink's name and URL, so a name re-used for another collector never replays the old one's events. A removed sink sends what it holds and stops within two seconds. Every option: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#opentelemetry-otlp">OpenTelemetry</a>, <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#event-sinks">Event sinks</a>, <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#dnstap">dnstap</a>.</p>
 </section>
 
 <section id="exclusions">

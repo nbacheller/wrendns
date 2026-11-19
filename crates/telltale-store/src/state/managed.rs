@@ -62,6 +62,50 @@ impl State {
         self.with(version)
     }
 
+    /// REQ: API-902 (T27.13) — a node-local note in `meta` (the guarded framework's outcomes and
+    /// suppressions; never replicated, never part of the configuration version).
+    pub fn meta_get(&self, key: &str) -> Result<Option<String>> {
+        self.with(|c| {
+            c.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+                .optional()
+        })
+    }
+
+    /// Every node-local note whose key starts with `prefix` (key and value), by key.
+    pub fn meta_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT key, value FROM meta WHERE substr(key, 1, length(?1)) = ?1 ORDER BY key",
+            )?;
+            st.query_map([prefix], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect()
+        })
+    }
+
+    /// Sets (or, with `None`, removes) a node-local note in `meta`.
+    pub fn meta_set(&self, key: &str, value: Option<&str>) -> Result<()> {
+        self.with(|c| {
+            match value {
+                Some(v) => c.execute(
+                    "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    params![key, v],
+                ),
+                None => c.execute("DELETE FROM meta WHERE key = ?1", [key]),
+            }
+            .map(|_| ())
+        })
+    }
+
+    /// REQ: API-007 (T35.1) — the client groups agent tokens are restricted to.
+    pub fn agent_token_groups(&self) -> Result<Vec<String>> {
+        self.with(|c| {
+            let mut st =
+                c.prepare("SELECT DISTINCT agent_group FROM tokens WHERE agent_group IS NOT NULL")?;
+            st.query_map([], |r| r.get(0))?.collect()
+        })
+    }
+
     /// Every entry of `kind`, by name.
     pub fn managed(&self, kind: &str) -> Result<Vec<Managed>> {
         self.with(|c| {
@@ -95,7 +139,7 @@ impl State {
         by: &str,
     ) -> std::result::Result<u64, ManagedError> {
         let conn = self.lock();
-        let tx = conn.unchecked_transaction()?;
+        let tx = super::write_tx(&conn)?;
         let current = version(&tx)?;
         if let Some(v) = expect
             && v != current
@@ -123,6 +167,230 @@ impl State {
         Ok(next)
     }
 
+    /// REQ: API-007 (T24.18, ADR-940) — creates or replaces every `(kind, name, body)` in one
+    /// transaction, if the version is still `expect` (when given). The version moves once for
+    /// the whole batch, so a failed batch leaves nothing half-written.
+    pub fn put_managed_batch(
+        &self,
+        rows: &[(&str, &str, &str)],
+        expect: Option<u64>,
+        now: u64,
+        by: &str,
+    ) -> std::result::Result<u64, ManagedError> {
+        let conn = self.lock();
+        let tx = super::write_tx(&conn)?;
+        let current = version(&tx)?;
+        if let Some(v) = expect
+            && v != current
+        {
+            return Err(ManagedError::VersionConflict { current });
+        }
+        for (kind, name, body) in rows {
+            tx.execute(
+                "INSERT INTO managed (kind, name, body, updated, updated_by) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(kind, name) DO UPDATE SET body = excluded.body,
+                     updated = excluded.updated, updated_by = excluded.updated_by",
+                params![kind, name, body, i(now), by],
+            )?;
+        }
+        let next = current + 1;
+        tx.execute(
+            "UPDATE meta SET value = ?1 WHERE key = 'config_version'",
+            [next.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(next)
+    }
+
+    /// REQ: API-007, DSC-901 (T35.1, ADR-1032) — creates or replaces every `(kind, name, body)` of
+    /// `puts` and deletes every `(kind, name)` of `removes`, in one transaction, if the version is
+    /// still `expect` (when given). The version moves once; `note` (a `meta` key and value) is
+    /// recorded in the same transaction. A repair that renames entries (a
+    /// delete of the old row and a put of the new one) lands whole or not at all.
+    pub fn put_and_remove_managed(
+        &self,
+        puts: &[(&str, &str, &str)],
+        removes: &[(&str, &str)],
+        expect: Option<u64>,
+        now: u64,
+        by: &str,
+        note: Option<(&str, &str)>,
+    ) -> std::result::Result<u64, ManagedError> {
+        let conn = self.lock();
+        let tx = super::write_tx(&conn)?;
+        let current = version(&tx)?;
+        if let Some(v) = expect
+            && v != current
+        {
+            return Err(ManagedError::VersionConflict { current });
+        }
+        if let Some((key, value)) = note {
+            // A node-local note recorded in the same transaction as the write.
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )?;
+        }
+        for (kind, name) in removes {
+            tx.execute(
+                "DELETE FROM managed WHERE kind = ?1 AND name = ?2",
+                params![kind, name],
+            )?;
+        }
+        for (kind, name, body) in puts {
+            tx.execute(
+                "INSERT INTO managed (kind, name, body, updated, updated_by) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(kind, name) DO UPDATE SET body = excluded.body,
+                     updated = excluded.updated, updated_by = excluded.updated_by",
+                params![kind, name, body, i(now), by],
+            )?;
+        }
+        let next = current + 1;
+        tx.execute(
+            "UPDATE meta SET value = ?1 WHERE key = 'config_version'",
+            [next.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(next)
+    }
+
+    /// REQ: CLU-015 (T24.37, ADR-1016) — makes the entries of `kinds` exactly `rows`
+    /// (`(kind, name, body)`, each kind among `kinds`) in one transaction: the rows this node
+    /// holds that `rows` doesn't name are deleted, the others created or replaced. The version
+    /// moves once. A promoted primary adopts the cluster's last published entries this way.
+    pub fn replace_managed(
+        &self,
+        kinds: &[&str],
+        rows: &[(&str, &str, &str)],
+        now: u64,
+        by: &str,
+    ) -> std::result::Result<u64, ManagedError> {
+        self.replace_managed_noted(kinds, rows, now, by, None)
+            .map(Option::unwrap_or_default)
+    }
+
+    /// [`Self::replace_managed`] that also records `note` (a `meta` key and value) in the same
+    /// transaction, and does nothing (`Ok(None)`) when `meta` already holds that value for the
+    /// key: the check, the replacement and the record are one step. REQ: CLU-015 (T24.37).
+    pub fn replace_managed_noted(
+        &self,
+        kinds: &[&str],
+        rows: &[(&str, &str, &str)],
+        now: u64,
+        by: &str,
+        note: Option<(&str, &str)>,
+    ) -> std::result::Result<Option<u64>, ManagedError> {
+        let conn = self.lock();
+        let tx = super::write_tx(&conn)?;
+        if let Some((key, value)) = note {
+            let held: Option<String> = tx
+                .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+                .optional()?;
+            if held.as_deref() == Some(value) {
+                return Ok(None);
+            }
+        }
+        let current = version(&tx)?;
+        let mut have: Vec<(String, String)> = Vec::new();
+        {
+            let mut st = tx.prepare("SELECT kind, name, CASE WHEN json_valid(body) THEN COALESCE(json_extract(body, '$.node_only'), 0) ELSE 0 END FROM managed")?;
+            let all = st.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)? == 1,
+                ))
+            })?;
+            for r in all {
+                let (k, n, pinned) = r?;
+                // REQ: CLU-006 — a row pinned to this node (`node_only`) never travelled in the
+                // blob, so replacing the shared rows with it must not delete the row.
+                if kinds.contains(&k.as_str()) && !pinned {
+                    have.push((k, n));
+                }
+            }
+        }
+        for (k, n) in &have {
+            if !rows.iter().any(|(rk, rn, _)| rk == k && rn == n) {
+                tx.execute(
+                    "DELETE FROM managed WHERE kind = ?1 AND name = ?2",
+                    params![k, n],
+                )?;
+            }
+        }
+        for (kind, name, body) in rows.iter().filter(|(k, _, _)| kinds.contains(k)) {
+            tx.execute(
+                "INSERT INTO managed (kind, name, body, updated, updated_by) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(kind, name) DO UPDATE SET body = excluded.body,
+                     updated = excluded.updated, updated_by = excluded.updated_by",
+                params![kind, name, body, i(now), by],
+            )?;
+        }
+        if let Some((key, value)) = note {
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )?;
+        }
+        let next = current + 1;
+        tx.execute(
+            "UPDATE meta SET value = ?1 WHERE key = 'config_version'",
+            [next.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(Some(next))
+    }
+
+    /// REQ: CLU-015 (T24.40, ADR-1019) — adds `rows` (`(kind, name, body)`) that this node does not
+    /// hold yet, in one transaction, and records `note` in the same step; a row already held is
+    /// left as it is (the node's own row wins), and nothing else is touched. Does nothing
+    /// (`Ok(None)`) when `meta` already holds the note's value. Returns the kinds of the rows added,
+    /// one per row. The version moves once.
+    pub fn insert_missing_managed_noted(
+        &self,
+        rows: &[(&str, &str, &str)],
+        now: u64,
+        by: &str,
+        note: (&str, &str),
+    ) -> std::result::Result<Option<Vec<String>>, ManagedError> {
+        let conn = self.lock();
+        let tx = super::write_tx(&conn)?;
+        let held: Option<String> = tx
+            .query_row("SELECT value FROM meta WHERE key = ?1", [note.0], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if held.as_deref() == Some(note.1) {
+            return Ok(None);
+        }
+        let current = version(&tx)?;
+        let mut added = Vec::new();
+        for (kind, name, body) in rows {
+            let n = tx.execute(
+                "INSERT INTO managed (kind, name, body, updated, updated_by) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(kind, name) DO NOTHING",
+                params![kind, name, body, i(now), by],
+            )?;
+            if n > 0 {
+                added.push((*kind).to_owned());
+            }
+        }
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![note.0, note.1],
+        )?;
+        let next = current + 1;
+        tx.execute(
+            "UPDATE meta SET value = ?1 WHERE key = 'config_version'",
+            [next.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(Some(added))
+    }
+
     /// Deletes `name` if the version is still `expect` (when given). Returns the new version.
     pub fn delete_managed(
         &self,
@@ -131,7 +399,7 @@ impl State {
         expect: Option<u64>,
     ) -> std::result::Result<u64, ManagedError> {
         let conn = self.lock();
-        let tx = conn.unchecked_transaction()?;
+        let tx = super::write_tx(&conn)?;
         let current = version(&tx)?;
         if let Some(v) = expect
             && v != current

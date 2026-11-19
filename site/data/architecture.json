@@ -83,6 +83,32 @@
       "reqs": ["OBS-001", "OBS-002", "OBS-004", "OBS-005", "OBS-013"],
       "code": "crates/telltale-telemetry/src"
     },
+    "telltale-snmp": {
+      "layer": "obs",
+      "summary": "SNMP BER codec and the read-only v2c and v3 USM client for network inventory (M25).",
+      "detail": "A hand-written BER codec with caps; GET, GETNEXT and GETBULK only. Connected UDP agents with random message and request IDs; authNoPriv and authPriv with SHA-96 and SHA-2, and AES-128-CFB written by hand around the aes block cipher. A bounded walker: 5,000 rows, 30 s and at most 20 requests a second. It runs in the discovery worker process, off the DNS path (ADR-908, ADR-911).",
+      "types": [
+        "Agent",
+        "Security",
+        "Timing",
+        "AgentError",
+        "Oid",
+        "Value",
+        "VarBind",
+        "Response",
+        "SecretValue"
+      ],
+      "adrs": [
+        "ADR-908",
+        "ADR-911"
+      ],
+      "reqs": [
+        "DSC-003",
+        "DSC-004"
+      ],
+      "budget": "Off the hot path; no work per query.",
+      "code": "crates/telltale-snmp/src"
+    },
     "telltale-store": {
       "layer": "obs",
       "summary": "The columnar query-log store and SQLite state.",
@@ -201,7 +227,7 @@
       { "name": "axum", "crate": "axum", "why": "The REST API and the MCP endpoint." },
       { "name": "utoipa", "crate": "utoipa", "why": "OpenAPI generated from the handlers, so the docs and UI types can't drift." },
       { "name": "argon2 + totp-rs", "crate": "argon2", "why": "Password hashing and authenticator-app codes." },
-      { "name": "openidconnect", "crate": "openidconnect", "why": "Sign-in with Keycloak, Authentik, or any OIDC provider." },
+      { "name": "ring", "crate": "ring", "why": "Sign-in with Keycloak, Authentik, or any OIDC provider: the in-tree verifier checks ID-token and access-token signatures (RSA, ECDSA, Ed25519), ADR-951." },
       { "name": "rcgen + x509-parser", "crate": "rcgen", "why": "The cluster CA and node certificates." },
       { "name": "prost", "crate": "prost", "why": "Protobuf frames on the cluster channel, versioned for N/N-1." },
       { "name": "minisign-verify", "crate": "minisign-verify", "why": "Checks release signatures in self-update and the update check." },

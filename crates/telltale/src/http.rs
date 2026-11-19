@@ -89,6 +89,23 @@ pub(crate) struct Sources {
     pub(crate) ship: Arc<crate::ship::Stats>,
     /// Wakes the Git source's poll at once (its webhook, ADR-049).
     pub(crate) git_poke: Arc<tokio::sync::Notify>,
+    /// REQ: API-016 (T23.7, ADR-922) — each router's last read, for the API and the Routers page.
+    pub(crate) routers: Arc<crate::routers::Board>,
+    /// Wakes the router poll loop when the configuration or a stored secret changes.
+    pub(crate) routers_changed: Arc<tokio::sync::Notify>,
+    /// REQ: API-016 (T23.10) — wakes the OIDC applier when the configuration, a stored secret
+    /// (here or replicated) or a node-managed entry changes.
+    pub(crate) oidc_changed: Arc<tokio::sync::Notify>,
+    /// REQ: API-016 (T23.11) — wakes the event-sink applier and the OTLP exports when the
+    /// configuration (or a stored secret they name) changes.
+    pub(crate) telemetry_changed: Arc<tokio::sync::Notify>,
+    /// REQ: API-016 (T23.11) — the same for the OTLP metrics export (one waiter per notify).
+    pub(crate) otlp_changed: Arc<tokio::sync::Notify>,
+    /// REQ: API-016 (T23.11) — the event sinks: started and changed without a restart.
+    pub(crate) sinks: Arc<crate::sinks::Manager>,
+    /// How OIDC providers are reached; unset, the HTTPS client list downloads use (tests set a
+    /// fake issuer).
+    pub(crate) oidc_fetch: crate::auth_setup::FetchSlot,
     /// Asks the main loop to re-read the config files and state.db and apply them; answers
     /// whether it worked (ADR-040).
     pub(crate) reload: tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<bool>>,
@@ -101,9 +118,28 @@ pub(crate) struct Sources {
     pub(crate) shadow: Arc<crate::shadow::Shadow>,
     /// REQ: OBS-017 (T11.6) — latency exemplars and the queries waiting to go out as traces.
     pub(crate) traces: Arc<crate::traces::Traces>,
+    /// REQ: OPS-014, API-014 (ADR-903 §2–3) — the secrets entered in the UI (encrypted) and the
+    /// node key, loaded on first use.
+    pub(crate) secrets: Arc<crate::secrets::SecretStore>,
+    /// REQ: DSC-001, DSC-002 (T25.2, T25.3) — the network inventory on this node: its thread and
+    /// workers, started only where `[discovery]` says this node runs them.
+    pub(crate) discovery: Arc<crate::discovery::runtime::Runtime>,
+    /// REQ: DSC-901 (T31.2) — the CMDB, started only where `[cmdb]` and `[discovery]`'s gate say.
+    pub(crate) cmdb: Arc<crate::cmdb::runtime::Runtime>,
+    /// REQ: API-902 (T27.13) — the guarded-changes engine, once the API has opened `state.db`.
+    pub(crate) guarded: crate::guarded::Slot,
+    /// REQ: OBS-902 (T26.4, ADR-959) - the GeoIP database on this node: fetched only when an
+    /// admin turned `[map.geoip]` on, never on the query path.
+    pub(crate) geoip: Arc<crate::geoip::GeoIp>,
 }
 
 impl Sources {
+    /// REQ: API-016 (T23.11) - wakes the event-sink applier and the OTLP export after a change.
+    pub(crate) fn notify_telemetry_changed(&self) {
+        self.telemetry_changed.notify_one();
+        self.otlp_changed.notify_one();
+    }
+
     /// REQ: OPS-003 — whether client IPs appear masked in the latest 10-minute window.
     pub(crate) fn masked_clients(&self) -> Option<crate::masking::Masked> {
         let now = std::time::SystemTime::now()
@@ -214,8 +250,15 @@ async fn readyz(
         .startup
         .as_deref()
         .is_some_and(|v| v != "0" && v != "false");
-    let ok = if startup { r.started() } else { r.ready() };
-    let reason = (!ok).then(|| r.reason()).flatten();
+    let mut ok = if startup { r.started() } else { r.ready() };
+    let mut reason = (!ok).then(|| r.reason()).flatten();
+    // REQ: OPS-901 (ADR-1014) — ready only when the node's own UDP listener answers a local
+    // query. The probe name is kept out of the query log and the analytics (OBS-020), and the
+    // answer is checked at most once a second however many probes ask.
+    if ok && r.dns_check_enabled() && !dns_answers(&src).await {
+        ok = false;
+        reason = Some("dns_unanswered");
+    }
     let body = match reason {
         None if ok => "{\"ready\":true}\n".to_owned(),
         None => "{\"ready\":false}\n".to_owned(),
@@ -227,6 +270,34 @@ async fn readyz(
         StatusCode::SERVICE_UNAVAILABLE
     };
     (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
+}
+
+/// How long `/readyz` waits for the listener's answer.
+const DNS_CHECK_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+/// A result is reused this long: an unauthenticated route must not turn into a query source.
+const DNS_CHECK_REUSE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// REQ: OPS-901 (ADR-1014) — whether the first UDP listener answers a query for the probe name
+/// from loopback (a wildcard bind is asked on `127.0.0.1`). A node with no UDP listener has
+/// nothing to ask: its listeners being bound is the answer.
+async fn dns_answers(src: &Sources) -> bool {
+    static PROBE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    if let Some(ok) = src.readiness.dns_cached(DNS_CHECK_REUSE) {
+        return ok;
+    }
+    let Some(addr) = crate::watchdog::udp_listener(&src.config.load()) else {
+        return true;
+    };
+    // Single flight: callers that arrive together wait for one probe and share its answer.
+    let _one = PROBE.lock().await;
+    if let Some(ok) = src.readiness.dns_cached(DNS_CHECK_REUSE) {
+        return ok;
+    }
+    let ok = tokio::task::spawn_blocking(move || crate::watchdog::ask_udp(addr, DNS_CHECK_WAIT))
+        .await
+        .unwrap_or(false);
+    src.readiness.dns_store(ok);
+    ok
 }
 
 async fn metrics(State(src): State<Arc<Sources>>, headers: header::HeaderMap) -> Response {
@@ -509,6 +580,35 @@ fn peer_maintenance_metrics(
     }
 }
 
+/// REQ: CLU-009 (T24.33) — each peer's configuration lag; a witness holds no configuration, so it
+/// has none.
+fn peer_config_lag_metrics(
+    c: &telltale_cluster::net::Cluster,
+    peers: &[telltale_cluster::net::Member],
+    newest: u64,
+    w: &mut PromWriter,
+) {
+    w.family(
+        "telltale_cluster_peer_config_lag",
+        "gauge",
+        "Configuration versions the peer is behind the newest known.",
+    );
+    let witnesses: Vec<String> = c
+        .identity
+        .registry()
+        .into_iter()
+        .filter(|n| n.witness)
+        .map(|n| n.node_id)
+        .collect();
+    for p in peers.iter().filter(|p| !witnesses.contains(&p.node_id)) {
+        w.sample(
+            "telltale_cluster_peer_config_lag",
+            &[("node", &p.node_id), ("site", &p.site)],
+            newest.saturating_sub(p.stable_seq()),
+        );
+    }
+}
+
 fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
     if let Some(c) = &src.cluster {
         let now = std::time::SystemTime::now()
@@ -557,18 +657,7 @@ fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
         }
         peer_detail_metrics(&peers, w);
         peer_maintenance_metrics(&peers, now, w);
-        w.family(
-            "telltale_cluster_peer_config_lag",
-            "gauge",
-            "Configuration versions the peer is behind the newest known.",
-        );
-        for p in &peers {
-            w.sample(
-                "telltale_cluster_peer_config_lag",
-                &[("node", &p.node_id), ("site", &p.site)],
-                newest.saturating_sub(p.stable_seq()),
-            );
-        }
+        peer_config_lag_metrics(c, &peers, newest, w);
         let local = c.local_state();
         w.family(
             "telltale_cluster_config_seq",
@@ -698,6 +787,10 @@ pub(crate) fn render(src: &Sources) -> String {
     );
     cluster_metrics(src, &mut w);
     render_maintenance(src, &mut w);
+    // REQ: DSC-014 (T25.3) — the discovery workers, when this node runs them.
+    src.discovery.render_metrics(&mut w);
+    // REQ: DSC-906 (T31.2) — the CMDB's series, when this node runs it.
+    src.cmdb.render_metrics(&mut w);
     crate::simulate::render(&mut w);
     src.identify.render(&mut w);
     // REQ: FLT-017 — the workload table's size, age, and the watcher's errors.
@@ -798,7 +891,7 @@ fn render_shadow(w: &mut PromWriter, shadow: &crate::shadow::Shadow) {
 /// REQ: OBS-017 (T11.6, ADR-110) — the trace export, while it's configured.
 fn render_traces(w: &mut PromWriter, src: &Sources) {
     let cfg = src.config.load();
-    let o = &cfg.telemetry.otlp;
+    let o = cfg.telemetry.otlp_effective();
     if o.endpoint.is_none() || (o.traces_sample_every == 0 && o.traces_slow_ms == 0) {
         return;
     }
@@ -958,6 +1051,26 @@ fn render_process(w: &mut PromWriter, src: &Sources) {
             );
         }
     }
+    // REQ: OPS-014 (ADR-903 §3) — stored secrets by how they stand on this node.
+    let st = src.secrets.status();
+    if st.state != crate::secrets::store::StoreState::Ephemeral {
+        let f = w.family(
+            "telltale_secrets",
+            "gauge",
+            "Secrets stored on this node, by state: readable, unreadable (another key made them), or corrupt (they fail their integrity check).",
+        );
+        for h in [
+            crate::secrets::store::RowHealth::Readable,
+            crate::secrets::store::RowHealth::Unreadable,
+            crate::secrets::store::RowHealth::Corrupt,
+        ] {
+            f.sample(
+                "telltale_secrets",
+                &[("state", h.as_str())],
+                u64::try_from(st.count(h)).unwrap_or(u64::MAX),
+            );
+        }
+    }
     // REQ: OBS-007 (review 04-08) — dnstap copies that never reached the reader.
     if let Some(tap) = src.pipeline.dnstap.get() {
         w.family(
@@ -1044,6 +1157,17 @@ fn render_telemetry(w: &mut PromWriter, hub: &telltale_telemetry::Hub) {
         "Queries left out of the query log, analytics, and exports by [exclusions] (still in telltale_queries_total).",
     )
     .sample("telltale_queries_excluded_total", &[], hub.excluded_total());
+    // REQ: OBS-903 (T24.35) — queries kept out of the query log only (still in the analytics).
+    w.family(
+        "telltale_queries_log_excluded_total",
+        "counter",
+        "Queries kept out of the query log by [exclusions.log] (still in the analytics and telltale_queries_total).",
+    )
+    .sample(
+        "telltale_queries_log_excluded_total",
+        &[],
+        hub.log_excluded_total(),
+    );
     // REQ: OBS-001 — clock steps the event clock followed (NTP's first sync on a Pi).
     let (steps, latest_step_us) = hub.clock_steps();
     w.family(
@@ -1287,7 +1411,12 @@ type ListGauge = (
 
 /// REQ: FLT-004, `spec/06` §6 alert "list fetch failing for > 48 h": per-list fetch state.
 fn render_lists(w: &mut PromWriter, fetcher: &Fetcher) {
-    let status = fetcher.status();
+    render_list_status(w, &fetcher.status());
+}
+
+/// REQ: FLT-004 — inline rules are never fetched, so they have no last-success time: one would
+/// stay at the last config change and trip the "> 48 h" alert two days after every edit.
+fn render_list_status(w: &mut PromWriter, status: &[(String, ListMeta)]) {
     let families: [ListGauge; 4] = [
         (
             "telltale_list_source_bytes",
@@ -1298,8 +1427,9 @@ fn render_lists(w: &mut PromWriter, fetcher: &Fetcher) {
         (
             "telltale_list_last_success_timestamp_seconds",
             "gauge",
-            "When the list was last confirmed current (download, 304, or unchanged file).",
-            |m| m.last_success,
+            "When the list was last confirmed current (download, 304, or unchanged file). Not \
+             reported for inline rules, which are never fetched.",
+            |m| m.last_success.filter(|_| !m.is_inline()),
         ),
         (
             "telltale_list_last_change_timestamp_seconds",
@@ -1316,7 +1446,7 @@ fn render_lists(w: &mut PromWriter, fetcher: &Fetcher) {
     ];
     for (name, kind, help, value) in families {
         w.family(name, kind, help);
-        for (list, meta) in &status {
+        for (list, meta) in status {
             if let Some(v) = value(meta) {
                 w.sample(name, &[("list", list)], v);
             }

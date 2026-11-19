@@ -2,7 +2,7 @@
 //!
 //! REQ: FLT-005, FLT-006. Precedence: client ID (DoH path / DoT SNI) → EDNS MAC (only from
 //! trusted forwarders) → MAC from the neighbor table → Kubernetes workload (FLT-017) → exact
-//! IP → most specific CIDR → the `default` group. All lookups are hash maps or a short prefix
+//! IP → most specific CIDR → router name (T24.24) → the `default` group. All lookups are hash maps or a short prefix
 //! list built once per config, so identifying a client allocates nothing.
 
 use std::collections::HashMap;
@@ -29,6 +29,18 @@ pub struct Group {
     pub services: Vec<Box<str>>,
     /// REQ: FLT-011 (T7.11) — safe search, and YouTube's restriction with it.
     pub safe_search: Option<telltale_config::YoutubeRestrict>,
+    /// REQ: FLT-902 (T24.29) — the engines safe search covers (empty: every engine), with
+    /// `youtube` added when the group sets its own YouTube level.
+    pub safe_search_engines: Vec<Box<str>>,
+    /// REQ: FLT-901 (T24.29) — the lists this group wants because of its categories and ad
+    /// block: `cat-<source>` names, or the name of a list that provides the source already.
+    pub cat_lists: Vec<Box<str>>,
+    /// REQ: FLT-901 - for each provider list in `cat_lists` (not a `cat-` name), the category names
+    /// it stands for, so a block reason names the category.
+    pub cat_labels: Vec<(Box<str>, Box<str>)>,
+    /// REQ: FLT-902 — what the group filters by category, in words ("Off", "Basic",
+    /// "Enhanced (3 of 20), Ad block"), for the device policy panel.
+    pub content_summary: Box<str>,
     /// REQ: FLT-015 (T7.20) — which answer addresses are refused.
     pub answers: Option<AnswerFilter>,
     /// REQ: FLT-014 (T7.20) — rewrites.
@@ -265,6 +277,46 @@ pub struct Client {
     pub inherit: bool,
 }
 
+/// REQ: FLT-006, API-010 (T24.30, ADR-996) — where a device's group came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupFrom {
+    /// The `[[client]]`'s own `groups`.
+    Device,
+    /// A group's `networks` (ADR-050).
+    Network,
+    /// A group's `router_names` (ADR-973).
+    RouterName,
+    /// A Kubernetes workload's group (labels, map, or default; FLT-017).
+    Workload,
+    /// No client and no network claims it: the `default` group.
+    Default,
+}
+
+impl GroupFrom {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Device => "device",
+            Self::Network => "network",
+            Self::RouterName => "router_name",
+            Self::Workload => "kubernetes",
+            Self::Default => "default",
+        }
+    }
+}
+
+/// REQ: FLT-006, API-010 (T24.30, ADR-996) — the key an [`Identity`] matched on, and where its
+/// group came from, derived from the same state `identify` read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchedKey {
+    /// The key as a `[[client]] match` is written (`id:kids`, `aa:bb:..`, `192.168.1.20`,
+    /// `10.0.5.0/24`, `hostname:tv`); `None` for a workload (the caller names it) and the default.
+    pub key: Option<String>,
+    pub group_from: GroupFrom,
+    /// What gave the group when it isn't the device's own: the network (`10.20.2.0/24`) or the
+    /// router name (`hostname:tv`).
+    pub group_key: Option<String>,
+}
+
 /// How a client was recognized (shown in the query log and explain).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdSource {
@@ -273,6 +325,8 @@ pub enum IdSource {
     NeighborMac,
     /// REQ: FLT-017 — a Kubernetes pod address, named by its workload.
     Workload,
+    /// REQ: FLT-006 (T24.9, ADR-973) — the name a router gave the device at its address.
+    Hostname,
     Ip,
     Cidr,
     /// Unknown device: the `default` group.
@@ -315,6 +369,55 @@ impl Neighbors {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// REQ: FLT-006 (T24.30) — an address the neighbor table knows this MAC at (the lowest, so
+    /// the answer is stable). Off the query path: it scans the table.
+    pub fn address_of(&self, mac: [u8; 6]) -> Option<IpAddr> {
+        self.map
+            .load()
+            .iter()
+            .filter(|(_, m)| **m == mac)
+            .map(|(ip, _)| *ip)
+            .min()
+    }
+}
+
+/// REQ: FLT-006 (T24.9, ADR-973) — the name a router gave each address (its label form), rebuilt
+/// off the query path every few seconds by the device-name task and read with one lock-free
+/// load. Empty until that task runs, so a name match waits at most one rebuild after a start or
+/// a reload.
+#[derive(Debug, Default)]
+pub struct RouterNames {
+    map: ArcSwap<HashMap<IpAddr, Arc<str>>>,
+}
+
+impl RouterNames {
+    pub fn replace(&self, names: HashMap<IpAddr, Arc<str>>) {
+        self.map.store(Arc::new(names));
+    }
+
+    /// The router name an address was given (canonical form).
+    pub fn get(&self, ip: IpAddr) -> Option<Arc<str>> {
+        self.map.load().get(&ip.to_canonical()).cloned()
+    }
+
+    /// The addresses a router gave this label at present.
+    pub fn addresses(&self, label: &str) -> Vec<IpAddr> {
+        self.map
+            .load()
+            .iter()
+            .filter(|(_, n)| &***n == label)
+            .map(|(ip, _)| *ip)
+            .collect()
+    }
+}
+
+/// REQ: FLT-006 (T24.9, ADR-973) — whether a rule device or match key is a router name
+/// (`hostname:<label>`), case-insensitively.
+pub fn is_router_key(s: &str) -> bool {
+    s.as_bytes()
+        .get(..9)
+        .is_some_and(|b| b.eq_ignore_ascii_case(b"hostname:"))
 }
 
 /// Every configured group and client, indexed for identification.
@@ -338,6 +441,14 @@ pub struct ClientTable {
     /// Index of the `default` group, and its name for unknown clients.
     default_group: [u16; 1],
     default_names: Vec<Box<str>>,
+    /// REQ: FLT-006 (T24.9, ADR-973) — router name → client (`hostname:` keys).
+    by_host: HashMap<Box<str>, u16>,
+    /// REQ: API-010 (T24.9, ADR-973) — router name → group (a group's `router_names`).
+    host_groups: HashMap<Box<str>, u16>,
+    /// The router name each address was given, shared with the quick rules (see [`RouterNames`]).
+    router_names: Arc<RouterNames>,
+    /// Some client, group or rule uses a router name, so the names are worth reading.
+    any_router_names: bool,
     /// REQ: FLT-015 — some group filters answer addresses (else the check is skipped).
     any_answers: bool,
     /// REQ: DNS-016 — some group has DNS64.
@@ -348,6 +459,21 @@ impl Default for ClientTable {
     fn default() -> Self {
         Self::from_config(&Config::default())
     }
+}
+
+/// REQ: FLT-902 — the engines a group's safe search covers: its list, plus YouTube when the
+/// group sets its own YouTube level (`moderate`, `off`) so that level applies whatever the list
+/// says (empty: every engine).
+fn effective_engines(g: &telltale_config::GroupConfig) -> Vec<Box<str>> {
+    let mut v: Vec<Box<str>> = g
+        .safe_search_engines
+        .iter()
+        .map(|e| e.as_str().into())
+        .collect();
+    if !v.is_empty() && !g.youtube_restrict.is_default() && !v.iter().any(|e| &**e == "youtube") {
+        v.push("youtube".into());
+    }
+    v
 }
 
 impl Group {
@@ -367,7 +493,12 @@ impl Group {
                 .iter()
                 .map(|s| s.as_str().into())
                 .collect(),
-            safe_search: g.safe_search.then_some(g.youtube_restrict),
+            safe_search: (g.safe_search || !g.safe_search_engines.is_empty())
+                .then_some(g.youtube_restrict),
+            safe_search_engines: effective_engines(g),
+            cat_lists: Vec::new(),
+            cat_labels: Vec::new(),
+            content_summary: telltale_config::categories::summary(g.content.as_ref()).into(),
             answers: (g.rebinding_protection || !g.block_answer_ips.is_empty()).then(|| {
                 AnswerFilter {
                     private: g.rebinding_protection,
@@ -417,8 +548,21 @@ impl Group {
 impl ClientTable {
     /// Builds the table. The config is assumed validated (`telltale config check` rules);
     /// unparseable keys and unknown groups are skipped.
+    #[allow(clippy::too_many_lines)] // one pass over the config into the table's indexes
     pub fn from_config(cfg: &Config) -> Self {
         let mut groups: Vec<Group> = cfg.group.iter().map(Group::from_config).collect();
+        // REQ: FLT-901 — each group's category lists (a provider list's name where a file already
+        // defines the source's URL).
+        for (g, c) in groups.iter_mut().zip(&cfg.group) {
+            g.cat_lists = telltale_config::categories::group_lists(cfg, c)
+                .into_iter()
+                .map(String::into_boxed_str)
+                .collect();
+            g.cat_labels = telltale_config::categories::provider_labels(cfg, c)
+                .into_iter()
+                .map(|(n, l)| (n.into_boxed_str(), l.into_boxed_str()))
+                .collect();
+        }
         let default_idx = if let Some(i) = groups.iter().position(|g| &*g.name == "default") {
             i
         } else {
@@ -431,6 +575,10 @@ impl ClientTable {
                 color: None,
                 services: Vec::new(),
                 safe_search: None,
+                safe_search_engines: Vec::new(),
+                cat_lists: Vec::new(),
+                cat_labels: Vec::new(),
+                content_summary: "Off".into(),
                 answers: None,
                 rewrites: Vec::new(),
                 dns64: None,
@@ -464,6 +612,10 @@ impl ClientTable {
             default_names: vec!["default".into()],
             clients: Vec::new(),
             groups: Vec::new(),
+            by_host: HashMap::new(),
+            host_groups: HashMap::new(),
+            router_names: Arc::default(),
+            any_router_names: false,
             any_answers,
             any_dns64,
         };
@@ -503,6 +655,9 @@ impl ClientTable {
                         t.by_ip.entry(ip.to_canonical()).or_insert(ci);
                     }
                     Ok(MatchKey::Cidr(n)) => t.cidrs.push((n, ci)),
+                    Ok(MatchKey::Hostname(h)) => {
+                        t.by_host.entry(h.into()).or_insert(ci);
+                    }
                     Err(_) => {}
                 }
             }
@@ -516,6 +671,7 @@ impl ClientTable {
         }
         t.group_nets
             .sort_by_key(|(n, _)| std::cmp::Reverse(n.prefix));
+        t.index_router_names(cfg);
         t.groups = groups;
         t
     }
@@ -547,9 +703,74 @@ impl ClientTable {
         self.clients.get(usize::from(id.client?))
     }
 
+    /// REQ: DNS-023 (T22.1) — the configured device matched by exactly this address (not a
+    /// CIDR, which names a set of devices). Off the query path.
+    pub fn by_exact_ip(&self, ip: IpAddr) -> Option<&Client> {
+        self.clients.get(usize::from(*self.by_ip.get(&ip)?))
+    }
+
+    /// REQ: DNS-023 (T22.1) — the configured device matched by this MAC address.
+    pub fn by_exact_mac(&self, mac: [u8; 6]) -> Option<&Client> {
+        self.clients.get(usize::from(*self.by_mac.get(&mac)?))
+    }
+
+    /// REQ: DNS-023 (T22.1) — every configured device matched by an exact address, with it.
+    pub fn exact_ips(&self) -> impl Iterator<Item = (IpAddr, &Client)> {
+        self.by_ip
+            .iter()
+            .filter_map(|(ip, i)| Some((*ip, self.clients.get(usize::from(*i))?)))
+    }
+
     /// REQ: FLT-017 — a group's index by name.
     pub fn group_id(&self, name: &str) -> Option<u16> {
         self.group_index.get(name).copied()
+    }
+
+    /// REQ: API-010 (T24.9, ADR-973) — the groups' router names (one group each), and whether any
+    /// client, group or rule uses a router name at all.
+    fn index_router_names(&mut self, cfg: &Config) {
+        for g in &cfg.group {
+            if let Some(&gi) = self.group_index.get(g.name.as_str()) {
+                for n in &g.router_names {
+                    // REQ: API-010 (ADR-973) — lowercased, as the names the routers give are.
+                    self.host_groups
+                        .entry(n.as_str().to_ascii_lowercase().into())
+                        .or_insert(gi);
+                }
+            }
+        }
+        self.any_router_names = !self.by_host.is_empty()
+            || !self.host_groups.is_empty()
+            || cfg
+                .rule
+                .iter()
+                .any(|r| r.devices.iter().any(|d| is_router_key(d.as_str())));
+    }
+
+    /// REQ: FLT-006 (T24.9, ADR-973) — the handle the quick rules read router names through.
+    pub(crate) fn router_names_handle(&self) -> Arc<RouterNames> {
+        Arc::clone(&self.router_names)
+    }
+
+    /// REQ: FLT-006 (T24.9, ADR-973) — the device-name task sets the router names it read from
+    /// the routers' leases (address → label). Off the query path.
+    pub fn set_router_names(&self, names: HashMap<IpAddr, Arc<str>>) {
+        self.router_names.replace(names);
+    }
+
+    /// REQ: FLT-006 (T24.9, ADR-973) — the router name an address was given, when a client,
+    /// group or rule uses router names (else `None` at once).
+    pub fn router_name(&self, ip: IpAddr) -> Option<Arc<str>> {
+        if !self.any_router_names {
+            return None;
+        }
+        self.router_names.get(ip)
+    }
+
+    /// REQ: FLT-006 (T24.9, ADR-973) — the addresses a router gave this name now (the query
+    /// log's `hostname:` filter).
+    pub fn router_name_addresses(&self, label: &str) -> Vec<IpAddr> {
+        self.router_names.addresses(label)
     }
 
     /// Identifies the sender of a query.
@@ -611,10 +832,87 @@ impl ClientTable {
         if let Some((_, c)) = self.cidrs.iter().find(|(n, _)| n.contains(peer)) {
             return found(*c, IdSource::Cidr);
         }
+        // REQ: FLT-006 (T24.24, ADR-973 owner decision, ADR-976) — the router's name for the address,
+        // after the most specific CIDR (a client's or a group's network), before `default`: a device
+        // can't take a looser client's identity by naming itself after it. A client that names it,
+        // else the group that lists it (which takes the device like a network does). One lock-free
+        // load and two lookups, and only when a client or group uses a name and no network has
+        // already taken the device.
+        if net.is_none()
+            && (!self.by_host.is_empty() || !self.host_groups.is_empty())
+            && let Some(label) = self.router_name(peer)
+        {
+            if let Some(&c) = self.by_host.get(&*label) {
+                return found(c, IdSource::Hostname);
+            }
+            if let Some(&g) = self.host_groups.get(&*label) {
+                return Identity {
+                    client: None,
+                    source: IdSource::Hostname,
+                    net: Some(g),
+                };
+            }
+        }
         Identity {
             client: None,
             source: IdSource::Default,
             net,
+        }
+    }
+
+    /// REQ: FLT-006, API-010 (T24.30, ADR-996) — the key `ident` (from [`Self::identify`] with the
+    /// same inputs) matched on, and where its group came from. Off the query path: it allocates.
+    /// The inputs must be the ones given to `identify`, so the answer can't name another key.
+    pub fn match_key(
+        &self,
+        ident: Identity,
+        peer: IpAddr,
+        client_id: Option<&str>,
+        edns_mac: Option<[u8; 6]>,
+        neighbors: &Neighbors,
+    ) -> MatchedKey {
+        let peer = peer.to_canonical();
+        let mac_text = |m: [u8; 6]| {
+            format!(
+                "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                m[0], m[1], m[2], m[3], m[4], m[5]
+            )
+        };
+        let key = match ident.source {
+            IdSource::ClientId => client_id.map(|c| format!("id:{c}")),
+            IdSource::EdnsMac => edns_mac.map(mac_text),
+            IdSource::NeighborMac => neighbors.get(peer).map(mac_text),
+            IdSource::Workload | IdSource::Default => None,
+            IdSource::Hostname => self.router_name(peer).map(|l| format!("hostname:{l}")),
+            IdSource::Ip => Some(peer.to_string()),
+            IdSource::Cidr => self
+                .cidrs
+                .iter()
+                .find(|(n, _)| n.contains(peer))
+                .map(|(n, _)| n.to_string()),
+        };
+        let own = self.client(ident).is_some_and(|c| !c.inherit);
+        let net_key = || {
+            self.group_nets
+                .iter()
+                .find(|(n, _)| n.contains(peer))
+                .map(|(n, _)| n.to_string())
+        };
+        let (group_from, group_key) = if own {
+            (GroupFrom::Device, None)
+        } else if ident.source == IdSource::Workload {
+            (GroupFrom::Workload, None)
+        } else if ident.source == IdSource::Hostname && ident.client.is_none() {
+            (GroupFrom::RouterName, key.clone())
+        } else if ident.net.is_some() {
+            (GroupFrom::Network, net_key())
+        } else {
+            (GroupFrom::Default, None)
+        };
+        MatchedKey {
+            key,
+            group_from,
+            group_key,
         }
     }
 
@@ -786,6 +1084,10 @@ match = ["10.0.0.0/8", "10.5.0.0/16"]
 name = "printer"
 match = ["10.5.5.5"]
 
+[[client]]
+name = "phone"
+match = ["hostname:phone"]
+
 [clients]
 trust_edns_mac_from = ["192.168.1.1/32"]
 "#,
@@ -861,6 +1163,140 @@ trust_edns_mac_from = ["192.168.1.1/32"]
             ("-".into(), IdSource::Default)
         );
         assert!(t.uses_macs());
+        // REQ: FLT-006 (T24.24, ADR-973 owner decision) — a router name ranks below the most
+        // specific CIDR and above `default`: in the office network the CIDR identifies the
+        // device even though a client has its router name; outside every CIDR the name does.
+        let ip = |s: &str| -> IpAddr { s.parse().unwrap() };
+        t.set_router_names(
+            [
+                (ip("10.5.9.9"), Arc::from("phone")),
+                (ip("172.16.0.1"), Arc::from("phone")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert_eq!(
+            who(&t, "10.5.9.9", None, None, &n),
+            ("office".into(), IdSource::Cidr)
+        );
+        assert_eq!(
+            who(&t, "172.16.0.1", None, None, &n),
+            ("phone".into(), IdSource::Hostname)
+        );
+        assert_eq!(
+            who(&t, "172.16.0.2", None, None, &n),
+            ("-".into(), IdSource::Default)
+        );
+    }
+
+    // REQ: FLT-006 (T24.24, ADR-973) — a group's network takes a device before a router name
+    // does; a device in no network is the name's.
+    #[test]
+    fn flt_006_group_network_beats_router_name() {
+        let cfg: Config = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                r#"
+[[group]]
+name = "guest"
+networks = ["10.9.0.0/16"]
+
+[[group]]
+name = "kids"
+router_names = ["kids-ipad"]
+"#,
+            )
+            .load()
+            .unwrap()
+            .config;
+        let t = ClientTable::from_config(&cfg);
+        let n = Neighbors::default();
+        let ip = |s: &str| -> IpAddr { s.parse().unwrap() };
+        t.set_router_names(
+            [
+                (ip("10.9.1.1"), Arc::from("kids-ipad")),
+                (ip("10.8.1.1"), Arc::from("kids-ipad")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let names = |s: &str| -> Vec<String> {
+            let id = t.identify(ip(s), None, None, &n, Workloads::none());
+            t.group_names(id).iter().map(ToString::to_string).collect()
+        };
+        assert_eq!(names("10.9.1.1"), ["guest"]);
+        assert_eq!(names("10.8.1.1"), ["kids"]);
+    }
+
+    // REQ: FLT-006 (T24.9, ADR-973) — a router's name for an address: a client that names it, or
+    // the group that lists it (which takes the device like a network does). The exact address
+    // still wins, and the names follow the addresses they are given now.
+    #[test]
+    fn flt_006_router_names_match_clients_and_groups() {
+        let cfg: Config = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                r#"
+[[group]]
+name = "kids"
+router_names = ["kids-ipad"]
+
+[[group]]
+name = "iot"
+router_names = ["printer"]
+
+[[client]]
+name = "Kitchen tablet"
+match = ["hostname:kitchen-tablet"]
+groups = ["kids"]
+
+[[client]]
+name = "Pinned TV"
+match = ["10.20.2.40"]
+"#,
+            )
+            .load()
+            .unwrap()
+            .config;
+        let t = ClientTable::from_config(&cfg);
+        let n = Neighbors::default();
+        let id_of = |ip: &str| t.identify(ip.parse().unwrap(), None, None, &n, Workloads::none());
+        let groups_of = |ip: &str| -> Vec<String> {
+            let id = id_of(ip);
+            t.group_names(id).iter().map(ToString::to_string).collect()
+        };
+        // Until the device task gives the names, an address with no other match is the default.
+        assert_eq!(id_of("10.20.2.50").source, IdSource::Default);
+        let ip = |s: &str| -> IpAddr { s.parse().unwrap() };
+        t.set_router_names(
+            [
+                (ip("10.20.2.50"), Arc::from("kitchen-tablet")),
+                (ip("10.20.2.40"), Arc::from("kitchen-tablet")),
+                (ip("10.20.2.60"), Arc::from("kids-ipad")),
+                (ip("10.20.2.70"), Arc::from("printer")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let k = id_of("10.20.2.50");
+        assert_eq!(k.source, IdSource::Hostname);
+        assert_eq!(t.client(k).map(|c| &*c.name), Some("Kitchen tablet"));
+        assert_eq!(groups_of("10.20.2.50"), ["kids"]);
+        // The exact address wins over the name the router gave the same device.
+        let tv = id_of("10.20.2.40");
+        assert_eq!(tv.source, IdSource::Ip);
+        assert_eq!(t.client(tv).map(|c| &*c.name), Some("Pinned TV"));
+        // A group's router name takes a device no client names.
+        let ipad = id_of("10.20.2.60");
+        assert_eq!((ipad.source, ipad.client), (IdSource::Hostname, None));
+        assert_eq!(groups_of("10.20.2.60"), ["kids"]);
+        assert_eq!(groups_of("10.20.2.70"), ["iot"]);
+        let mut named = t.router_name_addresses("kitchen-tablet");
+        named.sort();
+        assert_eq!(named, [ip("10.20.2.40"), ip("10.20.2.50")]);
+        // Cleared: the names stop matching at once.
+        t.set_router_names(HashMap::new());
+        assert_eq!(id_of("10.20.2.50").source, IdSource::Default);
     }
 
     #[test]

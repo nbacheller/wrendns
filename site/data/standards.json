@@ -229,12 +229,13 @@
     {
       "rfc": "9462",
       "title": "Discovery of designated resolvers (DDR)",
-      "status": "planned",
+      "status": "supported",
       "reqs": [
-        "DNS-002"
+        "DNS-002",
+        "DNS-019"
       ],
-      "summary": "Let clients discover our encrypted endpoints automatically.",
-      "diagram": "planned"
+      "summary": "With [special] ddr_name set, _dns.resolver.arpa SVCB lists the node's DoT, DoH, DoH3, and DoQ listeners (ALPN, port, DoH path, address hints), so devices can upgrade to encrypted DNS by themselves. Any other resolver.arpa query gets no data, and resolver.arpa is never forwarded.",
+      "diagram": "rfc9462"
     },
     {
       "rfc": "6761",
@@ -243,7 +244,7 @@
       "reqs": [
         "DNS-019"
       ],
-      "summary": "localhost answers with loopback, .invalid and the Firefox canary get NXDOMAIN, CHAOS queries are refused, and reverse lookups for private addresses (RFC 6303) stay local unless a route covers them.",
+      "summary": "localhost answers with loopback, .invalid, the Firefox canary, and iCloud Private Relay's names get NXDOMAIN, CHAOS queries are refused, and reverse lookups for private addresses (RFC 6303) stay local unless a route covers them. Optionally (domain-needed), bare single-label names get NXDOMAIN instead of going upstream.",
       "diagram": "rfc6761"
     },
     {
@@ -275,6 +276,16 @@
       ],
       "summary": "A Kubernetes workload counts in the analytics under one key, whichever pods ask: an address inside 100::/64, which is set aside for discarding traffic and never routes, so a key can't be mistaken for a real device. The query log keeps each pod's own address.",
       "diagram": "rfc6666"
+    },
+    {
+      "rfc": "1918",
+      "title": "Address Allocation for Private Internets",
+      "status": "supported",
+      "reqs": [
+        "DSC-001"
+      ],
+      "summary": "The network inventory reads only the private IPv4 networks 10/8, 172.16/12 and 192.168/16 that the configuration lists. Anything else, including the shared 100.64/10 range, is refused, and a subnet is a filter on addresses the inventory already has, never a range to scan.",
+      "diagram": "rfc1918"
     }
   ]
 }

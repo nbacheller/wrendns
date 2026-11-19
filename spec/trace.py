@@ -23,7 +23,7 @@ EVIDENCE = ROOT / "spec" / "trace-evidence.toml"
 
 def requirements() -> list[tuple[str, str]]:
     rows = []
-    for line in (ROOT / "spec" / "01-requirements.md").read_text().splitlines():
+    for line in (ROOT / "spec" / "01-requirements.md").read_text(encoding="utf-8").splitlines():
         m = re.match(r"^\| ([A-Z]+-\d{3}) \| P0 \| (.*) \|$", line)
         if m:
             text = re.sub(r"\*\*|`", "", m.group(2))
@@ -41,7 +41,7 @@ def files(globs: list[str]) -> list[Path]:
 def rust_tests() -> dict[str, list[str]]:
     by: dict[str, list[str]] = {}
     for p in files(["crates/**/*.rs", "fuzz/**/*.rs"]):
-        text = p.read_text(errors="replace")
+        text = p.read_text(encoding="utf-8", errors="replace")
         for m in re.finditer(r"#\[(?:tokio::)?test[^\]]*\]\s*(?:#\[[^\]]*\]\s*)*(?:async\s+)?fn\s+([a-z]+_\d{3})_(\w+)", text):
             by.setdefault(m.group(1).upper().replace("_", "-"), []).append(f"{m.group(1)}_{m.group(2)}")
     return by
@@ -50,7 +50,7 @@ def rust_tests() -> dict[str, list[str]]:
 def ui_tests() -> dict[str, list[str]]:
     by: dict[str, list[str]] = {}
     for p in files(["ui/tests/**/*.ts"]):
-        for m in re.finditer(r"test\(\s*['\"]([a-z]+_\d{3})\s+([^'\"]+)['\"]", p.read_text(errors="replace")):
+        for m in re.finditer(r"test\(\s*['\"]([a-z]+_\d{3})\s+([^'\"]+)['\"]", p.read_text(encoding="utf-8", errors="replace")):
             by.setdefault(m.group(1).upper().replace("_", "-"), []).append(f"{m.group(1)} {m.group(2)}")
     return by
 
@@ -58,10 +58,10 @@ def ui_tests() -> dict[str, list[str]]:
 def scripted() -> dict[str, list[str]]:
     by: dict[str, list[str]] = {}
     for p in files(["deploy/**/*.sh", "deploy/**/*.py", "bench/**/*.sh", "bench/**/*.py", ".github/workflows/*.yml", "fuzz/fuzz_targets/*.rs"]):
-        text = p.read_text(errors="replace")
+        text = p.read_text(encoding="utf-8", errors="replace")
         for m in re.finditer(r"REQ:\s*((?:[A-Z]+-\d{3}(?:\s*,\s*)?)+)", text):
             for rid in re.findall(r"[A-Z]+-\d{3}", m.group(1)):
-                rel = str(p.relative_to(ROOT))
+                rel = p.relative_to(ROOT).as_posix()
                 lst = by.setdefault(rid, [])
                 if rel not in lst:
                     lst.append(rel)
@@ -71,7 +71,7 @@ def scripted() -> dict[str, list[str]]:
 def code_refs() -> dict[str, int]:
     n: dict[str, int] = {}
     for p in files(["crates/**/*.rs", "ui/src/**/*.ts", "ui/src/**/*.svelte"]):
-        for rid in re.findall(r"REQ:[^\n]*?([A-Z]+-\d{3})", p.read_text(errors="replace")):
+        for rid in re.findall(r"REQ:[^\n]*?([A-Z]+-\d{3})", p.read_text(encoding="utf-8", errors="replace")):
             n[rid] = n.get(rid, 0) + 1
     return n
 
@@ -79,7 +79,7 @@ def code_refs() -> dict[str, int]:
 def manual() -> dict[str, list[str]]:
     if not EVIDENCE.exists():
         return {}
-    data = tomllib.loads(EVIDENCE.read_text())
+    data = tomllib.loads(EVIDENCE.read_text(encoding="utf-8"))
     return {k: list(v) for k, v in data.get("evidence", {}).items()}
 
 
@@ -125,13 +125,13 @@ def render() -> tuple[str, list[str]]:
 def main() -> None:
     text, bare = render()
     if "--check" in sys.argv:
-        if not OUT.exists() or OUT.read_text() != text:
+        if not OUT.exists() or OUT.read_text(encoding="utf-8") != text:
             sys.exit(f"{OUT} is stale: run python3 spec/trace.py")
         if bare:
             sys.exit(f"P0 requirements without evidence: {', '.join(bare)}")
         print(f"{OUT.name} OK")
         return
-    OUT.write_text(text)
+    OUT.write_text(text, encoding="utf-8", newline="\n")
     print(text.splitlines()[-2] if text.endswith("\n") else text.splitlines()[-1])
 
 

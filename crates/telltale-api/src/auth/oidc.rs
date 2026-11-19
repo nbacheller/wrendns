@@ -1,8 +1,8 @@
-//! `OpenID Connect` sign-in (REQ: API-004, `spec/08` §6, ADR-034): Authorization Code + PKCE
-//! with discovery, ID-token validation (signature against the provider's JWKS, issuer,
-//! audience, expiry, nonce) by `openidconnect`, group/role claims mapped to roles, users
-//! created on first sign-in, and RP-initiated sign-out. Sessions are local after sign-in: the
-//! provider is only contacted while signing in.
+//! `OpenID Connect` sign-in (REQ: API-004, `spec/08` §6, ADR-034, ADR-951): Authorization Code +
+//! PKCE with discovery, ID-token and access-token verification (`oidc/jose.rs`, `oidc/claims.rs`,
+//! `oidc/metadata.rs`), group/role claims mapped to roles, users created on first sign-in, and
+//! RP-initiated sign-out. Sessions are local after sign-in: the provider is only contacted while
+//! signing in.
 //!
 //! The flow state (PKCE verifier, nonce, where to return) lives in memory for 10 minutes,
 //! keyed by the `state` parameter and bound to the browser that started it by a short-lived
@@ -13,20 +13,23 @@ use std::future::Future;
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use openidconnect::core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata};
-use openidconnect::{
-    AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce, PkceCodeChallenge,
-    PkceCodeVerifier, RedirectUrl, Scope, TokenResponse,
-};
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use ring::digest::{self, SHA256};
 use serde_json::Value;
 use telltale_store::state::User;
 
 use super::{Actor, Auth, Role, crypto};
 use crate::problem::{Code, Problem};
+
+mod claims;
+mod jose;
+mod metadata;
+mod reload;
+
+pub use reload::{ProviderStatus, Reloaded};
 
 /// What the binary supplies to reach providers (its HTTPS client; no redirects followed).
 pub type Fetch = Arc<
@@ -41,13 +44,19 @@ pub type Fetch = Arc<
 /// How long a started sign-in may take, and how many may be in flight.
 const FLOW_TTL: Duration = Duration::from_secs(600);
 const MAX_FLOWS: usize = 1000;
-/// Discovery (including the signing keys) is refreshed this often, or when a token's
-/// signature doesn't verify (key rotation).
+/// Discovery (the endpoints and the key set) is refreshed this often.
 const DISCOVERY_TTL: Duration = Duration::from_secs(3600);
+/// A key set is refetched when a token's key isn't in it or its signature fails, at most once
+/// per provider in this interval (ADR-951, "JWKS").
+const JWKS_MIN_INTERVAL: Duration = Duration::from_secs(60);
+/// After a failed discovery reload, the cached copy is served this long before trying again.
+const RELOAD_BACKOFF: Duration = Duration::from_secs(60);
+/// The largest discovery document or key set read from a provider.
+const MAX_RESPONSE: usize = 1 << 20;
 pub const FLOW_COOKIE: &str = "telltale_oidc";
 
 /// One configured provider.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderSettings {
     pub id: String,
     pub name: String,
@@ -64,7 +73,7 @@ pub struct ProviderSettings {
 }
 
 /// `[auth.oidc]`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OidcSettings {
     /// `https://dns.example.com` (no trailing slash).
     pub public_url: String,
@@ -74,7 +83,7 @@ pub struct OidcSettings {
 }
 
 /// OAuth for MCP (REQ: AGT-008, T7.4): which provider issues access tokens, and for whom.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpOAuth {
     /// A provider's `id`.
     pub provider: String,
@@ -82,16 +91,20 @@ pub struct McpOAuth {
     pub audience: String,
 }
 
+/// A provider's discovery document and key set, as last read.
 #[derive(Debug)]
 struct Discovered {
-    metadata: CoreProviderMetadata,
-    end_session: Option<String>,
+    meta: metadata::Metadata,
+    keys: Vec<jose::Key>,
+    /// When the discovery document was read (its TTL runs from here).
     at: Instant,
 }
 
 #[derive(Debug)]
 struct Flow {
     provider: String,
+    /// The issuer the provider had when this sign-in started.
+    issuer: String,
     verifier: String,
     nonce: String,
     return_to: String,
@@ -99,12 +112,71 @@ struct Flow {
     started: Instant,
 }
 
-/// The OIDC service.
+/// What outlives a rebuild of [`Oidc`] (REQ: API-016, T23.10, ADR-903 §7): the sign-ins in
+/// progress (PKCE verifier, nonce) and what discovery read, so that a provider added, changed
+/// or removed in the UI doesn't cut off a person who is halfway through signing in, and an
+/// unchanged provider isn't read again. Discovery is keyed by provider ID and issuer, so a
+/// changed issuer reads again and an unchanged one doesn't.
+#[derive(Debug, Default)]
+pub struct Shared {
+    discovered: Mutex<HashMap<String, Arc<Discovered>>>,
+    flows: Mutex<HashMap<String, Flow>>,
+}
+
+impl Shared {
+    /// Forgets what isn't needed for `keep` (provider ID, issuer): their discovery, and the
+    /// flows of providers that are gone.
+    pub(super) fn retain(&self, keep: &[(String, String)]) {
+        self.discovered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|k, _| {
+                keep.iter()
+                    .any(|(id, issuer)| *k == discovery_key(id, issuer))
+            });
+        self.flows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|_, f| {
+                keep.iter()
+                    .any(|(id, issuer)| *id == f.provider && *issuer == f.issuer)
+            });
+    }
+
+    fn cached(&self, id: &str, issuer: &str) -> Option<Arc<Discovered>> {
+        self.discovered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&discovery_key(id, issuer))
+            .cloned()
+    }
+
+    fn store(&self, id: &str, issuer: &str, d: Arc<Discovered>) {
+        self.discovered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(discovery_key(id, issuer), d);
+    }
+}
+
+fn discovery_key(id: &str, issuer: &str) -> String {
+    format!(
+        "{id}
+{issuer}"
+    )
+}
+
+/// The OIDC service: one set of providers. A change of providers builds a new one that shares
+/// the [`Shared`] state of the old (`Auth::reload_oidc`).
 pub struct Oidc {
     settings: OidcSettings,
     fetch: Fetch,
-    discovered: Mutex<HashMap<String, Arc<Discovered>>>,
-    flows: Mutex<HashMap<String, Flow>>,
+    shared: Arc<Shared>,
+    /// Per provider: when its key set was last fetched. Held across a fetch, so concurrent
+    /// refetches for one provider collapse into one.
+    jwks_gate: HashMap<String, tokio::sync::Mutex<Option<Instant>>>,
+    /// One discovery reload at a time per provider; holds the time of the last failed reload.
+    reload_gate: HashMap<String, tokio::sync::Mutex<Option<Instant>>>,
 }
 
 impl std::fmt::Debug for Oidc {
@@ -131,37 +203,40 @@ pub struct Identity {
     pub groups: Vec<String>,
 }
 
-#[derive(Debug)]
-struct HttpFailure(String);
-
-impl std::fmt::Display for HttpFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for HttpFailure {}
-
-/// The binary's fetch function as an `openidconnect` HTTP client (a concrete type, so the
-/// futures are `Send` for any lifetime, which axum handlers need).
-struct Client(Fetch);
-
-type ClientFuture<'c> =
-    Pin<Box<dyn Future<Output = Result<axum::http::Response<Vec<u8>>, HttpFailure>> + Send + 'c>>;
-
-impl<'c> openidconnect::AsyncHttpClient<'c> for Client {
-    type Error = HttpFailure;
-    type Future = ClientFuture<'c>;
-
-    fn call(&'c self, request: axum::http::Request<Vec<u8>>) -> Self::Future {
-        let fetch = Arc::clone(&self.0);
-        Box::pin(async move { fetch(request).await.map_err(HttpFailure) })
-    }
-}
-
 fn provider_down(id: &str, e: impl std::fmt::Display) -> Problem {
     Problem::unavailable(format!("can't reach the `{id}` sign-in provider: {e}"))
         .hint("Check the issuer URL and that this server can reach it; sign in locally meanwhile if allowed.")
+}
+
+/// One request to a provider: its status and body, or the transport error. A body over
+/// `MAX_RESPONSE` is an error.
+async fn send(
+    fetch: &Fetch,
+    req: axum::http::Request<Vec<u8>>,
+) -> Result<(axum::http::StatusCode, Vec<u8>), String> {
+    let resp = fetch(req).await?;
+    if resp.body().len() > MAX_RESPONSE {
+        return Err("the response is too large".into());
+    }
+    let status = resp.status();
+    Ok((status, resp.into_body()))
+}
+
+/// The key set at `uri`, the keys this server can use (`Key::from_jwk`).
+async fn fetch_keys(fetch: &Fetch, uri: &str) -> Result<Vec<jose::Key>, String> {
+    let req = axum::http::Request::get(uri)
+        .body(Vec::new())
+        .map_err(|e| e.to_string())?;
+    let (status, body) = send(fetch, req).await?;
+    if !status.is_success() {
+        return Err(format!("the key set returned HTTP {}", status.as_u16()));
+    }
+    let set: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+    let keys = set
+        .get("keys")
+        .and_then(Value::as_array)
+        .ok_or("the key set has no keys list")?;
+    Ok(keys.iter().filter_map(jose::Key::from_jwk).collect())
 }
 
 /// A `returnTo` that stays inside the UI (no open redirects).
@@ -172,13 +247,103 @@ pub fn safe_return(r: Option<&str>) -> String {
     }
 }
 
+/// How the token request authenticates the client (ADR-951 decision 6).
+enum TokenAuth {
+    /// HTTP Basic with the form-encoded client ID and secret (RFC 6749 §2.3.1).
+    Basic,
+    /// The client ID and secret in the form body, when the provider lists only that.
+    Post,
+}
+
+/// Basic, unless the provider lists its methods without `client_secret_basic`.
+fn token_auth(meta: &metadata::Metadata) -> Result<TokenAuth, Problem> {
+    match &meta.token_auth_methods {
+        Some(methods) if !methods.iter().any(|m| m == "client_secret_basic") => {
+            if methods.iter().any(|m| m == "client_secret_post") {
+                Ok(TokenAuth::Post)
+            } else {
+                Err(Problem::unavailable(
+                    "the sign-in provider accepts no client authentication this server supports",
+                ))
+            }
+        }
+        _ => Ok(TokenAuth::Basic),
+    }
+}
+
+/// The ID-token algorithms: the nine this server verifies, intersected with the provider's
+/// `id_token_signing_alg_values_supported` when it lists them (ADR-951 decision 2). An empty
+/// intersection refuses every ID token.
+fn id_token_algs(meta: &metadata::Metadata) -> Result<Vec<jose::Alg>, Problem> {
+    let algs: Vec<jose::Alg> = jose::ALL
+        .into_iter()
+        .filter(|alg| {
+            meta.id_token_algs
+                .as_ref()
+                .is_none_or(|listed| listed.iter().any(|name| name == alg.name()))
+        })
+        .collect();
+    if algs.is_empty() {
+        return Err(Problem::unavailable(
+            "the sign-in provider's ID tokens use no algorithm this server accepts",
+        ));
+    }
+    Ok(algs)
+}
+
+/// Whole Unix seconds now.
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        // A clock before 1970 fails closed: every token then reads as expired.
+        .map_or(u64::MAX, |d| d.as_secs())
+}
+
+/// Reads the discovery document and the key set of the provider at `issuer`.
+async fn load_discovery(fetch: &Fetch, issuer: &str) -> Result<Discovered, String> {
+    let req = axum::http::Request::get(metadata::url_of(issuer))
+        .body(Vec::new())
+        .map_err(|e| e.to_string())?;
+    let (status, body) = send(fetch, req).await?;
+    if !status.is_success() {
+        return Err(format!(
+            "the discovery document returned HTTP {}",
+            status.as_u16()
+        ));
+    }
+    let doc: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+    let meta = metadata::parse(&doc, issuer)?;
+    let keys = fetch_keys(fetch, &meta.jwks_uri).await?;
+    Ok(Discovered {
+        meta,
+        keys,
+        at: Instant::now(),
+    })
+}
+
 impl Oidc {
     pub fn new(settings: OidcSettings, fetch: Fetch) -> Self {
+        Self::with_shared(settings, fetch, Arc::default())
+    }
+
+    /// A service that continues the sign-ins and discovery in `shared`.
+    pub fn with_shared(settings: OidcSettings, fetch: Fetch, shared: Arc<Shared>) -> Self {
+        let jwks_gate = settings
+            .providers
+            .iter()
+            .map(|p| (p.id.clone(), tokio::sync::Mutex::new(None)))
+            .collect();
+        let reload_gate = settings
+            .providers
+            .iter()
+            .map(|p| (p.id.clone(), tokio::sync::Mutex::new(None)))
+            .collect();
         Self {
             settings,
             fetch,
-            discovered: Mutex::new(HashMap::new()),
-            flows: Mutex::new(HashMap::new()),
+            shared,
+            jwks_gate,
+            reload_gate,
         }
     }
 
@@ -189,6 +354,11 @@ impl Oidc {
             .iter()
             .map(|p| (p.id.clone(), p.name.clone()))
             .collect()
+    }
+
+    /// REQ: API-016 — the issuer provider `id` is configured with.
+    pub fn issuer(&self, id: &str) -> Option<&str> {
+        self.provider(id).ok().map(|p| p.issuer.as_str())
     }
 
     fn provider(&self, id: &str) -> Result<&ProviderSettings, Problem> {
@@ -206,78 +376,153 @@ impl Oidc {
         )
     }
 
-    async fn discover(
-        &self,
-        p: &ProviderSettings,
-        fresh: bool,
-    ) -> Result<Arc<Discovered>, Problem> {
-        if !fresh {
-            let cached = self
-                .discovered
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .get(&p.id)
-                .cloned();
-            if let Some(d) = cached.filter(|d| d.at.elapsed() < DISCOVERY_TTL) {
-                return Ok(d);
+    /// The cached discovery for provider `p` at its issuer, if any (fresh or not).
+    fn cached(&self, p: &ProviderSettings) -> Option<Arc<Discovered>> {
+        self.shared.cached(&p.id, &p.issuer)
+    }
+
+    fn store(&self, p: &ProviderSettings, d: Arc<Discovered>) {
+        self.shared.store(&p.id, &p.issuer, d);
+    }
+
+    /// Reads the discovery document and the key set of `p`.
+    async fn load(&self, p: &ProviderSettings) -> Result<Discovered, String> {
+        load_discovery(&self.fetch, &p.issuer).await
+    }
+
+    /// The discovery of `p`, from the cache while it's fresh.
+    async fn discover(&self, p: &ProviderSettings) -> Result<Arc<Discovered>, Problem> {
+        if let Some(d) = self.cached(p).filter(|d| d.at.elapsed() < DISCOVERY_TTL) {
+            return Ok(d);
+        }
+        let Some(gate) = self.reload_gate.get(&p.id) else {
+            let d = Arc::new(self.load(p).await.map_err(|e| provider_down(&p.id, e))?);
+            self.store(p, Arc::clone(&d));
+            return Ok(d);
+        };
+        // One reload at a time per provider; a request that waited uses what the first stored.
+        let mut failed_at = gate.lock().await;
+        let stale = self.cached(p);
+        if let Some(d) = stale.as_ref().filter(|d| d.at.elapsed() < DISCOVERY_TTL) {
+            return Ok(Arc::clone(d));
+        }
+        // After a failed reload the stale entry is served for `RELOAD_BACKOFF`.
+        if let Some(d) = &stale
+            && failed_at.is_some_and(|at: Instant| at.elapsed() < RELOAD_BACKOFF)
+        {
+            return Ok(Arc::clone(d));
+        }
+        match self.load(p).await {
+            Ok(d) => {
+                let d = Arc::new(d);
+                self.store(p, Arc::clone(&d));
+                *failed_at = None;
+                Ok(d)
+            }
+            Err(e) => {
+                *failed_at = Some(Instant::now());
+                match stale {
+                    Some(d) => {
+                        tracing::warn!(provider = %p.id, error = %e, "OIDC discovery reload failed; serving the cached copy");
+                        Ok(d)
+                    }
+                    None => Err(provider_down(&p.id, e)),
+                }
             }
         }
-        let http = Client(Arc::clone(&self.fetch));
-        let issuer = IssuerUrl::new(p.issuer.clone()).map_err(|e| provider_down(&p.id, e))?;
-        let metadata = CoreProviderMetadata::discover_async(issuer, &http)
-            .await
-            .map_err(|e| provider_down(&p.id, e))?;
-        // `end_session_endpoint` (RP-initiated logout) isn't in the core metadata type.
-        let doc_url = format!(
-            "{}/.well-known/openid-configuration",
-            p.issuer.trim_end_matches('/')
-        );
-        let end_session = match axum::http::Request::get(&doc_url).body(Vec::new()) {
-            Ok(req) => (self.fetch)(req)
-                .await
-                .ok()
-                .and_then(|r| serde_json::from_slice::<Value>(r.body()).ok())
-                .and_then(|v| v.get("end_session_endpoint")?.as_str().map(str::to_owned)),
-            Err(_) => None,
+    }
+
+    /// The keys to try after `seen` failed to verify a token: the key set is refetched once
+    /// per provider per `JWKS_MIN_INTERVAL`, and only one fetch runs at a time. A request that
+    /// waited while another refreshed the keys uses those. A failed fetch keeps the cached keys.
+    async fn refreshed(&self, p: &ProviderSettings, seen: &Arc<Discovered>) -> Arc<Discovered> {
+        let Some(gate) = self.jwks_gate.get(&p.id) else {
+            return Arc::clone(seen);
         };
-        let d = Arc::new(Discovered {
-            metadata,
-            end_session,
-            at: Instant::now(),
-        });
-        self.discovered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(p.id.clone(), Arc::clone(&d));
-        Ok(d)
+        let mut last = gate.lock().await;
+        let current = self.cached(p).unwrap_or_else(|| Arc::clone(seen));
+        if !Arc::ptr_eq(&current, seen) || last.is_some_and(|at| at.elapsed() < JWKS_MIN_INTERVAL) {
+            return current;
+        }
+        *last = Some(Instant::now());
+        match fetch_keys(&self.fetch, &seen.meta.jwks_uri).await {
+            Ok(keys) => {
+                let fresh = Arc::new(Discovered {
+                    meta: seen.meta.clone(),
+                    keys,
+                    at: seen.at,
+                });
+                self.store(p, Arc::clone(&fresh));
+                fresh
+            }
+            Err(e) => {
+                tracing::warn!(provider = %p.id, error = %e, "OIDC key set refetch failed; keeping the cached keys");
+                Arc::clone(seen)
+            }
+        }
+    }
+
+    /// Verifies `token` against the keys of `d`; when its key is unknown or its signature
+    /// fails, the key set is refreshed (`refreshed`) and it is tried once more.
+    async fn verified(
+        &self,
+        p: &ProviderSettings,
+        d: &Arc<Discovered>,
+        token: &str,
+        kind: jose::Kind,
+        allowed: &[jose::Alg],
+    ) -> Result<jose::Verified, jose::Failure> {
+        match jose::verify(token, &d.keys, allowed, kind) {
+            Err(failure) if failure.may_be_rotation() => {
+                let fresh = self.refreshed(p, d).await;
+                jose::verify(token, &fresh.keys, allowed, kind)
+            }
+            other => other,
+        }
     }
 
     /// Begins a sign-in with provider `id`; afterwards the browser returns to `return_to`.
     pub async fn start(&self, id: &str, return_to: &str) -> Result<Started, Problem> {
         let p = self.provider(id)?;
-        let d = self.discover(p, false).await?;
-        let client = CoreClient::from_provider_metadata(
-            d.metadata.clone(),
-            ClientId::new(p.client_id.clone()),
-            p.client_secret.clone().map(ClientSecret::new),
-        )
-        .set_redirect_uri(
-            RedirectUrl::new(self.redirect_uri(id))
-                .map_err(|e| Problem::internal(e.to_string()))?,
-        );
-        let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
-        let mut req = client.authorize_url(
-            CoreAuthenticationFlow::AuthorizationCode,
-            CsrfToken::new_random,
-            Nonce::new_random,
-        );
+        let d = self.discover(p).await?;
+        let verifier = crypto::random_secret();
+        let challenge = URL_SAFE_NO_PAD.encode(digest::digest(&SHA256, verifier.as_bytes()));
+        let state = crypto::random_secret();
+        let nonce = crypto::random_secret();
+        let redirect = self.redirect_uri(id);
+        let mut scope = String::from("openid");
         for s in p.scopes.iter().filter(|s| s.as_str() != "openid") {
-            req = req.add_scope(Scope::new(s.clone()));
+            scope.push(' ');
+            scope.push_str(s);
         }
-        let (url, state, nonce) = req.set_pkce_challenge(challenge).url();
+        let query = [
+            ("response_type", "code"),
+            ("client_id", p.client_id.as_str()),
+            ("redirect_uri", redirect.as_str()),
+            ("scope", scope.as_str()),
+            ("state", state.as_str()),
+            ("nonce", nonce.as_str()),
+            ("code_challenge", challenge.as_str()),
+            ("code_challenge_method", "S256"),
+        ]
+        .iter()
+        .map(|(k, v)| format!("{k}={}", enc(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+        let sep = if d.meta.authorization_endpoint.contains('?') {
+            '&'
+        } else {
+            '?'
+        };
+        let url = format!("{}{sep}{query}", d.meta.authorization_endpoint);
         let browser = crypto::random_secret();
-        let mut flows = self.flows.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut flows = self
+            .shared
+            .flows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         flows.retain(|_, f| f.started.elapsed() < FLOW_TTL);
+        let issuer = self.provider(id)?.issuer.clone();
         if flows.len() >= MAX_FLOWS {
             return Err(Problem::new(
                 Code::RateLimited,
@@ -285,24 +530,88 @@ impl Oidc {
             ));
         }
         flows.insert(
-            state.secret().clone(),
+            state,
             Flow {
                 provider: id.to_owned(),
-                verifier: verifier.secret().clone(),
-                nonce: nonce.secret().clone(),
+                issuer,
+                verifier,
+                nonce,
                 return_to: return_to.to_owned(),
                 browser: crypto::secret_hash(&browser),
                 started: Instant::now(),
             },
         );
         Ok(Started {
-            redirect: url.to_string(),
+            redirect: url,
             browser,
         })
     }
 
+    /// The token request (RFC 6749 §4.1.3) with the PKCE verifier and the client
+    /// authentication of `token_auth`. Returns the ID token.
+    async fn exchange(
+        &self,
+        p: &ProviderSettings,
+        meta: &metadata::Metadata,
+        code: &str,
+        verifier: &str,
+    ) -> Result<String, Problem> {
+        let mut form = vec![
+            "grant_type=authorization_code".to_owned(),
+            format!("code={}", enc(code)),
+            format!("redirect_uri={}", enc(&self.redirect_uri(&p.id))),
+            format!("code_verifier={}", enc(verifier)),
+        ];
+        let mut req = axum::http::Request::post(&meta.token_endpoint)
+            .header("content-type", "application/x-www-form-urlencoded");
+        match &p.client_secret {
+            // A public client: no secret, so the client ID goes in the body.
+            None => form.push(format!("client_id={}", enc(&p.client_id))),
+            Some(secret) => match token_auth(meta)? {
+                TokenAuth::Basic => {
+                    let credentials = format!("{}:{}", enc(&p.client_id), enc(secret));
+                    req = req.header(
+                        "authorization",
+                        format!("Basic {}", STANDARD.encode(credentials)),
+                    );
+                }
+                TokenAuth::Post => {
+                    form.push(format!("client_id={}", enc(&p.client_id)));
+                    form.push(format!("client_secret={}", enc(secret)));
+                }
+            },
+        }
+        let req = req
+            .body(form.join("&").into_bytes())
+            .map_err(|e| Problem::internal(e.to_string()))?;
+        let (status, bytes) = send(&self.fetch, req)
+            .await
+            .map_err(|e| provider_down(&p.id, e))?;
+        if !status.is_success() {
+            return Err(Problem::new(
+                Code::Unauthorized,
+                format!(
+                    "the `{}` provider refused the sign-in: HTTP {}",
+                    p.id,
+                    status.as_u16()
+                ),
+            ));
+        }
+        let reply: Value = serde_json::from_slice(&bytes).map_err(|_| {
+            Problem::new(
+                Code::Unauthorized,
+                "the provider's token response isn't JSON",
+            )
+        })?;
+        reply
+            .get("id_token")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| Problem::new(Code::Unauthorized, "the provider sent no ID token"))
+    }
+
     /// Completes a sign-in: checks the state and browser binding, exchanges the code, and
-    /// validates the ID token. Returns the identity and where to send the browser.
+    /// verifies the ID token. Returns the identity and where to send the browser.
     pub async fn finish(
         &self,
         id: &str,
@@ -311,6 +620,7 @@ impl Oidc {
         browser: Option<&str>,
     ) -> Result<(Identity, String), Problem> {
         let flow = self
+            .shared
             .flows
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -333,73 +643,42 @@ impl Oidc {
             .hint("Start again from the sign-in page in this browser."));
         }
         let p = self.provider(id)?;
-        let http = Client(Arc::clone(&self.fetch));
-        let mut d = self.discover(p, false).await?;
-        let client = |d: &Discovered| -> Result<_, Problem> {
-            Ok(CoreClient::from_provider_metadata(
-                d.metadata.clone(),
-                ClientId::new(p.client_id.clone()),
-                p.client_secret.clone().map(ClientSecret::new),
+        if p.issuer != flow.issuer {
+            return Err(Problem::new(
+                Code::Unauthorized,
+                "this sign-in provider changed while you were signing in",
             )
-            .set_redirect_uri(
-                RedirectUrl::new(self.redirect_uri(id))
-                    .map_err(|e| Problem::internal(e.to_string()))?,
-            ))
-        };
-        let tokens = client(&d)?
-            .exchange_code(AuthorizationCode::new(code.to_owned()))
-            .map_err(|e| provider_down(id, e))?
-            .set_pkce_verifier(PkceCodeVerifier::new(flow.verifier.clone()))
-            .request_async(&http)
+            .hint("Start again from the sign-in page."));
+        }
+        let d = self.discover(p).await?;
+        let id_token = self.exchange(p, &d.meta, code, &flow.verifier).await?;
+        let allowed = id_token_algs(&d.meta)?;
+        let verified = self
+            .verified(p, &d, &id_token, jose::Kind::IdToken, &allowed)
             .await
             .map_err(|e| {
                 Problem::new(
                     Code::Unauthorized,
-                    format!("the `{id}` provider refused the sign-in: {e}"),
+                    format!("the ID token isn't valid: {}", e.reason()),
                 )
             })?;
-        let id_token = tokens
-            .id_token()
-            .ok_or_else(|| Problem::new(Code::Unauthorized, "the provider sent no ID token"))?;
-        let nonce = Nonce::new(flow.nonce.clone());
-        let verified = match id_token.claims(
-            &client(&d)?.id_token_verifier().set_allowed_algs(algs()),
-            &nonce,
-        ) {
-            Ok(_) => true,
-            Err(openidconnect::ClaimsVerificationError::SignatureVerification(_)) => {
-                // Maybe the provider rotated its keys: rediscover once and retry.
-                d = self.discover(p, true).await?;
-                id_token
-                    .claims(
-                        &client(&d)?.id_token_verifier().set_allowed_algs(algs()),
-                        &nonce,
-                    )
-                    .is_ok()
-            }
-            Err(e) => {
-                return Err(Problem::new(
-                    Code::Unauthorized,
-                    format!("the ID token isn't valid: {e}"),
-                ));
-            }
-        };
-        if !verified {
-            return Err(Problem::new(
+        claims::id_token(
+            &verified.payload,
+            &claims::IdCheck {
+                issuer: &p.issuer,
+                client_id: &p.client_id,
+                nonce: &flow.nonce,
+                now: unix_now(),
+            },
+        )
+        .map_err(|why| {
+            Problem::new(
                 Code::Unauthorized,
-                "the ID token's signature doesn't verify",
-            ));
-        }
-        // The token is verified; read every claim (groups etc. aren't standard) from it.
-        let raw = id_token.to_string();
-        let payload = raw
-            .split('.')
-            .nth(1)
-            .and_then(|p| URL_SAFE_NO_PAD.decode(p.trim_end_matches('=')).ok())
-            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-            .ok_or_else(|| Problem::internal("unreadable ID token payload"))?;
+                format!("the ID token isn't valid: {why}"),
+            )
+        })?;
         Ok((
-            identity(&payload, &p.username_claim, &p.groups_claim),
+            identity(&verified.payload, &p.username_claim, &p.groups_claim),
             flow.return_to,
         ))
     }
@@ -438,7 +717,6 @@ impl Oidc {
     /// for this resource's audience, and current. Its claims. Opaque (non-JWT) tokens aren't
     /// accepted: there's no introspection.
     pub async fn verify_access_token(&self, token: &str, now: u64) -> Result<Value, Problem> {
-        use openidconnect::JsonWebKey as _;
         let bad = |why: &str| {
             Problem::new(
                 Code::Unauthorized,
@@ -450,91 +728,20 @@ impl Oidc {
             .mcp()
             .ok_or_else(|| bad("OAuth for MCP isn't configured"))?;
         let provider = self.provider(&mcp.provider)?;
-        let mut parts = token.split('.');
-        let (Some(head), Some(body), Some(sig64), None) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
-            return Err(bad("not a JWT"));
-        };
-        let decode = |text: &str| URL_SAFE_NO_PAD.decode(text.trim_end_matches('=')).ok();
-        let header: Value = decode(head)
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .ok_or_else(|| bad("unreadable header"))?;
-        let alg: openidconnect::core::CoreJwsSigningAlgorithm = header
-            .get("alg")
-            .cloned()
-            .and_then(|a| serde_json::from_value(a).ok())
-            .filter(|a| algs().contains(a))
-            .ok_or_else(|| bad("unsupported signing algorithm"))?;
-        let kid = header.get("kid").and_then(Value::as_str);
-        let signature = decode(sig64).ok_or_else(|| bad("unreadable signature"))?;
-        let signed_part = format!("{head}.{body}");
-        let signed = |found: &Discovered| {
-            found
-                .metadata
-                .jwks()
-                .keys()
-                .iter()
-                .filter(|key| {
-                    kid.is_none_or(|id| key.key_id().is_some_and(|key_id| key_id.as_str() == id))
-                })
-                .any(|key| {
-                    key.verify_signature(&alg, signed_part.as_bytes(), &signature)
-                        .is_ok()
-                })
-        };
-        let known = self.discover(provider, false).await?;
-        // Maybe the provider rotated its keys: rediscover once.
-        if !signed(&known) && !signed(&*self.discover(provider, true).await?) {
-            return Err(bad("the signature doesn't verify"));
-        }
-        let claims: Value = decode(body)
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .ok_or_else(|| bad("unreadable claims"))?;
-        let issuer = claims
-            .get("iss")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if issuer.trim_end_matches('/') != provider.issuer.trim_end_matches('/') {
-            return Err(bad("issued by another provider"));
-        }
-        let for_us = match claims.get("aud") {
-            Some(Value::String(aud)) => *aud == mcp.audience,
-            Some(Value::Array(auds)) => auds
-                .iter()
-                .any(|aud| aud.as_str() == Some(mcp.audience.as_str())),
-            _ => false,
-        };
-        if !for_us {
-            return Err(bad(&format!("not issued for {}", mcp.audience)));
-        }
-        let expires = claims
-            .get("exp")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| bad("no expiry"))?;
-        if expires.saturating_add(60) < now {
-            return Err(bad("expired"));
-        }
-        if claims
-            .get("nbf")
-            .and_then(Value::as_u64)
-            .is_some_and(|not_before| not_before > now.saturating_add(60))
-        {
-            return Err(bad("not valid yet"));
-        }
-        Ok(claims)
+        let d = self.discover(provider).await?;
+        let verified = self
+            .verified(provider, &d, token, jose::Kind::AccessToken, &jose::ALL)
+            .await
+            .map_err(|e| bad(e.reason()))?;
+        claims::access_token(&verified.payload, &provider.issuer, &mcp.audience, now)
+            .map_err(|why| bad(&why))?;
+        Ok(verified.payload)
     }
 
     /// Where to send the browser to also sign out at the provider, if it supports that.
     pub fn logout_url(&self, id: &str) -> Option<String> {
         let p = self.provider(id).ok()?;
-        let end = self
-            .discovered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)?
-            .end_session
-            .clone()?;
+        let end = self.cached(p)?.meta.end_session_endpoint.clone()?;
         let back = format!("{}/", self.settings.public_url.trim_end_matches('/'));
         let sep = if end.contains('?') { '&' } else { '?' };
         Some(format!(
@@ -563,23 +770,6 @@ impl Oidc {
     }
 }
 
-/// Asymmetric signatures only (keys from the provider's JWKS): every common provider uses
-/// one of these, and refusing HMAC keeps the client secret out of token verification.
-fn algs() -> Vec<openidconnect::core::CoreJwsSigningAlgorithm> {
-    use openidconnect::core::CoreJwsSigningAlgorithm as A;
-    vec![
-        A::RsaSsaPkcs1V15Sha256,
-        A::RsaSsaPkcs1V15Sha384,
-        A::RsaSsaPkcs1V15Sha512,
-        A::RsaSsaPssSha256,
-        A::RsaSsaPssSha384,
-        A::RsaSsaPssSha512,
-        A::EcdsaP256Sha256,
-        A::EcdsaP384Sha384,
-        A::EdDsa,
-    ]
-}
-
 fn enc(s: &str) -> String {
     s.bytes()
         .map(|b| {
@@ -606,7 +796,12 @@ pub fn identity(claims: &Value, username_claim: &str, groups_claim: &str) -> Ide
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
     };
-    let subject = text("sub").unwrap_or_default();
+    // The subject is kept exact (not trimmed), as MCP looks users up by the exact `sub`.
+    let subject = claims
+        .get("sub")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     let username = text(username_claim)
         .or_else(|| text("email"))
         .unwrap_or_else(|| subject.clone());
@@ -709,6 +904,8 @@ impl Auth {
             .user_by_oidc(&provider, sub)
             .map_err(super::db)?
             .filter(|_| !sub.is_empty())
+            .map(|u| self.check_link(oidc, &provider, u))
+            .transpose()?
             .ok_or_else(|| {
                 Problem::new(
                     Code::Unauthorized,
@@ -773,6 +970,33 @@ impl Auth {
         })
     }
 
+    /// REQ: API-016 — a `sub` is unique only within one issuer, so a user linked at another
+    /// issuer than the provider has now isn't mapped (an admin deletes the user to let the
+    /// person sign in again as a new one). A user from before issuers were recorded adopts the
+    /// current one.
+    fn check_link(&self, oidc: &Oidc, id: &str, u: User) -> Result<User, Problem> {
+        let Some(now) = oidc.issuer(id) else {
+            return Ok(u);
+        };
+        match u.oidc_issuer.as_deref() {
+            Some(was) if was != now => Err(Problem::new(
+                Code::Forbidden,
+                "this account was linked to another issuer of this provider",
+            )
+            .hint("The provider's issuer changed. An admin can delete the user so the person signs in as a new one.")),
+            Some(_) => Ok(u),
+            None => {
+                self.state()
+                    .set_user_issuer(u.id, now)
+                    .map_err(super::db)?;
+                Ok(User {
+                    oidc_issuer: Some(now.to_owned()),
+                    ..u
+                })
+            }
+        }
+    }
+
     /// Signs in (and on first sign-in creates) the user `who` from provider `id`, updating
     /// their role from their groups. Blocking.
     pub fn oidc_user(
@@ -802,6 +1026,7 @@ impl Auth {
             .map_err(super::db)?;
         let user = if let Some(u) = existing {
             {
+                let u = self.check_link(oidc, id, u)?;
                 if u.disabled {
                     return Err(Problem::new(
                         Code::Forbidden,
@@ -830,6 +1055,11 @@ impl Auth {
                     .state()
                     .create_oidc_user(&name, role.as_str(), id, &who.subject, now)
                     .map_err(super::db)?;
+                if let Some(issuer) = oidc.issuer(id) {
+                    self.state()
+                        .set_user_issuer(u.id, issuer)
+                        .map_err(super::db)?;
+                }
                 self.record(
                     &actor(&u),
                     "user.create",
@@ -851,6 +1081,10 @@ impl Auth {
 
 #[cfg(test)]
 mod flow_tests;
+#[cfg(test)]
+mod testkit;
+#[cfg(test)]
+mod verify_tests;
 
 #[cfg(test)]
 mod tests {

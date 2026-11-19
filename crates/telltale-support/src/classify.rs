@@ -44,9 +44,11 @@ const TABLE: &[(&str, Class)] = &[
     ("alerts.destination[].from", Scan),
     ("alerts.destination[].name", Plain),
     ("alerts.destination[].password_file", Scan),
+    ("alerts.destination[].password_ref", Plain),
     ("alerts.destination[].tls_ca", Scan),
     ("alerts.destination[].to[]", Scan),
     ("alerts.destination[].token_file", Scan),
+    ("alerts.destination[].token_ref", Plain),
     ("alerts.destination[].url", Url),
     ("alerts.destination[].username", Secret),
     ("alerts.rule[].name", Plain),
@@ -66,6 +68,7 @@ const TABLE: &[(&str, Class)] = &[
     ("auth.oidc.provider[].client_id", Secret),
     ("auth.oidc.provider[].client_secret", Secret),
     ("auth.oidc.provider[].client_secret_file", Scan),
+    ("auth.oidc.provider[].client_secret_ref", Plain),
     ("auth.oidc.provider[].groups_claim", Plain),
     ("auth.oidc.provider[].id", Plain),
     ("auth.oidc.provider[].issuer", Url),
@@ -84,11 +87,13 @@ const TABLE: &[(&str, Class)] = &[
     ("cluster.config_source", Plain),
     ("cluster.git.allowed_signers_file", Scan),
     ("cluster.git.credentials_file", Scan),
+    ("cluster.git.credentials_ref", Plain),
     ("cluster.git.max_bytes", Plain),
     ("cluster.git.path", Free),
     ("cluster.git.ref", Free),
     ("cluster.git.repo", Url),
     ("cluster.git.webhook_secret_file", Scan),
+    ("cluster.git.webhook_secret_ref", Plain),
     ("cluster.init.advertise[]", Scan),
     ("cluster.init.config_authority", Plain),
     ("cluster.join_url", Url),
@@ -96,6 +101,21 @@ const TABLE: &[(&str, Class)] = &[
     ("cluster.name", Name(C::Cluster)),
     ("cluster.rollout.canaries[]", Name(C::Node)),
     ("cluster.site", Name(C::Cluster)),
+    // REQ: DSC-002 — the designated node is a node name; a subnet is an address range.
+    ("discovery.node", Name(C::Node)),
+    ("discovery.subnet[].cidr", Scan),
+    // REQ: DSC-004, DSC-007 (T25.6) - an SNMP agent is a device on the LAN (its name and address are
+    // scanned like a client's); a credential names files, never holds a secret.
+    ("discovery.snmp_agent[].address", Scan),
+    ("discovery.snmp_agent[].credential", Plain),
+    ("discovery.snmp_agent[].name", Name(C::Device)),
+    ("discovery.snmp_credential[].auth_password_file", Scan),
+    ("discovery.snmp_credential[].auth_protocol", Plain),
+    ("discovery.snmp_credential[].community_file", Scan),
+    ("discovery.snmp_credential[].name", Plain),
+    ("discovery.snmp_credential[].priv_password_file", Scan),
+    ("discovery.snmp_credential[].priv_protocol", Plain),
+    ("discovery.snmp_credential[].user", Secret),
     ("dnssec.negative_trust_anchors[]", Free),
     ("dnssec.trust_anchors_file", Scan),
     ("drill.clients[]", NameOrAddress(C::Device)),
@@ -104,17 +124,25 @@ const TABLE: &[(&str, Class)] = &[
     ("drill.tz", Plain),
     ("exclusions.clients[]", NameOrAddress(C::Device)),
     ("exclusions.names[]", Free),
+    ("exclusions.log.clients[]", NameOrAddress(C::Device)),
+    ("exclusions.log.domains[]", Free),
     ("filter.compile_memory", Plain),
     ("filter.max_list_bytes", Plain),
     ("group[].block_answer_ips[]", Scan),
     ("group[].block_ips[]", Scan),
     ("group[].blocked_services[]", Plain),
     ("group[].color", Plain),
+    // REQ: FLT-901, FLT-902 (T24.29) - catalog IDs and engine names: public words, no names of people.
+    ("group[].content.categories[]", Plain),
+    ("group[].content.tiers.{}", Plain),
+    ("group[].safe_search_engines[]", Plain),
     ("group[].dns64_exclude[]", Scan),
     ("group[].dns64_prefix", Scan),
     ("group[].lists[]", Plain),
     ("group[].name", Name(C::Group)),
     ("group[].networks[]", Scan),
+    // REQ: API-010 (T24.9, ADR-973) — a router name is a device name: a pseudonym.
+    ("group[].router_names[]", Name(C::Device)),
     ("group[].rebinding_allow[]", Free),
     ("group[].rewrite[].answer", Scan),
     ("group[].rewrite[].domain", Free),
@@ -139,8 +167,15 @@ const TABLE: &[(&str, Class)] = &[
     ("listen[].tls.cert", Scan),
     ("listen[].tls.key", Scan),
     ("local.hosts_files[]", Scan),
+    ("local.device_domain", Scan),
+    ("map.geoip.home_country", Plain),
+    ("map.geoip.sha256", Plain),
+    ("map.geoip.source_url", Scan),
     ("node.data_dir", Scan),
     ("node.name", Name(C::Node)),
+    ("node.secret_file_dirs[]", Scan),
+    ("node.secrets_key_file", Scan),
+    ("node.secrets_previous_key_file", Scan),
     ("probe.targets[]", Scan),
     ("ratelimit.exempt[]", Scan),
     ("record[].name", Free),
@@ -151,11 +186,15 @@ const TABLE: &[(&str, Class)] = &[
     ("route[].match_suffix[]", Free),
     ("route[].upstream_group", Plain),
     ("router[].api_key_file", Scan),
+    ("router[].api_key_ref", Plain),
     ("router[].api_secret_file", Scan),
+    ("router[].api_secret_ref", Plain),
     ("router[].name", Plain),
     ("router[].password_file", Scan),
+    ("router[].password_ref", Plain),
     ("router[].site", Plain),
     ("router[].tls_ca", Scan),
+    ("router[].tls_ca_pem", Scan),
     ("router[].tls_server_name", Scan),
     ("router[].url", Url),
     ("router[].username", Secret),
@@ -175,12 +214,14 @@ const TABLE: &[(&str, Class)] = &[
     ("schedule[].window[].end", Plain),
     ("schedule[].window[].start", Plain),
     ("simulate.default_window", Plain),
+    ("special.ddr_name", Scan),
     ("telemetry.anomaly.ignore_domains[]", Free),
     ("telemetry.dnstap.address", Scan),
     ("telemetry.dnstap.socket", Scan),
     ("telemetry.internal_names[]", Free),
     ("telemetry.metrics.listen", Scan),
     ("telemetry.otlp.endpoint", Url),
+    ("telemetry.otlp.header_refs", Plain),
     ("telemetry.otlp.headers", Secret),
     ("telemetry.qlog.retention_bytes", Plain),
     ("telemetry.ship.buffer_bytes", Plain),
@@ -193,6 +234,7 @@ const TABLE: &[(&str, Class)] = &[
     ("telemetry.sink[].statuses[]", Plain),
     ("telemetry.sink[].tls_ca", Scan),
     ("telemetry.sink[].token_file", Scan),
+    ("telemetry.sink[].token_ref", Plain),
     ("telemetry.sink[].token_scheme", Plain),
     ("telemetry.sink[].url", Url),
     ("updates.index_url", Url),
@@ -206,6 +248,7 @@ const TABLE: &[(&str, Class)] = &[
     ("upstream[].recursive.stub_servers[]", Scan),
     ("upstream[].recursive.stub_zone", Free),
     ("upstream[].relay", Url),
+    ("upstream[].source", Scan),
     ("upstream[].spki_pins[]", Plain),
     ("upstream[].tls_ca", Scan),
     ("upstream[].tls_client_cert", Scan),
@@ -381,10 +424,18 @@ pub fn schema_info() -> &'static SchemaInfo {
 }
 
 /// A key that looks like a credential: the second net, whatever the table says. `*_file`, `*_path`,
-/// and `*_scheme` fields name where a secret is, or how it is sent, and aren't secrets themselves.
+/// `*_scheme` and `*_ref` fields name where a secret is, or how it is sent, and aren't secrets
+/// themselves.
 fn credential_name(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
-    if k.ends_with("_file") || k.ends_with("_path") || k.ends_with("_scheme") {
+    // REQ: OPS-014 (ADR-903 §4) — `*_ref` and `header_refs` name a stored secret: a name, not
+    // the value.
+    if k.ends_with("_file")
+        || k.ends_with("_path")
+        || k.ends_with("_scheme")
+        || k.ends_with("_ref")
+        || k.ends_with("_refs")
+    {
         return false;
     }
     [

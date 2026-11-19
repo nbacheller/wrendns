@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""REQ: OPS-001 / T0.4 AC — compressed image size per platform must be ≤ 15 MiB (00 §5).
+"""REQ: OPS-001 / T0.4 AC — compressed image size per platform must be ≤ 25 MiB in this fork (00 §5; ADR-916, was 15 MiB upstream).
 
 Reads an OCI layout tarball (`docker buildx build --output type=oci,dest=image.tar`) or a
 pushed image (`--remote ghcr.io/...:edge`, via `docker buildx imagetools inspect --raw`) and
@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tarfile
 
-LIMIT = 15 * 1024 * 1024
+LIMIT = 25 * 1024 * 1024  # ADR-916: the fork raised upstream's 15 MiB
 ATTESTATION = "unknown/unknown"
 
 

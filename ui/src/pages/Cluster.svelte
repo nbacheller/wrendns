@@ -15,6 +15,8 @@
   import DrillForm from '../lib/components/DrillForm.svelte';
   import NodeRemoveForm from '../lib/components/NodeRemoveForm.svelte';
   import DrillPanel from '../lib/components/DrillPanel.svelte';
+  // REQ: CLU-014 (T27.11) — the scheduled drills' schedule and nodes, above the drills.
+  import DrillSchedule from '../lib/components/DrillSchedule.svelte';
   import RolloutPanel from '../lib/components/RolloutPanel.svelte';
   import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
   import TabPanel from '../lib/components/TabPanel.svelte';
@@ -148,6 +150,8 @@
     maintenance_ended: 'Back in service',
     handover: 'Maintenance handover',
     handover_failed: 'Handover failed',
+    lease_lost: 'Lease lapsed',
+    lease_renewed: 'Lease renewed',
     lease_released: 'Lease released',
     stepped_down: 'Stepped down',
     rollout_started: 'Rollout',
@@ -157,11 +161,11 @@
     unpinned: 'Unpinned',
   };
   const kindClass = (k: string) =>
-    k === 'disconnected' || k === 'sync_failed' || k === 'rejected' || k === 'handover_failed' || k === 'rollout_failed'
+    k === 'disconnected' || k === 'sync_failed' || k === 'rejected' || k === 'handover_failed' || k === 'lease_lost' || k === 'rollout_failed'
       ? 'bad'
       : k === 'restarted' || k === 'maintenance' || k === 'handover' || k === 'rollout_started' || k === 'pinned'
         ? 'warn'
-        : k === 'published' || k === 'applied' || k === 'rollout_promoted'
+        : k === 'published' || k === 'applied' || k === 'lease_renewed' || k === 'rollout_promoted'
           ? 'ok'
           : '';
   // REQ: CLU-013 — the nodes running the version baking.
@@ -213,7 +217,7 @@
   // REQ: API-005 (ADR-121) — the page in tabs, the summary above them. A tab with something
   // wrong says so: failing checks and conflicts, a pin or a version baking, problem events in
   // the last hour.
-  const problemKinds = new Set(['disconnected', 'sync_failed', 'rejected', 'handover_failed', 'rollout_failed']);
+  const problemKinds = new Set(['disconnected', 'sync_failed', 'rejected', 'handover_failed', 'lease_lost', 'rollout_failed']);
   const recentProblems = $derived.by(() => {
     const since = Date.now() - 3600_000;
     return (view?.events ?? []).filter((e) => problemKinds.has(e.kind) && Date.parse(e.at) >= since).length;
@@ -288,6 +292,8 @@
   <ErrorNote error={maintError} />
 
   {#if view && !view.enabled}
+    <!-- REQ: CLU-014 (T27.11) — the schedule is kept on a single node too: it applies once the node is in a cluster. -->
+    <DrillSchedule />
     <section class="card" data-testid="cluster-standalone">
       <h2>This node runs on its own</h2>
       <p>
@@ -354,11 +360,22 @@ telltale cluster join tt_join_…</pre>
         </dd>
         <!-- REQ: CLU-005 — how the cluster fails over (ADR-056). -->
         {#if view.failover}
-          <dt>Failover</dt>
+          <dt>Failover<HelpButton id="voter-links" /></dt>
           <dd data-testid="cluster-failover">
             {#if view.failover.active}
               automatic: {view.failover.reachableVoters} of {view.failover.voters} voters reachable
               {#if view.failover.leaseHeld}<span class="muted small">· this primary's lease: {Math.round(view.failover.leaseSecondsLeft ?? 0)} s left</span>{/if}
+              <!-- REQ: CLU-005 (T24.38) — a voter this node reaches only some of the time. -->
+              {#if view.failover.unstableVoters?.length}
+                <div class="notice warn small" role="status" data-testid="cluster-unstable-voters">
+                  {#each view.failover.unstableVoters as v (v.nodeId)}
+                    <div>
+                      {siteOf(v.nodeId)}: its link dropped {v.drops} times in the last {Math.round(v.windowSeconds / 60)} minutes
+                      (last {v.lastDropSecondsAgo} s ago). A voter reached only some of the time can lose a vote or a lease renewal.
+                    </div>
+                  {/each}
+                </div>
+              {/if}
               {#if view.failover.votedFor}<div class="muted small">voted for {siteOf(view.failover.votedFor)} in epoch {view.failover.votedEpoch}</div>{/if}
             {:else if view.failover.mode === 'auto'}
               automatic, but waiting for 3 or more voters ({view.failover.voters} now)
@@ -441,6 +458,8 @@ telltale cluster join tt_join_…</pre>
                 <th>Node</th>
                 <th>Status</th>
                 <th>Configuration</th>
+                <!-- REQ: CLU-015 (ADR-903 §6) — each member's stored secrets: its head, what it has applied, and what it can't read. -->
+                <th>Secrets<HelpButton id="cluster-secrets" /></th>
                 <th>Serving DNS</th>
                 <th>Version</th>
                 <th>Uptime</th>
@@ -452,11 +471,19 @@ telltale cluster join tt_join_…</pre>
                   <td>
                     <strong>{n.site}</strong>
                     <span class="badge {n.role === 'primary' ? 'ok' : n.role.includes('emergency') ? 'warn' : ''}">{n.witness ? 'witness' : n.role}</span>
+                    {#if n.witness}<span class="muted small" data-testid="cluster-node-witness">witness, votes only</span>{/if}
                     {#if n.ephemeral}<span class="muted small">pod</span>{/if}
                     {#if n.thisNode}<span class="muted small">this node</span>{/if}
                     <div class="mono muted small" title={n.nodeId}>
                       {shortId(n.nodeId)}{#if n.configSource}{' · '}{n.configSource === 'gitops' ? 'Git-managed' : 'local file'}{/if}
                     </div>
+                    <!-- REQ: OBS-010 (T24.5, fork #2) — a replica that hasn't reached its primary for a while (a silent split). -->
+                    {#if n.primarySilentSeconds != null}
+                      <div class="small" data-testid="cluster-node-primary-silent">
+                        <span class="badge warn">no contact with the primary</span> for {duration(n.primarySilentSeconds)}
+                        <HelpButton id="primary-unreachable" />
+                      </div>
+                    {/if}
                     {#if n.pod}<div class="muted small" data-testid="cluster-node-pod">pod <span class="mono">{n.pod}</span>{#if n.kubeNode}{' on '}<span class="mono">{n.kubeNode}</span>{/if}</div>{/if}
                     <!-- REQ: OPS-010 — the window, and the actions for operators. -->
                     {#if n.maintenance}
@@ -488,24 +515,58 @@ telltale cluster join tt_join_…</pre>
                   <td>
                     <span class="badge {n.up ? 'ok' : 'bad'}">{n.up ? 'up' : 'down'}</span>
                     <div class="muted small">
-                      {#if n.thisNode}—{:else}{n.link}{#if n.rttMs != null}{' · '}{ms(n.rttMs)} RTT{/if}{#if !n.up}{' · '}seen {duration(n.lastSeenSecondsAgo)} ago{/if}{/if}
+                      {#if n.thisNode}—{:else}<span title={n.link === 'relayed' ? 'No stream to this node (manual failover keeps replicas linked to the primary only): another node reports it up.' : undefined}>{n.link}</span>{#if n.rttMs != null}{' · '}{ms(n.rttMs)} RTT{/if}{#if !n.up}{' · '}seen {duration(n.lastSeenSecondsAgo)} ago{/if}{/if}
                     </div>
+                    <!-- REQ: CLU-009 (T24.33) — a witness's vote: the last reply to this node's vote request or lease renewal, and the epoch it voted in. -->
+                    {#if n.witness && n.vote}
+                      <div class="small" data-testid="cluster-node-vote">
+                        {#if n.vote.lastReplySecondsAgo != null}
+                          last vote {duration(n.vote.lastReplySecondsAgo)} ago{#if n.vote.lastGrantSecondsAgo != null && n.vote.lastGrantSecondsAgo !== n.vote.lastReplySecondsAgo}, last grant {duration(n.vote.lastGrantSecondsAgo)} ago{/if}{#if n.vote.votedEpoch != null}, epoch {n.vote.votedEpoch}{/if}
+                        {:else}
+                          <span class="muted">no vote asked of it by this node yet</span>
+                        {/if}
+                        <HelpButton id="cluster-witness" />
+                      </div>
+                    {/if}
                   </td>
                   <td>
+                    {#if n.witness}
+                      <span class="muted" data-testid="cluster-node-config-na">not applicable</span>
+                    {:else}
                     version {num(n.configSeq)}
                     {#if canaries.includes(n.nodeId) || (n.thisNode && n.role === 'primary' && canaries.length)}<span class="badge warn" data-testid="cluster-node-canary">canary</span>{/if}
                     {#if n.sourceCommit}<span class="mono muted small" title={n.sourceCommit}> · {n.sourceCommit.slice(0, 7)}</span>{/if}
                     <div class="small {n.configLag ? 'warn-text' : 'muted'}">
                       {#if n.configLag}{n.configLag} behind{#if n.behindSeconds != null} for {duration(n.behindSeconds)}{/if}{:else}in sync{/if}
                     </div>
+                    {/if}
+                  </td>
+                  <td class="small" data-testid="cluster-node-secrets">
+                    {#if n.witness}
+                      <span class="muted" data-testid="cluster-node-secrets-na">not applicable</span>
+                    {:else if n.secrets}
+                      {@const sec = n.secrets}
+                      <span class="badge {n.role.includes('primary') || sec.inSync ? 'ok' : sec.applied ? 'warn' : ''}" data-testid="cluster-node-secrets-state">
+                        {n.role.includes('primary') ? 'primary' : sec.inSync ? 'in sync' : sec.applied ? 'behind' : 'not reported'}
+                      </span>
+                      <div class="muted">head {sec.head ?? '–'} · applied {sec.applied ?? '–'}</div>
+                      {#if sec.unreadable}<div class="warn-text" data-testid="cluster-node-unreadable">{sec.unreadable} unreadable here</div>{/if}
+                      {#if sec.held}<div class="muted" data-testid="cluster-node-held">{sec.held} held by the primary</div>{/if}
+                    {:else}
+                      <span class="muted">not reported</span>
+                    {/if}
                   </td>
                   <td>
+                    {#if n.witness}
+                      <span class="muted" data-testid="cluster-node-dns-na">not applicable</span>
+                    {:else}
                     <span class="badge {n.ready ? 'ok' : 'bad'}">{n.ready ? 'ready' : 'not ready'}</span>
                     <div class="muted small">
                       {rate(n.qps)} q/s{#if n.querySharePercent != null}{` (${pct(n.querySharePercent)} of queries)`}{/if} · {pct(n.servfailPercent)} SERVFAIL · upstream p90 {n.upstreamP90Ms > 0 ? ms(n.upstreamP90Ms) : '–'}
                     </div>
                     {#if n.cacheEntries != null}
                       <div class="muted small">cache: {n.cacheHitPercent != null ? `${pct(n.cacheHitPercent)} hits` : 'no lookups'} · {num(n.cacheEntries)} entries</div>
+                    {/if}
                     {/if}
                   </td>
                   <td class="small">{n.version}</td>
@@ -517,7 +578,7 @@ telltale cluster join tt_join_…</pre>
                 </tr>
                 {#if maintFor === n.nodeId}
                   <tr class="maint-row">
-                    <td colspan="6">
+                    <td colspan="7">
                       <MaintenanceForm
                         node={apiNode(n)}
                         label={n.thisNode ? 'this node' : (n.pod ?? n.site)}
@@ -531,7 +592,7 @@ telltale cluster join tt_join_…</pre>
                 {/if}
                 {#if removeFor === n.nodeId}
                   <tr class="maint-row">
-                    <td colspan="6">
+                    <td colspan="7">
                       <NodeRemoveForm
                         nodeId={n.nodeId}
                         site={n.site}
@@ -545,7 +606,7 @@ telltale cluster join tt_join_…</pre>
                 {/if}
                 {#if drillFor === n.nodeId}
                   <tr class="maint-row">
-                    <td colspan="6">
+                    <td colspan="7">
                       <DrillForm
                         node={apiNode(n)}
                         label={n.thisNode ? 'this node' : (n.pod ?? n.site)}
@@ -559,7 +620,7 @@ telltale cluster join tt_join_…</pre>
               {#each fixed as n (n.nodeId)}{@render row(n)}{/each}
               {#each podSites as [site, pods] (site)}
                 <tr class="pods" data-testid="cluster-pods">
-                  <td colspan="6">
+                  <td colspan="7">
                     <button class="link" onclick={() => toggleSite(site)} aria-expanded={openSites.includes(site)}>
                       {openSites.includes(site) ? '▾' : '▸'} <strong>{site}</strong>: {pods.length} resolver pod{pods.length === 1 ? '' : 's'}
                     </button>
@@ -631,6 +692,7 @@ telltale cluster join tt_join_…</pre>
     {:else if tab === 'compare'}
       <NodeCompare data={compare} error={compareError} win={compareWin} onwindow={setCompareWin} />
     {:else if tab === 'drills'}
+      <DrillSchedule />
       <DrillPanel open={drillParam} />
     {:else}
       <section class="card">

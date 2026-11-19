@@ -51,6 +51,7 @@
       "description": "The REST API (and, later, the web UI).",
       "$ref": "#/$defs/ApiConfig",
       "default": {
+        "confirm_window_secs": 120,
         "enabled": true,
         "listen": "0.0.0.0:8053",
         "trusted_proxies": []
@@ -63,17 +64,6 @@
         "allow_insecure_basic": false,
         "audit_retention_days": 365,
         "oidc": {
-          "allowed_admin_networks": [
-            "10.0.0.0/8",
-            "172.16.0.0/12",
-            "192.168.0.0/16",
-            "100.64.0.0/10",
-            "169.254.0.0/16",
-            "127.0.0.0/8",
-            "fc00::/7",
-            "fe80::/10",
-            "::1/128"
-          ],
           "disable_local_login": false,
           "mcp_audience": "",
           "mcp_provider": "",
@@ -152,12 +142,20 @@
         "site": "default"
       }
     },
+    "cmdb": {
+      "description": "REQ: DSC-901, DSC-906 (T31.2, ADR-1005) — the CMDB (`[cmdb]`): off by default, runs on the\nnode `[discovery]` designates, admin-only writes. Serialized only when set (CLU-010).",
+      "$ref": "#/$defs/CmdbConfig"
+    },
     "config_version": {
       "description": "Schema version of this file (currently 1).",
       "type": "integer",
       "format": "uint32",
       "default": 1,
       "minimum": 0
+    },
+    "discovery": {
+      "description": "REQ: DSC-001 (T25.2, ADR-907) — the network inventory (`[discovery]`): off by default,\none designated node, admin-only writes. Serialized only when set (CLU-010).",
+      "$ref": "#/$defs/DiscoveryConfig"
     },
     "dns": {
       "description": "REQ: DNS-005 — settings of the DNS answers themselves.",
@@ -200,9 +198,11 @@
       "description": "List download and compile settings.",
       "$ref": "#/$defs/FilterConfig",
       "default": {
+        "ads_tier": "pro",
         "allow_link_local_urls": false,
         "compile_memory": "128MiB",
         "compile_threads": 0,
+        "entry_budget": 1000000,
         "fetch_concurrency": 4,
         "fetch_retries": 3,
         "fetch_timeout_secs": 120,
@@ -287,7 +287,25 @@
       "default": {
         "auto_ptr": true,
         "default_ttl": 300,
+        "device_mdns": false,
+        "device_ttl": 60,
         "hosts_files": []
+      }
+    },
+    "map": {
+      "description": "REQ: OBS-901 (T26.2, ADR-958) — the live network map: its sampler and the health\nthresholds that colour it. Shared by the whole cluster.",
+      "$ref": "#/$defs/MapConfig",
+      "default": {
+        "enabled": true,
+        "error_pct": 25,
+        "event_rate": 200,
+        "geoip": {
+          "enabled": false
+        },
+        "min_sample": 20,
+        "warn_blocked_pct": 60,
+        "warn_error_pct": 5,
+        "warn_slow_pct": 10
       }
     },
     "node": {
@@ -299,6 +317,13 @@
         "maintenance_default_secs": 3600,
         "name": "",
         "role": "all",
+        "secret_file_dirs": [
+          "/run/secrets",
+          "/var/run/secrets",
+          "/etc/telltale/secrets"
+        ],
+        "secrets_key_file": "",
+        "secrets_previous_key_file": "",
         "workers": 0
       }
     },
@@ -345,7 +370,7 @@
       }
     },
     "router": {
-      "description": "REQ: T8.2 — routers whose DHCP names devices (UniFi, OPNsense).",
+      "description": "REQ: T8.2 — routers whose DHCP names devices (UniFi, OPNsense), and (API-012, T22.3)\nHome Assistant's device registry.",
       "type": "array",
       "default": [],
       "items": {
@@ -395,9 +420,11 @@
       "$ref": "#/$defs/SpecialConfig",
       "default": {
         "block_firefox_canary": true,
+        "block_icloud_private_relay": true,
         "localhost": true,
         "private_ptr_nxdomain": true,
-        "refuse_chaos": true
+        "refuse_chaos": true,
+        "single_label_nxdomain": false
       }
     },
     "support": {
@@ -533,6 +560,16 @@
       },
       "additionalProperties": false
     },
+    "AdsTier": {
+      "description": "REQ: FLT-901 (T24.29) — which of `HaGeZi`'s ad and tracker lists the `ads` category uses.",
+      "type": "string",
+      "enum": [
+        "light",
+        "pro",
+        "pro_plus",
+        "ultimate"
+      ]
+    },
     "AgentsConfig": {
       "description": "`[agents]` (REQ: AGT-009, ADR-064).",
       "type": "object",
@@ -581,6 +618,14 @@
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "password_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding the password.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "tls_ca": {
           "description": "`email`: a PEM file with the mail server's certificate (or its CA), for a private\nserver; public ones are trusted already.",
           "type": [
@@ -599,6 +644,14 @@
         },
         "token_file": {
           "description": "A file holding the token (ntfy access token, Gotify application token), so it stays\nout of the config and Git.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "token_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding the token; at most one of `token_file` and `token_ref`.",
           "type": [
             "string",
             "null"
@@ -742,6 +795,11 @@
           "const": "sync_lag"
         },
         {
+          "description": "REQ: OBS-010 (T24.5, fork #2) — a replica hasn't reached its primary for `threshold`\nseconds (default 60; 15 to 86400), so a silent split is seen (one alert per replica).\nWitnesses and resolver pods are left out.",
+          "type": "string",
+          "const": "primary_unreachable"
+        },
+        {
           "description": "A device TelltaleDNS has never seen starts asking (once per device; quiet for the\nfirst day after a fresh start, while every device is new).",
           "type": "string",
           "const": "new_device"
@@ -795,6 +853,21 @@
           "description": "REQ: CLU-014 — a failover drill's report is ready (scheduled or started by hand; once\nper drill): who followed, who was stuck, coverage.",
           "type": "string",
           "const": "drill_report"
+        },
+        {
+          "description": "REQ: API-014 (T23.2, ADR-903 §4) — an admin changed where an entry's credential is sent\n(an upstream's URL or TLS name, an alert destination's URL): once per change, from the\naudit log's `credential.redirect` records.",
+          "type": "string",
+          "const": "credential_redirected"
+        },
+        {
+          "description": "REQ: API-007 (T23.9, ADR-903 §8) — a backup with the stored secrets was made (through the\nAPI; once per backup, from the audit log's `backup.create` records): the secrets left the\nnode, under a passphrase.",
+          "type": "string",
+          "const": "secrets_exported"
+        },
+        {
+          "description": "REQ: API-902 (T27.13, ADR-956 §6) — an admin changed a guarded setting (a listener, the API\naddress, TLS, proxies, secret keys, cluster, restart): once when it is applied or staged and\nagain on its outcome (confirmed, rolled back with the reason, restarting), from the audit\nlog's `settings.guarded*` records, so a second channel sees what an attacker with an admin\nsession does.",
+          "type": "string",
+          "const": "guarded_setting_changed"
         }
       ]
     },
@@ -1000,6 +1073,17 @@
       "description": "REST API listener (API-001). It also serves `/metrics` (signed in) and the health probes,\nonly to clients in `[access] allowed_networks` (ADR-029).",
       "type": "object",
       "properties": {
+        "allow_secrets_over_http": {
+          "description": "REQ: API-015 (ADR-903 §4) — accept stored secrets' values (`PUT /api/v1/secrets`) over\nplain HTTP from other hosts. Off (the default): a value is taken only over HTTPS (`tls`\nabove, or a proxy in `trusted_proxies` saying `X-Forwarded-Proto: https`) or from the node\nitself (loopback, with no `X-Forwarded-For`/`Forwarded`/`X-Real-IP`), since over plain\nHTTP it would cross the network in clear. A forwarded request's `X-Forwarded-Proto` counts\nonly from `trusted_proxies` here, loopback included: list `127.0.0.1/32` for a TLS proxy\non the same host. Read from this node's own files; the API can't set it.",
+          "type": "boolean"
+        },
+        "confirm_window_secs": {
+          "description": "REQ: API-902 (T27.13, ADR-956 §3) — how long a guarded change to an address, certificate\nor proxy list waits to be confirmed through the new address before it is rolled back, in\nseconds: 30 to 600. Read from this node's own files; the API can't set it.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 120,
+          "minimum": 0
+        },
         "enabled": {
           "type": "boolean",
           "default": true
@@ -1021,7 +1105,7 @@
           ]
         },
         "trusted_proxies": {
-          "description": "Reverse proxies or ingress controllers in front of the API (e.g. the pod network,\n`10.0.0.0/8`). For requests from them, the client address comes from\n`X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log), and\n`X-Forwarded-Proto: https` counts as HTTPS (HTTP Basic, the `Secure` cookie flag); from\nanyone else that header is ignored. Loopback always counts for `X-Forwarded-Proto`, so\na TLS terminator on the same host needs nothing here. Default: none (the connection's\naddress is the client).",
+          "description": "Reverse proxies or ingress controllers in front of the API (e.g. the pod network,\n`10.0.0.0/8`). For requests from them, the client address comes from\n`X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log), and\n`X-Forwarded-Proto: https` counts as HTTPS (HTTP Basic, the `Secure` cookie flag); from\nanyone else that header is ignored. Loopback always counts for `X-Forwarded-Proto`, so\na TLS terminator on the same host needs nothing here (except to take stored secrets'\nvalues, see `allow_secrets_over_http`). Default: none (the connection's\naddress is the client).",
           "type": "array",
           "default": [],
           "items": {
@@ -1080,17 +1164,6 @@
           "description": "Sign-in through `OpenID Connect` providers (Keycloak, Authentik, ...; API-004).",
           "$ref": "#/$defs/OidcConfig",
           "default": {
-            "allowed_admin_networks": [
-              "10.0.0.0/8",
-              "172.16.0.0/12",
-              "192.168.0.0/16",
-              "100.64.0.0/10",
-              "169.254.0.0/16",
-              "127.0.0.0/8",
-              "fc00::/7",
-              "fe80::/10",
-              "::1/128"
-            ],
             "disable_local_login": false,
             "mcp_audience": "",
             "mcp_provider": "",
@@ -1479,6 +1552,100 @@
         "advertise"
       ]
     },
+    "CmdbConfig": {
+      "description": "REQ: DSC-901, DSC-906 — the CMDB section (`[cmdb]`).",
+      "type": "object",
+      "properties": {
+        "detect_settle_secs": {
+          "description": "How long a changed value must hold (and across two batches) before a change is raised,\nin seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 600,
+          "minimum": 0
+        },
+        "disappear_after_days": {
+          "description": "How many days a device with a class 1 to 3 presence source must have been gone before a\n`delete` change is raised (it must also have been seen on at least 3 different days).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 14,
+          "minimum": 0
+        },
+        "enabled": {
+          "description": "Turn the CMDB on. Off by default: nothing starts, nothing is stored. It needs client\naddresses and names, so it cannot be on at `telemetry.qlog.privacy_level` 2 or 3.",
+          "type": "boolean",
+          "default": false
+        },
+        "history_days": {
+          "description": "How long merged-value history is kept, in days.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 90,
+          "minimum": 0
+        },
+        "macd_retention_days": {
+          "description": "How long change records are kept, in days.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 365,
+          "minimum": 0
+        },
+        "plan_expiry_days": {
+          "description": "How long an approved planned change waits to be seen at its source before it expires,\nin days.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 30,
+          "minimum": 0
+        },
+        "require_second_approver": {
+          "description": "Forbid approving your own request.",
+          "type": "boolean",
+          "default": false
+        },
+        "unconfirmed_alert_hours": {
+          "description": "How long a change may stay unconfirmed before one alert is raised through the event\nsinks, in hours. Off at privacy level 1 and above.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 24,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ContentLevel": {
+      "description": "REQ: FLT-902 (ADR-994) — a group's filtering level.",
+      "oneOf": [
+        {
+          "description": "No category applies (the selection is kept, so switching back loses nothing).",
+          "type": "string",
+          "const": "off"
+        },
+        {
+          "description": "The catalog's `basic` preset (adult content, malware, phishing and scam).",
+          "type": "string",
+          "const": "basic"
+        },
+        {
+          "description": "The categories in `categories`.",
+          "type": "string",
+          "const": "enhanced"
+        }
+      ]
+    },
+    "CredentialRole": {
+      "description": "REQ: DSC-007 (ADR-908 \"Credential roles\") — who may use a credential.",
+      "oneOf": [
+        {
+          "description": "Used by `[[discovery.snmp_agent]]` only: the gateway's and switches' credential.",
+          "type": "string",
+          "const": "infrastructure"
+        },
+        {
+          "description": "Used by a subnet's identity reads (T25.7): a low-value, shared identity.",
+          "type": "string",
+          "const": "host"
+        }
+      ]
+    },
     "DeviceClass": {
       "description": "REQ: OBS-025 (T13.3, ADR-117) — the kinds of device identification tells apart (a fixed\nlist, so metrics stay small).",
       "oneOf": [
@@ -1514,6 +1681,90 @@
           "type": "string",
           "const": "unknown"
         }
+      ]
+    },
+    "DiscoveryConfig": {
+      "description": "REQ: DSC-001 — the network inventory section (`[discovery]`).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Turn the network inventory on. Off by default: nothing starts, and nothing is read.",
+          "type": "boolean",
+          "default": false
+        },
+        "home_assistant_all_devices": {
+          "description": "REQ: DSC-009 (ADR-912) — read Home Assistant's registry devices that have a MAC and no\nentity, into the inventory only. On by default; it applies only when discovery is on.",
+          "type": "boolean",
+          "default": true
+        },
+        "node": {
+          "description": "The node that runs discovery. Unset: the cluster's primary, or the standalone node.\nEphemeral pods and witnesses never run it, whatever is set here.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "snmp_agent": {
+          "description": "REQ: DSC-004 (T25.6, ADR-908) — the infrastructure devices that are polled over SNMP: a\ngateway's ARP table, a switch's forwarding table, LLDP neighbours. Each names a credential.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SnmpAgent"
+          }
+        },
+        "snmp_credential": {
+          "description": "REQ: DSC-004, DSC-007 (T25.6, ADR-908) — the SNMP credentials the agents use. A secret is\nonly ever a file under `[node] secret_file_dirs`; an inline value is refused.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SnmpCredential"
+          }
+        },
+        "subnet": {
+          "description": "Private IPv4 subnets whose inventory addresses may be read. A filter on addresses the\ninventory already has, never a list of targets (ADR-907).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/DiscoverySubnet"
+          }
+        },
+        "unifi_all_users_within_hours": {
+          "description": "REQ: DSC-009 (ADR-912) — how far back `stat/alluser` reaches, in hours (1 to 8,760).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 720,
+          "minimum": 0
+        },
+        "unifi_reads": {
+          "description": "REQ: DSC-009 (ADR-912) — the extra UniFi reads, all off by default.",
+          "$ref": "#/$defs/UnifiReads",
+          "default": {
+            "all_users": false,
+            "client_fields": false,
+            "devices": false
+          }
+        },
+        "worker_memory_mib": {
+          "description": "Memory limit of each discovery worker process, in MiB (32 to 128). A worker that\nallocates past it aborts alone (ADR-908).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 64,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "DiscoverySubnet": {
+      "description": "One `[[discovery.subnet]]`: a private IPv4 network, given as `cidr = \"192.168.1.0/24\"`.",
+      "type": "object",
+      "properties": {
+        "cidr": {
+          "description": "The network, in CIDR form. IPv4 only, inside RFC 1918.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "cidr"
       ]
     },
     "DnsConfig": {
@@ -1760,6 +2011,10 @@
           "type": "boolean",
           "default": true
         },
+        "log": {
+          "description": "REQ: OBS-903 (T24.35, ADR-1014) — queries kept out of the query log (and the live view and\nevent sinks) only. Unlike the lists above they are still counted in the statistics\n(dashboard, top lists, anomalies) and `/metrics`.",
+          "$ref": "#/$defs/LogExclusions"
+        },
         "names": {
           "description": "Names left out, each with its subdomains (`ntp.org` covers `pool.ntp.org`; a leading\n`*.` means the same).",
           "type": "array",
@@ -1776,6 +2031,11 @@
       "description": "List download settings (`spec/05` §3.4, FLT-004).",
       "type": "object",
       "properties": {
+        "ads_tier": {
+          "description": "REQ: FLT-901 (T24.29) — the size of the Ad Block category: `light`, `pro` (default, the\nlist the bundles used to name by hand), `pro_plus` or `ultimate`.",
+          "$ref": "#/$defs/AdsTier",
+          "default": "pro"
+        },
         "allow_link_local_urls": {
           "description": "Allow list URLs on link-local addresses (169.254.0.0/16, `fe80::/10`). Off: they're\nrefused, like cloud-metadata addresses, so a list URL (from the UI, the API, or an\nagent's pre-save check) can't read what a cloud instance serves there.",
           "type": "boolean",
@@ -1801,6 +2061,13 @@
           "format": "uint8",
           "default": 0,
           "maximum": 255,
+          "minimum": 0
+        },
+        "entry_budget": {
+          "description": "REQ: FLT-901 (T24.29, ADR-994 item 5) — the most distinct blocklist entries the selected\ncategories may add before the Categories view warns (a soft limit; default 1,000,000, the\nNFR number). A node too small for a selection refuses it whatever this says.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 1000000,
           "minimum": 0
         },
         "fetch_concurrency": {
@@ -2007,6 +2274,14 @@
           "default": null,
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "credentials_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding it (Settings → Integrations & secrets); at most one of `credentials_file` and `credentials_ref`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "max_bytes": {
           "description": "Largest file accepted.",
           "default": "1MiB",
@@ -2056,6 +2331,14 @@
             "null"
           ],
           "default": null,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "webhook_secret_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding it; at most one of `webhook_secret_file` and `webhook_secret_ref`.",
+          "type": [
+            "string",
+            "null"
+          ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         }
       },
@@ -2112,6 +2395,17 @@
             "null"
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "content": {
+          "description": "REQ: FLT-901, FLT-902 (T24.29, ADR-994) — content categories and ad block for this group\n(see [`GroupContent`]). Absent = never set: nothing is selected.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GroupContent"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "device_classes": {
           "description": "REQ: OBS-025 (T13.3) — kinds of device that belong in this group (`camera`, `plug`,\n...): a device identified as one of them, and not in this group yet, gets this group\nsuggested. Nothing moves on its own. A kind can be claimed by one group only.",
@@ -2202,9 +2496,25 @@
             "$ref": "#/$defs/RewriteConfig"
           }
         },
+        "router_names": {
+          "description": "REQ: API-010 (T24.9, ADR-973) — router names (`kitchen-tablet`, the label form) of devices\nthat belong to this group, the way a network's devices do. A `[[client]]` that matches the\ndevice by its address or MAC still wins, and the match is by the name the router gave\nthe device at its current address.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
         "safe_search": {
           "description": "REQ: FLT-011 (T7.11) — safe search: Google, Bing, DuckDuckGo, Yandex, and Pixabay\nanswer with their safe-search service, and YouTube with Restricted Mode.",
           "type": "boolean"
+        },
+        "safe_search_engines": {
+          "description": "REQ: FLT-902 (T24.29, ADR-994) — which engines safe search covers (`google`, `bing`,\n`youtube`, `duckduckgo`, `yandex`, `pixabay`: `presets/safesearch.toml`). Empty with\n`safe_search = true` means every engine, as before; a non-empty list is the set of\nengines (and turns safe search on). `youtube_restrict` applies to YouTube whenever it is\nset, whatever this list says.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
         },
         "schedules": {
           "description": "REQ: FLT-010 (T7.10) — `[[schedule]]` names that apply to this group.",
@@ -2231,6 +2541,37 @@
       "required": [
         "name"
       ]
+    },
+    "GroupContent": {
+      "description": "REQ: FLT-901, FLT-902 (T24.29, ADR-994, ADR-995) — what a group filters by category. A group's\ncategory lists are fetched once for every group that uses them and are never part of another\ngroup's \"every enabled list\" default.",
+      "type": "object",
+      "properties": {
+        "ads": {
+          "description": "Ad block: the `ads` category, whose size is `[filter] ads_tier`. Independent of `level`.",
+          "type": "boolean"
+        },
+        "categories": {
+          "description": "With `enhanced`: category IDs from the catalog (`GET /api/v1/categories`). An ID this\nversion does not know (a newer node wrote it) is ignored and reported.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "level": {
+          "description": "`off` (default), `basic` or `enhanced`.",
+          "$ref": "#/$defs/ContentLevel",
+          "default": "off"
+        },
+        "tiers": {
+          "description": "A tier per category (`gambling = \"extended\"`); a category without one uses its default.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
     },
     "HttpVersion": {
       "description": "DoH HTTP version preference.",
@@ -2482,6 +2823,26 @@
           "default": 300,
           "minimum": 0
         },
+        "device_domain": {
+          "description": "REQ: DNS-023 (T22.1) — answer A and PTR records for the devices TelltaleDNS knows by\nname (named devices with one address, routers' DHCP clients, Home Assistant, and with\n`device_mdns` the names devices announce) as `<name>.<device_domain>`, such as\n`kitchen-tablet.home.arpa`. Off when unset. Records in `[[record]]`, hosts files, and\nzones win over these.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "device_mdns": {
+          "description": "Also answer for names devices announce over mDNS (`[clients] mdns`).",
+          "type": "boolean",
+          "default": false
+        },
+        "device_ttl": {
+          "description": "TTL of those answers, in seconds (they follow DHCP, so keep it short).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 60,
+          "minimum": 0
+        },
         "hosts_files": {
           "description": "Hosts files (`IP name [alias...]` per line) to import as A/AAAA records.",
           "type": "array",
@@ -2532,6 +2893,142 @@
         "type",
         "value"
       ]
+    },
+    "LogExclusions": {
+      "description": "REQ: OBS-903 (T24.35, ADR-1014) — what stays out of the query log but still counts in the\nstatistics. Applied when the event is written, on the aggregator thread.",
+      "type": "object",
+      "properties": {
+        "clients": {
+          "description": "Clients left out of the log: addresses (`192.168.1.10`), networks (`10.20.0.0/24`), or\ndevice names (`[[client]] name`, resolved on every reload).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "domains": {
+          "description": "Domains left out of the log: `localhost` is that name only; `*.lan` is every name under it\n(not `lan` itself).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "own_lookups": {
+          "description": "This node's own lookups (loopback and the node's own addresses: a health check, a\nwatchdog, programs on the host) stay out of the log.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "MapConfig": {
+      "description": "REQ: OBS-901 (T26.2, ADR-958 section 4) — the live network map: a sampler on the aggregator\nthread (never on the DNS path) and the thresholds that colour the map green, yellow or red.\nShared by the whole cluster; also in Settings -> Monitoring.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Off: the sampler isn't subscribed and the map routes answer `404 map_disabled`.",
+          "type": "boolean",
+          "default": true
+        },
+        "error_pct": {
+          "description": "Red when this percent of answers or more are SERVFAIL or timeouts (1 to 100; at least\n`warn_error_pct`).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 25,
+          "minimum": 0
+        },
+        "event_rate": {
+          "description": "Lookups per second each node samples for the map (10 to 2,000). Above it the sample is\nthinned and each kept lookup counts for more; the map says \"sampled, 1 in N\".",
+          "type": "integer",
+          "format": "uint32",
+          "default": 200,
+          "minimum": 0
+        },
+        "geoip": {
+          "description": "REQ: OBS-902 (T26.4, ADR-959) - the GeoIP database the world view places answers with.\nAdmin-only: an operator's change to it is refused, and a request that leaves it out keeps\nthe current one.",
+          "$ref": "#/$defs/MapGeoipConfig",
+          "default": {
+            "enabled": false
+          }
+        },
+        "min_sample": {
+          "description": "Sampled answers a device, edge or upstream needs in the 60 s window before it is\ncoloured; fewer is grey (\"idle\"), not green (1 to 1,000).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 20,
+          "minimum": 0
+        },
+        "warn_blocked_pct": {
+          "description": "Yellow for a device when this percent of its answers or more are blocked (1 to 100).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 60,
+          "minimum": 0
+        },
+        "warn_error_pct": {
+          "description": "Yellow when this percent of answers or more are SERVFAIL or timeouts (1 to 100).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 5,
+          "minimum": 0
+        },
+        "warn_latency_ms": {
+          "description": "An answer slower than this many milliseconds is slow (1 to 60,000). Unset: the\nlatency objective's `[slo] latency_ms`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "warn_slow_pct": {
+          "description": "Yellow when this percent of answers or more are slow (1 to 100).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 10,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "MapGeoipConfig": {
+      "description": "REQ: OBS-902 (T26.4, ADR-959) - the optional country database for the world view: nothing is\ndownloaded until an admin turns this on, and it is never bundled. Each node that serves the\nconsole fetches its own copy from the source below, at most once a day, in the background.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Off (the default): nothing is fetched and the world view says GeoIP is off. On: this node\ndownloads the database and keeps it current.",
+          "type": "boolean",
+          "default": false
+        },
+        "home_country": {
+          "description": "Two-letter country code arcs start from. Unset: arcs start at \"Your network\".",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "sha256": {
+          "description": "Pin the download to this SHA-256 (64 hex digits). Useful only with a fixed mirror URL\nwhose content you control: the publisher's monthly file changes digest every month.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "source_url": {
+          "description": "Where the CSV (`start,end,CC`, gzip) comes from: an HTTPS URL. Unset: DB-IP's \"IP to\nCountry Lite\" for this month (CC BY 4.0), falling back to the month before. Set it to your\nown HTTPS mirror for an air-gapped site.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false
     },
     "MetricsConfig": {
       "description": "Prometheus endpoint (OBS-005).",
@@ -2599,6 +3096,31 @@
           "$ref": "#/$defs/Role",
           "default": "all"
         },
+        "secret_file_dirs": {
+          "description": "REQ: API-014 (ADR-903 §4) — where a file holding a credential (an alert destination's\n`token_file` or `password_file`, an upstream's `tls_client_key`) set through the UI or\nAPI may be. Paths in the config files aren't limited. Only this node's own files set it:\nthe cluster never shares it.",
+          "type": "array",
+          "default": [
+            "/run/secrets",
+            "/var/run/secrets",
+            "/etc/telltale/secrets"
+          ],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "secrets_key_file": {
+          "description": "REQ: OPS-014, API-014 (ADR-903 §3) — a file holding this node's secrets key\n(`ttsk1:...`), for example a mounted Kubernetes Secret. It keys the hashes kept for\n`Idempotency-Key` retries. Empty: the `TELLTALE_SECRETS_KEY` variable, else\n`<data_dir>/secrets.key` (made, mode 0600, on first start). Set it from the environment as\n`TELLTALE_NODE_SECRETS_KEY_FILE`.",
+          "type": "string",
+          "default": "",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "secrets_previous_key_file": {
+          "description": "REQ: OPS-014 — the key before a rotation, in a file (or `TELLTALE_SECRETS_PREVIOUS_KEY`).",
+          "type": "string",
+          "default": "",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "workers": {
           "description": "UDP worker threads; 0 means `min(cgroup CPU limit, cores)`.",
           "type": "integer",
@@ -2615,18 +3137,10 @@
       "type": "object",
       "properties": {
         "allowed_admin_networks": {
-          "description": "Where break-glass admin sign-in is allowed. Default: private networks and loopback.",
-          "type": "array",
-          "default": [
-            "10.0.0.0/8",
-            "172.16.0.0/12",
-            "192.168.0.0/16",
-            "100.64.0.0/10",
-            "169.254.0.0/16",
-            "127.0.0.0/8",
-            "fc00::/7",
-            "fe80::/10",
-            "::1/128"
+          "description": "Where break-glass admin sign-in is allowed. Absent: loopback only (`127.0.0.0/8`,\n`::1`), so a reverse proxy or a Docker port publish on this host needs its own entry\nhere or `[api] trusted_proxies`. Set (even to `[]`, which allows nothing): exactly this\nlist. REQ: API-004 (ADR-944).",
+          "type": [
+            "array",
+            "null"
           ],
           "items": {
             "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host).",
@@ -2634,7 +3148,7 @@
           }
         },
         "disable_local_login": {
-          "description": "Turn off password sign-in (and HTTP Basic) except for admins signing in from\n`allowed_admin_networks` (break-glass, for when the provider is down).",
+          "description": "Turn off password sign-in (and HTTP Basic) except for admins signing in from\n`allowed_admin_networks` (break-glass, for when the provider is down). Unless you set that\nlist, it is loopback only (ADR-944), so the sign-in form is hidden from the rest of your\nnetwork; set it to your LAN to keep a password way in from other devices, or to `[]` to turn\npassword sign-in off for everyone (then nobody can sign in with a password while the\nprovider is down).",
           "type": "boolean",
           "default": false
         },
@@ -2690,6 +3204,14 @@
             "null"
           ],
           "default": null,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "client_secret_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — ... or the name of a stored secret holding it. At most one of the three.",
+          "type": [
+            "string",
+            "null"
+          ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "default_role": {
@@ -2795,6 +3317,17 @@
             "null"
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "header_refs": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — headers whose values are stored secrets, by header:\n`header_refs = { api-key = \"otlp\" }`. A header may be in `headers` or here, not both.",
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[^\\u0000-\\u001F\\u007F-\\u009F]*$": {
+              "type": "string",
+              "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+            }
+          }
         },
         "headers": {
           "description": "Extra headers (an API key for a hosted collector).",
@@ -3168,11 +3701,19 @@
       ]
     },
     "RouterConfig": {
-      "description": "REQ: T8.2 — a router whose DHCP clients name devices.",
+      "description": "REQ: T8.2 — a router whose DHCP clients name devices; or (API-012, T22.3) a Home Assistant\nwhose device registry names them.",
       "type": "object",
       "properties": {
         "api_key_file": {
-          "description": "UniFi: an API key (UniFi Network 9+), or OPNsense: the API key. A file holding it.",
+          "description": "UniFi: an API key (UniFi Network 9+); OPNsense: the API key; Home Assistant: a\nlong-lived access token. A file holding it.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "api_key_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding it (`api_key_ref = \"unifi\"`); at most one of `api_key_file` and `api_key_ref`.",
           "type": [
             "string",
             "null"
@@ -3181,6 +3722,14 @@
         },
         "api_secret_file": {
           "description": "OPNsense: the API secret (a file).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "api_secret_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding it.",
           "type": [
             "string",
             "null"
@@ -3199,7 +3748,21 @@
           "type": "string",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "offline_days": {
+          "description": "UniFi: also name the clients that are offline now, if UniFi saw them within this many\ndays (their queries then show a name, not a bare address); at most 1,024 of them, most\nrecently seen first. 0: only the connected clients.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
         "password_file": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "password_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — or the name of a stored secret holding the password.",
           "type": [
             "string",
             "null"
@@ -3222,6 +3785,13 @@
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "tls_ca_pem": {
+          "description": "REQ: API-016 (T23.7, ADR-921) — the same certificate as PEM text, for a router entered\nthrough the API or UI (16 KiB at most). Exclusive with `tls_ca`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "tls_insecure_skip_verify": {
           "description": "Skip certificate verification (dangerous; logs a warning).",
           "type": "boolean"
@@ -3235,11 +3805,11 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "type": {
-          "description": "`unifi` (UniFi OS consoles and the Network application) or `opnsense`.",
+          "description": "`unifi` (UniFi OS consoles and the Network application), `opnsense`, or\n`home_assistant`.",
           "$ref": "#/$defs/RouterKind"
         },
         "url": {
-          "description": "The console or controller: `https://192.168.1.1` (UniFi OS), `https://controller:8443`\n(Network application), `https://opnsense.lan`.",
+          "description": "The console or controller: `https://192.168.1.1` (UniFi OS), `https://controller:8443`\n(Network application), `https://opnsense.lan`, `http://homeassistant.local:8123`.",
           "type": "string",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
@@ -3261,10 +3831,19 @@
     },
     "RouterKind": {
       "description": "A router integration's kind.",
-      "type": "string",
-      "enum": [
-        "unifi",
-        "opnsense"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "unifi",
+            "opnsense"
+          ]
+        },
+        {
+          "description": "REQ: API-012 (T22.3) — Home Assistant: device names from its device registry, matched\nby MAC address; read-only.",
+          "type": "string",
+          "const": "home_assistant"
+        }
       ]
     },
     "RuleAction": {
@@ -3648,6 +4227,14 @@
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "token_ref": {
+          "description": "REQ: OPS-014 (ADR-903 §2) — `webhook`: or the name of a stored secret holding the token.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "token_scheme": {
           "description": "`webhook`: the scheme for the token (`Bearer`; Splunk HEC uses `Splunk`).",
           "type": "string",
@@ -3737,6 +4324,181 @@
       },
       "additionalProperties": false
     },
+    "SnmpAgent": {
+      "description": "REQ: DSC-004 (ADR-908, ADR-1001) — one `[[discovery.snmp_agent]]`: an infrastructure device\npolled over SNMP on the designated node. The address is an RFC 1918 IPv4 literal (ADR-907),\nand the credential is named, never written here.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "description": "The device's IPv4 address (RFC 1918 only).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "credential": {
+          "description": "The `[[discovery.snmp_credential]]` this agent uses (role `infrastructure`).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "interval_secs": {
+          "description": "Seconds between polls (60 to 86,400; default 300).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 300,
+          "minimum": 0
+        },
+        "max_repetitions": {
+          "description": "GETBULK `max_repetitions` (5 to 25; default 10).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 10,
+          "minimum": 0
+        },
+        "name": {
+          "description": "The agent's name: letters, digits, `.`, `_` and `-`, and never an IP address (the CLI and\nthe API take a name only, ADR-969).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "port": {
+          "description": "The UDP port (161 unless the device says otherwise).",
+          "type": "integer",
+          "format": "uint16",
+          "default": 161,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "tables": {
+          "description": "The tables to poll. A table the device doesn't answer is skipped until the next test\n(capabilities are probed, never assumed).",
+          "type": "array",
+          "default": [
+            "arp",
+            "ifmib",
+            "bridge",
+            "lldp"
+          ],
+          "items": {
+            "$ref": "#/$defs/SnmpTable"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "address",
+        "credential"
+      ]
+    },
+    "SnmpCredential": {
+      "description": "REQ: DSC-004, DSC-007 (ADR-908) — one `[[discovery.snmp_credential]]`. Secrets are files under\n`[node] secret_file_dirs` (an inline `community` or `*_password` is an unknown key and refuses\nthe load). T25.8 adds `*_ref` to the stored-secret store.",
+      "type": "object",
+      "properties": {
+        "auth_password_file": {
+          "description": "v3: the file that holds the authentication password (8 octets or more).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "auth_protocol": {
+          "description": "v3: `sha`, `sha-256`, `sha-384` or `sha-512`. MD5 and SHA-224 are refused.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "community_file": {
+          "description": "v2c: the file that holds the community.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "name": {
+          "description": "The credential's name, as an agent names it.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "priv_password_file": {
+          "description": "v3: the file that holds the privacy password. Left out, the authentication password is\nused for both (UniFi's single v3 password).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "priv_protocol": {
+          "description": "v3: `aes-128` for authPriv; leave out for authNoPriv. DES, AES-192 and AES-256 are refused.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "role": {
+          "description": "`infrastructure` (agents) or `host` (identity reads, T25.7).",
+          "$ref": "#/$defs/CredentialRole",
+          "default": "infrastructure"
+        },
+        "user": {
+          "description": "v3: the USM user name.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "version": {
+          "description": "`v2c` or `v3`.",
+          "$ref": "#/$defs/SnmpVersion",
+          "default": "v2c"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "SnmpTable": {
+      "description": "REQ: DSC-004 — a table group an agent may be polled for (ADR-908 \"Tables\").",
+      "oneOf": [
+        {
+          "description": "`ipNetToPhysicalTable`, else `ipNetToMediaTable`.",
+          "type": "string",
+          "const": "arp"
+        },
+        {
+          "description": "Interface names and the agent's own addresses.",
+          "type": "string",
+          "const": "ifmib"
+        },
+        {
+          "description": "The forwarding table (Q-BRIDGE, else BRIDGE), with ports and VLANs.",
+          "type": "string",
+          "const": "bridge"
+        },
+        {
+          "description": "The LLDP remote table.",
+          "type": "string",
+          "const": "lldp"
+        }
+      ]
+    },
+    "SnmpVersion": {
+      "description": "REQ: DSC-003 — the SNMP version of a credential.",
+      "oneOf": [
+        {
+          "description": "`SNMPv2c`: the community travels in clear text.",
+          "type": "string",
+          "const": "v2c"
+        },
+        {
+          "description": "`SNMPv3` USM at authNoPriv or authPriv.",
+          "type": "string",
+          "const": "v3"
+        }
+      ]
+    },
     "SpecialConfig": {
       "description": "Built-in handling of special names (`spec/03` §3 step 4).",
       "type": "object",
@@ -3745,6 +4507,19 @@
           "description": "`use-application-dns.net` → NXDOMAIN, so Firefox doesn't switch to its own DoH.",
           "type": "boolean",
           "default": true
+        },
+        "block_icloud_private_relay": {
+          "description": "`mask.icloud.com` and `mask-h2.icloud.com` → NXDOMAIN, so Apple devices turn iCloud\nPrivate Relay off on this network and their queries keep coming here, filtered\n(ADR-904; Pi-hole's `iCloudPrivateRelay`).",
+          "type": "boolean",
+          "default": true
+        },
+        "ddr_name": {
+          "description": "The name the certificates of this node's DoT, DoH, and DoQ listeners carry (such as\n`dns.example.com`). Set, `_dns.resolver.arpa` SVCB answers advertise those listeners\nfor Discovery of Designated Resolvers (RFC 9462), except listeners bound to loopback or\nwith `proxy_protocol` on; unset, `resolver.arpa` queries get no data. `resolver.arpa`\nis never forwarded (ADR-904).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "localhost": {
           "description": "`localhost` and `*.localhost` → `127.0.0.1` / `::1` (RFC 6761 §6.3).",
@@ -3760,6 +4535,11 @@
           "description": "CHAOS-class `version.bind`, `id.server`, ... → REFUSED.",
           "type": "boolean",
           "default": true
+        },
+        "single_label_nxdomain": {
+          "description": "Single-label names (`nas`, no dot) asked for A, AAAA, or HTTPS that no local record,\nzone, or device name answers → NXDOMAIN instead of forwarding them, unless a\n`[[route]]` matches them (ADR-904; Pi-hole and dnsmasq `domain-needed`).",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false
@@ -3913,6 +4693,28 @@
         "key"
       ]
     },
+    "UnifiReads": {
+      "description": "REQ: DSC-009 (T25.10, ADR-912) — which extra read-only UniFi reads the inventory makes, for\neach UniFi `[[router]]`. Each one is off until an admin turns it on.",
+      "type": "object",
+      "properties": {
+        "all_users": {
+          "description": "`POST stat/alluser` (a query, it changes nothing): clients UniFi has seen within\n`unifi_all_users_within_hours`, as history (class 5). Never a current address.",
+          "type": "boolean",
+          "default": false
+        },
+        "client_fields": {
+          "description": "Read more fields of the clients the router poll already reads (`stat/sta`, `rest/user`):\nwired or wireless, the switch port, the access point, the VLAN and network, and the first\ntime the client was seen. No extra request.",
+          "type": "boolean",
+          "default": false
+        },
+        "devices": {
+          "description": "`GET stat/device`: UniFi's own devices, their switch-port MAC tables (where a client plugs\nin) and LLDP neighbours.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
     "UpdatesConfig": {
       "description": "`[updates]` (REQ: OPS-004, ADR-046).",
       "type": "object",
@@ -4027,6 +4829,14 @@
         },
         "relay": {
           "description": "REQ: UPS-003 (T9.9) — an anonymized DNSCrypt relay for a DNSCrypt (`sdns://`)\nupstream: a relay stamp (`sdns://g…`) or `ip:port`. The relay sees who asks but not\nwhat; the resolver sees what is asked but not by whom.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "source": {
+          "description": "REQ: UPS-013 (T24.31, ADR-997) — the local address this upstream's sockets are bound to\nbefore they connect (`udp://`, `tcp://`, `tls://`, `https://`): `198.51.100.252` or\n`198.51.100.252:0`, or a network, `198.51.100.0/24`, meaning \"the address this node\nholds in it\" (so a shared upstream works on nodes whose addresses differ; in a cluster\nname a network, not one node's address). The address must be on a real interface (a VLAN\ninterface, not an alias on an untagged one). Binding it does not choose the interface the\npacket leaves by: Linux routes by destination, so add a source-based routing rule for it\n(see docs/running.md). Saving an address the node doesn't hold is refused; a node that\nlacks it at start or on a replica runs only this upstream degraded.",
           "type": [
             "string",
             "null"

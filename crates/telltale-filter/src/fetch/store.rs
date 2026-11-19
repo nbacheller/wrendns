@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// zstd level for stored sources: fast enough for a Pi, ~4–5× smaller than raw lists.
-const ZSTD_LEVEL: i32 = 3;
+pub(crate) const ZSTD_LEVEL: i32 = 3;
 
 /// What we know about one list's stored source.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,7 +47,16 @@ impl ListMeta {
     pub fn has_content(&self) -> bool {
         self.content_hash.is_some()
     }
+
+    /// True when the stored content is inline rules from the config. They're stored when the
+    /// config changes and never fetched, so `last_success` doesn't age like a download's.
+    pub fn is_inline(&self) -> bool {
+        self.source.starts_with(INLINE_SOURCE_PREFIX)
+    }
 }
+
+/// How [`ListMeta::source`] starts for inline rules (followed by the rules' hash).
+pub(crate) const INLINE_SOURCE_PREFIX: &str = "inline:";
 
 /// The `lists/` directory.
 #[derive(Debug, Clone)]
@@ -67,8 +76,15 @@ impl Store {
         &self.dir
     }
 
-    fn src_path(&self, name: &str) -> PathBuf {
+    pub(crate) fn src_path(&self, name: &str) -> PathBuf {
         self.dir.join(format!("{name}.src.zst"))
+    }
+
+    /// Where a download is spooled before it replaces the stored source (REQ: FLT-901).
+    pub(crate) fn spool_path(&self, name: &str) -> PathBuf {
+        let mut p = self.src_path(name).into_os_string();
+        p.push(".tmp");
+        PathBuf::from(p)
     }
 
     fn meta_path(&self, name: &str) -> PathBuf {

@@ -64,6 +64,8 @@ const JSON_TABLES: &[(&str, &str, Option<i64>)] = &[
 #[derive(Debug, Default)]
 pub(crate) struct Source {
     pub files: BTreeMap<String, Vec<u8>>,
+    /// REQ: API-007 (T24.6) — the `dnsmasq.d/*.conf` files, by base name.
+    pub dnsmasq: BTreeMap<String, Vec<u8>>,
     pub tables: BTreeMap<String, Vec<Row>>,
 }
 
@@ -71,9 +73,31 @@ fn base(name: &str) -> &str {
     name.rsplit('/').next().unwrap_or(name)
 }
 
+/// Whether `name` is a `conf` file in a `dnsmasq.d` directory (dnsmasq's `conf-dir`, where
+/// Pi-hole keeps its generated and custom dnsmasq lines).
+fn is_dnsmasq(name: &str) -> bool {
+    let mut parts = name.rsplit('/');
+    let file = parts.next().unwrap_or("");
+    parts.next() == Some("dnsmasq.d") && is_conf(file)
+}
+
+/// Whether `file` ends in `.conf`.
+fn is_conf(file: &str) -> bool {
+    Path::new(file)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("conf"))
+}
+
 impl Source {
     /// Reads `path`: an archive, a `gravity.db`, or a directory.
     pub(crate) fn load(path: &Path) -> Result<Self, String> {
+        Self::load_in(path, &std::env::temp_dir())
+    }
+
+    /// [`Source::load`] with the directory an archive's `gravity.db` is unpacked into (SQLite reads
+    /// files). The import worker passes a private directory the server made under its data
+    /// directory, because the image has no `/tmp` (REQ: API-007, ADR-989).
+    pub(crate) fn load_in(path: &Path, scratch: &Path) -> Result<Self, String> {
         let shown = path.display();
         if path.is_dir() {
             return Self::from_dir(path);
@@ -87,19 +111,30 @@ impl Source {
         }
         let entries = archive::read(&data, |n| {
             let b = base(n);
-            FILES.contains(&b) || b == "gravity.db" || JSON_TABLES.iter().any(|t| t.0 == b)
+            is_dnsmasq(n)
+                || FILES.contains(&b)
+                || b == "gravity.db"
+                || JSON_TABLES.iter().any(|t| t.0 == b)
         })
         .map_err(|e| format!("{shown}: {e}"))?;
-        Self::from_entries(entries)
+        Self::from_entries_in(entries, scratch)
     }
 
+    #[cfg(test)]
     pub(crate) fn from_entries(entries: archive::Entries) -> Result<Self, String> {
+        Self::from_entries_in(entries, &std::env::temp_dir())
+    }
+
+    fn from_entries_in(entries: archive::Entries, scratch: &Path) -> Result<Self, String> {
         let mut s = Self::default();
         let mut json: BTreeMap<String, Vec<u8>> = BTreeMap::new();
         for (name, data) in entries {
             let b = base(&name).to_owned();
+            if is_dnsmasq(&name) {
+                s.dnsmasq.entry(b.clone()).or_insert_with(|| data.clone());
+            }
             if b == "gravity.db" {
-                let tmp = TempFile::write(&data)?;
+                let tmp = TempFile::write(scratch, &data)?;
                 s.tables = sqlite_tables(&tmp.0)?;
             } else if FILES.contains(&b.as_str()) {
                 s.files.insert(b, data);
@@ -135,6 +170,25 @@ impl Source {
                 }
             }
         }
+        // REQ: API-007 (T24.6) — every `conf` file in dnsmasq.d beside the directory (or in
+        // /etc/dnsmasq.d for /etc/pihole), each within the entry size limit.
+        for d in [dir.join("dnsmasq.d"), dir.join("../dnsmasq.d")] {
+            let Ok(list) = std::fs::read_dir(&d) else {
+                continue;
+            };
+            for e in list.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let small = e
+                    .metadata()
+                    .is_ok_and(|m| m.is_file() && m.len() <= archive::ENTRY_LIMIT as u64);
+                if small
+                    && is_conf(&name)
+                    && let Ok(data) = std::fs::read(e.path())
+                {
+                    s.dnsmasq.entry(name).or_insert(data);
+                }
+            }
+        }
         let db = dir.join("gravity.db");
         s.tables = if db.exists() {
             sqlite_tables(&db)?
@@ -165,13 +219,12 @@ impl Source {
 struct TempFile(PathBuf);
 
 impl TempFile {
-    fn write(data: &[u8]) -> Result<Self, String> {
+    fn write(dir: &Path, data: &[u8]) -> Result<Self, String> {
         use std::io::Write as _;
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
-        let p =
-            std::env::temp_dir().join(format!("telltale-import-{}-{nanos}.db", std::process::id()));
+        let p = dir.join(format!("telltale-import-{}-{nanos}.db", std::process::id()));
         let mut o = std::fs::OpenOptions::new();
         o.write(true).create_new(true);
         #[cfg(unix)]
@@ -285,6 +338,8 @@ pub(crate) fn one_line(s: &str) -> String {
 
 /// Pi-hole's settings, from `pihole.toml` (v6) or `setupVars.conf` + friends (v5).
 #[derive(Debug, Default)]
+// One field per Pi-hole switch, as Pi-hole names them; an enum set would only obscure them.
+#[allow(clippy::struct_excessive_bools)]
 struct Settings {
     upstreams: Vec<String>,
     hosts: Vec<String>,
@@ -293,12 +348,92 @@ struct Settings {
     rev_servers: Vec<String>,
     dnssec: bool,
     rate_limit: Option<(u32, u32)>,
+    /// REQ: DNS-019 (ADR-904) — `domain-needed`: never forward bare names.
+    domain_needed: bool,
+    /// REQ: DNS-019 (ADR-904) — iCloud Private Relay and Firefox canary handling, when set.
+    icloud_relay: Option<bool>,
+    mozilla_canary: Option<bool>,
     blocking_mode: Option<String>,
     blocking_off: bool,
     dhcp_hosts: Vec<String>,
     dhcp_active: bool,
+    /// REQ: API-007 (T24.6) — dnsmasq's `address=/name/ip` values (`/name/target`).
+    dnsmasq_addresses: Vec<String>,
+    /// `server=/domain/ip[#port]` values (`/domain/target`): conditional forwarding.
+    dnsmasq_servers: Vec<String>,
+    /// `host-record=` values: names and addresses, in any order.
+    dnsmasq_hosts: Vec<String>,
+    /// REQ: OBS-903 (T24.35) — Pi-hole's excluded domains and clients (`webserver.api.excludeDomains`
+    /// and `excludeClients`, regexes in v6; `API_EXCLUDE_DOMAINS` and `API_EXCLUDE_CLIENTS`, plain
+    /// values in v5), as Pi-hole holds them.
+    exclude_domains: Vec<String>,
+    exclude_clients: Vec<String>,
+    /// Whether those are regexes (v6) or plain values (v5).
+    exclude_regex: bool,
     /// Settings with no TelltaleDNS equivalent (names only: values may be secrets).
     unmapped: Vec<String>,
+}
+
+/// dnsmasq directives Pi-hole writes for itself, or that describe the old install's
+/// plumbing (ports, interfaces, caches); they carry nothing to import, so they aren't named.
+const DNSMASQ_PLUMBING: &[&str] = &[
+    "addn-hosts",
+    "bind-interfaces",
+    "bogus-priv",
+    "cache-size",
+    "conf-dir",
+    "except-interface",
+    "expand-hosts",
+    "group",
+    "interface",
+    "listen-address",
+    "local-service",
+    "localise-queries",
+    "log-facility",
+    "log-queries",
+    "no-hosts",
+    "no-resolv",
+    "pid-file",
+    "port",
+    "rev-server",
+    "user",
+];
+
+/// Maps one dnsmasq line (`key=value` or a bare flag) onto the settings it configures.
+/// `server=ip` (a plain upstream) is left out: the upstreams come from the setup files, which
+/// Pi-hole also writes into dnsmasq.
+fn apply_dnsmasq(line: &str, s: &mut Settings) {
+    let l = line.trim();
+    if l.is_empty() || l.starts_with('#') {
+        return;
+    }
+    let (key, value) = l
+        .split_once('=')
+        .map_or((l, ""), |(k, v)| (k.trim(), v.trim()));
+    match key {
+        "cname" => s.cnames.push(value.to_owned()),
+        "address" => s.dnsmasq_addresses.push(value.to_owned()),
+        "host-record" => s.dnsmasq_hosts.push(value.to_owned()),
+        "server" if value.starts_with('/') => s.dnsmasq_servers.push(value.to_owned()),
+        "server" => {}
+        // REQ: DNS-019 (ADR-904): the same switch as Pi-hole's domain-needed setting.
+        "domain-needed" => s.domain_needed = true,
+        k if k.starts_with("dhcp") || DNSMASQ_PLUMBING.contains(&k) => {}
+        k => s.unmapped.push(format!("dnsmasq: {}", one_line(k))),
+    }
+}
+
+/// dnsmasq's `/a/b/target` form (`address=`, `server=`): the names, and the target after the
+/// last slash (empty for a bare `/name/`).
+fn dnsmasq_names(v: &str) -> Option<(Vec<String>, String)> {
+    let parts: Vec<&str> = v.strip_prefix('/')?.split('/').collect();
+    let (target, names) = parts.split_last()?;
+    let names = names
+        .iter()
+        .map(|n| n.trim().trim_end_matches('.').to_ascii_lowercase())
+        .filter(|n| !n.is_empty())
+        .collect();
+    Some((names, target.trim().to_owned()))
 }
 
 /// v6 keys the importer maps.
@@ -314,6 +449,12 @@ const V6_MAPPED: &[&str] = &[
     "dns.blocking.active",
     "dhcp.hosts",
     "dhcp.active",
+    "dns.domainNeeded",
+    "dns.specialDomains.iCloudPrivateRelay",
+    "dns.specialDomains.mozillaCanary",
+    "webserver.api.excludeDomains",
+    "webserver.api.excludeClients",
+    "misc.dnsmasq_lines",
 ];
 
 fn strings(v: Option<&toml::Value>) -> Vec<String> {
@@ -326,8 +467,21 @@ fn strings(v: Option<&toml::Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// REQ: API-007 — a parse error names the line and the problem, never the line's text: a broken
+/// `pihole.toml` can carry a password hash or a TOTP secret, and the error reaches the admin's page.
+fn toml_problem(text: &str, e: &toml::de::Error) -> String {
+    match e.span().and_then(|s| text.get(..s.start)) {
+        Some(before) => format!(
+            "pihole.toml line {}: {}",
+            before.matches('\n').count() + 1,
+            e.message()
+        ),
+        None => format!("pihole.toml: {}", e.message()),
+    }
+}
+
 fn v6_settings(text: &str) -> Result<Settings, String> {
-    let t: toml::Table = toml::from_str(text).map_err(|e| format!("pihole.toml: {e}"))?;
+    let t: toml::Table = toml::from_str(text).map_err(|e| toml_problem(text, &e))?;
     let get = |path: &str| {
         let mut v: Option<&toml::Value> = None;
         for (i, k) in path.split('.').enumerate() {
@@ -347,6 +501,12 @@ fn v6_settings(text: &str) -> Result<Settings, String> {
         blocking_off: get("dns.blocking.active").and_then(toml::Value::as_bool) == Some(false),
         dhcp_hosts: strings(get("dhcp.hosts")),
         dhcp_active: get("dhcp.active").and_then(toml::Value::as_bool) == Some(true),
+        domain_needed: get("dns.domainNeeded").and_then(toml::Value::as_bool) == Some(true),
+        icloud_relay: get("dns.specialDomains.iCloudPrivateRelay").and_then(toml::Value::as_bool),
+        mozilla_canary: get("dns.specialDomains.mozillaCanary").and_then(toml::Value::as_bool),
+        exclude_domains: strings(get("webserver.api.excludeDomains")),
+        exclude_clients: strings(get("webserver.api.excludeClients")),
+        exclude_regex: true,
         ..Settings::default()
     };
     let num = |p: &str| {
@@ -356,6 +516,10 @@ fn v6_settings(text: &str) -> Result<Settings, String> {
     };
     if let (Some(c), Some(i)) = (num("dns.rateLimit.count"), num("dns.rateLimit.interval")) {
         s.rate_limit = Some((c, i));
+    }
+    // Pi-hole v6's own dnsmasq lines (its "custom dnsmasq" box).
+    for line in strings(get("misc.dnsmasq_lines")) {
+        apply_dnsmasq(&line, &mut s);
     }
     // Pi-hole marks every setting that differs from its default with `### CHANGED`.
     // The marker ends the value, so for a multi-line array it's on the closing line.
@@ -382,6 +546,96 @@ fn v6_settings(text: &str) -> Result<Settings, String> {
     Ok(s)
 }
 
+/// A comma-separated `setupVars.conf` value, without blanks.
+fn comma_list(v: Option<&String>) -> Vec<String> {
+    v.map(|v| {
+        v.split(',')
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .map(str::to_owned)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// A regex made only of literal characters (`\.` an escaped dot), or `None` when it has any other
+/// operator. Pi-hole's lists are regexes, but nearly everyone writes `^name$`.
+fn literal_regex(r: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut it = r.chars();
+    while let Some(c) = it.next() {
+        match c {
+            '\\' => out.push(it.next().filter(|n| *n == '.' || *n == '-')?),
+            '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' | '/' => {
+                return None;
+            }
+            c => out.push(c),
+        }
+    }
+    Some(out)
+}
+
+/// REQ: OBS-903 (T24.35, ADR-1014) — Pi-hole's excluded domains and clients as TelltaleDNS's
+/// log-only exclusions: `(domains, clients, what couldn't be mapped)`. A domain `^name$` is that
+/// name; `^.*\.suffix$` (or `\.suffix$`) is `*.suffix`. A client is an address, a network or a
+/// device name; in v6 `^192\.168\.1\.5$` is an address. Anything else (a real pattern, an
+/// unanchored word that matches inside names) is left out and said so, with its text, which is a
+/// name or an address and no secret.
+fn map_exclusions(s: &Settings) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let (mut domains, mut clients, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
+    for d in &s.exclude_domains {
+        let d = d.trim();
+        let mapped = if s.exclude_regex {
+            let body = d.strip_prefix('^').and_then(|b| b.strip_suffix('$'));
+            match body {
+                Some(b) => {
+                    if let Some(rest) = b.strip_prefix("(.*\\.)?") {
+                        // matches the apex too: list both
+                        if let Some(n) = literal_regex(rest).filter(|n| !n.is_empty()) {
+                            domains.push(n.to_ascii_lowercase());
+                        }
+                        literal_regex(rest).map(|n| format!("*.{n}"))
+                    } else if let Some(rest) = b.strip_prefix(".*\\.") {
+                        literal_regex(rest).map(|n| format!("*.{n}"))
+                    } else {
+                        literal_regex(b)
+                    }
+                }
+                None => d
+                    .strip_prefix("\\.")
+                    .and_then(|r| r.strip_suffix('$'))
+                    .and_then(literal_regex)
+                    .map(|n| format!("*.{n}")),
+            }
+        } else {
+            Some(d.to_owned())
+        };
+        match mapped {
+            Some(m) if !m.is_empty() => domains.push(m.to_ascii_lowercase()),
+            _ => skipped.push(one_line(d)),
+        }
+    }
+    for c in &s.exclude_clients {
+        let c = c.trim();
+        let plain = if s.exclude_regex {
+            c.strip_prefix('^')
+                .and_then(|b| b.strip_suffix('$'))
+                .and_then(literal_regex)
+        } else {
+            Some(c.to_owned())
+        };
+        match plain {
+            Some(p)
+                if !p.is_empty() && !p.chars().any(|ch| ch.is_whitespace() || ch.is_control()) =>
+            {
+                clients.push(p);
+            }
+            _ => skipped.push(one_line(c)),
+        }
+    }
+    (domains, clients, skipped)
+}
+
 fn key_values(text: &str) -> BTreeMap<String, String> {
     text.lines()
         .filter(|l| !l.trim_start().starts_with('#'))
@@ -405,6 +659,11 @@ const V5_MAPPED: &[&str] = &[
     "DHCP_ACTIVE",
     "RATE_LIMIT",
     "BLOCKINGMODE",
+    "DNS_FQDN_REQUIRED",
+    "BLOCK_ICLOUD_PR",
+    "MOZILLA_CANARY",
+    "API_EXCLUDE_DOMAINS",
+    "API_EXCLUDE_CLIENTS",
     // The old install's own plumbing.
     "PIHOLE_INTERFACE",
     "IPV4_ADDRESS",
@@ -425,6 +684,16 @@ fn v5_settings(src: &Source) -> Settings {
         blocking_off: setup.get("BLOCKING_ENABLED").is_some_and(|v| v == "false"),
         dhcp_active: on("DHCP_ACTIVE"),
         blocking_mode: ftl.get("BLOCKINGMODE").cloned(),
+        domain_needed: on("DNS_FQDN_REQUIRED"),
+        icloud_relay: ftl
+            .get("BLOCK_ICLOUD_PR")
+            .map(|v| !v.trim().eq_ignore_ascii_case("false")),
+        mozilla_canary: ftl
+            .get("MOZILLA_CANARY")
+            .map(|v| !v.trim().eq_ignore_ascii_case("false")),
+        exclude_domains: comma_list(setup.get("API_EXCLUDE_DOMAINS")),
+        exclude_clients: comma_list(setup.get("API_EXCLUDE_CLIENTS")),
+        exclude_regex: false,
         ..Settings::default()
     };
     // PIHOLE_DNS_1, _2, ... in order.
@@ -566,6 +835,20 @@ pub(crate) fn unique(name: &str, taken: &mut HashSet<String>) -> String {
     n
 }
 
+/// REQ: API-007 (T35.1, A6) — like [`unique`], but a name already taken is told apart by the
+/// device's own tail (`Laptop (10.23)`, `Laptop (ee:0f)`) before a number is, so two devices
+/// named alike stay recognisable. A still-taken name takes the number after the tail.
+pub(crate) fn unique_tail(name: &str, taken: &mut HashSet<String>, tail: &str) -> String {
+    if taken.insert(name.to_ascii_lowercase()) {
+        return name.to_owned();
+    }
+    let tail = tail.trim();
+    if tail.is_empty() {
+        return unique(name, taken);
+    }
+    unique(&format!("{name} ({tail})"), taken)
+}
+
 /// A MAC in `aa:bb:cc:dd:ee:ff` form.
 pub(crate) fn mac(s: &str) -> Option<String> {
     let parts: Vec<&str> = s.split([':', '-']).collect();
@@ -593,24 +876,36 @@ struct Client {
     groups: Vec<String>,
 }
 
+/// Exact deny entries sampled for `--compare`.
+const SAMPLE_DOMAINS: usize = 20;
+
 /// The result: a TOML configuration and what didn't carry over.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct Imported {
     pub toml: String,
     pub version: &'static str,
     pub notes: Vec<String>,
     pub counts: String,
+    /// Names to resolve through both servers with `--compare` (REQ: API-007, T24.6).
+    pub samples: Vec<String>,
 }
 
 /// Maps a Pi-hole setup onto TelltaleDNS configuration (ADR-061).
 pub(crate) fn convert(src: &Source, source_name: &str) -> Result<Imported, String> {
-    let (version, settings) = match src.text("pihole.toml") {
+    let (version, mut settings) = match src.text("pihole.toml") {
         Some(t) => ("v6", v6_settings(&t)?),
         None if src.files.contains_key("setupVars.conf") || !src.tables.is_empty() => {
             ("v5", v5_settings(src))
         }
         None => return Err("no Pi-hole settings or group tables found".into()),
     };
+    // REQ: API-007 (T24.6) — the dnsmasq.d files (`address=`, `server=/…/`, `cname=`,
+    // `host-record=`); a line that repeats another is dropped when the records are built.
+    for text in src.dnsmasq.values() {
+        for line in String::from_utf8_lossy(text).lines() {
+            apply_dnsmasq(line, &mut settings);
+        }
+    }
     let mut b = Builder::new(src, settings);
     let upstreams = b.upstreams();
     let forwards = b.forwards();
@@ -618,6 +913,7 @@ pub(crate) fn convert(src: &Source, source_name: &str) -> Result<Imported, Strin
     b.groups();
     b.adlists();
     b.domains();
+    b.address_blocks_list();
     b.write_lists();
     let none_group = b.write_groups();
     b.clients(none_group.as_deref());
@@ -648,7 +944,21 @@ pub(crate) fn convert(src: &Source, source_name: &str) -> Result<Imported, Strin
         version,
         notes: b.notes,
         counts,
+        samples: b.samples,
     })
+}
+
+/// A domain as a list rule that also matches its subdomains (dnsmasq's `address=` does).
+fn subtree_rule(domain: &str) -> Result<String, String> {
+    let opts = ListOptions {
+        kind: ListKind::Block,
+        match_mode: ListMatch::Subtree,
+    };
+    let mut parsed = Vec::new();
+    match parse_line(domain, opts, &mut parsed) {
+        LineKind::Rules(_) => Ok(domain.to_owned()),
+        other => Err(format!("{other:?}")),
+    }
 }
 
 /// The conversion's state: each step appends TOML to `body` and notes to `notes`.
@@ -666,6 +976,10 @@ struct Builder<'a> {
     clients: Vec<Client>,
     client_names: HashSet<String>,
     keys_seen: HashSet<String>,
+    /// Names to resolve through both servers in `--compare` (local records, a few domains).
+    samples: Vec<String>,
+    /// REQ: API-007 (T24.6) — `address=/name/0.0.0.0`-style blocks, one rule each.
+    address_blocks: Vec<String>,
 }
 
 fn kind_of(t: i64) -> ListKind {
@@ -692,6 +1006,8 @@ impl<'a> Builder<'a> {
             clients: Vec::new(),
             client_names: HashSet::new(),
             keys_seen: HashSet::new(),
+            samples: Vec::new(),
+            address_blocks: Vec::new(),
         }
     }
 
@@ -713,6 +1029,13 @@ impl<'a> Builder<'a> {
                 toml_str(&name),
                 toml_str(&url)
             );
+            // REQ: UPS-006 (fork #25) — an IPv6 upstream fails, and turns the map yellow, on a
+            // host with no IPv6 route.
+            if url.contains('[') {
+                self.notes.push(format!(
+                    "Upstream {u} is an IPv6 address. If the hosts running TelltaleDNS have no IPv6 route, it will fail on every query; drop `{name}` (and its name in the `default` group's members) and the upstream's page will say \"this node has no IPv6 route\" if it applies."
+                ));
+            }
             if local {
                 self.notes.push(format!(
                     "Upstream {u} runs on the Pi-hole machine itself (often unbound): keep it running next to TelltaleDNS, which reaches it at the same address when they share a machine. Or let TelltaleDNS resolve from the root servers itself: `url = \"recursive://\"` (`docs/running.md`, Recursive resolution)."
@@ -733,12 +1056,13 @@ impl<'a> Builder<'a> {
     /// Conditional forwarding ("rev servers"): `enabled,network,target[#port],domain`.
     fn forwards(&mut self) -> usize {
         let mut n = 0;
-        for r in &self.s.rev_servers {
+        let mut routed = std::collections::BTreeSet::new();
+        for r in self.s.rev_servers.clone() {
             let f: Vec<&str> = r.split(',').map(str::trim).collect();
             let [on, net, target, rest @ ..] = f.as_slice() else {
                 self.notes.push(format!(
                     "Conditional forwarding `{}` isn't in a known form.",
-                    one_line(r)
+                    one_line(&r)
                 ));
                 continue;
             };
@@ -776,19 +1100,77 @@ impl<'a> Builder<'a> {
             if suffixes.is_empty() {
                 continue;
             }
-            n += 1;
-            let _ = writeln!(
-                self.body,
-                "\n[[upstream]]\nname = {g}\nurl = {u}\n\n[[upstream_group]]\nname = {g}\nmembers = [{g}]\n\n[[route]]\nmatch_suffix = {s}\nupstream_group = {g}\ndnssec_nta = true",
-                g = toml_str(&format!("pihole-forward-{n}")),
-                u = toml_str(&url),
-                s = toml_array(&suffixes)
-            );
+            self.route_fresh(&mut routed, &mut n, &url, suffixes);
+        }
+        // REQ: API-007 (T24.6) — dnsmasq's `server=/domain/ip` is the same forwarding.
+        for v in self.s.dnsmasq_servers.clone() {
+            let Some((names, target)) = dnsmasq_names(&v) else {
+                continue;
+            };
+            if target.is_empty() {
+                self.notes.push(format!(
+                    "dnsmasq `server={}` names no server; not imported.",
+                    one_line(&v)
+                ));
+                continue;
+            }
+            let Some((url, _)) = upstream_url(&target) else {
+                self.notes.push(format!(
+                    "dnsmasq `server={}`: `{}` isn't an IP address; not imported.",
+                    one_line(&v),
+                    one_line(&target)
+                ));
+                continue;
+            };
+            if names.is_empty() {
+                continue;
+            }
+            self.route_fresh(&mut routed, &mut n, &url, names);
         }
         n
     }
 
+    /// REQ: API-007 (T24.6) — a suffix is routed once. A v5 `rev-server` and a dnsmasq
+    /// `server=/domain/` can name the same domain; the first one named is kept, and the other is
+    /// noted, so the two routes can't collide as two entries of one name.
+    fn route_fresh(
+        &mut self,
+        routed: &mut std::collections::BTreeSet<String>,
+        n: &mut usize,
+        url: &str,
+        suffixes: Vec<String>,
+    ) {
+        let mut fresh = Vec::new();
+        for s in suffixes {
+            if routed.insert(s.clone()) {
+                fresh.push(s);
+            } else {
+                self.notes.push(format!(
+                    "Conditional forwarding for `{s}` is named twice; the first one is kept."
+                ));
+            }
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        *n += 1;
+        self.route(*n, url, &fresh);
+    }
+
+    /// One conditional forward: an upstream, its group, and the route for `suffixes`.
+    fn route(&mut self, n: usize, url: &str, suffixes: &[String]) {
+        let _ = writeln!(
+            self.body,
+            "\n[[upstream]]\nname = {g}\nurl = {u}\n\n[[upstream_group]]\nname = {g}\nmembers = [{g}]\n\n[[route]]\nmatch_suffix = {s}\nupstream_group = {g}\ndnssec_nta = true",
+            g = toml_str(&format!("pihole-forward-{n}")),
+            u = toml_str(url),
+            s = toml_array(suffixes)
+        );
+    }
+
     /// Local DNS (`IP name...`) and CNAME (`alias[,alias...],target[,ttl]`) records.
+    // One block per record source: local DNS, dnsmasq, CNAMEs.
+    #[allow(clippy::too_many_lines)]
     fn records(&mut self) -> usize {
         let mut records: Vec<(String, &str, String, Option<u32>)> = Vec::new();
         let clean = |n: &str| n.trim_end_matches('.').to_ascii_lowercase();
@@ -803,6 +1185,64 @@ impl<'a> Builder<'a> {
             };
             let rtype = if ip.is_ipv4() { "A" } else { "AAAA" };
             records.extend(it.map(|name| (clean(name), rtype, ip.to_string(), None)));
+        }
+        // REQ: API-007 (T24.6) — `host-record=name[,name...],ip[,ip...]`.
+        for h in &self.s.dnsmasq_hosts {
+            let fields: Vec<&str> = h
+                .split(',')
+                .map(str::trim)
+                .filter(|f| !f.is_empty())
+                .collect();
+            let (ips, names): (Vec<&str>, Vec<&str>) = fields
+                .into_iter()
+                .partition(|f| f.parse::<IpAddr>().is_ok());
+            if ips.is_empty() || names.is_empty() {
+                self.notes.push(format!(
+                    "dnsmasq `host-record={}` has no name or no address; not imported.",
+                    one_line(h)
+                ));
+                continue;
+            }
+            for name in &names {
+                for ip in &ips {
+                    if let Ok(ip) = ip.parse::<IpAddr>() {
+                        let rtype = if ip.is_ipv4() { "A" } else { "AAAA" };
+                        records.push((clean(name), rtype, ip.to_string(), None));
+                    }
+                }
+            }
+        }
+        // REQ: API-007 (T24.6) — `address=/name/ip` answers the exact name (and dnsmasq also
+        // answers its subdomains, which TelltaleDNS doesn't); `address=/name/0.0.0.0` blocks.
+        let mut subdomains_noted = false;
+        for a in &self.s.dnsmasq_addresses {
+            let Some((names, target)) = dnsmasq_names(a) else {
+                continue;
+            };
+            let blocked = matches!(target.as_str(), "" | "#" | "0.0.0.0" | "::");
+            for name in names {
+                if blocked {
+                    self.address_blocks.push(name);
+                    continue;
+                }
+                match target.parse::<IpAddr>() {
+                    Ok(ip) => {
+                        let rtype = if ip.is_ipv4() { "A" } else { "AAAA" };
+                        records.push((clean(&name), rtype, ip.to_string(), None));
+                        if !subdomains_noted {
+                            subdomains_noted = true;
+                            self.notes.push(
+                                "dnsmasq `address=` also answers subdomains of its names; TelltaleDNS answers the exact name only (add a record for each subdomain you use).".into(),
+                            );
+                        }
+                    }
+                    Err(_) => self.notes.push(format!(
+                        "dnsmasq `address={}`: `{}` isn't an IP address; not imported.",
+                        one_line(a),
+                        one_line(&target)
+                    )),
+                }
+            }
         }
         for c in &self.s.cnames {
             let mut f: Vec<&str> = c.split(',').map(str::trim).collect();
@@ -833,6 +1273,7 @@ impl<'a> Builder<'a> {
                 continue;
             }
             kept += 1;
+            self.samples.push(name.clone());
             let _ = writeln!(
                 self.body,
                 "\n[[record]]\nname = {}\ntype = \"{rtype}\"\nvalue = {}",
@@ -846,6 +1287,19 @@ impl<'a> Builder<'a> {
         kept
     }
 
+    /// REQ: API-007 (T35.1, A1, A6) — a human-text column (a comment, a group name): HTML
+    /// entities decoded once, control characters stripped. A name that lost characters, here or
+    /// before it reached the export, is listed in the report (`what` says which column).
+    fn human(&mut self, what: &str, raw: &str) -> String {
+        let cleaned = crate::names::clean_text(raw);
+        if crate::names::lost_characters(raw, &cleaned) {
+            self.notes.push(format!(
+                "The {what} name `{cleaned}` lost characters (a `?`, a replacement character or a control character is in it); check how it reads."
+            ));
+        }
+        cleaned
+    }
+
     fn groups(&mut self) {
         for g in self.src.rows("group") {
             let Some(id) = int(g, "id") else { continue };
@@ -853,7 +1307,7 @@ impl<'a> Builder<'a> {
                 self.group_off.insert(id);
             }
             if id != 0 {
-                let n = one_line(&text(g, "name"));
+                let n = self.human("group", &text(g, "name"));
                 let n = if n.is_empty() {
                     format!("group {id}")
                 } else {
@@ -888,7 +1342,23 @@ impl<'a> Builder<'a> {
                 unused += 1;
                 continue;
             };
-            let address = text(a, "address");
+            let mut address = text(a, "address");
+            // REQ: T24.27 — a GitHub page URL (`/blob/`) is an HTML page; fetch the raw file.
+            if let Some(raw) = github_raw(&address) {
+                self.notes.push(format!(
+                    "Adlist `{}` is a GitHub page, not the file; imported as `{raw}`.",
+                    one_line(&address)
+                ));
+                address = raw;
+            }
+            // REQ: T24.27 — a regex list (e.g. mmotti/pihole-regex) isn't an adlist format.
+            if is_regex_list(&address) {
+                self.notes.push(format!(
+                    "Adlist `{}` looks like a list of regular expressions. Pi-hole adlists hold domains or hosts lines, not regexes, so it can't work as a list; not imported. Add the patterns as regex deny rules (`/pattern/`) instead.",
+                    one_line(&address)
+                ));
+                continue;
+            }
             let (url, path) = if let Some(p) = address.strip_prefix("file://") {
                 (None, Some(p.to_owned()))
             } else if address.starts_with("https://") || address.starts_with("http://") {
@@ -912,7 +1382,7 @@ impl<'a> Builder<'a> {
                 format!("pihole-{id}-{tail}")
             };
             self.assign(&name, groups);
-            let comment = one_line(&text(a, "comment"));
+            let comment = self.human("adlist comment", &text(a, "comment"));
             self.lists.push(List {
                 name,
                 note: if comment.is_empty() {
@@ -945,6 +1415,7 @@ impl<'a> Builder<'a> {
         let domain_groups = membership(self.src.rows("domainlist_by_group"), "domainlist_id");
         let mut buckets: BTreeMap<(i64, BTreeSet<i64>), Vec<String>> = BTreeMap::new();
         let (mut off, mut orphan) = (0, 0);
+        let mut picked = 0;
         for d in self.src.rows("domainlist") {
             let (Some(id), Some(t)) = (int(d, "id"), int(d, "type")) else {
                 continue;
@@ -958,6 +1429,11 @@ impl<'a> Builder<'a> {
                 continue;
             };
             let domain = one_line(&text(d, "domain"));
+            // A few exact deny entries as samples: `--compare` checks they're blocked alike.
+            if t == 1 && picked < SAMPLE_DOMAINS {
+                picked += 1;
+                self.samples.push(domain.clone());
+            }
             match domain_rule(&domain, t) {
                 Ok(rule) => buckets.entry((t, groups.clone())).or_default().push(rule),
                 Err(why) => self
@@ -1006,6 +1482,37 @@ impl<'a> Builder<'a> {
                 enabled: true,
             });
         }
+    }
+
+    /// REQ: API-007 (T24.6) — dnsmasq's blocking `address=` lines: one deny list in every
+    /// group, as dnsmasq applies them to every client.
+    fn address_blocks_list(&mut self) {
+        let mut rules = Vec::new();
+        for d in std::mem::take(&mut self.address_blocks) {
+            match subtree_rule(&d) {
+                Ok(r) => rules.push(r),
+                Err(why) => self.notes.push(format!(
+                    "dnsmasq block `{}` can't be used: {why}.",
+                    one_line(&d)
+                )),
+            }
+        }
+        if rules.is_empty() {
+            return;
+        }
+        let name = "pihole-dnsmasq-address".to_owned();
+        let all: BTreeSet<i64> = self.group_names.keys().copied().collect();
+        self.assign(&name, &all);
+        self.lists.push(List {
+            name,
+            note: "Pi-hole dnsmasq address= blocks (they apply to every client)".into(),
+            url: None,
+            path: None,
+            rules,
+            kind: ListKind::Block,
+            exact: false,
+            enabled: true,
+        });
     }
 
     fn write_lists(&mut self) {
@@ -1119,10 +1626,12 @@ impl<'a> Builder<'a> {
             if !self.keys_seen.insert(key.clone()) {
                 continue;
             }
-            let comment = one_line(&text(c, "comment"));
-            let name = unique(
+            // REQ: API-007 (T35.1, A1) — Pi-hole stores the comment HTML-escaped.
+            let comment = self.human("client", &text(c, "comment"));
+            let name = unique_tail(
                 if comment.is_empty() { &raw } else { &comment },
                 &mut self.client_names,
+                &crate::names::tail(&key),
             );
             let mut groups: Vec<String> = client_groups
                 .get(&id)
@@ -1171,9 +1680,10 @@ impl<'a> Builder<'a> {
                 .filter(|k| self.keys_seen.insert(k.clone()))
                 .collect();
             let Some(first) = fresh.first() else { continue };
-            let name = unique(
+            let name = unique_tail(
                 &one_line(host.as_deref().unwrap_or(first)),
                 &mut self.client_names,
+                &crate::names::tail(first),
             );
             self.clients.push(Client {
                 name,
@@ -1219,6 +1729,49 @@ impl<'a> Builder<'a> {
                 );
             }
         }
+        // REQ: DNS-019 (ADR-904) — special names, only where Pi-hole differs from our defaults
+        // (both block the iCloud and Firefox names by default; domain-needed is off in both).
+        let mut special = String::new();
+        if self.s.domain_needed {
+            special.push_str("single_label_nxdomain = true\n");
+        }
+        if self.s.icloud_relay == Some(false) {
+            special.push_str("block_icloud_private_relay = false\n");
+        }
+        if self.s.mozilla_canary == Some(false) {
+            special.push_str("block_firefox_canary = false\n");
+        }
+        if !special.is_empty() {
+            let _ = write!(head, "\n[special]\n{special}");
+        }
+        // REQ: OBS-903 (T24.35) — Pi-hole's excluded domains and clients: kept out of the query
+        // log only (Pi-hole still records them), as `[exclusions.log]`.
+        let (domains, clients, skipped) = map_exclusions(&self.s);
+        if !domains.is_empty() || !clients.is_empty() {
+            let _ = write!(
+                head,
+                "
+[exclusions.log]
+"
+            );
+            if !domains.is_empty() {
+                let _ = writeln!(head, "domains = {}", toml_array(&domains));
+            }
+            if !clients.is_empty() {
+                let _ = writeln!(head, "clients = {}", toml_array(&clients));
+            }
+            self.notes.push(format!(
+                "Excluded from Pi-hole's query log and lists: {} domain(s) and {} client(s) are imported as [exclusions.log] (kept out of the query log and the live view, but still counted in the dashboard and top lists, which Pi-hole leaves them out of: the totals will differ from Pi-hole's; add the names to [exclusions] to leave them out of the statistics too).",
+                domains.len(),
+                clients.len()
+            ));
+        }
+        if !skipped.is_empty() {
+            self.notes.push(format!(
+                "Pi-hole excluded domains or clients that aren't a plain name, address or `^name$` pattern (not imported): {}.",
+                skipped.join(", ")
+            ));
+        }
         if !self.s.unmapped.is_empty() {
             let keys: Vec<String> = self.s.unmapped.iter().map(|k| one_line(k)).collect();
             self.notes.push(format!(
@@ -1233,6 +1786,44 @@ impl<'a> Builder<'a> {
 }
 
 /// A Pi-hole domain entry as a list rule our parser accepts, or why it can't be one.
+/// REQ: T24.27 — `https://github.com/<o>/<r>/blob/<ref>/<path>` (or `/raw/`) to
+/// `https://raw.githubusercontent.com/<o>/<r>/<ref>/<path>`. A query or fragment is dropped.
+/// `None` for anything else (including a branch name with a slash, which can't be told apart).
+pub(crate) fn github_raw(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+        .or_else(|| url.strip_prefix("https://www.github.com/"))?;
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    let mut it = rest.splitn(5, '/');
+    let (owner, repo, kind, git_ref, path) =
+        (it.next()?, it.next()?, it.next()?, it.next()?, it.next()?);
+    if owner.is_empty() || repo.is_empty() || git_ref.is_empty() || path.is_empty() {
+        return None;
+    }
+    if kind != "blob" && kind != "raw" {
+        return None;
+    }
+    Some(format!(
+        "https://raw.githubusercontent.com/{owner}/{repo}/{git_ref}/{path}"
+    ))
+}
+
+/// REQ: T24.27 — a file named like a regex list (`regex.list`, `regex.txt`, `my-regex.list`).
+pub(crate) fn is_regex_list(address: &str) -> bool {
+    let path = address.split(['?', '#']).next().unwrap_or(address);
+    let name = path.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+    let lower = name.to_ascii_lowercase();
+    let stem = lower.rsplit_once('.').map_or(lower.as_str(), |(s, _)| s);
+    // Whole-word match: `regex`, `regex-list`, `my_regex`, not `no-regex-needed`.
+    let words: Vec<&str> = stem
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let is_rx = |w: &&str| *w == "regex" || *w == "regexes";
+    words.first().is_some_and(is_rx) || words.last().is_some_and(is_rx)
+}
+
 fn domain_rule(domain: &str, t: i64) -> Result<String, String> {
     let opts = ListOptions {
         kind: kind_of(t),
@@ -1294,6 +1885,8 @@ pub(crate) fn toml_array(items: &[String]) -> String {
             .join(", ")
     )
 }
+
+pub(crate) mod compare;
 
 #[cfg(test)]
 mod tests;

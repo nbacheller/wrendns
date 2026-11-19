@@ -481,7 +481,15 @@ impl Collector {
             .ok()
             .map(|d| u32::try_from(d.count()).unwrap_or(u32::MAX));
         s.max_fds = read(&self.proc_root, "self/limits").and_then(|t| max_open_files(&t));
-        if let Some(w) = read(&self.proc_root, "self/io").and_then(|t| io_write_bytes(&t)) {
+        // REQ: DSC-002 (ADR-934) — on the real /proc, `/proc/self/io` comes from the descriptor the
+        // net crate opened before the discovery workers made this process not dumpable (a non-root
+        // process can't open it again). A test's own root reads its fake files.
+        let io = if self.proc_root == Path::new("/proc") {
+            telltale_net::self_io_text()
+        } else {
+            read(&self.proc_root, "self/io")
+        };
+        if let Some(w) = io.and_then(|t| io_write_bytes(&t)) {
             if let (Some(was), Some(dt)) = (self.prev.written, elapsed) {
                 let secs = dt.as_secs_f64().max(0.001);
                 s.write_bytes_per_s = Some((w.saturating_sub(was) as f64 / secs) as u64);
@@ -613,6 +621,30 @@ pub(crate) fn status_kib(text: &str, key: &str) -> Option<u64> {
     text.lines()
         .find_map(|l| l.strip_prefix(key))
         .and_then(|rest| rest.split_whitespace().next()?.parse().ok())
+}
+
+/// REQ: FLT-901 (T24.29, ADR-994 item 5) — the memory this node may use: `TELLTALE_MEMORY_LIMIT`
+/// (bytes; a test, or a measurement on a stand-in for a smaller node) wins, else the container's
+/// limit (cgroup v2, then v1), else the machine's RAM. `None` when none can be read.
+pub(crate) fn memory_limit() -> Option<u64> {
+    if let Some(v) = std::env::var("TELLTALE_MEMORY_LIMIT")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|v| *v > 0)
+    {
+        return Some(v);
+    }
+    let cg = |p: &str| std::fs::read_to_string(p).ok().and_then(|t| limit(&t));
+    // A cgroup with no limit reads "max" (v2) or a huge number (v1): the machine's RAM then.
+    let ram = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|t| meminfo(&t).total);
+    let grouped = cg("/sys/fs/cgroup/memory.max")
+        .or_else(|| cg("/sys/fs/cgroup/memory/memory.limit_in_bytes"));
+    match (grouped, ram) {
+        (Some(g), Some(r)) => Some(g.min(r)),
+        (g, r) => g.or(r),
+    }
 }
 
 /// `/proc/loadavg` → the three averages times 1000.

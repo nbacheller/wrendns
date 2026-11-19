@@ -14,6 +14,7 @@
   //    tap panel.
   import type { S } from '../api';
   import ClientChip from '../components/ClientChip.svelte';
+  import DomainIcon from '../icons/DomainIcon.svelte';
   import { num } from '../format';
   import { parseName, workloadName, type Parsed } from './names';
 
@@ -133,6 +134,8 @@
               <span class="dev"><ClientChip ip={it.key} name={it.name} display={it.name ? workloadName(it.name) : undefined} {onchanged} /></span>
               {#each it.groups ?? [] as g (g)}<i class="gdot" style:--gc={groupColor(g)} title={g}></i>{/each}
             {:else}
+              <!-- REQ: OBS-039 (ADR-167) — the name's mark; nothing when icons are off. -->
+              <DomainIcon name={target} quiet={kind === 'blocked'} />
               <a class="dom" href={link(target, merged)} title={p?.note || it.key} aria-label={target}>{#if sub}<span class="sub">{sub}</span>{/if}{#if tail}<span class="head">{head}</span><span class="tail">{tail}</span>{:else}<span class="base">{base}</span>{/if}</a>
               {#if tag}<span class="tag">{tag}</span>{/if}
             {/if}

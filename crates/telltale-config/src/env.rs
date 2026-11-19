@@ -41,6 +41,45 @@ const RESERVED: &[&str] = &[
     "DRILL_RETURN_SECS",
     "DRILL_RETRY_SECS",
     "DRILL_IGNORE_HEALTH",
+    // REQ: OPS-014, API-014 (ADR-903 §3) — the node's secrets key and the one before a rotation.
+    "SECRETS_KEY",
+    "SECRETS_PREVIOUS_KEY",
+    // REQ: OPS-014 (ADR-903) — set by the Helm chart when the data directory isn't kept across
+    // restarts (persistence off): stored secrets would be lost (`secrets_ephemeral`).
+    "DATA_EPHEMERAL",
+    // REQ: T24.27 — read by the binary outside the config. The supervisor the restart goes
+    // through (T27.13, set by the unit, bundles and chart), the guarded-entries escape hatch,
+    // the `telltale ctl`/`support` API token, the DNSSEC library-log switch, and the `exec://`
+    // plugin's socket and upstream name (set for a child, but a plugin that starts a `telltale`
+    // sees them too). Test hooks: the simulation seeds and the matcher's walk switch. Keys the
+    // schema has (`TELLTALE_DRAIN_DELAY_SECS` = `node.drain_delay_secs`) are not listed: they
+    // already resolve.
+    "SUPERVISOR",
+    "IGNORE_GUARDED",
+    "TOKEN",
+    "LOG_DNSSEC_LIBRARY",
+    "PLUGIN_SOCKET",
+    "UPSTREAM",
+    "SIM_SCHEDULES",
+    "SIM_SEED",
+    "TEST_WALK",
+    // REQ: FLT-901 (T24.29) - the memory limit a category selection is checked against, in bytes,
+    // when the cgroup and the machine's RAM are not what the node should plan with (a test, or a
+    // measurement on a stand-in for a smaller node).
+    "MEMORY_LIMIT",
+    // REQ: FLT-901 - the cluster test's fake source (read only by a build with the `e2e` feature).
+    "E2E_CATALOG_BASE",
+];
+
+/// REQ: OPS-014, API-014 (ADR-903 §3) — variables a process this one starts (an `exec://`
+/// plugin, the self-update's checks and restart) never inherits: the secrets keys, the
+/// bootstrap admin's password, and the API token `telltale ctl` reads.
+pub const NEVER_INHERITED: &[&str] = &[
+    "TELLTALE_SECRETS_KEY",
+    "TELLTALE_SECRETS_PREVIOUS_KEY",
+    "TELLTALE_BOOTSTRAP_ADMIN_PASSWORD",
+    "TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH",
+    "TELLTALE_TOKEN",
 ];
 
 /// Applies matching variables onto `root`, using `defaults` for path resolution and types.

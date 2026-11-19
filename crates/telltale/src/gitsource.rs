@@ -173,23 +173,27 @@ impl telltale_git::Transport for Https {
 
 /// `Authorization` from a credentials file: `user:password`, or a bare token (GitHub's
 /// `x-access-token` user).
-fn auth_header(path: &str) -> Result<String, String> {
+/// The `Authorization` header for an access token (or `user:password`).
+fn auth_header(secret: &crate::secrets::SecretValue) -> String {
     use base64::Engine as _;
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
-    let text = text.trim();
-    let pair = if text.contains(':') {
+    let text = secret.expose();
+    let pair = zeroize::Zeroizing::new(if text.contains(':') {
         text.to_owned()
     } else {
         format!("x-access-token:{text}")
-    };
-    Ok(format!(
+    });
+    format!(
         "Basic {}",
-        base64::engine::general_purpose::STANDARD.encode(pair)
-    ))
+        base64::engine::general_purpose::STANDARD.encode(pair.as_bytes())
+    )
 }
 
 /// One poll: fetch, check, and keep the result. Returns whether the commit in use changed.
-async fn poll(cfg: &Config, g: &GitSourceConfig) -> Result<bool, (String, bool)> {
+async fn poll(
+    cfg: &Config,
+    g: &GitSourceConfig,
+    store: &crate::secrets::SecretStore,
+) -> Result<bool, (String, bool)> {
     // A promoted node fetches only from the source the cluster is pinned to.
     if let Some((repo, git_ref, path)) = pin(cfg)
         && (repo.as_str(), git_ref.as_str(), path.as_str())
@@ -203,12 +207,12 @@ async fn poll(cfg: &Config, g: &GitSourceConfig) -> Result<bool, (String, bool)>
             true,
         ));
     }
-    let auth = g
-        .credentials_file
-        .as_ref()
-        .map(|f| auth_header(f.as_str()))
-        .transpose()
-        .map_err(|e| (e, false))?;
+    // REQ: OPS-014 (ADR-903 §2) — the credentials from their file or the store, at each poll.
+    let auth =
+        crate::secrets::Credential::of(g.credentials_file.as_ref(), g.credentials_ref.as_ref())
+            .resolve(Some(store))
+            .map_err(|e| (e, false))?
+            .map(|r| auth_header(&r.value));
     let signers = if g.require_signed {
         let file = g
             .allowed_signers_file
@@ -313,7 +317,7 @@ pub(crate) async fn run(
         if !cluster.is_primary() {
             continue;
         }
-        match poll(&cfg, &g).await {
+        match poll(&cfg, &g, &sources.secrets).await {
             Ok(true) => {
                 cluster.event(
                     "git_commit",
@@ -330,7 +334,7 @@ pub(crate) async fn run(
                         &telltale_api::auth::Actor::system("git"),
                         "config.git",
                         s.commit.as_deref().unwrap_or(""),
-                        &serde_json::json!({ "author": s.author, "subject": s.subject, "signedBy": s.signed_by, "repo": g.repo.as_str() }),
+                        &serde_json::json!({ "author": s.author, "subject": s.subject, "signedBy": s.signed_by, "repo": telltale_config::credentials::url_shown(g.repo.as_str()) }),
                     );
                 }
                 // REQ: OBS-033 — the marker says Git, and the commit's author.
@@ -378,8 +382,12 @@ pub(crate) fn view(cfg: &Config, primary: bool) -> Option<telltale_api::model::C
     };
     if primary && let Some(g) = &cfg.cluster.git {
         let s = status(cfg).unwrap_or_default();
+        // REQ: API-014 — a password in the repository's URL never leaves (nor in an error that
+        // quotes the URL).
+        let repo = telltale_config::credentials::url_shown(g.repo.as_str());
         return Some(telltale_api::model::ClusterSource {
-            repo: g.repo.to_string(),
+            error: s.error.map(|e| e.replace(g.repo.as_str(), &repo)),
+            repo,
             git_ref: g.git_ref.to_string(),
             path: g.path.to_string(),
             commit: s.commit.clone(),
@@ -388,13 +396,12 @@ pub(crate) fn view(cfg: &Config, primary: bool) -> Option<telltale_api::model::C
             subject: s.commit.as_ref().map(|_| s.subject.clone()),
             signed_by: s.signed_by,
             checked_at: at(s.checked_ms),
-            error: s.error,
             refused: s.refused,
         });
     }
     let m = crate::replication::last_applied(cfg)?.source?;
     Some(telltale_api::model::ClusterSource {
-        repo: m.repo,
+        repo: telltale_config::credentials::url_shown(&m.repo),
         git_ref: m.git_ref,
         path: m.path,
         commit: Some(m.commit),
@@ -409,17 +416,36 @@ pub(crate) fn view(cfg: &Config, primary: bool) -> Option<telltale_api::model::C
 }
 
 /// Checks a webhook's `X-Hub-Signature-256` (`sha256=<hex HMAC of the body>`).
-pub(crate) fn webhook_ok(cfg: &Config, signature: Option<&str>, body: &[u8]) -> Result<(), String> {
+pub(crate) fn webhook_ok(
+    cfg: &Config,
+    signature: Option<&str>,
+    body: &[u8],
+    store: Option<&crate::secrets::SecretStore>,
+) -> Result<(), String> {
     let g = cfg
         .cluster
         .git
         .as_ref()
         .ok_or("this node has no Git source")?;
-    let file = g
-        .webhook_secret_file
-        .as_ref()
-        .ok_or("no webhook_secret_file is set")?;
-    let secret = std::fs::read_to_string(file.as_str()).map_err(|e| format!("{file}: {e}"))?;
+    // REQ: OPS-014 (ADR-903 §2) — the secret from its file or the store.
+    let c = crate::secrets::Credential::of(
+        g.webhook_secret_file.as_ref(),
+        g.webhook_secret_ref.as_ref(),
+    );
+    let where_ = c
+        .file
+        .or(c.reference)
+        .unwrap_or("the webhook secret")
+        .to_owned();
+    let secret = c
+        .resolve(store)?
+        .ok_or("no webhook_secret_file or webhook_secret_ref is set")?
+        .value;
+    // REQ: API-014 (ADR-903 §4) — an empty secret is an empty HMAC key, which anyone can sign
+    // with: refused, whatever the signature.
+    if secret.expose().is_empty() {
+        return Err(format!("{where_} is empty: a webhook secret is needed"));
+    }
     let sig = signature
         .and_then(|s| s.strip_prefix("sha256="))
         .ok_or("missing X-Hub-Signature-256")?;
@@ -428,7 +454,7 @@ pub(crate) fn webhook_ok(cfg: &Config, signature: Option<&str>, body: &[u8]) -> 
         *b = u8::from_str_radix(sig.get(i * 2..i * 2 + 2).unwrap_or("zz"), 16)
             .map_err(|_| "bad signature")?;
     }
-    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret.trim().as_bytes());
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret.expose().as_bytes());
     ring::hmac::verify(&key, body, &want).map_err(|_| "the signature doesn't match".to_owned())
 }
 
@@ -476,6 +502,7 @@ mod tests {
             git_ref: "main".into(),
             path: "t.toml".into(),
             credentials_file: None,
+            credentials_ref: None,
             poll_secs: 60,
             require_signed: false,
             allowed_signers_file: None,
@@ -484,6 +511,7 @@ mod tests {
             webhook_secret_file: Some(
                 telltale_config::SafeString::new(secret.to_string_lossy().into_owned()).unwrap(),
             ),
+            webhook_secret_ref: None,
         });
         let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b"s3cret");
         let tag = ring::hmac::sign(&key, b"{}");
@@ -492,8 +520,71 @@ mod tests {
             let _ = write!(s, "{b:02x}");
             s
         });
-        assert!(webhook_ok(&cfg, Some(&format!("sha256={hex}")), b"{}").is_ok());
-        assert!(webhook_ok(&cfg, Some(&format!("sha256={hex}")), b"{\"x\":1}").is_err());
-        assert!(webhook_ok(&cfg, None, b"{}").is_err());
+        assert!(webhook_ok(&cfg, Some(&format!("sha256={hex}")), b"{}", None).is_ok());
+        assert!(webhook_ok(&cfg, Some(&format!("sha256={hex}")), b"{\"x\":1}", None).is_err());
+        assert!(webhook_ok(&cfg, None, b"{}", None).is_err());
+    }
+
+    /// REQ: API-014 — the Cluster page's Git source never shows a password in the repository's
+    /// URL.
+    #[test]
+    fn api_014_git_repo_password_never_shown() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = Config::default();
+        cfg.node.data_dir =
+            telltale_config::SafeString::new(tmp.path().to_string_lossy().into_owned()).unwrap();
+        cfg.cluster.git = Some(GitSourceConfig {
+            repo: "https://u:pl4ntedgit@git.example/r.git".into(),
+            git_ref: "main".into(),
+            path: "t.toml".into(),
+            credentials_file: None,
+            credentials_ref: None,
+            poll_secs: 60,
+            require_signed: false,
+            allowed_signers_file: None,
+            allow_rewind: false,
+            max_bytes: telltale_config::ByteSize::mib(1),
+            webhook_secret_file: None,
+            webhook_secret_ref: None,
+        });
+        let v = view(&cfg, true).unwrap();
+        assert_eq!(v.repo, "https://u:<redacted>@git.example/r.git");
+        assert!(!serde_json::to_string(&v).unwrap().contains("pl4ntedgit"));
+    }
+
+    /// REQ: API-014 (ADR-903 §4) — an empty secret file refuses every webhook, even one signed
+    /// with the empty key.
+    #[test]
+    fn api_014_empty_webhook_secret_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secret = tmp.path().join("hook");
+        std::fs::write(&secret, "  \n").unwrap();
+        let mut cfg = Config::default();
+        cfg.cluster.git = Some(telltale_config::GitSourceConfig {
+            repo: "https://example.com/r".into(),
+            git_ref: "main".into(),
+            path: "t.toml".into(),
+            credentials_file: None,
+            credentials_ref: None,
+            poll_secs: 60,
+            require_signed: false,
+            allowed_signers_file: None,
+            allow_rewind: false,
+            max_bytes: telltale_config::ByteSize::mib(1),
+            webhook_secret_file: Some(
+                telltale_config::SafeString::new(secret.to_string_lossy().into_owned()).unwrap(),
+            ),
+            webhook_secret_ref: None,
+        });
+        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b"");
+        let tag = ring::hmac::sign(&key, b"{}");
+        let hex = tag
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .concat();
+        let e = webhook_ok(&cfg, Some(&format!("sha256={hex}")), b"{}", None).unwrap_err();
+        assert!(e.contains("empty"), "{e}");
     }
 }

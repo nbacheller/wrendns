@@ -4,7 +4,7 @@
 **Decision (ADR-004):** the primary artifact is a multi-arch OCI image, used **both** in Kubernetes and on a Raspberry Pi (Docker/Podman). The static binary is a by-product of the same build and is published too, but its support tier is "secondary".
 
 Why this is the right path:
-- **One artifact, one test matrix.** The image is `FROM scratch` + one static musl binary + CA bundle + tzdata, about 10–15 MiB. A container adds roughly no runtime overhead for a network daemon (host networking on the Pi avoids NAT entirely).
+- **One artifact, one test matrix.** The image is `FROM scratch` + one static musl binary + a compact zoneinfo (ADR-169; no CA bundle: every TLS client uses the compiled-in Mozilla roots, ADR-168), about 10–15 MiB. A container adds roughly no runtime overhead for a network daemon (host networking on the Pi avoids NAT entirely).
 - **Pi upgrades become `docker compose pull && up -d`**, with trivial rollback by tag. That avoids distro/glibc drift (the reason Pi-hole needs per-OS install scripts, and Technitium needs a matching .NET runtime).
 - The Pi joins the same cluster as the k8s pods with the same image version, which is required for CLU-010 compatibility.
 - Native install remains possible for people who want it (no Docker on a Pi Zero, or appliance builds), at almost no maintenance cost, because the binary is static.
@@ -14,6 +14,7 @@ Support tiers: **Tier 1:** Helm on k8s/k3s (amd64, arm64); Docker/Podman Compose
 ## 2. Image (OPS-001)
 - Built with `cargo zigbuild` or `cross` for `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, and `armv7-unknown-linux-musleabihf`. Release profile: `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = true`, `opt-level = 3`. A profile-guided-optimization (PGO) build from the benchmark corpus is P1.
 - `USER 65532:65532`, read-only root filesystem, `/var/lib/telltale` as the only writable volume. Needs `NET_BIND_SERVICE` only if binding < 1024 inside the container. `NET_ADMIN`/netlink is *not* needed: neighbor-table reads use unprivileged `/proc/net/arp` + netlink route dumps, which work with host networking.
+- Tz database: the image ships `/usr/share/zoneinfo` without `right/` (leap-second zones), `*.tab`, `tzdata.zi` and `leap*` (ADR-915). Schedules read the TZif zones by name; a `right/...` name does not resolve.
 - Signed with cosign (keyless), SBOM attached, provenance (SLSA level 3 via GitHub Actions).
 - Tags: `X.Y.Z`, `X.Y`, `X`, `latest`, plus `edge` from main.
 
@@ -105,8 +106,8 @@ services:
      - Authorization Code + PKCE, with discovery via `.well-known`, multiple providers, and a configurable claim for groups (`groups`, `roles`, or custom) → role mapping rules.
      - JIT provisioning, optional `require_verified_email`, and back-channel/RP-initiated logout.
      - The ID token is validated (iss/aud/exp/nonce, JWKS rotation). Sessions are local after login, so the IdP isn't needed per request.
-     - Clustered nodes share the OIDC config via replication. Each node's redirect URI must be registered, or a single canonical `public_url` is used.
-     - Optional `oidc.disable_local_login` keeps one break-glass local admin usable only from `allowed_admin_networks`.
+     - Clustered nodes share the providers made in the UI (T23.10, ADR-967, ADR-968): the primary publishes them as references only in the signed version's `node_managed` blob, each member validates them apart from the shared configuration and merges them under its own files (a file's provider of the same ID wins), and the client secret travels by the secrets replication (ADR-903), never in the blob. `public_url` stays in each node's file; a node without it shows the providers as inactive. Providers made in the UI apply without a restart, on every node, and removing one ends its sessions. Each node's redirect URI must be registered, or a single canonical `public_url` is used.
+     - Optional `oidc.disable_local_login` keeps one break-glass local admin usable only from `allowed_admin_networks`. The default is loopback only (ADR-944): a request with forwarding headers from an untrusted peer is never break-glass, the startup log warns while the list is unset, and an explicit list (even `[]`) replaces the default.
   - LDAP is a non-goal (API-009).
 - **RBAC roles:** `viewer` (dashboards, query log subject to privacy level), `operator` (pause, flush cache, manage lists/clients/groups), `admin` (everything incl. users, cluster, upstreams). A `family` role (P1) can only pause or unpause specific groups.
 - **First run:** no default password. A one-time setup token is printed to logs / available via `telltale ctl setup-token`; the Helm chart can set a bootstrap admin from a Secret.
@@ -131,7 +132,8 @@ DHCPv4 server (static leases, options 3/6/15/42/119, lease file), disabled by de
 - **Kubernetes:** one readiness probe per pod serves every Service, so a controller pod in maintenance also leaves the API Service; use another node's UI or a port-forward. The startup probe asks `/readyz?startup=1`, which leaves maintenance out, so a pod restarted inside its window isn't killed (ADR-118, amended). Design: `docs/design/maintenance-mode.md`.
 
 ## 8. Backup / migration (API-007)
-- `telltale ctl backup create [--include-qlog]` → a `.ttbk` (tar.zst + manifest + signature). Restore onto a new primary.
+- `telltale backup create [--include-qlog] [--secrets-passphrase-file F | --secrets-passphrase-stdin | --secrets-passphrase-prompt]` → a `.ttbk` (tar.zst + manifest with BLAKE3 hashes; no signature, ADR-063). Restore onto a new primary with `telltale backup restore`. Also `POST /api/v1/backup` (admin; `{includeQlog?, passphrase?}`) and Settings → System → Backup.
+- **Stored secrets (T23.9, ADR-903 §8, ADR-965):** left out unless a passphrase of at least 12 characters is given; with one, `data/secrets.enc` holds them (JSON `{name, kind, value, updated, updated_by}` under ChaCha20-Poly1305, key from Argon2id v1.3 m = 19,456 KiB, t = 2, p = 1, random salt and nonce recorded in the manifest's `secrets` block, associated data `"telltale-backup-secrets v1" || backupId`). The format is version 2 only when `secrets.enc` is present, so older builds refuse it. Restore needs the passphrase (`--secrets-passphrase-file|-stdin|-prompt`) or `--skip-secrets`, refuses a recorded cost over m = 256 MiB, t = 10, p = 8, stores the secrets under the restoring node's own key (from `-c`, the environment, or the data directory; never generated when a source is configured) and re-stamps them. One key derivation runs at a time per process (429 on the API). A passphrase backup over the API needs an interactive session signed in within 10 minutes (403 `reauth_required`), never an agent token, and raises the alert event `secrets_exported`.
 - **Importers:**
   - Pi-hole v5 (`gravity.db` + `setupVars.conf`) and Pi-hole v6 Teleporter zip (`pihole.toml` + `gravity.db`): adlists, domainlists (exact/regex, allow/deny), groups, clients, local DNS/CNAME records, upstreams, conditional forwarding. The importer reads the documented SQLite schema (data, not code).
   - Technitium (P1): backup zip → blocked/allowed zones, block-list URLs, forwarders + protocols, Advanced Blocking app config → groups.

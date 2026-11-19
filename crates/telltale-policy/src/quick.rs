@@ -16,7 +16,8 @@ use xxhash_rust::xxh3::xxh3_64;
 
 use telltale_config::{Cidr, Config, RuleAction};
 
-use crate::clients::{ClientTable, Identity};
+use crate::clients::{ClientTable, Identity, RouterNames, is_router_key};
+use std::sync::Arc;
 
 /// Who a rule applies to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +26,8 @@ pub enum RuleScope {
     Devices {
         clients: Vec<u16>,
         nets: Vec<Cidr>,
+        /// REQ: FLT-006 (T24.9, ADR-973) — router names (`hostname:<label>` devices).
+        hosts: Vec<Box<str>>,
     },
     /// Group indices.
     Groups(Vec<u16>),
@@ -93,6 +96,9 @@ pub struct QuickRules {
     rules: Vec<QuickRule>,
     /// xxh3 of the lowercase wire-format domain → rule indices.
     by_domain: HashMap<u64, Vec<u32>, BuildHasherDefault<PassThrough>>,
+    /// REQ: FLT-006 (T24.9, ADR-973) — the router names, when a rule names a device that way
+    /// (else `None`: a query reads nothing extra).
+    router_names: Option<Arc<RouterNames>>,
 }
 
 /// `example.com` → `\x07example\x03com\x00` (the wire form a query name has).
@@ -114,12 +120,20 @@ impl QuickRules {
     /// Unknown device names and groups are skipped (validation reports them).
     pub fn from_config(cfg: &Config, clients: &ClientTable) -> Self {
         let mut t = Self::default();
+        if cfg
+            .rule
+            .iter()
+            .any(|r| r.devices.iter().any(|d| is_router_key(d)))
+        {
+            t.router_names = Some(clients.router_names_handle());
+        }
         for r in &cfg.rule {
             let domain = r.domain.trim_end_matches('.').to_ascii_lowercase();
             let Some(key) = wire(&domain) else { continue };
             let scope = if !r.devices.is_empty() {
                 let mut ids = Vec::new();
                 let mut nets = Vec::new();
+                let mut hosts = Vec::new();
                 for d in &r.devices {
                     if let Some(i) = clients
                         .clients()
@@ -129,9 +143,16 @@ impl QuickRules {
                         ids.extend(u16::try_from(i));
                     } else if let Ok(net) = Cidr::parse(d) {
                         nets.push(net);
+                    } else if is_router_key(d) {
+                        // REQ: FLT-006 (T24.9, ADR-973) — `hostname:<label>`, the label lowercased.
+                        hosts.push(d[9..].to_ascii_lowercase().into_boxed_str());
                     }
                 }
-                RuleScope::Devices { clients: ids, nets }
+                RuleScope::Devices {
+                    clients: ids,
+                    nets,
+                    hosts,
+                }
             } else if !r.groups.is_empty() {
                 let ids = r
                     .groups
@@ -186,6 +207,17 @@ impl QuickRules {
         &self.rules
     }
 
+    /// REQ: FLT-005, FLT-006 (T24.30) — whether rule `i` is scoped to this client (its device, one
+    /// of its groups, or everyone), by the same test `decide` applies. Expiry isn't checked here.
+    /// Off the query path.
+    pub fn applies_to(&self, i: usize, who: Identity, peer: IpAddr, groups: &[u16]) -> bool {
+        let Some(r) = self.rules.get(i) else {
+            return false;
+        };
+        let host = self.router_names.as_ref().and_then(|n| n.get(peer));
+        applies(&r.scope, who, peer, groups, host.as_deref())
+    }
+
     /// The deciding rule for `qname` (wire format) asked by a client, at `now` (Unix
     /// seconds), or `None` to let the lists decide. Allocation-free.
     pub fn decide(
@@ -203,6 +235,8 @@ impl QuickRules {
         let name = &mut buf[..qname.len()];
         name.copy_from_slice(qname);
         name.make_ascii_lowercase();
+        // REQ: FLT-006 (T24.9, ADR-973) — the device's router name, read only when a rule uses one.
+        let host = self.router_names.as_ref().and_then(|n| n.get(peer));
         let mut best: Option<((u8, u8, bool), u32)> = None;
         let mut at = 0usize;
         while at < name.len() {
@@ -214,7 +248,7 @@ impl QuickRules {
                     };
                     if *r.wire != *suffix
                         || r.expires.is_some_and(|e| now >= e)
-                        || !applies(&r.scope, who, peer, groups)
+                        || !applies(&r.scope, who, peer, groups, host.as_deref())
                     {
                         continue;
                     }
@@ -253,13 +287,24 @@ pub fn quick_ref(id: &str) -> u16 {
     u16::try_from((h >> 16) ^ (h & 0xffff)).unwrap_or(0)
 }
 
-fn applies(scope: &RuleScope, who: Identity, peer: IpAddr, groups: &[u16]) -> bool {
+fn applies(
+    scope: &RuleScope,
+    who: Identity,
+    peer: IpAddr,
+    groups: &[u16],
+    host: Option<&str>,
+) -> bool {
     match scope {
         RuleScope::Everyone => true,
         RuleScope::Groups(ids) => ids.iter().any(|g| groups.contains(g)),
-        RuleScope::Devices { clients, nets } => {
+        RuleScope::Devices {
+            clients,
+            nets,
+            hosts,
+        } => {
             who.client.is_some_and(|c| clients.contains(&c))
                 || nets.iter().any(|n| n.contains(peer))
+                || host.is_some_and(|h| hosts.iter().any(|x| &**x == h))
         }
     }
 }

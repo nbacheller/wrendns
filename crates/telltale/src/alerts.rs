@@ -137,6 +137,9 @@ fn one_off(w: AlertWhen) -> bool {
             | AlertWhen::PlanPending
             | AlertWhen::RolloutFailed
             | AlertWhen::DrillReport
+            | AlertWhen::CredentialRedirected
+            | AlertWhen::SecretsExported
+            | AlertWhen::GuardedSettingChanged
     )
 }
 
@@ -252,7 +255,11 @@ impl Engine {
 }
 
 /// REQ: OBS-010 (T9.6) — a test message to `d`, from `node`.
-pub(crate) async fn send_test(d: &AlertDestination, node: &str) -> Result<(), String> {
+pub(crate) async fn send_test(
+    d: &AlertDestination,
+    node: &str,
+    store: &crate::secrets::SecretStore,
+) -> Result<(), String> {
     let n = Notice {
         rule: 0,
         subject: "test".to_owned(),
@@ -264,7 +271,7 @@ pub(crate) async fn send_test(d: &AlertDestination, node: &str) -> Result<(), St
     };
     let client =
         telltale_filter::fetch::Client::new(Arc::new(telltale_filter::fetch::SystemResolver), &[])?;
-    deliver(&client, d, "Test", &n, node).await
+    deliver(&client, d, "Test", &n, node, store).await
 }
 
 /// Records a delivery's outcome for the status API (the latest per destination).
@@ -285,13 +292,17 @@ fn record_delivery(sources: &crate::http::Sources, destination: &str, r: &Result
 }
 
 /// What `rule` sees now, read from `b` (blocking: run it on a blocking thread). `pending`:
-/// agents' plans waiting for approval on this node, as `(id, summary)`.
+/// agents' plans waiting for approval on this node, as `(id, summary)`; `redirects`: this node's
+/// recent `credential.redirect` audit records, likewise; `exports`: its `backup.create` records
+/// that carried secrets.
 #[allow(clippy::too_many_lines)] // one arm per condition
 fn observe(
     b: &dyn Backend,
     rule: &AlertRule,
     now: u64,
     pending: &[(String, String)],
+    redirects: &[(String, String)],
+    exports: &[(String, String)],
     m: &Paused,
 ) -> Observed {
     let node_label = |n: &telltale_api::model::ClusterNode| {
@@ -310,7 +321,9 @@ fn observe(
             .cluster()
             .nodes
             .into_iter()
-            .filter(|n| !n.this_node && n.connected && n.config_lag > 0 && !Paused::node(n))
+            .filter(|n| {
+                !n.this_node && !n.witness && n.connected && n.config_lag > 0 && !Paused::node(n)
+            })
             .map(|n| {
                 let s = format!(
                     "{} is {} configuration version(s) behind the primary{}",
@@ -322,6 +335,34 @@ fn observe(
                 (node_label(&n), s)
             })
             .collect(),
+        // REQ: OBS-010 (T24.5, fork #2) — a replica that hasn't reached its primary for
+        // `threshold` seconds (default 60). Witnesses and resolver pods are left out; so are
+        // nodes in maintenance.
+        AlertWhen::PrimaryUnreachable => {
+            let limit = rule.threshold.unwrap_or(60.0);
+            b.cluster()
+                .nodes
+                .into_iter()
+                .filter(|n| {
+                    !n.this_node
+                        && !n.ephemeral
+                        && !n.witness
+                        && n.up
+                        && n.role == "replica"
+                        && !Paused::node(n)
+                })
+                .filter_map(|n| {
+                    let silent = n.primary_silent_seconds?;
+                    (f64::from(u32::try_from(silent).unwrap_or(u32::MAX)) >= limit).then(|| {
+                        let name = node_label(&n);
+                        let s = format!(
+                            "replica {name} hasn't reached its primary for {silent} s: it may be split off from the cluster"
+                        );
+                        (name, s)
+                    })
+                })
+                .collect()
+        }
         AlertWhen::NewDevice => {
             // REQ: OBS-025 — say what it looks like, when that's known.
             let ids: std::collections::HashMap<String, telltale_api::model::DeviceIdentity> = b
@@ -382,6 +423,20 @@ fn observe(
                 })
                 .collect()
         }
+        // REQ: API-014 (T23.2, ADR-903 §4) — once per change of where a credential goes.
+        AlertWhen::CredentialRedirected => redirects.to_vec(),
+        // REQ: API-007 (T23.9, ADR-903 §8) — a backup took the stored secrets out of the node.
+        AlertWhen::SecretsExported => exports
+            .iter()
+            .filter(|(s, _)| !s.starts_with(GUARDED_PREFIX))
+            .cloned()
+            .collect(),
+        // REQ: API-902 (T27.13, ADR-956 §6) — a guarded setting was changed, or its change ended.
+        AlertWhen::GuardedSettingChanged => exports
+            .iter()
+            .filter(|(s, _)| s.starts_with(GUARDED_PREFIX))
+            .cloned()
+            .collect(),
         AlertWhen::PlanPending => pending
             .iter()
             .map(|(id, summary)| {
@@ -732,16 +787,15 @@ async fn deliver_email(
     rule: &str,
     n: &Notice,
     node: &str,
+    store: &crate::secrets::SecretStore,
 ) -> Result<(), String> {
     let (host, port, security) = crate::smtp::parse_url(d.url.as_str())?;
-    let login = match (&d.username, &d.password_file) {
-        (Some(u), Some(f)) => Some((
-            u.to_string(),
-            std::fs::read_to_string(f.as_str())
-                .map_err(|e| format!("{}: {e}", f.as_str()))?
-                .trim()
-                .to_owned(),
-        )),
+    // REQ: OPS-014 (ADR-903 §2) — the password from its file or the store.
+    let password =
+        crate::secrets::Credential::of(d.password_file.as_ref(), d.password_ref.as_ref())
+            .resolve(Some(store))?;
+    let login = match (&d.username, password) {
+        (Some(u), Some(p)) => Some((u.to_string(), p.value.expose().to_owned())),
         _ => None,
     };
     let extra_roots = match &d.tls_ca {
@@ -802,26 +856,24 @@ async fn deliver(
     rule: &str,
     n: &Notice,
     node: &str,
+    store: &crate::secrets::SecretStore,
 ) -> Result<(), String> {
     if d.kind == AlertKind::Email {
-        return deliver_email(d, rule, n, node).await;
+        return deliver_email(d, rule, n, node, store).await;
     }
-    let token = match &d.token_file {
-        Some(f) => Some(
-            std::fs::read_to_string(f.as_str())
-                .map_err(|e| format!("{}: {e}", f.as_str()))?
-                .trim()
-                .to_owned(),
-        ),
-        None => None,
-    };
-    let (body, ct, headers) = render(d, token.as_deref(), rule, n, node);
+    // REQ: OPS-014 (ADR-903 §2) — the token from its file or the store.
+    let token = crate::secrets::Credential::of(d.token_file.as_ref(), d.token_ref.as_ref())
+        .resolve(Some(store))?
+        .map(|r| r.value);
+    let token = token.as_ref().map(crate::secrets::SecretValue::expose);
+    let (body, ct, headers) = render(d, token, rule, n, node);
     let mut url = d.url.to_string();
     if d.kind == AlertKind::Gotify {
+        // REQ: API-014 (ADR-903 §4) — the token is one query value, whatever it holds.
         url = format!(
             "{}/message?token={}",
             url.trim_end_matches('/'),
-            token.as_deref().unwrap_or_default()
+            crate::kubernetes::encode(token.unwrap_or_default())
         );
     }
     let mut req = http::Request::post(url)
@@ -834,7 +886,18 @@ async fn deliver(
     let resp = tokio::time::timeout(Duration::from_secs(10), client.request(req, 64 * 1024))
         .await
         .map_err(|_| "timed out".to_owned())?
-        .map_err(|e| e.message)?;
+        .map_err(|e| match token.filter(|t| !t.is_empty()) {
+            // REQ: API-014 — an error that quotes the request never shows the token.
+            // The URL carries it percent-encoded: both forms go.
+            Some(t) => e
+                .message
+                .replace(t, telltale_config::credentials::MARKER)
+                .replace(
+                    &crate::kubernetes::encode(t),
+                    telltale_config::credentials::MARKER,
+                ),
+            None => e.message,
+        })?;
     if resp.status().is_success() {
         Ok(())
     } else {
@@ -889,6 +952,143 @@ fn pending_plans(sources: &crate::http::Sources) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
+/// How far back the `credential_redirected` alert looks: a restart doesn't send older ones again.
+const REDIRECT_WINDOW_SECS: u64 = 3600;
+
+/// REQ: API-014 (T23.2, ADR-903 §4) — this node's `credential.redirect` audit records of the last
+/// hour, as `(subject, summary)`: the subject is the record's sequence number, so each change
+/// goes out once. Only the primary (or a standalone node) applies changes, and so records them.
+pub(crate) fn recent_redirects(sources: &crate::http::Sources, now: u64) -> Vec<(String, String)> {
+    let Some(auth) = sources.auth.get() else {
+        return Vec::new();
+    };
+    let since = now.saturating_sub(REDIRECT_WINDOW_SECS);
+    auth.state()
+        .audit_page(
+            None,
+            50,
+            Some(crate::credential_rules::REDIRECT_ACTION),
+            None,
+        )
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.action == crate::credential_rules::REDIRECT_ACTION && e.ts >= since)
+        .map(|e| {
+            let d: serde_json::Value = serde_json::from_str(&e.detail).unwrap_or_default();
+            let field = d["field"].as_str().unwrap_or("url");
+            // REQ: API-014 (review of T23.2) — only where it goes: a URL's scheme and host. Its
+            // path can hold a secret (a Slack or webhook URL), and the alert reaches every
+            // destination of the rule; the audit record has the rest.
+            let to = match &d["to"] {
+                serde_json::Value::String(s) => url_origin(s),
+                serde_json::Value::Null => "nothing".to_owned(),
+                other => other.to_string(),
+            };
+            (
+                e.seq.to_string(),
+                format!(
+                    "{} changed where {} {}'s credential is sent: {field} is now {to}",
+                    e.actor,
+                    d["kind"].as_str().unwrap_or("entry").replace('_', " "),
+                    e.target
+                ),
+            )
+        })
+        .collect()
+}
+
+/// REQ: API-007 (T23.9, ADR-903 §8) — this node's `backup.create` audit records of the last hour
+/// that carried stored secrets (`secretsIncluded`), as `(subject, summary)`: the subject is the
+/// record's sequence number, so each backup goes out once. The summary names who made it and how
+/// many secrets, never a name or a value.
+pub(crate) fn recent_exports(sources: &crate::http::Sources, now: u64) -> Vec<(String, String)> {
+    let Some(auth) = sources.auth.get() else {
+        return Vec::new();
+    };
+    let mut out = recent_guarded(auth, now);
+    let since = now.saturating_sub(REDIRECT_WINDOW_SECS);
+    out.extend(
+        auth.state()
+            .audit_page(None, 50, Some("backup.create"), None)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.action == "backup.create" && e.ts >= since)
+            .filter_map(|e| {
+                let d: serde_json::Value = serde_json::from_str(&e.detail).unwrap_or_default();
+                d["secretsIncluded"].as_bool().filter(|x| *x)?;
+                Some((
+                    e.seq.to_string(),
+                    format!(
+                        "{} made a backup that carries {} stored secret(s), encrypted with a passphrase",
+                        e.actor,
+                        d["count"].as_u64().unwrap_or(0)
+                    ),
+                ))
+            }),
+    );
+    out
+}
+
+/// What marks a `(subject, summary)` pair as a guarded-setting event (they share the vector the
+/// `secrets_exported` events travel in, so the condition's own arm picks them out).
+const GUARDED_PREFIX: &str = "guarded:";
+
+/// REQ: API-902 (T27.13, ADR-956 §6) — this node's `settings.guarded*` audit records of the last
+/// hour as `(subject, summary)`: a change applied or staged, its outcome (confirmed, rolled back
+/// with the reason) and an accepted restart, each once (the subject is the record's sequence
+/// number). The summary names who, what and where, never a value: a rule's channels reach
+/// people who aren't admins. Refusals and offline clears aren't events here.
+pub(crate) fn recent_guarded(auth: &telltale_api::auth::Auth, now: u64) -> Vec<(String, String)> {
+    let since = now.saturating_sub(REDIRECT_WINDOW_SECS);
+    auth.state()
+        .audit_page(None, 50, Some("settings.guarded"), None)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.ts >= since)
+        .filter_map(|e| {
+            let d: serde_json::Value = serde_json::from_str(&e.detail).unwrap_or_default();
+            let setting = d["setting"].as_str().unwrap_or("a setting").to_owned();
+            let node = d["node"].as_str().unwrap_or("this node");
+            let what = match e.action.as_str() {
+                "settings.guarded" => format!(
+                    "{} {} the guarded setting `{setting}` on {node}{}",
+                    e.actor,
+                    match d["outcome"].as_str() {
+                        Some("staged") => "staged a change to",
+                        Some("confirmed") => "confirmed a change to",
+                        _ => "changed",
+                    },
+                    if d["weakening"].as_bool() == Some(true) {
+                        " (it weakens security)"
+                    } else {
+                        ""
+                    }
+                ),
+                "settings.guarded_rolled_back" => format!(
+                    "the change to the guarded setting `{setting}` on {node} was rolled back ({})",
+                    d["reason"].as_str().unwrap_or("unknown")
+                ),
+                "settings.guarded_restart" => {
+                    format!("{} restarted {node} to apply guarded changes", e.actor)
+                }
+                _ => return None,
+            };
+            Some((format!("{GUARDED_PREFIX}{}", e.seq), what))
+        })
+        .collect()
+}
+
+/// `scheme://host[:port]` of a URL, without its user information or path; anything else as is.
+fn url_origin(s: &str) -> String {
+    let Some(i) = s.find("://") else {
+        return s.to_owned();
+    };
+    let rest = &s[i + 3..];
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    format!("{}://{host}", &s[..i])
+}
+
 /// REQ: OPS-010 — which nodes are in maintenance now (from heartbeats, or this node's own
 /// window when standalone), and the reads without them.
 async fn paused_now(
@@ -918,6 +1118,7 @@ async fn paused_now(
 
 /// The alert task: every `interval_secs`, evaluate (on the primary or a standalone node) and
 /// send what started or cleared.
+#[allow(clippy::too_many_lines)] // one loop: read, observe, step, deliver
 pub(crate) async fn run(
     sources: Arc<crate::http::Sources>,
     mut stop: tokio::sync::watch::Receiver<bool>,
@@ -970,9 +1171,21 @@ pub(crate) async fn run(
             let rs = rules.clone();
             let in_maintenance = Arc::clone(&paused);
             let pending = pending_plans(&sources);
+            let redirects = recent_redirects(&sources, now);
+            let exports = recent_exports(&sources, now);
             let observed = tokio::task::spawn_blocking(move || {
                 rs.iter()
-                    .map(|r| observe(b.as_ref(), r, now, &pending, &in_maintenance))
+                    .map(|r| {
+                        observe(
+                            b.as_ref(),
+                            r,
+                            now,
+                            &pending,
+                            &redirects,
+                            &exports,
+                            &in_maintenance,
+                        )
+                    })
                     .collect::<Vec<_>>()
             })
             .await
@@ -999,7 +1212,7 @@ pub(crate) async fn run(
                         Arc::clone(&sources),
                     );
                     tokio::spawn(async move {
-                        let r = deliver(&client, &d, &rname, &n, &node).await;
+                        let r = deliver(&client, &d, &rname, &n, &node, &src.secrets).await;
                         if let Err(e) = &r {
                             warn!(destination = %d.name, error = %e, "alert not delivered");
                         }
@@ -1162,7 +1375,7 @@ mod tests {
             probes: Vec::new(),
             findings: vec![finding("beacon", false), finding("chatty_loop", true)],
         };
-        let o = |w: AlertWhen| observe(&b, &rule(w, 0), 1000, &[], &Paused::default());
+        let o = |w: AlertWhen| observe(&b, &rule(w, 0), 1000, &[], &[], &[], &Paused::default());
         let anomaly = o(AlertWhen::Anomaly);
         let chatty = o(AlertWhen::ChattyLoop);
         assert_eq!(anomaly.len(), 1, "{anomaly:?}");
@@ -1264,6 +1477,117 @@ mod tests {
         }
     }
 
+    // REQ: OBS-010 (T24.5, fork #2) — a replica that hasn't reached its primary for `threshold`
+    // seconds (default 60) raises one alert after `for_secs`; the boundary is exact; witnesses,
+    // resolver pods and nodes out of contact are left out; the alert clears on reconnect and
+    // doesn't repeat while the silence goes on.
+    #[test]
+    #[allow(clippy::too_many_lines)] // one scenario, step by step
+    fn obs_010_t24_5_primary_unreachable_alert() {
+        use telltale_api::model::{ClusterNode, ClusterView};
+        let node = |id: &str, silent: Option<u64>| ClusterNode {
+            node_id: id.into(),
+            site: id.into(),
+            role: "replica".into(),
+            connected: true,
+            up: true,
+            primary_silent_seconds: silent,
+            ..ClusterNode::default()
+        };
+        let mut primary = node("primary", None);
+        primary.role = "primary".into();
+        primary.this_node = true;
+        let stub = |nodes: Vec<ClusterNode>| Stub {
+            view: ClusterView {
+                enabled: true,
+                cluster_id: None,
+                name: None,
+                this_node: None,
+                newest_config_seq: 0,
+                healthy: true,
+                checks: Vec::new(),
+                nodes,
+                events: Vec::new(),
+                authority: None,
+                conflicts: Vec::new(),
+                failover: None,
+                source: None,
+                rollout: None,
+                host: None,
+            },
+            probes: Vec::new(),
+            findings: Vec::new(),
+        };
+        let mut witness = node("witness", Some(600));
+        witness.witness = true;
+        let mut pod = node("pod", Some(600));
+        pod.ephemeral = true;
+        let mut away = node("away", Some(600));
+        away.up = false;
+        let rule = AlertRule {
+            threshold: None,
+            ..rule(AlertWhen::PrimaryUnreachable, 30)
+        };
+        let seen = |nodes: Vec<ClusterNode>| {
+            observe(&stub(nodes), &rule, 1000, &[], &[], &[], &Paused::default())
+        };
+        // One second short of the default 60 s: nothing. Exactly 60 s: raised.
+        assert!(
+            seen(vec![primary.clone(), node("r1", Some(59))]).is_empty(),
+            "one second short"
+        );
+        let at = seen(vec![primary.clone(), node("r1", Some(60))]);
+        assert_eq!(
+            at.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(),
+            ["r1"]
+        );
+        assert!(
+            at[0].1.contains("hasn't reached its primary for 60 s"),
+            "{}",
+            at[0].1
+        );
+        // Witnesses, resolver pods and nodes out of contact never raise it.
+        assert!(
+            seen(vec![primary.clone(), witness, pod, away]).is_empty(),
+            "left out"
+        );
+        // The rule's threshold replaces the default.
+        let tight = AlertRule {
+            threshold: Some(15.0),
+            ..rule.clone()
+        };
+        let tight_seen = observe(
+            &stub(vec![primary.clone(), node("r1", Some(15))]),
+            &tight,
+            1000,
+            &[],
+            &[],
+            &[],
+            &Paused::default(),
+        );
+        assert_eq!(tight_seen.len(), 1);
+        // Held for for_secs before it goes out, once; still silent later: no repeat; contact
+        // again: it clears.
+        let mut engine = Engine::default();
+        let rules = vec![rule.clone()];
+        let obs = |silent: Option<u64>| vec![seen(vec![primary.clone(), node("r1", silent)])];
+        assert!(engine.step(0, &rules, &obs(Some(60))).is_empty(), "not yet");
+        assert!(
+            engine.step(29, &rules, &obs(Some(89))).is_empty(),
+            "for_secs not yet"
+        );
+        let fired = engine.step(30, &rules, &obs(Some(90)));
+        assert_eq!(fired.len(), 1);
+        assert!(fired[0].firing);
+        assert!(
+            engine.step(60, &rules, &obs(Some(120))).is_empty(),
+            "no repeat"
+        );
+        let cleared = engine.step(65, &rules, &obs(None));
+        assert_eq!(cleared.len(), 1);
+        assert!(!cleared[0].firing, "reconnected: the alert clears");
+    }
+
     /// REQ: OPS-010 (ADR-118) — a node in maintenance raises no `node_down` or probe alert;
     /// one that was firing resolves with "(maintenance)"; the `maintenance` rule fires while
     /// it lasts; after the window, `for_secs` counts from zero again.
@@ -1329,7 +1653,7 @@ mod tests {
         let seen = |backend: &Stub, paused: &Paused| -> Vec<Observed> {
             rules
                 .iter()
-                .map(|r| observe(backend, r, 1000, &[], paused))
+                .map(|r| observe(backend, r, 1000, &[], &[], &[], paused))
                 .collect()
         };
         let subjects = |o: &Observed| o.iter().map(|(x, _)| x.clone()).collect::<Vec<_>>();
@@ -1408,10 +1732,12 @@ mod tests {
             kind,
             url: telltale_config::SafeString::new("https://example.test/x").unwrap(),
             token_file: None,
+            token_ref: None,
             from: None,
             to: Vec::new(),
             username: None,
             password_file: None,
+            password_ref: None,
             tls_ca: None,
         };
         let n = Notice {
@@ -1490,7 +1816,7 @@ mod tests {
             };
             rules
                 .iter()
-                .map(|x| observe(&b, x, 1000, &[], &Paused::default()))
+                .map(|x| observe(&b, x, 1000, &[], &[], &[], &Paused::default()))
                 .collect()
         };
         let mut e = Engine::default();

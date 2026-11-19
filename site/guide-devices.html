@@ -39,6 +39,7 @@
     <li class="step"><b>MAC address</b>, from a trusted router's EDNS option or from the kernel's neighbor table (ARP and IPv6 NDP, read every 60 s).</li>
     <li class="step"><b>Exact IP address.</b></li>
     <li class="step"><b>The most specific CIDR.</b></li>
+    <li class="step"><b>Router name</b> (<code>hostname:…</code> or a group's <code>router_names</code>), only for a device no network holds.</li>
     <li class="step"><b><code>default</code></b>, for every device that matched nothing.</li>
   </ol>
   <ul>
@@ -111,6 +112,17 @@ block_mode = "nxdomain"</code></pre>
   <p class="muted">Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#groups-for-your-networks-vlans">Groups for your networks</a> and <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#upstream-servers-per-group">Upstream servers per group</a> in the docs.</p>
 </section>
 
+<section id="networks">
+  <h2>See your networks</h2>
+  <p class="muted">The <b>Networks</b> page, in the Devices section beside Clients, lists the LANs and VLANs your routers report, with the group that covers each one.</p>
+  <ul>
+    <li><b>Each row</b> shows the subnet, VLAN, DHCP pool, domain, router, group, how many devices are on it, and how full it is. A network that only a group names is marked <b>group only</b>.</li>
+    <li><b>Click a row</b> to see the devices on that network, with the DNS name each one answers as.</li>
+    <li><b>Operators</b> get <b>Make a group from this network</b> on a network no group covers. It opens the Groups editor with the network already in <b>Networks</b>, so you only pick its lists.</li>
+    <li><b>Viewers</b> read the page. Scripts get the same list from <code>GET /api/v1/networks</code>.</li>
+  </ul>
+</section>
+
 <section id="name">
   <h2>Name your devices</h2>
   <p class="muted">A name shows everywhere at once, including on past queries: names are looked up when data is read, so renaming relabels history.</p>
@@ -154,6 +166,8 @@ match = ["10.0.5.0/24"]       # no groups: its network's group, else "default"</
 <section id="router">
   <h2>Names from your router and mDNS</h2>
   <p>Your router's DHCP hands out addresses; TelltaleDNS can read its client list, so devices show up by name without any typing.</p>
+  <p>An admin sets a router up on the <b>Routers</b> page (Devices → Routers): choose the kind, enter the address, store the credential (it's never shown again), then fetch the console's certificate and trust it. Check it reads the router once and saves nothing. Each router's card shows its last read and where each credential comes from. Changes there take effect with no restart.</p>
+  <p>Or in the configuration file:</p>
 <pre><code>[[router]]
 name = "udm"
 type = "unifi"                         # UniFi OS consoles and the Network application
@@ -169,18 +183,20 @@ url = "https://opnsense.lan"
 api_key_file = "/etc/telltale/opn-key"     # System → Access → Users → API keys
 api_secret_file = "/etc/telltale/opn-secret"</code></pre>
   <ul>
-    <li><b>UniFi</b> gives the connected clients, named by their UniFi alias, else their host name. <b>OPNsense</b> gives its DHCP leases (Dnsmasq, Kea, or ISC).</li>
+    <li><b>UniFi</b> gives the connected clients and the offline ones it saw in the last 30 days (<code>offline_days</code>; 0 for connected ones only), at their last address, named by their UniFi alias, else their host name. <b>OPNsense</b> gives its DHCP leases (Dnsmasq, Kea, or ISC).</li>
     <li><b>A self-signed UniFi console:</b> save its certificate as <code>tls_ca</code> (<code>openssl s_client -connect 192.168.1.1:443 &lt;/dev/null | openssl x509 &gt; udm.pem</code>). It names <code>unifi.local</code>, not the address you reach it at, so set <code>tls_server_name</code> to that name. The console is then verified, and only that certificate is trusted.</li>
-    <li>Credentials stay in files. Routers are read every <code>interval_secs</code> (300). Changes to <code>[[router]]</code> need a restart.</li>
+    <li>Credentials can stay in files, or be stored on the node (<code>api_key_ref</code>). Routers are read every <code>interval_secs</code> (300). A change on the Routers page takes effect at the next read; a change to the file needs a reload or a restart.</li>
   </ul>
   <p><b>mDNS:</b> phones, speakers, printers, and NAS boxes announce names like <code>Kitchen-HomePod.local</code>. To use them for devices you haven't named:</p>
 <pre><code>[clients]
 mdns = true</code></pre>
   <ul>
     <li>Listen only: TelltaleDNS never sends mDNS, and it shares port 5353 with avahi. It needs to hear the LAN: a native install, the Pi bundle, or a pod with host networking. Changing it needs a restart.</li>
+    <li><b>Turn it on:</b> Local DNS → Listen for mDNS announcements (an admin's switch, since it opens multicast listening on every node). Then Device names in DNS can use the names devices announce too. It takes effect after a restart on every node.</li>
+    <li><b>IPv6:</b> a device the router reports with IPv6 addresses (UniFi lists them) answers AAAA and has an <code>ip6.arpa</code> reverse name for each, under the same name as its IPv4 address and with the same rules; link-local addresses are left out. They show beside the device in Clients → Discovered and in a network's device list.</li>
     <li><b>Which name wins:</b> the name you gave, then the router's, then mDNS.</li>
     <li><b>In a cluster</b>, one node reading the router (or hearing mDNS) is enough: every node uses the names the others know, so resolver pods name devices the same way the primary does.</li>
-    <li><b>Clients → Discovered</b> lists every device a router or mDNS found; naming one from there suggests the name it gave. <code>GET /api/v1/dhcp/leases</code> lists them too.</li>
+    <li><b>Clients → Discovered</b> lists every device a router or mDNS found; naming one from there suggests the name it gave. An offline client (the router remembers it, but it isn't connected) is marked <em>offline</em> there; it has no DNS name. A device a router reported shows the router by name and type, such as <code>router: udm (UniFi)</code> or <code>router: ha (Home Assistant)</code>, once the Routers page knows the router. <code>GET /api/v1/dhcp/leases</code> lists them too.</li>
   </ul>
   <p class="muted">Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#names-from-your-router-unifi-opnsense">Names from your router</a> and <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#names-devices-announce-mdns">Names devices announce</a>.</p>
 </section>

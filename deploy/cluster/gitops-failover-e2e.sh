@@ -118,6 +118,10 @@ wait_metric 29201 telltale_cluster_lease_held 1 40 || fail "g never held a lease
 for n in n1 n2; do
   for _ in $(seq 60); do [ -f "$E/$n/cluster/ca.key" ] && break; sleep 0.25; done
   [ -f "$E/$n/cluster/ca.key" ] || fail "$n never received the cluster key"
+  # REQ: CLU-005 (ADR-960) — a node stands only after it has seen a lease: its ballot names the primary
+  # once it has granted a renewal (every 5 s).
+  for _ in $(seq 120); do grep -q '"candidate":"[0-9a-f]' "$E/$n/cluster/ballot.json" 2>/dev/null && break; sleep 0.25; done
+  grep -q '"candidate":"[0-9a-f]' "$E/$n/cluster/ballot.json" 2>/dev/null || fail "$n never granted g a lease"
 done
 echo "ok (epoch $(metric 29201 telltale_cluster_epoch))"
 

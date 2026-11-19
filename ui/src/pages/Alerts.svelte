@@ -7,6 +7,8 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
+  import { secretNameFor } from '../lib/components/SecretField.svelte';
+  import { alertConditions } from '../lib/alert-conditions';
 
   let status = $state<S['AlertsStatus'] | null>(null);
   let destinations = $state<string[]>([]);
@@ -25,29 +27,45 @@
   $effect(() => poll(load, 15_000));
 
   const kinds = ['email', 'ntfy', 'gotify', 'slack', 'webhook'];
+  // REQ: API-014 (T23.2) — a destination holds a credential when a file gives it one or its
+  // address carries a password: then only an admin changes where it goes.
+  const holdsCredential = (d: Record<string, unknown>) =>
+    Boolean(d.token_file || d.password_file || d.token_ref || d.password_ref || /:\/\/[^/?#]*:[^/?#@]*@/.test(String(d.url ?? '')));
   const destinationFields: Field[] = [
-    { key: 'type', label: 'Type', type: 'select', options: kinds, initial: 'email',
-      help: 'email (any provider’s SMTP), ntfy or Gotify (phone push), slack (Slack, Mattermost, Discord), or a JSON webhook.' },
+    // REQ: API-014 (T24.16) — a destination that holds a credential keeps its kind (where it sends it) for an admin.
+    { key: 'type', label: 'Type', type: 'select', options: kinds, initial: 'email', admin: (d, r) => holdsCredential(d) || r.length > 0,
+      help: 'email (any provider’s SMTP), ntfy or Gotify (phone push), slack (Slack, Mattermost, Discord), or a JSON webhook. A destination with a stored or file credential is changed by an admin.' },
     { key: 'url', label: 'Address', type: 'text', placeholder: 'smtp://smtp.gmail.com:587 or https://ntfy.sh/my-topic',
-      help: 'Email: smtp://host:587 (STARTTLS) or smtps://host:465. Others: the https:// URL.' },
+      help: 'Email: smtp://host:587 (STARTTLS) or smtps://host:465. Others: the https:// URL.', admin: holdsCredential },
     { key: 'from', label: 'From (email)', type: 'text', placeholder: 'you@gmail.com' },
     { key: 'to', label: 'To (email, one per line)', type: 'lines', placeholder: 'you@gmail.com' },
     { key: 'username', label: 'Account (email)', type: 'text', placeholder: 'you@gmail.com' },
-    { key: 'password_file', label: 'Password file (email)', type: 'text', placeholder: '/run/secrets/smtp-password',
-      help: 'A file on the node holding the password (a Gmail app password, for example). The password itself never goes through the UI.' },
-    { key: 'token_file', label: 'Token file (ntfy, Gotify)', type: 'text', placeholder: '/run/secrets/ntfy-token', advanced: true },
-    { key: 'tls_ca', label: 'Private CA (email)', type: 'text', placeholder: '/etc/telltale/mail-ca.pem', advanced: true },
+    // REQ: API-015 (T23.6, ADR-903 §9) — the password and token are stored secrets (or a file the
+    // configuration sets, shown read-only); only an admin sets or clears them.
+    { key: 'password_ref', label: 'Password (email)', type: 'secret', fileKey: 'password_file', admin: true,
+      secretName: (e) => secretNameFor('alert', e, 'password'),
+      help: 'The password (a Gmail app password, for example), kept encrypted on this node and never shown again. A password_file in the configuration wins over it.' },
+    { key: 'token_ref', label: 'Token (ntfy, Gotify)', type: 'secret', fileKey: 'token_file', advanced: true, admin: true,
+      secretName: (e) => secretNameFor('alert', e, 'token'),
+      help: 'The access token of your ntfy or Gotify server, kept encrypted on this node and never shown again. A token_file in the configuration wins over it.' },
+    { key: 'tls_ca', label: 'Private CA (email)', type: 'text', placeholder: '/etc/telltale/mail-ca.pem', advanced: true, admin: holdsCredential },
   ];
-  const conditions = [
-    'upstream_down', 'node_down', 'sync_lag', 'list_failing', 'list_stale', 'servfail_rate', 'anomaly', 'new_device',
-    'disk_full', 'plan_pending', 'update_available', 'maintenance',
-  ];
+  // REQ: OBS-010 (T27.1) — every condition the server accepts; the list is checked against the enum.
+  const conditions = alertConditions;
+  // The conditions that read the threshold; the field is shown for these only.
+  const thresholdConditions = ['servfail_rate', 'disk_full', 'cert_expiring', 'primary_unreachable'];
   const ruleFields = $derived<Field[]>([
-    { key: 'when', label: 'When', type: 'select', options: conditions, initial: 'upstream_down' },
+    { key: 'when', label: 'When', type: 'select', options: conditions, initial: 'upstream_down',
+      help: 'What the rule watches. The ? above the Rules list explains each condition.' },
     { key: 'to', label: 'Send to', type: 'multi', options: destinations },
     { key: 'for_secs', label: 'For at least (seconds)', type: 'number', placeholder: '60',
       help: 'How long the condition must hold before the alert goes out, so short blips stay quiet.' },
-    { key: 'threshold', label: 'Threshold (%)', type: 'number', placeholder: '5 (servfail_rate) or 90 (disk_full)', advanced: true },
+    // REQ: OBS-010 (T24.5, fork #2) — the unit depends on the condition: a percentage, days, or seconds.
+    // The server accepts 0 to 100 for any condition, days 1 to 365 for cert_expiring, and seconds 15 to 86400
+    // for primary_unreachable; the other conditions ignore it.
+    { key: 'threshold', label: 'Threshold', type: 'number', placeholder: '5 (servfail_rate), 90 (disk_full), 14 days (cert_expiring), 60 s (primary_unreachable)', advanced: true,
+      visibleWhen: (v) => thresholdConditions.includes(String(v.when)),
+      help: 'The unit depends on the condition: a percentage for servfail_rate (default 5, from 0 to 100) and disk_full (default 90), days for cert_expiring (default 14, from 1 to 365), and seconds for primary_unreachable (default 60, from 15 to 86400): how long a replica may go without reaching its primary before the alert. Other conditions ignore it.' },
     { key: 'enabled', label: 'On', type: 'bool', initial: true },
   ]);
   const test = {
@@ -109,6 +127,7 @@
   <ConfigEditor kind="alert_destination" path="alerts/destinations" title="Destinations" noun="destination"
     help="alerts" fields={destinationFields} rowAction={test} onchanged={load}
     summary={(d) => `${String(d.type ?? '')}: ${d.type === 'email' ? ((d.to as string[]) ?? []).join(', ') : String(d.url ?? '')}`} />
+  <p class="small muted" data-testid="alert-conditions-help">Each rule watches one condition. <HelpButton id="alert-conditions" /> says what each one means and what its threshold is.</p>
   <ConfigEditor kind="alert_rule" path="alerts/rules" title="Rules" noun="rule" help="alerts" fields={ruleFields}
     summary={(d) => `${String(d.when ?? '')} → ${((d.to as string[]) ?? []).join(', ')}${d.enabled === false ? ' (off)' : ''}`} />
 </div>

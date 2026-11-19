@@ -1,0 +1,404 @@
+# TelltaleDNS content-category catalog: Privacy and Ads (REQ: FLT-901, ADR-995).
+# Data, not code: compiled into the binary. Lists are never bundled: a node downloads
+# each source from its maintainer only while a group uses it.
+
+[[group]]
+id = "privacy"
+name = "Privacy and Ads"
+order = 8
+
+# The Ad Block checkbox. The size is a Settings value ([filter] ads_tier, default pro). The sources
+# name the adblock/ files so the default tier's URL is the one the bundles already use (ADR-995 2b).
+[[category]]
+id = "ads"
+name = "Ad block"
+group = "privacy"
+description = "Ads, trackers, telemetry and known bad hosts. The size (light, pro, pro++, ultimate) is a Settings choice."
+tier_kind = "exclusive"
+default_tier = "pro"
+tier_from = "ads_tier"
+[[category.tier]]
+id = "light"
+name = "Light"
+sources = ["hagezi-ads-light"]
+[[category.tier]]
+id = "pro"
+name = "Pro"
+sources = ["hagezi-ads-pro"]
+[[category.tier]]
+id = "pro-plus"
+name = "Pro++"
+sources = ["hagezi-ads-pro-plus"]
+[[category.tier]]
+id = "ultimate"
+name = "Ultimate"
+sources = ["hagezi-ads-ultimate"]
+
+[[category]]
+id = "popup-ads"
+name = "Pop-up ads"
+group = "privacy"
+description = "Pop-up and pop-under advertising networks."
+sources = ["hagezi-popupads"]
+
+[[category]]
+id = "smart-tv"
+name = "Smart-TV trackers"
+group = "privacy"
+description = "Smart TVs sending data home: Perflyst's smart-TV list plus HaGeZi's LG, Samsung and Roku trackers. Some TV apps and updates may stop working."
+sources = ["perflyst-smarttv", "perflyst-amazonfiretv", "hagezi-native-lgwebos", "hagezi-native-samsung", "hagezi-native-roku"]
+
+[[category]]
+id = "app-trackers"
+name = "App and session-replay trackers"
+group = "privacy"
+description = "Android tracking hosts and session-replay services (Perflyst)."
+sources = ["perflyst-android-tracking", "perflyst-sessionreplay"]
+
+[[category]]
+id = "native-trackers"
+name = "Device and OS trackers"
+group = "privacy"
+description = "Built-in trackers of Amazon, Apple, Huawei, LG, Oppo and Realme, Roku, Samsung, TikTok, Vivo, Windows and Office, and Xiaomi (HaGeZi)."
+sources = ["hagezi-native-amazon", "hagezi-native-apple", "hagezi-native-huawei", "hagezi-native-lgwebos", "hagezi-native-oppo-realme", "hagezi-native-roku", "hagezi-native-samsung", "hagezi-native-tiktok", "hagezi-native-vivo", "hagezi-native-winoffice", "hagezi-native-xiaomi"]
+
+[[source]]
+id = "hagezi-ads-light"
+name = "HaGeZi Multi LIGHT"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/light.txt"
+format = "adblock"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 93345
+bytes = 2278030
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-ads-pro"
+name = "HaGeZi Multi PRO"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt"
+format = "adblock"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 252767
+bytes = 5771069
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-ads-pro-plus"
+name = "HaGeZi Multi PRO++"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.plus.txt"
+format = "adblock"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 276917
+bytes = 6221727
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-ads-ultimate"
+name = "HaGeZi Multi ULTIMATE"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/ultimate.txt"
+format = "adblock"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 308317
+bytes = 7028872
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-popupads"
+name = "HaGeZi Pop-up ads"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/popupads-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 88356
+bytes = 1584269
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "perflyst-smarttv"
+name = "Perflyst Smart-TV"
+maintainer = "Perflyst"
+url = "https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/master/SmartTV.txt"
+format = "domains"
+licence = "MIT"
+licence_url = "https://github.com/Perflyst/PiHoleBlocklist/blob/master/LICENSE"
+homepage = "https://github.com/Perflyst/PiHoleBlocklist"
+cadence = "low"
+entries = 498
+bytes = 16594
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-09-09"
+archived = false
+
+[[source]]
+id = "perflyst-amazonfiretv"
+name = "Perflyst Amazon Fire TV"
+maintainer = "Perflyst"
+url = "https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/master/AmazonFireTV.txt"
+format = "domains"
+licence = "MIT"
+licence_url = "https://github.com/Perflyst/PiHoleBlocklist/blob/master/LICENSE"
+homepage = "https://github.com/Perflyst/PiHoleBlocklist"
+cadence = "low"
+entries = 16
+bytes = 1502
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-09-09"
+archived = false
+
+[[source]]
+id = "perflyst-android-tracking"
+name = "Perflyst Android tracking"
+maintainer = "Perflyst"
+url = "https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/master/android-tracking.txt"
+format = "domains"
+licence = "MIT"
+licence_url = "https://github.com/Perflyst/PiHoleBlocklist/blob/master/LICENSE"
+homepage = "https://github.com/Perflyst/PiHoleBlocklist"
+cadence = "low"
+entries = 80
+bytes = 2153
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-09-09"
+archived = false
+
+[[source]]
+id = "perflyst-sessionreplay"
+name = "Perflyst session replay"
+maintainer = "Perflyst"
+url = "https://raw.githubusercontent.com/Perflyst/PiHoleBlocklist/master/SessionReplay.txt"
+format = "domains"
+licence = "MIT"
+licence_url = "https://github.com/Perflyst/PiHoleBlocklist/blob/master/LICENSE"
+homepage = "https://github.com/Perflyst/PiHoleBlocklist"
+cadence = "low"
+entries = 24
+bytes = 387
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-09-09"
+archived = false
+
+[[source]]
+id = "hagezi-native-amazon"
+name = "HaGeZi native tracker: Amazon"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/native.amazon-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 382
+bytes = 11678
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-native-apple"
+name = "HaGeZi native tracker: Apple"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/native.apple-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 104
+bytes = 3514
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-native-huawei"
+name = "HaGeZi native tracker: Huawei"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/native.huawei-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 148
+bytes = 6199
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-native-lgwebos"
+name = "HaGeZi native tracker: LG webOS"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/native.lgwebos-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 460
+bytes = 15490
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-native-oppo-realme"
+name = "HaGeZi native tracker: Oppo and Realme"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/native.oppo-realme-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 530
+bytes = 16231
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-native-roku"
+name = "HaGeZi native tracker: Roku"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/native.roku-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 64
+bytes = 2418
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-native-samsung"
+name = "HaGeZi native tracker: Samsung"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/native.samsung-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 201
+bytes = 6321
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-native-tiktok"
+name = "HaGeZi native tracker: TikTok"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/native.tiktok-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 547
+bytes = 16689
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-native-vivo"
+name = "HaGeZi native tracker: Vivo"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/native.vivo-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 303
+bytes = 9440
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-native-winoffice"
+name = "HaGeZi native tracker: Windows and Office"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/native.winoffice-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 398
+bytes = 12971
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-native-xiaomi"
+name = "HaGeZi native tracker: Xiaomi"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/native.xiaomi-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 410
+bytes = 10911
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+

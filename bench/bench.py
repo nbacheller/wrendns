@@ -4,6 +4,8 @@
   bench.py run smoke            quick gate: cache-hot + miss-heavy, one run each
   bench.py run full             every available corpus, 3 runs each, medians reported
   bench.py run smoke --target 192.0.2.53:53     bench any external DNS server instead
+  bench.py run smoke --devices 1000             the same with 1000 device names in DNS (DNS-023)
+  bench.py run smoke --corpus device-names --devices 1000     ask for those names
   bench.py compare base.json new.json           regression gate (default ±5%)
 
 By default the harness starts the stub upstream (stub_upstream.py) and a telltale server
@@ -302,7 +304,107 @@ def tls_cert(dir_):
     return cert, key
 
 
-def server_config(workers, data_dir, upstream, lists=(), compile_threads=0, quick_rules=0, tls=None):
+def device_config(n, domain=True):
+    """REQ: DNS-023 (T22.1) — `n` named devices, one exact address each (`dev-{i}` at
+    10.77.{i // 250}.{i % 250 + 1}). With `domain`, device names in DNS are on, so the table
+    holds n A records and n PTRs; without it, the same clients are named and the feature is
+    off: the fair "before" of an A/B, since a home that uses device names has its devices named
+    either way."""
+    if not n:
+        return ""
+    out = [f'\n[local]\ndevice_domain = "{corpus.DEVICE_DOMAIN}"\n'] if domain else []
+    out += [f'\n[[client]]\nname = "{corpus.device_name(i)}"\nmatch = ["{corpus.device_ip(i)}"]\n'
+            for i in range(n)]
+    return "".join(out)
+
+
+def wire_name(name):
+    return b"".join(bytes([len(lbl)]) + lbl.encode() for lbl in name.strip(".").split(".")) + b"\0"
+
+
+def read_name(data, pos):
+    """A (possibly compressed) name at `pos`: (lowercase dotted name with the root dot, end)."""
+    labels, end, hops = [], None, 0
+    while True:
+        if pos >= len(data) or hops > 64:
+            raise ValueError("bad name")
+        n = data[pos]
+        if n & 0xC0 == 0xC0:
+            if pos + 1 >= len(data):
+                raise ValueError("bad pointer")
+            end = pos + 2 if end is None else end
+            pos, hops = ((n & 0x3F) << 8) | data[pos + 1], hops + 1
+            continue
+        if n == 0:
+            return ".".join(labels).lower() + ".", pos + 1 if end is None else end
+        labels.append(data[pos + 1:pos + 1 + n].decode("ascii", "replace"))
+        pos += 1 + n
+
+
+def dns_ask(target, name, qtype, timeout=1.0):
+    """One UDP query: (rcode, [rdata of the answers of `qtype`]), or None without a valid reply
+    (no answer, another ID, not a response, or another question). A and AAAA rdata are
+    addresses, names (PTR, CNAME, NS) are dotted with the root dot, anything else is bytes."""
+    qid = int.from_bytes(os.urandom(2), "big")
+    qt = QTYPES[qtype]
+    question = wire_name(name) + struct.pack(">HH", qt, 1)
+    msg = struct.pack(">HHHHHH", qid, 0x0100, 1, 0, 0, 0) + question
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.settimeout(timeout)
+        try:
+            s.sendto(msg, target)
+            data, _ = s.recvfrom(4096)
+        except OSError:
+            return None
+    try:
+        rid, flags, qd, an = struct.unpack(">HHHH", data[:8])
+        # The response to this query: same ID, QR set, and the question echoed (case aside).
+        if rid != qid or not flags & 0x8000 or qd != 1 or data[12:12 + len(question)].lower() != question.lower():
+            return None
+        pos, out = 12 + len(question), []
+        for _ in range(an):
+            _, pos = read_name(data, pos)
+            rtype, _, _, rdlen = struct.unpack(">HHIH", data[pos:pos + 10])
+            pos += 10
+            rdata = data[pos:pos + rdlen]
+            if rtype == qt:
+                if rtype == 1 and rdlen == 4:
+                    out.append(socket.inet_ntop(socket.AF_INET, rdata))
+                elif rtype == 28 and rdlen == 16:
+                    out.append(socket.inet_ntop(socket.AF_INET6, rdata))
+                elif rtype in (2, 5, 12):
+                    out.append(read_name(data, pos)[0])
+                else:
+                    out.append(rdata)
+            pos += rdlen
+    except (struct.error, ValueError):
+        return None
+    return flags & 0x000F, out
+
+
+def wait_devices(target, n, proc, timeout=60.0):
+    """REQ: DNS-023 — the device table is built off the query path (every 10 s, the first at
+    start): wait until the last device's name and PTR answer, so every run measures it filled.
+    The answers must be the table's own (the device's address, and its name back), not merely
+    NOERROR: the stub upstream answers any A, and a config sending private reverse lookups
+    upstream would let the PTR through as well."""
+    i = n - 1
+    host = f"{corpus.device_name(i)}.{corpus.DEVICE_DOMAIN}"
+    probes = [(host, "A", corpus.device_ip(i)), (corpus.device_ptr(i), "PTR", f"{host}.")]
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            raise RuntimeError(f"server exited with {proc.returncode} before the device names answered")
+        if all((r := dns_ask(target, name, t)) is not None and r[0] == 0 and want in r[1]
+               for name, t, want in probes):
+            return time.monotonic()
+        time.sleep(0.2)
+    raise RuntimeError(f"device names not answering after {timeout}s ({host} A {probes[0][2]}, "
+                       f"{probes[1][0]} PTR {probes[1][2]})")
+
+
+def server_config(workers, data_dir, upstream, lists=(), compile_threads=0, quick_rules=0, tls=None,
+                  devices=0, extra="", device_domain=True):
     list_cfg = "".join(f'\n[[list]]\nname = "{p.stem}"\npath = "{p}"\n' for p in lists)
     if compile_threads:
         list_cfg = f"\n[filter]\ncompile_threads = {compile_threads}\n" + list_cfg
@@ -313,6 +415,11 @@ def server_config(workers, data_dir, upstream, lists=(), compile_threads=0, quic
                  else 'groups = ["default"]' if i % 3 == 1 else "")
         action = "allow" if i % 2 else "block"
         list_cfg += f'\n[[rule]]\nid = "bench-{i}"\naction = "{action}"\ndomain = "r{i}.bench.invalid"\n{scope}\n'
+    list_cfg += device_config(devices, device_domain)
+    if extra:
+        # Last, after every [[client]] and [[rule]]: it should open with a table header, or its
+        # bare keys land in the last array table. (`cmd_run` has turned `\n` into newlines.)
+        list_cfg += "\n" + extra + "\n"
 
     encrypted = ""
     if tls:
@@ -357,6 +464,25 @@ def git_info():
         return r.stdout.strip() if r.returncode == 0 else None
 
     return {"rev": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--untracked-files=no"))}
+
+
+def bind_ms(n=5):
+    """Median cost of one UDP bind(), in ms. The server binds a fresh socket for every UDP
+    upstream query (a random source port, RFC 5452), so this is a floor under every cache miss.
+    It is microseconds on Linux, but about 10 ms, one at a time, in a container on Docker
+    Desktop's WSL 2 VM (probably its port forwarding, which watches binds): there misses top out near 100 a second and a
+    cold cache turns into SERVFAILs and lost queries, whatever the server does."""
+    out = []
+    for _ in range(n):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            t = time.monotonic()
+            s.bind(("127.0.0.1", 0))
+            out.append((time.monotonic() - t) * 1000)
+    return round(statistics.median(out), 3)
+
+
+# Above this, the host's bind() cost dominates the upstream path: the run says so.
+SLOW_BIND_MS = 1.0
 
 
 def host_info():
@@ -414,6 +540,11 @@ def cmd_run(args):
         transports = [t for t in transports if t != "doh"]
     duration = args.duration or mode["duration"]
     runs = args.runs or mode["runs"]
+    extra = args.extra.replace("\\n", "\n") if args.extra else ""
+    if args.devices and args.device_domain and re.search(r"^\s*\[\s*local\s*\]", extra, re.M):
+        # TOML allows a table once: the server would refuse the config with "duplicate key".
+        sys.exit("--extra has a [local] table and --devices writes one: drop it from --extra, "
+                 "or use --no-device-domain and set device_domain in your own [local]")
 
     if not shutil.which("dnsperf"):
         sys.exit("dnsperf not found (apt install dnsperf)")
@@ -424,7 +555,11 @@ def cmd_run(args):
         if name == "blocked" and not any((HERE / "lists").glob("*.txt")):
             print("skip blocked: no lists in bench/lists/ (fetched artifact, see bench/README.md)", file=sys.stderr)
             continue
-        path, digest = corpus.generate(name, corpus_dir, HERE / "lists")
+        if name == "device-names" and not (args.devices and args.device_domain):
+            # Feature off (the "before" of an A/B): the same names, answered without the table.
+            print("device-names with device names in DNS off: the A queries go upstream and the PTRs "
+                  f"get NXDOMAIN ({args.devices or corpus.CORPORA[name]['devices']} names)", file=sys.stderr)
+        path, digest = corpus.generate(name, corpus_dir, HERE / "lists", args.devices)
         files[name] = {"path": path, "sha256": digest, "seed": corpus.CORPORA[name]["seed"]}
 
     result = {
@@ -436,10 +571,20 @@ def cmd_run(args):
         "tools": {"dnsperf": tool_version(["dnsperf", "-h"])},
         "params": {"duration_s": duration, "runs": runs, "warmup_s": mode["warmup"], "threads": args.threads,
                    "clients": args.clients, "outstanding": args.outstanding, "miss_qps": MISS_QPS,
-                   "quick_rules": args.quick_rules, "transports": transports},
+                   "quick_rules": args.quick_rules, "transports": transports,
+                   # REQ: DNS-023 — named devices in the device-name table (0 = feature off).
+                   "devices": args.devices, "device_domain": bool(args.devices and args.device_domain),
+                   "extra": args.extra or None},
         "server": {},
         "runs": [],
     }
+    # The host, not the server: see `bind_ms`.
+    cost = result["host"]["bind_ms"] = bind_ms()
+    if not args.target and cost > SLOW_BIND_MS:
+        print(f"WARNING: one UDP bind() takes {cost} ms on this host (Docker Desktop?); every upstream "
+              f"query pays it, so cache misses top out near {1000 / cost:.0f} a second, and miss-heavy, "
+              "cold-cache and warmup results here are the host's, not the server's (bench/README.md)",
+              file=sys.stderr)
 
     stub = server = None
     tmp = tempfile.TemporaryDirectory(prefix="telltale-bench-")
@@ -461,7 +606,8 @@ def cmd_run(args):
             lists = sorted((HERE / "lists").glob("*.txt")) if "blocked" in files else []
             tls = tls_cert(tmp.name) if {"dot", "doh"} & set(transports) else None
             cfg.write_text(server_config(args.workers, tmp.name, f"udp://127.0.0.1:{STUB_PORT}", lists,
-                                         quick_rules=args.quick_rules, tls=tls))
+                                         quick_rules=args.quick_rules, tls=tls, devices=args.devices,
+                                         extra=extra, device_domain=args.device_domain))
             log = open(pathlib.Path(tmp.name) / "server.log", "w")
             env = dict(os.environ, RUST_LOG=os.environ.get("RUST_LOG", "warn"))
             t0 = time.monotonic()
@@ -471,6 +617,11 @@ def cmd_run(args):
             if lists:
                 filter_s = round(wait_filter(f"http://127.0.0.1:{METRICS_PORT}/metrics", server) - ready_at, 1)
                 print(f"filter ready {filter_s}s after start ({len(lists)} lists)", file=sys.stderr)
+            devices_s = None
+            # On by --devices, or by a device_domain of the caller's own [local] in --extra.
+            if args.devices and (args.device_domain or re.search(r"^\s*device_domain\s*=", extra, re.M)):
+                devices_s = round(wait_devices(("127.0.0.1", DNS_PORT), args.devices, server) - ready_at, 1)
+                print(f"device names answering {devices_s}s after start ({args.devices} devices)", file=sys.stderr)
             # Let worker threads settle before sampling idle RSS. With lists, also wait out the
             # 2 s grace before swapped-out matchers are freed (ADR-023) and the allocator's
             # purge of the compile's memory: sampled earlier, a transient compile peak
@@ -486,6 +637,8 @@ def cmd_run(args):
                 "idle_rss_kib": idle.get("rss_kib"),
                 "lists": [p.name for p in lists],
                 "filter_ready_s": filter_s,
+                "devices": args.devices,
+                "devices_ready_s": devices_s,
             }
             target = ("127.0.0.1", DNS_PORT)
 
@@ -565,10 +718,27 @@ def cmd_run(args):
 def compare(base, new, tolerance_pct):
     """Regression gate (09 §2): qps must not drop and p99 must not rise by more than the tolerance."""
     failures = []
+
+    def shas(result):
+        out = {}
+        for r in result.get("runs", []):
+            out.setdefault(r.get("corpus"), set()).add(r.get("corpus_sha256"))
+        return out
+
+    # Runs are matched by corpus name: say so when the two sides didn't send the same file
+    # (device-names with another --devices), or ran another configuration.
+    base_shas, new_shas = shas(base), shas(new)
+    bp, np_ = base.get("params", {}), new.get("params", {})
+    for key in ("devices", "device_domain", "extra"):
+        if bp.get(key) != np_.get(key):
+            print(f"note: params.{key} differs: {bp.get(key)!r} → {np_.get(key)!r}", file=sys.stderr)
     for name, b in base.get("summary", {}).items():
         n = new.get("summary", {}).get(name)
         if not n:
             continue
+        if base_shas.get(name) != new_shas.get(name):
+            print(f"WARNING {name}: the corpus differs (sha256 {sorted(map(str, base_shas.get(name, ())))} → "
+                  f"{sorted(map(str, new_shas.get(name, ())))}); the numbers are not comparable", file=sys.stderr)
         rows = [("qps", b["qps"], n["qps"], -1)]
         # Gate latency on the 50%-load point when both sides have it (saturated p99 is queueing noise).
         b50, n50 = b.get("at_load", {}).get("50"), n.get("at_load", {}).get("50")
@@ -805,6 +975,13 @@ def cmd_swap(args):
     return 0 if ok else 1
 
 
+def device_count(s):
+    n = int(s)
+    if not 0 <= n <= corpus.MAX_DEVICES:
+        raise argparse.ArgumentTypeError(f"0 to {corpus.MAX_DEVICES}")
+    return n
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
@@ -827,6 +1004,14 @@ def main():
     r.add_argument("--quick-rules", type=int, default=0, help="load this many non-matching quick rules (T6.12)")
     r.add_argument("--transport", action="append", choices=["udp", "tcp", "dot", "doh"],
                    help="query over these transports (T9.13; default: the mode's, else udp)")
+    r.add_argument("--devices", type=device_count, default=0,
+                   help="DNS-023: turn device names in DNS on with this many named devices "
+                        "(dev-N.home.arpa at 10.77.x.y); also sizes the device-names corpus")
+    r.add_argument("--no-device-domain", dest="device_domain", action="store_false",
+                   help="with --devices: name the same devices but leave [local] device_domain unset "
+                        "(the feature off, for the 'before' of an A/B)")
+    r.add_argument("--extra", default="",
+                   help="TOML appended to the server config, `\\n` between lines (e.g. to turn a feature off)")
     r.add_argument("--out", default=str(HERE / "results"))
     r.set_defaults(func=cmd_run)
 

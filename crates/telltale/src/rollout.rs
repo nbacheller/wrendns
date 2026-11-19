@@ -79,6 +79,9 @@ pub(crate) struct VersionEntry {
     pub(crate) identities: Option<BlobRef>,
     #[serde(default)]
     pub(crate) acks: Option<BlobRef>,
+    /// REQ: CLU-015 (T23.10) — the node-managed entries of that version.
+    #[serde(default)]
+    pub(crate) node_managed: Option<BlobRef>,
     /// For a pin: the version whose content it serves.
     #[serde(default)]
     pub(crate) pinned_to: Option<(u64, u64)>,
@@ -95,6 +98,7 @@ impl VersionEntry {
         }
         v.extend(self.identities.iter().cloned());
         v.extend(self.acks.iter().cloned());
+        v.extend(self.node_managed.iter().cloned());
         v
     }
 }

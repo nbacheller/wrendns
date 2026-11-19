@@ -144,6 +144,21 @@ pub(crate) fn top_registrable(names: impl IntoIterator<Item = (String, u64)>) ->
 }
 
 /// The devices the aggregator saw lately, with the domains it keeps for them.
+/// REQ: T8.2, OBS-025 (ADR-166) — the addresses the routers and mDNS say are in use now. A
+/// router's offline clients (remembered, not connected) name a device whose queries show up,
+/// but they aren't "seen": counted here they would never age out, and they would fill the
+/// `max_clients` places the devices that are really there need.
+fn announced<'a>(
+    routers: &'a crate::devices::Leases,
+    mdns: &'a crate::devices::Leases,
+) -> impl Iterator<Item = &'a std::net::Ipv4Addr> {
+    routers
+        .iter()
+        .filter(|(_, l)| !l.offline)
+        .map(|(ip, _)| ip)
+        .chain(mdns.keys())
+}
+
 fn observe(agg: &Aggregates, max: usize) -> BTreeMap<String, (IpAddr, Vec<String>)> {
     let mut out: BTreeMap<String, (IpAddr, Vec<String>)> = BTreeMap::new();
     for sel in [HourSel::Previous, HourSel::Current] {
@@ -496,7 +511,7 @@ impl Identifier {
                 s.domains_s = now;
             }
         }
-        for ip in routers.keys().chain(mdns.keys()) {
+        for ip in announced(&routers, &mdns) {
             let key = telltale_telemetry::agg::client_text(octets(IpAddr::V4(*ip)));
             seen.entry(key).or_default().last_s = now;
         }

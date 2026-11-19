@@ -23,6 +23,9 @@ use tracing::{error, warn};
 pub(crate) const CLIENT: &str = "client";
 pub(crate) const RECORD: &str = "record";
 pub(crate) const FORWARD: &str = "forward";
+/// REQ: DNS-010 (T27.7) — authoritative zones made through the API, by apex: the body is a
+/// `[[zone]]` without its file (the files' zones win).
+pub(crate) const ZONE: &str = "zone";
 /// Quick rules (T6.12, ADR-067), stored by ID.
 pub(crate) const RULE: &str = "rule";
 /// T7.5 (ADR-069): these may override or hide the files' entry of the same name.
@@ -44,11 +47,61 @@ pub(crate) const EXCLUSIONS: &str = "exclusions";
 /// REQ: OBS-024 (T13.1) — change simulation's settings: one entry, `default`, replacing
 /// `[simulate]`.
 pub(crate) const SIMULATE: &str = "simulate";
+/// REQ: OBS-901 (T26.2, ADR-958) — the live map's settings: one entry, `default`, replacing `[map]`.
+pub(crate) const MAP: &str = "map";
 /// REQ: CLU-013 (T13.2) — staged rollouts' settings: one entry, `default`, replacing
 /// `[cluster.rollout]`.
 pub(crate) const ROLLOUT: &str = "rollout";
 /// REQ: FLT-017 (T15.1) — `[[kubernetes.map]]` rules, by key (`namespace/kind/name`).
 pub(crate) const KUBERNETES_MAP: &str = "kubernetes_map";
+/// REQ: DNS-019 (T24.12, ADR-904, ADR-914) — `[special]`: one entry, `default`, whose fields
+/// the files win over (see `settings_kinds`).
+pub(crate) const SPECIAL: &str = "special";
+/// REQ: DNS-023 (T24.13, ADR-901, ADR-914) — `[local]` without `hosts_files`.
+pub(crate) const LOCAL: &str = "local";
+/// REQ: DNS-023 (T24.13, ADR-914) — `[clients]`, which takes only `mdns` in M24.
+pub(crate) const CLIENTS: &str = "clients";
+/// REQ: DSC-001 (T25.2, ADR-907) — `[discovery]`: the network inventory's settings, one entry.
+pub(crate) const DISCOVERY: &str = "discovery";
+/// REQ: DSC-901 (T31.2, ADR-1005) — `[cmdb]`: the CMDB's settings, one entry.
+pub(crate) const CMDB: &str = "cmdb";
+/// REQ: DNS-006 (T27.2, ADR-1006) — `[cache]` for one node, named by the node (node-managed).
+pub(crate) const CACHE: &str = "cache";
+/// REQ: OPS-011 (T27.11, ADR-1006) — `[support] persist_logs` for one node (node-managed).
+pub(crate) const SUPPORT: &str = "support";
+/// REQ: OPS-012 (T27.11, ADR-1006) — `[updates] check` for one node (node-managed).
+pub(crate) const UPDATES: &str = "updates";
+/// REQ: DNS-011 (T27.11, ADR-1006) — `[dnssec]` mode and trust anchors, one entry.
+pub(crate) const DNSSEC: &str = "dnssec";
+/// REQ: FLT-004 (T27.11, ADR-1006) — `[filter]` refresh and stale settings, one entry.
+pub(crate) const FILTER: &str = "filter";
+/// REQ: CLU-014 (T27.11, ADR-1006) — `[drill] schedule`, one entry.
+pub(crate) const DRILL: &str = "drill";
+/// REQ: API-016 (T23.7, ADR-921) — `[[router]]` integrations, by name. Admin-only; a router the
+/// files define is read-only through the API (ADR-040), so these never override the files.
+pub(crate) const ROUTER: &str = "router";
+/// REQ: API-016 (T23.10, ADR-967) — OIDC sign-in providers, by ID: a node-managed kind
+/// (ADR-903 §6). Admin-only; a provider the files define is read-only through the API, and the
+/// rows travel to the other members as the manifest's `node_managed` blob, not in `[auth]`.
+pub(crate) const OIDC_PROVIDER: &str = "oidc_provider";
+/// REQ: API-016 (T23.11, ADR-984) — event sinks, by name: a node-managed kind (ADR-903 §6),
+/// admin-only; a sink the files define is read-only through the API.
+pub(crate) const SINK: &str = "sink";
+/// REQ: OBS-016, OBS-020, OBS-019 (T27.5, ADR-1007) — `[slo]`, `[probe]` and `[upstream_check]`:
+/// shared singletons (one entry, `default`), operators write them; the files win field by field.
+pub(crate) const SLO: &str = "slo";
+pub(crate) const PROBE: &str = "probe";
+pub(crate) const UPSTREAM_CHECK: &str = "upstream_check";
+/// REQ: OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — `[telemetry.anomaly]`, `[telemetry.qlog]` and
+/// `[telemetry.metrics]`: node-managed singletons (`node-managed.json`), admin-only.
+pub(crate) const ANOMALY_SETTINGS: &str = "anomaly_settings";
+pub(crate) const QLOG_SETTINGS: &str = "qlog_settings";
+pub(crate) const METRICS_SETTINGS: &str = "metrics_settings";
+/// REQ: API-016 (T23.11, ADR-984) — the OTLP export (one row, named `default`): a node-managed
+/// kind, admin-only; the files win when they set a destination.
+pub(crate) const OTLP: &str = "otlp";
+/// The one OTLP row's name.
+pub(crate) const OTLP_NAME: &str = "default";
 
 /// An API entry for a kind that can override the files (ADR-069): a definition, or the
 /// files' entry of that name left out.
@@ -100,6 +153,11 @@ impl Named for telltale_config::AnomalyMuteConfig {
         self.name.as_str()
     }
 }
+impl Named for telltale_config::RouterConfig {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+}
 impl Named for telltale_config::AlertRule {
     fn name(&self) -> &str {
         self.name.as_str()
@@ -115,6 +173,9 @@ pub(crate) struct RecordValue {
     pub(crate) value: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) ttl: Option<u32>,
+    /// REQ: CLU-006 (T27.7) — this record stays on this node.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) node_only: bool,
 }
 
 /// The servers a domain is sent to.
@@ -126,6 +187,29 @@ pub(crate) struct Forward {
     /// iteratively, and the delegations they give are followed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) stub: bool,
+    /// REQ: DNS-010 (T27.7) — only these client groups are sent (empty: all).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) match_group: Vec<String>,
+    /// REQ: DNS-010 (T27.7) — only these query types are sent (empty: all).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) match_qtype: Vec<String>,
+    /// REQ: DNS-010 (T27.7) — a DNSSEC negative trust anchor for the domain (on by default, as
+    /// forwards always had it).
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub(crate) dnssec_nta: bool,
+    /// REQ: CLU-006 (T27.7) — the route, its group and its servers stay on this node.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) node_only: bool,
+}
+
+/// The serde default of a flag that is on unless stored off.
+fn default_true() -> bool {
+    true
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes a reference
+fn is_true(v: &bool) -> bool {
+    *v
 }
 
 /// Everything stored through the API.
@@ -134,6 +218,8 @@ pub(crate) struct Entries {
     pub(crate) clients: Vec<ClientConfig>,
     pub(crate) records: Vec<(String, Vec<RecordValue>)>,
     pub(crate) forwards: Vec<(String, Forward)>,
+    /// REQ: DNS-010 (T27.7) — the zones made through the API, by apex.
+    pub(crate) zones: Vec<(String, telltale_config::ZoneConfig)>,
     pub(crate) rules: Vec<telltale_config::RuleConfig>,
     pub(crate) upstreams: Vec<(String, Ovr<Upstream>)>,
     pub(crate) upstream_groups: Vec<(String, Ovr<UpstreamGroup>)>,
@@ -141,6 +227,14 @@ pub(crate) struct Entries {
     pub(crate) groups: Vec<(String, Ovr<GroupConfig>)>,
     pub(crate) alert_destinations: Vec<(String, Ovr<telltale_config::AlertDestination>)>,
     pub(crate) alert_rules: Vec<(String, Ovr<telltale_config::AlertRule>)>,
+    /// REQ: API-016 (T23.7) — the routers made through the API or UI.
+    pub(crate) routers: Vec<(String, Ovr<telltale_config::RouterConfig>)>,
+    /// REQ: API-016 (T23.10) — the OIDC providers made through the API or UI, by ID.
+    pub(crate) oidc_providers: Vec<(String, telltale_config::OidcProvider)>,
+    /// REQ: API-016 (T23.11) — the event sinks made through the API or UI, by name.
+    pub(crate) sinks: Vec<(String, telltale_config::SinkConfig)>,
+    /// REQ: API-016 (T23.11) — the OTLP export made through the API or UI.
+    pub(crate) otlp: Option<telltale_config::OtlpConfig>,
     pub(crate) schedules: Vec<(String, Ovr<telltale_config::ScheduleConfig>)>,
     /// REQ: OBS-038 — anomaly mutes.
     pub(crate) anomaly_mutes: Vec<(String, Ovr<telltale_config::AnomalyMuteConfig>)>,
@@ -150,10 +244,105 @@ pub(crate) struct Entries {
     pub(crate) exclusions: Option<telltale_config::ExclusionsConfig>,
     /// REQ: OBS-024 — the `[simulate]` the API or UI set, likewise.
     pub(crate) simulate: Option<telltale_config::SimulateConfig>,
+    /// REQ: OBS-901 — the `[map]` the API or UI set, likewise.
+    pub(crate) map: Option<telltale_config::MapConfig>,
     /// REQ: CLU-013 — the `[cluster.rollout]` the API or UI set, likewise.
     pub(crate) rollout: Option<telltale_config::RolloutConfig>,
     /// REQ: FLT-017 — `[[kubernetes.map]]` rules by key; they come before the files' rules.
     pub(crate) kubernetes_map: Vec<(String, Ovr<telltale_config::KubernetesMapRule>)>,
+    /// REQ: DNS-019 (T24.12) — the stored `[special]` section (every editable key), if the API
+    /// or UI set one. The files' fields win over it (ADR-914).
+    pub(crate) special: Option<serde_json::Value>,
+    /// REQ: DNS-023 (T24.13) — the stored `[local]` fields, likewise.
+    pub(crate) local: Option<serde_json::Value>,
+    /// REQ: DNS-023 (T24.13) — the stored `[clients]` fields (`mdns`), likewise.
+    pub(crate) clients_settings: Option<serde_json::Value>,
+    /// REQ: DSC-001 (T25.2) — the stored `[discovery]` section, likewise.
+    pub(crate) discovery: Option<serde_json::Value>,
+    /// REQ: DSC-901 (T31.2) — the stored `[cmdb]` section, likewise.
+    pub(crate) cmdb: Option<serde_json::Value>,
+    /// REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — the per-node sections stored
+    /// through the API or UI: (kind, node, body) for every node. A node applies its own rows.
+    pub(crate) node_settings: Vec<(String, String, serde_json::Value)>,
+    /// REQ: DNS-011, FLT-004, CLU-014 (T27.11, ADR-1006) — the stored `[dnssec]`, `[filter]` and
+    /// `[drill]` sections, likewise (one entry each).
+    pub(crate) dnssec: Option<serde_json::Value>,
+    pub(crate) filter: Option<serde_json::Value>,
+    pub(crate) drill: Option<serde_json::Value>,
+    /// REQ: OBS-016, OBS-020, OBS-019 (T27.5) — the stored `[slo]`, `[probe]` and
+    /// `[upstream_check]` sections, likewise.
+    pub(crate) slo: Option<serde_json::Value>,
+    pub(crate) probe: Option<serde_json::Value>,
+    pub(crate) upstream_check: Option<serde_json::Value>,
+    /// REQ: OBS-013, OBS-003, OBS-005 (T27.5) — the stored `[telemetry.*]` sections, likewise.
+    pub(crate) telemetry_anomaly: Option<serde_json::Value>,
+    pub(crate) telemetry_qlog: Option<serde_json::Value>,
+    pub(crate) telemetry_metrics: Option<serde_json::Value>,
+    /// REQ: API-902 (T27.13) — this node's guarded entries (the reserved kind `guarded`).
+    pub(crate) guarded: Vec<crate::guarded::store::Stored>,
+}
+
+impl Entries {
+    /// The stored OIDC providers that validate, with the secret fields a body never carries
+    /// cleared (references only); the ones that don't are logged and left out (CLU-004).
+    pub(crate) fn valid_oidc_providers(&self) -> Vec<telltale_config::OidcProvider> {
+        let mut ok = Vec::new();
+        for (id, p) in &self.oidc_providers {
+            let mut p = p.clone();
+            p.id = telltale_config::SafeString::new(id).unwrap_or(p.id);
+            p.client_secret = None;
+            p.client_secret_file = None;
+            let errs = telltale_config::oidc_provider_errors(&p);
+            if errs.is_empty() {
+                ok.push(p);
+            } else {
+                warn!(provider = %id, "skipping a stored OIDC provider: {}", errs.join("; "));
+            }
+        }
+        ok
+    }
+}
+
+impl Entries {
+    /// REQ: API-016 (T23.11) — the stored sinks that validate (those that don't are logged and
+    /// left out alone, CLU-004), with the fields a body never carries cleared.
+    pub(crate) fn valid_sinks(&self) -> Vec<telltale_config::SinkConfig> {
+        let mut ok = Vec::new();
+        for (name, s) in &self.sinks {
+            let mut s = s.clone();
+            s.name = telltale_config::SafeString::new(name).unwrap_or(s.name);
+            s.token_file = None;
+            s.tls_ca = None;
+            let mut errs = telltale_config::sink_errors(&s);
+            if let Err(why) = crate::sink_settings::stored_limits(&s) {
+                errs.push(why);
+            }
+            if ok.len() >= crate::sink_settings::max_sinks() {
+                errs.push("more sinks than a node takes".into());
+            }
+            if errs.is_empty() {
+                ok.push(s);
+            } else {
+                warn!(sink = %name, "skipping a stored event sink: {}", errs.join("; "));
+            }
+        }
+        ok
+    }
+
+    /// REQ: API-016 (T23.11) — the stored OTLP export, if it validates.
+    pub(crate) fn valid_otlp(&self) -> Option<telltale_config::OtlpConfig> {
+        let mut o = self.otlp.clone()?;
+        o.headers.clear();
+        o.traces_sample_every = 0;
+        o.traces_slow_ms = 0;
+        let errs = telltale_config::otlp_errors(&o);
+        if errs.is_empty() {
+            Some(o)
+        } else {
+            warn!("skipping the stored OTLP export: {}", errs.join("; "));
+            None
+        }
+    }
 }
 
 /// Where the state database lives.
@@ -175,6 +364,45 @@ fn decode<T: for<'de> Deserialize<'de>>(state: &State, kind: &str) -> Vec<(Strin
             Err(e) => {
                 warn!(kind, name = %m.name, "skipping a stored entry: {e}");
                 None
+            }
+        })
+        .collect()
+}
+
+/// REQ: API-016 (T23.10) — the stored OIDC providers: the row's name is the provider's ID, whatever
+/// the body says (a row seeded from a replicated blob names it only by the row).
+fn decode_oidc_providers(state: &State) -> Vec<(String, telltale_config::OidcProvider)> {
+    decode::<serde_json::Value>(state, OIDC_PROVIDER)
+        .into_iter()
+        .filter_map(|(name, mut v)| {
+            if let Some(o) = v.as_object_mut() {
+                o.insert("id".into(), serde_json::Value::String(name.clone()));
+            }
+            match serde_json::from_value::<telltale_config::OidcProvider>(v) {
+                Ok(p) => Some((name, p)),
+                Err(e) => {
+                    warn!(kind = OIDC_PROVIDER, %name, "skipping a stored entry: {e}");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// REQ: API-016 (T23.11) — the stored sinks: the row's name is the sink's, whatever the body says.
+fn decode_sinks(state: &State) -> Vec<(String, telltale_config::SinkConfig)> {
+    decode::<serde_json::Value>(state, SINK)
+        .into_iter()
+        .filter_map(|(name, mut v)| {
+            if let Some(o) = v.as_object_mut() {
+                o.insert("name".into(), serde_json::Value::String(name.clone()));
+            }
+            match serde_json::from_value::<telltale_config::SinkConfig>(v) {
+                Ok(s) => Some((name, s)),
+                Err(e) => {
+                    warn!(kind = SINK, %name, "skipping a stored entry: {e}");
+                    None
+                }
             }
         })
         .collect()
@@ -219,6 +447,7 @@ pub(crate) fn entries(state: &State) -> Entries {
             .collect(),
         records: decode(state, RECORD),
         forwards: decode(state, FORWARD),
+        zones: decode(state, ZONE),
         rules: decode::<telltale_config::RuleConfig>(state, RULE)
             .into_iter()
             .map(|(_, r)| r)
@@ -229,6 +458,13 @@ pub(crate) fn entries(state: &State) -> Entries {
         groups: decode_ovr(state, GROUP),
         alert_destinations: decode_ovr(state, ALERT_DESTINATION),
         alert_rules: decode_ovr(state, ALERT_RULE),
+        routers: decode_ovr(state, ROUTER),
+        oidc_providers: decode_oidc_providers(state),
+        sinks: decode_sinks(state),
+        otlp: decode::<telltale_config::OtlpConfig>(state, OTLP)
+            .into_iter()
+            .next()
+            .map(|(_, o)| o),
         schedules: decode_ovr(state, SCHEDULE),
         anomaly_mutes: decode_ovr(state, ANOMALY_MUTE),
         ratelimit: decode::<telltale_config::RateLimitConfig>(state, RATELIMIT)
@@ -243,12 +479,47 @@ pub(crate) fn entries(state: &State) -> Entries {
             .into_iter()
             .next()
             .map(|(_, x)| x),
+        map: decode::<telltale_config::MapConfig>(state, MAP)
+            .into_iter()
+            .next()
+            .map(|(_, x)| x),
         rollout: decode::<telltale_config::RolloutConfig>(state, ROLLOUT)
             .into_iter()
             .next()
             .map(|(_, x)| x),
         kubernetes_map: decode_ovr(state, KUBERNETES_MAP),
+        special: single(state, SPECIAL),
+        local: single(state, LOCAL),
+        clients_settings: single(state, CLIENTS),
+        discovery: single(state, DISCOVERY),
+        cmdb: single(state, CMDB),
+        node_settings: [CACHE, SUPPORT, UPDATES]
+            .into_iter()
+            .flat_map(|k| {
+                decode::<serde_json::Value>(state, k)
+                    .into_iter()
+                    .map(move |(n, v)| (k.to_owned(), n, v))
+            })
+            .collect(),
+        dnssec: single(state, DNSSEC),
+        filter: single(state, FILTER),
+        drill: single(state, DRILL),
+        slo: single(state, SLO),
+        probe: single(state, PROBE),
+        upstream_check: single(state, UPSTREAM_CHECK),
+        telemetry_anomaly: single(state, ANOMALY_SETTINGS),
+        telemetry_qlog: single(state, QLOG_SETTINGS),
+        telemetry_metrics: single(state, METRICS_SETTINGS),
+        guarded: crate::guarded::store::all(state),
     }
+}
+
+/// The one stored row of a singleton section (`default`), as JSON.
+fn single(state: &State, kind: &str) -> Option<serde_json::Value> {
+    decode::<serde_json::Value>(state, kind)
+        .into_iter()
+        .next()
+        .map(|(_, v)| v)
 }
 
 /// REQ: FLT-017 — the API's `[[kubernetes.map]]` rules: each replaces (or hides) the files'
@@ -319,7 +590,9 @@ fn safe(s: &str) -> Result<SafeString, String> {
 }
 
 /// The one-of sections the API or UI set, each replacing the files' section as a whole.
-fn apply_one_of(cfg: &mut Config, e: &Entries) {
+fn apply_one_of(cfg: &mut Config, own: &Config, e: &Entries) {
+    // REQ: API-902 (T27.13, ADR-956 §2) — the guarded values in force (a field the files set wins).
+    crate::guarded::appliers::overlay(cfg, own, &e.guarded, None);
     if let Some(r) = &e.ratelimit {
         cfg.ratelimit = r.clone();
     }
@@ -329,14 +602,35 @@ fn apply_one_of(cfg: &mut Config, e: &Entries) {
     if let Some(x) = &e.simulate {
         cfg.simulate = x.clone();
     }
+    if let Some(x) = &e.map {
+        cfg.map = x.clone();
+    }
     if let Some(x) = &e.rollout {
         cfg.cluster.rollout = x.clone();
     }
 }
 
+/// REQ: API-016 (T23.10, T23.11, ADR-967, ADR-984) - the node-managed kinds: OIDC providers, event
+/// sinks and the OTLP export, merged apart from their file sections (the files win, a bad entry is
+/// dropped alone).
+fn overlay_node_managed(cfg: &mut Config, e: &Entries) {
+    crate::node_managed::overlay_providers(cfg, e.valid_oidc_providers());
+    crate::node_managed::overlay_sinks(cfg, e.valid_sinks());
+    crate::node_managed::overlay_otlp(cfg, e.valid_otlp());
+}
+
 /// `file` plus the entries (names the files already use are skipped), if the result validates
 /// (including record values); otherwise `Err` with the reasons.
 pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
+    merge_on(file, file, e)
+}
+
+/// [`merge`] over `file`, which may be a cluster version built on this node's own files `own`
+/// (a promoted primary's, ADR-051): `own` decides which stored paths are the files' and the path
+/// rules (REQ: API-014, review of T23.2), so a path an older primary published as the API's is
+/// judged, not taken for the files'.
+#[allow(clippy::too_many_lines)] // one step per kind of entry, in the order the files win
+pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     let mut cfg = file.clone();
     // ADR-069 — upstreams, upstream groups, lists, and groups made through the API override
     // or hide the files' entries of the same name (before forwards add their own).
@@ -344,12 +638,56 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     apply_ovr(&mut cfg.upstream_group, &e.upstream_groups);
     apply_ovr(&mut cfg.list, &e.lists);
     apply_ovr(&mut cfg.group, &e.groups);
+    // REQ: FLT-901 (T24.29) - a group whose config file sets `content` keeps the file's: an
+    // override (one stored before the file set it, or by a client that sent the whole group)
+    // never freezes it, so a later edit to the file takes effect. The base `file` decides, not
+    // `own`: on a promoted primary the cluster version's content beats its own files'.
+    for g in &mut cfg.group {
+        if let Some(fc) = file
+            .group
+            .iter()
+            .find(|f| f.name == g.name)
+            .and_then(|f| f.content.clone())
+        {
+            g.content = Some(fc);
+        }
+    }
+    adopt_ad_list(&mut cfg, file, e);
     apply_ovr(&mut cfg.alerts.destination, &e.alert_destinations);
+    // REQ: OPS-014 (ADR-903 §2, decision 4) — a credential this node's files set (inline or by
+    // file) wins over whatever an override stored for it (one stored before the files set it):
+    // the merged entry has one source per field, the files'.
+    for d in &mut cfg.alerts.destination {
+        if let Some(f) = own.alerts.destination.iter().find(|f| f.name == d.name) {
+            for field in
+                telltale_config::secret_refs::prefer_file_credentials("alert_destination", f, d)
+            {
+                warn!(destination = %d.name, field, "an alert destination's credential is set by the configuration files, which win over the one stored through the API");
+            }
+        }
+    }
     apply_ovr(&mut cfg.alerts.rule, &e.alert_rules);
+    // REQ: API-016 (T23.7, ADR-040) — a router the files define is read-only here: the API's
+    // entry of that name is left out (the files' applies), and a new name is added.
+    for (name, o) in &e.routers {
+        if let Ovr::Set(r) = o
+            && !file.router.iter().any(|f| f.name.as_str() == name)
+        {
+            cfg.router.retain(|f| f.name.as_str() != name);
+            cfg.router.push(r.clone());
+        }
+    }
+    // REQ: API-016 (T23.10, ADR-967) — the providers made in the UI are node-managed: merged
+    // apart from `[[auth.oidc.provider]]` (a node without `public_url` shows them as inactive
+    // instead of failing the configuration), the files' ID wins, and a bad one is dropped alone.
+    overlay_node_managed(&mut cfg, e);
     apply_ovr(&mut cfg.schedule, &e.schedules);
     apply_ovr(&mut cfg.anomaly_mute, &e.anomaly_mutes);
     apply_kubernetes_map(&mut cfg, &e.kubernetes_map);
-    apply_one_of(&mut cfg, e);
+    apply_one_of(&mut cfg, own, e);
+    // REQ: API-014 (T23.2, ADR-903 §4) — a stored path the rules refuse isn't read
+    // (`effective` logs why; the entries list it in `credentialIssues`).
+    crate::credential_rules::confine(&mut cfg, own, e);
     for c in &e.clients {
         if !cfg.client.iter().any(|f| f.name == c.name) {
             cfg.client.push(c.clone());
@@ -361,7 +699,7 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
             cfg.rule.push(r.clone());
         }
     }
-    let mut errs = Vec::new();
+    let mut errs = crate::settings_kinds::apply_stored(&mut cfg, own, e);
     for (name, recs) in &e.records {
         if file
             .record
@@ -377,7 +715,7 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
                     rtype: t,
                     value: v,
                     ttl: r.ttl,
-                    node_only: false,
+                    node_only: r.node_only,
                 }),
                 _ => errs.push(format!("record `{name}`: invalid characters")),
             }
@@ -394,6 +732,16 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
         }
         let group = forward_group(domain);
         let members = forward_upstreams(&mut cfg, domain, &group, f, &mut errs);
+        if f.node_only {
+            // REQ: CLU-006 (T27.7) — a node-only forward's servers stay on this node with it.
+            for u in cfg
+                .upstream
+                .iter_mut()
+                .filter(|u| members.contains(&u.name))
+            {
+                u.node_only = true;
+            }
+        }
         match (safe(&group), safe(domain)) {
             (Ok(g), Ok(d)) => {
                 cfg.upstream_group.push(UpstreamGroup {
@@ -401,19 +749,35 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
                     members,
                     strategy: telltale_config::Strategy::Failover,
                     parallel_fanout: 2,
-                    node_only: false,
+                    node_only: f.node_only,
                 });
+                let groups = f.match_group.iter().filter_map(|s| safe(s).ok()).collect();
+                let qtypes = f.match_qtype.iter().filter_map(|s| safe(s).ok()).collect();
                 cfg.route.push(Route {
                     match_suffix: vec![d],
-                    match_group: Vec::new(),
-                    match_qtype: Vec::new(),
+                    match_group: groups,
+                    match_qtype: qtypes,
                     upstream_group: g,
-                    dnssec_nta: true,
-                    node_only: false,
+                    dnssec_nta: f.dnssec_nta,
+                    node_only: f.node_only,
                 });
             }
             _ => errs.push(format!("forward `{domain}`: invalid name")),
         }
+    }
+    // REQ: DNS-010 (T27.7) — zones made through the API; a zone the files define wins, and a bad
+    // one is named in the errors (the files alone then apply, CLU-004).
+    for (_, z) in &e.zones {
+        if file
+            .zone
+            .iter()
+            .any(|f| f.name.as_str().eq_ignore_ascii_case(z.name.as_str()))
+        {
+            continue;
+        }
+        let mut z = z.clone();
+        z.file = None;
+        cfg.zone.push(z);
     }
     if let Err(v) = telltale_config::validate_config(&cfg) {
         errs.extend(v.iter().map(ToString::to_string));
@@ -421,6 +785,80 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     let (_, report) = telltale_policy::LocalData::from_config(&cfg);
     errs.extend(report.errors);
     if errs.is_empty() { Ok(cfg) } else { Err(errs) }
+}
+
+/// REQ: FLT-901 (T24.29, ADR-994, design section 6.3) — a list made through the API or the UI
+/// whose URL is the Ad Block category's current source (the bundles' `hagezi-pro`) is adopted by
+/// that category: it leaves the lists, and every group that never set `content` (and so used it
+/// through "every enabled list", or by name) gets `content.ads = true` in its place, so ad
+/// blocking does not change and the checkbox is live. A group that has a `content` of its own,
+/// even with ads off, is left alone: unchecking stops ad blocking. This is done on the effective
+/// configuration, never written back; a list the files define is a provider the category does not
+/// download twice, and is never adopted (the files win, ADR-040).
+fn adopt_ad_list(cfg: &mut Config, file: &Config, e: &Entries) {
+    let cat = telltale_config::categories::catalog();
+    let Some(ads) = cat.category("ads") else {
+        return;
+    };
+    let Some(want) = cat
+        .tier_for(
+            ads,
+            &telltale_config::GroupContent::default(),
+            cfg.filter.ads_tier,
+        )
+        .and_then(|t| t.sources.first())
+        .and_then(|id| cat.source(id))
+        .map(|s| telltale_config::categories::normalize_url(&s.url))
+    else {
+        return;
+    };
+    let adopted: Vec<String> = e
+        .lists
+        .iter()
+        .filter_map(|(name, o)| match o {
+            Ovr::Set(l)
+                if !file.list.iter().any(|f| f.name.as_str() == name)
+                    && l.enabled
+                    && l.url.as_ref().is_some_and(|u| {
+                        telltale_config::categories::normalize_url(u.as_str()) == want
+                    }) =>
+            {
+                Some(name.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    if adopted.is_empty() {
+        return;
+    }
+    cfg.list
+        .retain(|l| !adopted.iter().any(|a| a == l.name.as_str()));
+    let ads_on = telltale_config::GroupContent {
+        ads: true,
+        ..telltale_config::GroupContent::default()
+    };
+    for g in &mut cfg.group {
+        if g.content.is_some() {
+            continue;
+        }
+        let names_it = g
+            .lists
+            .as_ref()
+            .is_some_and(|l| l.iter().any(|n| adopted.iter().any(|a| a == n.as_str())));
+        if g.lists.is_none() || names_it {
+            if let Some(l) = &mut g.lists {
+                l.retain(|n| !adopted.iter().any(|a| a == n.as_str()));
+            }
+            g.content = Some(ads_on.clone());
+        }
+    }
+    // The implicit default group used it through "every enabled list" too.
+    if !cfg.group.iter().any(|g| g.name.as_str() == "default")
+        && let Ok(mut g) = toml::from_str::<GroupConfig>("name = \"default\"")
+    {
+        g.content = Some(ads_on);
+        cfg.group.push(g);
+    }
 }
 
 /// Adds the upstreams a forwarded domain becomes to `cfg` and returns their names: one per
@@ -489,6 +927,12 @@ pub(crate) fn merge_clients(
 /// The effective config: `file` plus what the API stored. Opens `state.db` briefly; any
 /// problem falls back to `file`.
 pub(crate) fn effective(file: &Config) -> Config {
+    effective_on(file, file)
+}
+
+/// [`effective`] over `file`, a cluster version built on this node's own files `own` (see
+/// [`merge_on`]).
+pub(crate) fn effective_on(file: &Config, own: &Config) -> Config {
     let path = state_path(file);
     if !path.exists() {
         return file.clone();
@@ -500,7 +944,11 @@ pub(crate) fn effective(file: &Config) -> Config {
             return file.clone();
         }
     };
-    match merge(file, &entries(&state)) {
+    let e = entries(&state);
+    for i in crate::credential_rules::issues(own, &e) {
+        warn!(kind = i.kind, name = %i.name, field = i.field, "a path set through the UI or API: {}", i.reason);
+    }
+    match merge_on(file, own, &e) {
         Ok(c) => c,
         Err(errs) => {
             for e in &errs {
@@ -634,6 +1082,7 @@ mod tests {
             rtype: t.into(),
             value: v.into(),
             ttl: None,
+            node_only: false,
         }
     }
 
@@ -663,6 +1112,10 @@ mod tests {
                 Forward {
                     servers: vec!["10.0.0.53".into(), "tls://10.0.0.54".into()],
                     stub: false,
+                    match_group: Vec::new(),
+                    match_qtype: Vec::new(),
+                    dnssec_nta: true,
+                    node_only: false,
                 },
             )],
             ..Entries::default()
@@ -710,6 +1163,10 @@ mod tests {
                 Forward {
                     servers: vec!["ftp://x".into()],
                     stub: false,
+                    match_group: Vec::new(),
+                    match_qtype: Vec::new(),
+                    dnssec_nta: true,
+                    node_only: false,
                 },
             )],
             ..Entries::default()
@@ -727,6 +1184,10 @@ mod tests {
                 Forward {
                     servers: vec!["10.0.0.53".into(), "udp://10.0.0.54".into()],
                     stub: true,
+                    match_group: Vec::new(),
+                    match_qtype: Vec::new(),
+                    dnssec_nta: true,
+                    node_only: false,
                 },
             )],
             ..Entries::default()
@@ -752,6 +1213,10 @@ mod tests {
                 Forward {
                     servers: vec!["tls://10.0.0.53".into()],
                     stub: true,
+                    match_group: Vec::new(),
+                    match_qtype: Vec::new(),
+                    dnssec_nta: true,
+                    node_only: false,
                 },
             )],
             ..Entries::default()
@@ -822,5 +1287,93 @@ mod tests {
             ..Entries::default()
         };
         assert!(merge(&file, &broken).is_err());
+    }
+    const PRO: &str =
+        "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt";
+
+    fn hagezi_pro() -> FilterList {
+        toml::from_str(&format!(
+            "name = \"hagezi-pro\"
+url = \"{PRO}\"
+"
+        ))
+        .unwrap()
+    }
+
+    /// REQ: FLT-901 (T24.29, design 6.3) — a list the API stored with the Ad Block category's
+    /// URL is adopted: it leaves the lists, groups that never set `content` get `content.ads`
+    /// (also the implicit default group), and a list the files define is left as a provider.
+    #[test]
+    fn flt_901_ads_adopts_existing_list_by_url() {
+        let file: Config = toml::from_str(
+            r#"
+            [[group]]
+            name = "kids"
+            lists = ["hagezi-pro"]
+            [[group]]
+            name = "plain"
+            lists = []
+            "#,
+        )
+        .unwrap();
+        // The kids group names a list that only the API defines.
+        let e = Entries {
+            lists: vec![("hagezi-pro".into(), Ovr::Set(hagezi_pro()))],
+            ..Entries::default()
+        };
+        let c = merge(&file, &e).unwrap();
+        assert!(c.list.is_empty(), "adopted, so no longer a list of its own");
+        let kids = c.group.iter().find(|g| g.name.as_str() == "kids").unwrap();
+        assert!(kids.content.as_ref().unwrap().ads, "{kids:?}");
+        assert!(
+            kids.lists.as_ref().unwrap().is_empty(),
+            "the name left `lists`"
+        );
+        let plain = c.group.iter().find(|g| g.name.as_str() == "plain").unwrap();
+        assert!(plain.content.is_none(), "never used the list");
+        let default = c
+            .group
+            .iter()
+            .find(|g| g.name.as_str() == "default")
+            .unwrap();
+        assert!(
+            default.content.as_ref().unwrap().ads,
+            "the implicit default used it"
+        );
+        // The category now downloads it (once) under its own name.
+        let lists = telltale_config::categories::expand(&c).list;
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0].name.as_str(), "cat-hagezi-ads-pro");
+        // A list the files define is a provider and stays.
+        let mut f2 = file.clone();
+        f2.list.push(hagezi_pro());
+        let c2 = merge(&f2, &Entries::default()).unwrap();
+        assert_eq!(c2.list.len(), 1);
+    }
+
+    /// REQ: FLT-901 — once a group has its own `content`, unchecking ads stops ad blocking: the
+    /// adoption does not turn it back on.
+    #[test]
+    fn flt_901_ads_unchecked_stops_ad_blocking() {
+        let file = Config::default();
+        let mut off: GroupConfig = toml::from_str("name = \"default\"").unwrap();
+        off.content = Some(telltale_config::GroupContent::default());
+        let e = Entries {
+            lists: vec![("hagezi-pro".into(), Ovr::Set(hagezi_pro()))],
+            groups: vec![("default".into(), Ovr::Set(off))],
+            ..Entries::default()
+        };
+        let c = merge(&file, &e).unwrap();
+        let d = c
+            .group
+            .iter()
+            .find(|g| g.name.as_str() == "default")
+            .unwrap();
+        assert!(!d.content.as_ref().unwrap().ads);
+        assert!(
+            telltale_config::categories::expand(&c).list.is_empty(),
+            "nothing downloads"
+        );
+        assert_eq!(telltale_config::categories::used_sources(&c).len(), 0);
     }
 }

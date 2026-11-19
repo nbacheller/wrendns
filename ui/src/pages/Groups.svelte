@@ -2,7 +2,7 @@
   // REQ: API-005, FLT-005 (ADR-050) — groups as categories of devices: each group's networks,
   // what its devices did in the last 24 hours, its heaviest names this hour, and its settings.
   import { api, type S } from '../lib/api';
-  import { href } from '../lib/router.svelte';
+  import { href, navigate, route } from '../lib/router.svelte';
   import { dateTime, num, pct } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
@@ -10,6 +10,31 @@
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
   import ClientChip from '../lib/components/ClientChip.svelte';
   import { loadWorkloads, workloads } from '../lib/workloads.svelte';
+  // REQ: FLT-902 (T24.29) - the profile list and editor.
+  import ProfileEditor from '../lib/components/ProfileEditor.svelte';
+  import { can } from '../lib/session.svelte';
+  import { ENGINES } from '../lib/categories';
+
+  // undefined: closed; null: a new profile; a name: that profile.
+  let editing = $state<string | null | undefined>(undefined);
+  // The columns' chips: the first two, then "+N" (the rest in its title).
+  type Chip = { label: string; warn?: boolean; title?: string };
+  const CHIPS = 2;
+  const privateOnly = (s: S['ProfileSource']) => (s.keys ?? []).length > 0 && (s.keys ?? []).every((k) => k.kind === 'mac' && k.randomized);
+  const sourceChips = (g: S['GroupInfo']): Chip[] =>
+    (g.sources ?? []).map((s) => ({ label: s.label, warn: s.kind === 'device' && privateOnly(s), title: s.kind === 'network' ? `Network ${s.id}` : undefined }));
+  const engineChips = (g: S['GroupInfo']): Chip[] => {
+    const ids = (g.safeSearchEngines ?? []).length ? (g.safeSearchEngines ?? []) : g.safeSearch ? ENGINES.map((e) => e.id) : [];
+    return ids.map((id) => ({ label: ENGINES.find((e) => e.id === id)?.name ?? id }));
+  };
+  const scheduleChips = (g: S['GroupInfo']): Chip[] => g.schedules.map((s) => ({ label: g.schedulesOn.includes(s) ? `${s} (on now)` : s }));
+  $effect(() => {
+    // "Use in a profile" on the Lists page's Categories tab opens a new profile.
+    if (route.path === '/groups' && route.params.get('new') === '1') {
+      editing = null;
+      navigate('/groups', undefined, true);
+    }
+  });
 
   // REQ: FLT-017 — the workloads a group holds (the default group: those without one).
   const workloadsIn = (group: string) =>
@@ -52,10 +77,72 @@
   ]);
   const serviceName = (id: string) => services.find((s) => s.id === id)?.name ?? id;
 
+  // REQ: FLT-014 (T27.4) — the same rules the server checks (validate.rs `rewrites`, the block and
+  // rebinding fields): a name is letters, digits, `-` and `_` labels of 1 to 63 characters, at most
+  // 253 in all; an address is IPv4 or IPv6. The server still checks on Check, and its message wins.
+  const isName = (s: string) => {
+    const d = s.replace(/\.+$/, '');
+    return d.length > 0 && d.length <= 253 && d.split('.').every((l) => l.length > 0 && l.length <= 63 && /^[A-Za-z0-9_-]+$/.test(l));
+  };
+  const isIpv4 = (s: string) => /^(\d{1,3}\.){3}\d{1,3}$/.test(s) && s.split('.').every((o) => Number(o) <= 255);
+  // An IPv6 address: at most one `::`, 8 groups of 1 to 4 hex digits (7 with `::`), and an IPv4 tail allowed.
+  const isIpv6 = (s: string) => {
+    if (!s.includes(':') || !/^[0-9a-fA-F:.]+$/.test(s)) return false;
+    let t = s;
+    if (t.includes('.')) {
+      const cut = t.lastIndexOf(':');
+      if (!isIpv4(t.slice(cut + 1))) return false;
+      t = `${t.slice(0, cut + 1)}0:0`;
+    }
+    const halves = t.split('::');
+    if (halves.length > 2) return false;
+    const groups = (h: string) => (h === '' ? [] : h.split(':'));
+    const all = halves.flatMap(groups);
+    if (!all.every((g) => /^[0-9a-fA-F]{1,4}$/.test(g))) return false;
+    return halves.length === 2 ? all.length <= 7 : all.length === 8;
+  };
+  const isIp = (s: string) => isIpv4(s) || isIpv6(s);
+  const linesOf = (v: unknown) => ((v as string[] | undefined) ?? []).join('\n');
+  // Each line of a `lines` field, checked; a bad line stops Check with its message.
+  function addressesFrom(s: string): string[] {
+    return s.split('\n').map((x) => x.trim()).filter(Boolean).map((x) => {
+      if (!isIp(x)) throw new Error(`"${x}": write an IP address, like 192.168.1.2 or fd00::2`);
+      return x;
+    });
+  }
+  function namesFrom(s: string): string[] {
+    return s.split('\n').map((x) => x.trim()).filter(Boolean).map((x) => {
+      if (!isName(x)) throw new Error(`"${x}": write a domain, like plex.direct`);
+      return x;
+    });
+  }
+  type Rewrite = { domain: string; answer: string };
+  const rewriteText = (v: unknown) => ((v as Rewrite[] | undefined) ?? []).map((r) => `${r.domain} ${r.answer}`).join('\n');
+  // REQ: FLT-014 (T27.4) — one rewrite per line: `name answer` (an address, or a name for a CNAME).
+  function rewritesFrom(s: string): Rewrite[] {
+    const out: Rewrite[] = [];
+    const seen = new Set<string>();
+    for (const raw of s.split('\n').map((x) => x.trim()).filter(Boolean)) {
+      const parts = raw.split(/\s+/);
+      if (parts.length !== 2) throw new Error(`"${raw}": write the name and the answer, like nas.example.com 192.168.1.10`);
+      const [domain, answer] = parts;
+      if (!isName(domain.replace(/^\*\./, ''))) throw new Error(`"${domain}": a domain, or *.domain for every name under it`);
+      const key = domain.toLowerCase();
+      if (seen.has(key)) throw new Error(`"${domain}" is rewritten twice in this group`);
+      seen.add(key);
+      if (!isIp(answer) && !isName(answer)) throw new Error(`"${answer}": an IP address or a domain`);
+      out.push({ domain, answer });
+    }
+    return out;
+  }
+
   // REQ: API-002 (T7.5) — add and change groups here.
   const groupFields = $derived<Field[]>([
     { key: 'networks', label: 'Networks', type: 'lines', placeholder: '10.20.2.0/24',
       help: 'One per line. Every device on these networks belongs to the group.' },
+    // REQ: API-010 (T24.9, ADR-973) — the names a router gave devices.
+    { key: 'router_names', label: 'Router names', type: 'lines', placeholder: 'kitchen-tablet',
+      help: 'One per line, in the label form (Kitchen Tablet is kitchen-tablet): a device the router named this, and that no device entry names, belongs to the group, whatever its address.' },
     { key: 'lists', label: 'Lists', type: 'multi', options: listNames,
       help: 'Leave all unticked on a new group to use every enabled list.' },
     // REQ: UPS-007 (T9.25)
@@ -64,15 +151,26 @@
     // REQ: FLT-011 (T7.11)
     { key: 'safe_search', label: 'Safe search', type: 'bool',
       help: 'Google, Bing, DuckDuckGo, Yandex, and Pixabay show only safe results; YouTube uses Restricted Mode.' },
+    // REQ: FLT-902 (T24.29) - which engines (the profile editor sets this too).
+    { key: 'safe_search_engines', label: 'Safe search engines', type: 'multi', options: ENGINES.map((e) => e.id), advanced: true,
+      help: 'Only these engines are restricted (and safe search is on). Empty with Safe search on means every engine.' },
     { key: 'youtube_restrict', label: 'YouTube restriction', type: 'select', options: ['strict', 'moderate', 'off'], advanced: true },
     // REQ: FLT-012 (T7.9)
     { key: 'blocked_services', label: 'Blocked services', type: 'multi', options: services.map((s) => s.id),
       help: 'Block a whole service (all its domains) for this group, on top of its lists.' },
     // REQ: FLT-014 (T7.20), DNS-016 (T7.21) — answer filtering and DNS64 (T8.6).
-    { key: 'rebinding_protection', label: 'Rebinding protection', type: 'bool', advanced: true,
+    { key: 'rebinding_protection', label: 'Rebinding protection', type: 'bool', advanced: true, helpTopic: 'rebinding',
       help: 'Block answers from the internet that point at private addresses (DNS rebinding).' },
+    // REQ: FLT-014, FLT-015 (T27.4) — the exceptions to rebinding protection, one domain per line.
+    { key: 'rebinding_allow', label: 'Rebinding exceptions', type: 'lines', placeholder: 'plex.direct', helpTopic: 'rebinding',
+      toText: linesOf, fromText: namesFrom,
+      help: 'Domains allowed to answer with private addresses, one per line (your own domain, plex.direct).' },
     { key: 'block_answer_ips', label: 'Block answers in', type: 'lines', placeholder: '203.0.113.0/24', advanced: true,
       help: 'Answers with an address in these networks are blocked, whatever the name.' },
+    // REQ: FLT-014 (T27.4) — rewrites: the name answered with an address, or a name (a CNAME).
+    { key: 'rewrite', label: 'Rewrites', type: 'lines', placeholder: 'nas.example.com 192.168.1.10', helpTopic: 'rewrites',
+      toText: rewriteText, fromText: rewritesFrom,
+      help: 'One per line: a name, then its answer. *.example.com covers every name under it. Blocks still win.' },
     { key: 'dns64', label: 'DNS64', type: 'bool', advanced: true,
       help: 'Make IPv6 addresses for IPv4-only names, for IPv6-only networks with NAT64.' },
     { key: 'dns64_prefix', label: 'DNS64 prefix', type: 'text', placeholder: '64:ff9b::/96', advanced: true },
@@ -85,7 +183,19 @@
     // REQ: FLT-010 (T9.7)
     { key: 'schedules', label: 'Schedules', type: 'multi', options: scheduleNames,
       help: 'Schedules this group follows (make them under Schedules, below).' },
-    { key: 'block_mode', label: 'Blocked answer', type: 'select', options: ['null_ip', 'nxdomain', 'nodata', 'refused', 'custom_ip'], advanced: true },
+    { key: 'block_mode', label: 'Blocked answer', type: 'select', options: ['null_ip', 'nxdomain', 'nodata', 'refused', 'custom_ip'], helpTopic: 'block-response' },
+    // REQ: FLT-008 (T27.4) — the addresses for custom_ip (required there, the server checks), the block TTL
+    // (0 to 86400 s), the Extended DNS Error code and whether it names the list.
+    { key: 'block_ips', label: 'Block addresses (custom_ip)', type: 'lines', placeholder: '192.168.1.2', helpTopic: 'block-response',
+      toText: linesOf, fromText: addressesFrom,
+      enabledWhen: (v) => v.block_mode === 'custom_ip',
+      help: 'Used only with Blocked answer = custom_ip: an IPv4 address answers A, an IPv6 address answers AAAA.' },
+    { key: 'block_ttl', label: 'Block TTL (seconds)', type: 'number', placeholder: '60', min: 0, max: 86400, helpTopic: 'block-response',
+      help: 'How long clients may keep a block: 0 to 86400 seconds.' },
+    { key: 'ede', label: 'Extended DNS Error', type: 'select', options: ['blocked', 'filtered'], helpTopic: 'block-response',
+      help: 'blocked (15) for ads and trackers; filtered (17) for parental controls, where the client asked for it.' },
+    { key: 'ede_text', label: 'Name the list in the error', type: 'bool', initial: true, helpTopic: 'block-response',
+      help: 'Off hides the name of the list that blocked the name from the error text.' },
     { key: 'priority', label: 'Priority', type: 'number', placeholder: '0', advanced: true,
       help: 'When a device matches several groups, the highest priority wins.' },
     { key: 'color', label: 'Color', type: 'text', placeholder: '#4f8cff', advanced: true },
@@ -121,7 +231,34 @@
   $effect(load);
   const advanced = $derived(currentMode() === 'advanced');
   const total = $derived(groups.reduce((a, g) => a + g.queries24h, 0));
+  // REQ: FLT-005 (T24.15) — "Make a group from this network" on the Networks page opens the editor
+  // with the network filled in (`/groups?draft=network&name=…&networks=…`). Once taken, the URL is
+  // replaced with a clean `/groups`, so a reload or Back/Forward doesn't reopen it.
+  const networkDraft = $derived(
+    route.path === '/groups' && route.params.get('draft') === 'network'
+      ? {
+          name: route.params.get('name') ?? '',
+          values: { networks: [route.params.get('networks') ?? ''].filter(Boolean) },
+          onused: () => navigate('/groups', undefined, true),
+        }
+      : null,
+  );
 </script>
+
+{#snippet chips(list: Chip[], empty: string)}
+  {#if list.length === 0}
+    <span class="muted small">{empty}</span>
+  {:else}
+    <span class="chiprow">
+      {#each list.slice(0, CHIPS) as c (c.label)}
+        <span class="pchip" data-testid="chip" title={c.title}>{c.label}{#if c.warn}<span class="warn-icon" data-testid="chip-private" role="img" aria-label="Private Wi-Fi address" title="Private Wi-Fi address: the profile may not follow it">⚠</span>{/if}</span>
+      {/each}
+      {#if list.length > CHIPS}
+        <span class="pchip more" data-testid="chip-more" title={list.slice(CHIPS).map((c) => c.label).join(', ')}>+{list.length - CHIPS}</span>
+      {/if}
+    </span>
+  {/if}
+{/snippet}
 
 <div class="page">
   <h1>Groups<HelpButton id="groups" /></h1>
@@ -130,6 +267,36 @@
     A group is a kind of device: every device on a group's networks belongs to it (a named device can also be put in a
     group of its own). Groups decide which lists apply and show what each kind of device does.
   </p>
+
+  <!-- REQ: FLT-902 (T24.29) - the profile list: a profile is a group, with who it applies to and what it filters. -->
+  <section class="card" data-testid="profiles">
+    <div class="card-head">
+      <h2>Profiles<HelpButton id="filter-profiles" /></h2>
+      {#if can('operator')}
+        <button type="button" data-testid="profile-new" onclick={() => (editing = null)}>New profile</button>
+      {/if}
+    </div>
+    <div class="table-wrap">
+      <table data-testid="profile-table">
+        <thead><tr><th>Name</th><th>Source</th><th>Filter Scope</th><th>Safe Search</th><th>Schedule</th>{#if can('operator')}<th><span class="sr-only">Edit</span></th>{/if}</tr></thead>
+        <tbody>
+          {#each groups as g (g.name)}
+            <tr data-testid="profile-row" data-profile={g.name}>
+              <td><strong>{g.name}</strong></td>
+              <td data-col="source">{@render chips(sourceChips(g), 'no devices or networks')}</td>
+              <td data-col="scope">{g.filterScope || 'Off'}</td>
+              <td data-col="safe">{@render chips(engineChips(g), 'off')}</td>
+              <td data-col="schedule">{@render chips(scheduleChips(g), 'none')}</td>
+              {#if can('operator')}<td><button type="button" class="link small" data-testid="profile-edit" onclick={() => (editing = g.name)}>Edit</button></td>{/if}
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {#if editing !== undefined}
+    <ProfileEditor name={editing} onclose={() => (editing = undefined)} onsaved={load} />
+  {/if}
 
   <div class="group-grid">
     {#each groups as g (g.name)}
@@ -230,7 +397,7 @@
     <h2>Settings</h2>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Group</th><th class="num">Priority</th><th>Lists<HelpButton id="lists" /></th>{#if advanced}<th>Blocked answer</th>{/if}<th>Blocking</th></tr></thead>
+        <thead><tr><th>Group</th><th class="num">Priority</th><th>Lists<HelpButton id="lists" /></th>{#if advanced}<th>Blocked answer<HelpButton id="block-response" /></th>{/if}<th>Blocking</th></tr></thead>
         <tbody>
           {#each groups as g (g.name)}
             <tr>
@@ -251,9 +418,11 @@
       </table>
     </div>
   </section>
-  <ConfigEditor kind="group" path="groups" title="Manage groups" noun="group" fields={groupFields}
+  <div id="manage-groups">
+  <ConfigEditor kind="group" path="groups" title="Manage groups" noun="group" fields={groupFields} draft={networkDraft}
     summary={(d) => `${((d.networks as string[]) ?? []).join(', ') || 'named devices only'} · ${d.lists ? `${(d.lists as string[]).length} lists` : 'every enabled list'}`}
     onchanged={load} />
+  </div>
   <!-- REQ: FLT-010 (T9.7) — schedules made here; groups follow them through `schedules`. -->
   <ConfigEditor kind="schedule" path="schedules" title="Schedules" noun="schedule" help="schedules" fields={scheduleFields}
     summary={(d) => `${String(d.action ?? '')}: ${((d.window as { days: string[]; start: string; end: string }[]) ?? []).map((w) => `${w.days.join(',')} ${w.start}-${w.end}`).join('; ')}`}
@@ -261,6 +430,28 @@
 </div>
 
 <style>
+  .chiprow {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .pchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    font-size: 0.85em;
+    white-space: nowrap;
+  }
+  .pchip.more {
+    color: var(--muted);
+  }
+  .warn-icon {
+    color: var(--warn);
+  }
   .workloads {
     display: flex;
     flex-wrap: wrap;

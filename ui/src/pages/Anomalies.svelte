@@ -6,11 +6,12 @@
   // REQ: OBS-038 — muting: a kind of finding for a device stops counting (it is still recorded);
   // muted findings hide here unless "Show muted" is on, and the mutes are listed below.
   import { api, type S } from '../lib/api';
-  import { href } from '../lib/router.svelte';
+  import { href, route } from '../lib/router.svelte';
   import { can } from '../lib/session.svelte';
   import { dateTime, num } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import TuningSettings from '../lib/components/TuningSettings.svelte';
   import RhythmStrip from '../lib/components/RhythmStrip.svelte';
   import MuteForm from '../lib/components/MuteForm.svelte';
   import KeepInGit from '../lib/components/KeepInGit.svelte';
@@ -19,11 +20,14 @@
   let showAcked = $state(false);
   let showMuted = $state(false);
   // The ones that count; muted findings are listed only on request.
-  const counted = $derived(all.filter((f) => !f.mutedBy));
-  const visible = $derived(showMuted ? all : counted);
+  // REQ: OBS-901 (T26.3) — the network map links here with `?client=<address>`: one device's findings.
+  const only = $derived(route.params.get('client'));
+  const scoped = $derived(only ? all.filter((f) => f.client === only) : all);
+  const counted = $derived(scoped.filter((f) => !f.mutedBy));
+  const visible = $derived(showMuted ? scoped : counted);
   const items = $derived(showAcked ? visible : visible.filter((f) => !f.acknowledged));
   const ackedCount = $derived(visible.filter((f) => f.acknowledged).length);
-  const mutedCount = $derived(all.length - counted.length);
+  const mutedCount = $derived(scoped.length - counted.length);
   const open = $derived(counted.filter((f) => !f.acknowledged));
   // REQ: OBS-038 — the mutes (from the files or the API), and the finding whose form is open.
   type MuteDef = { devices?: string[]; groups?: string[]; kinds?: string[]; expires?: string; note?: string };
@@ -119,6 +123,8 @@
 <div class="page">
   <div class="page-head">
     <h1>Anomalies<HelpButton id="anomalies" /></h1>
+    <!-- REQ: OBS-013 (T27.5, ADR-1007) — the detector's settings, an admin's. -->
+    <TuningSettings which="anomaly" />
     <label class="pill-field">
       Show
       <select bind:value={range} aria-label="Time range">
@@ -130,6 +136,9 @@
   </div>
   <ErrorNote {error} />
   <ErrorNote error={actionError} />
+  {#if only}
+    <p class="notice small" data-testid="anomaly-device-filter">Findings for <b class="mono">{only}</b> only. <a href={href('/anomalies')}>Show all devices</a></p>
+  {/if}
   {#if muted}
     <div class="notice ok small" data-testid="mute-saved">
       Muted. {muted.impact ?? ''}

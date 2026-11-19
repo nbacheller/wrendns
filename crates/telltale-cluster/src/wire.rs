@@ -47,6 +47,11 @@ pub struct Hello {
     /// The Git commit of the configuration it serves (ADR-049).
     #[prost(string, tag = "12")]
     pub source_commit: String,
+    /// REQ: CLU-005 (T24.38, ADR-1018) — a random id of the sending process, new at each start:
+    /// a link that ends and comes back with another id was a restart, not a flapping link.
+    /// Empty from a peer older than this field (prost skips unknown tags, so older peers ignore it).
+    #[prost(string, tag = "13")]
+    pub instance: String,
 }
 
 /// A federated read (CLU-002, T5.6): `kind` names the call, `body` carries its arguments
@@ -182,6 +187,66 @@ pub struct Heartbeat {
     pub drill_since_ms: u64,
     #[prost(uint64, tag = "32")]
     pub drill_until_ms: u64,
+    /// REQ: CLU-015 (ADR-903 §6) — the newest secrets head this node holds (the primary's is the
+    /// cluster's). Absent from older nodes, which ignore the tags.
+    #[prost(message, optional, tag = "33")]
+    pub secrets_head: Option<SecretsHeadMsg>,
+    /// REQ: CLU-015 — the head of this node's own store after it applied the primary's rows.
+    #[prost(message, optional, tag = "34")]
+    pub secrets_applied: Option<SecretsHeadMsg>,
+    /// REQ: CLU-015 — live secrets this node can't read (encrypted under a key it doesn't have).
+    #[prost(uint32, tag = "35")]
+    pub secrets_unreadable: u32,
+    /// REQ: CLU-015 — secrets the primary holds but couldn't decrypt for this answer ("held").
+    #[prost(uint32, tag = "36")]
+    pub secrets_held: u32,
+    /// REQ: CLU-015 — configuration paths this node refuses to read as credentials (at most 32).
+    #[prost(string, repeated, tag = "37")]
+    pub credential_issues: Vec<String>,
+    /// REQ: CLU-015 — names its node-local fields reference (at most 128), so `DELETE` checks them.
+    #[prost(string, repeated, tag = "38")]
+    pub secret_refs: Vec<String>,
+    /// REQ: OBS-010 (T24.5, fork #2) — for a replica: how long it has gone without a heartbeat
+    /// from its primary, in seconds (absent when it reaches the primary or is the primary, and
+    /// from older nodes, which ignore the tag).
+    #[prost(uint64, optional, tag = "40")]
+    pub primary_silent_s: Option<u64>,
+    /// REQ: CLU-005 (ADR-051) — whether the sender is the primary now. A Hello says it only when a
+    /// stream opens, so a promotion after that is seen only here. Absent from older nodes (`None`):
+    /// the flag a peer already holds stays.
+    #[prost(bool, optional, tag = "39")]
+    pub primary: Option<bool>,
+    /// REQ: CLU-001 (ADR-960) — the members the sender has heard from within the `up` window, and
+    /// how long ago. A replica in manual failover has a stream only to its primary, so this is how
+    /// it learns that the other replicas are up. Absent from older nodes, which ignore the tag.
+    #[prost(message, repeated, tag = "41")]
+    pub peers: Vec<PeerHealth>,
+}
+
+/// REQ: CLU-001 (ADR-960) — what a node tells its peers about another member it hears from (a relay).
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct PeerHealth {
+    #[prost(string, tag = "1")]
+    pub node_id: String,
+    /// How long ago the sender last heard it, in milliseconds.
+    #[prost(uint64, tag = "2")]
+    pub age_ms: u64,
+    #[prost(bool, tag = "3")]
+    pub ready: bool,
+    #[prost(uint64, tag = "4")]
+    pub applied_seq: u64,
+}
+
+/// REQ: CLU-015 (ADR-903 §6) — a secrets head on the wire: the highest stamp and the BLAKE3
+/// digest of the sorted `(name, kind, stamp, deleted)` list. Holds no value.
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct SecretsHeadMsg {
+    #[prost(uint64, tag = "1")]
+    pub epoch: u64,
+    #[prost(uint64, tag = "2")]
+    pub seq: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub digest: Vec<u8>,
 }
 
 /// REQ: CLU-008 (T6.11) — the resources of the machine a node runs on, for monitoring and
@@ -282,6 +347,8 @@ pub struct Frame {
 }
 
 #[derive(Clone, PartialEq, prost::Oneof)]
+// A frame is built, encoded and dropped at once; boxing the heartbeat would change every call site.
+#[allow(clippy::large_enum_variant)]
 pub enum Body {
     #[prost(message, tag = "1")]
     Hello(Hello),
@@ -353,6 +420,7 @@ mod tests {
                 applied_seq: 9,
                 primary: false,
                 config_source: String::new(),
+                instance: "0123456789abcdef".into(),
             })),
         };
         let hb = Frame {
@@ -379,6 +447,36 @@ mod tests {
         // A huge length is refused before any allocation.
         let mut bad = (u32::MAX).to_be_bytes().to_vec();
         assert!(decode_all(&mut bad).is_err());
+    }
+
+    /// REQ: CLU-005 (ADR-051) — the heartbeat's primary flag is optional both ways: an older node's
+    /// heartbeat decodes with no flag (so a peer keeps the one it holds), and an older node skips it.
+    #[test]
+    fn clu_005_the_heartbeat_primary_flag_is_optional_both_ways() {
+        let old = Heartbeat {
+            epoch: 2,
+            ..Heartbeat::default()
+        }
+        .encode_to_vec();
+        assert_eq!(Heartbeat::decode(&old[..]).unwrap().primary, None);
+        let new = Heartbeat {
+            epoch: 2,
+            primary: Some(true),
+            ..Heartbeat::default()
+        };
+        let back = Heartbeat::decode(&new.encode_to_vec()[..]).unwrap();
+        assert_eq!(back.primary, Some(true));
+        // A flag set to false is still sent (present, not the default): it says "stepped down".
+        let stepped = Heartbeat {
+            primary: Some(false),
+            ..Heartbeat::default()
+        };
+        assert_eq!(
+            Heartbeat::decode(&stepped.encode_to_vec()[..])
+                .unwrap()
+                .primary,
+            Some(false)
+        );
     }
 
     /// REQ: CLU-010 (T6.14) — a heartbeat from an older node (no pod, start time, or cache
@@ -451,6 +549,67 @@ mod tests {
             ..Heartbeat::default()
         };
         assert_eq!(Heartbeat::decode(&new.encode_to_vec()[..]).unwrap(), new);
+    }
+
+    /// REQ: CLU-015, CLU-010 (ADR-903 §6) — the secrets fields are optional both ways: an older
+    /// node's heartbeat decodes with no head, and a node that doesn't know them (N-1) decodes
+    /// ours and ignores them, the other fields unchanged.
+    #[test]
+    fn clu_015_n_minus_1_ignores_fields() {
+        // What an N-1 node knows: the tags up to 32, nothing more.
+        #[derive(Clone, PartialEq, Message)]
+        struct HeartbeatN1 {
+            #[prost(uint64, tag = "2")]
+            epoch: u64,
+            #[prost(uint64, tag = "3")]
+            applied_seq: u64,
+            #[prost(uint64, tag = "4")]
+            qps: u64,
+            #[prost(uint64, tag = "32")]
+            drill_until_ms: u64,
+        }
+        let new = Heartbeat {
+            epoch: 4,
+            applied_seq: 9,
+            qps: 7,
+            drill_until_ms: 11,
+            secrets_head: Some(SecretsHeadMsg {
+                epoch: 4,
+                seq: 12,
+                digest: vec![7; 32],
+            }),
+            secrets_applied: Some(SecretsHeadMsg {
+                epoch: 4,
+                seq: 12,
+                digest: vec![7; 32],
+            }),
+            secrets_unreadable: 2,
+            secrets_held: 1,
+            credential_issues: vec!["upstream[0].tls_ca".into()],
+            secret_refs: vec!["router.unifi.api_key".into()],
+            ..Heartbeat::default()
+        };
+        let bytes = new.encode_to_vec();
+        let n1 = HeartbeatN1::decode(&bytes[..]).unwrap();
+        assert_eq!(
+            (n1.epoch, n1.applied_seq, n1.qps, n1.drill_until_ms),
+            (4, 9, 7, 11)
+        );
+        // And an N-1 heartbeat (no secrets fields) decodes with them empty.
+        let old = HeartbeatN1 {
+            epoch: 1,
+            applied_seq: 0,
+            qps: 0,
+            drill_until_ms: 0,
+        }
+        .encode_to_vec();
+        let back = Heartbeat::decode(&old[..]).unwrap();
+        assert_eq!(back.secrets_head, None);
+        assert_eq!(back.secrets_applied, None);
+        assert_eq!((back.secrets_unreadable, back.secrets_held), (0, 0));
+        assert!(back.credential_issues.is_empty() && back.secret_refs.is_empty());
+        // The new one round-trips.
+        assert_eq!(Heartbeat::decode(&bytes[..]).unwrap(), new);
     }
 
     #[test]

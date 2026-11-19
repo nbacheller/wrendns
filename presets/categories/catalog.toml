@@ -1,0 +1,35 @@
+# TelltaleDNS content-category catalog: the version, the presets and the measured sizes
+# (REQ: FLT-901, ADR-995). Data, not code: compiled into the binary.
+
+# The day the sources were last checked (licence, a push within 90 days, not archived). The
+# recorded-metadata tests compare each source's `checked` and `pushed` dates with this day, never
+# with the clock, so a stale catalog fails the weekly job (scripts/check-catalog.py) and not an
+# unrelated build.
+catalog_version = "2026-11-18"
+
+# What "Basic" means in a profile (`level = "basic"`, ADR-994 owner decision 2).
+[[preset]]
+id = "basic"
+name = "Basic"
+description = "Adult content, malware, phishing and scams. Nothing else is blocked."
+categories = ["adult", "malware", "phishing", "scam"]
+
+# Measured by `docs/design/content-categories.md` section 2.4 (T24.29 step 2). The budget rule
+# reads these, never a number written in code.
+[measured]
+# Resident set of a node with no category list, in bytes.
+baseline_rss_bytes = 33554432
+# Snapshot bytes per distinct domain.
+bytes_per_domain = 12
+# Compile peak = min(source bytes x factor, the merge budget) + the fixed part. Re-measured with
+# bench/categories_rss.py (design 2.4): the peak above what the model adds for the baseline and the
+# snapshot is 37.8 MiB for Basic (4.45 MiB of source), 75.7 MiB for Enhanced with ad block (14.6 MiB)
+# and 153 MiB for NRD 7 days with four categories (42.8 MiB, the sort capped at 128 MiB), on a
+# 4-CPU stand-in. A factor of 5.0 with a fixed 28 MiB covers all three (50, 101 and 156 MiB).
+compile_peak_factor = 5.0
+compile_peak_fixed_bytes = 29360128
+# A source above this many entries is "heavy".
+heavy_threshold = 500000
+# Refresh of a light and of a heavy source, seconds (8 hours; 24 hours).
+light_refresh_secs = 28800
+heavy_refresh_secs = 86400

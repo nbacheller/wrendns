@@ -7,6 +7,10 @@ use tower::ServiceExt;
 
 use super::*;
 
+mod flt_901_content;
+mod obs_901_map;
+mod obs_902_geoip;
+
 /// Records what it was asked for; returns fixed data.
 #[derive(Default)]
 struct Fake {
@@ -17,7 +21,29 @@ struct Fake {
     notes: Mutex<Vec<crate::model::Annotation>>,
     /// REQ: OPS-011 — the fake's one pseudonym map has been handed out.
     map_taken: std::sync::atomic::AtomicBool,
+    /// REQ: API-005 (T24.10) — minutes blocking is paused for everyone, while it is.
+    paused: Mutex<Option<u32>>,
+    /// REQ: OBS-901 — the map's settings (`None`: no map) and what every node reports.
+    map: Mutex<(Option<crate::map::MapSettings>, crate::map::MapParts)>,
+    /// REQ: OBS-902 - the GeoIP database's status (`None`: this backend keeps none) and the
+    /// countries it answers by address.
+    geoip: Mutex<Option<FakeGeoip>>,
+    /// REQ: FLT-004 (T24.28) - lists where `quiet` nearly duplicates `ads`, for the prune tests.
+    prunable: std::sync::atomic::AtomicBool,
+    /// REQ: FLT-901 (T24.29) - the groups the category tests read, and the memory limit the node
+    /// reports (0: unknown). Group writes succeed while there are groups.
+    cat_groups: Mutex<Vec<GroupInfo>>,
+    cat_memory: std::sync::atomic::AtomicU64,
+    /// REQ: FLT-901 - the group entries `config_entries("group")` answers (when not empty).
+    cat_entries: Mutex<Vec<crate::model::ConfigEntry>>,
+    /// REQ: API-010 - a group write that takes this many ms and then records itself in
+    /// `slow_done` (0: it answers at once): the "client hung up" test.
+    slow_ms: std::sync::atomic::AtomicU64,
+    slow_done: Arc<Mutex<Vec<String>>>,
 }
+
+/// The GeoIP database the fake reports: its status and the country of each address prefix.
+type FakeGeoip = (crate::model::GeoipStatus, Vec<(std::net::IpAddr, String)>);
 
 /// The one finding the fake reports.
 fn fake_finding_id() -> String {
@@ -30,17 +56,171 @@ impl Backend for Fake {
     fn now_unix_seconds(&self) -> u64 {
         NOW
     }
+    // REQ: OBS-901 — the map the test sets up.
+    fn map_settings(&self) -> Option<crate::map::MapSettings> {
+        self.map.lock().unwrap().0
+    }
+    fn map_part(&self) -> Option<crate::map::MapPart> {
+        self.map.lock().unwrap().1.parts.first().cloned()
+    }
+    fn config_entries(&self, kind: Option<&str>) -> Vec<crate::model::ConfigEntry> {
+        if kind == Some("list") && self.prunable.load(std::sync::atomic::Ordering::SeqCst) {
+            return ["ads", "quiet", "mine"]
+                .iter()
+                .map(|n| crate::model::ConfigEntry {
+                    kind: "list".into(),
+                    name: (*n).into(),
+                    source: "file".into(),
+                    definition: Some(serde_json::json!({
+                        "name": n, "url": "https://lists.example/x", "enabled": true
+                    })),
+                    redacted: Vec::new(),
+                    credential_issues: Vec::new(),
+                    set_by_file: Vec::new(),
+                    answering: None,
+                })
+                .collect();
+        }
+        if kind == Some("group") {
+            return self.cat_entries.lock().unwrap().clone();
+        }
+        if kind != Some("map") {
+            return Vec::new();
+        }
+        vec![crate::model::ConfigEntry {
+            kind: "map".into(),
+            name: "default".into(),
+            source: "file".into(),
+            definition: serde_json::to_value(telltale_config::MapConfig::default()).ok(),
+            redacted: Vec::new(),
+            credential_issues: Vec::new(),
+            set_by_file: Vec::new(),
+            answering: None,
+        }]
+    }
+    fn map_parts(&self) -> crate::map::MapParts {
+        self.map.lock().unwrap().1.clone()
+    }
+    // REQ: OBS-902 (T26.4) - the GeoIP database the test sets up.
+    fn geoip_status(&self) -> Option<crate::model::GeoipStatus> {
+        self.geoip.lock().unwrap().as_ref().map(|g| g.0.clone())
+    }
+    fn geoip_update(&self) -> Result<crate::model::GeoipStatus, Problem> {
+        self.seen.lock().unwrap().push("geoip update".into());
+        self.geoip_status()
+            .ok_or_else(|| Problem::not_found("no database"))
+    }
+    fn geoip_delete(&self) -> Result<crate::model::GeoipStatus, Problem> {
+        self.seen.lock().unwrap().push("geoip delete".into());
+        self.geoip_status()
+            .ok_or_else(|| Problem::not_found("no database"))
+    }
+    fn geoip_locate(&self, ips: &[std::net::IpAddr]) -> crate::map::GeoAnswer {
+        let g = self.geoip.lock().unwrap();
+        let Some((status, table)) = g.as_ref() else {
+            return crate::map::GeoAnswer::default();
+        };
+        if !status.enabled {
+            return crate::map::GeoAnswer::default();
+        }
+        if status.state != "ready" {
+            return crate::map::GeoAnswer {
+                state: crate::map::GeoState::Missing,
+                ..crate::map::GeoAnswer::default()
+            };
+        }
+        crate::map::GeoAnswer {
+            state: crate::map::GeoState::Ready,
+            home: Some("NL".into()),
+            countries: ips
+                .iter()
+                .map(|ip| {
+                    table
+                        .iter()
+                        .find(|(a, _)| crate::map::prefix_of(*a) == crate::map::prefix_of(*ip))
+                        .map(|(_, c)| c.clone())
+                })
+                .collect(),
+        }
+    }
+    // REQ: API-007 (T24.18) — the test backend discards any plan (a real one answers 404 for a plan
+    // it doesn't hold; the idempotency test needs a first answer that succeeds).
+    fn pihole_import_discard(&self, id: &str, by: &str) -> Result<serde_json::Value, Problem> {
+        let _ = (id, by);
+        Ok(serde_json::json!({ "discarded": true }))
+    }
+    // REQ: API-007 (ADR-940) — a plan whose change is stored but whose reload fails: the test
+    // backend says so (`applied: false`), and the API audits the change before it answers 500.
+    fn pihole_import_apply(
+        &self,
+        id: String,
+        by: String,
+    ) -> crate::BoxFuture<Result<serde_json::Value, Problem>> {
+        let _ = by;
+        Box::pin(async move {
+            if id == "reload-fails" {
+                return Ok(serde_json::json!({
+                    "applied": false, "configVersion": 3, "added": 1, "changed": 0,
+                    "skipped": 0, "entries": 1, "counts": "1 upstreams", "source": "v5"
+                }));
+            }
+            Err(Problem::unavailable(
+                "importing a Pi-hole configuration isn't available on this node",
+            ))
+        })
+    }
     // REQ: FLT-017 — the map rule writes reach the backend as managed writes.
     fn write_managed(
         &self,
         w: crate::ManagedWrite,
     ) -> crate::BoxFuture<Result<crate::model::ConfigChange, Problem>> {
         self.seen.lock().unwrap().push(format!(
-            "managed {:?} {} {}",
+            "managed {:?} {} {}{}",
             w.kind,
             w.name,
-            w.body.map(|b| b.to_string()).unwrap_or_default()
+            w.body.map(|b| b.to_string()).unwrap_or_default(),
+            w.expect
+                .map_or_else(String::new, |v| format!(" expect={v}"))
         ));
+        if w.kind == crate::ManagedKind::Group && !self.cat_groups.lock().unwrap().is_empty() {
+            let applied = !w.dry_run;
+            let slow = self.slow_ms.load(std::sync::atomic::Ordering::SeqCst);
+            let (done, name) = (Arc::clone(&self.slow_done), w.name.clone());
+            return Box::pin(async move {
+                if slow > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(slow)).await;
+                    done.lock().unwrap().push(name);
+                }
+                Ok(crate::model::ConfigChange {
+                    applied,
+                    config_version: 7,
+                    before: None,
+                    after: None,
+                    recent_queries: 0,
+                    impact: String::new(),
+                    warnings: Vec::new(),
+                    keep_in_git: None,
+                    simulation: None,
+                })
+            });
+        }
+        if w.kind == crate::ManagedKind::List
+            && self.prunable.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Box::pin(async {
+                Ok(crate::model::ConfigChange {
+                    applied: true,
+                    config_version: 7,
+                    before: None,
+                    after: None,
+                    recent_queries: 0,
+                    impact: String::new(),
+                    warnings: Vec::new(),
+                    keep_in_git: None,
+                    simulation: None,
+                })
+            });
+        }
         Box::pin(async { Err(Problem::unavailable("recorded")) })
     }
     fn annotations(&self, f: &crate::model::AnnotationFilter) -> Vec<crate::model::Annotation> {
@@ -60,6 +240,79 @@ impl Backend for Fake {
         self.notes.lock().unwrap().push(a.clone());
         Ok(a)
     }
+    // REQ: FLT-004 — two enabled lists and a disabled one; queuing is recorded.
+    fn lists_refresh(
+        &self,
+        w: crate::ListsRefreshWrite,
+    ) -> crate::BoxFuture<Result<crate::model::ListsRefreshResult, Problem>> {
+        let configured = [
+            ("hagezi".to_owned(), true),
+            ("old".to_owned(), false),
+            ("mine".to_owned(), true),
+        ];
+        let r = crate::lists_api::answer(
+            &configured,
+            &w,
+            Some("test".into()),
+            |_| false,
+            |names| {
+                self.seen
+                    .lock()
+                    .unwrap()
+                    .push(format!("lists_refresh {names:?} by {}", w.by));
+            },
+        );
+        Box::pin(async move { r })
+    }
+    // REQ: DSC-004 (ADR-1002) - one agent, "gateway"; a second real test of it is refused.
+    fn snmp_test(
+        &self,
+        w: crate::SnmpTestWrite,
+    ) -> crate::BoxFuture<Result<crate::model::SnmpTestResult, Problem>> {
+        let mut seen = self.seen.lock().unwrap();
+        let again = seen
+            .iter()
+            .any(|s| s.starts_with("snmp_test gateway dry=false"));
+        seen.push(format!(
+            "snmp_test {} dry={} by {}",
+            w.agent, w.dry_run, w.by
+        ));
+        let r = if w.agent != "gateway" {
+            Err(
+                Problem::not_found(format!("no SNMP agent named `{}`", w.agent))
+                    .hint("Agents: gateway."),
+            )
+        } else if again && !w.dry_run {
+            Err(Problem::new(
+                crate::problem::Code::RateLimited,
+                "`gateway` was tested less than a minute ago",
+            )
+            .retry_after(30))
+        } else {
+            Ok(crate::model::SnmpTestResult {
+                agent: w.agent.clone(),
+                dry_run: w.dry_run,
+                ok: true,
+                oids: vec![crate::model::SnmpTestOid {
+                    table: "arp".into(),
+                    part: "arp".into(),
+                    alternative: "ipNetToPhysicalTable".into(),
+                    probe_oid: "1.3.6.1.2.1.4.35.1.4".into(),
+                    columns: vec!["1.3.6.1.2.1.4.35.1.4".into()],
+                }],
+                capability: (!w.dry_run).then(|| crate::model::AgentCapability {
+                    probed_unix: NOW,
+                    level: "authPriv".into(),
+                    ..Default::default()
+                }),
+                error: None,
+                duration_ms: None,
+                node: Some("test".into()),
+                note: "n".into(),
+            })
+        };
+        Box::pin(async move { r })
+    }
     fn system_info(&self) -> SystemInfo {
         SystemInfo {
             version: "0.1.0".into(),
@@ -75,6 +328,7 @@ impl Backend for Fake {
             filter_names: 42,
             client_ips_masked: None,
             cluster: None,
+            addresses: Vec::new(),
             build: crate::model::BuildInfo {
                 version: "0.1.0-edge.60".into(),
                 commit: "abc1234".into(),
@@ -254,6 +508,21 @@ impl Backend for Fake {
         .unwrap();
         Ok(rx) // the sender drops here, so the stream ends after these two
     }
+    fn client_policy(&self, client: &str) -> Result<crate::policy_api::ClientPolicy, Problem> {
+        if client != "tv" {
+            return Err(Problem::not_found("no such device"));
+        }
+        Ok(crate::policy_api::ClientPolicy {
+            client: "tv".into(),
+            device: Some("tv".into()),
+            identified_by: "ip".into(),
+            matched_key: Some("192.168.1.40".into()),
+            group: "kids".into(),
+            group_from: "device".into(),
+            groups: vec!["kids".into()],
+            ..crate::policy_api::ClientPolicy::default()
+        })
+    }
     fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem> {
         if p.name.is_empty() {
             return Err(Problem::invalid("`name` is empty"));
@@ -266,10 +535,15 @@ impl Backend for Fake {
                 mac: None,
                 device: None,
                 identified_by: "default".into(),
+                matched_key: None,
+                group: "default".into(),
+                group_from: "default".into(),
+                group_key: None,
                 groups: vec!["default".into()],
                 workload: None,
             },
             outcome: "resolved".into(),
+            special: None,
             summary: "no rule applies; resolved normally".into(),
             block: None,
             paused_until_unix_seconds: None,
@@ -279,10 +553,103 @@ impl Backend for Fake {
         })
     }
     fn lists(&self) -> Vec<ListInfo> {
-        Vec::new()
+        // This node's own hits: 1 (the cluster's, from `list_hits`, are what the API shows).
+        let list = |name: &str| ListInfo {
+            name: name.into(),
+            kind: "block".into(),
+            enabled: true,
+            mode: "enforce".into(),
+            source: "inline".into(),
+            state: "ok".into(),
+            error: None,
+            bytes: 0,
+            lines: 1,
+            entries: 1,
+            unique: 1,
+            regex_skipped: 0,
+            hits: 1,
+            overlap: Vec::new(),
+            rules: 0,
+            last_checked_unix_seconds: None,
+            last_changed_unix_seconds: None,
+            stale_days: None,
+            last_success_unix_seconds: None,
+            refreshing: false,
+            owners: Vec::new(),
+        };
+        if self.prunable.load(std::sync::atomic::Ordering::SeqCst) {
+            let share = |n: &str, names| crate::model::ListShare {
+                list: n.into(),
+                names,
+            };
+            let mut ads = list("ads");
+            (ads.entries, ads.unique, ads.overlap) = (1000, 901, vec![share("quiet", 99)]);
+            let mut quiet = list("quiet");
+            (quiet.entries, quiet.unique, quiet.overlap) = (100, 1, vec![share("ads", 99)]);
+            let mut mine = list("mine");
+            (mine.entries, mine.unique) = (100, 100);
+            return vec![ads, quiet, mine];
+        }
+        vec![list("ads"), list("quiet")]
+    }
+    fn list_hits(&self) -> BTreeMap<String, u64> {
+        BTreeMap::from([("ads".to_owned(), 42)])
+    }
+    // REQ: API-005 (T24.10, ADR-961) — a stateful pause, so `POST /blocking/pause` and the Pi-hole
+    // compatible API can be told apart only by what they ask for.
+    fn blocking_state(&self) -> Vec<crate::model::BlockingNode> {
+        let pauses = self
+            .paused
+            .lock()
+            .unwrap()
+            .map(|m| crate::model::PauseInfo {
+                group: None,
+                until: "2026-10-04T00:05:00.000Z".into(),
+                seconds_left: u64::from(m) * 60,
+            })
+            .into_iter()
+            .collect();
+        vec![crate::model::BlockingNode {
+            node: None,
+            pauses,
+            error: None,
+        }]
+    }
+    fn blocking_pause(
+        &self,
+        group: Option<&str>,
+        minutes: u32,
+        node: Option<&str>,
+    ) -> Result<Vec<crate::model::BlockingNode>, Problem> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(format!("pause {group:?} {minutes} {node:?}"));
+        *self.paused.lock().unwrap() = Some(minutes);
+        Ok(self.blocking_state())
+    }
+    fn blocking_resume(
+        &self,
+        group: Option<&str>,
+        node: Option<&str>,
+    ) -> Result<Vec<crate::model::BlockingNode>, Problem> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(format!("resume {group:?} {node:?}"));
+        *self.paused.lock().unwrap() = None;
+        Ok(self.blocking_state())
     }
     fn groups(&self) -> Vec<GroupInfo> {
-        Vec::new()
+        self.cat_groups.lock().unwrap().clone()
+    }
+    // REQ: FLT-901 - the memory limit the test sets.
+    fn category_env(&self) -> crate::categories_api::CategoryEnv {
+        let m = self.cat_memory.load(std::sync::atomic::Ordering::SeqCst);
+        crate::categories_api::CategoryEnv {
+            memory_limit_bytes: (m > 0).then_some(m),
+            ..crate::categories_api::CategoryEnv::default()
+        }
     }
     fn clients(&self) -> Vec<ClientInfo> {
         Vec::new()
@@ -510,7 +877,9 @@ async fn send(
     let resp = app.router.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let headers = resp.headers().clone();
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+    // 4 MiB: the served OpenAPI document passed 1 MiB with the merge of feat/ipam-integrations
+    // into feat/t26.4-t26.5-world (1,052,133 bytes).
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 22)
         .await
         .unwrap();
     (
@@ -828,6 +1197,20 @@ async fn obs_014_acknowledging_anomalies_over_http() {
     assert_eq!((s, v["level"].as_str()), (StatusCode::OK, Some("healthy")));
 }
 
+// REQ: OBS-009 (T7.14, regression 2026-11-15) — a list's hits are the cluster's (the backend's
+// `list_hits`), not the API node's own: on a cluster whose replicas answer the queries, the
+// primary serving the UI showed 0 for every list.
+#[tokio::test]
+async fn obs_009_list_hits_are_the_clusters() {
+    let (app, _) = app();
+    let (s, _, v) = get(&app, "/api/v1/lists").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["items"][0]["name"], "ads");
+    assert_eq!(v["items"][0]["hits"], 42);
+    assert_eq!(v["items"][1]["name"], "quiet");
+    assert_eq!(v["items"][1]["hits"], 0, "no node used it");
+}
+
 // REQ: OBS-016 — the objectives over HTTP: worked out from the last 6 hours' minutes and the
 // window's hours of the (federated) time buckets.
 #[tokio::test]
@@ -991,6 +1374,50 @@ async fn agt_004_agent_tokens_over_http() {
         .await,
         StatusCode::OK
     );
+}
+
+// REQ: AGT-004, DSC-903 (T31.2) - no agent token, whatever its scopes, can link, unlink, merge or split
+// CIs: the CMDB's manual changes are people's (deny by default), reason or not.
+#[tokio::test]
+async fn agt_004_agent_tokens_cannot_change_the_cmdb() {
+    let (app, _) = app();
+    let (s, _, v) = send(
+        &app,
+        app.signed_in(
+            "POST",
+            "/api/v1/tokens",
+            serde_json::json!({"name": "wide", "kind": "agent",
+                "scopes": ["analytics:read", "config:write:clients", "config:write:groups"],
+                "ratePerMinute": 600}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let agent = v["token"].as_str().unwrap().to_owned();
+    let id = format!("ci_{:032x}", 1);
+    let other = format!("ci_{:032x}", 2);
+    let cases = [
+        ("link", serde_json::json!({"mac": "aa:bb:cc:00:00:01"})),
+        ("unlink", serde_json::json!({"mac": "aa:bb:cc:00:00:01"})),
+        ("merge", serde_json::json!({"into": other})),
+        ("split", serde_json::json!({"mac": "aa:bb:cc:00:00:01"})),
+    ];
+    for (op, body) in cases {
+        let r = Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/cmdb/cis/{id}/{op}"))
+            .header("authorization", format!("Bearer {agent}"))
+            .header("content-type", "application/json")
+            .header("x-telltale-client", "test-agent/1.0")
+            .header("x-telltale-reason", "tidy the inventory")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        assert_eq!(
+            send(&app, r).await.0,
+            StatusCode::FORBIDDEN,
+            "an agent token may not {op}"
+        );
+    }
 }
 
 // REQ: AGT-004 — a token restricted to a group: its group's devices only, other views
@@ -1538,6 +1965,64 @@ async fn clu_008_cluster_view_on_a_standalone_node() {
     assert_eq!(send(&app, anonymous).await.0, StatusCode::UNAUTHORIZED);
 }
 
+/// REQ: FLT-006, API-010, AGT-001, AGT-004 (T24.30) — a device's policy over HTTP: the admin reads
+/// it, an agent needs `config:read`, a group-restricted agent reads its own group's devices and
+/// gets a 404 for another group's, and an unknown device is a 404.
+#[tokio::test]
+async fn flt_006_client_policy_over_http() {
+    let (app, _) = app();
+    let (s, _, v) = get(&app, "/api/v1/clients/tv/policy").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["group"], "kids");
+    assert_eq!(v["matchedKey"], "192.168.1.40");
+    assert_eq!(v["identifiedBy"], "ip");
+    assert_eq!(
+        get(&app, "/api/v1/clients/nobody/policy").await.0,
+        StatusCode::NOT_FOUND
+    );
+    let make = |scopes: &'static [&'static str], group: Option<&'static str>| {
+        let body = serde_json::json!({"name": format!("p-{scopes:?}-{group:?}"), "kind": "agent",
+            "scopes": scopes, "group": group});
+        app.signed_in("POST", "/api/v1/tokens", body)
+    };
+    let token = |scopes: &'static [&'static str], group: Option<&'static str>| {
+        let req = make(scopes, group);
+        let app = &app;
+        async move {
+            let (s, _, v) = send(app, req).await;
+            assert_eq!(s, StatusCode::CREATED, "{v}");
+            v["token"].as_str().unwrap().to_owned()
+        }
+    };
+    let read = |bearer: String| {
+        let req = Request::get("/api/v1/clients/tv/policy")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("x-telltale-client", "test-agent/1.0")
+            .body(Body::empty())
+            .unwrap();
+        let app = &app;
+        async move { send(app, req).await.0 }
+    };
+    assert_eq!(
+        read(token(&["config:read"], None).await).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        read(token(&["analytics:read"], None).await).await,
+        StatusCode::FORBIDDEN,
+        "no config:read"
+    );
+    assert_eq!(
+        read(token(&["config:read"], Some("kids")).await).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        read(token(&["config:read"], Some("adults")).await).await,
+        StatusCode::NOT_FOUND,
+        "another group's device"
+    );
+}
+
 #[tokio::test]
 async fn api_001_openapi_is_served_and_documents_every_route() {
     let (app, _) = app();
@@ -1560,7 +2045,38 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 113 with CLU-001's /cluster/nodes/{id}.
     // 114 with OBS-038's /anomaly-mutes/{name}; 116 with OPS-011's /system/support-package and
     // /system/support-package/{id}/map.
-    assert_eq!(paths.len(), 116);
+    // 117 with API-013's /networks; 118 with FLT-004's /lists/refresh; 120 with API-015's
+    // /secrets and /secrets/{name}; 123 with DNS-019's /special-names/default and DNS-023's
+    // /local-settings/default and /clients-settings/default; 127 with API-016's /routers,
+    // /routers/{name}, /checks/router and /checks/router-certificate; 129 with DSC-001's
+    // /discovery-settings/default and DSC-014's /discovery/status; 132 with API-007's
+    // /import/pihole, /import/pihole/plans/{id}/apply and /import/pihole/plans/{id}; 142 with
+    // API-005's /pihole-api and /pihole-api/token (T24.10) and the Pi-hole compatible paths
+    // /api/auth, /api/stats/{summary,top_domains,top_clients,upstreams}, /api/info/version,
+    // /api/dns/blocking and /admin/api.php; 147 with OBS-901's /map, /map/stream, /map/world,
+    // /map/health and /map-settings/default (T26.2); 149 with API-016's /oidc-providers and
+    // /oidc-providers/{id} (T23.10); 153 with API-016's /sinks, /sinks/{name}, /otlp and
+    // /otlp/default (T23.11); 158 with API-902's /guarded, /guarded/{id},
+    // /guarded/{id}/preview, /guarded/pending/{id}/confirm and /guarded/pending/{id}/cancel (T27.13);
+    // 170 with DNS-006's /node-settings, /node-settings/{node} and /cache-settings/{node}, OPS-011's
+    // /support-settings/{node}, OPS-012's /updates-settings/{node}, and DNS-011's, FLT-004's and
+    // CLU-014's /dnssec-settings/default, /filter-settings/default and /drill-settings/default
+    // (T27.2, T27.11), plus FLT-004's /lists/overlap, /lists/prune-plan and /lists/prune (T24.28) and
+    // FLT-006's /clients/{id}/policy (T24.30), which the merge of feat/ipam-integrations adds.
+    // 171 with UPS-004's /upstream-presets (T24.36), from the same merge.
+    // 172 with DSC-004's /discovery/snmp/test (T25.6).
+    // 173 with DNS-010's /zones/{name} (T27.7), from the merge of feat/t27.5-t27.7-settings.
+    // 179 with the tuning sections' /slo-settings/default, /probe-settings/default,
+    // /upstream-check-settings/default, /anomaly-settings/default, /qlog-settings/default and
+    // /metrics-settings/default (T27.5), from the same merge.
+    // 181 with OBS-902's /map/geoip and /map/geoip/update (T26.4), from the merge of
+    // feat/ipam-integrations into feat/t26.4-t26.5-world.
+    // 186 with FLT-901's /categories, /categories/budget and /groups/{name}/content and FLT-902's
+    // /groups/{name}/sources and /profiles/devices (T24.29; its /filter-settings/default is the one above).
+    // 195 with DSC-901's /cmdb-settings/default and DSC-902's /cmdb/status, /cmdb/cis,
+    // /cmdb/cis/{id}, /cmdb/proposals and DSC-903's /cmdb/cis/{id}/link, /unlink, /merge and /split
+    // (T31.2).
+    assert_eq!(paths.len(), 195);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -1581,7 +2097,7 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
 #[test]
 fn api_001_committed_openapi_matches_the_code() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/api/openapi.json");
-    let doc = openapi_document() + "\n";
+    let doc = generated_openapi_document() + "\n";
     if std::env::var_os("UPDATE_OPENAPI").is_some() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &doc).unwrap();
@@ -1591,6 +2107,15 @@ fn api_001_committed_openapi_matches_the_code() {
         committed == doc,
         "docs/api/openapi.json is out of date: run UPDATE_OPENAPI=1 cargo test -p telltale-api api_001_committed_openapi"
     );
+}
+
+/// REQ: API-001, NFR-001 (ADR-168) — `GET /api/v1/openapi.json` serves the committed file, byte
+/// for byte (the document is compiled in from it, not generated while running).
+#[test]
+fn api_001_the_served_openapi_is_the_committed_file() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/api/openapi.json");
+    let committed = std::fs::read_to_string(path).unwrap();
+    assert_eq!(openapi_document().to_owned() + "\n", committed);
 }
 
 /// API-003 over HTTP: setup, sign-in with cookie + CSRF, tokens, roles, sign-out.
@@ -2558,6 +3083,7 @@ async fn agt_007_viewers_see_only_their_own_plans() {
         method: "PUT".into(),
         path: "/api/v1/rules/x".into(),
         body: None,
+        write_body: None,
         preview: serde_json::json!({}),
         config_version: 1,
         reason: "too many ads".into(),
@@ -3042,4 +3568,1743 @@ async fn clu_014_drill_requests_over_http() {
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
     let (s, _, v) = send(&app, get("/api/v1/nodes/local/drill")).await;
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+}
+
+// REQ: FLT-004, AGT-002, AGT-003, AGT-004, AGT-005 — "update lists now" over HTTP: 202 with
+// what was queued (every list, or the ones named), a dry run that queues nothing, an
+// Idempotency-Key replay, the audit entry, 404 for an unknown list, and the roles and scope:
+// operators and `config:write:lists` agents (with a reason), not viewers or read-only agents.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one story: queue, dry run, replay, refuse
+async fn flt_004_update_lists_now_over_http() {
+    let (app, fake) = app();
+    let post = |uri: &str, bearer: &str, body: &str, extra: &[(&str, &str)]| {
+        let mut b = Request::post(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json");
+        for (k, v) in extra {
+            b = b.header(*k, *v);
+        }
+        b.body(Body::from(body.to_owned())).unwrap()
+    };
+    let queued = |fake: &Fake| {
+        fake.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.starts_with("lists_refresh"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    // No body: every enabled list.
+    let (s, _, v) = send(&app, post("/api/v1/lists/refresh", &app.bearer, "", &[])).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    assert_eq!(v["queued"], serde_json::json!(["hagezi", "mine"]));
+    assert_eq!(v["dryRun"], false);
+    assert_eq!(v["node"], "test");
+    assert_eq!(
+        queued(&fake),
+        ["lists_refresh None by token:tests (owner: root)"]
+    );
+    let audit = app
+        .auth
+        .state()
+        .audit_page(None, 10, Some("lists.refresh"), None)
+        .unwrap();
+    assert_eq!(
+        (audit.len(), audit[0].target.as_str()),
+        (1, "*"),
+        "{audit:?}"
+    );
+
+    // A dry run says what it would queue, queues nothing, and isn't audited.
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/lists/refresh?dryRun=true",
+            &app.bearer,
+            r#"{"names":["mine","old"]}"#,
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    assert_eq!(
+        (v["dryRun"].as_bool(), v["queued"].clone()),
+        (Some(true), serde_json::json!(["mine"]))
+    );
+    assert_eq!(v["skipped"][0]["name"], "old");
+    assert_eq!(v["skipped"][0]["reason"], "disabled");
+    assert_eq!(queued(&fake).len(), 1);
+
+    // Idempotency: the same key and request replays the first answer without queuing again;
+    // the same key for another request is refused.
+    let key = [("idempotency-key", "refresh-1")];
+    let (s, h, _) = send(
+        &app,
+        post(
+            "/api/v1/lists/refresh",
+            &app.bearer,
+            r#"{"names":["mine"]}"#,
+            &key,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED);
+    assert!(h.get("idempotency-replayed").is_none());
+    let (s, h, v) = send(
+        &app,
+        post(
+            "/api/v1/lists/refresh",
+            &app.bearer,
+            r#"{"names":["mine"]}"#,
+            &key,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    assert_eq!(h.get("idempotency-replayed").unwrap(), "true");
+    assert_eq!(v["queued"], serde_json::json!(["mine"]));
+    assert_eq!(queued(&fake).len(), 2, "{:?}", queued(&fake));
+    let (s, _, _) = send(
+        &app,
+        post(
+            "/api/v1/lists/refresh",
+            &app.bearer,
+            r#"{"names":["hagezi"]}"#,
+            &key,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+
+    // Unknown names, a malformed body, unknown fields.
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/lists/refresh",
+            &app.bearer,
+            r#"{"names":["nope"]}"#,
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    assert!(v["hint"].as_str().unwrap().contains("hagezi"), "{v}");
+    for bad in ["{", r#"{"all":true}"#, r#"{"names":[""]}"#] {
+        let (s, _, v) = send(&app, post("/api/v1/lists/refresh", &app.bearer, bad, &[])).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}: {v}");
+    }
+
+    // A viewer can't.
+    let vic = app
+        .auth
+        .create_user("vic", "a viewer password", auth::Role::Viewer, false, NOW)
+        .unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            vic.id,
+            "ro",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let viewer = format!("tt_{tid}_{secret}");
+    let (s, _, _) = send(&app, post("/api/v1/lists/refresh", &viewer, "{}", &[])).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // Agents: config:write:lists and a reason.
+    let token = |name: &str, scopes: &str| {
+        Request::post("/api/v1/tokens")
+            .header("cookie", &app.cookie)
+            .header("x-csrf-token", &app.csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"name":"{name}","kind":"agent","scopes":[{scopes}]}}"#
+            )))
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, token("reader", r#""config:read""#)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let reader = v["token"].as_str().unwrap().to_owned();
+    let why = [(
+        "x-telltale-reason",
+        "the list maintainer fixed a false positive",
+    )];
+    let (s, _, v) = send(&app, post("/api/v1/lists/refresh", &reader, "{}", &why)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(
+        v["detail"].as_str().unwrap().contains("config:write:lists"),
+        "{v}"
+    );
+    let (s, _, v) = send(&app, token("lists", r#""config:write:lists""#)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let agent = v["token"].as_str().unwrap().to_owned();
+    let (s, _, _) = send(&app, post("/api/v1/lists/refresh", &agent, "{}", &[])).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "agents must give a reason");
+    let (s, _, v) = send(&app, post("/api/v1/lists/refresh", &agent, "{}", &why)).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    let audit = app
+        .auth
+        .state()
+        .audit_page(None, 10, Some("lists.refresh"), None)
+        .unwrap();
+    assert!(audit[0].actor.starts_with("agent:lists"), "{audit:?}");
+    assert_eq!(audit[0].reason.as_deref(), Some(why[0].1));
+
+    // The MCP tool is a thin wrapper over the same route.
+    let rpc = |body: serde_json::Value| {
+        Request::post("/mcp")
+            .header("authorization", format!("Bearer {agent}"))
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let (_, _, v) = send(
+        &app,
+        rpc(serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "refresh_lists", "arguments": {"names": ["hagezi"], "dryRun": true, "reason": "check first"}}})),
+    )
+    .await;
+    assert_eq!(v["result"]["isError"], false, "{v}");
+    assert_eq!(
+        v["result"]["structuredContent"]["result"]["queued"],
+        serde_json::json!(["hagezi"]),
+        "{v}"
+    );
+    assert_eq!(v["result"]["structuredContent"]["result"]["dryRun"], true);
+    let (_, _, v) = send(
+        &app,
+        rpc(
+            serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "refresh_lists", "arguments": {"reason": "lists are a day old"}}}),
+        ),
+    )
+    .await;
+    assert_eq!(v["result"]["isError"], false, "{v}");
+    let last = queued(&fake).last().cloned().unwrap();
+    assert!(
+        last.starts_with("lists_refresh None by agent:lists"),
+        "{last}"
+    );
+}
+
+/// REQ: DSC-004, AGT-001..005 (T25.6, ADR-1002) - `POST /api/v1/discovery/snmp/test` over HTTP: the
+// admin's call with a name only (an address or another field is a 400), a dry run that is not
+// audited, the audit entry `discovery.snmp_test`, an Idempotency-Key replay, 404 for an unknown
+// agent, 429 with Retry-After for a second test, and the roles and scope: admins, and agents with
+// `ops:discovery_test` and a reason (not operators, viewers or read-only agents).
+#[tokio::test]
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one story: test, dry run, replay, refuse
+async fn dsc_004_snmp_test_over_http() {
+    let (app, fake) = app();
+    let post = |uri: &str, bearer: &str, body: &str, extra: &[(&str, &str)]| {
+        let mut b = Request::post(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json");
+        for (k, v) in extra {
+            b = b.header(*k, *v);
+        }
+        b.body(Body::from(body.to_owned())).unwrap()
+    };
+    let calls = |fake: &Fake| {
+        fake.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.starts_with("snmp_test"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let url = "/api/v1/discovery/snmp/test";
+    // A dry run lists the OIDs and is not audited.
+    let (s, _, v) = send(
+        &app,
+        post(
+            &format!("{url}?dryRun=true"),
+            &app.bearer,
+            r#"{"agent":"gateway"}"#,
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["dryRun"].as_bool(), v["ok"].as_bool()),
+        (Some(true), Some(true))
+    );
+    assert_eq!(v["oids"][0]["probeOid"], "1.3.6.1.2.1.4.35.1.4");
+    assert!(v["capability"].is_null());
+    let audit = |app: &TestApp| {
+        app.auth
+            .state()
+            .audit_page(None, 10, Some("discovery.snmp_test"), None)
+            .unwrap()
+    };
+    assert_eq!(audit(&app).len(), 0);
+    // A test answers with the capability record and is audited as `discovery.snmp_test`.
+    let (s, _, v) = send(&app, post(url, &app.bearer, r#"{"agent":"gateway"}"#, &[])).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["capability"]["level"], "authPriv");
+    let a = audit(&app);
+    assert_eq!((a.len(), a[0].target.as_str()), (1, "gateway"), "{a:?}");
+    assert!(
+        calls(&fake)
+            .contains(&"snmp_test gateway dry=false by token:tests (owner: root)".to_owned())
+    );
+    // A second test is refused, with how long to wait.
+    let (s, h, v) = send(&app, post(url, &app.bearer, r#"{"agent":"gateway"}"#, &[])).await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "{v}");
+    assert_eq!(h.get("retry-after").unwrap(), "30");
+    // Idempotency: a keyed success replays the first answer without reaching the backend again.
+    let (app2, fake2) = self::app();
+    let key = [("idempotency-key", "t-1")];
+    let (s, _, _) = send(
+        &app2,
+        post(url, &app2.bearer, r#"{"agent":"gateway"}"#, &key),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, h, v) = send(
+        &app2,
+        post(url, &app2.bearer, r#"{"agent":"gateway"}"#, &key),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(h.get("idempotency-replayed").unwrap(), "true");
+    assert_eq!(
+        calls(&fake2).len(),
+        1,
+        "the replay didn't reach the backend"
+    );
+    let (s, _, _) = send(&app2, post(url, &app2.bearer, r#"{"agent":"other"}"#, &key)).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    // An unknown agent is a 404 that lists the agents.
+    let (s, _, v) = send(&app, post(url, &app.bearer, r#"{"agent":"nope"}"#, &[])).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    assert!(v["hint"].as_str().unwrap().contains("gateway"));
+    // A name only: an address, another field, a blank name and bad JSON are 400s.
+    for bad in [
+        r#"{"agent":"192.168.1.1"}"#,
+        r#"{"agent":"10.0.0.1:161"}"#,
+        r#"{"agent":"gateway","address":"10.0.0.1"}"#,
+        r#"{"agent":" "}"#,
+        r#"{"address":"10.0.0.1"}"#,
+        "{",
+    ] {
+        let (s, _, v) = send(&app, post(url, &app.bearer, bad, &[])).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}: {v}");
+    }
+    let before = calls(&fake).len();
+
+    // An operator and a viewer can't: it sends packets to a device.
+    for (name, role) in [("olive", auth::Role::Operator), ("vic", auth::Role::Viewer)] {
+        let u = app
+            .auth
+            .create_user(name, "a long enough password", role, false, NOW)
+            .unwrap();
+        let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+        app.auth
+            .state()
+            .create_token(
+                &tid,
+                u.id,
+                name,
+                &auth::crypto::secret_hash(&secret),
+                "write",
+                None,
+                NOW,
+            )
+            .unwrap();
+        let t = format!("tt_{tid}_{secret}");
+        let (s, _, _) = send(&app, post(url, &t, r#"{"agent":"gateway"}"#, &[])).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{name}");
+    }
+    // Agents: ops:discovery_test and a reason.
+    let token = |name: &str, scopes: &str| {
+        Request::post("/api/v1/tokens")
+            .header("cookie", &app.cookie)
+            .header("x-csrf-token", &app.csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"name":"{name}","kind":"agent","scopes":[{scopes}]}}"#
+            )))
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, token("reader", r#""config:read""#)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let reader = v["token"].as_str().unwrap().to_owned();
+    let why = [("x-telltale-reason", "the gateway was replaced")];
+    let (s, _, v) = send(&app, post(url, &reader, r#"{"agent":"gateway"}"#, &why)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(
+        v["detail"].as_str().unwrap().contains("ops:discovery_test"),
+        "{v}"
+    );
+    let (s, _, v) = send(&app, token("prober", r#""ops:discovery_test""#)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let agent = v["token"].as_str().unwrap().to_owned();
+    let (s, _, _) = send(&app, post(url, &agent, r#"{"agent":"gateway"}"#, &[])).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "agents must give a reason");
+    let (s, _, v) = send(
+        &app,
+        post(
+            &format!("{url}?dryRun=true"),
+            &agent,
+            r#"{"agent":"gateway"}"#,
+            &why,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(calls(&fake).len(), before + 1);
+}
+
+/// REQ: API-007 (T24.18, ADR-940) — importing a Pi-hole export is an admin's: a viewer is refused
+// on every import route, an agent is refused whatever its scopes, and an admin gets past the
+// role check (the test backend has no import, so it answers unavailable, not forbidden).
+#[tokio::test]
+async fn api_007_pihole_import_admin_only() {
+    let (app, _) = app();
+    let vic = app
+        .auth
+        .create_user("vic", "a viewer password", auth::Role::Viewer, false, NOW)
+        .unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            vic.id,
+            "ro",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let viewer = format!("tt_{tid}_{secret}");
+    let raw = |method: &str, uri: &str, bearer: &str| {
+        let b = match method {
+            "DELETE" => Request::delete(uri),
+            _ => Request::post(uri),
+        };
+        b.header("authorization", format!("Bearer {bearer}"))
+            .body(Body::from(b"PK\x03\x04 a file".to_vec()))
+            .unwrap()
+    };
+    for (method, uri) in [
+        ("POST", "/api/v1/import/pihole"),
+        ("POST", "/api/v1/import/pihole/plans/abc/apply"),
+        ("DELETE", "/api/v1/import/pihole/plans/abc"),
+    ] {
+        let (s, _, v) = send(&app, raw(method, uri, &viewer)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "a viewer, {method} {uri}: {v}");
+    }
+
+    // An agent with a scope for the same write, still refused.
+    let (s, _, v) = send(
+        &app,
+        app.signed_in(
+            "POST",
+            "/api/v1/tokens",
+            serde_json::json!({"name": "helper", "kind": "agent",
+                "scopes": ["config:write:clients", "config:write:special"], "ratePerMinute": 600}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let agent = v["token"].as_str().unwrap().to_owned();
+    let (s, _, v) = send(&app, raw("POST", "/api/v1/import/pihole", &agent)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    // The auth layer refuses agent tokens on this path, before the handler runs.
+    assert_eq!(v["code"], "forbidden", "{v}");
+
+    // An admin passes the role check; the test backend has no import.
+    let (s, _, _) = send(
+        &app,
+        app.signed_in(
+            "POST",
+            "/api/v1/import/pihole/plans/abc/apply",
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+// REQ: API-007 (T24.18, ADR-940) — an operator is refused on every import route as a viewer is:
+// the import is an admin's alone.
+#[tokio::test]
+async fn api_007_pihole_import_operator_refused() {
+    let (app, _) = app();
+    let op = app
+        .auth
+        .create_user(
+            "oscar",
+            "an operator password",
+            auth::Role::Operator,
+            false,
+            NOW,
+        )
+        .unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            op.id,
+            "ops",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let bearer = format!("tt_{tid}_{secret}");
+    for (method, uri) in [
+        ("POST", "/api/v1/import/pihole"),
+        ("POST", "/api/v1/import/pihole/plans/abc/apply"),
+        ("DELETE", "/api/v1/import/pihole/plans/abc"),
+    ] {
+        let req = match method {
+            "DELETE" => Request::delete(uri),
+            _ => Request::post(uri),
+        };
+        let req = req
+            .header("authorization", format!("Bearer {bearer}"))
+            .body(Body::from(b"PK a file".to_vec()))
+            .unwrap();
+        let (s, _, v) = send(&app, req).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "an operator, {method} {uri}: {v}");
+    }
+}
+
+// REQ: API-007 (T24.18, ADR-940) — a change stored before a failed reload is audited as
+// `import.pihole`, and the caller gets a 500 that says the change was saved.
+#[tokio::test]
+async fn api_007_pihole_import_apply_is_audited_when_the_reload_fails() {
+    let (app, _) = app();
+    let (s, _, v) = send(
+        &app,
+        app.signed_in(
+            "POST",
+            "/api/v1/import/pihole/plans/reload-fails/apply",
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR, "{v}");
+    assert!(
+        v["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("was saved"),
+        "{v}"
+    );
+    let entries = app
+        .auth
+        .state()
+        .audit_page(None, 50, Some("import.pihole"), None)
+        .unwrap();
+    assert_eq!(entries.len(), 1, "one audit record for the stored change");
+}
+
+// REQ: API-007 (T24.18) — an upload over 64 MiB is refused with 413 before anything reads it, so
+// a large body costs the node its limit and no more.
+#[tokio::test]
+async fn api_007_pihole_import_upload_limit() {
+    let (app, _) = app();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/import/pihole")
+        .header("cookie", &app.cookie)
+        .header("x-csrf-token", &app.csrf)
+        .header("content-type", "application/octet-stream")
+        .body(Body::from(vec![0u8; (64 << 20) + 1]))
+        .unwrap();
+    let (s, _, _) = send(&app, req).await;
+    assert_eq!(s, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+// REQ: API-007 (T24.18, AGT-003) — a discard sent again with its Idempotency-Key gets the first
+// answer, not a 404.
+#[tokio::test]
+async fn api_007_pihole_import_discard_is_idempotent() {
+    let (app, _) = app();
+    let key = "discard-key-1";
+    let del = || {
+        Request::builder()
+            .method("DELETE")
+            .uri("/api/v1/import/pihole/plans/no-such-plan")
+            .header("cookie", &app.cookie)
+            .header("x-csrf-token", &app.csrf)
+            .header("idempotency-key", key)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (s, _, _) = send(&app, del()).await;
+    assert_eq!(s, StatusCode::OK);
+    // The retry is answered from the record: the same status and body, marked as a replay.
+    let resp = app.router.clone().oneshot(del()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("idempotency-replayed")
+            .map(|v| v.to_str().unwrap()),
+        Some("true")
+    );
+    // Without the key the same request is a second, unanswered discard.
+    let plain = Request::builder()
+        .method("DELETE")
+        .uri("/api/v1/import/pihole/plans/no-such-plan")
+        .header("cookie", &app.cookie)
+        .header("x-csrf-token", &app.csrf)
+        .body(Body::empty())
+        .unwrap();
+    let (s, _, _) = send(&app, plain).await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+// ---- REQ: API-005 (T24.10, ADR-961) — the Pi-hole compatible API
+
+/// A request to the compatible API: any method, optional JSON body and headers.
+fn pi(
+    method: &str,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: Option<serde_json::Value>,
+) -> Request<Body> {
+    let mut b = Request::builder().method(method).uri(uri);
+    for (k, v) in headers {
+        b = b.header(*k, *v);
+    }
+    match body {
+        Some(v) => b
+            .header("content-type", "application/json")
+            .body(Body::from(v.to_string()))
+            .unwrap(),
+        None => b.body(Body::empty()).unwrap(),
+    }
+}
+
+/// An admin changes the settings over the API: `(status, body)`.
+async fn pi_admin(
+    app: &TestApp,
+    method: &str,
+    uri: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let (s, _, v) = send(
+        app,
+        pi(
+            method,
+            uri,
+            &[("authorization", &format!("Bearer {}", app.bearer))],
+            Some(body),
+        ),
+    )
+    .await;
+    (s, v)
+}
+
+/// Turns the API on with a fresh token and returns the token.
+async fn pi_on(app: &TestApp) -> String {
+    let (s, v) = pi_admin(
+        app,
+        "POST",
+        "/api/v1/pihole-api/token",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let token = v["token"].as_str().unwrap().to_owned();
+    let (s, v) = pi_admin(
+        app,
+        "PUT",
+        "/api/v1/pihole-api",
+        serde_json::json!({"enabled": true}),
+    )
+    .await;
+    assert_eq!(
+        (s, v["enabled"].as_bool()),
+        (StatusCode::OK, Some(true)),
+        "{v}"
+    );
+    token
+}
+
+/// Signs in to v6 with `token`: the session id.
+async fn pi_sid(app: &TestApp, token: &str) -> String {
+    let (s, _, v) = send(
+        app,
+        pi(
+            "POST",
+            "/api/auth",
+            &[],
+            Some(serde_json::json!({"password": token})),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["session"]["valid"], true);
+    assert_eq!(v["session"]["validity"], 300);
+    v["session"]["sid"].as_str().unwrap().to_owned()
+}
+
+fn audit_count(app: &TestApp, action: &str) -> usize {
+    app.auth
+        .state()
+        .audit_page(None, 100, Some(action), None)
+        .unwrap()
+        .len()
+}
+
+/// The denied audit is written off the async threads: wait for it to land.
+async fn audit_count_settled(app: &TestApp, action: &str, want: usize) -> usize {
+    for _ in 0..100 {
+        if audit_count(app, action) == want {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    audit_count(app, action)
+}
+
+/// REQ: API-005 (ADR-961 §3, §8) — off by default: every compatible path answers the ordinary 404
+/// (a scanner learns nothing), a token that exists is useless until the API is on, and a write
+/// attempt is audited once.
+#[tokio::test]
+async fn api_005_pihole_api_is_off_by_default_and_answers_404() {
+    let (app, fake) = app();
+    for (m, u) in [
+        ("POST", "/api/auth"),
+        ("GET", "/api/auth"),
+        ("GET", "/api/stats/summary"),
+        ("GET", "/api/dns/blocking"),
+        ("POST", "/api/dns/blocking"),
+        ("GET", "/admin/api.php?summaryRaw&auth=x"),
+        ("GET", "/admin/api.php?disable=300&auth=x"),
+        ("GET", "/admin/api.php?versions"),
+    ] {
+        let (s, _, v) = send(&app, pi(m, u, &[], None)).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{m} {u}: {v}");
+    }
+    let (s, v) = pi_admin(
+        &app,
+        "PUT",
+        "/api/v1/pihole-api",
+        serde_json::json!({"enabled": true}),
+    )
+    .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::CONFLICT, Some("conflict")),
+        "no token yet: {v}"
+    );
+    // A token alone doesn't turn it on.
+    let (s, v) = pi_admin(
+        &app,
+        "POST",
+        "/api/v1/pihole-api/token",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let token = v["token"].as_str().unwrap();
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/auth",
+            &[],
+            Some(serde_json::json!({"password": token})),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "off, token or not");
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "GET",
+            &format!("/admin/api.php?disable&auth={token}"),
+            &[],
+            None,
+        ),
+    )
+    .await;
+    // v5's path answers as any unknown page does (the web UI), never a Pi-hole answer.
+    assert!(
+        s == StatusCode::OK || s == StatusCode::NOT_FOUND,
+        "off: like an unknown page, got {s}"
+    );
+    assert!(
+        !fake
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("pause")),
+        "nothing paused"
+    );
+    // Off: nothing is audited (no write path for a node that never turned it on).
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(audit_count(&app, "pihole_api.denied"), 0);
+}
+
+/// REQ: API-005, AGT-004 (ADR-961 §7) — the settings are an admin's: the token is shown once and
+/// only its hash is stored; a viewer and an agent can't change them (an agent with `config:read`
+/// may read the status); every change is audited without the token.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one flow: roles, token once, hash only, settings, audit
+async fn api_005_pihole_api_settings_are_an_admins_and_the_token_is_shown_once() {
+    let (app, _) = app();
+    let vic = app
+        .auth
+        .create_user("vic", "a viewer password", auth::Role::Viewer, false, NOW)
+        .unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            vic.id,
+            "ro",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let viewer = format!("tt_{tid}_{secret}");
+    for (m, u) in [
+        ("GET", "/api/v1/pihole-api"),
+        ("PUT", "/api/v1/pihole-api"),
+        ("POST", "/api/v1/pihole-api/token"),
+        ("DELETE", "/api/v1/pihole-api/token"),
+    ] {
+        let (s, _, _) = send(
+            &app,
+            pi(
+                m,
+                u,
+                &[("authorization", &format!("Bearer {viewer}"))],
+                Some(serde_json::json!({})),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "a viewer: {m} {u}");
+    }
+    let (s, _, v) = get(&app, "/api/v1/pihole-api").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        (
+            v["enabled"].as_bool(),
+            v["tokenSet"].as_bool(),
+            v["maxPauseMinutes"].as_u64()
+        ),
+        (Some(false), Some(false), Some(60))
+    );
+    let (s, resp) = pi_admin(
+        &app,
+        "POST",
+        "/api/v1/pihole-api/token",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let token = resp["token"].as_str().unwrap().to_owned();
+    assert!(token.len() >= 40);
+    // Never again: the status has no token, and the database holds only a hash.
+    let (_, _, v) = get(&app, "/api/v1/pihole-api").await;
+    assert_eq!(v["tokenSet"], true);
+    assert!(!v.to_string().contains(&token));
+    let row = app.auth.state().pihole_api().unwrap();
+    let hash = row.token_hash.unwrap();
+    assert_eq!(hash, auth::crypto::secret_hash(&token));
+    assert!(!String::from_utf8_lossy(&hash).contains(&token));
+    // Settings: the cap, on, an unknown field.
+    for bad in [0, 1441] {
+        let (s, _) = pi_admin(
+            &app,
+            "PUT",
+            "/api/v1/pihole-api",
+            serde_json::json!({"maxPauseMinutes": bad}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    let (s, v) = pi_admin(
+        &app,
+        "PUT",
+        "/api/v1/pihole-api",
+        serde_json::json!({"enabled": true, "maxPauseMinutes": 90}),
+    )
+    .await;
+    assert_eq!(
+        (s, v["maxPauseMinutes"].as_u64()),
+        (StatusCode::OK, Some(90))
+    );
+    let (s, _) = pi_admin(
+        &app,
+        "PUT",
+        "/api/v1/pihole-api",
+        serde_json::json!({"token": "x"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    // An agent token: reads with config:read, never writes.
+    let (aid, asecret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    let admin = app.auth.state().user_by_name("root").unwrap().unwrap();
+    app.auth
+        .state()
+        .create_token(
+            &aid,
+            admin.id,
+            "agent",
+            &auth::crypto::secret_hash(&asecret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    app.auth
+        .state()
+        .set_token_agent(&aid, "config:read config:write:lists", None, None)
+        .unwrap();
+    let agent = format!("tt_{aid}_{asecret}");
+    let (s, _, v) = send(
+        &app,
+        pi(
+            "GET",
+            "/api/v1/pihole-api",
+            &[("authorization", &format!("Bearer {agent}"))],
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, v["enabled"].as_bool()),
+        (StatusCode::OK, Some(true)),
+        "{v}"
+    );
+    for (m, u) in [
+        ("PUT", "/api/v1/pihole-api"),
+        ("POST", "/api/v1/pihole-api/token"),
+        ("DELETE", "/api/v1/pihole-api/token"),
+    ] {
+        let (s, _, v) = send(
+            &app,
+            pi(
+                m,
+                u,
+                &[("authorization", &format!("Bearer {agent}"))],
+                Some(serde_json::json!({"enabled": false})),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "an agent: {m} {u}: {v}");
+    }
+    // Revoking removes the token and turns the API off.
+    let (s, v) = pi_admin(
+        &app,
+        "DELETE",
+        "/api/v1/pihole-api/token",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(
+        (s, v["tokenSet"].as_bool(), v["enabled"].as_bool()),
+        (StatusCode::OK, Some(false), Some(false))
+    );
+    // The audit log has each change, never the token.
+    assert_eq!(audit_count(&app, "pihole_api.token_rotate"), 1);
+    assert_eq!(audit_count(&app, "pihole_api.enable"), 1);
+    assert_eq!(audit_count(&app, "pihole_api.token_revoke"), 1);
+    assert_eq!(audit_count(&app, "pihole_api.settings"), 1);
+    let all = app
+        .auth
+        .state()
+        .audit_page(None, 100, Some("pihole_api."), None)
+        .unwrap();
+    assert!(
+        all.iter().all(|e| !format!("{e:?}").contains(&token)),
+        "{all:?}"
+    );
+}
+
+/// REQ: API-005 (ADR-961 §2-§5) — Home Assistant's v6 conversation: sign in with the token, read
+/// the summary, the top lists, the version and the blocking state, switch blocking off with a
+/// timer and back on; pausing is the very call `POST /api/v1/blocking/pause` makes, audited the
+/// same; a wrong or missing credential, a stale session and a wrong CSRF value are refused.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one conversation, start to finish
+async fn api_005_pihole_v6_reads_and_switches_blocking() {
+    let (app, fake) = app();
+    let token = pi_on(&app).await;
+    // Wrong password, none, a malformed body.
+    let (s, _, v) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/auth",
+            &[],
+            Some(serde_json::json!({"password": "nope"})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, v["error"]["key"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("unauthorized"))
+    );
+    let (s, _, v) = send(
+        &app,
+        pi("POST", "/api/auth", &[], Some(serde_json::json!({}))),
+    )
+    .await;
+    assert_eq!(
+        (s, v["error"]["key"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("unauthorized"))
+    );
+    let (s, _, _) = send(&app, pi("POST", "/api/auth", &[], None)).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let sid = pi_sid(&app, &token).await;
+    let hs = [("x-ftl-sid", sid.as_str())];
+    // Reads need the session.
+    let (s, _, _) = send(&app, pi("GET", "/api/stats/summary", &[], None)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "GET",
+            "/api/stats/summary",
+            &[("x-ftl-sid", "made-up")],
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _, v) = send(&app, pi("GET", "/api/stats/summary", &hs, None)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // The fake's two buckets: 200 queries, 50 blocked, 100 cached, 50 forwarded.
+    assert_eq!(v["queries"]["total"], 200);
+    assert_eq!(v["queries"]["blocked"], 50);
+    assert_eq!(v["queries"]["percent_blocked"], 25.0);
+    assert_eq!(v["queries"]["cached"], 100);
+    assert_eq!(v["queries"]["forwarded"], 50);
+    assert_eq!(v["queries"]["status"]["GRAVITY"], 50);
+    assert_eq!(v["queries"]["replies"]["NXDOMAIN"], 6);
+    assert_eq!(v["clients"]["active"], 1);
+    assert_eq!(v["gravity"]["domains_being_blocked"], 42);
+    // The session id also works as a query parameter, and a wrong CSRF value is refused.
+    let (s, _, _) = send(
+        &app,
+        pi("GET", &format!("/api/stats/summary?sid={sid}"), &[], None),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "GET",
+            "/api/stats/summary",
+            &[("x-ftl-sid", &sid), ("x-ftl-csrf", "wrong")],
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::UNAUTHORIZED,
+        "a CSRF value that doesn't match"
+    );
+    // Top lists, upstreams, version.
+    let (s, _, v) = send(
+        &app,
+        pi(
+            "GET",
+            "/api/stats/top_domains?blocked=true&count=10",
+            &hs,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["domains"][0]["count"], 9);
+    assert_eq!(v["blocked_queries"], 50);
+    let (s, _, v) = send(
+        &app,
+        pi("GET", "/api/stats/top_clients?count=10", &hs, None),
+    )
+    .await;
+    assert_eq!(
+        (s, v["clients"][0]["ip"].as_str()),
+        (StatusCode::OK, Some("10.0.0.1"))
+    );
+    let (s, _, v) = send(&app, pi("GET", "/api/stats/upstreams", &hs, None)).await;
+    assert_eq!((s, v["upstreams"].is_array()), (StatusCode::OK, true));
+    let (s, _, v) = send(&app, pi("GET", "/api/info/version", &hs, None)).await;
+    assert_eq!(
+        (s, v["version"]["core"]["local"]["version"].as_str()),
+        (StatusCode::OK, Some("0.1.0"))
+    );
+    // Blocking: on, off for 5 minutes (300 s), the state, on again.
+    let (s, _, v) = send(&app, pi("GET", "/api/dns/blocking", &hs, None)).await;
+    assert_eq!(
+        (s, v["blocking"].as_str(), v["timer"].is_null()),
+        (StatusCode::OK, Some("enabled"), true)
+    );
+    // Without a session the write is refused, and audited as denied.
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/dns/blocking",
+            &[],
+            Some(serde_json::json!({"blocking": false, "timer": 300})),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_eq!(audit_count_settled(&app, "pihole_api.denied", 1).await, 1);
+    assert!(
+        !fake
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("pause"))
+    );
+    let (s, _, v) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/dns/blocking",
+            &hs,
+            Some(serde_json::json!({"blocking": false, "timer": 300})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, v["blocking"].as_str(), v["timer"].as_u64()),
+        (StatusCode::OK, Some("disabled"), Some(300)),
+        "{v}"
+    );
+    let (_, _, v) = send(&app, pi("GET", "/api/dns/blocking", &hs, None)).await;
+    assert_eq!(v["blocking"], "disabled");
+    // The same pause as POST /api/v1/blocking/pause: the same backend call, the same audit action.
+    let (s, _) = pi_admin(
+        &app,
+        "POST",
+        "/api/v1/blocking/pause",
+        serde_json::json!({"minutes": 5}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let calls: Vec<String> = fake
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|l| l.starts_with("pause"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        calls,
+        vec!["pause None 5 None".to_owned(); 2],
+        "one call, twice"
+    );
+    let entries = app
+        .auth
+        .state()
+        .audit_page(None, 20, Some("blocking.pause"), None)
+        .unwrap();
+    assert_eq!(entries.len(), 2, "{entries:?}");
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.actor == "token:pihole-api" && e.detail.contains("pihole-api")),
+        "{entries:?}"
+    );
+    let (s, _, v) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/dns/blocking",
+            &hs,
+            Some(serde_json::json!({"blocking": true})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, v["blocking"].as_str()),
+        (StatusCode::OK, Some("enabled"))
+    );
+    assert!(
+        fake.seen
+            .lock()
+            .unwrap()
+            .contains(&"resume None None".to_owned())
+    );
+    assert_eq!(audit_count(&app, "blocking.resume"), 1);
+    // A body without `blocking` is a bad request; a long timer is cut to the cap (60 minutes).
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/dns/blocking",
+            &hs,
+            Some(serde_json::json!({"timer": 5})),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (_, _, v) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/dns/blocking",
+            &hs,
+            Some(serde_json::json!({"blocking": false, "timer": 172_800})),
+        ),
+    )
+    .await;
+    assert_eq!(v["timer"], 3_600, "{v}");
+    let (_, _, v) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/dns/blocking",
+            &hs,
+            Some(serde_json::json!({"blocking": false, "timer": null})),
+        ),
+    )
+    .await;
+    assert_eq!(v["timer"], 3_600, "no timer: the cap, not forever");
+    // Home Assistant's "turn off" sends `"timer": true` (its library passes its `True` duration
+    // through): no timer, so the cap, and not a refusal.
+    let (s, _, v) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/dns/blocking",
+            &hs,
+            Some(serde_json::json!({"blocking": false, "timer": true})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, v["timer"].as_u64()),
+        (StatusCode::OK, Some(3_600)),
+        "{v}"
+    );
+    // The admin raises the cap.
+    pi_admin(
+        &app,
+        "PUT",
+        "/api/v1/pihole-api",
+        serde_json::json!({"maxPauseMinutes": 120}),
+    )
+    .await;
+    let (_, _, v) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/dns/blocking",
+            &hs,
+            Some(serde_json::json!({"blocking": false, "timer": 172_800})),
+        ),
+    )
+    .await;
+    assert_eq!(v["timer"], 7_200, "{v}");
+    // Sign out ends the session.
+    let (s, _, _) = send(&app, pi("DELETE", "/api/auth", &hs, None)).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _, _) = send(&app, pi("GET", "/api/stats/summary", &hs, None)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+/// REQ: API-005 (ADR-961 §3) — rotating the token, or turning the API off, ends every session
+/// and the old token stops working; the new one works.
+#[tokio::test]
+async fn api_005_pihole_rotation_and_off_end_sessions() {
+    let (app, _) = app();
+    let old = pi_on(&app).await;
+    let sid = pi_sid(&app, &old).await;
+    let (s, _, _) = send(
+        &app,
+        pi("GET", "/api/dns/blocking", &[("x-ftl-sid", &sid)], None),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v) = pi_admin(
+        &app,
+        "POST",
+        "/api/v1/pihole-api/token",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let new = v["token"].as_str().unwrap().to_owned();
+    assert_ne!(new, old);
+    let (s, _, _) = send(
+        &app,
+        pi("GET", "/api/dns/blocking", &[("x-ftl-sid", &sid)], None),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::UNAUTHORIZED,
+        "the session ended with the old token"
+    );
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/auth",
+            &[],
+            Some(serde_json::json!({"password": old})),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "the old token");
+    let sid = pi_sid(&app, &new).await;
+    let (s, _) = pi_admin(
+        &app,
+        "PUT",
+        "/api/v1/pihole-api",
+        serde_json::json!({"enabled": false}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, _) = send(
+        &app,
+        pi("GET", "/api/dns/blocking", &[("x-ftl-sid", &sid)], None),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::NOT_FOUND,
+        "off: 404, and the session is gone"
+    );
+}
+
+/// REQ: API-005 (ADR-961 §3) — repeated wrong passwords from one address lock it out (429 with
+/// `Retry-After`), even for the right token, the same lockout as sign-in.
+#[tokio::test]
+async fn api_005_pihole_failed_attempts_are_rate_limited() {
+    let (app, _) = app();
+    let token = pi_on(&app).await;
+    // Five misses are free; the sixth locks the address.
+    for _ in 0..6 {
+        let (s, _, _) = send(
+            &app,
+            pi(
+                "POST",
+                "/api/auth",
+                &[],
+                Some(serde_json::json!({"password": "guess"})),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+    let (s, h, v) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/auth",
+            &[],
+            Some(serde_json::json!({"password": "guess"})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, v["error"]["key"].as_str()),
+        (StatusCode::TOO_MANY_REQUESTS, Some("rate_limiting"))
+    );
+    assert!(h.contains_key("retry-after"));
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/auth",
+            &[],
+            Some(serde_json::json!({"password": token})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "the right token is never locked out by another client's failures"
+    );
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "GET",
+            &format!("/admin/api.php?summaryRaw&auth={token}"),
+            &[],
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "the right v5 token goes through the lock"
+    );
+    // A correct credential clears the failures counted against the address.
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(audit_count(&app, "auth.lockout"), 1);
+}
+
+/// REQ: API-005 (ADR-961 §2) — Home Assistant's v5 fallback: a wrong token reads `[]` (that is how
+/// it recognizes v5), `versions` needs no token, `summaryRaw` and `summary` carry the totals,
+/// `status` and `topItems` need the token, and `enable` and `disable` make the same pause as v6
+/// (a write without the token is a 401 and audited once).
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one conversation, start to finish
+async fn api_005_pihole_v5_reads_and_switches_blocking() {
+    let (app, fake) = app();
+    let token = pi_on(&app).await;
+    let get5 = |q: String| pi("GET", &format!("/admin/api.php?{q}"), &[], None);
+    let (s, _, v) = send(&app, get5("summaryRaw&auth=wrong_token".into())).await;
+    assert_eq!(
+        (s, v),
+        (StatusCode::OK, serde_json::json!([])),
+        "how Home Assistant tells v5"
+    );
+    let (s, _, v) = send(&app, get5("versions".into())).await;
+    assert_eq!(
+        (s, v["core_current"].as_str(), v["core_update"].as_bool()),
+        (StatusCode::OK, Some("0.1.0"), Some(false))
+    );
+    let (s, _, v) = send(&app, get5(format!("summaryRaw&auth={token}"))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["dns_queries_today"], 200);
+    assert_eq!(v["ads_blocked_today"], 50);
+    assert_eq!(v["ads_percentage_today"], 25.0);
+    assert_eq!(v["queries_cached"], 100);
+    assert_eq!(v["queries_forwarded"], 50);
+    assert_eq!(v["domains_being_blocked"], 42);
+    assert_eq!(v["unique_clients"], 1);
+    assert_eq!(v["status"], "enabled");
+    assert_eq!(v["reply_NXDOMAIN"], 6);
+    let (_, _, v) = send(&app, get5(format!("summary&auth={token}"))).await;
+    assert_eq!(v["dns_queries_today"], "200");
+    assert_eq!(v["ads_percentage_today"], "25.0");
+    let (_, _, v) = send(&app, get5(format!("status&auth={token}"))).await;
+    assert_eq!(v["status"], "enabled");
+    let (_, _, v) = send(&app, get5("status&auth=nope".into())).await;
+    assert_eq!(v, serde_json::json!([]), "status needs the token");
+    let (_, _, v) = send(&app, get5(format!("topItems=5&auth={token}"))).await;
+    assert_eq!(v["top_queries"]["10.0.0.1"], 9, "{v}");
+    // A write without the token: 401, audited once for two tries.
+    for _ in 0..2 {
+        let (s, _, v) = send(&app, get5("disable=300&auth=nope".into())).await;
+        assert_eq!((s, v), (StatusCode::UNAUTHORIZED, serde_json::json!([])));
+    }
+    assert_eq!(audit_count_settled(&app, "pihole_api.denied", 1).await, 1);
+    assert!(
+        !fake
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("pause"))
+    );
+    // disable=300 is 5 minutes; no number is the cap; enable is the resume.
+    let (_, _, v) = send(&app, get5(format!("disable=300&auth={token}"))).await;
+    assert_eq!(v["status"], "disabled");
+    assert!(
+        fake.seen
+            .lock()
+            .unwrap()
+            .contains(&"pause None 5 None".to_owned())
+    );
+    let (_, _, v) = send(&app, get5(format!("disable=True&auth={token}"))).await;
+    assert_eq!(v["status"], "disabled");
+    assert!(
+        fake.seen
+            .lock()
+            .unwrap()
+            .contains(&"pause None 60 None".to_owned()),
+        "forever is the cap"
+    );
+    let (_, _, v) = send(&app, get5(format!("enable=True&auth={token}"))).await;
+    assert_eq!(v["status"], "enabled");
+    assert!(
+        fake.seen
+            .lock()
+            .unwrap()
+            .contains(&"resume None None".to_owned())
+    );
+    assert_eq!(audit_count(&app, "blocking.pause"), 2);
+    // An unknown call answers `[]`.
+    let (s, _, v) = send(&app, get5(format!("bogus&auth={token}"))).await;
+    assert_eq!((s, v), (StatusCode::OK, serde_json::json!([])));
+}
+
+/// REQ: API-005 (ADR-961 §6) — the compatible paths take no cookie: a signed-in admin's session
+/// opens nothing there, and an API token for the rest of the API is not the Pi-hole token.
+#[tokio::test]
+async fn api_005_pihole_paths_take_only_their_own_token() {
+    let (app, _) = app();
+    let _token = pi_on(&app).await;
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "GET",
+            "/api/dns/blocking",
+            &[("cookie", &app.cookie), ("x-csrf-token", &app.csrf)],
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::UNAUTHORIZED,
+        "a session cookie is not a Pi-hole session"
+    );
+    let (s, _, _) = send(
+        &app,
+        pi(
+            "POST",
+            "/api/auth",
+            &[],
+            Some(serde_json::json!({"password": app.bearer})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::UNAUTHORIZED,
+        "an API token is not the Pi-hole token"
+    );
+    let (s, _, v) = send(
+        &app,
+        pi(
+            "GET",
+            &format!("/admin/api.php?summaryRaw&auth={}", app.bearer),
+            &[],
+            None,
+        ),
+    )
+    .await;
+    assert_eq!((s, v), (StatusCode::OK, serde_json::json!([])));
+}
+
+// REQ: FLT-004, AGT-004 (T24.28, ADR-992) - the overlap and the plan are reads (viewers, agents
+// with `config:read`); the apply turns the plan's lists off, is an operator's, audited, refuses a
+// list the plan no longer holds, and is never for agent tokens.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one story: read, plan, refuse, apply, audit
+async fn flt_004_prune_lists_over_http() {
+    let (app, fake) = app();
+    fake.prunable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let get = |uri: &str, bearer: &str| {
+        Request::get(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let post = |uri: &str, bearer: &str, body: &str, extra: &[(&str, &str)]| {
+        let mut b = Request::post(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json");
+        for (k, v) in extra {
+            b = b.header(*k, *v);
+        }
+        b.body(Body::from(body.to_owned())).unwrap()
+    };
+    let (s, _, v) = send(&app, get("/api/v1/lists/overlap", &app.bearer)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["items"][0]["name"], "ads");
+    assert_eq!(v["items"][1]["addsPercent"], 1.0);
+    assert_eq!(v["items"][1]["coveredBy"][0]["list"], "ads");
+
+    // The plan: at the default threshold `quiet` (1 of 100 unique) is proposed; nothing changes.
+    let (s, _, v) = send(&app, get("/api/v1/lists/prune-plan", &app.bearer)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["candidates"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["candidates"][0]["name"], "quiet");
+    assert_eq!(v["candidates"][0]["losesAtMost"], 1);
+    assert_eq!(v["kept"].as_array().unwrap().len(), 2);
+    let (s, _, v) = send(
+        &app,
+        get("/api/v1/lists/prune-plan?thresholdPercent=0", &app.bearer),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(v["candidates"].as_array().unwrap().is_empty(), "{v}");
+    let (s, _, _) = send(
+        &app,
+        get("/api/v1/lists/prune-plan?thresholdPercent=80", &app.bearer),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let writes = |fake: &Fake| {
+        fake.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.starts_with("managed List"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(writes(&fake), Vec::<String>::new());
+
+    // A list the plan doesn't hold: nothing changes.
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/lists/prune",
+            &app.bearer,
+            r#"{"names":["quiet","mine"],"snapshotVersion":3,"configVersion":0}"#,
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["detail"].as_str().unwrap().contains("`mine`"), "{v}");
+    assert_eq!(writes(&fake), Vec::<String>::new());
+    // The preview's versions are required, and a different one is a 409 (ADR-993).
+    let plan_v = send(&app, get("/api/v1/lists/prune-plan", &app.bearer))
+        .await
+        .2;
+    assert_eq!(
+        (
+            plan_v["snapshotVersion"].as_u64(),
+            plan_v["configVersion"].as_u64()
+        ),
+        (Some(3), Some(0)),
+        "{plan_v}"
+    );
+    for stale in [
+        r#"{"names":["quiet"],"snapshotVersion":2,"configVersion":0}"#,
+        r#"{"names":["quiet"],"snapshotVersion":3,"configVersion":9}"#,
+    ] {
+        let (s, _, v) = send(&app, post("/api/v1/lists/prune", &app.bearer, stale, &[])).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{stale}: {v}");
+    }
+    assert_eq!(writes(&fake), Vec::<String>::new());
+    for bad in [
+        "{",
+        "",
+        r#"{"names":["quiet"]}"#,
+        r#"{"all":true}"#,
+        r#"{"names":[],"snapshotVersion":3,"configVersion":0,"thresholdPercent":99}"#,
+    ] {
+        let (s, _, v) = send(&app, post("/api/v1/lists/prune", &app.bearer, bad, &[])).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}: {v}");
+    }
+
+    // The apply: `quiet` is written back with `enabled: false`, audited.
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/lists/prune",
+            &app.bearer,
+            r#"{"names":["quiet"],"snapshotVersion":3,"configVersion":0}"#,
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["disabled"], serde_json::json!(["quiet"]));
+    assert_eq!(v["configVersion"], 7);
+    let w = writes(&fake);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].starts_with("managed List quiet "), "{w:?}");
+    assert!(
+        w[0].contains(r#""enabled":false"#) && w[0].contains("lists.example"),
+        "{w:?}"
+    );
+    let audit = app
+        .auth
+        .state()
+        .audit_page(None, 10, Some("lists.prune"), None)
+        .unwrap();
+    assert_eq!(
+        (audit.len(), audit[0].target.as_str()),
+        (1, "quiet"),
+        "{audit:?}"
+    );
+
+    // The write is checked against the version the preview read (no lost update), and the list's
+    // own audit entry is written next to the prune's.
+    assert!(w[0].ends_with(" expect=0"), "{w:?}");
+    let own = app
+        .auth
+        .state()
+        .audit_page(None, 10, Some("list.put"), None)
+        .unwrap();
+    assert_eq!((own.len(), own[0].target.as_str()), (1, "quiet"), "{own:?}");
+
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/lists/prune",
+            &app.bearer,
+            r#"{"names":["quiet","quiet"],"snapshotVersion":3,"configVersion":0}"#,
+            &[],
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["disabled"], serde_json::json!(["quiet"]), "names once");
+
+    // Agents read the plan, and never apply it, whatever their scopes.
+    let token = |scopes: &str| {
+        Request::post("/api/v1/tokens")
+            .header("cookie", &app.cookie)
+            .header("x-csrf-token", &app.csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"name":"pruner","kind":"agent","scopes":[{scopes}]}}"#
+            )))
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, token(r#""config:read","config:write:lists""#)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let agent = v["token"].as_str().unwrap().to_owned();
+    let (s, _, v) = send(&app, get("/api/v1/lists/prune-plan", &agent)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let why = [("x-telltale-reason", "tidy the lists")];
+    let (s, _, v) = send(&app, post("/api/v1/lists/prune", &agent, "{}", &why)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert_eq!(v["code"], "agent_not_allowed", "{v}");
+    assert_eq!(writes(&fake).len(), 2, "the agent changed nothing");
+
+    // A viewer can't apply, but reads the plan.
+    let vic = app
+        .auth
+        .create_user("vic", "a viewer password", auth::Role::Viewer, false, NOW)
+        .unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            vic.id,
+            "ro",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let viewer = format!("tt_{tid}_{secret}");
+    let (s, _, _) = send(&app, post("/api/v1/lists/prune", &viewer, "{}", &[])).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = send(&app, get("/api/v1/lists/prune-plan", &viewer)).await;
+    assert_eq!(s, StatusCode::OK);
 }

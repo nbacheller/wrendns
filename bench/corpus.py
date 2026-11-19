@@ -7,6 +7,8 @@ byte-identical files; the runner records each file's SHA-256 in the results JSON
   cache-hot   10k names, Zipf s=1.0, after warmup (cache-hit path)
   miss-heavy  unique random subdomains (every query misses the cache)
   blocked     names drawn 100% from the blocklists in bench/lists/ (needs --lists)
+  device-names  Zipf over dev-{i}.home.arpa A plus their PTRs (DNS-023); the device count
+              is shared with `bench.py run --devices N` (default 1000)
 
 realistic-home (24 h replay mix) needs blocking and the query-log distributions, so it
 lands with the filter tasks (T2.x).
@@ -29,7 +31,27 @@ CORPORA = {
     # ~65% repeated popular names (cache hits), ~20% blocklisted, ~15% unique misses (09 §2).
     "realistic-home": {"seed": 0x7E14, "popular": 5_000, "trackers": 2_000, "queries": 300_000,
                        "mix": (0.65, 0.20)},
+    # REQ: DNS-023 (T22.1) — the device-name table: names of the devices `bench.py run
+    # --devices N` configures (Zipf s=1.0 over dev-0..dev-N-1), 90% A and 10% their PTRs.
+    "device-names": {"seed": 0x7E15, "devices": 1_000, "zipf_s": 1.0, "queries": 200_000, "ptr_share": 0.10},
 }
+
+# REQ: DNS-023 — the devices `bench.py run --devices N` names, and the corpus asks for.
+DEVICE_DOMAIN = "home.arpa"
+# 250 addresses per /24 under 10.77.0.0/16 (.1 to .250), so at most 256 × 250.
+MAX_DEVICES = 256 * 250
+
+
+def device_name(i):
+    return f"dev-{i}"
+
+
+def device_ip(i):
+    return f"10.77.{i // 250}.{i % 250 + 1}"
+
+
+def device_ptr(i):
+    return f"{i % 250 + 1}.{i // 250}.77.10.in-addr.arpa"
 
 TLDS = [("com", 60), ("net", 12), ("org", 8), ("io", 5), ("de", 5), ("co.uk", 4), ("app", 3), ("tv", 3)]
 ALPHABET = "abcdefghijklmnopqrstuvwxyz"
@@ -135,13 +157,30 @@ def realistic_home(spec, lists):
             yield f"u{n:x}.{label(rng)}.{weighted(rng, TLDS)} A"
 
 
-def generate(name, out_dir, lists=None):
+def device_names(spec, devices):
+    """REQ: DNS-023 — Zipf over the device names (rank k is dev-(k-1)), some asked by address."""
+    n = devices or spec["devices"]
+    if not 1 <= n <= MAX_DEVICES:
+        sys.exit(f"device-names: --devices must be 1 to {MAX_DEVICES}")
+    rng = random.Random(spec["seed"])
+    pick = zipf_picker(rng, range(n), spec["zipf_s"])
+    for _ in range(spec["queries"]):
+        i = pick()
+        if rng.random() < spec["ptr_share"]:
+            yield f"{device_ptr(i)} PTR"
+        else:
+            yield f"{device_name(i)}.{DEVICE_DOMAIN} A"
+
+
+def generate(name, out_dir, lists=None, devices=0):
+    """Writes the corpus to `out_dir/<name>.txt`; `devices` sizes `device-names` (0: its default)."""
     spec = CORPORA[name]
     gens = {
         "cache-hot": lambda: cache_hot(spec),
         "miss-heavy": lambda: miss_heavy(spec),
         "blocked": lambda: blocked(spec, lists),
         "realistic-home": lambda: realistic_home(spec, lists),
+        "device-names": lambda: device_names(spec, devices),
     }
     gen = gens[name]()
     path = out_dir / f"{name}.txt"
@@ -156,9 +195,11 @@ def main():
     ap.add_argument("corpora", nargs="*", default=["cache-hot", "miss-heavy"], choices=sorted(CORPORA))
     ap.add_argument("--out", type=pathlib.Path, default=pathlib.Path(__file__).parent / "corpora")
     ap.add_argument("--lists", type=pathlib.Path, default=pathlib.Path(__file__).parent / "lists")
+    ap.add_argument("--devices", type=int, default=0,
+                    help=f"device-names: how many devices (default {CORPORA['device-names']['devices']})")
     args = ap.parse_args()
     for name in args.corpora:
-        path, digest = generate(name, args.out, args.lists)
+        path, digest = generate(name, args.out, args.lists, args.devices)
         print(f"{name}: {path} sha256={digest}")
 
 

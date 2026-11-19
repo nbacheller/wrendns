@@ -1,0 +1,9 @@
+<svg viewBox="0 0 320 150" role="img" width="320"><title>Inventory reads only the private IPv4 networks 10/8, 172.16/12 and 192.168/16; 100.64/10 and public space are refused</title>
+<rect x="10" y="12" width="140" height="26" rx="8" class="svg-ok" opacity=".8"/><text x="80" y="30" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">10/8 · 172.16/12 · 192.168/16</text>
+<rect x="10" y="46" width="140" height="26" rx="8" class="svg-box"/><text x="80" y="64" text-anchor="middle" class="svg-mono">192.168.1.0/24</text>
+<path d="M150 59 H180" class="svg-stroke-brand" stroke-width="2"/>
+<rect x="180" y="46" width="130" height="26" rx="8" class="svg-box"/><text x="245" y="64" text-anchor="middle" class="svg-mono">read: inventory</text>
+<rect x="10" y="90" width="140" height="26" rx="8" class="svg-box"/><text x="80" y="108" text-anchor="middle" class="svg-mono">100.64.0.0/10</text>
+<text x="245" y="108" text-anchor="middle" class="svg-sub">refused, never read</text>
+<text x="160" y="140" text-anchor="middle" class="svg-sub">a subnet is a filter, never a range to scan</text>
+</svg>

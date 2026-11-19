@@ -95,13 +95,17 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. Search the query log, newest first: who asked for what, the answer, and timings. Filter by client, group, name (substring), status (blocked, cached, forwarded, local, ...), qtype, rcode, minimum latency, and time, or find the one query a trace ID names (from an exemplar or an exported trace). Pages with `cursor` (from the previous result's nextCursor). Needs the querylog:read scope; subject to the privacy level.",
+    "description": "Read-only. Search the query log, newest first: who asked for what, the answer, and timings. Filter by client, group, name (substring), status (blocked, cached, forwarded, local, ...), qtype, rcode, minimum latency, and time, or find the one query a trace ID names (from an exemplar or an exported trace). Each of name, client, status, qtype, and rcode can be turned around with its Not flag (name with nameNot: every query whose name does not contain the text; on a long log give a time range too). Pages with `cursor` (from the previous result's nextCursor). Needs the querylog:read scope; subject to the privacy level.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
         "client": {
-          "description": "Client IP or device name.",
+          "description": "A client IP, or several comma-separated (addresses, `hostname:<router name>`, Kubernetes workloads as namespace/kind/name; at most 100). With clientNot, every client except these.",
           "type": "string"
+        },
+        "clientNot": {
+          "description": "Keep the queries from every client except those in `client`. Needs `client`.",
+          "type": "boolean"
         },
         "cursor": {
           "description": "From the previous page's nextCursor.",
@@ -129,13 +133,25 @@
           "description": "Part of the queried name.",
           "type": "string"
         },
+        "nameNot": {
+          "description": "Keep the queries whose name does NOT contain `name`. Needs `name`.",
+          "type": "boolean"
+        },
         "qtype": {
           "description": "A, AAAA, HTTPS, ...",
           "type": "string"
         },
+        "qtypeNot": {
+          "description": "Keep the queries whose type is none of `qtype`. Needs `qtype`.",
+          "type": "boolean"
+        },
         "rcode": {
           "description": "NOERROR, NXDOMAIN, SERVFAIL, ...",
           "type": "string"
+        },
+        "rcodeNot": {
+          "description": "Keep the queries whose response code is none of `rcode` (queries with no response code are kept). Needs `rcode`.",
+          "type": "boolean"
         },
         "scope": {
           "description": "Which nodes: cluster (default, every node), site:<name>, node:<name or ID>, or node:local (the node you're connected to). Nodes that don't answer within 2 s are listed in missingNodes.",
@@ -144,6 +160,10 @@
         "status": {
           "description": "blocked, cached, forwarded, local, refused, error, ...",
           "type": "string"
+        },
+        "statusNot": {
+          "description": "Keep the queries whose status is none of `status`. Needs `status`.",
+          "type": "boolean"
         },
         "to": {
           "description": "End (default now).",
@@ -165,7 +185,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. Why a name is (or isn't) blocked or routed for a client: the client's identity and groups, the rules that match, which one wins, and the upstream route. Answers 'why was X blocked for Y?'.",
+    "description": "Read-only. Why a name is (or isn't) blocked or routed for a client: the client's identity, the key it matched on and where its group came from, the groups, the rules that match, which one wins, and the upstream route. Answers 'why was X blocked for Y?'. For everything that applies to a device, use get_client_policy.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -196,7 +216,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. A device's profile: its identity, groups, top domains this hour, its rhythm (per tracked domain, how regularly it's queried: the dominant period such as 'every 2.5 s' and its share), and its most recent queries (with latency and status). Give a device name or IP. Recent queries need the querylog:read scope; without it that part is reported as not allowed.",
+    "description": "Read-only. A device's profile: its identity, groups, the policy that applies to it (policy: the group and the key that matched, lists, services, schedules, rules; needs config:read), top domains this hour, its rhythm (per tracked domain, how regularly it's queried: the dominant period such as 'every 2.5 s' and its share), and its most recent queries (with latency and status). Give a device name or IP. Recent queries need the querylog:read scope; without it that part is reported as not allowed.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -219,6 +239,96 @@
       "type": "object"
     },
     "name": "get_client_profile"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. The network inventory: the LANs and VLANs the routers report (subnet, VLAN, gateway, DHCP pool, domain), and client groups' networks no router reported, each with the group that covers it, its host addresses, the known devices in it, how full it is, and how many devices sit outside the DHCP pool; then every device found by the routers, Home Assistant, and mDNS (MAC, IP, the name the router or Home Assistant gave it, which [[router]] named it, its name in TelltaleDNS, and with [local] device_domain the name it answers as in DNS). Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "list_networks"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. The public DNS resolvers TelltaleDNS knows by name (Cloudflare, Cloudflare for Families, Google, Quad9, OpenDNS, AdGuard, Mullvad, CleanBrowsing and others): each variant's addresses (plain, DNS over TLS, DNS over HTTPS) and TLS name, what it filters, a line on its privacy, and whether the Upstreams page's simple view offers it; also whether this node has an IPv6 route (without one, IPv6 upstreams only time out). Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "list_upstream_presets"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. The stored secrets (routers', alert destinations', OIDC providers', sinks', Git's and OTLP's credentials entered in the UI): each one's name, kind, when and by whom it was set, the credential fields that name it (usedBy), and which nodes hold it and can read it. Never a value. Also this node's secrets store (ready, or locked and why; the key's source and ID, never the key) and every credential field of its configuration with its source: inline or file (set by the configuration files, which win) or stored, and whether this node can read it. On a replica, stale=true means the primary couldn't be asked. There is no tool to set or clear a secret: a person does that (Settings → Integrations & secrets, or telltale ctl secrets). Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "secrets_status"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. Whether the Pi-hole compatible API is on (the part of Pi-hole's v6 and v5 interfaces that dashboards, phone apps and the Home Assistant Pi-hole integration use: statistics, and turning blocking off for a while and on again), whether a token has been issued and when, when it was last used, and the longest pause it may start (`maxPauseMinutes`). Never the token. There is no tool to turn it on or to issue or rotate its token: an admin does that in Settings → Pi-hole. Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "pihole_api_status"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. The router integrations in the configuration (UniFi, OPNsense, Home Assistant): each one's name, kind and address (no password), its settings with stored secrets named (never their values), whether the configuration files define it, each credential's source and whether this node can read it, and the last read: its state (ok, failing, waiting, or skipped and why), when, the error, and the devices and networks it reported. There is no tool to add, change or check a router: an admin does that in Settings or the Routers page. Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "list_routers"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. Where this node sends query events and metrics: each event sink (file, syslog or webhook) with its settings (a webhook token named, never valued), whether the configuration files define it, whether this node runs it and why not, and how many events it dropped since start; and the OTLP export (collector address, interval, header names, whether it runs). Use it to answer why events are not reaching a collector.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "list_event_sinks"
   },
   {
     "annotations": {
@@ -345,6 +455,87 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. Every filter and rule that applies to one device, and why: the group it lands in and the key that matched (client ID, MAC, workload, address, network or router name, with the precedence ladder), then sections for the block response, the group's lists and blocked services, SafeSearch and YouTube, answer filtering, rewrites, schedules (and whether each is in effect now), the quick rules that apply (with expiry) and the upstream group. It is resolved the way a query and explain_decision resolve the device, so the two agree. Give a device name, an IP, or a Kubernetes workload. Needs config:read; a group-restricted token sees its group's devices only.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "client": {
+          "description": "A device's name, its IP, or a workload (namespace/kind/name).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "client"
+      ],
+      "type": "object"
+    },
+    "name": "get_client_policy"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. The content categories this node offers (adult content, gambling, malware, ad block, ...), grouped as the picker shows them, each with its description, tiers, entries and whether it is heavy; every source with its maintainer, licence (SPDX), format, size and what this node has downloaded; the presets (basic); the categories not offered and why; what each group selects now; and what all of them cost together against the node's memory limit. Use it before plan_set_group_content. Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "categories_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. One group's content filtering: the level (off, basic, enhanced), its categories and tiers, whether ad block is on, the sources they make the node download, and what that costs. With the optional proposal fields (level, categories, ads) it also says what the cost would be if the group were set that way, without changing anything. Needs config:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "ads": {
+          "description": "A proposal: price ad block on or off.",
+          "type": "boolean"
+        },
+        "categories": {
+          "description": "A proposal: price these category IDs.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "group": {
+          "description": "The group's name.",
+          "type": "string"
+        },
+        "level": {
+          "description": "A proposal: price this level.",
+          "enum": [
+            "off",
+            "basic",
+            "enhanced"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "group"
+      ],
+      "type": "object"
+    },
+    "name": "get_group_content"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. Latency percentiles (p50/p90/p99/p99.9/max in ms) broken down by pipeline stage, upstream, client, or query type, for the current or previous hour. Find where time goes. With histogram: true, also the last hour's answers per latency bucket per minute (boundsUs, per path or per upstream when by is upstream), to see a tail's shape.",
     "inputSchema": {
       "additionalProperties": false,
@@ -405,13 +596,35 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. Filter lists: size, last update, errors, hits since start, unique names (only that list has them), and which lists overlap. Find dead, failing, or redundant lists.",
+    "description": "Read-only. Filter lists: size, last check, last confirmed current, last change, errors, whether a refresh is downloading it now (`refreshing`), hits since start, unique names (only that list has them), and which lists overlap. Find dead, failing, or redundant lists.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {},
       "type": "object"
     },
     "name": "list_effectiveness"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. Which filter lists add little: each enabled list's entries, the names no other list of its kind has (unique), its regexes and modifier rules (counted as unique), the share it adds, the lists covering the rest of it, and the groups that name it; plus the prune plan: the block lists that add at most thresholdPercent of their own entries (default 1), with the most names turning them all off could stop blocking, and why every other list stays. Allow lists, shadow lists, lists a group names, and lists not compiled yet are never proposed. Changes nothing: a person turns the lists off in the UI after previewing; propose it to them with the numbers.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "thresholdPercent": {
+          "description": "Propose lists adding at most this percent of their own entries. Default 1.",
+          "maximum": 50,
+          "minimum": 0,
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "name": "list_overlap"
   },
   {
     "annotations": {
@@ -470,6 +683,38 @@
       "type": "object"
     },
     "name": "health"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. How is the network doing, as the live map sees it? Counts of nodes by health (green, yellow, red, idle), the red and yellow nodes with their reasons (at most 50: a device failing lookups, a slow or benched upstream, a resolver node that is down, a router integration that is failing), and the five busiest flows. The map is built from a sample of recent lookups (sampleRate says how thin; 'idle' means too few answers to say). Device names and addresses appear at query-log privacy levels 0 and 1; at level 2 and above devices are hidden and only networks, nodes and upstreams are listed. No domain name is ever in it. Optional filters narrow it to one network, group, device or node. Needs analytics:read. Answers map_disabled when [map] is off.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "device": {
+          "description": "Only devices whose name or address contains this text.",
+          "type": "string"
+        },
+        "group": {
+          "description": "Only devices of this client group.",
+          "type": "string"
+        },
+        "network": {
+          "description": "Only this network (a name from list_networks / GET /api/v1/networks).",
+          "type": "string"
+        },
+        "node": {
+          "description": "Only this TelltaleDNS node (pod, site or ID).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "network_health"
   },
   {
     "annotations": {
@@ -609,6 +854,26 @@
       "type": "object"
     },
     "name": "cache_advice"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. The settings that operators change from the UI, per node (this node when none is named): the cache sizing and TTLs, the list refresh and stale settings, DNSSEC mode and negative trust anchors, the drill schedule, and the support and update switches. Each section lists its fields, the fields the configuration files set (setByFile), and whether a restart is pending. Agents can read these but not change them.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "node": {
+          "description": "The node's name (default: this node).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "node_settings"
   },
   {
     "annotations": {
@@ -1670,7 +1935,111 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Plans a change (nothing changes until apply_plan). Changes which names and devices are kept out of the query log, the live view, the dashboard and top lists, anomalies, and exports (noise like connectivity checks or a monitoring probe). Their queries are still answered and still counted in /metrics. `names` covers each name and its subdomains; `clients` takes addresses or networks; both replace the current lists. `enabled` turns the exclusions off without losing the lists. Fields left out keep their current values. Applies to every node from the next query. Needs config:write:exclusions (and config:read to read the current ones).",
+    "description": "Plans a change (nothing changes until apply_plan). Changes the special-name handling: iCloud Private Relay names answered NXDOMAIN (blockIcloudPrivateRelay), single-label names kept off upstreams (singleLabelNxdomain, domain-needed), the Firefox canary, private reverse lookups, CHAOS queries, localhost, and ddrName (the name the encrypted listeners' certificates carry, for DDR). Fields left out keep their current values. A field the config files set can't be changed here. ddrName is admin-only: an agent can't plan it (refused). Applies on the next query, with no restart. Needs config:write:special (and config:read to read the current settings).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "blockFirefoxCanary": {
+          "description": "use-application-dns.net answers NXDOMAIN, so Firefox keeps the network's DNS.",
+          "type": "boolean"
+        },
+        "blockIcloudPrivateRelay": {
+          "description": "mask.icloud.com and mask-h2.icloud.com answer NXDOMAIN, so Apple devices turn Private Relay off here.",
+          "type": "boolean"
+        },
+        "ddrName": {
+          "description": "The host name on the encrypted listeners' certificates (DDR). Admin-only: an agent can't set it.",
+          "type": "string"
+        },
+        "localhost": {
+          "description": "localhost names answer loopback addresses.",
+          "type": "boolean"
+        },
+        "privatePtrNxdomain": {
+          "description": "Reverse lookups for private addresses answer NXDOMAIN unless local data or a route covers them.",
+          "type": "boolean"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "refuseChaos": {
+          "description": "CHAOS-class queries (version.bind, id.server) are REFUSED.",
+          "type": "boolean"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
+        },
+        "singleLabelNxdomain": {
+          "description": "One-label names asked for A, AAAA or HTTPS that nothing local answers get NXDOMAIN without upstreams.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_set_special_names"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Changes the device-name settings: the domain devices get names under (deviceDomain, e.g. home.arpa; local is refused), the TTL of those answers (deviceTtl), whether names devices announce over mDNS count (deviceMdns; needs the mDNS switch on, which an admin sets), automatic reverse names (autoPtr), and the TTL of other local names (defaultTtl). Fields left out keep their current values; a field the config files set can't be changed here. Names change within about 10 seconds, with no restart. Needs config:write:local (and config:read to read the current settings).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "autoPtr": {
+          "description": "Make reverse names for every local address record.",
+          "type": "boolean"
+        },
+        "defaultTtl": {
+          "description": "Seconds for local names without their own TTL.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deviceDomain": {
+          "description": "The domain, such as home.arpa (not local). Empty turns device names off.",
+          "type": "string"
+        },
+        "deviceMdns": {
+          "description": "Also name devices by the names they announce over mDNS.",
+          "type": "boolean"
+        },
+        "deviceTtl": {
+          "description": "Seconds for device names (they follow DHCP, so keep it short; 60 by default).",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_set_device_names"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Changes which names and devices are kept out of the query log, the live view, the dashboard and top lists, anomalies, and exports (noise like connectivity checks or a monitoring probe). Their queries are still answered and still counted in /metrics. `names` covers each name and its subdomains; `clients` takes addresses or networks; both replace the current lists. `enabled` turns the exclusions off without losing the lists. Fields left out keep their current values. `log` keeps queries out of the query log (and the live view and event sinks) only: they are still counted in the dashboard, top lists and anomalies. It has `clients` (addresses, networks or device names), `domains` (`localhost` is exactly that name, `*.lan` is every name under lan), and `own_lookups` (this node's own loopback and addresses); it replaces the current `log` settings as a whole. Applies to every node from the next query. Needs config:write:exclusions (and config:read to read the current ones).",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1684,6 +2053,28 @@
         "enabled": {
           "description": "Turn the exclusions on or off (the lists are kept).",
           "type": "boolean"
+        },
+        "log": {
+          "additionalProperties": false,
+          "description": "Kept out of the query log only (still counted in the statistics); replaces the current log settings.",
+          "properties": {
+            "clients": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "domains": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "own_lookups": {
+              "type": "boolean"
+            }
+          },
+          "type": "object"
         },
         "names": {
           "description": "Names kept out, each with its subdomains (replaces the current list).",
@@ -1707,6 +2098,82 @@
       "type": "object"
     },
     "name": "plan_set_exclusions"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Changes the live network map's settings: whether it runs, how many lookups per second each node samples (`eventRate`, 10 to 2,000), how many sampled answers a device or edge needs before it is coloured (`minSample`), what counts as slow (`warnLatencyMs`; null follows the latency objective), and the percent thresholds that turn it yellow or red (`warnSlowPct`, `warnErrorPct`, `errorPct`, `warnBlockedPct`, 1 to 100; `errorPct` at least `warnErrorPct`). Fields left out keep their current values. It changes only what the map shows, never an answer. Applies to every node within a few seconds. Needs config:write:map (and config:read to read the current settings).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "description": "Turn the map on or off (off: no sampling, and the map routes answer map_disabled).",
+          "type": "boolean"
+        },
+        "errorPct": {
+          "description": "Red at this percent of SERVFAIL or timeouts (at least warnErrorPct).",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "eventRate": {
+          "description": "Lookups per second each node samples.",
+          "maximum": 2000,
+          "minimum": 10,
+          "type": "integer"
+        },
+        "minSample": {
+          "description": "Sampled answers needed before something is coloured (fewer is idle).",
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
+        },
+        "warnBlockedPct": {
+          "description": "A device turns yellow at this percent of blocked answers.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "warnErrorPct": {
+          "description": "Yellow at this percent of SERVFAIL or timeouts.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "warnLatencyMs": {
+          "description": "An answer slower than this is slow; null follows [slo] latency_ms.",
+          "maximum": 60000,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "warnSlowPct": {
+          "description": "Yellow at this percent of slow answers.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_set_map"
   },
   {
     "annotations": {
@@ -1787,7 +2254,66 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Plans a change (nothing changes until apply_plan). Changes (or adds) an upstream server (`url`) or an upstream group (`members`, `strategy`: failover, round_robin, weighted, fastest, parallel). Fields left out keep their current values. Needs config:write:upstreams (and config:read to read the current entry).",
+    "description": "Plans a change (nothing changes until apply_plan). **An operator must approve it first, whatever [agents] require_approval says**: choosing categories makes the node download lists (tens of megabytes a day), which an agent never starts on its own, so this tool only plans and apply_plan works after an operator approves the plan (Agent changes in the web UI); applying an unapproved plan answers 403 agent_not_allowed. Sets a group's content filtering: `level` (off, basic: adult content, malware, phishing and scam; enhanced: the `categories` you list), `categories` (IDs from categories_list), `tiers` (category to tier, such as gambling extended) and `ads` (ad block). Fields left out keep their current values. A heavy selection (newly registered domains, the full threat feed) or one over the entry budget is refused to an agent at planning time: the owner confirms that cost. Needs config:write:groups (and config:read).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "ads": {
+          "description": "Ad block.",
+          "type": "boolean"
+        },
+        "categories": {
+          "description": "With enhanced: category IDs (replaces the current list).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "group": {
+          "description": "The group (profile) to change.",
+          "type": "string"
+        },
+        "level": {
+          "description": "Filtering level.",
+          "enum": [
+            "off",
+            "basic",
+            "enhanced"
+          ],
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
+        },
+        "tiers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Tier per category, for example gambling: extended.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "group",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_set_group_content"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Changes (or adds) an upstream server (`url`) or an upstream group (`members`, `strategy`: failover, round_robin, weighted, fastest, parallel). Fields left out keep their current values. Needs config:write:upstreams (and config:read to read the current entry). Moving an upstream that holds a credential (headers, a client key, a password in its URL) and exec:// or unix:// upstreams are an admin's in the UI: such a plan is refused (403).",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1935,6 +2461,41 @@
       "type": "object"
     },
     "name": "flush_cache"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes at once (audited, no plan; no configuration changes). Downloads the filter lists again now instead of waiting for their schedule: every enabled list, or only `names`. Returns the lists queued, the named ones left out (disabled), and the node that downloads them (the primary, in a cluster). The downloads run in the background: `refreshing` in list_effectiveness clears when each list is done. Unchanged lists cost one conditional request; the filter is recompiled only if something changed. With dryRun, says what would be queued and queues nothing. Needs the config:write:lists scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "dryRun": {
+          "description": "Say what would be downloaded; download nothing.",
+          "type": "boolean"
+        },
+        "names": {
+          "description": "Only these lists, by name (default: every enabled list).",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "refresh_lists"
   },
   {
     "annotations": {

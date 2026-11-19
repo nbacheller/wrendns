@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { BASE_URL } from './tests/e2e/ports';
 
 // REQ: API-005 — T3.9 acceptance: the Playwright suite runs the real binary (`server.mjs`).
 // Build first: `cargo build -p telltale` and `npm run build` (or set TELLTALE_BIN).
@@ -15,13 +16,13 @@ export default defineConfig({
   // `github` turns failures into annotations (readable without the job log).
   reporter: process.env.CI ? [['list'], ['github'], ['html', { open: 'never' }]] : 'list',
   use: {
-    baseURL: 'http://127.0.0.1:18054',
+    baseURL: BASE_URL,
     trace: 'retain-on-failure',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
     command: 'node tests/e2e/server.mjs',
-    url: 'http://127.0.0.1:18054/livez',
+    url: `${BASE_URL}/livez`,
     reuseExistingServer: false,
     timeout: 60_000,
     stdout: 'pipe',

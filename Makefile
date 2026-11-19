@@ -34,7 +34,7 @@ image:
 	docker buildx build --load -t telltale:dev .
 	deploy/image/smoke.sh telltale:dev
 
-# All three platforms into an OCI tarball, then the 15 MiB-per-arch size gate.
+# All three platforms into an OCI tarball, then the 25 MiB-per-arch size gate (ADR-916).
 image-all:
 	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 --output type=oci,dest=target/telltale-oci.tar .
 	python3 deploy/image/size.py --oci target/telltale-oci.tar
@@ -50,6 +50,6 @@ udp-scaling:
 # REQ: NFR-004 — fuzz every target for FUZZ_SECS seconds (needs nightly + cargo-fuzz).
 FUZZ_SECS ?= 600
 fuzz:
-	cd fuzz && for t in parse_query parse_response differential parse_list; do \
+	cd fuzz && for t in parse_query parse_response differential parse_list inventory_merge; do \
 		cargo +nightly fuzz run $$t -- -max_total_time=$(FUZZ_SECS) -max_len=1500 || exit 1; \
 	done

@@ -1,6 +1,8 @@
 //! OPS-005 acceptance tests: unknown keys error with path; env overrides apply.
 
-use telltale_config::{ByteSize, Config, ConfigError, Loader, Role, Strategy, TelemetryMode};
+use telltale_config::{
+    AlertWhen, ByteSize, Config, ConfigError, Loader, Role, Strategy, TelemetryMode,
+};
 
 const EXAMPLE: &str = include_str!("../../../docs/examples/telltale.toml");
 
@@ -367,6 +369,101 @@ trust_edns_mac_from = ["192.168.1.1/32"]
     assert!(c.clients.neighbor_table);
 }
 
+// REQ: FLT-006 (T24.9, ADR-973) — `hostname:` keys and group router names are label-form router
+// names; a router name is in one group only, and a rule may name one.
+#[test]
+fn flt_006_router_names_are_labels() {
+    use telltale_config::MatchKey;
+    assert_eq!(
+        MatchKey::parse("hostname:Kitchen-Tablet").unwrap(),
+        MatchKey::Hostname("kitchen-tablet".into())
+    );
+    assert!(
+        MatchKey::parse("hostname:Kitchen Tablet").is_err(),
+        "a label, not a name"
+    );
+    assert!(MatchKey::parse("hostname:-edge").is_err());
+    assert!(MatchKey::parse("hostname:").is_err());
+    // A group's router names are case-insensitive, as the keys are: `Kids-iPad` is `kids-ipad`,
+    // so another group naming it in any case is the same duplicate.
+    assert!(
+        load_str(
+            r#"
+[[group]]
+name = "kids"
+router_names = ["Kids-iPad"]
+"#
+        )
+        .is_ok()
+    );
+    let dup = load_str(
+        r#"
+[[group]]
+name = "kids"
+router_names = ["Kids-iPad"]
+
+[[group]]
+name = "guests"
+router_names = ["kids-ipad"]
+"#,
+    )
+    .err()
+    .unwrap_or_default();
+    assert!(
+        dup.iter()
+            .any(|e| e.to_string().contains("already a router name")),
+        "a case-only duplicate is refused"
+    );
+    let errs = load_str(
+        r#"
+[[group]]
+name = "kids"
+router_names = ["kids-ipad", "Bad Name"]
+
+[[group]]
+name = "guests"
+router_names = ["kids-ipad"]
+
+[[client]]
+name = "Tablet"
+match = ["hostname:kitchen-tablet"]
+
+[[rule]]
+id = "no-games"
+action = "block"
+domain = "games.example"
+devices = ["hostname:kitchen-tablet"]
+
+[[rule]]
+id = "bad-device"
+action = "block"
+domain = "ads.example"
+devices = ["hostname:not a label"]
+"#,
+    )
+    .unwrap_err();
+    let text: Vec<String> = errs.iter().map(ToString::to_string).collect();
+    assert!(
+        text.iter().any(|e| e.contains("group[0].router_names[1]")),
+        "{text:?}"
+    );
+    assert!(
+        text.iter()
+            .any(|e| e.contains("group[1].router_names[0]") && e.contains("`kids`")),
+        "{text:?}"
+    );
+    assert!(
+        text.iter().any(|e| e.contains("rule[1].devices[0]")),
+        "{text:?}"
+    );
+    assert!(
+        !text
+            .iter()
+            .any(|e| e.contains("rule[0].devices") || e.contains("client[0].match")),
+        "{text:?}"
+    );
+}
+
 // REQ: FLT-005 (ADR-050) — a network can belong to one group; colors are #rrggbb.
 #[test]
 fn flt_005_group_networks_validation() {
@@ -605,6 +702,121 @@ fn flt_012_blocked_services_are_validated() {
     assert!(err.contains("kept for blocked services"), "{err}");
 }
 
+/// REQ: FLT-901 (ADR-994 item 9) — the `cat-` list prefix is the catalog's: a list that defines a
+/// source under that name is refused, a bare `cat-` entry may only set `mode`, and a group cannot
+/// name a category list.
+#[test]
+fn flt_901_cat_prefix_reserved() {
+    let load = |toml: &str| load_str(toml).map(|l| l.config);
+    let err = format!(
+        "{:?}",
+        load(
+            "[[list]]
+name = \"cat-mine\"
+url = \"https://example.com/x.txt\"
+"
+        )
+        .unwrap_err()
+    );
+    assert!(err.contains("kept for category lists"), "{err}");
+    let err = format!(
+        "{:?}",
+        load(
+            "[[list]]
+name = \"cat-hagezi-nsfw\"
+rules = [\"||x.example^\"]
+"
+        )
+        .unwrap_err()
+    );
+    assert!(err.contains("kept for category lists"), "{err}");
+    // A bare entry sets the mode of a real category list (shadow) and nothing else.
+    assert!(
+        load(
+            "[[list]]
+name = \"cat-hagezi-nsfw\"
+mode = \"shadow\"
+"
+        )
+        .is_ok()
+    );
+    let err = format!(
+        "{:?}",
+        load(
+            "[[list]]
+name = \"cat-hagezi-nsfw\"
+enabled = false
+"
+        )
+        .unwrap_err()
+    );
+    assert!(err.contains("can only be set to `mode`"), "{err}");
+    let err = format!(
+        "{:?}",
+        load(
+            "[[group]]
+name = \"kids\"
+lists = [\"cat-hagezi-nsfw\"]
+"
+        )
+        .unwrap_err()
+    );
+    assert!(err.contains("content.categories"), "{err}");
+}
+
+/// REQ: FLT-901, FLT-902 — a group's content: levels parse, a category id this version does
+/// not know is a warning (version skew), a service bundle or an unknown tier is an error, and so
+/// is an unknown safe-search engine.
+#[test]
+fn flt_902_content_and_engines_are_validated() {
+    let ok = load_str(
+        "[[group]]
+name = \"kids\"
+safe_search_engines = [\"google\", \"bing\"]
+         content = { level = \"enhanced\", categories = [\"adult\", \"gambling\", \"from-the-future\"], tiers = { gambling = \"extended\" }, ads = true }
+",
+    )
+    .unwrap();
+    assert!(
+        ok.warnings.iter().any(|w| w.contains("from-the-future")),
+        "{:?}",
+        ok.warnings
+    );
+    let c = ok.config.group[0].content.as_ref().unwrap();
+    assert_eq!(c.level, telltale_config::ContentLevel::Enhanced);
+    assert!(c.ads);
+    let bad = |toml: &str| format!("{:?}", load_str(toml).unwrap_err());
+    let e = bad("[[group]]
+name = \"g\"
+content = { level = \"enhanced\", categories = [\"ai\"] }
+");
+    assert!(e.contains("bundle of services"), "{e}");
+    let e = bad("[[group]]
+name = \"g\"
+content = { tiers = { gambling = \"huge\" } }
+");
+    assert!(e.contains("no tier `huge`"), "{e}");
+    let e = bad("[[group]]
+name = \"g\"
+content = { tiers = { ads = \"light\" } }
+");
+    assert!(e.contains("ads_tier"), "{e}");
+    let e = bad("[[group]]
+name = \"g\"
+safe_search_engines = [\"altavista\"]
+");
+    assert!(e.contains("no engine `altavista`"), "{e}");
+    let e = bad("[[group]]
+name = \"g\"
+content = { level = \"loud\" }
+");
+    assert!(e.contains("level"), "{e}");
+    let e = bad("[filter]
+entry_budget = 0
+");
+    assert!(e.contains("entry_budget"), "{e}");
+}
+
 /// REQ: FLT-010 (T7.10) — schedules: known schedules, lists, and services; readable windows
 /// and time zones.
 #[test]
@@ -823,6 +1035,102 @@ fn obs_022_exclusions_are_validated() {
     ] {
         assert!(load(bad).is_err(), "{bad}");
     }
+}
+
+/// REQ: OBS-901 (T26.2, ADR-958 section 4) — `[map]` defaults and bounds: every out-of-range
+/// value is refused with its field named, and red can't come before yellow.
+#[test]
+fn obs_901_map_config_defaults_and_bounds() {
+    let load = |toml: &str| {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+    };
+    let m = load("").unwrap().config.map;
+    assert!(m.enabled);
+    assert_eq!(
+        (
+            m.event_rate,
+            m.min_sample,
+            m.warn_slow_pct,
+            m.warn_error_pct,
+            m.error_pct,
+            m.warn_blocked_pct
+        ),
+        (200, 20, 10, 5, 25, 60)
+    );
+    assert_eq!(m.warn_latency_ms, None, "follows [slo] latency_ms");
+    for (bad, field) in [
+        (
+            "[map]
+event_rate = 9
+",
+            "map.event_rate",
+        ),
+        (
+            "[map]
+event_rate = 2001
+",
+            "map.event_rate",
+        ),
+        (
+            "[map]
+min_sample = 0
+",
+            "map.min_sample",
+        ),
+        (
+            "[map]
+warn_latency_ms = 0
+",
+            "map.warn_latency_ms",
+        ),
+        (
+            "[map]
+warn_slow_pct = 101
+",
+            "map.warn_slow_pct",
+        ),
+        (
+            "[map]
+warn_blocked_pct = 0
+",
+            "map.warn_blocked_pct",
+        ),
+        (
+            "[map]
+warn_error_pct = 30
+",
+            "map.error_pct",
+        ),
+        (
+            "[map]
+speed = 3
+",
+            "speed",
+        ),
+    ] {
+        let err = format!("{:?}", load(bad).unwrap_err());
+        assert!(err.contains(field), "{bad}: {err}");
+    }
+    assert!(
+        load(
+            "[map]
+event_rate = 10
+error_pct = 5
+"
+        )
+        .is_ok()
+    );
+    assert!(
+        load(
+            "[map]
+enabled = false
+"
+        )
+        .is_ok()
+    );
 }
 
 /// REQ: OPS-010 (T13.4) — maintenance lasts an hour unless a request says otherwise; the
@@ -1159,6 +1467,57 @@ fn t8_2_routers_are_validated() {
     );
 }
 
+/// REQ: API-012 (T22.3) — `type = "home_assistant"`: a token file, and none of the other kinds'
+/// settings.
+#[test]
+fn api_012_home_assistant_router_is_validated() {
+    const HA: &str = "[[router]]\nname = \"ha\"\ntype = \"home_assistant\"\nurl = \"http://192.0.2.20:8123\"\n";
+    let ok = load_str(&format!("{HA}api_key_file = \"/run/secrets/ha-token\"\n")).unwrap();
+    assert_eq!(
+        ok.config.router[0].kind,
+        telltale_config::RouterKind::HomeAssistant
+    );
+    assert_eq!(paths(&load_str(HA).unwrap_err()), ["router[0]"]);
+    for extra in [
+        "username = \"u\"\n",
+        "password_file = \"/p\"\n",
+        "api_secret_file = \"/s\"\n",
+        "site = \"default\"\n",
+    ] {
+        let errs = load_str(&format!("{HA}api_key_file = \"/t\"\n{extra}")).unwrap_err();
+        assert_eq!(paths(&errs), ["router[0]"], "{extra}");
+    }
+}
+
+/// REQ: DNS-023 (T22.1) — `[local] device_domain`: a domain name, not `local`; a sane TTL;
+/// a warning when `device_mdns` has no listener.
+#[test]
+fn dns_023_device_domain_is_validated() {
+    let ok = load_str("[local]\ndevice_domain = \"home.arpa\"\n").unwrap();
+    assert_eq!(
+        ok.config
+            .local
+            .device_domain
+            .as_ref()
+            .map(telltale_config::SafeString::as_str),
+        Some("home.arpa")
+    );
+    assert_eq!(ok.config.local.device_ttl, 60);
+    assert!(load_str("[local]\ndevice_domain = \"lan.\"\n").is_ok());
+    for bad in ["local", "LOCAL", "bad name", "-x.home.arpa", "", "a..b"] {
+        let errs = load_str(&format!("[local]\ndevice_domain = \"{bad}\"\n")).unwrap_err();
+        assert_eq!(paths(&errs), ["local.device_domain"], "{bad}");
+    }
+    let errs = load_str("[local]\ndevice_ttl = 0\n").unwrap_err();
+    assert_eq!(paths(&errs), ["local.device_ttl"]);
+    let w = load_str("[local]\ndevice_domain = \"home.arpa\"\ndevice_mdns = true\n").unwrap();
+    assert!(
+        w.warnings.iter().any(|x| x.contains("device_mdns")),
+        "{:?}",
+        w.warnings
+    );
+}
+
 // REQ: FLT-017 (T15.1) — `[kubernetes]`: map rules name known groups and kinds; the section is
 // shared but left out of the shared part while at its defaults (older replicas).
 #[test]
@@ -1385,4 +1744,362 @@ note = "hourly reverse-DNS sweep"
         let err = format!("{:?}", load(&bad).unwrap_err());
         assert!(err.contains(why), "{why}: {err}");
     }
+}
+
+/// Every field a stored secret can fill, set twice (with a bad name and an inline OTLP header).
+const BOTH: &str = r#"
+[[router]]
+name = "unifi"
+type = "unifi"
+url = "https://192.168.1.1"
+api_key_file = "/run/secrets/unifi"
+api_key_ref = "unifi"
+[[router]]
+name = "opn"
+type = "opnsense"
+url = "https://opnsense.lan"
+api_key_ref = "opn.key"
+api_secret_file = "/run/secrets/opn"
+api_secret_ref = "opn.secret"
+[[alerts.destination]]
+name = "phone"
+type = "ntfy"
+url = "https://ntfy.sh/t"
+token_file = "/run/secrets/ntfy"
+token_ref = "ntfy"
+[[alerts.destination]]
+name = "mail"
+type = "email"
+url = "smtp://smtp.example:587"
+from = "a@example.com"
+to = ["a@example.com"]
+username = "a@example.com"
+password_file = "/run/secrets/smtp"
+password_ref = "smtp"
+[[telemetry.sink]]
+name = "splunk"
+type = "webhook"
+url = "https://hec.example/services/collector"
+token_file = "/run/secrets/hec"
+token_ref = "hec"
+[telemetry.otlp]
+endpoint = "https://otel.example"
+headers = { api-key = "inline" }
+header_refs = { api-key = "otlp", x-other = "Bad Name" }
+[auth.oidc]
+public_url = "https://dns.example.com"
+[[auth.oidc.provider]]
+id = "kc"
+issuer = "https://kc.example/realms/home"
+client_id = "telltale"
+client_secret = "inline"
+client_secret_ref = "kc"
+[cluster.git]
+repo = "https://git.example/r.git"
+path = "t.toml"
+credentials_file = "/run/secrets/git"
+credentials_ref = "git"
+webhook_secret_file = "/run/secrets/hook"
+webhook_secret_ref = "hook"
+"#;
+
+/// One each, by reference.
+const REFS: &str = r#"
+[[router]]
+name = "unifi"
+type = "unifi"
+url = "https://192.168.1.1"
+api_key_ref = "router.unifi.api_key"
+[[router]]
+name = "ha"
+type = "home_assistant"
+url = "http://ha:8123"
+api_key_ref = "ha"
+[[alerts.destination]]
+name = "mail"
+type = "email"
+url = "smtp://smtp.example:587"
+from = "a@example.com"
+to = ["a@example.com"]
+username = "a@example.com"
+password_ref = "smtp"
+"#;
+
+/// REQ: OPS-014 (AC7, ADR-903 §2) — a credential comes from one of its inline value, its
+/// `_file` and its `_ref`: two of them is an error at the reference's path, for every field a
+/// stored secret can fill; a reference's name is checked; an OTLP header is in `headers` or
+/// `header_refs`; `<redacted>` in the files is an error; and the fields a kind needs may come
+/// from a reference.
+#[test]
+fn ops_014_file_inline_ref_mutually_exclusive() {
+    let errs = load_str(BOTH).unwrap_err();
+    let p = paths(&errs);
+    for want in [
+        "router[0].api_key_ref",
+        "router[1].api_secret_ref",
+        "alerts.destination[0].token_ref",
+        "alerts.destination[1].password_ref",
+        "telemetry.sink[0].token_ref",
+        "telemetry.otlp.header_refs.api-key",
+        "telemetry.otlp.header_refs.x-other",
+        "auth.oidc.provider[0].client_secret_ref",
+        "cluster.git.credentials_ref",
+        "cluster.git.webhook_secret_ref",
+    ] {
+        assert!(p.contains(&want), "{want} not in {p:?}");
+    }
+    assert!(
+        !p.contains(&"router[1]"),
+        "OPNsense's key and secret may be references: {p:?}"
+    );
+    // One each, by reference: valid, and the kinds' needs are met.
+    let loaded = load_str(REFS).unwrap();
+    assert_eq!(
+        loaded.config.router[0].api_key_ref.as_deref(),
+        Some("router.unifi.api_key")
+    );
+    // Serialized only when set: a configuration without references reads as before.
+    let plain = toml::to_string(&load_str("").unwrap().config).unwrap();
+    assert!(
+        !plain.contains("_ref =") && !plain.contains("header_refs"),
+        "{plain}"
+    );
+    let back = toml::to_string(&loaded.config).unwrap();
+    assert!(
+        back.contains("api_key_ref = \"router.unifi.api_key\""),
+        "{back}"
+    );
+    // The redaction marker is never a value.
+    let errs = load_str(
+        r#"
+[[upstream]]
+name = "doh"
+url = "https://doh.example/dns-query"
+headers = { Authorization = "<redacted>" }
+[[upstream_group]]
+name = "default"
+members = ["doh"]
+"#,
+    )
+    .unwrap_err();
+    assert_eq!(paths(&errs), ["upstream[0].headers.Authorization"]);
+    // A URL's password too, wherever a credential path has one (what `config check --print`
+    // shows for it).
+    let errs = load_str(
+        r#"
+[[alerts.destination]]
+name = "hook"
+type = "webhook"
+url = "https://u:<redacted>@hooks.example/x"
+[cluster.git]
+repo = "https://git:<redacted>@git.example/cfg.git"
+path = "telltale/shared.toml"
+"#,
+    )
+    .unwrap_err();
+    let p = paths(&errs);
+    for want in ["alerts.destination[0].url", "cluster.git.repo"] {
+        assert!(p.contains(&want), "{want} not in {p:?}");
+    }
+}
+
+/// REQ: T8.2, CLU-003 (ADR-166) — `offline_days`: 30 unless set, 0 turns offline names off,
+/// more than a year is refused, and the default is not written back, so a node on an older
+/// build (the section refuses fields it doesn't know) still reads the shared configuration.
+#[test]
+fn t8_2_router_offline_days() {
+    const UNIFI: &str = "[[router]]\nname = \"udm\"\ntype = \"unifi\"\nurl = \"https://192.168.1.1\"\napi_key_file = \"/k\"\n";
+    let default = load_str(UNIFI).unwrap();
+    assert_eq!(default.config.router[0].offline_days, 30);
+    let written = serde_json::to_value(&default.config.router[0]).unwrap();
+    assert!(written.get("offline_days").is_none(), "{written}");
+
+    let off = load_str(&format!("{UNIFI}offline_days = 0\n")).unwrap();
+    assert_eq!(off.config.router[0].offline_days, 0);
+    let written = serde_json::to_value(&off.config.router[0]).unwrap();
+    assert_eq!(written["offline_days"], 0);
+
+    let year = load_str(&format!("{UNIFI}offline_days = 365\n")).unwrap();
+    assert_eq!(year.config.router[0].offline_days, 365);
+    let errs = load_str(&format!("{UNIFI}offline_days = 366\n")).unwrap_err();
+    assert_eq!(paths(&errs), ["router[0].offline_days"]);
+}
+
+/// REQ: OBS-010 (T27.1) — the Alerts form offers every `when` the server accepts (the `AlertWhen`
+/// enum, read from its JSON Schema), and no other: `ui/src/lib/alert-conditions.ts` is compared
+/// with the enum in both directions, so a new condition fails this test until the form offers it.
+#[test]
+fn obs_010_alert_conditions_match_ui() {
+    const UI_LIST: &str = include_str!("../../../ui/src/lib/alert-conditions.ts");
+    let schema = serde_json::to_value(schemars::schema_for!(AlertWhen)).unwrap();
+    // Doc comments on the variants make schemars write `oneOf` with a `const` each; plain
+    // variants give an `enum` array. Both are read.
+    let mut server: Vec<String> = match (schema["enum"].as_array(), schema["oneOf"].as_array()) {
+        (Some(values), _) => values
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect(),
+        (None, Some(variants)) => variants
+            .iter()
+            .filter_map(|v| v["const"].as_str().map(str::to_owned))
+            .collect(),
+        (None, None) => panic!("AlertWhen is a string enum"),
+    };
+    server.sort();
+    assert!(server.len() >= 22, "the schema lists the enum's values");
+
+    // The array literal in the module: every quoted name between `alertConditions` and `];`.
+    let body = UI_LIST
+        .split_once("alertConditions")
+        .and_then(|(_, rest)| rest.split_once("];"))
+        .map(|(body, _)| body)
+        .expect("ui/src/lib/alert-conditions.ts exports alertConditions");
+    let mut ui: Vec<String> = body
+        .split('\'')
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 1)
+        .map(|(_, name)| name.to_owned())
+        .collect();
+    let listed = ui.len();
+    ui.sort();
+    ui.dedup();
+    assert_eq!(listed, ui.len(), "no condition is listed twice");
+    let missing: Vec<&String> = server.iter().filter(|c| !ui.contains(c)).collect();
+    let unknown: Vec<&String> = ui.iter().filter(|c| !server.contains(c)).collect();
+    assert!(missing.is_empty(), "the Alerts form lacks: {missing:?}");
+    assert!(
+        unknown.is_empty(),
+        "the Alerts form offers what the server doesn't accept: {unknown:?}"
+    );
+}
+
+/// REQ: OBS-013 (T27.5, ADR-1007) — the anomaly settings, the per-client series' cap and the query
+/// log's upper bounds are checked by the server as the settings form shows them: a direct API
+/// write of 0 or a huge value is refused with the field's path.
+#[test]
+fn obs_013_anomaly_metrics_and_qlog_bounds_are_validated() {
+    let load = |toml: &str| {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+    };
+    assert!(load("").is_ok(), "the defaults are valid");
+    for (toml, path) in [
+        (
+            "[telemetry.anomaly]\nlearning_days = 0\n",
+            "telemetry.anomaly.learning_days",
+        ),
+        (
+            "[telemetry.anomaly]\nlearning_days = 91\n",
+            "telemetry.anomaly.learning_days",
+        ),
+        (
+            "[telemetry.anomaly]\nmax_clients = 0\n",
+            "telemetry.anomaly.max_clients",
+        ),
+        (
+            "[telemetry.anomaly]\nmax_clients = 100001\n",
+            "telemetry.anomaly.max_clients",
+        ),
+        (
+            "[telemetry.anomaly]\nnxdomain_per_minute = 0\n",
+            "telemetry.anomaly.nxdomain_per_minute",
+        ),
+        (
+            "[telemetry.anomaly]\nnxdomain_percent = 0\n",
+            "telemetry.anomaly.nxdomain_percent",
+        ),
+        (
+            "[telemetry.anomaly]\nnxdomain_percent = 500\n",
+            "telemetry.anomaly.nxdomain_percent",
+        ),
+        (
+            "[telemetry.metrics]\nper_client_cap = 0\n",
+            "telemetry.metrics.per_client_cap",
+        ),
+        (
+            "[telemetry.metrics]\nper_client_cap = 4294967295\n",
+            "telemetry.metrics.per_client_cap",
+        ),
+        (
+            "[telemetry.qlog]\nretention_days = 3651\n",
+            "telemetry.qlog.retention_days",
+        ),
+        (
+            "[telemetry.qlog]\nflush_interval_secs = 3601\n",
+            "telemetry.qlog.flush_interval_secs",
+        ),
+    ] {
+        let errs = load(toml).unwrap_err();
+        assert!(
+            paths(&errs).contains(&path),
+            "{toml}: expected {path}, got {:?}",
+            paths(&errs)
+        );
+    }
+    let ok = "[telemetry.anomaly]\nlearning_days = 90\nmax_clients = 100000\nnxdomain_per_minute = 1\nnxdomain_percent = 100\n[telemetry.metrics]\nper_client_cap = 10000\n[telemetry.qlog]\nretention_days = 3650\nflush_interval_secs = 3600\n";
+    assert!(load(ok).is_ok(), "the bounds themselves are accepted");
+}
+
+/// REQ: UPS-013 (T24.31, ADR-997) — an upstream's `source` reads as an address, `address:0`, or
+/// a network; a port, a wildcard and nonsense are refused.
+#[test]
+fn ups_013_parse_source() {
+    use telltale_config::{SourceSpec, parse_source};
+    assert!(matches!(
+        parse_source("198.51.100.252"),
+        Ok(SourceSpec::Addr(_))
+    ));
+    assert!(matches!(
+        parse_source("198.51.100.252:0"),
+        Ok(SourceSpec::Addr(_))
+    ));
+    assert!(matches!(
+        parse_source("[fd00::2]:0"),
+        Ok(SourceSpec::Addr(_))
+    ));
+    assert!(matches!(
+        parse_source("198.51.100.0/24"),
+        Ok(SourceSpec::Subnet(_))
+    ));
+    for bad in [
+        "198.51.100.252:53",
+        "0.0.0.0",
+        "::",
+        "0.0.0.0/0",
+        "224.0.0.1",
+        "fe80::1",
+        "fe80::/64",
+        "eth0",
+        "",
+    ] {
+        assert!(parse_source(bad).is_err(), "{bad}");
+    }
+    let c = telltale_config::Cidr::parse("198.51.100.252/24").unwrap();
+    assert_eq!(c.network().to_string(), "198.51.100.0/24");
+}
+
+/// REQ: T24.27 — every `TELLTALE_*` variable the binary itself reads (the shipped unit,
+/// bundles and chart set `TELLTALE_SUPERVISOR`) is known: none is warned about at start.
+#[test]
+fn t24_27_binary_env_vars_are_not_reported_unknown() {
+    let loaded = Loader::new()
+        .env([
+            ("TELLTALE_SUPERVISOR", "systemd"),
+            ("TELLTALE_IGNORE_GUARDED", "1"),
+            ("TELLTALE_TOKEN", "t"),
+            ("TELLTALE_LOG_DNSSEC_LIBRARY", "1"),
+            // A schema key (`node.drain_delay_secs`): applied, not reported.
+            ("TELLTALE_DRAIN_DELAY_SECS", "7"),
+        ])
+        .load()
+        .unwrap();
+    let unknown: Vec<_> = loaded
+        .warnings
+        .iter()
+        .filter(|w| w.contains("unknown environment variable"))
+        .collect();
+    assert!(unknown.is_empty(), "{unknown:?}");
+    assert_eq!(loaded.config.node.drain_delay_secs, 7);
 }

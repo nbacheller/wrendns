@@ -57,7 +57,7 @@ resolvers:
   resources:
     requests:
       cpu: 50m
-      memory: 64Mi
+      memory: 128Mi  # the loaded working-set gate (ADR-1031)
     limits:
       cpu: "1"
       memory: 256Mi
@@ -241,9 +241,29 @@ auth:
     passwordKey: password
     passwordHashKey: password-hash
 
+# REQ: OPS-014 (ADR-903 §3) — the key that encrypts the secrets entered in the UI (Settings →
+# Integrations & secrets), used on the controller only: resolver pods hold no stored secrets
+# and get no key. Unset, the controller makes `secrets.key` in its data directory on its first
+# start and keeps it on the volume (lost with it; with persistence off, stored secrets are lost
+# at every restart and health says `secrets_ephemeral`).
+secretsKey:
+  # Recommended: a Secret holding the key (`ttsk1:` and 43 base64url characters), mounted
+  # read-only at /etc/telltale-secrets-key with [node] secrets_key_file pointing at it.
+  existingSecret: ""
+  # The Secret's entry holding the key.
+  key: secrets.key
+  # Make that Secret with the chart and keep it across upgrades (Helm `lookup`). Unsafe with
+  # `helm template` and Argo CD, which can't look up: every render makes a new key, and the
+  # secrets stored under the old one can't be read (the store locks). Prefer existingSecret.
+  generate: false
+
 # Secrets mounted read-only at /etc/telltale-secrets/<name>, e.g. an OIDC client secret
 # (point client_secret_file at /etc/telltale-secrets/oidc/client_secret). `optional: true`
 # lets the pod start without the Secret.
+# OIDC providers can also be added in the UI (Settings -> Sign-in), with the client secret stored
+# encrypted by name and replicated to the controllers: no mount, no values change, no restart.
+# [auth.oidc] public_url stays in `config:` (it is per node); a provider made in the UI is inactive
+# on a node without it. Resolver pods hold no stored secrets and skip such providers.
 secretMounts: []
 #  - name: oidc
 #    secretName: telltale-oidc

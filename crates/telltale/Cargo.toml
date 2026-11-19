@@ -48,12 +48,21 @@ miniz_oxide = "0.8"
 zstd = { version = "0.14.0", default-features = false }
 # SHA-256 for self-update (already in the tree through rustls).
 ring = "0.17.14"
+# REQ: OPS-014 (ADR-903) — wipes secret values and keys when dropped; already in the tree
+# through RustCrypto (argon2, rustls).
+zeroize = "1.9.0"
+# REQ: OPS-014 (ADR-903 §8) — the passphrase key of backups that carry secrets (T23.9);
+# already in the tree through telltale-api's password hashing.
+argon2 = "0.6.0"
 serde = { version = "1.0.229", features = ["derive"] }
 # REQ: OBS-010 (T9.4) — alert email over STARTTLS/TLS: the same rustls stack the fetcher and
 # DoT use (already in the tree), with the built-in Mozilla roots.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
 webpki-roots = "1.0.9"
+# REQ: API-016 (T23.8, ADR-120) — the console certificate's names on the Routers page; already in
+# the tree (rcgen's X.509 reader), so the image doesn't grow.
+x509-parser = "0.18.1"
 # float_roundtrip: saved anomaly baselines reload bit-exact (OBS-013 determinism).
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 bytes = "1.12.1"
@@ -67,10 +76,12 @@ telltale-store = { version = "0.8.0", path = "../telltale-store" }
 telltale-net = { version = "0.8.0", path = "../telltale-net" }
 telltale-policy = { version = "0.8.0", path = "../telltale-policy" }
 telltale-proto = { version = "0.8.0", path = "../telltale-proto" }
+# REQ: DSC-003 (T25.4) — `telltale snmp walk`; the poller (T25.6) uses it in the discovery worker.
+telltale-snmp = { version = "0.8.0", path = "../telltale-snmp" }
 telltale-telemetry = { version = "0.8.0", path = "../telltale-telemetry" }
 telltale-upstream = { version = "0.8.0", path = "../telltale-upstream" }
 # io-std/io-util: `telltale mcp --stdio` (AGT-006).
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "signal", "macros", "time", "io-std", "io-util"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "signal", "macros", "time", "io-std", "io-util", "process"] }
 toml = "1.1.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "ansi"] }
@@ -84,11 +95,20 @@ dhat-heap = ["dep:dhat"]
 # every runtime worker n seconds after start, so the watchdog can be tried on a real process
 # (`deploy/watchdog/e2e.sh`).
 wedge-test = []
+# REQ: API-902 (T27.13, ADR-956 §3) — the guarded framework's test rows and the simulated restart
+# (`TT_E2E_RESTART_HOOK`). Never in a release build: only the end-to-end server is built with it
+# (`ui/tests/e2e/server.mjs`); the registry rows and the hook are compiled out without it.
+e2e = ["telltale-config/e2e"]
+# REQ: OBS-902, NFR-001 (ADR-1008 addendum (h)) - a bench hook, never in a release build: a
+# release-profile binary built with it trusts `TELLTALE_GEOIP_TEST_CA` (the fake source's
+# certificate, as a debug build does), so `bench/geoipbuild.py` can measure a real download and
+# build in the resolver's own allocator configuration. The production limits stay.
+geoip-probe = []
 
 [dev-dependencies]
 # REQ: NFR-002 — the whole-pipeline allocation test (`pipeline.rs`).
 allocation-counter = "0.8.1"
 tempfile = "3.27.0"
-tokio = { version = "1.53.1", features = ["io-util"] }
+tokio = { version = "1.53.1", features = ["io-util", "test-util"] }
 # REQ: OPS-006 (T10.6) — health endpoint tests call the router directly.
 tower = { version = "0.5.3", default-features = false, features = ["util"] }

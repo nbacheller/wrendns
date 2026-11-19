@@ -1,0 +1,12 @@
+<svg viewBox="0 0 320 150" role="img" width="320"><title>A device asks resolver.arpa which encrypted endpoints this resolver has, and upgrades to them</title>
+<rect x="10" y="12" width="140" height="30" rx="8" class="svg-box"/><text x="80" y="32" text-anchor="middle" class="svg-mono">_dns.resolver.arpa</text>
+<path d="M150 27 H170" class="svg-stroke-brand" stroke-width="2"/>
+<rect x="170" y="12" width="140" height="30" rx="8" class="svg-ok" opacity=".8"/><text x="240" y="32" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">SVCB: dot, h2, doq</text>
+<rect x="10" y="52" width="140" height="30" rx="8" class="svg-box"/><text x="80" y="72" text-anchor="middle" class="svg-mono">dns.example.com</text>
+<path d="M150 67 H170" class="svg-stroke-brand" stroke-width="2"/>
+<rect x="170" y="52" width="140" height="30" rx="8" class="svg-box"/><text x="240" y="72" text-anchor="middle" class="svg-sub">cert lists our IP: upgrade</text>
+<rect x="10" y="92" width="140" height="30" rx="8" class="svg-box"/><text x="80" y="112" text-anchor="middle" class="svg-mono">x.resolver.arpa</text>
+<path d="M150 107 H170" class="svg-stroke-brand" stroke-width="2"/>
+<rect x="170" y="92" width="140" height="30" rx="8" class="svg-box"/><text x="240" y="112" text-anchor="middle" class="svg-sub">no data, never forwarded</text>
+<text x="160" y="142" text-anchor="middle" class="svg-sub">with [special] ddr_name set</text>
+</svg>

@@ -167,12 +167,12 @@ pub(crate) struct Window {
 }
 
 /// A window from `[simulate]` and a request: `window` (`24h`), ending at `until` (Unix
-/// seconds, default now). 422 past 7 days.
+/// seconds, default now: `now_ms`). 422 past 7 days.
 pub(crate) fn window(
     cfg: &telltale_config::SimulateConfig,
     window: Option<&str>,
     until_s: Option<u64>,
-    now_s: u64,
+    now_ms: u64,
 ) -> Result<Window, Problem> {
     let text = window.unwrap_or(&cfg.default_window);
     let secs = telltale_config::window_secs(text).ok_or_else(|| {
@@ -189,10 +189,17 @@ pub(crate) fn window(
         )
         .hint("Simulations replay at most the last 7 days."));
     }
-    let to_s = until_s.unwrap_or(now_s);
+    // REQ: OBS-024 (T10.7) — the window is `[from, to)`. An explicit `until` ends at that
+    // whole second; the default ends one microsecond after the request's instant. Truncating
+    // "now" to its second dropped every row logged in the current second (a fast test or a
+    // quiet node saw 0 newly blocked for rows logged a moment earlier).
+    let to_us = match until_s {
+        Some(s) => s.saturating_mul(1_000_000),
+        None => now_ms.saturating_mul(1_000).saturating_add(1),
+    };
     Ok(Window {
-        from_us: to_s.saturating_sub(secs).saturating_mul(1_000_000),
-        to_us: to_s.saturating_mul(1_000_000),
+        from_us: to_us.saturating_sub(secs.saturating_mul(1_000_000)),
+        to_us,
         max_rows: cfg.max_rows,
         max_secs: cfg.max_secs,
     })
@@ -477,7 +484,7 @@ struct Decider {
 
 /// The configuration's enabled lists (blocked services included), in ID order.
 fn enabled_lists(cfg: &Config) -> Vec<FilterList> {
-    telltale_config::services::expand(cfg)
+    telltale_config::categories::expand_lists(cfg)
         .list
         .into_iter()
         .filter(|l| l.enabled)
@@ -646,11 +653,13 @@ impl Decider {
             };
             notes.insert("identity_from_event".to_owned());
         }
+        // Device names (DNS-023) follow the routers, not the configuration being simulated.
         let special = match crate::explain::answered_early(
             &self.policy,
             &q,
             row.ip,
             clients.group_names(ident),
+            None,
         ) {
             Ok(s) => s,
             Err((outcome, _)) => {
@@ -764,6 +773,10 @@ impl Decider {
         let selection = self.router.select(&Question::from_query(q), names);
         if special == Some(Special::PrivatePtr) && !selection.as_ref().is_some_and(|s| s.routed) {
             return Verdict::Answered(Arc::from("private reverse lookup: NXDOMAIN"));
+        }
+        // REQ: DNS-019 (ADR-904) — domain-needed, as the pipeline's `resolve_or_defer`.
+        if special == Some(Special::SingleLabel) && !selection.as_ref().is_some_and(|s| s.routed) {
+            return Verdict::Answered(Arc::from("single-label name: NXDOMAIN"));
         }
         Verdict::Resolved {
             allowed_by,
@@ -1486,12 +1499,11 @@ pub(crate) async fn simulate(
         Mode::Full => false,
         Mode::DevicesOnly => true,
     };
-    let now_s = now_ms() / 1000;
     let w = window(
         &running.simulate,
         opts.window.as_deref(),
         opts.until_s,
-        now_s,
+        now_ms(),
     )?;
     // Peers run while this node does.
     let peers = src.cluster.as_ref().map(|cluster| {

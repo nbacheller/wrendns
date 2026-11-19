@@ -45,7 +45,8 @@ pub struct OnBehalfOf(pub IpAddr);
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+        // A clock before 1970 fails closed: every token then reads as expired.
+        .map_or(u64::MAX, |d| d.as_secs())
 }
 
 async fn blocking<T: Send + 'static>(
@@ -73,12 +74,37 @@ pub(crate) fn remote(auth: &Auth, req_ext: &axum::http::Extensions, headers: &He
     let peer = req_ext
         .get::<ConnectInfo<SocketAddr>>()
         .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip());
-    let trusted = |ip: IpAddr| {
-        auth.settings()
-            .trusted_proxies
-            .iter()
-            .any(|(n, l)| super::in_network(ip, *n, *l))
-    };
+    if !is_trusted_proxy(auth, peer) {
+        return peer;
+    }
+    headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .filter_map(|s| s.trim().parse::<IpAddr>().ok())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .find(|ip| !is_trusted_proxy(auth, *ip))
+        .unwrap_or(peer)
+}
+
+/// REQ: API-902 (ADR-956 §3) — [`remote`] under another proxy list: what the client address would
+/// be if `proxies` were `[api] trusted_proxies`. The confirm route of a guarded `trusted-proxies`
+/// change shows it, and nothing else reads it: break-glass networks, loopback-only checks, rate
+/// limits and the audit source all keep the list in force.
+pub(crate) fn remote_under(
+    auth: &Auth,
+    req_ext: &axum::http::Extensions,
+    headers: &HeaderMap,
+    proxies: &[(IpAddr, u8)],
+) -> IpAddr {
+    let trusted = |ip: IpAddr| proxies.iter().any(|(n, l)| super::in_network(ip, *n, *l));
+    let _ = auth;
+    let peer = req_ext
+        .get::<ConnectInfo<SocketAddr>>()
+        .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip());
     if !trusted(peer) {
         return peer;
     }
@@ -93,6 +119,62 @@ pub(crate) fn remote(auth: &Auth, req_ext: &axum::http::Extensions, headers: &He
         .rev()
         .find(|ip| !trusted(*ip))
         .unwrap_or(peer)
+}
+
+/// REQ: API-902 (ADR-956 §3) — what a `proxy_list` proof needs: the request passes under the new
+/// list. The connection's peer must be one of the new list's proxies (else the new list is not what
+/// is carrying this request) and the client address under it must be a different address (else the
+/// proxy's header was not read). `Some(client)` then; `None` otherwise.
+pub(crate) fn remote_under_proven(
+    auth: &Auth,
+    req_ext: &axum::http::Extensions,
+    headers: &HeaderMap,
+    proxies: &[(IpAddr, u8)],
+) -> Option<IpAddr> {
+    let peer = req_ext.get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip())?;
+    if !proxies.iter().any(|(n, l)| super::in_network(peer, *n, *l)) {
+        return None;
+    }
+    let client = remote_under(auth, req_ext, headers, proxies);
+    (client != peer).then_some(client)
+}
+
+/// `ip` is one of `[api] trusted_proxies`.
+fn is_trusted_proxy(auth: &Auth, ip: IpAddr) -> bool {
+    auth.settings()
+        .trusted_proxies
+        .iter()
+        .any(|(n, l)| super::in_network(ip, *n, *l))
+}
+
+/// Headers a reverse proxy adds to a request (ADR-944).
+const PROXY_HEADERS: [&str; 6] = [
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-forwarded-port",
+    "x-real-ip",
+    "forwarded",
+];
+
+/// True when this request must not sign in as break-glass (ADR-944, API-004): local sign-in is
+/// off and the break-glass networks are the loopback default, and the request came through a
+/// proxy that isn't trusted. Its address is then the proxy's (often loopback, on the same host),
+/// so the client can't be told apart from the proxy. In-process MCP calls (`OnBehalfOf`) keep
+/// the address they were made with.
+pub(crate) fn break_glass_proxied(
+    auth: &Auth,
+    req_ext: &axum::http::Extensions,
+    headers: &HeaderMap,
+) -> bool {
+    let s = auth.settings();
+    if !(s.disable_local_login && s.break_glass_default) || req_ext.get::<OnBehalfOf>().is_some() {
+        return false;
+    }
+    let peer = req_ext
+        .get::<ConnectInfo<SocketAddr>>()
+        .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip());
+    !is_trusted_proxy(auth, peer) && PROXY_HEADERS.iter().any(|h| headers.contains_key(*h))
 }
 
 fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -129,7 +211,8 @@ pub(crate) fn is_https(auth: &Auth, req_ext: &axum::http::Extensions, headers: &
         return says;
     }
     req_ext.get::<ConnectInfo<SocketAddr>>().is_some_and(|c| {
-        let ip = c.0.ip();
+        // `::ffff:127.0.0.1` (a `[::]` listener) is loopback too.
+        let ip = c.0.ip().to_canonical();
         ip.is_loopback()
             || auth
                 .settings()
@@ -203,6 +286,8 @@ pub async fn authenticate(
     let headers = req.headers().clone();
     let https = is_https(&auth, req.extensions(), &headers);
     let ip = remote(&auth, req.extensions(), &headers);
+    // A proxied request that isn't trusted can't be break-glass: no address to check (ADR-944).
+    let ip = (!break_glass_proxied(&auth, req.extensions(), &headers)).then_some(ip);
     let (session, bearer, basic) = presented(&headers);
     // REQ: AGT-008 (T7.4) — an OAuth access token from the MCP sign-in provider (a JWT, not a
     // TelltaleDNS token) is verified against the provider first.
@@ -210,11 +295,7 @@ pub async fn authenticate(
         (Some(t), Some(o))
             if o.mcp().is_some() && !t.starts_with("tt_") && t.split('.').count() == 3 =>
         {
-            Some(
-                o.verify_access_token(t, now())
-                    .await
-                    .map(|c| (Arc::clone(o), c)),
-            )
+            Some(o.verify_access_token(t, now()).await.map(|c| (o, c)))
         }
         _ => None,
     };
@@ -230,7 +311,7 @@ pub async fn authenticate(
             bearer: bearer.as_deref(),
             basic,
             https,
-            remote: Some(ip),
+            remote: ip,
         };
         auth2.authenticate(&p, now())
     })
@@ -301,6 +382,53 @@ pub async fn authenticate(
     }
     req.extensions_mut().insert(principal);
     next.run(req).await
+}
+
+/// REQ: API-902 (ADR-956 §3) — [`authenticate`] for a request that may carry no credential at all:
+/// the confirm route of a guarded change, which the admin opens on the *new* address with a
+/// single-use token and no session (a new origin has none). A request that presents a cookie, a
+/// token or Basic credentials is authenticated exactly as everywhere else (and a wrong one is
+/// refused); one that presents none passes without a [`Principal`], and the handler then accepts
+/// only a valid confirmation token.
+pub async fn authenticate_optional(
+    State(auth): State<AuthState>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let (session, bearer, basic) = presented(req.headers());
+    if session.is_none() && bearer.is_none() && basic.is_none() {
+        return next.run(req).await;
+    }
+    authenticate(State(auth), req, next).await
+}
+
+/// REQ: API-902 (ADR-956 §3) — the guarded confirm route's credentials. A request that carries a
+/// `confirmToken` in its body is judged by the token alone: cookies are not scoped to a port, so on
+/// a same-host address change the browser also sends the old session's cookie (stale, or without the
+/// CSRF header), and that must not fail a valid token. A request without a token is authenticated as
+/// [`authenticate_optional`] does (the handler then refuses it).
+pub async fn authenticate_confirm(
+    State(auth): State<AuthState>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let (parts, body) = req.into_parts();
+    // The body is a few dozen bytes; a larger one is not a confirmation.
+    let Ok(bytes) = axum::body::to_bytes(body, 8 * 1024).await else {
+        return Problem::invalid("the request body is too large").into_response();
+    };
+    let token = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|v| v.get("confirmToken").map(serde_json::Value::is_string))
+        .unwrap_or(false);
+    // Only a session cookie is set aside: a bearer token or Basic credentials are still checked
+    // (an agent's token is refused here as everywhere else).
+    let (_, bearer, basic) = presented(&parts.headers);
+    let req = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
+    if token && bearer.is_none() && basic.is_none() {
+        return next.run(req).await;
+    }
+    authenticate_optional(State(auth), req, next).await
 }
 
 /// REQ: AGT-008 (T7.4) — a 401 from `/mcp` tells MCP clients where to sign in (RFC 9728
@@ -921,6 +1049,8 @@ pub(crate) async fn status(
     let (session, bearer, basic) = presented(&headers);
     let https = is_https(&auth, &req_ext, &headers);
     let ip = remote(&auth, &req_ext, &headers);
+    let proxied = break_glass_proxied(&auth, &req_ext, &headers);
+    let p_ip = (!proxied).then_some(ip);
     blocking(move || {
         let setup_required = auth.setup_required()?;
         let p = Presented {
@@ -928,7 +1058,7 @@ pub(crate) async fn status(
             bearer: bearer.as_deref(),
             basic,
             https,
-            remote: Some(ip),
+            remote: p_ip,
         };
         let who = auth.authenticate(&p, now()).ok().flatten();
         let (user, csrf) = match &who {
@@ -953,7 +1083,7 @@ pub(crate) async fn status(
             authenticated: user.is_some(),
             user,
             csrf_token: csrf,
-            local_login: auth.local_login_allowed(ip),
+            local_login: !proxied && auth.local_login_allowed(ip),
             oidc,
         }))
     })
@@ -1017,6 +1147,9 @@ pub(crate) async fn login(
 ) -> Result<Response, Problem> {
     let r = body(b)?;
     let ip = remote(&auth, &req_ext, &headers);
+    if break_glass_proxied(&auth, &req_ext, &headers) {
+        return Err(Auth::local_login_refused());
+    }
     let https = is_https(&auth, &req_ext, &headers);
     let ttl = auth.settings().session_ttl_secs;
     let (sess, info) = blocking(move || {
@@ -1231,7 +1364,7 @@ pub(crate) async fn create_display(
         let networks: Vec<String> = nets.iter().map(|(n, l)| format!("{n}/{l}")).collect();
         let (id, secret) = (crypto::random_id(), crypto::random_secret());
         let now = now();
-        let expires = r.expires_in_days.map(|d| now + u64::from(d.max(1)) * 86_400);
+        let expires = r.expires_in_days.map(|d| now.saturating_add(u64::from(d.max(1)) * 86_400));
         auth.state()
             .create_token(
                 &id,
@@ -1397,7 +1530,7 @@ pub(crate) async fn oidc_start(
     Path(id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<OidcStart>,
 ) -> Response {
-    let Some(oidc) = auth.oidc().cloned() else {
+    let Some(oidc) = auth.oidc() else {
         return login_error("sign-in providers aren't configured");
     };
     let back = super::oidc::safe_return(q.return_to.as_deref());
@@ -1430,7 +1563,7 @@ pub(crate) async fn oidc_callback(
     Path(id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<OidcCallback>,
 ) -> Response {
-    let Some(oidc) = auth.oidc().cloned() else {
+    let Some(oidc) = auth.oidc() else {
         return login_error("sign-in providers aren't configured");
     };
     if let Some(e) = &q.error {
@@ -1449,11 +1582,12 @@ pub(crate) async fn oidc_callback(
     let https = is_https(&auth, &req_ext, &headers);
     let ttl = auth.settings().session_ttl_secs;
     let pid = id.clone();
+    let issuer = oidc.issuer(&id).unwrap_or_default().to_owned();
     let signed_in = blocking(move || {
         let user = auth.oidc_user(&oidc, &pid, &who, ip, now())?;
         let sess = auth.start_session(&user, ip, now())?;
         auth.state()
-            .set_session_provider(&crypto::secret_hash(&sess.cookie), &pid)
+            .set_session_provider(&crypto::secret_hash(&sess.cookie), &pid, &issuer)
             .map_err(db)?;
         Ok(sess)
     })
@@ -1717,7 +1851,9 @@ pub(crate) async fn create_token(
         }
         let (id, secret) = (crypto::random_id(), crypto::random_secret());
         let now = now();
-        let expires = r.expires_in_days.map(|d| now + u64::from(d) * 86_400);
+        let expires = r
+            .expires_in_days
+            .map(|d| now.saturating_add(u64::from(d) * 86_400));
         auth.state()
             .create_token(
                 &id,
@@ -2112,5 +2248,101 @@ mod group_tests {
             super::with_group(&bare, "kids").unwrap().to_string(),
             "/api/v1/stats/top?group=kids"
         );
+    }
+}
+
+#[cfg(test)]
+mod api_004_proxy_tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use axum::extract::ConnectInfo;
+    use axum::http::{Extensions, HeaderMap, HeaderValue};
+    use telltale_store::state::State;
+
+    use super::{OnBehalfOf, break_glass_proxied, remote};
+    use crate::auth::{Auth, Settings};
+
+    fn auth(s: Settings) -> Auth {
+        Auth::new(std::sync::Arc::new(State::in_memory().unwrap()), s)
+    }
+
+    fn ext(peer: [u8; 4]) -> Extensions {
+        let mut e = Extensions::new();
+        e.insert(ConnectInfo(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::from(peer)),
+            5000,
+        )));
+        e
+    }
+
+    fn xff(value: &'static str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", HeaderValue::from_static(value));
+        h
+    }
+
+    fn loopback_default(trusted: Vec<(IpAddr, u8)>) -> Auth {
+        auth(Settings {
+            disable_local_login: true,
+            admin_networks: vec![(IpAddr::V4(Ipv4Addr::LOCALHOST), 8)],
+            break_glass_default: true,
+            trusted_proxies: trusted,
+            ..Settings::default()
+        })
+    }
+
+    // REQ: API-004 (ADR-944) - a same-host proxy that is not in `trusted_proxies` makes its
+    // clients look like loopback; the loopback default must not then admit them.
+    #[test]
+    fn api_004_proxied_client_is_not_break_glass() {
+        let a = loopback_default(Vec::new());
+        assert!(break_glass_proxied(
+            &a,
+            &ext([127, 0, 0, 1]),
+            &xff("203.0.113.9")
+        ));
+        // Without a forwarding header the loopback peer is the admin on the host.
+        assert!(!break_glass_proxied(
+            &a,
+            &ext([127, 0, 0, 1]),
+            &HeaderMap::new()
+        ));
+    }
+
+    // REQ: API-004 (ADR-944) - a trusted proxy names the real client, which is then checked.
+    #[test]
+    fn api_004_trusted_proxy_names_the_client() {
+        let a = loopback_default(vec![(IpAddr::V4(Ipv4Addr::LOCALHOST), 32)]);
+        let h = xff("203.0.113.9");
+        let e = ext([127, 0, 0, 1]);
+        assert_eq!(
+            remote(&a, &e, &h),
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9))
+        );
+        assert!(!break_glass_proxied(&a, &e, &h));
+    }
+
+    // REQ: API-004 (ADR-944) - in-process MCP calls keep the address they were made with, and
+    // an explicit list is never second-guessed by the proxy rule.
+    #[test]
+    fn api_004_on_behalf_of_and_explicit_lists_keep_their_address() {
+        let lan = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
+        let a = loopback_default(Vec::new());
+        let mut e = ext([127, 0, 0, 1]);
+        e.insert(OnBehalfOf(lan));
+        assert_eq!(remote(&a, &e, &xff("203.0.113.9")), lan);
+        assert!(!break_glass_proxied(&a, &e, &xff("203.0.113.9")));
+
+        let explicit = auth(Settings {
+            disable_local_login: true,
+            admin_networks: vec![(IpAddr::V4(Ipv4Addr::LOCALHOST), 8)],
+            break_glass_default: false,
+            ..Settings::default()
+        });
+        assert!(!break_glass_proxied(
+            &explicit,
+            &ext([127, 0, 0, 1]),
+            &xff("203.0.113.9")
+        ));
     }
 }

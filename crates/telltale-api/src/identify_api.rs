@@ -27,6 +27,7 @@ pub(crate) fn routes(backend: Shared) -> axum::Router {
 #[utoipa::path(get, path = "/api/v1/clients/identities", tag = "config",
     responses((status = 200, body = Items<DeviceIdentity>, description = "The identities, by device.")))]
 pub(crate) async fn identities(State(b): State<Shared>) -> Json<Items<DeviceIdentity>> {
+    let b = crate::request_backend(&b);
     let (items, missing_nodes) =
         tokio::task::spawn_blocking(move || (b.identities(), b.missing_nodes()))
             .await

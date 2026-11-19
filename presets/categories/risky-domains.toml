@@ -1,0 +1,107 @@
+# TelltaleDNS content-category catalog: New or Risky Domains (REQ: FLT-901, ADR-995).
+# Data, not code: compiled into the binary. Lists are never bundled: a node downloads
+# each source from its maintainer only while a group uses it.
+
+[[group]]
+id = "risky"
+name = "New or Risky Domains"
+order = 6
+
+[[category]]
+id = "nrd"
+name = "Newly registered domains (7 days)"
+group = "risky"
+description = "Domains registered in the last 7 days, a favourite of phishing and malware. HaGeZi publishes it as-is, with no guarantees. Heavy: about 2.4 million names."
+sources = ["hagezi-nrd7"]
+
+[[category]]
+id = "dga"
+name = "DGA-like new domains (7 days)"
+group = "risky"
+description = "Newly registered domains with random-looking names, typical of malware. Offered as-is. Heavy: about 550,000 names."
+sources = ["hagezi-dga7"]
+
+[[category]]
+id = "fake-stores"
+name = "Fake stores and scams"
+group = "risky"
+description = "Fake web shops and scam sites."
+sources = ["hagezi-fake"]
+
+[[category]]
+id = "abused-tlds"
+name = "Risky top-level domains"
+group = "risky"
+description = "Blocks whole top-level domains that are mostly abused. Many legitimate sites live under them too. Off by default and never in Basic."
+sources = ["hagezi-spam-tlds"]
+warn = "This blocks every site under those top-level domains, legitimate ones included."
+
+[[source]]
+id = "hagezi-nrd7"
+name = "HaGeZi NRD, 7 days"
+maintainer = "HaGeZi"
+url = "https://cdn.jsdelivr.net/gh/hagezi/nrd@latest/domains/nrd7.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/nrd/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/nrd"
+cadence = "daily"
+entries = 2438879
+bytes = 40223891
+max_bytes = 60335836
+weight = "heavy"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-dga7"
+name = "HaGeZi entropy NRD/DGA, 7 days"
+maintainer = "HaGeZi"
+url = "https://cdn.jsdelivr.net/gh/hagezi/nrd@latest/domains/dga7.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/nrd/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/nrd"
+cadence = "daily"
+entries = 552899
+bytes = 12971451
+weight = "heavy"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-fake"
+name = "HaGeZi Fake (scam stores)"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/fake-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 18807
+bytes = 323414
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+
+[[source]]
+id = "hagezi-spam-tlds"
+name = "HaGeZi Most abused TLDs"
+maintainer = "HaGeZi"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/spam-tlds-onlydomains.txt"
+format = "domains"
+licence = "GPL-3.0"
+licence_url = "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+homepage = "https://github.com/hagezi/dns-blocklists"
+cadence = "daily"
+entries = 445
+bytes = 4447
+weight = "light"
+checked = "2026-11-18"
+pushed = "2026-11-18"
+archived = false
+

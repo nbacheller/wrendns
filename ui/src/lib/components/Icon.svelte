@@ -8,6 +8,8 @@
     anomalies: 'M3 17l5-6 4 4 4-7 5 9M3 21h18',
     clients: 'M4 5h16v10H4zM9 19h6M12 15v4',
     groups: 'M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM16 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM2 20c0-3.3 2.7-5 6-5s6 1.7 6 5M14 15.5c.6-.3 1.3-.5 2-.5 3.3 0 6 1.7 6 5',
+    // REQ: API-013 (T24.15) — networks: a LAN with its devices.
+    networks: 'M3 6h18v5H3zM7 11v3M17 11v3M5 14h4v6H5zM15 14h4v6h-4z',
     lists: 'M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6zM9 12l2 2 4-4',
     upstreams: 'M12 3v10M8 9l4 4 4-4M5 21h14M5 17h14',
     names: 'M3 11l9-7 9 7M5 9.5V20h14V9.5M10 20v-5h4v5',
@@ -25,6 +27,10 @@
     logout: 'M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10',
     analyze: 'M4 20V11M10 20V5M16 20v-6M2 20h20',
     traffic: 'M3 3h18v18H3zM11 3v18M11 12h10M3 14h8M16 12v9',
+    // REQ: OBS-901 (T26.3) — the network map: nodes joined by flows.
+    map: 'M5 5a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM19 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM19 17a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM12 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM5 9l5.3 2.4M13.8 11.2L17.4 6.2M13.8 12.8l3.8 4',
+    // REQ: OBS-902 (T26.5) — the world view: a globe.
+    world: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9S14.5 18.4 12 21c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z',
     heatmap: 'M3 3h5v5H3zM10 3h5v5h-5zM17 3h4v5h-4zM3 10h5v5H3zM10 10h5v5h-5zM17 10h4v5h-4zM3 17h5v4H3zM10 17h5v4h-5zM17 17h4v4h-4z',
     flow: 'M3 5h4c5 0 5 7 10 7h4M3 12h4c5 0 5-7 10-7h4M3 19h4c5 0 5-7 10-7',
     // REQ: OBS-035 — the wall display: a screen with panels.

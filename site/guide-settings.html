@@ -21,6 +21,7 @@
     <li><a href="#ways">Four ways to change a setting</a></li>
     <li><a href="#styles">Pick a style</a></li>
     <li><a href="#layers">How the layers stack</a></li>
+    <li><a href="#guarded">Guarded settings</a></li>
     <li><a href="#shared">Shared or per node</a></li>
     <li><a href="#where">Where each setting lives</a></li>
   </ul>
@@ -142,6 +143,39 @@ path = "telltale/shared.toml"
     <li class="step"><b>In a cluster, the primary.</b> Its shared settings replace the shared sections of every other node's own files.</li>
   </ol>
   <p class="muted"><code>telltale config check telltale.toml --print</code> shows layers 1 to 4 merged. The UI's entries are listed with their source by <code>GET /api/v1/config/entries</code>.</p>
+  <p class="muted"><b>Credentials are never shown.</b> An upstream's <code>headers</code> and <code>args</code>, a password in any URL, an OIDC <code>client_secret</code>, and OTLP headers read <code>&lt;redacted&gt;</code> in the API, the audit log, the TOML to keep in Git, agents' plans, MCP, and <code>--print</code> (<code>--show-secrets</code> prints them on the node). Editing an entry keeps them while it points where it did; change its URL, proxy, TLS name, CA, bootstrap addresses, certificate checks (skip verify, pins) or an alert destination's type and the credential has to be typed again. <b>Test it</b> never uses a stored credential: type it into the draft. On a replica, keeping a credential this way needs a primary on the same version (until then, <code>409 upgrade_required</code>).</p>
+</section>
+
+<section id="secrets">
+  <h2>Credentials: in the file, in a file, or stored</h2>
+  <p>A router's API key, an alert destination's token, an OIDC client secret, a sink's token, OTLP headers, and the Git source's credentials can each come from one of three places, never two:</p>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Where</th><th>Config file</th><th>Good for</th></tr></thead>
+    <tbody>
+      <tr><td>A file the node reads when it needs it</td><td><code>api_key_file = "/run/secrets/unifi"</code></td><td>Docker and Kubernetes Secrets, a key mounted read-only</td></tr>
+      <tr><td>A secret stored on the node, encrypted</td><td><code>api_key_ref = "unifi"</code></td><td>Entering it in the UI instead of on the machine</td></tr>
+      <tr><td>Inline (OIDC client secret and OTLP headers only)</td><td><code>client_secret = "..."</code></td><td>Trying something out</td></tr>
+    </tbody>
+  </table></div>
+  <p>A stored secret is write-only: nothing shows it again, admins included. It is encrypted in <code>state.db</code> with the node's own key (<code>secrets.key</code> in the data directory, made on the first start, or one you keep elsewhere with <code>TELLTALE_SECRETS_KEY</code> or <code>[node] secrets_key_file</code>; the Helm chart's <code>secretsKey.existingSecret</code>). A backup leaves them out unless you give it a passphrase (Settings → System → Backup, or <code>telltale backup create --secrets-passphrase-file</code>): then they travel encrypted with a key made from it, and a restore stores them under the new node's own key. The node's key is never in a backup, and resolver pods hold neither.</p>
+  <pre><code>telltale ctl secrets set unifi --from-file /root/unifi-key   # or: ... set unifi &lt; key
+telltale ctl secrets list                                     # names and users, never a value
+telltale ctl secrets clear unifi                              # refused while a field names it</code></pre>
+  <p class="muted"><b>Who sets one.</b> Admins only (<code>PUT /api/v1/secrets/&lt;name&gt;</code> with <code>{"value": "..."}</code>), never an agent token (<code>403 agent_not_allowed</code>), and only over HTTPS or on the node itself: plain HTTP from another machine is <code>403 insecure_transport</code> unless <code>[api] allow_secrets_over_http = true</code> (turn on <code>[api] tls = { self_signed = true }</code> instead). A TLS proxy in front, even one on the same host, must be listed in <code>[api] trusted_proxies</code> for this. Operators and agents with <code>config:read</code> see the names, who set them, and which fields use them (<code>GET /api/v1/secrets</code>, the MCP tool <code>secrets_status</code>). In a cluster the primary keeps them; a replica sends the change there. A secret a field still uses can't be deleted (<code>409 secret_in_use</code>).</p>
+  <p class="muted"><b>Settings → Integrations &amp; secrets.</b> Operators and admins see this node's secrets store (its key's source and state), every stored secret with the fields that use it and the nodes that hold it, and every credential field with where its value comes from. Admins add, replace or delete a secret there. Every password or token field in the UI is a secret field: it shows that a secret is set, never the value, and clearing it stops the entry using it when you apply. <b>Who may change a credential in a form.</b> Only an admin changes where a credential is sent: an alert destination's address or type when it holds a token or password, an upstream's address or TLS server name when it keeps a header, a password or a credential file, and an address that runs a program (<code>exec://</code>, <code>unix://</code>). An operator sees those fields read-only, with the reason. A kept value is never shown again: its entry says <b>kept: re-enter to change</b>, and a change that would send it somewhere new is refused with the field's name. The help topic "Who may change a credential" says more.</p>
+  <p class="muted"><b>The files win.</b> A credential the config file sets can't be changed in the UI (<code>409 set_by_file</code>). <b>If the key is missing or wrong</b>, the store is locked: integrations that use a stored secret say "not configured", health is degraded (<code>secrets_locked</code>), and DNS keeps answering. <code>telltale secrets status</code> shows what the node can read; <code>telltale secrets rotate-key</code> replaces the key. Custody, rotation and recovery: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/secrets.md">docs/secrets.md</a>.</p>
+</section>
+
+<section id="guarded">
+  <h2>Guarded settings: the ones that can lock you out</h2>
+  <p>A few settings can lock every admin out, put passwords on the wire, re-encrypt your stored secrets, or replace a node's configuration: the listeners, the API's address, certificate and trusted proxies, the secrets key, <code>allow_secrets_over_http</code> and <code>allow_insecure_basic</code>, the watchdog, the file paths the server reads, a node's name and data directory, and the cluster actions. In the web UI they go through one safe process. Admins only: AI agents and API tokens can't change them, and operators and viewers don't see the controls.</p>
+  <ol>
+    <li><b>Review.</b> The page says what the change does, which node it reaches, and what could go wrong, marks a change that weakens security in red, and shows a phrase such as <code>pi-a listen</code> (in a cluster the node is named by its ID, and a node picker chooses the node). Nothing has changed yet.</li>
+    <li><b>Type the phrase.</b> The server checks it, so a script can't skip it. A change that weakens security also asks for your password again (a sign-in from the last 10 minutes).</li>
+    <li><b>Confirm through the new address.</b> A change to an address, certificate or proxy list is applied next to the old one and kept only if you open the new address and press <b>Confirm</b> within the window (120 seconds by default). If you can't reach it, do nothing: it rolls back by itself and says why.</li>
+  </ol>
+  <p>A change that needs a restart is shown as <b>pending restart</b>. The <b>Restart now</b> button is offered only where the install declares something that will start the node again (the shipped systemd unit, Compose bundles and Helm chart do); otherwise the page shows the manual steps. If a staged change keeps the node from starting healthy, two starts later it is dropped and the node starts from its file.</p>
+  <p class="muted"><b>A file always wins</b> over what you set here, and the control says "set by file". <b>If you do get locked out,</b> no recovery needs the UI: set the value in the config file and restart, run <code>telltale guarded list</code> and <code>telltale guarded clear</code> with the node stopped, or start it once with <code>TELLTALE_IGNORE_GUARDED=1</code>. Every change and rollback is in the audit log, and the <code>guarded_setting_changed</code> alert tells a second channel. See <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/recovery.md">docs/recovery.md</a> for the symptom-by-symptom table.</p>
 </section>
 
 <section id="shared">
@@ -181,12 +215,29 @@ path = "telltale/shared.toml"
       <tr><td>Rate limit</td><td>Settings → Query handling</td><td><code>[ratelimit]</code></td><td><code>/api/v1/ratelimit/default</code></td></tr>
       <tr><td>Kept out of the log</td><td>Settings → Query handling</td><td><code>[exclusions]</code></td><td><code>/api/v1/exclusions/default</code></td></tr>
       <tr><td>Change simulation</td><td>Settings → Query handling</td><td><code>[simulate]</code></td><td><code>/api/v1/simulate-settings/default</code></td></tr>
+      <tr><td>Special names (iCloud Private Relay, one-label names, DDR)</td><td>Settings → Query handling (the DDR name is an admin's)</td><td><code>[special]</code></td><td><code>/api/v1/special-names/default</code></td></tr>
+      <tr><td>Device names in DNS</td><td>Local DNS → Device names in DNS</td><td><code>[local]</code></td><td><code>/api/v1/local-settings/default</code></td></tr>
+      <tr><td>Listening for mDNS announcements (an admin's)</td><td>Local DNS → Listen for mDNS announcements</td><td><code>[clients] mdns</code></td><td><code>/api/v1/clients-settings/default</code></td></tr>
+      <tr><td>Network map (sampling and thresholds)</td><td>Settings → Query handling → Network map</td><td><code>[map]</code></td><td><code>/api/v1/map-settings/default</code></td></tr>
       <tr><td>Alerts</td><td>Alerts</td><td><code>[[alerts.destination]]</code>, <code>[[alerts.rule]]</code></td><td><code>/api/v1/alerts/destinations/{name}</code>, <code>/api/v1/alerts/rules/{name}</code></td></tr>
       <tr><td>Staged rollouts</td><td>Settings → Cluster</td><td><code>[cluster.rollout]</code></td><td><code>/api/v1/cluster/rollout-settings/default</code></td></tr>
       <tr><td>Listeners, the API, sign-in, telemetry, cache, the node</td><td>(config file only)</td><td><code>[[listen]]</code>, <code>[api]</code>, <code>[auth]</code>, <code>[telemetry]</code>, <code>[cache]</code>, <code>[node]</code></td><td>(config file only)</td></tr>
     </tbody>
   </table></div>
   <p class="muted">Every change through the UI or API is checked first, refused if it would leave the configuration invalid, and recorded in the audit log with who made it. The full API is described at <code>/api/v1/openapi.json</code> on every node.</p>
+</section>
+
+<section>
+  <h2>The cache, list limits, DNSSEC and the small switches</h2>
+  <p>Most of these are a form on the page they belong to, with a check before the change is saved:</p>
+  <ul>
+    <li><strong>Cache</strong> (the Cache page): memory, how long answers are kept, stale answers, prefetch and the warm start for each node. Operators change them; each node applies its own, when it restarts.</li>
+    <li><strong>Lists</strong>: a largest download and a stale age for each list, and the refresh interval for all of them (after a restart).</li>
+    <li><strong>DNSSEC</strong> (Query handling): the validation mode and the domains not validated.</li>
+    <li><strong>Drills</strong> (the Cluster page): whether the failover drills run each month, and on which nodes.</li>
+    <li><strong>System</strong>: this node's support-log and update-check switches (admins).</li>
+  </ul>
+  <p class="muted">Each control has a ? beside it that explains what the setting does, and the API has the same change: see the reference on the developers' pages.</p>
 </section>
 
 <section>

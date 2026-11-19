@@ -13,6 +13,7 @@
   import TabPanel from '../lib/components/TabPanel.svelte';
   import Drawer from '../lib/components/Drawer.svelte';
   import RhythmStrip from '../lib/components/RhythmStrip.svelte';
+  import PolicyPanel from '../lib/components/PolicyPanel.svelte';
   import DeviceTimeline from '../lib/components/DeviceTimeline.svelte';
   import { groupFromText, loadWorkloads, workloadOf, workloads } from '../lib/workloads.svelte';
   import { mode } from '../lib/mode.svelte';
@@ -31,6 +32,32 @@
   // REQ: T8.2, T8.3 (T8.6) — devices found by the routers' DHCP or mDNS.
   let found = $state<S['DhcpLease'][]>([]);
   const sourceText: Record<string, string> = { router: 'router', mdns: 'mDNS' };
+  // REQ: T24.14 (API-012) — name the router that named the device ("udm", "home-assistant"),
+  // not the bare word "router". Its type (UniFi, Home Assistant) comes from GET /api/v1/routers (T23.7).
+  // REQ: API-012 (T24.14) — the router's type, from GET /api/v1/routers (T23.7), when it's known.
+  let routerKinds = $state<Record<string, string>>({});
+  const routerKindText: Record<string, string> = { unifi: 'UniFi', opnsense: 'OPNsense', home_assistant: 'Home Assistant' };
+  const sourceLabel = (l: S['DhcpLease']) => {
+    if (l.source !== 'router' || !l.router) return sourceText[l.source] ?? l.source;
+    const k = routerKinds[l.router];
+    return `router: ${l.router}${k ? ` (${routerKindText[k] ?? k})` : ''}`;
+  };
+  // REQ: DNS-023 (T24.14) — copy a device's DNS name.
+  // Per row (keyed by address, so two rows with the same name don't share a status); cleared after 1.5 s.
+  let copied = $state<{ ip: string; ok: boolean } | null>(null);
+  let copyTimer: ReturnType<typeof setTimeout> | undefined;
+  async function copyName(ip: string, n: string) {
+    let ok = true;
+    try {
+      await navigator.clipboard.writeText(n);
+    } catch {
+      // No clipboard here (plain HTTP on the LAN): the name is selectable, so say so.
+      ok = false;
+    }
+    copied = { ip, ok };
+    clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => (copied = null), 1500);
+  }
   const named = (ip: string) => configured.some((c) => c.match.includes(ip));
   // REQ: OBS-025 — what each device looks like, by address.
   let identities = $state<Record<string, S['DeviceIdentity']>>({});
@@ -50,6 +77,10 @@
       .dhcpLeases()
       .then((l) => (found = l.items))
       .catch(() => (found = []));
+    api
+      .routers()
+      .then((r) => (routerKinds = Object.fromEntries(r.items.map((x) => [x.name, x.kind]))))
+      .catch(() => (routerKinds = {}));
     api
       .identities()
       .then((r) => (identities = Object.fromEntries(r.items.map((i) => [i.client, i]))))
@@ -100,10 +131,11 @@
   // REQ: OBS-031, OBS-034 — a device's drawer: its rhythm and its day. The address says which
   // (`#/clients?device=…&view=timeline`), so findings and the heatmap can link to it.
   const rhythmFor = $derived(route.params.get('device'));
-  const view = $derived(route.params.get('view') === 'timeline' ? 'timeline' : 'rhythm');
+  // REQ: FLT-006, API-010 (T24.30) — `view=policy` is the device's Policy panel.
+  const view = $derived(route.params.get('view') === 'timeline' ? 'timeline' : route.params.get('view') === 'policy' ? 'policy' : 'rhythm');
   let rhythm = $state<S['ClientRhythm'] | null>(null);
   let rhythmError = $state<unknown>(null);
-  function openDevice(ip: string, v: 'rhythm' | 'timeline') {
+  function openDevice(ip: string, v: 'rhythm' | 'timeline' | 'policy') {
     const params: Record<string, string> = { device: ip, view: v };
     const t = route.params.get('tab');
     if (t) params.tab = t;
@@ -164,7 +196,7 @@
                     <td class="small" data-testid="affinity" title={a ? a.nodes.map((n) => `${n.node}: ${num(n.queries)}`).join('\n') : ''}>{a?.label ?? ''}</td>
                   {/if}
                   <td class="num">{num(c.count)}</td>
-                  <td class="num"><a href={href('/queries', { client: c.key })}>Queries</a> · <a href={href('/heatmap', { kind: 'client', key: c.key })}>When</a> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'rhythm')} data-testid="open-rhythm">Rhythm</button> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'timeline')} data-testid="open-timeline">Day</button></td>
+                  <td class="num"><a href={href('/queries', { client: c.key })}>Queries</a> · <a href={href('/heatmap', { kind: 'client', key: c.key })}>When</a> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'rhythm')} data-testid="open-rhythm">Rhythm</button> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'timeline')} data-testid="open-timeline">Day</button> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'policy')} data-testid="open-policy-seen">Policy</button></td>
                 </tr>
               {/each}
             </tbody>
@@ -196,7 +228,8 @@
                     {/if}
                   </td>
                   <td class="small">{c.source === 'api' ? 'the UI / API' : 'config file'}</td>
-                  <td class="num">
+                  <td class="num nowrap">
+                    <button type="button" class="link small" onclick={() => openDevice(c.name, 'policy')} data-testid="open-policy" aria-label={`Policy of ${c.name}`}>Policy</button>
                     {#if c.source === 'api' && canEdit}
                       <button class="link small" onclick={() => remove(c.name)} aria-label={`Forget ${c.name}`}>Forget</button>
                     {/if}
@@ -253,24 +286,39 @@
     </section>
   {:else}
     <section class="card" data-testid="discovered">
-      <h2>Discovered on your network</h2>
+      <h2>Discovered on your network<HelpButton id="offline-leases" /></h2>
       <p class="muted small">
-        Names your router's DHCP knows (<code>[[router]]</code>: UniFi, OPNsense), or that devices announced
-        themselves over mDNS (<code>[clients] mdns</code>). Unnamed devices already show these names; click an address to keep
-        one, change it, or put the device in a group.
+        Names your routers know (UniFi, OPNsense, and Home Assistant, on the <a href="#/routers">Routers</a> page), or that
+        devices announced themselves over mDNS (<code>[clients] mdns</code>). Unnamed devices already show these names; click an address to keep
+        one, change it, or put the device in a group. A client marked <em>offline</em> is one the router remembers but doesn't see now: it
+        names nothing in DNS and isn't counted as a device, so this list (and its count) can be longer than the device counts on the Networks page.
       </p>
       {#if found.length === 0}
-        <p class="empty">Nothing discovered yet. Connect your router (<code>[[router]]</code>) or set <code>[clients] mdns = true</code>.</p>
+        <p class="empty">Nothing discovered yet. Add a router on the <a href="#/routers">Routers</a> page, or set <code>[clients] mdns = true</code>.</p>
       {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Address</th><th>Name it gave</th><th>From</th><th>MAC</th><th>In TelltaleDNS</th></tr></thead>
+            <thead><tr><th>Address</th><th>Name it gave</th><th>DNS name</th><th>IPv6<HelpButton id="device-ipv6" /></th><th>From</th><th>MAC</th><th>In TelltaleDNS</th></tr></thead>
             <tbody>
               {#each found as l (l.ip)}
                 <tr>
-                  <td class="mono"><ClientChip ip={l.ip} onchanged={load} /></td>
+                  <td class="mono"><ClientChip ip={l.ip} onchanged={load} />{#if l.offline}
+                      <span class="badge warn" data-testid="offline-badge" title="The router remembers this client but doesn't see it now">offline</span>
+                    {/if}</td>
                   <td>{l.hostname ?? ''}</td>
-                  <td><span class="badge info">{sourceText[l.source] ?? l.source}</span></td>
+                  <td class="mono small" data-testid="dns-name">
+                    {#if l.dnsName}
+                      {l.dnsName}
+                      <button type="button" class="link small copy-btn" aria-label={'Copy ' + l.dnsName} onclick={() => copyName(l.ip, l.dnsName ?? '')}>Copy</button>
+                      <span class="small muted" role="status" aria-live="polite" data-testid="copy-status">{copied?.ip === l.ip ? (copied.ok ? 'Copied' : 'Select to copy') : ''}</span>
+                    {:else}<span class="muted">none</span>{/if}
+                  </td>
+                  <td class="mono small" data-testid="ipv6">
+                    {#if l.ipv6?.length}
+                      {#each l.ipv6 as a (a)}<div>{a}</div>{/each}
+                    {:else}<span class="muted">none</span>{/if}
+                  </td>
+                  <td><span class="badge info" data-testid="named-by">{sourceLabel(l)}</span></td>
                   <td class="mono small">{l.mac}</td>
                   <td class="small">{#if named(l.ip)}<strong>{l.clientName}</strong>{:else}<span class="muted">not named yet</span>{/if}</td>
                 </tr>
@@ -287,8 +335,12 @@
       <div class="seg" role="group" aria-label="Device view">
         <button type="button" aria-pressed={view === 'rhythm'} onclick={() => openDevice(rhythmFor, 'rhythm')} data-testid="device-rhythm">Rhythm</button>
         <button type="button" aria-pressed={view === 'timeline'} onclick={() => openDevice(rhythmFor, 'timeline')} data-testid="device-timeline">Timeline</button>
+        <button type="button" aria-pressed={view === 'policy'} onclick={() => openDevice(rhythmFor, 'policy')} data-testid="device-policy">Policy</button>
       </div>
-      {#if view === 'timeline'}
+      {#if view === 'policy'}
+        <p class="muted small">Every filter and rule that applies to this device, and why.</p>
+        <PolicyPanel client={rhythmFor} />
+      {:else if view === 'timeline'}
         <p class="muted small">This device's day from the query log: a lane per domain it talks to, the answer time below, and what happened above.<HelpButton id="device-timeline" /></p>
         <DeviceTimeline client={rhythmFor} />
       {:else}
@@ -308,6 +360,11 @@
 </div>
 
 <style>
+  /* A larger tap target for the row's Copy button (it sits in a table cell). */
+  .copy-btn {
+    min-height: 32px;
+    padding: 6px 8px;
+  }
   /* REQ: FLT-017 — a workload's name on one line (the table scrolls instead). */
   .nowrap {
     white-space: nowrap;

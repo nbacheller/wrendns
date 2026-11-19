@@ -21,9 +21,11 @@ Then rebuild the binary (`cargo build -p telltale`) to embed `dist/`. A binary b
 ## End-to-end tests
 
 ```sh
-cargo build -p telltale && npm run build
+cargo build -p telltale --features e2e && npm run build   # `e2e`: the guarded framework's test rows
 npx playwright install --with-deps --only-shell chromium
 npm run test:e2e             # starts the real binary (tests/e2e/server.mjs) on 127.0.0.1:18054
+                             # every e2e port is an offset from E2E_HTTP_PORT (default 18054), in
+                             # tests/e2e/ports.ts; a run on another base keeps its data in .e2e-<base>/
 SHOTS=1 npm run test:e2e     # also refreshes the site's screenshots (../site/assets/shots/)
                              # and saves every page to .shots/ for design review
 ```

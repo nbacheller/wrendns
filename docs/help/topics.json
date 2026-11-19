@@ -20,7 +20,7 @@
       "summary": "A searchable history of each lookup: which device asked, for what, and what happened (answered, blocked, from memory).",
       "when": "A site or app is broken, or you want to know what a device talks to.",
       "example": "Filter by the smart plug's address to see it contacting a dozen servers every hour.",
-      "caution": "The log shows names, not page contents. How long it's kept is set by [telemetry.qlog] retention_days.",
+      "caution": "Each filter has a \"not\" box that flips it to everything except the match (no rcode on Live). The log shows names, not page contents. How long it's kept is set by [telemetry.qlog] retention_days.",
       "docs": "query-log"
     },
     {
@@ -135,6 +135,16 @@
       "docs": "a-devices-rhythm"
     },
     {
+      "id": "device-policy",
+      "title": "Which filters apply to this device?",
+      "term": "A device's effective policy",
+      "summary": "Every filter and rule that applies to one device, and why: the group it is in, the key that matched it (a MAC, an address, a network, a client ID, a router name), then its lists, blocked services, SafeSearch, rewrites, schedules, quick rules and upstream group, each linking to where it is set.",
+      "when": "A device is blocked, or not blocked, and you want to know which group, list, schedule or rule is responsible. Or you want to check that the right group took a new device.",
+      "example": "The kids' tablet matched by its MAC lands in group kids; its bedtime schedule is in effect now, so every name is blocked until 07:00; a quick rule for game.example ends at 22:00.",
+      "caution": "It is read the way a query from the device is matched. A device known only by a MAC that has not been seen at an address has no network, so a network group is not shown for it.",
+      "docs": "a-devices-policy"
+    },
+    {
       "id": "kubernetes-workloads",
       "title": "Pods named by what they run",
       "term": "Kubernetes workloads as devices",
@@ -210,7 +220,7 @@
       "id": "devices",
       "title": "Name your devices",
       "term": "Clients",
-      "summary": "Give an address (or a MAC, or a client ID) a name so every view shows \"Living room TV\" instead of 192.168.1.42, and put it in groups.",
+      "summary": "Give an address (or a MAC, or a client ID) a name so every view shows \"Living room TV\" instead of 192.168.1.42, and put it in groups. Under Discovered on your network, each device shows the DNS name it answers as (copyable) and the router that named it (for example \"router: udm (UniFi)\" or \"router: home-assistant (Home Assistant)\"). Routers are added on the Routers page, under Devices.",
       "when": "You see an address you don't recognize, or want different rules for one device.",
       "example": "Name 192.168.1.42 \"Living room TV\" and add it to the kids group: its history relabels at once.",
       "caution": "Addresses can change when a device reconnects; match by MAC for devices that don't keep their address (a DHCP reservation also works).",
@@ -220,10 +230,10 @@
       "id": "device-name",
       "title": "The device's name",
       "term": "Client name",
-      "summary": "Shown everywhere instead of the address, including on past queries, and usable in rules ($client='Kids tablet').",
+      "summary": "Shown everywhere instead of the address, including on past queries, and usable in rules ($client='Kids tablet'). It can also match the name your router gave the device (\"Also recognize it by its router name\"), so it stays matched when the device gets a new address.",
       "when": "Always: a name you'll recognize in a month.",
       "example": "\"Kids tablet\", \"Office printer\", \"Ring doorbell\".",
-      "caution": "Names must be unique; renaming keeps the device's groups.",
+      "caution": "Names must be unique; renaming keeps the device's groups. A router name is in label form (Kitchen Tablet is kitchen-tablet) and matches the address the router gives that name now, after an address, a MAC and any network that holds the device; a group or a quick rule can name it too (Router names, Device by router name). A device picks its own host name, so any device can claim a router name such as kids-ipad, though a network that holds it takes it first. Where it matters, match by MAC or IP address instead. Router names cover IPv4 addresses only.",
       "docs": "naming-devices-in-the-ui"
     },
     {
@@ -247,6 +257,24 @@
       "caution": "The highest-priority group's settings win when a device is in several.",
       "diagram": "blocked",
       "docs": "groups-and-devices"
+    },
+    {
+      "id": "networks",
+      "title": "The networks your routers know",
+      "term": "Network",
+      "summary": "A LAN or VLAN your router reports, or one this node is directly on: its subnet, DHCP pool, domain and the group that covers it. Devices on it show how full it is.",
+      "when": "You want to see which networks are filling up, or which networks no group covers yet.",
+      "example": "IoT (192.168.20.0/24, VLAN 20): 42 of 254 addresses in use, 38 of them from the DHCP pool.",
+      "caution": "Networks come from your routers, from the networks this node is directly on (marked this node: its own LAN and any tagged VLAN interface), and from your groups' networks. A network nothing reports shows as group only. A VLAN reached through the gateway is not on the node, so it shows only if a router reports it. This node means the node answering the API. A replica asks the primary, which reads the routers, for their networks and devices and adds the networks it is directly on; if the primary doesn't answer it shows only its own and says which node didn't. Inside a bridged Docker container there are none (set TELLTALE_HOST_NETWORK=1 on host networking)."
+    },
+    {
+      "id": "network-group",
+      "title": "Make a group from a network",
+      "term": "Group",
+      "summary": "Opens the Groups editor with this network already filled in as the group's networks, so the devices on it follow the group's lists and settings.",
+      "when": "A network has no group yet, so its devices use the default group.",
+      "example": "A new IoT network: make a group named iot from it, then pick its lists.",
+      "caution": "Groups are checked when you apply them. A network that another group already covers isn't offered this button."
     },
     {
       "id": "lists",
@@ -280,6 +308,16 @@
       "docs": "filter-lists"
     },
     {
+      "id": "list-update-now",
+      "title": "Update lists now",
+      "term": "Update now (list refresh)",
+      "summary": "Downloads every enabled list again right away instead of waiting for its schedule, like Pi-hole's Update Gravity. Each list's row has its own Update now to download just that one. The page shows progress; each list's State says \"updating\" until its download ends, and Confirmed current shows when the list last downloaded fine.",
+      "when": "A list maintainer fixed a false positive or added new names, or you just added a list. Use a row's Update now when only one list is in question.",
+      "example": "A site broke because of a list entry the maintainer removed this morning: the list's row Update now picks up the fix without waiting a day.",
+      "caution": "Unchanged lists cost one small request each, and blocking only changes if a list did. An off list can't be updated until it's on. In a cluster the primary downloads the lists for every node. Agents need the config:write:lists scope.",
+      "docs": "filter-lists"
+    },
+    {
       "id": "upstreams",
       "title": "Where answers come from",
       "term": "Upstreams (forwarders)",
@@ -302,15 +340,100 @@
       "docs": "encrypted-upstreams"
     },
     {
+      "id": "upstream-picker",
+      "title": "Pick your upstream servers",
+      "term": "Upstream picker (simple view)",
+      "summary": "Tick the public DNS servers you want, choose encrypted or plain DNS and IPv4 and/or IPv6, and Save. TelltaleDNS asks the fastest of the servers you ticked. The Custom row takes an address of your own. The Advanced view is the technical list and forms.",
+      "when": "Setting up, or changing which public servers answer for you, without writing addresses by hand.",
+      "example": "Tick Quad9 and Cloudflare, leave Encrypted on, and Save: DNS over TLS to both, using whichever answers faster.",
+      "caution": "Every server you tick sees the names you look up, so read its note. Plain DNS isn't private. IPv6 is greyed out when this node has no IPv6 route. Servers set up another way (config files, an import, the Advanced view) are shown and left alone, and stay in the default group.",
+      "docs": "upstream-presets"
+    },
+    {
+      "id": "upstream-route",
+      "title": "\"This node has no IPv6 route\"",
+      "term": "No route to an upstream",
+      "summary": "This node can't reach the server's address: it is an IPv6 (or IPv4) address and the machine has no default route for that family. TelltaleDNS checks with a connection attempt that sends nothing, at start and every 30 seconds, never on the query path. The server fails on every query until the route exists.",
+      "when": "A server you imported from Pi-hole, or added by address, is always failing.",
+      "example": "Cloudflare's [2606:4700:4700::1111] on a Pi with only IPv4: remove it from the group, or give the host IPv6. On the map the group's resolver stays yellow while the others answer.",
+      "caution": "A server given by hostname isn't checked this way; its failures show as connection errors.",
+      "docs": "network-map"
+    },
+    {
+      "id": "upstream-source",
+      "title": "Send an upstream's queries from one address",
+      "term": "Source address (bind address)",
+      "summary": "The address on this node that an upstream's queries leave from. A network such as 198.51.100.0/24 means the address each node holds in it, so one shared upstream works on every node.",
+      "when": "A DNS filter knows your network by the address its queries come from, or the node sits on several networks and you want one of them.",
+      "example": "The family filter is asked from the 198.51.100.x address, so a service that keys on that network sees it.",
+      "caution": "The node must hold the address (on a real interface); saving one it doesn't is refused. If it is missing at start or disappears later, only that upstream's queries fail and the health icon says why. Binding an address doesn't pick the interface: add a routing rule for it (see the runbook). In a cluster, name a network, not one node's address. This is not what makes a gateway's content filtering apply: that works on traffic, whatever DNS is used.",
+      "docs": "commercial-filters-behind-telltaledns"
+    },
+    {
       "id": "routes",
       "title": "Send a domain to another server",
       "term": "Conditional forwarding (routes)",
       "summary": "Questions for one domain go to a specific server instead of the public ones, such as your work network's or your router's.",
       "when": "Names like nas.home or corp.example only exist on another server.",
       "example": "Send everything under corp.example to 10.0.0.53 so work names resolve at home over the VPN.",
-      "caution": "That server sees those questions; private reverse lookups never leave your network by default. If that server only knows this domain (it refuses other questions and hands sub-domains to other servers), tick the stub zone box.",
+      "caution": "That server sees those questions; private reverse lookups never leave your network by default. If that server only knows this domain (it refuses other questions and hands sub-domains to other servers), tick the stub zone box. Limit it with groups (only their devices are sent) and query types (only PTR, say), and leave the DNSSEC box ticked unless the domain is signed or you know why it isn't. Ticking “Only on this node” keeps the route here: the other nodes answer as if it weren't there.",
       "diagram": "route",
       "docs": "routing-conditional-forwarding"
+    },
+    {
+      "id": "records",
+      "title": "A name's TTL and whether this node only keeps it",
+      "term": "Record TTL (time to live)",
+      "summary": "How long other devices may keep an answer before they ask again, and whether only this node keeps the name.",
+      "when": "A name changes often, so devices should ask again soon (a short TTL); or a name only this node should answer, such as a test name.",
+      "example": "printer.home.arpa with TTL 60 is asked again within a minute; a name marked this node only is not shared with the other nodes of a cluster.",
+      "caution": "A blank TTL means `[local] default_ttl`. A node-only name is missing on the other nodes of a cluster, so their devices don't get it.",
+      "diagram": "local",
+      "docs": "local-records"
+    },
+    {
+      "id": "zones",
+      "title": "Answer a whole domain from its own records",
+      "term": "Authoritative zone",
+      "summary": "TelltaleDNS answers every name under a domain itself, from the records you list; a name it doesn't have gets “no such name”.",
+      "when": "A private domain such as home.example.com should be answered only from your own records, and a made-up name under it should fail at once.",
+      "example": "home.example.com with printer.home.example.com → 192.168.1.20; ghost.home.example.com gets “no such name” at once, from this node.",
+      "caution": "Only the groups you pick see the zone (split horizon). A zone the configuration file defines, or its zone file, is read-only here. The negative TTL is how long devices may remember “no such name”.",
+      "diagram": "local",
+      "docs": "local-zones"
+    },
+    {
+      "id": "anomaly-settings",
+      "title": "Device anomaly settings",
+      "term": "Anomaly detection (per device)",
+      "summary": "How readily TelltaleDNS reports a device that suddenly asks for much more, or for many new domains, or beacons to a service on a schedule.",
+      "when": "Too many findings for devices that are normal (lower the sensitivity, or lengthen the learning period); or a device that should be watched more closely (raise the sensitivity).",
+      "example": "Learning for 14 days and low sensitivity: only large departures from a device's own baseline are reported.",
+      "caution": "Admins only: these are node-managed and apply on every node, and the files win field by field. Findings already recorded stay as they are. Ignored domains are never reported.",
+      "diagram": "local",
+      "docs": "device-anomalies"
+    },
+    {
+      "id": "qlog-settings",
+      "title": "Query log store, retention and privacy",
+      "term": "Query log (retention and privacy level)",
+      "summary": "How long the query log is kept, how much disk it may use, and how much of each query it keeps.",
+      "when": "The log holds more than you want to keep (shorten the retention), or it should not show the names or the devices (raise the privacy level).",
+      "example": "Privacy level 2 keeps the domains but hides the devices; retention of 7 days keeps the last week.",
+      "caution": "Admins only, since privacy and retention are at stake. The privacy level applies within seconds; turning the log on or off, its retention and its flush settings take effect after a restart.",
+      "diagram": "local",
+      "docs": "query-log"
+    },
+    {
+      "id": "metrics-settings",
+      "title": "Per-client metric series",
+      "term": "Per-client metrics (Prometheus)",
+      "summary": "Whether /metrics has a series for each device, and how many devices get one.",
+      "when": "You want to graph one device's queries in Prometheus or Grafana.",
+      "example": "Per device with a cap of 100: the first 100 devices get their own series, the rest count as “other”.",
+      "caution": "High cardinality: every device is a time series in your Prometheus, so keep the cap low. Admins only; no agent can change it.",
+      "diagram": "local",
+      "docs": "monitoring"
     },
     {
       "id": "config-sources",
@@ -367,6 +490,15 @@
       "docs": "users-and-sign-in"
     },
     {
+      "id": "domain-icons",
+      "title": "Icons beside domain names",
+      "term": "Domain icons",
+      "summary": "A small mark left of a name in the dashboard's lists and the query log: a brand's colour and glyph when TelltaleDNS knows the brand, otherwise a letter in a colour that is always the same for that owner. It is drawn here; nothing is fetched.",
+      "when": "Pick Monogram only if you'd rather not see brand marks, Small for denser lists, or Off for plain names.",
+      "example": "netflix.com shows Netflix's red tile, cdn.example.org a letter C, and nas.home.arpa, a name of your own network, a house.",
+      "caution": "The choice is kept per user in this browser, not on the server. When a privacy level hides names, there are no icons."
+    },
+    {
       "id": "two-factor",
       "title": "A second step when signing in",
       "term": "Two-factor authentication (TOTP)",
@@ -374,6 +506,56 @@
       "when": "Anyone who can change settings should turn it on.",
       "example": "Scan the QR code with any authenticator app, enter the code, and keep the recovery codes somewhere safe.",
       "caution": "Lose both the phone and the recovery codes and an admin must reset it for you.",
+      "docs": "users-and-sign-in"
+    },
+    {
+      "id": "break-glass",
+      "title": "Signing in when the provider is down",
+      "term": "Break-glass sign-in",
+      "summary": "With local sign-in turned off, an admin can still sign in with a password from the break-glass networks. By default that is this computer only.",
+      "when": "Only if you turn off password sign-in for your provider (disable_local_login).",
+      "example": "Set allowed_admin_networks = [\"192.168.1.0/24\"] to allow your home network, or leave it out and sign in from the server itself.",
+      "caution": "Behind a reverse proxy on the same machine, or published through Docker, your sign-in may come from the proxy or the Docker gateway. Then it is refused unless the proxy is in trusted_proxies or the networks include it.",
+      "docs": "users-and-sign-in"
+    },
+    {
+      "id": "password-reset",
+      "title": "Forgot the password",
+      "term": "Offline password reset",
+      "summary": "On the machine that runs TelltaleDNS, with it stopped, an admin on the machine sets a new password for any user. Their web sessions end.",
+      "when": "Only when nobody can sign in: no admin remembers a password and no second admin exists.",
+      "example": "Stop the service, then run: printf '%s\\n' \"$NEW_PASSWORD\" | telltale auth reset-password alice -c /etc/telltale/telltale.toml, or run it without the pipe and type the password twice.",
+      "caution": "It needs the node stopped, and it can't run on a cluster replica (reset the password on the primary). Whoever can run it controls the node, so it's for the person who runs the box. A web session ends, but API tokens and HTTP Basic logins keep working. Typing the password, Ctrl-C then Enter cancels it.",
+      "docs": "users-and-sign-in"
+    },
+    {
+      "id": "oidc-providers",
+      "title": "Let people sign in with an account they already have",
+      "term": "OIDC sign-in provider",
+      "summary": "Keycloak, Authentik, Google or any OpenID Connect provider. A person signs in at the provider and TelltaleDNS gives them a role from the groups the provider reports. A provider you add, change or remove here applies on every node within seconds, with no restart.",
+      "when": "You want family or colleagues to sign in with their own account instead of a password kept here.",
+      "example": "Issuer https://id.example.com/realms/home, client ID telltale, the client secret stored as oidc.keycloak.client_secret, and the group dns-admins mapped to admin.",
+      "caution": "Register each node's redirect URI (shown on the provider's card) with the provider. Each node's configuration file sets its own public_url; without it the provider is inactive on that node. Removing a provider ends the sessions it opened. The break-glass admin's password sign-in is never affected. A provider the configuration file defines is read-only here.",
+      "docs": "users-and-sign-in"
+    },
+    {
+      "id": "oidc-role-rules",
+      "title": "Choose each person's role from their groups",
+      "term": "Group to role rules",
+      "summary": "Each rule maps one group the provider reports to a role. A person gets the highest role any of their groups maps to, at every sign-in. People in no mapped group get the role for everyone else, or can't sign in when there is none.",
+      "when": "You decide who is an admin, an operator or a viewer by the groups they are in at the provider.",
+      "example": "dns-admins is admin, family is viewer, and no role for everyone else: a stranger with an account at the provider is refused.",
+      "caution": "Leave the role for everyone else empty unless every account at the provider should get in. The groups claim (default groups) has to be in the provider's tokens: add it to the client's scope there.",
+      "docs": "users-and-sign-in"
+    },
+    {
+      "id": "oidc-public-url",
+      "title": "Why a provider is inactive on a node",
+      "term": "public_url",
+      "summary": "Each node is opened at its own address, so each node's configuration file sets [auth.oidc] public_url. It makes the redirect URI the provider sends people back to. A node without it can't serve sign-in buttons, so it shows the providers as inactive.",
+      "when": "A provider's card says Inactive on this node and names public_url.",
+      "example": "public_url = \"https://dns.example.com\" on one node and \"http://192.168.1.2:8053\" on another, each registered with the provider as <public_url>/api/v1/auth/oidc/<id>/callback.",
+      "caution": "It is not shared between nodes and can't be set here: it is part of how the node is reached. Set it in the node's file and reload.",
       "docs": "users-and-sign-in"
     },
     {
@@ -440,17 +622,17 @@
       "id": "backup",
       "title": "Keep a copy of your setup",
       "term": "Backup and restore",
-      "summary": "One file with your settings, users, API tokens, the devices and names you added, the audit log, and statistics history.",
+      "summary": "One file with your settings, users, API tokens, the devices and names you added, the audit log, and statistics history. Tick \"Include the stored secrets\" to carry the passwords and tokens you stored in the UI too, encrypted with a passphrase you choose.",
       "when": "Before an upgrade, before moving to new hardware, or just to have a copy.",
-      "example": "Download a backup on the old Pi, then run telltale backup restore on the new one.",
-      "caution": "The file holds password hashes: keep it private. The query log is only included from the command line (--include-qlog).",
+      "example": "Download a backup with a passphrase on the old Pi, then run telltale backup restore --secrets-passphrase-file on the new one: the stored secrets come back under the new node's own key.",
+      "caution": "The file holds password hashes: keep it private. Without a passphrase the stored secrets are left out (the page says how many); with one, they need that passphrase to come back, and a backup with secrets needs a sign-in from the last 10 minutes. The query log is included only if you tick it, or from the command line (--include-qlog).",
       "docs": "backups-and-moving-to-a-new-machine"
     },
     {
       "id": "support-package",
       "title": "Share what's wrong without sharing yourself",
       "term": "Support package",
-      "summary": "One file for a bug report: build facts, your settings without secrets, cluster and health, upstreams, a metrics snapshot, and this node's recent log. At the default level, addresses and names become pseudonyms (device-1, 10.4.7.9) that stay consistent inside the file, and nothing is uploaded: you look it over and attach it yourself.",
+      "summary": "One file for a bug report: build facts, your settings without secrets, cluster and health, upstreams, a metrics snapshot, and this node's recent log (tick \"Every node in the cluster\" for each node's own part: every node redacts its own log, and the key map is turned off). At the default level, addresses and names become pseudonyms (device-1, 10.4.7.9) that stay consistent inside the file, and nothing is uploaded: you look it over and attach it yourself.",
       "when": "Something broke and a maintainer asks for logs and settings.",
       "example": "A node won't talk to its upstream: the package shows the upstream's state, the warnings from the log, and the settings, with your addresses replaced.",
       "caution": "Log lines are redacted by pattern, which is best effort: read the file before you attach it. The pseudonym map holds your real names; keep it to yourself.",
@@ -495,6 +677,16 @@
       "when": "You run TelltaleDNS on more than one machine (a Pi and Kubernetes, say) and hand out both as DNS servers.",
       "example": "Two nodes: the k8s pod is the primary (config from GitOps), the Pi follows it; both show version 12, in sync, ready.",
       "caution": "Change configuration on the primary. Each node keeps its own listeners, sign-in, query-log retention, and cache size.",
+      "docs": "clusters"
+    },
+    {
+      "id": "primary-unreachable",
+      "title": "A replica can't reach its primary",
+      "term": "Primary unreachable",
+      "summary": "A replica that hasn't heard from its primary for a minute is split off: it keeps answering DNS from its last copy, but it gets no configuration changes until it reconnects. It can still reach other members, which relay its state to this page, so a silent split shows here.",
+      "when": "A replica shows this after a network change, or when its primary was moved or stopped. The alert fires once it has held for the rule's threshold (60 seconds by default) and its 'For at least' time.",
+      "example": "The Pi shows \"no contact with the primary for 3m\" while the pod still reaches it. Changes made on the primary won't reach the Pi until the link is back.",
+      "caution": "DNS on the replica keeps working. Check the network path between the replica and the primary; the alert clears by itself once they reconnect.",
       "docs": "clusters"
     },
     {
@@ -546,6 +738,36 @@
       "example": "home: the Pi (replica, 30% of queries, 4 ms). k8s: the controller (primary) and node k3s-1 with 3 pods, one amber because it's still loading the configuration.",
       "caution": "Each pod has its own cache and rate limits, so a new pod starts cold. Uneven line thickness between a site's pods means the load balancer isn't spreading queries; the Load balance check explains what to do.",
       "docs": "scaling-in-kubernetes"
+    },
+    {
+      "id": "cluster-secrets",
+      "title": "Stored secrets reach every full member",
+      "term": "Secrets replication",
+      "summary": "A secret stored in the UI is copied to every full member over the cluster's encrypted channel, and each member re-encrypts it with its own key. This column shows each node's secrets head, the head it has applied from the primary, and how many secrets it can't read.",
+      "when": "You stored a credential on one node and want to know every node has it, or a node reports a secret it can't read.",
+      "example": "The primary's head is 2.14 and the Pi has applied 2.14, so it's in sync. The Pi shows 1 unreadable: its key file was replaced, so enter that secret again on the primary.",
+      "caution": "A secret never goes to a resolver pod or a witness, and never to a file or a backup. A 'held' count means the primary couldn't decrypt those secrets to send them, so this node keeps its own copy.",
+      "docs": "replicated-secrets"
+    },
+    {
+      "id": "voter-links",
+      "title": "Every voter reachable, all the time",
+      "term": "Voter link",
+      "summary": "Automatic failover needs each voter to reach the others to vote and to renew the primary's lease. The Cluster page counts the voters this node has a link to, and warns when a voter's link has dropped three or more times in ten minutes: it is up now but cannot be counted on.",
+      "when": "The Failover line shows a warning under it, or the Health tab's Voter links check fails, often after a restart or an upgrade, or when a switch or Wi-Fi bridge between the nodes is flaky.",
+      "example": "node-b: its link dropped 5 times in the last 10 minutes (last 40 s ago). The log's \"the main link ended\" lines give how long each link lasted and why it ended.",
+      "caution": "A restart or an upgrade of either node is not counted: only a link that ended while both nodes kept running is. DNS keeps answering whatever the voters do; what a flaky voter risks is a lost election or a paused configuration change, not answers.",
+      "docs": "clusters"
+    },
+    {
+      "id": "cluster-witness",
+      "title": "A witness only votes",
+      "term": "Witness",
+      "summary": "A witness is a small vote-only member (telltale cluster witness). It holds no configuration, no secrets and no DNS, so the Cluster page shows those as not applicable instead of behind or not ready. What it shows is whether it is up and linked, its version and uptime, and its vote: when it last answered this node's vote request or lease renewal, and the epoch it voted in.",
+      "when": "Your cluster has two full nodes and a witness so that automatic failover has three voters, and the witness's row shows no configuration version.",
+      "example": "node-c (witness, votes only): up, last vote 4 s ago, epoch 7; configuration, secrets and DNS: not applicable. It is green in the topology while it is up.",
+      "caution": "A witness that is down is a real problem: with two voters left, one more failure leaves no majority and no primary can keep its lease. The checks, health reasons and the node_down alert still name it, but it never counts as behind, not serving or odd.",
+      "docs": "clusters"
     },
     {
       "id": "host-resources",
@@ -614,9 +836,109 @@
       "summary": "Messages to ntfy, Gotify, Slack-compatible channels, or a webhook when an upstream is down, a node drops out, a list fails, SERVFAILs climb, a device behaves oddly, or an update is out.",
       "when": "You want to hear about problems without watching the dashboard.",
       "example": "An ntfy push to your phone when Quad9 has been unreachable for a minute, and another when it's back.",
-      "caution": "Set for_secs long enough that short blips stay quiet. Keep tokens in token_file, not in the config.",
+      "caution": "Set for_secs long enough that short blips stay quiet. Keep tokens in a stored secret (the token field keeps it encrypted), not in the config file.",
       "docs": "alerts",
       "general": true
+    },
+    {
+      "id": "alert-conditions",
+      "title": "Alert conditions",
+      "term": "Alert condition (the when of a rule)",
+      "summary": "Each rule watches one condition. Pick the one that matches the problem you want to hear about; the list below says what each one means.",
+      "when": "You are adding a rule and want to know what a condition covers before you choose it.",
+      "example": "A rule with when = \"cert_expiring\" and threshold = 30 tells you a DoT listener's certificate is within 30 days of expiring.",
+      "caution": "Threshold means different things: a percentage, days or seconds, depending on the condition. Conditions that don't use it ignore it.",
+      "docs": "alerts",
+      "items": [
+        {
+          "name": "upstream_down",
+          "line": "an upstream is benched (its circuit breaker is open); one alert per upstream."
+        },
+        {
+          "name": "node_down",
+          "line": "a cluster node isn't connected; one alert per node."
+        },
+        {
+          "name": "sync_lag",
+          "line": "a replica is behind the primary's configuration; one alert per node. Set for_secs so a normal sync stays quiet."
+        },
+        {
+          "name": "primary_unreachable",
+          "line": "a replica hasn't reached its primary for threshold seconds (default 60, 15 to 86400); one alert per replica."
+        },
+        {
+          "name": "list_failing",
+          "line": "a list fails to download; one alert per list."
+        },
+        {
+          "name": "list_stale",
+          "line": "a URL list's content hasn't changed in stale_after_days; one alert per list."
+        },
+        {
+          "name": "servfail_rate",
+          "line": "SERVFAIL above threshold percent (default 5) of queries over 5 minutes, at least 50 queries; one alert per node."
+        },
+        {
+          "name": "anomaly",
+          "line": "a device anomaly is found (not acknowledged or muted); one alert per finding."
+        },
+        {
+          "name": "new_device",
+          "line": "a device TelltaleDNS has never seen starts asking; once per device, quiet for the first day after a fresh start."
+        },
+        {
+          "name": "disk_full",
+          "line": "a node's data disk is more than threshold percent full (default 90); one alert per node."
+        },
+        {
+          "name": "plan_pending",
+          "line": "an AI agent's change waits for your approval; once per plan."
+        },
+        {
+          "name": "update_available",
+          "line": "a newer TelltaleDNS build is out; once per version."
+        },
+        {
+          "name": "maintenance",
+          "line": "a node is in maintenance; resolves when it leaves. Set for_secs to 0 to hear at once."
+        },
+        {
+          "name": "credential_redirected",
+          "line": "an admin changed where an entry's credential is sent; once per change."
+        },
+        {
+          "name": "secrets_exported",
+          "line": "a backup with the stored secrets was made through the API; once per backup."
+        },
+        {
+          "name": "slo_burn",
+          "line": "a service-level objective spends its error budget too fast (14.4 times over an hour and 5 minutes, or 6 times over 6 hours and 30 minutes); one alert per objective."
+        },
+        {
+          "name": "probe_failing",
+          "line": "a listener or extra target hasn't answered its probe twice in a row, on any node; one alert per node and target."
+        },
+        {
+          "name": "cert_expiring",
+          "line": "a DoT, DoH or DoQ listener's certificate expires within threshold days (default 14, from 1 to 365); one alert per node and listener."
+        },
+        {
+          "name": "rollout_failed",
+          "line": "a staged rollout's guard failed a version and pinned the cluster to the one before; once per version, with the reason."
+        },
+        {
+          "name": "cluster_pinned",
+          "line": "the cluster is pinned to an older version, so configuration changes wait; raise for_secs if you pin on purpose for long."
+        },
+        {
+          "name": "chatty_loop",
+          "line": "a device asks one domain at a steady rhythm faster than every 30 seconds (an informational finding the anomaly rule leaves out); one alert per finding."
+        },
+        {
+          "name": "drill_report",
+          "line": "a failover drill's report is ready, scheduled or started by hand; once per drill, saying who followed, who was stuck and the coverage."
+        }
+      ]
     },
     {
       "id": "shadow-lists",
@@ -659,6 +981,16 @@
       "docs": "keeping-names-and-devices-out-of-the-log"
     },
     {
+      "id": "qlog-exclusions",
+      "title": "Kept out of the query log only",
+      "term": "Log-only exclusions",
+      "summary": "Devices, domains and this node's own lookups whose queries are answered and counted in the dashboard and top lists, but never written to the query log, the live view or the event sinks.",
+      "when": "The log fills with the node's own lookups (client 127.0.0.1, name localhost) from a health check or a watchdog, or with one chatty device or domain, and you still want them in the statistics.",
+      "example": "Turn on the node's own lookups and add *.lan: the log shows only real devices asking for real names, while the dashboard's totals stay complete.",
+      "caution": "Excluded queries can't be searched later. Queries logged before stay. A device name that no client has matches nothing. To leave a query out of the statistics too, use the Names and Devices fields above.",
+      "docs": "keeping-queries-out-of-the-query-log-only"
+    },
+    {
       "id": "exemplars",
       "title": "Trace IDs",
       "term": "Exemplars and traces",
@@ -675,7 +1007,7 @@
       "summary": "Whether each upstream's answers can be trusted: the DNSSEC verdicts on them, the error codes it attaches (EDE 15 Blocked, 16 Censored, 17 Filtered mean it filters names itself), and, if you turn them on, second opinions: a small sample of questions asked again of another upstream, with the two answers compared.",
       "when": "A site works on one network but not yours, an upstream seems to block things you didn't, or you want to know whether an upstream rewrites answers (an ISP's resolver, a 'family' filter).",
       "example": "family-dns answered NXDOMAIN for casino.example.org while quad9 had an address: a 'filtered' disagreement, and family-dns's answers carry EDE 17 (Filtered).",
-      "caution": "Different addresses are normal for big sites (CDNs answer per resolver). Second opinions are off by default because the second upstream sees the sampled names; one in 1,000 is a good start.",
+      "caution": "Different addresses are normal for big sites (CDNs answer per resolver). Second opinions are off by default because the second upstream sees the sampled names; one in 1,000 is a good start. The sampling rate, reference group and history size are set under “Change the second opinions” (operators).",
       "docs": "upstream-truth-checks"
     },
     {
@@ -685,7 +1017,7 @@
       "summary": "Every 30 seconds each node asks each of its own DNS listeners a question the way a device would: over UDP, TCP, DNS over TLS, DNS over HTTPS (HTTP/2 or HTTP/3), or DNS over QUIC. It also reads when each encrypted listener's certificate expires, and with HTTPS on the web UI ([api] tls) checks the web UI and its certificate too, showing the SHA-256 fingerprint to compare with your browser's.",
       "when": "Devices say DNS is broken but the dashboard looks fine: a listener can be bound and still not answer (a stuck TLS handshake, a firewall, a load balancer in front). Add the load balancer's address under [probe] targets to check the path devices really use.",
       "example": "tls://127.0.0.1:853 answers in 1.8 ms, certificate expires in 9 days: the health icon turns amber so you renew it before Android's Private DNS stops working.",
-      "caution": "Probes connect by IP, so they don't check the certificate's name; the expiry is read from the certificate file. A listener with PROXY protocol on is skipped (probes don't send the header).",
+      "caution": "Probes connect by IP, so they don't check the certificate's name; the expiry is read from the certificate file. A listener with PROXY protocol on is skipped (probes don't send the header). Their interval, timeout, extra targets and certificate warning are set under “Change the listener checks” on this page (operators).",
       "docs": "listener-checks"
     },
     {
@@ -725,7 +1057,7 @@
       "summary": "Two promises about DNS on your network: answers that work (not SERVFAIL) and answers that are quick (within 250 ms). Each allows a few bad answers a month, its error budget; the card shows how much of it is left and how fast it's going right now.",
       "when": "You want one honest number for \"is DNS good here?\" over a month, and a warning when a problem is eating the month's allowance fast, not every time one lookup fails.",
       "example": "Target 99.9%: of 1,000,000 answers this month, 1,000 may be SERVFAIL. If an upstream outage causes 300 in an hour, the burn rate jumps far above 1, the card says \"burning fast\", the health icon turns amber, and a slo_burn alert goes out.",
-      "caution": "A target of 100% leaves no budget, so it isn't allowed. On a quiet network a few bad answers can look like a big share: alerts wait for at least 50 answers in the short window and 10 bad ones in the long one.",
+      "caution": "A target of 100% leaves no budget, so it isn't allowed. On a quiet network a few bad answers can look like a big share: alerts wait for at least 50 answers in the short window and 10 bad ones in the long one. The objectives are set on this card (under “Change the objectives”): operators change them, and the files win field by field.",
       "docs": "service-level-objectives"
     },
     {
@@ -753,10 +1085,20 @@
       "id": "list-overlap",
       "title": "Unique names and overlap",
       "term": "List overlap",
-      "summary": "Unique names are the ones no other list has. When almost everything in a list is also in another, the list adds little.",
+      "summary": "Unique names are the ones no other list of the same side (block or allow) has, so an exception list never makes a block list look covered. When almost everything in a list is also in another, the list adds little.",
       "when": "Deciding which lists to drop to save memory and compile time.",
       "example": "\"97% also in hagezi-pro\": removing this list would lose only its unique names.",
-      "caution": "Hits count since the node started, so a list with no hits after a restart may just be new.",
+      "caution": "Hits count since each node started (every node's added up), so a list with no hits after a restart may just be new.",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "list-prune",
+      "title": "Prune lists",
+      "term": "Prune",
+      "summary": "Previews the block lists that add less than a threshold of their own entries (names no other list has, plus their regexes), and turns them off after you confirm. They stay in the configuration; Undo turns them on again.",
+      "when": "Several big lists overlap and you want fewer lists to download and compile.",
+      "example": "At 1%, a list where 99.5% of the names are also in hagezi-pro is proposed; turning it off could stop blocking at most the 0.5%.",
+      "caution": "Allow lists, shadow lists and lists a group names are never proposed. Overlap is by name, so a regex or a wildcard another list covers isn't seen: the plan only errs toward keeping a list.",
       "docs": "filter-lists"
     },
     {
@@ -821,6 +1163,547 @@
       "example": "A pod looking up api.github.com first tries api.github.com.argocd.svc.cluster.local and two more cluster names (its search list); those failures land under Internal, not in Top domains or the NXDOMAIN list.",
       "caution": "Nothing is hidden: internal names stay in the query log, the live view, a device's own top domains, and the blocked list. Add your own (e.g. lan) with [telemetry] internal_names on each node.",
       "docs": "internal-names"
+    },
+    {
+      "id": "stored-secrets",
+      "title": "Keep a password or token on the node, encrypted",
+      "term": "Stored secret",
+      "summary": "A password or token (a router's API key, an alert's token, an OIDC client secret) kept in TelltaleDNS's own database, encrypted with the node's key, and never shown again once saved. Settings → Integrations & secrets lists them and shows where each one is used.",
+      "when": "You'd rather type a password or token into the UI than put a file on the machine.",
+      "example": "api_key_ref = \"unifi\" uses the stored secret named unifi as the UniFi console's API key.",
+      "caution": "A credential set in the config file wins and can't be changed in the UI. Keep a copy of the node's key: without it, stored secrets can't be read. Backups leave them out unless you give a passphrase (Settings → System → Backup).",
+      "docs": "stored-secrets"
+    },
+    {
+      "id": "secrets-members",
+      "title": "Which nodes hold a stored secret",
+      "term": "Secret held by every member",
+      "summary": "A stored secret is replicated, encrypted, to every full member of the cluster, so the node that becomes the primary can use it (a router's API key keeps working after a failover). This list is the same on every node: for each full member it shows whether it has the secret, can read it, holds an older version, or didn't answer. Only stamps and health are exchanged, never a value or a ciphertext. A resolver pod or a witness holds none, by design.",
+      "when": "You see the secret on one node and wonder whether the cluster really keeps a copy on the others, or a warning says a member is missing one.",
+      "example": "node-a, node-b and node-c each show \"has it\" with the same stamp for the secret unifi: if node-b is lost, node-a reads the router with its own copy.",
+      "caution": "A member that is missing a secret, holds an older one or can't read it raises a warning and a degraded health reason (secret_not_held), never an unhealthy DNS: DNS doesn't use stored secrets. A member that didn't answer is shown as unknown, not as missing. Give it a minute, then check its secrets key.",
+      "docs": "stored-secrets"
+    },
+    {
+      "id": "credentials-in-forms",
+      "title": "Who may change a credential",
+      "term": "Credential rules in forms",
+      "summary": "Some fields send a password or a token somewhere, or run a program. Only an admin changes those. An operator sees them read-only, with the reason. A value kept on this node isn't shown again: the entry says kept, and changing where it goes means entering the value again.",
+      "when": "A form shows 'Only an admin can change this', or a saved entry shows 'kept: re-enter to change'.",
+      "example": "An alert destination with a stored token: an operator can rename it, but only an admin can change its address or type, because that is where the token goes.",
+      "caution": "A change that would send a kept credential to a new address is refused with a message that names the field. Enter the value again if you are the admin, or change the file if the form can't enter it.",
+      "docs": "stored-secrets"
+    },
+    {
+      "id": "secret-field",
+      "title": "A password or token you type once",
+      "term": "Secret field",
+      "summary": "A box for a password or token. Saved, it is kept encrypted on this node and never shown again: the field only says it's set. Replace it to change it, or clear it to stop the entry using it. If its name is already stored, the field offers to use that secret.",
+      "when": "An integration needs a password or token, such as an alert's ntfy token or a router's API key.",
+      "example": "Type the ntfy access token once; the destination then says it is stored as alert.phone.token.",
+      "caution": "A file the configuration sets wins over a stored secret and can only be changed there. Over plain HTTP the server may refuse the value: turn on HTTPS first.",
+      "docs": "stored-secrets"
+    },
+    {
+      "id": "special-names",
+      "title": "Names with a special meaning",
+      "term": "Special names",
+      "summary": "Names that have a standard meaning are answered here, not on the internet: iCloud Private Relay's names, Firefox's DoH canary, localhost, CHAOS queries, reverse lookups of private addresses, and one-label names like nas.",
+      "when": "Apple devices bypass your filters because Private Relay is on, a bare name like nas goes out to the internet, or a browser setting skips this resolver.",
+      "example": "Leave Private Relay names blocked: an iPhone on your Wi-Fi then uses this resolver and its filters. It shows Private Relay as off for this network, which is what Apple expects.",
+      "caution": "Turning a switch off sends its names to the internet again, at once and on every node. The DDR name is one name for the whole cluster, and it must be on every encrypted listener's certificate: only an admin sets it.",
+      "docs": "special-names"
+    },
+    {
+      "id": "ddr",
+      "title": "Find encrypted DNS by itself (DDR)",
+      "term": "DDR (RFC 9462)",
+      "summary": "Devices that support it ask resolver.arpa where an encrypted resolver is. With a DDR name set, this node answers with its DoT, DoH, and DoQ listeners.",
+      "when": "Windows 11, iOS 16 and later, and macOS 13 and later should use encrypted DNS on your network without a profile.",
+      "example": "Set dns.home.arpa on a node whose certificate carries that name: a device that asks learns the listeners and uses them.",
+      "caution": "A listener bound to loopback, or one behind PROXY protocol, isn't advertised. The certificate must cover the name and the address the device connects to; the listener checks show whether it does.",
+      "docs": "special-names"
+    },
+    {
+      "id": "device-ipv6",
+      "title": "See a device's IPv6 addresses",
+      "term": "IPv6 addresses",
+      "summary": "When your router reports IPv6 addresses for a device (UniFi does for connected clients), each one answers AAAA under the device's DNS name and has an ip6.arpa reverse name, by the same rules as the IPv4 address. The Discovered list and a network's device list show them.",
+      "when": "You reach a device by name over IPv6, or want to check why a name has no AAAA answer.",
+      "example": "kitchen-tablet.home.arpa answers A 192.0.2.21 and AAAA 2001:db8:1::21; the reverse lookup of that IPv6 address gives kitchen-tablet.home.arpa.",
+      "caution": "Link-local addresses (fe80::) are never published: they're the same on every link. A device that left the network has none, as for IPv4. A device the router knows only by an IPv6 address isn't named yet. Devices rotate privacy addresses, so the list changes as the router's does. A device with more than four addresses publishes the four lowest by value, not the most stable, because the router doesn't say which are temporary.",
+      "docs": "device-names-in-dns"
+    },
+    {
+      "id": "device-names-dns",
+      "title": "Name devices in DNS",
+      "term": "Device names",
+      "summary": "Devices TelltaleDNS knows by name answer as name.domain, such as kitchen-tablet.home.arpa, with a reverse name too. Names come from your devices, your routers' DHCP leases, Home Assistant, and mDNS when it's on.",
+      "when": "You want to open kitchen-tablet or nas by name from any device, and the router's DHCP names aren't in DNS.",
+      "example": "Set home.arpa: a router lease for kitchen-tablet answers kitchen-tablet.home.arpa within about 10 seconds, and the reverse lookup gives the name back.",
+      "caution": "local is refused: mDNS owns it. mDNS names need the mDNS switch, which only an admin turns on, because it opens multicast listening on every node. That switch takes effect after a restart on every node.",
+      "docs": "device-names-in-dns"
+    },
+    {
+      "id": "routers",
+      "title": "Name devices from your routers",
+      "term": "Router integration",
+      "summary": "A UniFi console, an OPNsense firewall, or Home Assistant that TelltaleDNS reads, read-only, to learn the names and addresses of the devices on your network.",
+      "when": "Devices show as bare addresses, or your router already names them and you want TelltaleDNS to use those names too.",
+      "example": "A UniFi console named home-gateway reports a laptop called laptop at 192.168.1.20: its queries then show that name.",
+      "caution": "Give it a read-only account or a key that can only read. Only an admin adds, changes, or removes a router. Each stored credential is encrypted on the node and never shown again. A router with a stored credential is read by the primary only: on a replica its card shows the primary's last read, marked as read by the primary, and the credential never leaves the primary.",
+      "docs": "routers"
+    },
+    {
+      "id": "router-unifi",
+      "title": "Connect a UniFi console",
+      "term": "UniFi API key or local user",
+      "summary": "A UniFi OS console (UDM, UCG) or the Network application, read with an API key (UniFi Network 9 and later) or with a local user that can read clients and networks.",
+      "when": "You want the devices your UniFi console knows, by the names it gives them.",
+      "example": "Address https://192.168.1.1, an API key stored as unifi.home-gateway.api_key, and the console's certificate fetched and trusted.",
+      "caution": "Trust the console's own certificate (Fetch the console's certificate). Skipping verification lets anything on the LAN pose as the console. The certificate changes when the console renews it: fetch it again then.",
+      "docs": "routers"
+    },
+    {
+      "id": "router-home-assistant",
+      "title": "Name devices from Home Assistant",
+      "term": "Long-lived access token",
+      "summary": "Home Assistant names devices by the MAC addresses in its registry. TelltaleDNS reads them with a long-lived access token, which must come from an administrator's account, because the template it renders needs one.",
+      "when": "Your devices (Shelly, ESPHome, Sonos, TVs) have names in Home Assistant you'd like TelltaleDNS to use.",
+      "example": "Address http://homeassistant.local:8123 and a token stored as home_assistant.ha.api_key (the form names it `<kind>.<router name>.api_key`).",
+      "caution": "The token is an administrator's: anyone holding it can read your Home Assistant. Keep it stored, never in a file in Git.",
+      "docs": "routers"
+    },
+    {
+      "id": "router-offline-clients",
+      "title": "Keep the names of offline devices",
+      "term": "Offline clients",
+      "summary": "A UniFi console remembers the devices that have left the network. TelltaleDNS keeps their names for this many days, so a phone that is off Wi-Fi still shows its name in the query log and the top lists. Those devices don't count as seen: they don't make a device look present on the network, they give no address to the device inventory, they aren't published as DNS names, and they aren't counted in a network's device totals. They are listed in the leases with an \"offline\" marker (see Offline devices in the leases).",
+      "when": "A device you know by name shows as a bare address once it has left, and the log's names for it disappear with it.",
+      "example": "With 30 days (the default), a laptop asleep since last Tuesday still shows as \"Kitchen laptop\" in the query log; a guest's phone last seen 90 days ago shows as an address again.",
+      "caution": "0 keeps only the connected devices and the ones with a fixed address (a DHCP reservation, which always keeps its name). The window is at most 365 days, and the console still has to keep its history: an older Network application without it gives the connected devices only.",
+      "docs": "routers"
+    },
+    {
+      "id": "offline-leases",
+      "title": "Offline devices in the leases",
+      "term": "Offline",
+      "summary": "The leases (the Clients page's Discovered list and a network's device list) include the devices the router remembers but doesn't see now, marked offline. They show the address and the name the router gave, but no DNS name, and they don't count in a network's device total. So the Discovered tab's count can be higher than the device count on the Networks page.",
+      "when": "You want to see a device that has left the network, or check why a known device has no DNS name.",
+      "example": "A phone marked offline in Discovered still shows its name in the query log, but asking DNS for its name gets no answer until it is back on the network.",
+      "caution": "An offline row is the router's memory, not a live answer. Its address may belong to another device by now, which is why it gives no DNS name and no binding to the device inventory.",
+      "docs": "routers"
+    },
+    {
+      "id": "router-certificate",
+      "title": "Trust a console's certificate",
+      "term": "Certificate (PEM)",
+      "summary": "The console's own certificate, fetched with Fetch the console's certificate and trusted with Trust this certificate. It's saved as the text of the certificate chain the console presents, and nothing else is trusted for that router.",
+      "when": "The router's HTTPS address is refused because its certificate isn't one a public authority signed, which is the normal case for a console.",
+      "example": "The console at https://192.168.1.1 presents unifi.local; fetch it, trust it, and the name to check is unifi.local.",
+      "caution": "The certificate changes when the console renews it, and the router then fails until the new one is saved. Skipping the check is not offered: anything on the LAN could pose as the console.",
+      "docs": "routers"
+    },
+    {
+      "id": "router-check",
+      "title": "Check a router before you save it",
+      "term": "Check it",
+      "summary": "Check it reads the router once with the form's settings and saves nothing. A stored credential is sent only to the address and TLS settings it was saved with, or to a new router's own secret named after it.",
+      "when": "You want to know the key, address, and certificate work before the router is saved and read every few minutes.",
+      "example": "A check of a new UniFi router that reports 12 devices and 3 networks read, with nothing saved.",
+      "caution": "When the address or the certificate differs from the saved router's, a stored credential isn't sent, and the check says so.",
+      "docs": "routers"
+    },
+    {
+      "id": "pihole-import",
+      "title": "Bring your Pi-hole setup over",
+      "term": "Import from Pi-hole",
+      "summary": "Reads a Pi-hole Teleporter export (or its gravity.db), shows what would be added, changed or skipped, and applies the preview as one change once you confirm it.",
+      "when": "You are moving from Pi-hole to TelltaleDNS, or want to see what a Pi-hole export holds before you decide.",
+      "example": "Upload the Teleporter zip from Pi-hole v6. The preview lists its upstreams, local names, lists and groups, and the notes say what has no equivalent, such as the DHCP server and the query history. Apply writes them in one change, which the audit log records as import.pihole.",
+      "caution": "Nothing changes until you apply. Names the config files define are skipped, and DNSSEC is set in the file, not here. The Points to column shows where each entry goes: a file list reads a file on this machine, and the notes say so. Discard forgets a preview without a change. Only admins can import, and agents can't. A preview expires after ten minutes; if the configuration changes meanwhile, preview again.",
+      "docs": "migrating-from-pihole"
+    },
+    {
+      "id": "pihole-api",
+      "title": "Let Pi-hole tools talk to TelltaleDNS",
+      "term": "Pi-hole compatible API",
+      "summary": "Answers the part of Pi-hole's API that the Home Assistant Pi-hole integration, phone apps and dashboards use: the statistics, and turning blocking off for a while and back on. Off until you turn it on; one token you make here.",
+      "when": "You already have Home Assistant, a phone app or a dashboard set up for Pi-hole and want it to keep working against TelltaleDNS.",
+      "example": "Turn it on, copy the token, then in Home Assistant add the Pi-hole integration with this server's address, location admin, and the token as the API key. Its sensors show queries and blocked today, and its switch turns blocking off for a while.",
+      "caution": "The token is shown once and only its hash is kept: make a new one if you lose it, and the old one stops working. It can read the statistics and pause blocking, nothing else. A pause with no timer lasts the longest pause you set (60 minutes by default), so a phone cannot leave filtering off. Prefer Pi-hole v6 mode in your tool: v5 puts the token in the address, which logs may keep.",
+      "docs": "pi-hole-compatible-api"
+    },
+    {
+      "id": "pihole-compare",
+      "title": "Check the answers match",
+      "term": "Compare with Pi-hole",
+      "summary": "Resolves a sample of names (addresses for A and AAAA) through your Pi-hole and through TelltaleDNS, and lists each name whose answers differ. The sample is the import's own local names and CNAMEs, up to 20 blocked names, plus any extra names you type (comma-separated).",
+      "when": "Before you switch your network's DNS to TelltaleDNS, to see what would change for the names you use.",
+      "example": "The sample has your local names, the CNAMEs, and a few blocked domains. A difference such as NXDOMAIN on TelltaleDNS against an address on the Pi-hole means that name isn't answered the same yet.",
+      "caution": "TelltaleDNS answers from its running configuration. Run the imported configuration first, or the comparison shows what the node answers now. Each name costs two queries to each server, and the comparison stops after a minute.",
+      "docs": "migrating-from-pihole"
+    },
+    {
+      "id": "network-inventory",
+      "title": "Network inventory",
+      "term": "Network inventory",
+      "summary": "TelltaleDNS can list the devices on your network that routers and Home Assistant already know, and read a few facts from your managed switches and gateway. It only reads: it never scans the network itself.",
+      "when": "Turn it on when you want to see devices that never ask DNS for anything, such as printers or devices with fixed addresses. Leave it off if you don't want TelltaleDNS reading switches or gateways at all.",
+      "example": "You list your gateway's subnet 192.168.1.0/24 and turn the inventory on. The gateway's ARP table then tells TelltaleDNS which MAC address sits behind each address on that subnet.",
+      "caution": "Only one node runs the inventory: the primary, or the node you name. Changes are for administrators only. Turning it on is refused while privacy level is 2 or 3, because the inventory needs client addresses.",
+      "docs": "network-inventory-devices-that-never-ask-dns"
+    },
+    {
+      "id": "discovery-workers",
+      "title": "Inventory workers",
+      "term": "Discovery worker",
+      "summary": "The inventory's SNMP reads run in a separate small process, so a problem there can't slow or stop DNS. TelltaleDNS restarts it when it stops, and waits longer each time it keeps failing.",
+      "when": "Look here when the inventory shows no data, or when the health icon names a discovery worker.",
+      "example": "A worker is refused because it was built from a different version than this node. Upgrade the node so both match, and the worker starts again.",
+      "caution": "A worker that keeps crashing is a sign of a fault in the inventory or in a device's reply. DNS keeps answering while it is down.",
+      "docs": "network-inventory-devices-that-never-ask-dns"
+    },
+    {
+      "id": "snmp-agents",
+      "title": "SNMP agents",
+      "term": "SNMP agent",
+      "summary": "An SNMP agent is a device TelltaleDNS may ask what it knows about the network: your gateway's ARP table (which MAC address sits behind each IP address), a switch's forwarding table (which port and VLAN a device is on) and the neighbours each switch port sees. TelltaleDNS only reads: it sends read requests and has no way to change a setting on the device. It asks every few minutes, one request at a time and no more than 20 a second.",
+      "when": "Add your gateway to see every device on every VLAN with its MAC address, and your managed switches to see where each device is plugged in. Press Test to see what a device answers before you rely on it: a table the device doesn't answer is skipped, never assumed.",
+      "example": "Your gateway answers the ARP table over SNMPv3 but has no switch tables, so Test shows ARP and interfaces answering and the bridge and LLDP tables skipped. Your managed switch answers the forwarding table and LLDP, so it is added as a second agent with its own credential.",
+      "caution": "Only a private IPv4 address can be an agent, named by you; the Test button takes the agent's name, never an address. Ports that lead to another switch or the gateway are left out when placing a device, so a device isn't shown on the wrong switch. If a device still answers the default community 'public' once SNMPv3 works, turn that off on the device.",
+      "docs": "snmp-setup-the-gateway-and-the-switches"
+    },
+    {
+      "id": "snmp-setup",
+      "title": "Setting up SNMP on your devices",
+      "term": "SNMP setup",
+      "summary": "Turn SNMP on in your gateway and switches, create a read-only SNMPv3 user (SHA with AES), allow only the DNS host's address, then put the user's password in a file TelltaleDNS can read and add the agent here.",
+      "when": "Do this once per device before you add it as an agent. Prefer SNMPv3: a v2c community crosses your network in clear text.",
+      "example": "On a UniFi gateway, enable SNMPv3 in the controller's SNMP settings with a user and one password (UniFi uses it for both authentication and privacy), and allow the DNS host's address. Save the password in a file under /run/secrets, add a credential with that file, then add the gateway as an agent and press Test.",
+      "caution": "A password lives in a file under the node's secret directories, never in the settings. On Kubernetes outside the host network, devices see the node's address after address translation: allow that address. A v2c host credential tells every device in the subnet the community in clear text.",
+      "docs": "snmp-setup-the-gateway-and-the-switches"
+    },
+    {
+      "id": "inventory-unifi-reads",
+      "title": "More from your routers",
+      "term": "Extra router reads",
+      "summary": "The inventory can ask UniFi for more than its device list: more fields of each connected client (port or access point, VLAN, network, first seen), clients it has seen before (history), and its own devices with each switch port's MAC table and LLDP neighbours. It can also ask Home Assistant for devices that have a MAC address and no entity. Every read only reads, adds to the inventory only, and is capped at 4 MiB and 8,192 rows (Home Assistant 1 MiB).",
+      "when": "Turn these on when the inventory shows a device with no place: you want to know which switch port or access point a device is on, or to keep the name of a phone that left last week.",
+      "example": "With the devices read on, a printer's row shows the switch and port it plugs into. With history on, a laptop that has been away for ten days is listed as history, with the last address UniFi saw, and it never answers for the address now.",
+      "caution": "History is never a current address: it can't give a device a DNS name, and it never replaces an address a router reports now. A console that refuses a read (a key without the right to read devices, for example) is reported once in the table, and the other reads carry on. Home Assistant can only list a device with no entity when the device sits in an area or has a label.",
+      "docs": "network-inventory-devices-that-never-ask-dns"
+    },
+    {
+      "id": "block-response",
+      "title": "How blocked names are answered",
+      "term": "Block response",
+      "summary": "What a blocked name gets back: a zero address (null_ip), no such name (NXDOMAIN), no data (NODATA), a refusal, or your own landing-page addresses (custom_ip). The block TTL says how long clients may keep it, and the Extended DNS Error code says why.",
+      "when": "You want a blocked site to show a \"blocked\" page of your own, or a family group's blocks to say they are parental controls.",
+      "example": "The kids group answers custom_ip with 192.168.1.2 for 60 seconds and Extended DNS Error 17 (filtered), without naming the list.",
+      "caution": "custom_ip needs at least one block address. A long TTL keeps a block in clients' caches after you lift it.",
+      "docs": "blocking"
+    },
+    {
+      "id": "network-map",
+      "title": "Read the network map",
+      "term": "Network map",
+      "summary": "Your gateway, networks, devices, TelltaleDNS nodes, answer kinds and upstreams, joined by the flows between them. A wider, denser pulse is more lookups a second; the shape and the word on each node (OK, Warning, Failing, Idle) say how it is doing, so the colour is never the only sign.",
+      "when": "You want to see at a glance which device, node or upstream is having trouble, then click it to open its queries, Explain or anomalies. Use the Table view for the same data as text.",
+      "example": "A device is Failing: its flow to the resolver is red because a quarter of its lookups got SERVFAIL. Open the device, then Show its queries.",
+      "caution": "The map is drawn from a sample of lookups, so the rates are estimates (a banner says 1 in N when it is thinned) and a quiet device is Idle, not healthy. At privacy level 2 devices are hidden; at 3 only totals show. No domain name appears on the map.",
+      "docs": "network-map"
+    },
+    {
+      "id": "world-view",
+      "title": "Read the world view",
+      "term": "World view",
+      "summary": "A dot-grid world map with an arc from your network to each country the answers point at. A wider, denser pulse is more lookups a second; the colour and the shape at the country's end (OK, Warning, Failing, Idle) say how many of those answers were slow. Diamonds mark where your upstreams are.",
+      "when": "You want to see where your devices' answers lead, or whether one region is slow. The Table view is the same data as text.",
+      "example": "Most arcs end in your own country and one thick arc ends in the US with a Warning shape: a fifth of the answers there took longer than your latency objective.",
+      "caution": "Placing answers needs the GeoIP database (Settings, Query handling, GeoIP), which an admin turns on. TelltaleDNS does not yet record the address each answer points at, so until it does the view shows only where your upstreams are, labelled as that, not where answers point. Countries are a database's best guess: good for a picture, not for compliance. Failed, blocked and local answers have no location and are counted apart.",
+      "docs": "world-view"
+    },
+    {
+      "id": "geoip",
+      "title": "Turn on the country database",
+      "term": "GeoIP database",
+      "summary": "The world view needs a database that says which country an address is in. It is never bundled: an admin turns it on here, and each node that serves the console then downloads DB-IP's free IP to Country Lite file (about 5 MB, CC BY 4.0) in the background, at most once a day, verifies it and keeps it in the data directory. Nothing is fetched until you turn it on.",
+      "when": "You want the world view to place answers by country. Use your own HTTPS mirror as the source for a site with no internet access.",
+      "example": "Turn it on, press Update now: the state goes Downloading, then Ready with the month and size. A mirror at https://files.example.lan/dbip.csv.gz with its SHA-256 pinned makes the download exactly that file.",
+      "caution": "The checks (a size and row count, no overlaps, both address families, the gzip checksum and a pinned digest if you set one) guard against a truncated or tampered-with file; they don't prove who made it. A failed download keeps the old database and shows an error code. Delete database removes the file and nothing is fetched again until you press Update now. Only an admin changes this; everyone sees the status.",
+      "docs": "geoip-database"
+    },
+    {
+      "id": "sinks",
+      "title": "Send every query to your own log pipeline",
+      "term": "Event sink",
+      "summary": "A sink copies each query event, as it happens, to a file on this node, a syslog collector or a webhook (Loki, Vector, Splunk, a SIEM). You add, change or remove one here and it applies on every node within seconds, with no restart.",
+      "when": "You want the query log in your own tooling, or an alert on blocked queries in a SIEM.",
+      "example": "A webhook sink to https://logs.example.net/ingest with the token stored as sink.loki.token: events go out in batches of 500, or every 5 seconds, whichever comes first.",
+      "caution": "A slow or missing destination never slows DNS: its buffer fills and new events are dropped and counted (telltale_sink_dropped_total). Names and clients follow the query log's privacy level. A sink the configuration file defines is read-only here, and so are its token file and CA: set those in the file.",
+      "docs": "event-sinks"
+    },
+    {
+      "id": "otlp",
+      "title": "Push metrics to an OpenTelemetry collector",
+      "term": "OTLP export",
+      "summary": "The same metrics Prometheus scrapes can be pushed to an OpenTelemetry collector (the OpenTelemetry Collector, Grafana Alloy, a hosted backend) every interval. A header such as an API key is a stored secret, read for every export.",
+      "when": "Your metrics live in a hosted backend, or Prometheus can't reach this node.",
+      "example": "Collector http://otel-collector:4318, every 60 seconds, with the header x-api-key taken from the stored secret otlp.default.header-x-api-key.",
+      "caution": "Only an admin changes it, and it applies on every node without a restart. If the configuration file sets the collector, headers or header references, the file wins and the card is read-only; an inline header value in the file is never shown (it reads <redacted>). Trace settings stay in the file and are read at start.",
+      "docs": "opentelemetry-otlp"
+    },
+    {
+      "id": "guarded-settings",
+      "title": "Guarded settings",
+      "term": "Guarded change",
+      "summary": "Some settings can lock every admin out, put passwords on the wire, re-encrypt your stored secrets or replace a node's configuration. They are changed in two steps: a review that says what the change does and gives a phrase, then the change itself once you type that phrase. A change to an address, a certificate or the trusted proxies is applied as pending and kept only if you confirm it through the new address within the window (120 seconds by default); otherwise it rolls back by itself. A change that weakens security also needs a sign-in from the last 10 minutes and is marked in red.",
+      "when": "Before changing a listener, the API address, TLS, trusted proxies, the secrets key or the cluster from the UI.",
+      "example": "You move the API from port 8053 to 9000. The node opens 9000 beside 8053, gives you a link to the new address, and keeps the change only if you open it and press Confirm. If the new address is unreachable, do nothing: it rolls back and you are still where you were.",
+      "caution": "Admins only, never AI agents or API tokens. A value set in the configuration file wins over the UI and locks the control (\"set by file\"). Restart now exists only where the node declares a supervisor that starts it again.",
+      "docs": "guarded-changes"
+    },
+    {
+      "id": "guarded-recovery",
+      "title": "Getting back after a guarded change",
+      "term": "Guarded recovery",
+      "summary": "If a guarded change leaves a node unreachable, the way back never needs the UI: set the value in the configuration file and restart (a file always wins), run telltale guarded list and telltale guarded clear on the stopped node, or start it once with TELLTALE_IGNORE_GUARDED=1 so it runs on its files alone. Two failed starts after a staged change also drop it automatically.",
+      "when": "The UI is unreachable after an address, certificate or proxy change, DNS stopped after a listener change, you cannot sign in behind a proxy, the secret store is locked after a key change, or a Restart now did not bring the node back.",
+      "example": "On Kubernetes, set TELLTALE_IGNORE_GUARDED=1 on the pod and let it restart: it ignores every stored guarded setting and uses its ConfigMap. Fix the setting, remove the variable, and restart again.",
+      "caution": "telltale guarded clear needs the node stopped and only clears that node's entries. TELLTALE_IGNORE_GUARDED ignores entries without deleting them, and never ignores the file.",
+      "docs": "recovering-from-a-guarded-change"
+    },
+    {
+      "id": "cache-size",
+      "title": "Cache memory",
+      "term": "Memory budget of the DNS cache",
+      "summary": "How much memory a node may use for the answers it keeps, and how many answers it may keep at most.",
+      "when": "The Size line on the Cache page says a bigger cache would answer more lookups from memory, or the node's bar is near full.",
+      "example": "A node with spare memory can take 64 MiB; the Cache page then shows how much of it the answers use.",
+      "caution": "Applies when the node restarts, not at once. The budget is taken from the node's memory, so a big cache on a small Raspberry Pi can crowd out other work.",
+      "docs": "cache-tools"
+    },
+    {
+      "id": "cache-ttl",
+      "title": "How long answers are kept",
+      "term": "Cache time to live (TTL)",
+      "summary": "The shortest and longest time an answer is kept, how long names that don't exist and SERVFAIL are kept, whether old answers are served when upstreams fail, and whether popular answers are refreshed before they expire.",
+      "when": "Answers change often and you want them fresher, or your upstreams are slow or flaky and you want old answers to keep working while they recover.",
+      "example": "A shortest TTL of 60 s makes an answer that says 5 s live for a minute; serve stale keeps the last answer for the first clients when the upstream doesn't reply in time.",
+      "caution": "Applies when the node restarts, not at once. A long TTL means changes to a name reach devices later.",
+      "docs": "cache-tools"
+    },
+    {
+      "id": "cache-persistence",
+      "title": "Keep the cache across restarts",
+      "term": "Warm start",
+      "summary": "The node writes its cache to disk when it stops and reads it back when it starts, so it doesn't start empty; in a cluster it also asks the other nodes for their most-used names.",
+      "when": "After an upgrade or a restart a cold cache means slower first answers for every client.",
+      "example": "With the cache kept, a node that restarts answers its first lookups from the saved answers that are still fresh.",
+      "caution": "The file is owner-only, since it shows what was looked up. Applies when the node restarts.",
+      "docs": "cache-tools"
+    },
+    {
+      "id": "drill-schedule",
+      "title": "Scheduled failover drills",
+      "term": "Failover drill",
+      "summary": "A drill moves the devices of the nodes you name to a standby for a few minutes, to prove the failover works before you need it.",
+      "when": "You want the failover tested every month, without someone remembering to do it.",
+      "example": "Once a month, the node node-b drills itself at night for two minutes; the Cluster page shows the last report.",
+      "caution": "A drill changes where devices get their answers, for a short time. Only admins change the schedule.",
+      "docs": "failover-drills"
+    },
+    {
+      "id": "dnssec-mode",
+      "title": "DNSSEC validation",
+      "term": "DNSSEC",
+      "summary": "DNSSEC lets TelltaleDNS check that an answer was really published by the owner of the name. Off passes answers through, validate refuses bogus ones, and validate-and-count only counts them.",
+      "when": "You want to stop forged answers from reaching your devices, or to see how many would be refused before you turn refusing on.",
+      "example": "A domain whose server is internal and not signed goes in the list of domains not validated, so its answers aren't refused.",
+      "caution": "Validation takes effect on every node within seconds. A wrong trust anchor makes answers for a signed domain fail.",
+      "docs": "dnssec-validation"
+    },
+    {
+      "id": "list-limits",
+      "title": "List size and staleness",
+      "term": "List limits",
+      "summary": "How large a downloaded list may be, how often URL and file lists are refreshed, and when a list nobody has confirmed for a long time is flagged as stale.",
+      "when": "A list is big enough to be refused, or a list's source may have been abandoned and you want to hear about it.",
+      "example": "A list over 64 MiB is refused and the last good copy is kept; a list not confirmed for 30 days shows as stale.",
+      "caution": "The refresh and stale settings apply after a restart. A list's own limit overrides the lists' default.",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "update-check",
+      "title": "Checking for new builds",
+      "term": "Update check",
+      "summary": "Once a day this node reads the signed release index of its channel to see whether a newer build exists. Nothing else leaves the node.",
+      "when": "You want to hear about a new build without checking yourself, or you want no outside request at all.",
+      "example": "With the check off, the status says off and no request is made to the release index.",
+      "caution": "Applies after a restart of this node.",
+      "docs": "versions-and-updates"
+    },
+    {
+      "id": "support-logs",
+      "title": "Keeping support logs",
+      "term": "Support logs",
+      "summary": "Whether this node keeps its log files on disk, so a support package made later includes them.",
+      "when": "You are asked for a support package after something went wrong, and the earlier logs are needed.",
+      "example": "With the logs kept, the support package of last night's failure still has its log lines.",
+      "caution": "Applies after a restart of this node. Logs take disk space.",
+      "docs": "support-package"
+    },
+    {
+      "id": "backup-query-history",
+      "title": "Query history in a backup",
+      "term": "Query history",
+      "summary": "Whether the backup includes the query log, the record of every answer this node gave. It can be large.",
+      "when": "You need to move the history to another node, or keep it for a record.",
+      "example": "A backup without the history is small; with it, the file can be over 256 MiB, and the API then refuses it.",
+      "caution": "The history shows what devices looked up. Keep the backup as private as the network it came from.",
+      "docs": "backups-and-moving-to-a-new-machine"
+    },
+    {
+      "id": "map-thresholds",
+      "title": "Tune the network map's colours and sampling",
+      "term": "Map thresholds",
+      "summary": "The map is drawn from a sample of lookups. Each node samples up to N lookups a second (10 to 2,000), and something is coloured only after it has enough answers (the minimum). It turns Warning when a share of its answers are slow, fail or (for a device) are blocked, and Failing when the failures reach the higher threshold. Idle means too few answers to say.",
+      "when": "The map is too jumpy or too calm for your network, shows Idle for quiet devices, or says it is sampled 1 in N on a busy network.",
+      "example": "A home network with a few chatty devices: leave the defaults. A network with one flaky upstream you accept: raise the failing threshold from 25% to 50% so it stays Warning.",
+      "caution": "The preview on the card is an estimate: it reclassifies the flows drawn now, one by one, while the server judges each device or upstream as a whole, so a value right at a threshold can colour differently once applied. The thresholds change only what the map shows, never an answer or an alert (alerts use the service-level objectives). A higher sampling rate costs a little CPU on every node and, above the default, is worth it only on a busy network. Slow means slower than the latency objective unless you set your own.",
+      "docs": "network-map"
+    },
+    {
+      "id": "query-log-clients",
+      "title": "Show queries from several devices",
+      "term": "Client filter",
+      "summary": "Search by a device's name, or by its address, and pick as many devices as you like; the log shows the queries from all of them, and \"not\" shows every other device.",
+      "when": "You want one person's phone and laptop together, or everything except the server that asks the most.",
+      "example": "Type \"tv\", pick the living room and bedroom TVs, and the log lists both. Tick \"not\" to see everything else.",
+      "caution": "A device is found by the address it has now (a router name or a Kubernetes workload is followed to its addresses); at most 100 devices and 256 addresses per search.",
+      "docs": "groups-and-devices"
+    },
+    {
+      "id": "picker",
+      "title": "Choosing from a long list",
+      "term": "Search and multi-select",
+      "summary": "Type to narrow the list, click or press Enter to pick, Select all and Deselect all act on what the search shows, Backspace removes the last pick.",
+      "when": "A setting offers many devices, groups, lists or networks.",
+      "example": "In a group's networks, type \"10.20.2\" and Select all.",
+      "caution": "Escape closes the list without changing the choice.",
+      "general": true,
+      "docs": "groups-and-devices"
+    },
+    {
+      "id": "list-too-large",
+      "title": "A list is over its size limit",
+      "term": "List size limit",
+      "summary": "A download bigger than the list's limit (64 MiB unless the list or [filter] max_list_bytes says otherwise) is refused so a wrong address can't fill the disk or memory; the last good copy stays in use. Raise the limit sets this list's own max_bytes (the size the server announced plus a quarter, or double the old limit) and downloads it again.",
+      "when": "A list's row says it is larger than its limit.",
+      "example": "A big hosts list grew past 64 MiB: one click sets that list's limit to 128 MiB and the next download works.",
+      "caution": "A big list costs memory: about 20 bytes a name while running and about three times that while a snapshot compiles. The page offers up to 128 MiB for one list; past that, remove it or pick a smaller list. Check the address first: a limit hit on a list that should be small usually means the address returns something else.",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "list-not-found",
+      "title": "A list's address returns not found",
+      "term": "List not found (404)",
+      "summary": "The server answered HTTP 404 or 410 for the list's address: the maintainer moved or deleted it. TelltaleDNS keeps the last good copy, if there was one, but it will never update. Remove the list, or edit it to the new address in Manage lists.",
+      "when": "A list's row says the address returns not found.",
+      "example": "A project renamed its file: remove the old list and add the new address.",
+      "caution": "Removing a list that came from a configuration file hides it on this node; the file still lists it (Manage lists can revert that).",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "list-redundant",
+      "title": "A list that adds nothing",
+      "term": "Redundant list",
+      "summary": "Every name this list puts in the snapshot is also in one other enabled, enforcing list of the same kind, so removing it loses no blocking. It still costs a download and memory. Turn it off to keep it in the configuration, or remove it.",
+      "when": "The Unique column reads 0 and the row says every name is in another list.",
+      "example": "A small list is wholly inside a bigger one you also use: turn the small one off.",
+      "caution": "Unique counts names, not regex rules, and is measured on the active snapshot: if you later remove the other list, this one is no longer redundant. Lists assigned to different groups overlap on purpose, so check the groups before removing.",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "categories",
+      "title": "Content categories",
+      "term": "Category",
+      "summary": "A category is a named kind of site (adult content, gambling, malware, social networks, ad block) backed by an open list its maintainer publishes. A profile chooses categories; this node downloads each list once, however many profiles use it, and blocks the names in it for that profile's devices only.",
+      "when": "You want to keep a kind of site away from some devices, such as adult content and gambling on the children's tablets, without writing a list yourself.",
+      "example": "A Kids profile with Basic filtering blocks adult content, malware, phishing and scams. The Teens profile adds Gambling and Social networks. The default profile blocks none of them.",
+      "caution": "A category block is a DNS block: it stops names, not pages. A device on mobile data, a VPN or its own encrypted DNS goes around it, apps cache answers, and no list is complete. It is not a promise of child safety.",
+      "docs": "content-categories-and-filter-profiles"
+    },
+    {
+      "id": "category-sources",
+      "title": "Where category lists come from",
+      "term": "Category source",
+      "summary": "Every category is backed by lists maintained by someone else (HaGeZi, Steven Black, Perflyst, Bon-Appetit). Each row shows the maintainer, the licence and a link; the node downloads the list from the maintainer's own address while a profile uses it, and never bundles or redistributes it.",
+      "when": "You want to know who maintains a list, how it is licensed, how big it is, or why a category you looked for is not offered.",
+      "example": "Adult content is HaGeZi's NSFW list (GPL-3.0). Its Extended size adds the Bon-Appetit list, which is licensed CC BY-SA 4.0 and shows its attribution next to the checkbox.",
+      "caution": "A category is offered only when an open, maintained, licensed list backs it. Categories without one are listed under Not available, with the reason, instead of appearing as a checkbox that does nothing.",
+      "docs": "content-categories-and-filter-profiles"
+    },
+    {
+      "id": "category-budget",
+      "title": "What a selection costs",
+      "term": "Entry budget",
+      "summary": "Each blocked name takes about 12 bytes in memory, and a big list also needs memory while it is compiled. The Categories view shows the entries and the memory a selection adds, counting a list shared by several categories once, against the entry budget (Settings, Filtering). A node too small for a selection refuses it and says why.",
+      "when": "You are choosing categories on a Raspberry Pi or a small container, or choosing a heavy one (newly registered domains, the full threat feed).",
+      "example": "Basic is about 275,000 entries, about 3 MiB. Newly registered domains (7 days) is about 2.4 million entries and 40 MB to download every day: it passes the default budget by itself and is refused on a node with 256 MiB or less. Basic needs about 85 MiB by the estimate: a node with 128 MiB refuses it and one with 192 MiB takes it.",
+      "caution": "Heavy lists refresh once a day and ask for a confirmation that states the daily download. Raising the budget in Settings lets the view stop warning; it does not give the node more memory.",
+      "docs": "content-categories-and-filter-profiles"
+    },
+    {
+      "id": "filter-profiles",
+      "title": "Filter profiles",
+      "term": "Profile",
+      "summary": "A profile is a group with a friendlier editor: who it applies to (networks and devices), Ad Block, Safe Search for each engine, a filtering level (Off, Basic or Enhanced with the categories you tick) and a schedule. Every other setting of the group stays under Advanced settings.",
+      "when": "You want one set of rules for a kind of device: the children's devices, the smart-TV network, the guests.",
+      "example": "The Kids profile applies to the kids' VLAN and to Maya's iPad, has Basic filtering, Safe Search for Google and YouTube, and a bedtime schedule.",
+      "caution": "A device can be in several profiles: the lists are the union and the other settings come from the profile with the higher priority. A device with a private Wi-Fi address may stop matching when the address changes: select it by address or router name instead.",
+      "docs": "content-categories-and-filter-profiles"
+    },
+    {
+      "id": "cmdb",
+      "title": "CMDB: one record for each thing on your network",
+      "term": "Configuration item (CI)",
+      "summary": "The CMDB keeps one record for each real thing on your network (a laptop, a switch, a camera, a VLAN) and remembers what every source said about it: your router, a managed switch, Home Assistant, the neighbour table, the clients that asked DNS, and your own configuration.",
+      "when": "Turn it on to see everything about a device in one place, and to correct a device the sources get wrong. Leave it off if you don't want TelltaleDNS to keep a record of your devices.",
+      "example": "Your laptop has a Wi-Fi and an Ethernet address. The router sees two clients and Home Assistant knows one device with two MAC addresses. The CMDB shows one device with two interfaces, and the record each source made.",
+      "caution": "It only reads: it never writes to a router or a device, and it never changes a DNS answer, a filtering decision or a device's name in DNS. Only one node runs it, the node the network inventory is designated to, even when the inventory itself is off. It can't be on at privacy level 2 or 3; at level 1 names are hashed. Only an administrator changes its settings.",
+      "docs": "cmdb-one-record-for-each-thing-on-the-network"
+    },
+    {
+      "id": "cmdb-sources",
+      "title": "What each source said",
+      "term": "Source record",
+      "summary": "A source record is what one source said about one thing, kept as it said it: the router's client, the switch's port, Home Assistant's device, the neighbour table's entry, a query the device made, a name in your configuration. Records are matched to the item they describe by MAC address, serial number or a stable device key.",
+      "when": "Open an item and read its sources side by side when two sources disagree, for example a different name for one laptop.",
+      "example": "The router calls a device \"anna-laptop\", Home Assistant calls it \"Anna's MacBook\" and mDNS says \"macbook.local\". All three records are kept; the item shows its best name and each source's own.",
+      "caution": "A source that stops reporting a thing doesn't remove it at once: its record is marked absent after two missed reports and removed after a week (imports after 30 days). A record that no source confirms makes an unconfirmed item.",
+      "docs": "cmdb-one-record-for-each-thing-on-the-network"
+    },
+    {
+      "id": "cmdb-proposals",
+      "title": "Merge proposals",
+      "term": "Merge proposal",
+      "summary": "When the sources point at two devices for one record, or two devices share a host name on one network, the CMDB never guesses: it keeps both devices and proposes the merge. A proposal changes nothing until a person applies it.",
+      "when": "Look at the proposals after you add a router or a switch, when new records arrive that name the same thing in different ways.",
+      "example": "A switch's record has a MAC that belongs to one device and a serial number that belongs to another. Both devices stay, and a proposal asks whether they are one.",
+      "caution": "A host name match alone is only a proposal: two phones can share a name on one VLAN. Merging moves the records and leaves the old id as an alias that redirects for 90 days.",
+      "docs": "cmdb-one-record-for-each-thing-on-the-network"
+    },
+    {
+      "id": "cmdb-changes",
+      "title": "Fixing a wrong link",
+      "term": "Link, unlink, merge, split",
+      "summary": "Move a record to another device, unlink it, merge two devices, or split records out of one. Each shows a preview of the records that would move before anything is written, and each stays after the next report: your decision is kept.",
+      "when": "A record is on the wrong device, or one thing is shown as two, or two things as one.",
+      "example": "A printer's mDNS record attached to the wrong device. Unlink it: it will not be matched to that device again and stands on its own, or Move it to the printer's own item.",
+      "caution": "A MAC address identifies an interface, so moving or unlinking a record with a MAC moves the whole interface with every record of that MAC. Operators and admins may do this; nothing here changes the network.",
+      "docs": "cmdb-one-record-for-each-thing-on-the-network"
     }
   ]
 }

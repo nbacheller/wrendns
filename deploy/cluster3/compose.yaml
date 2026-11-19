@@ -1,0 +1,102 @@
+# A throwaway 3-node TelltaleDNS cluster for the cluster acceptance run (deploy/cluster3/README.md).
+# It never touches the single-node Docker Desktop bundle (deploy/docker-desktop, project telltale-dev,
+# ports 1053/8053): its own project name, its own volumes, and host ports 2153-2353 / 8153-8353.
+#
+#   primary      creates the cluster ([cluster.init]) and serves the UI and API
+#   replica-a    joins with a token, eligible for promotion; 2 CPUs, to check the 2-CPU behaviour
+#   replica-b    joins with a token, eligible for promotion
+#
+# e2e.sh generates the join tokens, the admin password and the secret it writes; nothing secret is
+# kept in this file or in the repository. Run it: deploy/cluster3/e2e.sh (see the README).
+name: telltale-cluster3
+
+x-telltale: &telltale
+  # TT_IMAGE: e2e.sh's upgrade step (j) runs nodes on an older image, one at a time.
+  image: ${TT_IMAGE:-telltale:cluster3-test}
+  pull_policy: never
+  restart: "no"
+  # The image's unprivileged user; the same hardening as the Docker Desktop bundle.
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  read_only: true
+  command: ["run", "-c", "/etc/telltale/telltale.toml"]
+  environment:
+    # The cluster links and the federated reads at debug level: a failed check names the stream
+    # or the call that didn't come back (a few lines a minute).
+    TELLTALE_LOG: "info,telltale_cluster::net=debug,telltale::federated=debug"
+    # REQ: FLT-901 (T24.29): the image is built with the `e2e` feature, which lets this fake stand in
+    # for the hosts the category lists come from, so the test can see which node fetched what.
+    TELLTALE_E2E_CATALOG_BASE: "http://fake-source:8080/"
+  depends_on:
+    fake-source:
+      condition: service_started
+  healthcheck:
+    test: ["CMD", "/usr/local/bin/telltale", "health", "--url", "http://127.0.0.1:8053/readyz"]
+    interval: 5s
+    timeout: 5s
+    retries: 30
+    start_period: 10s
+
+services:
+  # REQ: FLT-901 (T24.29): the category lists' host. BusyBox's httpd logs the address of every request
+  # (-vv), which e2e.sh reads to check that only the primary fetches a list.
+  fake-source:
+    image: busybox:stable
+    restart: "no"
+    command: ["httpd", "-f", "-vv", "-p", "8080", "-h", "/www"]
+    volumes:
+      - ./fake-source:/www:ro
+
+  primary:
+    <<: *telltale
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        # The same build as deploy/docker-desktop/compose.yaml (thin LTO). Unstamped, it reports
+        # `<crate version>-dev`, which its peers read as that version, so the version gates (the
+        # [discovery] first write, ADR-928) let it through (ADR-948, T21.6).
+        PROFILE: bench-fast
+        TELLTALE_BUILD_CHANNEL: dev
+        # The category lists' fake source (see `fake-source`); never set for a shipped image.
+        CARGO_FEATURES: e2e
+        # Its own build cache, not the default one every worktree shares: that one can hold a
+        # crate built from another worktree's sources and fail with a false compile error.
+        # Set CLUSTER3_CACHE_SCOPE (e.g. -mybranch) to keep a worktree's cache apart too.
+        BUILD_CACHE_SCOPE: ${CLUSTER3_CACHE_SCOPE:--cluster3}
+    volumes:
+      - ./config/primary.toml:/etc/telltale/telltale.toml:ro
+      - primary-data:/var/lib/telltale
+    ports:
+      - "127.0.0.1:2153:2153/udp"   # DNS
+      - "127.0.0.1:2153:2153/tcp"
+      - "127.0.0.1:8153:8053"       # the web UI and API
+      - "127.0.0.1:9163:9153"       # /metrics (its own listener)
+
+  replica-a:
+    <<: *telltale
+    cpus: 2
+    volumes:
+      - ./config/replica-a.toml:/etc/telltale/telltale.toml:ro
+      - replica-a-data:/var/lib/telltale
+    ports:
+      - "127.0.0.1:2253:2153/udp"
+      - "127.0.0.1:2253:2153/tcp"
+      - "127.0.0.1:8253:8053"
+      - "127.0.0.1:9263:9153"
+
+  replica-b:
+    <<: *telltale
+    volumes:
+      - ./config/replica-b.toml:/etc/telltale/telltale.toml:ro
+      - replica-b-data:/var/lib/telltale
+    ports:
+      - "127.0.0.1:2353:2153/udp"
+      - "127.0.0.1:2353:2153/tcp"
+      - "127.0.0.1:8353:8053"
+      - "127.0.0.1:9363:9153"
+
+volumes:
+  primary-data:
+  replica-a-data:
+  replica-b-data:

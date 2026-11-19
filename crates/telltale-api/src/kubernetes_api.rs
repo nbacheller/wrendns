@@ -71,7 +71,7 @@ pub(crate) async fn workloads(
     State(b): State<Shared>,
     Query(p): Query<WorkloadParams>,
 ) -> Result<Json<WorkloadPage>, Problem> {
-    let b = crate::pick(&b, p.scope.as_deref())?;
+    let b = crate::pick(&crate::request_backend(&b), p.scope.as_deref())?;
     let start = match p.cursor.as_deref() {
         None | Some("") => 0,
         Some(c) => c.parse::<usize>().map_err(|_| {

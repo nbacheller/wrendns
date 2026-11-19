@@ -4,7 +4,7 @@
 #![allow(clippy::expect_used)] // test helpers
 
 use std::net::UdpSocket;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 fn free_port() -> u16 {
@@ -70,11 +70,12 @@ listen = "127.0.0.1:{api}"
         ),
     )
     .expect("write config");
+    let node_log = std::fs::File::create(tmp.path().join("node.log")).expect("log file");
     let mut child = Command::new(env!("CARGO_BIN_EXE_telltale"))
         .args(["run", "-c"])
         .arg(&cfg)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(node_log.try_clone().expect("log file"))
+        .stderr(node_log)
         .spawn()
         .expect("start");
     let start = Instant::now();
@@ -89,10 +90,21 @@ listen = "127.0.0.1:{api}"
     assert!(status.success());
     let sent = Instant::now();
     std::thread::sleep(Duration::from_millis(700));
-    assert!(answers(dns), "still answering during the drain delay");
+    // The node's own log goes with a failure: this has failed on CI runners only.
+    let log = || std::fs::read_to_string(tmp.path().join("node.log")).unwrap_or_default();
+    let answering = answers(dns);
+    assert!(
+        answering,
+        "still answering during the drain delay\n--- node log ---\n{}",
+        log()
+    );
     let code = child.wait().expect("wait");
     let took = sent.elapsed();
-    assert!(code.success(), "clean exit: {code:?}");
+    assert!(
+        code.success(),
+        "clean exit: {code:?}\n--- node log ---\n{}",
+        log()
+    );
     assert!(
         took >= Duration::from_secs(2) && took < Duration::from_secs(10),
         "exited after the delay, not long after: {took:?}"

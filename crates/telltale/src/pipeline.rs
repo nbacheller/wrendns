@@ -66,6 +66,9 @@ pub(crate) struct Policy {
     pub(crate) limiter: Option<RateLimiter>,
     pub(crate) limit_action: RateLimitAction,
     pub(crate) special: SpecialConfig,
+    /// REQ: DNS-019 (ADR-904) — the DDR answer for `_dns.resolver.arpa` SVCB (RFC 9462): one
+    /// SVCB RDATA per encrypted listener; empty without `[special] ddr_name`.
+    pub(crate) ddr: Vec<Box<[u8]>>,
     /// Local records (DNS-010), answered before cache and upstreams.
     pub(crate) local: Arc<LocalData>,
     /// Groups and known clients (FLT-005, FLT-006).
@@ -78,6 +81,8 @@ pub(crate) struct Policy {
     pub(crate) shadow_lists: Vec<Box<str>>,
     /// REQ: DNS-021 (T12.4) — this node's name for the NSID option (`[dns] nsid`).
     pub(crate) nsid: Option<Box<[u8]>>,
+    /// REQ: DNS-023 (T22.1) — device names in DNS (`[local] device_domain`); `None`: off.
+    pub(crate) device_dns: Option<crate::device_dns::Settings>,
 }
 
 /// REQ: DNS-018 (T7.22) — one authoritative zone.
@@ -105,6 +110,7 @@ impl Policy {
             limiter: RateLimiter::new(&cfg.ratelimit),
             limit_action: cfg.ratelimit.action,
             special: cfg.special.clone(),
+            ddr: telltale_policy::ddr_records(cfg),
             local: Arc::new(local),
             quick,
             clients: Arc::new(clients),
@@ -121,6 +127,7 @@ impl Policy {
                 .nsid
                 .then(|| crate::http::node_name(cfg).into_bytes().into_boxed_slice())
                 .filter(|n| !n.is_empty() && n.len() <= 255),
+            device_dns: crate::device_dns::Settings::from_config(cfg),
         }
     }
 
@@ -288,6 +295,7 @@ pub(crate) fn unix_now() -> u64 {
 }
 
 impl FilterState {
+    #[allow(clippy::too_many_lines)] // the masks of every group, one pass
     pub(crate) fn new(
         matcher: Arc<Matcher>,
         clients: Arc<ClientTable>,
@@ -327,9 +335,14 @@ impl FilterState {
                         .lists
                         .as_ref()
                         .is_some_and(|l| l.iter().any(|l| **l == **n));
+                    // REQ: FLT-901 — category lists apply only to the groups whose categories
+                    // use them, never through the "every enabled list" default.
+                    let by_category = g.cat_lists.iter().any(|x| **x == **n);
                     let wanted = now
+                        || by_category
                         || match telltale_config::services::of_list(n) {
                             Some(s) => g.services.iter().any(|x| **x == *s.id),
+                            None if telltale_config::categories::is_category_list(n) => false,
                             None if sched.scheduled.iter().any(|x| x == n) => explicit,
                             None => g.lists.is_none() || explicit,
                         };
@@ -369,6 +382,18 @@ impl FilterState {
             }
             m
         };
+        // REQ: FLT-901 - the category a list stands for: a `cat-` list, or the list a file defines
+        // that provides a catalog source to some group.
+        let label_of = |n: &str| {
+            telltale_config::categories::label_of_list(n).or_else(|| {
+                clients
+                    .groups()
+                    .iter()
+                    .flat_map(|g| g.cat_labels.iter())
+                    .find(|(l, _)| **l == *n)
+                    .map(|(_, c)| c.to_string())
+            })
+        };
         let unknown = Identity {
             client: None,
             source: telltale_policy::IdSource::Default,
@@ -384,14 +409,21 @@ impl FilterState {
                 .iter()
                 .map(|n| match telltale_config::services::of_list(n) {
                     Some(s) => format!("blocked service {}", s.name),
-                    None => format!("blocked by list {n}"),
+                    // REQ: FLT-901 — a category list names the category it stands for.
+                    None => match label_of(n) {
+                        Some(c) => format!("blocked by category {c} (list {n})"),
+                        None => format!("blocked by list {n}"),
+                    },
                 })
                 .collect(),
             cname_reasons: names
                 .iter()
                 .map(|n| match telltale_config::services::of_list(n) {
                     Some(s) => format!("CNAME target blocked: service {}", s.name),
-                    None => format!("CNAME target blocked by list {n}"),
+                    None => match label_of(n) {
+                        Some(c) => format!("CNAME target blocked by category {c} (list {n})"),
+                        None => format!("CNAME target blocked by list {n}"),
+                    },
                 })
                 .collect(),
             list_names: names,
@@ -575,6 +607,11 @@ pub(crate) struct Pipeline {
     pub(crate) router_leases: Arc<arc_swap::ArcSwap<crate::devices::Leases>>,
     /// REQ: T8.3 — the names devices announce over mDNS, by address.
     pub(crate) mdns_names: Arc<arc_swap::ArcSwap<crate::devices::Leases>>,
+    /// REQ: API-013 (T22.2) — the networks (LANs, VLANs) the routers reported.
+    pub(crate) router_networks: Arc<arc_swap::ArcSwap<Vec<crate::routers::Network>>>,
+    /// REQ: DNS-023 (T22.1) — the device names answered in DNS, built off the query path by
+    /// `device_dns::run`; empty while `[local] device_domain` is unset.
+    pub(crate) device_names: arc_swap::ArcSwap<crate::device_dns::DeviceNames>,
     /// REQ: CLU-002 (ADR-125) — the names other nodes' routers and mDNS know (after this
     /// node's own).
     pub(crate) peer_names: arc_swap::ArcSwap<crate::devices::Names>,
@@ -665,6 +702,8 @@ impl Pipeline {
             dnstap: std::sync::OnceLock::new(),
             router_leases: Arc::default(),
             mdns_names: Arc::default(),
+            router_networks: Arc::default(),
+            device_names: arc_swap::ArcSwap::default(),
             peer_names: arc_swap::ArcSwap::default(),
             filter_pin: ArcSwapOption::empty(),
             flights: Singleflight::new(),
@@ -756,6 +795,29 @@ impl Pipeline {
         })));
     }
 
+    /// REQ: FLT-013, FLT-006 (T24.30, ADR-996) — runs `f` on the state Explain reads (the policy,
+    /// the filter, the neighbors, the schedules), so a device's Policy panel and Explain read one
+    /// state. Off the query path.
+    pub(crate) fn with_explain_state<R>(
+        &self,
+        f: impl FnOnce(&crate::explain::State<'_>) -> R,
+    ) -> R {
+        let dynamic = self.state.load();
+        let filter = self.filter.load();
+        let schedules = self.schedules.load();
+        let devices = self.device_names.load();
+        let st = crate::explain::State {
+            dynamic: &dynamic,
+            filter: filter.as_deref(),
+            neighbors: &self.neighbors,
+            workloads: &self.workloads,
+            pause: &self.pause,
+            schedules: &schedules,
+            devices: Some(&devices.data),
+        };
+        f(&st)
+    }
+
     /// Explains what this pipeline would do with a query, and why (FLT-013).
     pub(crate) fn explain(
         &self,
@@ -765,6 +827,7 @@ impl Pipeline {
         let dynamic = self.state.load();
         let filter = self.filter.load();
         let schedules = self.schedules.load();
+        let devices = self.device_names.load();
         let st = crate::explain::State {
             dynamic: &dynamic,
             filter: filter.as_deref(),
@@ -772,6 +835,7 @@ impl Pipeline {
             workloads: &self.workloads,
             pause: &self.pause,
             schedules: &schedules,
+            devices: Some(&devices.data),
         };
         crate::explain::explain(&st, req, source)
     }
@@ -1023,21 +1087,47 @@ impl Pipeline {
         {
             return Some(len);
         }
-        if policy.zones.is_empty() {
-            return None;
+        // REQ: DNS-023 (T22.1) — device names: after configured records and a zone's own
+        // records, before a zone's NXDOMAIN. With the feature off this is one branch; on, one
+        // lock-free load.
+        if policy.device_dns.is_none() {
+            if policy.zones.is_empty() {
+                return None;
+            }
+            return self.zone_answer(q, policy.clients.group_names(ident), out, None);
         }
-        self.zone_answer(q, policy.clients.group_names(ident), out)
+        let devices = self.device_names.load();
+        if policy.zones.is_empty() {
+            return devices
+                .data
+                .answer(q, out, response_edns(q, self.settings.edns_payload, None));
+        }
+        self.zone_answer(
+            q,
+            policy.clients.group_names(ident),
+            out,
+            Some(&devices.data),
+        )
     }
 
     /// REQ: DNS-018 (T7.22) — the answer from the most specific zone this client sees: its
     /// records, no data for the apex and empty non-terminals, else NXDOMAIN (authoritative,
     /// with an SOA).
-    fn zone_answer(&self, q: &Query<'_>, groups: &[Box<str>], out: &mut [u8]) -> Option<usize> {
+    fn zone_answer(
+        &self,
+        q: &Query<'_>,
+        groups: &[Box<str>],
+        out: &mut [u8],
+        devices: Option<&LocalData>,
+    ) -> Option<usize> {
         let st = self.state.load();
-        let z = st.policy.zones.iter().find(|z| {
+        let Some(z) = st.policy.zones.iter().find(|z| {
             q.qname.is_subdomain_of(&z.apex)
                 && (z.groups.is_empty() || z.groups.iter().any(|g| groups.contains(g)))
-        })?;
+        }) else {
+            // REQ: DNS-023 — no zone covers it: the device names may.
+            return devices?.answer(q, out, response_edns(q, self.settings.edns_payload, None));
+        };
         let edns = response_edns(q, self.settings.edns_payload, None);
         // REQ: DNS-018 (T9.18) — the apex's SOA and NS.
         if q.qname == z.apex && matches!(q.qtype, rtype::SOA | rtype::NS) {
@@ -1053,6 +1143,12 @@ impl Pipeline {
             return b.finish(edns).ok();
         }
         if let Some(len) = z.data.answer(q, out, edns) {
+            return Some(len);
+        }
+        // REQ: DNS-023 — a device name inside a zone (the zone's own records won above).
+        if let Some(len) = devices
+            .and_then(|d| d.answer(q, out, response_edns(q, self.settings.edns_payload, None)))
+        {
             return Some(len);
         }
         let exists = q.qname == z.apex || z.data.has_below(&q.qname);
@@ -1446,7 +1542,8 @@ impl Pipeline {
             }
         }
         let name = std::str::from_utf8(buf.get(..n)?).ok()?;
-        let target = telltale_config::safesearch::target(name, youtube)?;
+        let target =
+            telltale_config::safesearch::target_in(name, youtube, &group.safe_search_engines)?;
         NameBuf::from_presentation(target).ok()
     }
 
@@ -1622,10 +1719,41 @@ impl Pipeline {
         let special = telltale_policy::classify(&q, &st.policy.special);
         match special {
             Some(Special::Refused) => Err(self.simple(&q, out, rcode::REFUSED, None, meta)),
-            Some(Special::Nxdomain) => Err(self.simple(&q, out, rcode::NXDOMAIN, None, meta)),
+            // REQ: DNS-019 (ADR-904) — iCloud Private Relay's names, like the Firefox canary.
+            Some(Special::Nxdomain | Special::PrivateRelay) => {
+                Err(self.simple(&q, out, rcode::NXDOMAIN, None, meta))
+            }
             Some(Special::Localhost) => Err(self.localhost(&q, out, meta)),
+            Some(Special::ResolverArpa) => Err(self.resolver_arpa(&q, &st.policy.ddr, out, meta)),
             other => Ok(other),
         }
+    }
+
+    /// REQ: DNS-019 (ADR-904) — `resolver.arpa` (RFC 9462), answered here and never forwarded:
+    /// `_dns.resolver.arpa` SVCB gets this node's DDR records, anything else no data (with an
+    /// SOA, so clients cache it). The records are built with the policy; no allocation here.
+    fn resolver_arpa(
+        &self,
+        q: &Query<'_>,
+        ddr: &[Box<[u8]>],
+        out: &mut [u8],
+        meta: &RequestMeta,
+    ) -> Response {
+        let edns = response_edns(q, self.settings.edns_payload, None);
+        let len = ResponseBuilder::new(q, out, rcode::NOERROR)
+            .ok()
+            .and_then(|mut b| {
+                b.authoritative(true);
+                if telltale_policy::is_ddr_query(q) && !ddr.is_empty() {
+                    for r in ddr {
+                        b.answer_rdata(None, rtype::SVCB, 300, r).ok()?;
+                    }
+                } else {
+                    b.authority_soa(300).ok()?;
+                }
+                b.finish(edns).ok()
+            });
+        ready(len.map(|l| self.finish(q, out, l, meta.transport)))
     }
 
     /// Routing, private-PTR handling, cache lookup, and deferral to upstreams.
@@ -1647,8 +1775,11 @@ impl Pipeline {
         let question = Question::from_query(&q);
         // REQ: FLT-005, UPS-007 — routes can match the client's groups.
         let selection = st.router.select(&question, groups);
-        // Private reverse lookups stay local unless a route explicitly forwards them (RFC 6303).
-        if special == Some(Special::PrivatePtr) && !selection.is_some_and(|s| s.routed) {
+        // Private reverse lookups stay local unless a route explicitly forwards them (RFC 6303);
+        // REQ: DNS-019 (ADR-904) — so do single-label names with domain-needed on.
+        if matches!(special, Some(Special::PrivatePtr | Special::SingleLabel))
+            && !selection.is_some_and(|s| s.routed)
+        {
             return self.simple(&q, out, rcode::NXDOMAIN, None, meta);
         }
         let Some(sel) = selection else {
@@ -2869,6 +3000,11 @@ mod tests {
 
     /// Compiles several named lists into one snapshot and installs it.
     fn install_lists(p: &Pipeline, lists: &[(&str, &str)]) {
+        install_lists_allowing(p, lists, &[]);
+    }
+
+    /// `install_lists`, with the lists named in `allow` compiled as allow-kind lists.
+    fn install_lists_allowing(p: &Pipeline, lists: &[(&str, &str)], allow: &[&str]) {
         use telltale_filter::compile::{CompileOptions, ListData, ListInput, compile};
         use telltale_filter::matcher::Lookup;
         let tmp = tempfile::tempdir().unwrap();
@@ -2877,7 +3013,14 @@ mod tests {
             .iter()
             .map(|(name, rules)| ListInput {
                 name: (*name).into(),
-                options: telltale_filter::parse::ListOptions::default(),
+                options: telltale_filter::parse::ListOptions {
+                    kind: if allow.contains(name) {
+                        telltale_config::ListKind::Allow
+                    } else {
+                        telltale_config::ListKind::Block
+                    },
+                    ..telltale_filter::parse::ListOptions::default()
+                },
                 data: ListData::Bytes(rules.as_bytes().to_vec()),
                 source_hash: telltale_filter::fetch::content_hash(rules.as_bytes()),
                 size: rules.len() as u64,
@@ -2969,6 +3112,312 @@ blocked_services = ["tiktok"]
             "every list still applies"
         );
         assert!(blocked(&ask("10.0.1.5:1000", "ads.example.com")));
+    }
+
+    /// A pipeline over `toml` (with `UPSTREAM` added) whose category lists carry `rules`
+    /// (list name, rule text), built through `Policy::from_config` so quick rules apply.
+    fn category_pipeline(toml: &str, rules: &[(&str, &str)]) -> Arc<Pipeline> {
+        let cfg: telltale_config::Config = telltale_config::Loader::new()
+            .toml_str("t.toml", format!("{UPSTREAM}{toml}"))
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, report) = telltale_policy::LocalData::from_config(&cfg);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy::from_config(&cfg, local),
+        );
+        install_lists(&p, rules);
+        p
+    }
+
+    fn is_blocked(r: &[u8]) -> bool {
+        summarize(r).is_ok_and(|s| s.rcode == rcode::NOERROR && s.answers == 1)
+    }
+
+    /// REQ: FLT-901 (T24.29) — a category selected for one group does not block for another,
+    /// the default group included (whose `lists` is omitted, so it uses every enabled list), and
+    /// the block says which category it was.
+    #[test]
+    fn flt_901_category_lists_not_in_default() {
+        let p = category_pipeline(
+            r#"
+[[list]]
+name = "ads"
+rules = ["||ads.example.com^"]
+[[group]]
+name = "default"
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+content = { level = "enhanced", categories = ["adult"] }
+"#,
+            &[
+                (
+                    "ads",
+                    "||ads.example.com^
+",
+                ),
+                (
+                    "cat-hagezi-nsfw",
+                    "||adult.example^
+",
+                ),
+            ],
+        );
+        let kid = ask_from(&p, "10.0.1.5", "www.adult.example", rtype::A);
+        assert!(is_blocked(&kid), "the kids group blocks the category");
+        let text = b"blocked by category Adult content (list cat-hagezi-nsfw)";
+        assert!(contains(&kid, text), "the block names the category");
+        assert!(
+            !is_blocked(&ask_from(&p, "10.0.0.9", "www.adult.example", rtype::A)),
+            "the default group, which uses every list, does not"
+        );
+        assert!(is_blocked(&ask_from(
+            &p,
+            "10.0.0.9",
+            "ads.example.com",
+            rtype::A
+        )));
+        assert!(is_blocked(&ask_from(
+            &p,
+            "10.0.1.5",
+            "ads.example.com",
+            rtype::A
+        )));
+    }
+
+    /// REQ: FLT-901 (T24.29) - a list a file defines with a source's URL provides it, and the block
+    /// still names the category.
+    #[test]
+    fn flt_901_provider_list_names_the_category() {
+        let p = category_pipeline(
+            r#"
+[[list]]
+name = "my-nsfw"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/nsfw-onlydomains.txt"
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+content = { level = "enhanced", categories = ["adult"] }
+"#,
+            &[(
+                "my-nsfw",
+                "||adult.example^
+",
+            )],
+        );
+        let kid = ask_from(&p, "10.0.1.5", "www.adult.example", rtype::A);
+        assert!(is_blocked(&kid));
+        assert!(
+            contains(&kid, b"blocked by category Adult content (list my-nsfw)"),
+            "the provider list is named by its category"
+        );
+    }
+
+    /// REQ: FLT-902 (T24.29) — `basic` blocks adult content and threats and not gambling; `off`
+    /// blocks none and keeps the selection; `enhanced` follows the selection.
+    #[test]
+    fn flt_902_levels_decide_what_blocks() {
+        let p = category_pipeline(
+            r#"
+[[group]]
+name = "default"
+[[group]]
+name = "basic"
+networks = ["10.0.1.0/24"]
+content = { level = "basic", categories = ["gambling"] }
+[[group]]
+name = "off"
+networks = ["10.0.2.0/24"]
+content = { level = "off", categories = ["adult", "gambling"] }
+[[group]]
+name = "enhanced"
+networks = ["10.0.3.0/24"]
+content = { level = "enhanced", categories = ["gambling"] }
+"#,
+            &[
+                (
+                    "cat-hagezi-nsfw",
+                    "||adult.example^
+",
+                ),
+                (
+                    "cat-hagezi-tif-mini",
+                    "||threat.example^
+",
+                ),
+                (
+                    "cat-hagezi-gambling-medium",
+                    "||bet.example^
+",
+                ),
+            ],
+        );
+        let blocked = |peer: &str, name: &str| is_blocked(&ask_from(&p, peer, name, rtype::A));
+        assert!(blocked("10.0.1.5", "adult.example"));
+        assert!(blocked("10.0.1.5", "threat.example"));
+        assert!(!blocked("10.0.1.5", "bet.example"), "basic leaves gambling");
+        for name in ["adult.example", "threat.example", "bet.example"] {
+            assert!(!blocked("10.0.2.5", name), "off blocks nothing: {name}");
+        }
+        assert!(blocked("10.0.3.5", "bet.example"));
+        assert!(
+            !blocked("10.0.3.5", "adult.example"),
+            "enhanced is the selection"
+        );
+    }
+
+    /// REQ: FLT-901 (T24.29) — a quick allow rule beats a category block, and a deny from the
+    /// category stays where no rule applies.
+    #[test]
+    fn flt_901_allow_rule_beats_category() {
+        let p = category_pipeline(
+            r#"
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+content = { level = "enhanced", categories = ["adult"] }
+[[rule]]
+id = "homework"
+action = "allow"
+domain = "ok.adult.example"
+groups = ["kids"]
+"#,
+            &[(
+                "cat-hagezi-nsfw",
+                "||adult.example^
+",
+            )],
+        );
+        assert!(is_blocked(&ask_from(
+            &p,
+            "10.0.1.5",
+            "www.adult.example",
+            rtype::A
+        )));
+        assert!(
+            !is_blocked(&ask_from(&p, "10.0.1.5", "ok.adult.example", rtype::A)),
+            "the allow rule wins"
+        );
+    }
+
+    /// REQ: FLT-901 (T24.29, AC 4) - an allow-kind list the group uses beats a category too.
+    #[test]
+    fn flt_901_allow_list_beats_category() {
+        let cfg_toml = r#"
+[[list]]
+name = "homework"
+kind = "allow"
+rules = ["ok.adult.example"]
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+lists = ["homework"]
+content = { level = "enhanced", categories = ["adult"] }
+"#;
+        let p = category_pipeline(cfg_toml, &[]);
+        install_lists_allowing(
+            &p,
+            &[
+                (
+                    "cat-hagezi-nsfw",
+                    "||adult.example^
+",
+                ),
+                (
+                    "homework",
+                    "ok.adult.example
+",
+                ),
+            ],
+            &["homework"],
+        );
+        assert!(is_blocked(&ask_from(
+            &p,
+            "10.0.1.5",
+            "www.adult.example",
+            rtype::A
+        )));
+        assert!(
+            !is_blocked(&ask_from(&p, "10.0.1.5", "ok.adult.example", rtype::A)),
+            "the allow list wins"
+        );
+    }
+
+    /// REQ: FLT-902 (T24.29) — `safe_search_engines = ["google"]` answers Google with its
+    /// safe-search target and Bing normally; `safe_search = true` alone still covers every
+    /// engine; YouTube's own level applies whatever the list says.
+    #[test]
+    fn flt_902_safe_search_engines_per_group() {
+        let p = category_pipeline(
+            r#"
+[[group]]
+name = "default"
+safe_search = true
+[[group]]
+name = "google"
+networks = ["10.0.1.0/24"]
+safe_search_engines = ["google"]
+[[group]]
+name = "yt"
+networks = ["10.0.2.0/24"]
+safe_search_engines = ["google"]
+youtube_restrict = "moderate"
+"#,
+            &[(
+                "ads",
+                "||nothing.example^
+",
+            )],
+        );
+        // The engines' safe-search names are in the cache (the upstream is never contacted).
+        let cache_a = |name: &str, ip: Ipv4Addr| {
+            let req = query(name, rtype::A, false);
+            let q = parse_query(&req).unwrap();
+            let mut out = [0u8; 512];
+            let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+            b.answer_a(300, ip).unwrap();
+            let len = b.finish(None).unwrap();
+            let view = p
+                .current()
+                .router
+                .select(&Question::from_query(&q), &["default"])
+                .unwrap()
+                .view;
+            p.cache
+                .insert(&p.key(&q, view), &q, &out[..len], Instant::now())
+                .unwrap();
+        };
+        cache_a(
+            "forcesafesearch.google.com",
+            Ipv4Addr::new(216, 239, 38, 120),
+        );
+        cache_a("strict.bing.com", Ipv4Addr::new(204, 79, 197, 220));
+        cache_a(
+            "restrictmoderate.youtube.com",
+            Ipv4Addr::new(216, 239, 38, 119),
+        );
+        let answered = |peer: &str, name: &str| !ask_from(&p, peer, name, rtype::A).is_empty();
+        // A group that covers only Google: Bing is left alone (forwarded, so nothing is answered).
+        assert!(
+            answered("10.0.1.5", "www.google.com"),
+            "Google gets its target"
+        );
+        assert!(!answered("10.0.1.5", "www.bing.com"), "Bing is left alone");
+        // `safe_search = true` alone covers every engine.
+        assert!(answered("10.0.0.5", "www.google.com"));
+        assert!(
+            answered("10.0.0.5", "www.bing.com"),
+            "safe_search alone covers Bing"
+        );
+        // YouTube's own level applies though the list names only Google.
+        assert!(!answered("10.0.1.5", "www.youtube.com"));
+        assert!(answered("10.0.2.5", "www.youtube.com"));
     }
 
     /// REQ: FLT-010 (T7.10) — schedules: bedtime blocks everything for its group during the
@@ -3595,6 +4044,170 @@ groups = ["kids"]
             "the zone's SOA in the authority"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn named(name: &str, ip: [u8; 4]) -> crate::device_dns::Named {
+        crate::device_dns::Named {
+            name: name.to_owned(),
+            ip: Ipv4Addr::from(ip),
+            v6: Vec::new(),
+        }
+    }
+
+    /// REQ: DNS-023 (T24.8, ADR-983) — a device with IPv6 addresses answers AAAA for each and
+    /// an `ip6.arpa` PTR for each (a unique-local one too: the device name answers before the
+    /// private-reverse special names), its A is unchanged, and a device without one stays
+    /// NODATA for AAAA.
+    #[test]
+    fn dns_023_device_names_ipv6_in_dns() {
+        let cfg_toml = format!("{UPSTREAM}[local]\ndevice_domain = \"home.arpa\"\n");
+        let cfg: telltale_config::Config = telltale_config::Loader::new()
+            .toml_str("t.toml", &cfg_toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, _) = LocalData::from_config(&cfg);
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy::from_config(&cfg, local),
+        );
+        install_filter(
+            &p,
+            "||nothing.example^\n",
+            telltale_filter::matcher::Lookup::Indexed,
+        );
+        let gua: std::net::Ipv6Addr = "2001:db8:1::21".parse().unwrap();
+        let ula: std::net::Ipv6Addr = "fd00:10::21".parse().unwrap();
+        let mut tablet = named("kitchen-tablet.home.arpa", [192, 0, 2, 21]);
+        tablet.v6 = vec![gua, ula];
+        p.device_names
+            .store(Arc::new(crate::device_dns::build(&[tablet], 60)));
+        let r = ask_from(&p, "10.0.0.5", "kitchen-tablet.home.arpa", rtype::AAAA);
+        let s = summarize(&r).unwrap();
+        assert!(s.header.flags.aa() && s.rcode == rcode::NOERROR);
+        assert!(
+            contains(&r, &gua.octets()) && contains(&r, &ula.octets()),
+            "both AAAA"
+        );
+        let a = ask_from(&p, "10.0.0.5", "kitchen-tablet.home.arpa", rtype::A);
+        assert!(contains(&a, &[192, 0, 2, 21]), "the A is unchanged");
+        let rev = |ip: std::net::Ipv6Addr| {
+            let nibbles: Vec<String> = ip
+                .octets()
+                .iter()
+                .flat_map(|b| [b >> 4, b & 15])
+                .rev()
+                .map(|x| format!("{x:x}"))
+                .collect();
+            format!("{}.ip6.arpa", nibbles.join("."))
+        };
+        let name = NameBuf::from_presentation("kitchen-tablet.home.arpa").unwrap();
+        for ip in [gua, ula] {
+            let ptr = ask_from(&p, "10.0.0.5", &rev(ip), rtype::PTR);
+            assert!(contains(&ptr, name.as_wire()), "PTR for {ip}");
+        }
+        p.device_names.store(Arc::new(crate::device_dns::build(
+            &[named("nas.home.arpa", [192, 0, 2, 5])],
+            60,
+        )));
+        let r = ask_from(&p, "10.0.0.5", "nas.home.arpa", rtype::AAAA);
+        assert_eq!(summarize(&r).unwrap().rcode, rcode::NOERROR, "NODATA");
+    }
+
+    /// REQ: DNS-023 (T22.1) — device names answer A and PTR, authoritatively; a configured
+    /// record and a zone's own record win; inside a zone a device name answers before the
+    /// zone's NXDOMAIN; with the feature off the table is ignored.
+    #[test]
+    fn dns_023_device_names_in_dns() {
+        let cfg_toml = format!(
+            "{UPSTREAM}[local]\ndevice_domain = \"home.arpa\"\n[[record]]\nname = \"nas.home.arpa\"\ntype = \"A\"\nvalue = \"192.0.2.200\"\n[[zone]]\nname = \"lab.example\"\n[[zone.record]]\nname = \"web.lab.example\"\ntype = \"A\"\nvalue = \"10.9.9.9\"\n"
+        );
+        let cfg: telltale_config::Config = telltale_config::Loader::new()
+            .toml_str("t.toml", &cfg_toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, _) = LocalData::from_config(&cfg);
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy {
+                zones: Arc::new(crate::server::load_zones(&cfg).unwrap()),
+                ..Policy::from_config(&cfg, local)
+            },
+        );
+        install_filter(
+            &p,
+            "||nothing.example^\n",
+            telltale_filter::matcher::Lookup::Indexed,
+        );
+        p.device_names.store(Arc::new(crate::device_dns::build(
+            &[
+                named("kitchen-tablet.home.arpa", [192, 0, 2, 21]),
+                named("nas.home.arpa", [192, 0, 2, 5]),
+                named("web.lab.example", [10, 1, 1, 1]),
+                named("printer.lab.example", [10, 1, 1, 2]),
+            ],
+            60,
+        )));
+        let r = ask_from(&p, "10.0.0.5", "kitchen-tablet.home.arpa", rtype::A);
+        let s = summarize(&r).unwrap();
+        assert!(
+            s.header.flags.aa() && s.rcode == rcode::NOERROR && contains(&r, &[192, 0, 2, 21]),
+            "a device name"
+        );
+        let ptr = ask_from(&p, "10.0.0.5", "21.2.0.192.in-addr.arpa", rtype::PTR);
+        let name = NameBuf::from_presentation("kitchen-tablet.home.arpa").unwrap();
+        assert!(contains(&ptr, name.as_wire()), "its PTR");
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "nas.home.arpa", rtype::A),
+                &[192, 0, 2, 200]
+            ),
+            "a configured record wins"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "web.lab.example", rtype::A),
+                &[10, 9, 9, 9]
+            ),
+            "a zone's own record wins"
+        );
+        let printer = ask_from(&p, "10.0.0.5", "printer.lab.example", rtype::A);
+        assert!(
+            summarize(&printer).unwrap().rcode == rcode::NOERROR
+                && contains(&printer, &[10, 1, 1, 2]),
+            "a device name inside a zone, before its NXDOMAIN"
+        );
+        let nx = summarize(&ask_from(&p, "10.0.0.5", "nope.lab.example", rtype::A)).unwrap();
+        assert_eq!(
+            nx.rcode,
+            rcode::NXDOMAIN,
+            "the zone still says no for the rest"
+        );
+        // Off: the same table is ignored.
+        let off = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy::open(),
+        );
+        install_filter(
+            &off,
+            "||nothing.example^\n",
+            telltale_filter::matcher::Lookup::Indexed,
+        );
+        off.device_names.store(Arc::new(crate::device_dns::build(
+            &[named("kitchen-tablet.home.arpa", [192, 0, 2, 21])],
+            60,
+        )));
+        let r = ask_from(&off, "10.0.0.5", "kitchen-tablet.home.arpa", rtype::A);
+        assert!(!contains(&r, &[192, 0, 2, 21]), "off: not answered");
     }
 
     /// REQ: DNS-016 (T7.21) — DNS64: a name without AAAA gets AAAA made from its A records
@@ -5079,6 +5692,124 @@ mod policy_tests {
             ask(&p, peer, "4.3.30.10.in-addr.arpa", rtype::PTR, 1),
             Some((rcode::NXDOMAIN, 0))
         );
+        // REQ: DNS-019 (ADR-904) — iCloud Private Relay and resolver.arpa, by default.
+        assert_eq!(
+            ask(&p, peer, "mask.icloud.com", rtype::A, 1),
+            Some((rcode::NXDOMAIN, 0))
+        );
+        assert_eq!(
+            ask(&p, peer, "mask-h2.icloud.com", rtype::HTTPS, 1),
+            Some((rcode::NXDOMAIN, 0))
+        );
+        assert_eq!(
+            ask(&p, peer, "_dns.resolver.arpa", rtype::SVCB, 1),
+            Some((rcode::NOERROR, 0)),
+            "no ddr_name: no data, not forwarded"
+        );
+        // Bare names go on (here: no upstream configured, so REFUSED) with domain-needed off.
+        assert_eq!(ask(&p, peer, "nas", rtype::A, 1), Some((rcode::REFUSED, 0)));
+        let p = pipeline(Policy {
+            special: SpecialConfig {
+                block_icloud_private_relay: false,
+                ..SpecialConfig::default()
+            },
+            ..Policy::open()
+        });
+        assert_eq!(
+            ask(&p, peer, "mask.icloud.com", rtype::A, 1),
+            Some((rcode::REFUSED, 0)),
+            "switched off: resolved like any name"
+        );
+    }
+
+    fn config(toml: &str) -> telltale_config::Config {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config
+    }
+
+    /// REQ: DNS-019 (ADR-904) — DDR: `_dns.resolver.arpa` SVCB lists the encrypted listeners
+    /// (RFC 9462); its other types and names get no data, authoritatively, with an SOA.
+    #[test]
+    fn dns_019_ddr_answers_advertise_encrypted_listeners() {
+        let cfg = config(
+            "[[listen]]\nproto = \"dot\"\naddr = \"0.0.0.0:853\"\ntls = { cert = \"/c\", key = \"/k\" }\n\
+             [[listen]]\nproto = \"doq\"\naddr = \"0.0.0.0:8853\"\ntls = { cert = \"/c\", key = \"/k\" }\n\
+             [special]\nddr_name = \"dns.example.com\"\n",
+        );
+        let p = pipeline(Policy {
+            ddr: telltale_policy::ddr_records(&cfg),
+            ..Policy::open()
+        });
+        let mut buf = [0u8; 512];
+        let n = NameBuf::from_presentation("_dns.resolver.arpa").unwrap();
+        let len = build_query(&mut buf, 3, &n, rtype::SVCB, 1, true, None).unwrap();
+        let meta = RequestMeta {
+            peer: "10.0.0.1:53".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let mut out = [0u8; 4096];
+        let Response::Ready(l) = Handler(Arc::clone(&p)).handle(&buf[..len], &meta, &mut out)
+        else {
+            panic!("not answered at once");
+        };
+        let s = summarize(&out[..l]).unwrap();
+        assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 2));
+        assert_ne!(out[2] & 0x04, 0, "authoritative");
+        let msg = &out[..l];
+        let has = |needle: &[u8]| msg.windows(needle.len()).any(|w| w == needle);
+        assert!(has(b"\x03dns\x07example\x03com\x00\x00\x01\x00\x04\x03dot"));
+        assert!(has(b"\x03dns\x07example\x03com\x00\x00\x01\x00\x04\x03doq"));
+        for (name, qtype) in [
+            ("_dns.resolver.arpa", rtype::A),
+            ("resolver.arpa", rtype::SVCB),
+        ] {
+            assert_eq!(
+                ask(&p, "10.0.0.1:53", name, qtype, 1),
+                Some((rcode::NOERROR, 0)),
+                "{name}"
+            );
+        }
+    }
+
+    /// REQ: DNS-019 (ADR-904) — domain-needed: bare names get NXDOMAIN instead of going to
+    /// an upstream, unless a `[[route]]` matches them; names with a dot still go on.
+    #[test]
+    fn dns_019_single_label_names_stay_local() {
+        let cfg = config(
+            "[[upstream]]\nname = \"u\"\nurl = \"udp://127.0.0.1:9\"\n\
+             [[upstream_group]]\nname = \"default\"\nmembers = [\"u\"]\n\
+             [[upstream]]\nname = \"r\"\nurl = \"udp://127.0.0.1:10\"\n\
+             [[upstream_group]]\nname = \"router\"\nmembers = [\"r\"]\n\
+             [[route]]\nmatch_suffix = [\"printer\"]\nupstream_group = \"router\"\n\
+             [special]\nsingle_label_nxdomain = true\n",
+        );
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy {
+                special: cfg.special.clone(),
+                ..Policy::open()
+            },
+        );
+        let peer = "10.0.0.1:53";
+        for qtype in [rtype::A, rtype::AAAA, rtype::HTTPS] {
+            assert_eq!(
+                ask(&p, peer, "nas", qtype, 1),
+                Some((rcode::NXDOMAIN, 0)),
+                "type {qtype}"
+            );
+        }
+        // `None`: deferred to an upstream.
+        assert_eq!(ask(&p, peer, "printer", rtype::A, 1), None, "routed");
+        assert_eq!(ask(&p, peer, "nas.example", rtype::A, 1), None);
+        assert_eq!(ask(&p, peer, "com", rtype::DS, 1), None, "a TLD's DS");
     }
 }
 

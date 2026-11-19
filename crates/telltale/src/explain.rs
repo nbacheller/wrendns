@@ -36,6 +36,12 @@ pub(crate) struct Explanation {
     pub(crate) qtype: u16,
     pub(crate) client: ClientInfo,
     pub(crate) outcome: Outcome,
+    /// REQ: DNS-019 (T24.12, ADR-914) — for a `special` outcome, the name of the special-name
+    /// rule that answered: `private_relay`, `single_label`, `resolver_arpa`, `ddr`,
+    /// `firefox_canary`, `private_ptr`, `chaos`, or `localhost`. It is a rule's name, not a field
+    /// of `[special]`: the UI maps it to the switch that controls it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) special: Option<&'static str>,
     /// One sentence for people.
     pub(crate) summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -77,6 +83,18 @@ pub(crate) struct ClientInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) device: Option<String>,
     pub(crate) identified_by: &'static str,
+    /// REQ: FLT-006, API-010 (T24.30, ADR-996) — the key it matched on, as a `[[client]] match`
+    /// is written (`id:kids`, a MAC, an address, a network, `hostname:tv`) or the workload's
+    /// name; `None` for the `default` group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) matched_key: Option<String>,
+    /// The group whose settings apply (the first of `groups`).
+    pub(crate) group: String,
+    /// Where that group came from: `device`, `network`, `router_name`, `kubernetes`, `default`.
+    pub(crate) group_from: &'static str,
+    /// The network or router name that gave the group, when it isn't the device's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) group_key: Option<String>,
     /// Highest priority first; the first one's settings apply.
     pub(crate) groups: Vec<String>,
     /// REQ: FLT-017 — the Kubernetes workload a pod address belongs to.
@@ -108,19 +126,57 @@ pub(crate) struct RouteInfo {
     pub(crate) routed: bool,
 }
 
-fn source_name(s: IdSource) -> &'static str {
+pub(crate) fn source_name(s: IdSource) -> &'static str {
     match s {
         IdSource::ClientId => "client_id",
         IdSource::EdnsMac => "edns_mac",
         IdSource::NeighborMac => "neighbor_mac",
         IdSource::Workload => "kubernetes",
+        // REQ: FLT-006 (T24.9, ADR-973) — matched by the name a router gave the device.
+        IdSource::Hostname => "router_name",
         IdSource::Ip => "ip",
         IdSource::Cidr => "cidr",
         IdSource::Default => "default",
     }
 }
 
-fn mac_text(m: [u8; 6]) -> String {
+/// REQ: FLT-006, API-010 (T24.30, ADR-996) — a client identified: the identity, the key it
+/// matched on, and the MAC it was seen with.
+pub(crate) struct Resolved {
+    pub(crate) ident: telltale_policy::Identity,
+    pub(crate) key: telltale_policy::MatchedKey,
+    pub(crate) mac: Option<[u8; 6]>,
+}
+
+/// REQ: FLT-006, API-010 (T24.30, ADR-996) — identifies `ip` the way a query from it is
+/// (`ClientTable::identify`), with `mac` standing in for the neighbor table's when given.
+pub(crate) fn resolve_identity(
+    clients: &ClientTable,
+    live: &Neighbors,
+    workloads: &Workloads,
+    ip: IpAddr,
+    client_id: Option<&str>,
+    mac: Option<[u8; 6]>,
+) -> Resolved {
+    let given;
+    let neighbors = match mac {
+        Some(mac) => {
+            given = Neighbors::default();
+            given.replace([(ip, mac)]);
+            &given
+        }
+        None => live,
+    };
+    let ident = clients.identify(ip, client_id, None, neighbors, workloads);
+    let key = clients.match_key(ident, ip, client_id, None, neighbors);
+    Resolved {
+        ident,
+        key,
+        mac: mac.or_else(|| neighbors.get(ip)),
+    }
+}
+
+pub(crate) fn mac_text(m: [u8; 6]) -> String {
     format!(
         "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
         m[0], m[1], m[2], m[3], m[4], m[5]
@@ -137,6 +193,8 @@ pub(crate) struct State<'a> {
     pub(crate) pause: &'a Pause,
     /// REQ: FLT-010 — which schedules are on right now.
     pub(crate) schedules: &'a ScheduleNow,
+    /// REQ: DNS-023 — the device names answered in DNS (`None`: off).
+    pub(crate) devices: Option<&'a telltale_policy::LocalData>,
 }
 
 /// Explains `req` against `st`, reading list sources through `source(list name)`.
@@ -157,16 +215,20 @@ pub(crate) fn explain(
     // The filter's client table is the one its masks were built for (they match after a
     // reload; before the first snapshot only the policy's exists).
     let clients: &ClientTable = st.filter.map_or(&policy.clients, |f| &f.clients);
-    let given;
-    let neighbors = match req.mac {
-        Some(mac) => {
-            given = Neighbors::default();
-            given.replace([(req.client, mac)]);
-            &given
-        }
-        None => st.neighbors,
-    };
-    let ident = clients.identify(req.client, req.client_id, None, neighbors, st.workloads);
+    // REQ: FLT-006, API-010 (T24.30, ADR-996) — the one place a device is identified for a
+    // read: Explain and the device's Policy panel both call it.
+    let Resolved {
+        ident,
+        key: by_key,
+        mac: mac_seen,
+    } = resolve_identity(
+        clients,
+        st.neighbors,
+        st.workloads,
+        req.client,
+        req.client_id,
+        req.mac,
+    );
     // REQ: FLT-017 — a pod address is named by its workload (and `$client` rules match it).
     let workload = (ident.source == IdSource::Workload)
         .then(|| st.workloads.load())
@@ -191,9 +253,22 @@ pub(crate) fn explain(
         qtype: req.qtype,
         client: ClientInfo {
             ip: req.client,
-            mac: req.mac.or_else(|| neighbors.get(req.client)).map(mac_text),
+            mac: mac_seen.map(mac_text),
             device: device.clone(),
             identified_by: source_name(ident.source),
+            matched_key: by_key.key.clone().or_else(|| {
+                workload
+                    .as_ref()
+                    .map(|(w, _)| w.name.clone())
+                    .filter(|_| ident.source == IdSource::Workload)
+            }),
+            group: clients.primary_group(ident).name.to_string(),
+            group_from: if ident.source == IdSource::Workload {
+                "kubernetes"
+            } else {
+                by_key.group_from.as_str()
+            },
+            group_key: by_key.group_key.clone(),
             groups: clients
                 .group_names(ident)
                 .iter()
@@ -202,6 +277,7 @@ pub(crate) fn explain(
             workload: workload.as_ref().map(|(w, _)| w.clone()),
         },
         outcome: Outcome::Resolved,
+        special: None,
         summary: String::new(),
         block: None,
         paused_until: None,
@@ -222,9 +298,20 @@ pub(crate) fn explain(
         ));
     }
 
-    let special = match answered_early(policy, &q, req.client, clients.group_names(ident)) {
+    let special = match answered_early(
+        policy,
+        &q,
+        req.client,
+        clients.group_names(ident),
+        st.devices,
+    ) {
         Ok(special) => special,
         Err((outcome, summary)) => {
+            // REQ: DNS-019 (T24.12) — the rule behind a special-name answer, named for the UI.
+            if outcome == Outcome::Special && !q.is_any() && !q.is_zone_transfer() {
+                e.special = telltale_policy::classify(&q, &policy.special)
+                    .and_then(|s| special_key(&q, s, policy.ddr.is_empty()));
+            }
             e.outcome = outcome;
             e.summary = summary;
             return Ok(e);
@@ -314,7 +401,14 @@ pub(crate) fn explain(
     // Same rules as the pipeline's `resolve_or_defer`.
     if special == Some(Special::PrivatePtr) && !selection.as_ref().is_some_and(|s| s.routed) {
         e.outcome = Outcome::Special;
+        e.special = Some("private_ptr");
         e.summary = "private reverse lookup with no [[route]] for it: NXDOMAIN without forwarding (RFC 6303)".into();
+    } else if special == Some(Special::SingleLabel) && !selection.as_ref().is_some_and(|s| s.routed)
+    {
+        // REQ: DNS-019 (ADR-904)
+        e.outcome = Outcome::Special;
+        e.special = Some("single_label");
+        e.summary = "single-label name with no local answer and no [[route]] for it: NXDOMAIN without forwarding ([special] single_label_nxdomain)".into();
     } else if let Some(sel) = selection {
         e.route = Some(RouteInfo {
             group: sel.group.name.clone(),
@@ -501,6 +595,40 @@ fn rcode_text(rc: u16) -> String {
     }
 }
 
+/// REQ: DNS-019 (T24.12, ADR-914) — the name of a special-name rule, as the UI and the
+/// explanation name it. `None` for a rule with no name of its own (`.invalid`, and any other
+/// name the special rules don't list). `resolver.arpa` is `ddr` for a DDR query while this node
+/// advertises designated resolvers (`[special] ddr_name` and encrypted listeners), and
+/// `resolver_arpa` otherwise.
+fn special_key(q: &telltale_proto::Query<'_>, s: Special, no_ddr: bool) -> Option<&'static str> {
+    Some(match s {
+        Special::Refused => "chaos",
+        Special::Localhost => "localhost",
+        Special::PrivateRelay => "private_relay",
+        Special::SingleLabel => "single_label",
+        Special::PrivatePtr => "private_ptr",
+        Special::Nxdomain => {
+            if q.qname
+                .display()
+                .to_string()
+                .trim_end_matches('.')
+                .eq_ignore_ascii_case("use-application-dns.net")
+            {
+                "firefox_canary"
+            } else {
+                return None;
+            }
+        }
+        Special::ResolverArpa => {
+            if telltale_policy::is_ddr_query(q) && !no_ddr {
+                "ddr"
+            } else {
+                "resolver_arpa"
+            }
+        }
+    })
+}
+
 /// `spec/03` §3 steps 2–5 (access, ANY, special names, local records and zones): the outcome
 /// if one of them answers, else the special-name class to continue with. Rate limiting
 /// depends on the moment, not the name, so it isn't explained.
@@ -509,6 +637,7 @@ pub(crate) fn answered_early(
     q: &telltale_proto::Query<'_>,
     client: IpAddr,
     groups: &[Box<str>],
+    devices: Option<&telltale_policy::LocalData>,
 ) -> Result<Option<Special>, (Outcome, String)> {
     if !telltale_policy::is_allowed(&policy.allowed, client) {
         return Err((
@@ -534,6 +663,18 @@ pub(crate) fn answered_early(
         Some(Special::Refused) => "special-use query: REFUSED without forwarding",
         Some(Special::Nxdomain) => "special-use name: NXDOMAIN without forwarding",
         Some(Special::Localhost) => "localhost: answered with loopback addresses",
+        // REQ: DNS-019 (ADR-904)
+        Some(Special::PrivateRelay) => {
+            "iCloud Private Relay name: NXDOMAIN without forwarding, so Apple devices keep using this resolver ([special] block_icloud_private_relay)"
+        }
+        Some(Special::ResolverArpa)
+            if telltale_policy::is_ddr_query(q) && !policy.ddr.is_empty() =>
+        {
+            "designated resolver discovery (RFC 9462): answered with this node's encrypted listeners ([special] ddr_name)"
+        }
+        Some(Special::ResolverArpa) => {
+            "resolver.arpa is answered here and never forwarded: no data (RFC 9462)"
+        }
         _ => {
             // Local records are authoritative.
             let mut out = [0u8; 4096];
@@ -542,16 +683,39 @@ pub(crate) fn answered_early(
             }
             // REQ: DNS-018 — an authoritative zone this client's groups see answers before
             // any filtering (the pipeline's `zone_answer`).
-            if let Some(z) = policy.zones.iter().find(|z| {
+            let zone = policy.zones.iter().find(|z| {
                 q.qname.is_subdomain_of(&z.apex)
                     && (z.groups.is_empty() || z.groups.iter().any(|g| groups.contains(g)))
-            }) {
+            });
+            // REQ: DNS-023 — a device name answers after a zone's own records, before its
+            // NXDOMAIN (the pipeline's `local_answer`).
+            let device = || {
+                policy
+                    .device_dns
+                    .as_ref()
+                    .and(devices)
+                    .is_some_and(|d| d.answer(q, &mut [0u8; 4096], None).is_some())
+            };
+            if let Some(z) = zone {
+                if z.data.answer(q, &mut out, None).is_none() && device() {
+                    return Err((
+                        Outcome::Local,
+                        "answered from the devices TelltaleDNS knows by name ([local] device_domain)".into(),
+                    ));
+                }
                 return Err((
                     Outcome::Local,
                     format!(
                         "answered from the authoritative zone {} (local data, never filtered)",
                         z.apex.display()
                     ),
+                ));
+            }
+            if device() {
+                return Err((
+                    Outcome::Local,
+                    "answered from the devices TelltaleDNS knows by name ([local] device_domain)"
+                        .into(),
                 ));
             }
             return Ok(special);
@@ -608,7 +772,7 @@ fn decide(
     }
     false
 }
-fn block_answer_text(mode: BlockMode) -> &'static str {
+pub(crate) fn block_answer_text(mode: BlockMode) -> &'static str {
     match mode {
         BlockMode::NullIp => "0.0.0.0 / ::",
         BlockMode::Nxdomain => "NXDOMAIN",

@@ -324,8 +324,16 @@ impl Identity {
             // A rotation's next key can arrive before the manifest that adds its CA: hold it
             // until a verified bundle includes it (`adopt_trust`). It came from the primary
             // over the authenticated channel, and is used only once its CA is trusted.
-            write(&self.dir.join("ca-pending.key"), key_pem.as_bytes(), true)
-                .map_err(|e| e.to_string())?;
+            // REQ: CLU-005 (ADR-947) — the primary repeats the share every 30 s while the CA
+            // isn't trusted yet: rewrite the file only when its key changes.
+            let pending = self.dir.join("ca-pending.key");
+            let same = std::fs::read_to_string(&pending)
+                .ok()
+                .and_then(|k| crate::sync::public_of(&k).ok())
+                .is_some_and(|k| k == public);
+            if !same {
+                write(&pending, key_pem.as_bytes(), true).map_err(|e| e.to_string())?;
+            }
             return Ok(false);
         };
         let file = if pos == 0 { "ca.key" } else { "ca-next.key" };
@@ -479,6 +487,8 @@ impl Identity {
     /// Stores the ballot durably before any vote is answered (a vote must survive a crash).
     pub fn save_ballot(&self, b: &crate::election::Ballot) -> Result<(), String> {
         let bytes = serde_json::to_vec(b).map_err(|e| e.to_string())?;
+        let started = std::time::Instant::now();
+        let _slow = SlowStore(started);
         let path = self.dir.join("ballot.json");
         let tmp = path.with_extension("tmp");
         let e = |e: std::io::Error| e.to_string();
@@ -815,10 +825,72 @@ pub(crate) fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// REQ: CLU-005 (T24.26) — warns when a ballot takes long to store: an fsync of seconds on a
+/// slow card holds a vote answer past the asker's deadline, and is the first thing to look at when
+/// a primary's lease lapses.
+struct SlowStore(std::time::Instant);
+
+impl Drop for SlowStore {
+    fn drop(&mut self) {
+        let took = self.0.elapsed();
+        if took >= std::time::Duration::from_millis(500) {
+            // At most one warning a minute, counting the ones held back.
+            static LAST_S: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            static HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            use std::sync::atomic::Ordering::Relaxed;
+            let now_s = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let last = LAST_S.load(Relaxed);
+            if now_s.saturating_sub(last) < 60
+                || LAST_S
+                    .compare_exchange(last, now_s, Relaxed, Relaxed)
+                    .is_err()
+            {
+                HELD.fetch_add(1, Relaxed);
+                return;
+            }
+            tracing::warn!(
+                took_ms = u64::try_from(took.as_millis()).unwrap_or(u64::MAX),
+                held_back = HELD.swap(0, Relaxed),
+                "cluster: storing the election ballot was slow (disk); votes wait for it"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::many_single_char_names)]
 mod tests {
     use super::*;
+
+    /// REQ: CLU-005 (ADR-947) — a next CA key the trust doesn't include yet is held in
+    /// `ca-pending.key`, and the primary's repeat (every 30 s) doesn't rewrite the file.
+    #[test]
+    fn clu_005_b_a_pending_ca_key_is_written_once() {
+        let a = tempfile::tempdir().unwrap();
+        let id = Identity::init(
+            a.path(),
+            "home",
+            vec!["https://10.0.0.1:8443".into()],
+            "home-pi",
+        )
+        .unwrap();
+        let next = pki::new_node_key().unwrap().key_pem;
+        assert_eq!(id.store_ca_key(&next), Ok(false));
+        let pending = dir_of(a.path()).join("ca-pending.key");
+        assert!(pending.exists(), "held until its CA is trusted");
+        // The same key with other bytes (a trailing newline) marks the file: a repeat of the same
+        // key must leave those bytes alone, since the file already holds that key.
+        let marked = format!("{next}\n");
+        std::fs::write(&pending, &marked).unwrap();
+        assert_eq!(id.store_ca_key(&next), Ok(false));
+        assert_eq!(
+            std::fs::read_to_string(&pending).unwrap(),
+            marked,
+            "an unchanged pending key isn't rewritten"
+        );
+    }
 
     #[test]
     fn clu_001_init_token_and_join_on_disk() {

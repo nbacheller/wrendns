@@ -11,20 +11,35 @@ mod api_tls;
 mod archive;
 mod auth_setup;
 mod backup;
+#[cfg(test)]
+mod backup_api_tests;
 mod build_info;
 mod cache_history;
 mod cache_sizing;
 mod checks;
 mod cluster;
+mod cmdb;
+mod credential_rules;
+#[cfg(test)]
+mod credential_rules_tests;
+#[cfg(test)]
+mod credential_tests;
 mod ctl;
 mod datadir;
+mod device_dns;
 mod devices;
+mod discovery;
 mod dnstap;
 mod drill;
 mod explain;
 mod federated;
+#[cfg(test)]
+mod federated_wedge_tests;
 mod forward;
+mod geoip;
 mod gitsource;
+mod group_sources;
+mod guarded;
 mod health;
 mod host;
 mod http;
@@ -34,29 +49,65 @@ mod kubernetes;
 mod lists;
 mod maintenance;
 mod managed;
+mod managed_adopt;
+#[cfg(test)]
+mod managed_adopt_t2440_tests;
+#[cfg(test)]
+mod managed_adopt_tests;
 mod masking;
 mod mcp_stdio;
 mod mdns;
+mod names;
+mod names_repair;
+#[cfg(test)]
+mod names_repair_tests;
+mod node_managed;
+#[cfg(test)]
+mod node_managed_tests;
 mod node_removal;
+mod node_settings;
+#[cfg(test)]
+mod node_settings_tests;
+mod oidc_settings;
 mod otlp;
+mod own_networks;
 mod pihole;
+mod pihole_import;
 mod pipeline;
+mod policy_view;
 mod privacy;
 mod probes;
+mod profiles;
 mod qlog_cli;
 mod readiness;
+mod redact;
 mod replay;
 mod replication;
 mod rollout;
 mod rollups;
+mod router_cert;
+mod router_settings;
 mod routers;
+#[cfg(test)]
+mod secret_store_tests;
+mod secrets;
+mod secrets_api;
+#[cfg(test)]
+mod secrets_api_tests;
 mod selfupdate;
 mod server;
+mod settings_kinds;
+#[cfg(test)]
+mod settings_kinds_tests;
 mod shadow;
 mod ship;
 mod simulate;
+mod sink_settings;
+#[cfg(test)]
+mod sink_settings_tests;
 mod sinks;
 mod smtp;
+mod snmp_cli;
 mod support;
 mod support_cli;
 mod support_log;
@@ -65,6 +116,7 @@ mod technitium;
 mod traces;
 mod updates;
 mod upstream_checks;
+mod upstream_presets;
 mod vqlog;
 mod warm;
 mod watchdog;
@@ -106,6 +158,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// REQ: DSC-003 (T25.4) — SNMP diagnostics for the network inventory (read-only).
+    Snmp {
+        #[command(subcommand)]
+        command: SnmpCommand,
+    },
     /// Run the resolver.
     Run {
         /// Config files, later ones overriding earlier ones. Defaults to `$TELLTALE_CONFIG`,
@@ -142,6 +199,26 @@ enum Command {
     Auth {
         #[command(subcommand)]
         command: AuthCommand,
+    },
+    /// Guarded settings (listeners, the API address, TLS, proxies, secret keys, cluster, restart):
+    /// list what is stored on this node, or clear it, with the node stopped (lockout recovery).
+    // REQ: API-902 (T27.13, ADR-957; the offline command, so no UI control, API-901)
+    Guarded {
+        #[command(subcommand)]
+        command: GuardedCommand,
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config", global = true)]
+        config: Vec<PathBuf>,
+    },
+    /// The secrets entered in the UI: the store's state and key, and a new key. Run on the node,
+    /// with the same configuration and environment as the server.
+    // REQ: OPS-014 (ADR-903 §3)
+    Secrets {
+        #[command(subcommand)]
+        command: SecretsCommand,
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config", global = true)]
+        config: Vec<PathBuf>,
     },
     /// Search the query log (newest first), offline from the data directory.
     // REQ: OBS-003
@@ -180,6 +257,17 @@ enum Command {
     Import {
         #[command(subcommand)]
         command: ImportCommand,
+    },
+    /// REQ: API-007 (T24.18, ADR-939) — internal: parses one uploaded Pi-hole export and prints
+    /// the conversion as JSON. The API runs it as a short-lived child process with an empty
+    /// environment, so a hostile file can't reach the server's state or secrets.
+    #[command(hide = true)]
+    PiholeImportWorker {
+        /// The uploaded file (a Teleporter archive, a gravity.db, or a directory).
+        path: PathBuf,
+        /// A private directory to unpack an archive's gravity.db into (ADR-989).
+        #[arg(long)]
+        scratch: Option<PathBuf>,
     },
     /// Serve MCP to an AI agent over stdin/stdout (the `stdio` transport), relaying to a
     /// running node's `/mcp` with an API token (`TELLTALE_TOKEN`, or `--token-file`).
@@ -256,6 +344,11 @@ enum Command {
         /// Make it from the config files and the log files, without asking a running node.
         #[arg(long)]
         offline: bool,
+        /// One package for the whole cluster: every reachable node redacts its own data before it
+        /// leaves the node, and a device has the same pseudonym on all of them. Asks a running
+        /// node (not with `--offline` or `--keep-map`).
+        #[arg(long)]
+        cluster: bool,
         /// The node's API address (default: from the config files' `[api] listen`).
         #[arg(long)]
         url: Option<String>,
@@ -303,6 +396,15 @@ enum Command {
         /// Restart the `telltale` systemd service after updating.
         #[arg(long)]
         restart: bool,
+    },
+    /// REQ: DSC-002 (T25.3, ADR-908) — a network-inventory worker process: started by the node
+    /// (never by hand), it reads the stdin frames and answers them on stdout. `--import` is the
+    /// scan-import parser, with no credentials (ADR-913).
+    #[command(hide = true)]
+    DiscoveryWorker {
+        /// The scan-import parser instead of the SNMP poller.
+        #[arg(long)]
+        import: bool,
     },
 }
 
@@ -403,6 +505,35 @@ enum ClusterTokenCommand {
     },
 }
 
+/// REQ: API-007 (T23.9, ADR-903 §8) — where a backup's passphrase comes from. Never an argument.
+#[derive(Debug, clap::Args)]
+#[allow(clippy::struct_field_names)] // the flags are named by the spec: --secrets-passphrase-*
+struct PassphraseArgs {
+    /// Read the passphrase (at least 12 characters) from the first line of this file.
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["secrets_passphrase_stdin", "secrets_passphrase_prompt"])]
+    secrets_passphrase_file: Option<PathBuf>,
+    /// Read the passphrase from standard input (one line).
+    #[arg(long, conflicts_with = "secrets_passphrase_prompt")]
+    secrets_passphrase_stdin: bool,
+    /// Ask for the passphrase on the terminal (not shown).
+    #[arg(long)]
+    secrets_passphrase_prompt: bool,
+}
+
+impl PassphraseArgs {
+    fn source(&self) -> Option<backup::cli::Source> {
+        if let Some(f) = &self.secrets_passphrase_file {
+            Some(backup::cli::Source::File(f.clone()))
+        } else if self.secrets_passphrase_stdin {
+            Some(backup::cli::Source::Stdin)
+        } else if self.secrets_passphrase_prompt {
+            Some(backup::cli::Source::Prompt)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum BackupCommand {
     /// Write a backup: the config files, users and API tokens, devices and names made in the
@@ -419,6 +550,10 @@ enum BackupCommand {
         /// Config files (same defaults as `telltale run`).
         #[arg(short, long = "config")]
         config: Vec<PathBuf>,
+        /// Stored secrets (entered in the UI) are left out unless a passphrase is given: with
+        /// one, they are encrypted into the backup under a key made from it.
+        #[command(flatten)]
+        passphrase: PassphraseArgs,
     },
     /// Restore a backup onto this machine. Stop TelltaleDNS first. Every file is checked
     /// before anything is written; existing files are only replaced with --force.
@@ -434,6 +569,16 @@ enum BackupCommand {
         /// Replace existing files.
         #[arg(long)]
         force: bool,
+        /// The configuration whose secrets-key settings name this node's key (the environment
+        /// counts too). Without one, the data directory's own key is used (made if missing).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+        /// The passphrase of a backup that holds stored secrets.
+        #[command(flatten)]
+        passphrase: PassphraseArgs,
+        /// Restore a backup that holds stored secrets without them.
+        #[arg(long, conflicts_with_all = ["secrets_passphrase_file", "secrets_passphrase_stdin", "secrets_passphrase_prompt"])]
+        skip_secrets: bool,
     },
     /// Check a backup and list what's in it.
     Show {
@@ -466,6 +611,22 @@ enum ImportCommand {
         /// Write the TOML here instead of to stdout.
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Resolve a sample of names (A and AAAA) through this Pi-hole (`ip` or `ip:port`)
+        /// and through TelltaleDNS (`--telltale`), and report where the answers differ.
+        #[arg(long, value_name = "ADDR")]
+        compare: Option<String>,
+        /// The TelltaleDNS to compare with: the node's resolver (run it with the imported
+        /// configuration first, or the comparison shows what it answers now).
+        #[arg(
+            long,
+            value_name = "ADDR",
+            default_value = "127.0.0.1:53",
+            requires = "compare"
+        )]
+        telltale: String,
+        /// Names to add to the sample (repeat the flag).
+        #[arg(long = "sample", value_name = "NAME", requires = "compare")]
+        samples: Vec<String>,
     },
     /// Read a running Technitium DNS Server through its API (forwarders, zones and records,
     /// forwarder zones, block lists, allowed/blocked names, Advanced Blocking groups, DHCP
@@ -497,6 +658,48 @@ enum AuthCommand {
     /// Read a password from stdin and print its Argon2id hash, for
     /// `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH`.
     HashPassword,
+    /// Set a local user's password with the node stopped, for when nobody can sign in. The
+    /// password comes from stdin (one line) or is typed twice in a terminal (echo off). It ends
+    /// the user's UI sessions and is audited. Refuses while `telltale run` holds the data
+    /// directory, and on a cluster replica (reset it on the primary).
+    // REQ: API-003 (ADR-972; the offline command, so no UI control, API-901)
+    ResetPassword {
+        /// The username.
+        user: String,
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum GuardedCommand {
+    /// Every guarded entry on this node: staged (waiting for the next start), on probation,
+    /// active, or hidden by a local clear. Needs the node stopped (it reads `state.db`).
+    List,
+    /// Remove this node's guarded entries so it starts on its configuration file's values.
+    /// Audited as `cli:<os user>`. Needs the node stopped. In a cluster it clears only this node;
+    /// a replica also ignores the primary's copy until that copy changes.
+    Clear {
+        /// The setting to clear (`telltale guarded list` shows the IDs).
+        id: Option<String>,
+        /// Clear every guarded entry on this node.
+        #[arg(long, conflicts_with = "id")]
+        all: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SecretsCommand {
+    /// The store (ready, locked, or ephemeral), its key's source and ID (never the key), each
+    /// stored secret without its value, and every credential field with its source and whether
+    /// this node can read it. Exits 1 when the store is locked. Changes nothing (no key made, no
+    /// rotation finished, nothing re-encrypted), so it's safe beside a running server.
+    Status,
+    /// Replace the data-directory key (`secrets.key`): every stored secret is re-encrypted under a
+    /// new one. Stop TelltaleDNS first. A key from `TELLTALE_SECRETS_KEY` or
+    /// `[node] secrets_key_file` is rotated by setting the old one as the previous key instead.
+    RotateKey,
 }
 
 #[derive(Debug, Subcommand)]
@@ -560,6 +763,24 @@ enum ListsCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum SnmpCommand {
+    /// Read one table from a configured SNMP agent and print its rows. Takes the agent's
+    /// configured name, never an address; the credential is read from its file and never
+    /// printed.
+    Walk {
+        /// The agent's name, from `[[discovery.snmp_agent]]`.
+        #[arg(long)]
+        agent: String,
+        /// Which table: the ARP table, interfaces, the bridge (FDB) table or LLDP neighbours.
+        #[arg(long, value_enum, default_value = "arp")]
+        table: snmp_cli::Table,
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum QlogCommand {
     /// Find logged queries. Filters combine (AND); prints newest first.
     Search {
@@ -577,6 +798,19 @@ enum QlogCommand {
         /// Query type, e.g. AAAA (repeatable).
         #[arg(short = 't', long)]
         qtype: Vec<String>,
+        /// Keep the queries whose name does NOT match (does not contain, is not, is not under,
+        /// ...). Needs a name.
+        #[arg(long)]
+        not_name: bool,
+        /// Keep the queries from every client except --client.
+        #[arg(long)]
+        not_client: bool,
+        /// Keep the queries whose status is none of --status.
+        #[arg(long)]
+        not_status: bool,
+        /// Keep the queries whose type is none of --qtype.
+        #[arg(long)]
+        not_qtype: bool,
         /// Only the last N seconds.
         #[arg(long)]
         since: Option<u64>,
@@ -640,9 +874,14 @@ enum ConfigCommand {
         /// Ignore TELLTALE_* environment variables.
         #[arg(long)]
         no_env: bool,
-        /// Print the effective config (defaults + files + env) as TOML.
+        /// Print the effective config (defaults + files + env) as TOML. Credentials (upstream
+        /// headers and args, passwords in URLs, an OIDC client secret, OTLP headers) print as
+        /// `<redacted>`.
         #[arg(long)]
         print: bool,
+        /// With --print: print credentials as they are (REQ: API-014).
+        #[arg(long, requires = "print")]
+        show_secrets: bool,
     },
     /// Print the JSON Schema for telltale.toml (for editor completion).
     Schema,
@@ -681,6 +920,24 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Run { config } => run(config),
+        Command::Snmp {
+            command:
+                SnmpCommand::Walk {
+                    agent,
+                    table,
+                    config,
+                },
+        } => Ok(
+            server::load(&config_files(config)).map_or(ExitCode::FAILURE, |cfg| {
+                match snmp_cli::run_walk(&cfg, &agent, table, &mut io::stdout().lock()) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        ExitCode::FAILURE
+                    }
+                }
+            }),
+        ),
         Command::Config { command } => run_config(command),
         Command::Presets { command } => run_presets(command),
         Command::Services {
@@ -695,6 +952,10 @@ fn main() -> ExitCode {
                     client,
                     status,
                     qtype,
+                    not_name,
+                    not_client,
+                    not_status,
+                    not_qtype,
                     since,
                     min_ms,
                     limit,
@@ -709,6 +970,13 @@ fn main() -> ExitCode {
                 client,
                 status,
                 qtype,
+                not: telltale_store::qlog::Not {
+                    name: not_name,
+                    client: not_client,
+                    status: not_status,
+                    qtype: not_qtype,
+                    rcode: false,
+                },
                 since_secs: since,
                 min_ms,
                 limit,
@@ -728,6 +996,8 @@ fn main() -> ExitCode {
             )
         }
         Command::Auth { command } => Ok(run_auth(command)),
+        Command::Secrets { command, config } => Ok(run_secrets(&command, config)),
+        Command::Guarded { command, config } => Ok(run_guarded(command, config)),
         Command::Audit { command } => Ok(run_audit(command)),
         Command::Explain {
             name,
@@ -751,7 +1021,14 @@ fn main() -> ExitCode {
             check,
             restart,
         } => Ok(run_self_update(channel, check, restart)),
+        // REQ: DSC-002 (T25.3) — the worker's exit code says why it stopped (discovery::worker).
+        Command::DiscoveryWorker { import } => Ok(ExitCode::from(
+            u8::try_from(discovery::worker::main(import)).unwrap_or(1),
+        )),
         Command::Import { command } => Ok(run_import(command)),
+        Command::PiholeImportWorker { path, scratch } => {
+            Ok(pihole_import::run_worker(&path, scratch.as_deref()))
+        }
         Command::Backup { command } => Ok(run_backup(command)),
         Command::Mcp {
             stdio,
@@ -784,6 +1061,7 @@ fn main() -> ExitCode {
             list,
             output,
             offline,
+            cluster,
             url,
             ca_file,
             token_file,
@@ -797,6 +1075,7 @@ fn main() -> ExitCode {
                 list,
                 output,
                 offline,
+                cluster,
             },
             url,
             ca_file,
@@ -1018,72 +1297,133 @@ fn run_mcp(
     }
 }
 
-// REQ: API-007 (T6.7, ADR-063)
+// REQ: OPS-014 (ADR-903 §3)
+/// REQ: API-902 (ADR-957) — `telltale guarded list|clear`, offline.
+fn run_guarded(command: GuardedCommand, config: Vec<PathBuf>) -> ExitCode {
+    let Some(cfg) = server::load_files(&config_files(config)) else {
+        return ExitCode::FAILURE;
+    };
+    let done = match command {
+        GuardedCommand::List => guarded::cli::run_list(&cfg, &mut io::stdout().lock()),
+        GuardedCommand::Clear { id, all } => {
+            let target = match (id, all) {
+                (Some(id), false) => guarded::cli::Target::One(id),
+                (None, true) => guarded::cli::Target::All,
+                _ => {
+                    eprintln!("error: name a setting to clear, or pass --all");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let user = std::env::var("USER")
+                .or_else(|_| std::env::var("USERNAME"))
+                .unwrap_or_else(|_| "unknown".to_owned());
+            guarded::cli::run_clear(&cfg, &target, &user, &mut io::stdout().lock())
+        }
+    };
+    match done {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_secrets(command: &SecretsCommand, config: Vec<PathBuf>) -> ExitCode {
+    let files = config_files(config);
+    let Some(cfg) = server::load(&files) else {
+        return ExitCode::FAILURE;
+    };
+    let env = secrets::cli::env();
+    let result = match command {
+        SecretsCommand::Status => secrets::cli::status(&cfg, env, &mut io::stdout().lock())
+            .map_err(|e| e.to_string())
+            .map(|ok| {
+                if ok {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                }
+            }),
+        SecretsCommand::RotateKey => {
+            secrets::cli::rotate_key(&cfg, &env, secrets::cli::Until::Done).map(|r| {
+                eprintln!(
+                    "rotated the secrets key: key_id {} -> {}; {} secret(s) re-encrypted{}",
+                    r.from,
+                    r.to,
+                    r.reencrypted,
+                    if r.skipped > 0 {
+                        format!(
+                            ", {} left as they were (not readable under the old key either)",
+                            r.skipped
+                        )
+                    } else {
+                        String::new()
+                    }
+                );
+                ExitCode::SUCCESS
+            })
+        }
+    };
+    result.unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        ExitCode::FAILURE
+    })
+}
+
+// REQ: API-007 (T6.7, ADR-063; T23.9, ADR-903 §8)
 fn run_backup(command: BackupCommand) -> ExitCode {
     let result = match command {
         BackupCommand::Create {
             include_qlog,
             output,
             config,
+            passphrase,
         } => {
             let files = config_files(config);
             let Some(cfg) = server::load(&files) else {
                 return ExitCode::FAILURE;
             };
             let out = output.unwrap_or_else(|| backup::default_name(cfg.node.name.as_str()));
-            backup::create(&files, &cfg, include_qlog, &out).map(|c| {
-                eprintln!(
-                    "wrote {} ({} files, {} KiB). It holds password hashes: keep it private.",
-                    c.path.display(),
-                    c.entries,
-                    c.bytes.div_ceil(1024)
-                );
-            })
+            backup::cli::create(
+                &files,
+                &cfg,
+                include_qlog,
+                &out,
+                passphrase.source().as_ref(),
+            )
         }
         BackupCommand::Restore {
             file,
             data_dir,
             config_dir,
             force,
-        } => backup::restore(&file, data_dir.as_deref(), config_dir.as_deref(), force).map(|r| {
-            eprintln!(
-                "restored {} files from {} (node {}, TelltaleDNS {}): data in {}, config in {}",
-                r.files,
-                file.display(),
-                r.manifest.node,
-                r.manifest.telltale_version,
-                r.data_dir.display(),
-                r.config_dir.display()
-            );
-            if Path::new(&r.manifest.data_dir) != r.data_dir {
-                eprintln!(
-                    "note: the restored config files say data_dir = {}; set it to {} (or add a file that does).",
-                    r.manifest.data_dir,
-                    r.data_dir.display()
-                );
-            }
-            if r.manifest.cluster_member {
-                eprintln!(
-                    "note: the backup came from a cluster member; cluster identity isn't in backups. Start this node, then `telltale cluster init` or join it again (docs: Clusters)."
-                );
-            }
-        }),
-        BackupCommand::Show { file } => backup::show(&file).map(|m| {
-            let mut out = io::stdout().lock();
-            let total: u64 = m.entries.iter().map(|e| e.size).sum();
-            let _ = writeln!(
-                out,
-                "TelltaleDNS {} backup of node `{}`, taken {} (unix), {} files, {} KiB, checksums OK",
-                m.telltale_version,
-                m.node,
-                m.created,
-                m.entries.len(),
-                total.div_ceil(1024)
-            );
-            for e in &m.entries {
-                let _ = writeln!(out, "  {:>10}  {}", e.size, e.path);
-            }
-        }),
+            config,
+            passphrase,
+            skip_secrets,
+        } => {
+            // The key settings come from -c (and the environment); no file given, no
+            // configuration is read: the restored node has none yet.
+            let key_cfg = if config.is_empty() {
+                None
+            } else {
+                match server::load(&config) {
+                    Some(c) => Some(c),
+                    None => return ExitCode::FAILURE,
+                }
+            };
+            backup::cli::restore(
+                &file,
+                data_dir.as_deref(),
+                config_dir.as_deref(),
+                force,
+                key_cfg.as_ref(),
+                skip_secrets,
+                passphrase.source().as_ref(),
+            )
+        }
+        BackupCommand::Show { file } => backup::cli::show(&file),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -1102,7 +1442,19 @@ fn run_import(command: ImportCommand) -> ExitCode {
             origin,
             output,
         } => run_import_zone(&file, origin.as_deref(), output.as_deref()),
-        ImportCommand::Pihole { path, output } => run_import_pihole(&path, output.as_deref()),
+        ImportCommand::Pihole {
+            path,
+            output,
+            compare,
+            telltale,
+            samples,
+        } => run_import_pihole(
+            &path,
+            output.as_deref(),
+            compare
+                .as_deref()
+                .map(|p| (p, telltale.as_str(), samples.as_slice())),
+        ),
         ImportCommand::Technitium {
             url,
             token_file,
@@ -1138,17 +1490,67 @@ fn run_import_technitium(url: &str, token_file: Option<&Path>, output: Option<&P
     }
 }
 
-// REQ: API-007 (T6.3, ADR-061)
-fn run_import_pihole(path: &Path, output: Option<&Path>) -> ExitCode {
-    match pihole::Source::load(path)
+// REQ: API-007 (T6.3, ADR-061; T24.6, ADR-941)
+fn run_import_pihole(
+    path: &Path,
+    output: Option<&Path>,
+    compare: Option<(&str, &str, &[String])>,
+) -> ExitCode {
+    let im = match pihole::Source::load(path)
         .and_then(|src| pihole::convert(&src, &path.display().to_string()))
     {
-        Ok(im) => write_import(&im, output, &format!("Pi-hole {}", im.version)),
+        Ok(im) => im,
         Err(e) => {
             eprintln!("error: {e}");
-            ExitCode::FAILURE
+            return ExitCode::FAILURE;
         }
+    };
+    if write_import(&im, output, &format!("Pi-hole {}", im.version)) != ExitCode::SUCCESS {
+        return ExitCode::FAILURE;
     }
+    let Some((pihole_addr, telltale_addr, extra)) = compare else {
+        return ExitCode::SUCCESS;
+    };
+    let parsed = pihole::compare::parse_server(pihole_addr)
+        .and_then(|p| Ok((p, pihole::compare::parse_server(telltale_addr)?)));
+    let (p, t) = match parsed {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut names = im.samples.clone();
+    names.extend(extra.iter().cloned());
+    let rep = pihole::compare::compare(p, t, &names);
+    eprint!("{}", compare_report(&rep, p, t));
+    ExitCode::SUCCESS
+}
+
+/// The comparison as text: the counts, each difference, and what stopped it.
+fn compare_report(
+    rep: &pihole::compare::Report,
+    p: std::net::SocketAddr,
+    t: std::net::SocketAddr,
+) -> String {
+    use std::fmt::Write as _;
+    let mut s = format!(
+        "compared {} names through Pi-hole {p} and TelltaleDNS {t}: {} agree, {} differ\n",
+        rep.names,
+        rep.agree,
+        rep.names - rep.agree
+    );
+    for d in &rep.differences {
+        let _ = writeln!(
+            s,
+            "  - {} {}: Pi-hole {} {:?}, TelltaleDNS {} {:?}",
+            d.name, d.qtype, d.pihole.rcode, d.pihole.values, d.telltale.rcode, d.telltale.values
+        );
+    }
+    for e in &rep.errors {
+        let _ = writeln!(s, "  ! {e}");
+    }
+    s
 }
 
 /// Checks an importer's output loads as config, writes it, and prints the summary and notes.
@@ -1308,21 +1710,27 @@ fn init_logging() {
     use tracing_subscriber::Layer as _;
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
-    let level = std::env::var("TELLTALE_LOG")
-        .ok()
-        .and_then(|v| v.parse::<tracing::level_filters::LevelFilter>().ok())
-        .unwrap_or(tracing::level_filters::LevelFilter::INFO);
+    // `TELLTALE_LOG` is a level (`debug`) or per-module directives such as
+    // `info,telltale_cluster::failover=debug`, so a cluster lapse can be traced without debug
+    // logging for the whole DNS server.
+    let env = std::env::var("TELLTALE_LOG").ok();
+    let mut targets = env
+        .as_deref()
+        .and_then(|v| v.parse::<tracing_subscriber::filter::Targets>().ok())
+        .unwrap_or_else(|| {
+            tracing_subscriber::filter::Targets::new()
+                .with_default(tracing::level_filters::LevelFilter::INFO)
+        });
     // REQ: DNS-011 (ADR-098) — hickory's validator logs every unsigned NODATA (a warning) and
     // its depth limit (an error); TelltaleDNS counts and logs each verdict itself.
     // `TELLTALE_LOG_DNSSEC_LIBRARY=1` turns its log back on, for debugging validation.
     let library = if std::env::var_os("TELLTALE_LOG_DNSSEC_LIBRARY").is_some() {
-        level
+        // INFO and above, as the console's default: the library's own noise is its warnings.
+        tracing::level_filters::LevelFilter::INFO
     } else {
         tracing::level_filters::LevelFilter::OFF
     };
-    let targets = tracing_subscriber::filter::Targets::new()
-        .with_default(level)
-        .with_target("hickory_net::dnssec", library);
+    targets = targets.with_target("hickory_net::dnssec", library);
     // The console follows `TELLTALE_LOG`. REQ: OPS-011 (ADR-156) — the support package's own log
     // keeps INFO and above whatever it says, from the first line on.
     let console = tracing_subscriber::fmt::layer()
@@ -1330,7 +1738,13 @@ fn init_logging() {
         .with_ansi(io::IsTerminal::is_terminal(&io::stderr()))
         .with_writer(io::stderr)
         .with_filter(targets);
-    let support = support_log::layer().with_filter(support_log::filter(library));
+    let support = support_log::layer().with_filter(support_log::filter(
+        if library == tracing::level_filters::LevelFilter::OFF {
+            library
+        } else {
+            tracing::level_filters::LevelFilter::INFO
+        },
+    ));
     tracing_subscriber::registry()
         .with(console)
         .with(support)
@@ -1355,6 +1769,12 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
     telltale_net::allocator_purge_at_once();
     init_logging();
     let files = config_files(config);
+    // REQ: API-902 (T27.13, ADR-956 §4, ADR-957) — before anything the UI stored is applied: the
+    // staged and restored guarded entries go on probation (or are dropped after two failed
+    // starts), and `TELLTALE_IGNORE_GUARDED=1` makes the node run on its files alone.
+    if let Some(file_cfg) = server::load_files_quiet(&files) {
+        guarded::probation::begin(&file_cfg, &guarded::appliers::rows(), guarded::now_secs());
+    }
     let Some(cfg) = server::load(&files) else {
         return Ok(ExitCode::FAILURE);
     };
@@ -1404,13 +1824,32 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
         "starting TelltaleDNS"
     );
 
-    // spec/02 §3: UDP has dedicated worker threads; everything else runs on Tokio.
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .thread_name("telltale-rt")
-        .build()?;
     let data_dir = data_dir.to_owned();
-    let served = rt.block_on(server::serve(files, cfg));
+    // REQ: API-902 (ADR-956 §4) — a confirmed guarded listener that can't bind at this start falls
+    // back to the file's value, once, on a fresh runtime.
+    let served = guarded::serve_with_fallback(
+        cfg,
+        || server::load(&files),
+        || server::load_files_quiet(&files),
+        &guarded::appliers::rows(),
+        |cfg| {
+            // spec/02 §3: UDP has dedicated worker threads; everything else runs on Tokio.
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("telltale-rt")
+                .build()?;
+            // REQ: CLU-004 (upstream #7) — the runtime's own worker count (the container's CPU
+            // quota, on a 2-CPU replica): the three-node run asserts it, since the UDP workers are
+            // a different count.
+            info!(
+                runtime_workers = rt.metrics().num_workers(),
+                "tokio runtime ready"
+            );
+            let r = rt.block_on(server::serve(files.clone(), cfg));
+            rt.shutdown_timeout(std::time::Duration::from_secs(2));
+            r
+        },
+    );
     if lock.is_some() {
         datadir::record_stop(&data_dir);
     }
@@ -1418,7 +1857,8 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
     info!("stopped");
     // REQ: OPS-011 — the last lines (why it stopped) reach the log files before the process exits.
     support_log::global().flush();
-    Ok(ExitCode::SUCCESS)
+    // REQ: API-902 (ADR-956 §4a) — a requested restart ends with exit 75, for the supervisor.
+    Ok(ExitCode::from(guarded::restart::exit_status()))
 }
 
 fn run_lists(cmd: ListsCommand) -> io::Result<ExitCode> {
@@ -1482,6 +1922,12 @@ fn run_auth(command: AuthCommand) -> ExitCode {
             auth_setup::print_setup_token(&cfg)
         }
         AuthCommand::HashPassword => auth_setup::hash_password(),
+        AuthCommand::ResetPassword { user, config } => {
+            let Some(cfg) = server::load(&config_files(config)) else {
+                return ExitCode::FAILURE;
+            };
+            auth_setup::reset_password(&cfg, &user)
+        }
     };
     match done {
         Ok(true) => ExitCode::SUCCESS,
@@ -1596,6 +2042,7 @@ fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
             files,
             no_env,
             print,
+            show_secrets,
         } => {
             let mut loader = files.iter().fold(Loader::new(), Loader::file);
             if !no_env {
@@ -1604,6 +2051,10 @@ fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
             match loader.load() {
                 Ok(cfg) => {
                     for w in &cfg.warnings {
+                        eprintln!("warning: {w}");
+                    }
+                    // REQ: UPS-013 — an upstream `source` this machine doesn't hold.
+                    for w in telltale_upstream::source_warnings(&cfg.config) {
                         eprintln!("warning: {w}");
                     }
                     // Record values and hosts files are checked too (DNS-010).
@@ -1619,7 +2070,7 @@ fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
                         return Ok(ExitCode::FAILURE);
                     }
                     if print {
-                        let text = toml::to_string(&cfg.config).map_err(io::Error::other)?;
+                        let text = printed_config(&cfg.config, show_secrets)?;
                         write!(out, "{text}")?;
                     } else {
                         writeln!(out, "config OK")?;
@@ -1636,6 +2087,17 @@ fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
             }
         }
     }
+}
+
+/// REQ: API-014 (ADR-903 §4) — `config check --print`: the effective configuration as TOML,
+/// its credentials redacted unless `show_secrets`.
+fn printed_config(cfg: &telltale_config::Config, show_secrets: bool) -> io::Result<String> {
+    if show_secrets {
+        return toml::to_string(cfg).map_err(io::Error::other);
+    }
+    let mut shown = cfg.clone();
+    telltale_config::credentials::redact_config(&mut shown);
+    toml::to_string(&shown).map_err(io::Error::other)
 }
 
 /// `telltale services list`.

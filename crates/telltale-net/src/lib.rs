@@ -10,6 +10,8 @@ pub mod doh;
 pub mod doh3;
 pub mod doq;
 pub mod handler;
+pub mod iface;
+pub mod ifaddrs;
 pub mod neigh;
 pub mod peer_limit;
 pub mod proxy;
@@ -20,11 +22,14 @@ mod sys;
 pub mod tcp;
 pub mod tls;
 pub mod udp;
+pub mod worker;
 
 pub use doh::{DohConfig, DohServer, DohStats};
 pub use doh3::{Doh3Config, Doh3Server};
 pub use doq::{DoqConfig, DoqServer, DoqStats};
 pub use handler::{ClientId, Deferred, QueryHandler, RequestMeta, Response, Transport};
+pub use iface::{IfaceAddr, Ipv4Interface, ipv4_interfaces};
+pub use ifaddrs::{IfAddr, local_addrs};
 pub use neigh::{Neighbor, neighbors};
 #[cfg(target_os = "linux")]
 pub use sys::MappedFile;
@@ -101,6 +106,29 @@ pub fn default_workers() -> usize {
 pub fn allocator_purge_at_once() {
     #[cfg(target_os = "linux")]
     sys::allocator_purge_at_once();
+}
+
+/// REQ: NFR-001, OBS-902 (ADR-1008 (h)) — after a rare, allocation-heavy job (the GeoIP build),
+/// the allocator gives the calling thread's freed pages and the arenas' free memory back to the
+/// OS at once. Call it on the thread that did the work, once the work's buffers are dropped. A
+/// no-op off Linux.
+pub fn allocator_collect() {
+    #[cfg(target_os = "linux")]
+    sys::allocator_collect();
+}
+
+/// REQ: DSC-002 (ADR-934) — the text of this process's `/proc/self/io`, read through a descriptor
+/// opened before [`worker::prepare_spawn`] made the process not dumpable (a non-root process
+/// can't open the file itself after that). `None` off Linux or without the file.
+pub fn self_io_text() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        sys::self_io_text()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
 
 /// REQ: NFR-001 (T10.2) — drops this process's resident copies of its executable's code and

@@ -5,7 +5,7 @@
 /bench/corpora/
 /ui/node_modules/
 /ui/dist/
-/ui/.e2e/
+/ui/.e2e*/
 /ui/test-results/
 /ui/playwright-report/
 /ui/.shots/
@@ -17,3 +17,4 @@
 /site/_site/
 __pycache__/
 deploy/mcp-e2e/node_modules/
+/.v3e2e.*/

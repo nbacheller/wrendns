@@ -6,9 +6,10 @@
 //! actually changed. Nothing here touches the query path.
 
 mod http;
+mod spool;
 mod store;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -19,7 +20,8 @@ use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 pub use self::http::{
-    BodyStream, Client, Conditional, HttpError, Resolve, Response, SystemResolver,
+    BodySink, BodyStream, Client, Conditional, HttpError, Resolve, Response, Streamed,
+    SystemResolver,
 };
 pub use self::store::{ListMeta, Store, content_hash, count_lines};
 
@@ -27,6 +29,12 @@ pub use self::store::{ListMeta, Store, content_hash, count_lines};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListSource {
     Url(String),
+    /// REQ: FLT-901 (ADR-995 item 1) — a source whose file name changes: `meta_url` names the
+    /// current one (`blocklist.raw_url` in a small JSON file), which must start with `prefix`.
+    UrlMeta {
+        meta_url: String,
+        prefix: String,
+    },
     Path(PathBuf),
     Inline(Vec<String>),
 }
@@ -37,10 +45,12 @@ impl ListSource {
     fn key(&self) -> String {
         match self {
             Self::Url(u) => u.clone(),
+            Self::UrlMeta { meta_url, .. } => format!("meta:{meta_url}"),
             Self::Path(p) => format!("file:{}", p.display()),
             Self::Inline(rules) => {
                 format!(
-                    "inline:{}",
+                    "{}{}",
+                    store::INLINE_SOURCE_PREFIX,
                     &content_hash(rules.join("\n").as_bytes())[..16]
                 )
             }
@@ -60,6 +70,22 @@ pub struct ListSpec {
     pub enabled: bool,
 }
 
+/// REQ: FLT-901 — a `cat-` list whose catalog source resolves its URL through a JSON file is
+/// fetched that way; any other URL is fetched as it is.
+fn category_source(name: &str, url: &str) -> ListSource {
+    if let Some(s) = telltale_config::categories::source_of_list(name)
+        && s.resolve.is_some()
+        && s.url == url
+        && let Some(prefix) = &s.url_prefix
+    {
+        return ListSource::UrlMeta {
+            meta_url: url.to_owned(),
+            prefix: prefix.clone(),
+        };
+    }
+    ListSource::Url(url.to_owned())
+}
+
 impl ListSpec {
     /// The configured lists, disabled ones included (marked), with `[filter]` defaults
     /// applied.
@@ -69,7 +95,7 @@ impl ListSpec {
             .iter()
             .filter_map(|l| {
                 let source = if let Some(u) = &l.url {
-                    ListSource::Url(u.to_string())
+                    category_source(l.name.as_str(), u.as_str())
                 } else if let Some(p) = &l.path {
                     ListSource::Path(PathBuf::from(p.as_str()))
                 } else if !l.rules.is_empty() {
@@ -165,6 +191,49 @@ pub struct Fetcher {
     settings: FetchSettings,
     metas: Mutex<HashMap<String, ListMeta>>,
     refresh_now: Notify,
+    /// REQ: FLT-004 — refreshes asked for and lists downloading now (`refreshing`).
+    manual: Mutex<Manual>,
+}
+
+/// REQ: FLT-004 — what [`Fetcher::is_refreshing`] reads.
+#[derive(Debug, Default)]
+struct Manual {
+    /// A refresh asked for that hasn't started yet. Requests made before it starts merge into
+    /// it.
+    queued: Option<Asked>,
+    /// Lists downloading now, with how many rounds hold each (a scheduled round and an
+    /// asked-for one can overlap).
+    running: HashMap<String, u32>,
+}
+
+/// The lists a refresh was asked for.
+#[derive(Debug)]
+enum Asked {
+    All,
+    Some(BTreeSet<String>),
+}
+
+/// One list's place in [`Manual::running`], given back when its download ends (or is
+/// cancelled with the task).
+struct Running {
+    fetcher: Arc<Fetcher>,
+    name: String,
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let mut m = self
+            .fetcher
+            .manual
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(n) = m.running.get_mut(&self.name) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                m.running.remove(&self.name);
+            }
+        }
+    }
 }
 
 impl Fetcher {
@@ -175,6 +244,7 @@ impl Fetcher {
             settings,
             metas: Mutex::new(HashMap::new()),
             refresh_now: Notify::new(),
+            manual: Mutex::new(Manual::default()),
         }
     }
 
@@ -190,9 +260,58 @@ impl Fetcher {
         out
     }
 
-    /// Makes `run` refresh every list now, regardless of schedule (`POST /lists/refresh`).
+    /// Makes `run` refresh every enabled list now, regardless of schedule (`SIGUSR1`).
     pub fn request_refresh(&self) {
+        self.request_refresh_of(None);
+    }
+
+    /// REQ: FLT-004 — makes `run` refresh `names` (`None`: every enabled list) now, regardless
+    /// of schedule (`POST /api/v1/lists/refresh`). Requests made before the refresh starts
+    /// merge into it; one made while lists are downloading starts another round after it.
+    /// Names that aren't configured, and disabled lists, are skipped.
+    pub fn request_refresh_of(&self, names: Option<&[String]>) {
+        {
+            let mut m = self.manual.lock().unwrap_or_else(PoisonError::into_inner);
+            m.queued = Some(match (m.queued.take(), names) {
+                (Some(Asked::All), _) | (_, None) => Asked::All,
+                (Some(Asked::Some(mut set)), Some(n)) => {
+                    set.extend(n.iter().cloned());
+                    Asked::Some(set)
+                }
+                (None, Some(n)) => Asked::Some(n.iter().cloned().collect()),
+            });
+        }
         self.refresh_now.notify_one();
+    }
+
+    /// REQ: FLT-004 — true while `name` waits for a refresh asked for, or is downloading.
+    pub fn is_refreshing(&self, name: &str) -> bool {
+        let m = self.manual.lock().unwrap_or_else(PoisonError::into_inner);
+        m.running.contains_key(name)
+            || match &m.queued {
+                Some(Asked::All) => true,
+                Some(Asked::Some(set)) => set.contains(name),
+                None => false,
+            }
+    }
+
+    /// The refresh asked for, as the enabled lists of `specs` it covers, now marked running
+    /// (in one step, so `is_refreshing` never misses them in between).
+    fn start_asked(&self, specs: &[ListSpec]) -> Vec<ListSpec> {
+        let mut m = self.manual.lock().unwrap_or_else(PoisonError::into_inner);
+        let picked: Vec<ListSpec> = match m.queued.take() {
+            None => Vec::new(),
+            Some(Asked::All) => specs.iter().filter(|s| s.enabled).cloned().collect(),
+            Some(Asked::Some(names)) => specs
+                .iter()
+                .filter(|s| s.enabled && names.contains(&s.name))
+                .cloned()
+                .collect(),
+        };
+        for s in &picked {
+            *m.running.entry(s.name.clone()).or_insert(0) += 1;
+        }
+        picked
     }
 
     fn meta(&self, name: &str) -> ListMeta {
@@ -213,13 +332,27 @@ impl Fetcher {
             .insert(name.to_owned(), meta);
     }
 
-    fn spawn_refreshes(self: &Arc<Self>, specs: &[ListSpec]) -> JoinSet<(String, Outcome)> {
+    /// `counted`: [`Self::start_asked`] already marked `specs` running.
+    fn spawn_refreshes(
+        self: &Arc<Self>,
+        specs: &[ListSpec],
+        counted: bool,
+    ) -> JoinSet<(String, Outcome)> {
         let sem = Arc::new(Semaphore::new(self.settings.concurrency.max(1)));
         let mut set = JoinSet::new();
         // A disabled list is kept in the specs (its files stay) but never fetched.
         for spec in specs.iter().filter(|s| s.enabled).cloned() {
+            if !counted {
+                let mut m = self.manual.lock().unwrap_or_else(PoisonError::into_inner);
+                *m.running.entry(spec.name.clone()).or_insert(0) += 1;
+            }
+            let running = Running {
+                fetcher: Arc::clone(self),
+                name: spec.name.clone(),
+            };
             let (this, sem) = (Arc::clone(self), Arc::clone(&sem));
             set.spawn(async move {
+                let _running = running;
                 let _permit = sem.acquire_owned().await;
                 let outcome = this.refresh_one(&spec).await;
                 (spec.name, outcome)
@@ -230,7 +363,7 @@ impl Fetcher {
 
     /// Refreshes `specs` concurrently (at most `concurrency` at a time).
     pub async fn refresh(self: &Arc<Self>, specs: &[ListSpec]) -> Vec<(String, Outcome)> {
-        let mut set = self.spawn_refreshes(specs);
+        let mut set = self.spawn_refreshes(specs, false);
         let mut out = Vec::with_capacity(specs.len());
         while let Some(res) = set.join_next().await {
             match res {
@@ -250,8 +383,9 @@ impl Fetcher {
         self: &Arc<Self>,
         specs: &[ListSpec],
         changed: &watch::Sender<u64>,
+        counted: bool,
     ) {
-        let mut set = self.spawn_refreshes(specs);
+        let mut set = self.spawn_refreshes(specs, counted);
         let mut pending: Option<tokio::time::Instant> = None;
         loop {
             let deadline = pending.map(|t| t + self.settings.settle);
@@ -298,57 +432,26 @@ impl Fetcher {
         let now = unix_now();
         meta.last_attempt = Some(now);
 
-        let fetched = match &spec.source {
-            ListSource::Url(url) => self.download(&spec.name, url, &cond, spec.max_bytes).await,
-            ListSource::Path(path) => read_file(path, spec.max_bytes).await,
-            ListSource::Inline(rules) => {
-                let mut text = rules.join("\n");
-                text.push('\n');
-                Ok(Response::Body {
-                    data: text.into_bytes(),
-                    etag: None,
-                    last_modified: None,
-                })
-            }
-        };
-
-        let outcome = match fetched {
-            Ok(Response::NotModified) if same_source => Outcome::Unchanged,
-            Ok(Response::NotModified) => {
-                Outcome::Failed("server answered 304 but no copy is stored".to_owned())
-            }
-            Ok(Response::Body {
-                data,
-                etag,
-                last_modified,
-            }) => {
-                // Hashing, checking, and zstd-compressing a large list takes hundreds of ms:
-                // never on a runtime worker, which also carries upstream answers (T2.7).
-                let (store, name, mut m) = (self.store.clone(), spec.name.clone(), meta.clone());
-                let checks = self.checks(spec);
-                let processed = tokio::task::spawn_blocking(move || {
-                    let r = accept_body(&store, &name, &mut m, same_source, &data, now, checks);
-                    (r, m)
-                })
-                .await;
-                match processed {
-                    Ok((r, m)) => {
-                        meta = m;
-                        r.map_or_else(Outcome::Failed, |outcome| {
-                            // A held body keeps the stored copy's validators, so the next
-                            // conditional GET fetches it again rather than answering 304.
-                            if !matches!(outcome, Outcome::Held(_)) {
-                                meta.source.clone_from(&key);
-                                meta.etag = etag;
-                                meta.last_modified = last_modified;
-                            }
-                            outcome
-                        })
+        // REQ: FLT-901 (design 2.4): a URL list streams to disk and is checked as it arrives, so
+        // a 40 MB source is never held in memory; a file or inline list is small and is buffered.
+        let outcome = if matches!(spec.source, ListSource::Url(_) | ListSource::UrlMeta { .. }) {
+            match self
+                .refresh_streamed(spec, &cond, &mut meta, same_source, now)
+                .await
+            {
+                Ok((outcome, etag, last_modified)) => {
+                    if !matches!(outcome, Outcome::Held(_)) {
+                        meta.source.clone_from(&key);
+                        meta.etag = etag;
+                        meta.last_modified = last_modified;
                     }
-                    Err(e) => Outcome::Failed(format!("processing the list failed: {e}")),
+                    outcome
                 }
+                Err(e) => Outcome::Failed(e),
             }
-            Err(e) => Outcome::Failed(e),
+        } else {
+            self.refresh_buffered(spec, &mut meta, same_source, now, &key)
+                .await
         };
 
         match &outcome {
@@ -391,12 +494,273 @@ impl Fetcher {
         outcome
     }
 
+    /// A file or inline list: small, read whole and checked in memory.
+    async fn refresh_buffered(
+        &self,
+        spec: &ListSpec,
+        meta: &mut ListMeta,
+        same_source: bool,
+        now: u64,
+        key: &str,
+    ) -> Outcome {
+        let fetched = match &spec.source {
+            ListSource::Url(_) | ListSource::UrlMeta { .. } => {
+                Err("internal: a URL list is fetched as a stream".to_owned())
+            }
+            ListSource::Path(path) => read_file(path, spec.max_bytes).await,
+            ListSource::Inline(rules) => {
+                let mut text = rules.join("\n");
+                text.push('\n');
+                Ok(Response::Body {
+                    data: text.into_bytes(),
+                    etag: None,
+                    last_modified: None,
+                })
+            }
+        };
+
+        match fetched {
+            Ok(Response::NotModified) if same_source => Outcome::Unchanged,
+            Ok(Response::NotModified) => {
+                Outcome::Failed("server answered 304 but no copy is stored".to_owned())
+            }
+            Ok(Response::Body {
+                data,
+                etag,
+                last_modified,
+            }) => {
+                // Hashing, checking, and zstd-compressing a large list takes hundreds of ms:
+                // never on a runtime worker, which also carries upstream answers (T2.7).
+                let (store, name, mut m) = (self.store.clone(), spec.name.clone(), meta.clone());
+                let checks = self.checks(spec);
+                let processed = tokio::task::spawn_blocking(move || {
+                    let r = accept_body(&store, &name, &mut m, same_source, &data, now, checks);
+                    (r, m)
+                })
+                .await;
+                match processed {
+                    Ok((r, m)) => {
+                        *meta = m;
+                        r.map_or_else(Outcome::Failed, |outcome| {
+                            // A held body keeps the stored copy's validators, so the next
+                            // conditional GET fetches it again rather than answering 304.
+                            if !matches!(outcome, Outcome::Held(_)) {
+                                meta.source.clone_from(&key.to_owned());
+                                meta.etag = etag;
+                                meta.last_modified = last_modified;
+                            }
+                            outcome
+                        })
+                    }
+                    Err(e) => Outcome::Failed(format!("processing the list failed: {e}")),
+                }
+            }
+            Err(e) => Outcome::Failed(e),
+        }
+    }
+
+    /// REQ: FLT-901: fetches a URL list into a spool on disk and decides whether to keep it.
+    /// The checks are the buffered ones (empty or HTML body, too many invalid lines, unchanged,
+    /// shrunk), made from what the spool counted as the body arrived. On success the temp file
+    /// replaces the stored source; otherwise it is deleted.
+    async fn refresh_streamed(
+        &self,
+        spec: &ListSpec,
+        cond: &Conditional,
+        meta: &mut ListMeta,
+        same_source: bool,
+        now: u64,
+    ) -> Result<(Outcome, Option<String>, Option<String>), String> {
+        let (url, cond) = match &spec.source {
+            ListSource::Url(u) => (u.clone(), cond.clone()),
+            // The file name changes with every update, so a validator never applies.
+            ListSource::UrlMeta { meta_url, prefix } => (
+                self.resolve_meta(&spec.name, meta_url, prefix).await?,
+                Conditional::default(),
+            ),
+            _ => return Err("internal: not a URL list".to_owned()),
+        };
+        let mut spool = spool::Spool::new(self.store.spool_path(&spec.name));
+        let got = self
+            .download_into(&spec.name, &url, &cond, spec.max_bytes, &mut spool)
+            .await;
+        let (etag, last_modified) = match got {
+            Err(e) => {
+                spool.discard();
+                return Err(e);
+            }
+            Ok(Streamed::NotModified) => {
+                spool.discard();
+                return if same_source {
+                    Ok((Outcome::Unchanged, None, None))
+                } else {
+                    Err("server answered 304 but no copy is stored".to_owned())
+                };
+            }
+            Ok(Streamed::Body {
+                etag,
+                last_modified,
+            }) => (etag, last_modified),
+        };
+        let finished = tokio::task::spawn_blocking(move || spool.finish())
+            .await
+            .map_err(|e| format!("processing the list failed: {e}"))?;
+        let (spooled, spool) = finished.map_err(|e| format!("cannot store source: {e}"))?;
+        let checks = self.checks(spec);
+        let decided = (|| {
+            sanity_check_head(&spooled.head, spooled.bytes)?;
+            if spooled.invalid > 0
+                && spooled.invalid * 100
+                    > (spooled.rules + spooled.invalid) * u64::from(checks.max_invalid_percent)
+            {
+                return Err(format!(
+                    "not a usable list: {} rules, {} invalid lines (first: {})",
+                    spooled.rules, spooled.invalid, spooled.first_invalid
+                ));
+            }
+            if same_source && meta.content_hash.as_deref() == Some(spooled.hash.as_str()) {
+                return Ok(Outcome::Unchanged);
+            }
+            // REQ: FLT-004 (ADR-147): a list that suddenly lost most of its lines waits for the
+            // source to serve the same content again.
+            if same_source
+                && meta.lines >= SHRINK_MIN_LINES
+                && spooled.lines.saturating_mul(100)
+                    < meta
+                        .lines
+                        .saturating_mul(100 - u64::from(checks.max_shrink_percent.min(100)))
+                && meta.held_hash.as_deref() != Some(spooled.hash.as_str())
+            {
+                meta.held_hash = Some(spooled.hash.clone());
+                return Ok(Outcome::Held(format!(
+                    "it shrank from {} to {} lines, more than [filter] max_shrink_percent ({} %) \
+                     allows; the previous copy stays in use until a later refresh brings the same \
+                     content (\"Refresh now\" accepts it)",
+                    meta.lines, spooled.lines, checks.max_shrink_percent
+                )));
+            }
+            Ok(Outcome::Updated)
+        })();
+        match decided {
+            Ok(Outcome::Updated) => {
+                if meta.held_hash.as_deref() == Some(spooled.hash.as_str()) {
+                    info!(
+                        list = %spec.name,
+                        from = meta.lines,
+                        to = spooled.lines,
+                        "list shrank; the source served the same content again, so it's accepted"
+                    );
+                }
+                spool
+                    .commit(&self.store.src_path(&spec.name))
+                    .map_err(|e| format!("cannot store source: {e}"))?;
+                meta.content_hash = Some(spooled.hash);
+                meta.bytes = spooled.bytes;
+                meta.lines = spooled.lines;
+                meta.last_changed = Some(now);
+                Ok((Outcome::Updated, etag, last_modified))
+            }
+            Ok(other) => {
+                spool.discard();
+                Ok((other, etag, last_modified))
+            }
+            Err(e) => {
+                spool.discard();
+                Err(e)
+            }
+        }
+    }
+
+    /// REQ: FLT-901 (ADR-995 item 1): the current file's URL from a source's small JSON file
+    /// (`blocklist.raw_url`), refused unless it starts with the source's fixed prefix. A refusal
+    /// reads `resolve_refused` in the list's status.
+    async fn resolve_meta(
+        &self,
+        name: &str,
+        meta_url: &str,
+        prefix: &str,
+    ) -> Result<String, String> {
+        let body = match self
+            .download(name, meta_url, &Conditional::default(), RESOLVE_MAX_BYTES)
+            .await?
+        {
+            Response::Body { data, .. } => data,
+            Response::NotModified => return Err("resolve_failed: unexpected 304".to_owned()),
+        };
+        let v: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|e| format!("resolve_failed: {meta_url} is not JSON: {e}"))?;
+        let url = v
+            .pointer("/blocklist/raw_url")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("resolve_failed: {meta_url} has no blocklist.raw_url"))?;
+        let ok = url.strip_prefix(prefix).is_some_and(|r| {
+            !r.is_empty()
+                && !r.contains("..")
+                // A percent sign could spell a dot segment (`%2e%2e`) that the HTTP client resolves.
+                && !r.contains(['\\', '?', '#', '@', '%'])
+                && !r.starts_with('/')
+        });
+        if ok {
+            Ok(url.to_owned())
+        } else {
+            Err(format!(
+                "resolve_refused: {url} is outside {prefix}; the list is not fetched"
+            ))
+        }
+    }
+
+    /// One URL download into `sink` with retries and backoff.
+    async fn download_into(
+        &self,
+        name: &str,
+        url: &str,
+        cond: &Conditional,
+        max_bytes: u64,
+        sink: &mut dyn BodySink,
+    ) -> Result<Streamed, String> {
+        let attempts = u32::from(self.settings.retries) + 1;
+        let mut last = String::new();
+        for attempt in 0..attempts {
+            if attempt > 0 {
+                let delay = backoff(self.settings.backoff, attempt);
+                debug!(
+                    list = name,
+                    attempt,
+                    ?delay,
+                    "retrying list download: {last}"
+                );
+                tokio::time::sleep(delay).await;
+            }
+            match tokio::time::timeout(
+                self.settings.timeout,
+                self.client.get_into(url, cond, max_bytes, sink),
+            )
+            .await
+            {
+                Ok(Ok(resp)) => return Ok(resp),
+                Ok(Err(HttpError { message, retryable })) => {
+                    last = message;
+                    if !retryable {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    last = format!("timed out after {:?}", self.settings.timeout);
+                }
+            }
+        }
+        Err(last)
+    }
+
     /// The checks a download of `spec` must pass.
     fn checks(&self, spec: &ListSpec) -> Checks {
         Checks {
             max_invalid_percent: self.settings.max_invalid_percent,
             // A file or inline list shrinks because someone edited it.
-            max_shrink_percent: if matches!(spec.source, ListSource::Url(_)) {
+            max_shrink_percent: if matches!(
+                spec.source,
+                ListSource::Url(_) | ListSource::UrlMeta { .. }
+            ) {
                 self.settings.max_shrink_percent
             } else {
                 100
@@ -481,7 +845,7 @@ impl Fetcher {
 
             let (due, next) = self.due(&list, unix_now());
             if !due.is_empty() {
-                self.refresh_and_signal(&due, &changed).await;
+                self.refresh_and_signal(&due, &changed, false).await;
                 continue;
             }
             // Wake at the next due time (re-checked at least hourly, in case the clock jumped).
@@ -490,7 +854,11 @@ impl Fetcher {
                 .min(Duration::from_secs(3600));
             tokio::select! {
                 () = tokio::time::sleep(wait) => {}
-                () = self.refresh_now.notified() => self.refresh_and_signal(&list, &changed).await,
+                // REQ: FLT-004 — a refresh asked for: the lists it names (or all), now.
+                () = self.refresh_now.notified() => {
+                    let asked = self.start_asked(&list);
+                    self.refresh_and_signal(&asked, &changed, true).await;
+                }
                 r = specs.changed() => if r.is_err() { return },
             }
         }
@@ -508,6 +876,26 @@ impl Fetcher {
         }
         !removed.is_empty()
     }
+}
+
+/// The largest meta file a source's file name is read from.
+const RESOLVE_MAX_BYTES: u64 = 1 << 20;
+
+/// [`sanity_check`] for a body that was streamed: only its first bytes and its size are known.
+fn sanity_check_head(head: &[u8], total: u64) -> Result<(), String> {
+    if head.len() as u64 == total {
+        return sanity_check(head);
+    }
+    // Longer than the head: only the HTML-page check can be made from the head alone.
+    let start = head
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .map_or(&[][..], |i| &head[i..]);
+    let lower: Vec<u8> = start.iter().take(15).map(u8::to_ascii_lowercase).collect();
+    if lower.starts_with(b"<!doctype html") || lower.starts_with(b"<html") {
+        return Err("got an HTML page, not a list".to_owned());
+    }
+    Ok(())
 }
 
 /// The `[filter]` checks a downloaded body must pass.
@@ -750,6 +1138,19 @@ mod tests {
             .source
             .key();
         assert_eq!(next_attempt(&inline, &m), 0);
+    }
+
+    /// REQ: FLT-004 — only inline rules count as inline: their metadata has no download to age.
+    #[test]
+    fn flt_004_inline_sources_are_recognised() {
+        let meta = |source: ListSource| ListMeta {
+            source: spec(source).source.key(),
+            ..ListMeta::default()
+        };
+        assert!(meta(ListSource::Inline(vec!["||a.com^".into()])).is_inline());
+        assert!(!meta(ListSource::Url("https://example.com/inline.txt".into())).is_inline());
+        assert!(!meta(ListSource::Path("inline:a.txt".into())).is_inline());
+        assert!(!ListMeta::default().is_inline());
     }
 
     #[test]

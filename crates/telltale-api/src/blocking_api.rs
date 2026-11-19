@@ -94,51 +94,69 @@ async fn pause(
             .into_response();
     };
     let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
-    let r = req.clone();
-    let b2: Arc<dyn Backend> = Arc::clone(&backend);
-    let result = tokio::task::spawn_blocking(move || {
-        b2.blocking_pause(r.group.as_deref(), minutes, r.node.as_deref())
-    })
-    .await;
-    match result {
-        Ok(Ok(items)) => {
-            auth.record(
-                &actor,
-                "blocking.pause",
-                req.group.as_deref().unwrap_or("*"),
-                &serde_json::json!({ "minutes": minutes, "node": req.node }),
-            );
-            // REQ: OBS-033 — a change marker on this node, naming where it applied.
-            let now_ms = backend.now_unix_seconds() * 1000;
-            let who = req
-                .group
-                .as_deref()
-                .map_or_else(|| "everyone".to_owned(), |g| format!("group {g}"));
-            crate::annotations_api::mark(
-                &backend,
-                crate::model::Annotation {
-                    actor: Some(actor.name.clone()),
-                    until: Some(crate::time::format_us(
-                        (now_ms + u64::from(minutes) * 60_000) * 1000,
-                    )),
-                    nodes: items.iter().filter_map(|n| n.node.clone()).collect(),
-                    ..crate::annotations_api::marker(
-                        "blocking.paused",
-                        now_ms,
-                        format!("blocking paused for {who}, {minutes} min"),
-                    )
-                },
-            )
-            .await;
-            Json(Items {
-                missing_nodes: Vec::new(),
-                items,
-            })
-            .into_response()
-        }
-        Ok(Err(e)) => e.into_response(),
-        Err(e) => Problem::internal(format!("blocking pause: {e}")).into_response(),
+    match apply_pause(
+        &backend,
+        &auth,
+        &actor,
+        req.group.as_deref(),
+        minutes,
+        req.node.as_deref(),
+        None,
+    )
+    .await
+    {
+        Ok(items) => Json(Items {
+            missing_nodes: Vec::new(),
+            items,
+        })
+        .into_response(),
+        Err(e) => e.into_response(),
     }
+}
+
+/// REQ: FLT-009, API-005 (T24.10, ADR-961 §5) — the one pause, shared by `POST /blocking/pause`
+/// and the Pi-hole compatible API: the backend call on every node (or `node`), the `blocking.pause`
+/// audit entry (with `via` when it didn't come in through this route), and the change marker.
+pub(crate) async fn apply_pause(
+    backend: &Shared,
+    auth: &Auth,
+    actor: &crate::auth::Actor,
+    group: Option<&str>,
+    minutes: u32,
+    node: Option<&str>,
+    via: Option<&str>,
+) -> Result<Vec<BlockingNode>, Problem> {
+    let b2: Arc<dyn Backend> = Arc::clone(backend);
+    let (g, n) = (group.map(str::to_owned), node.map(str::to_owned));
+    let items =
+        tokio::task::spawn_blocking(move || b2.blocking_pause(g.as_deref(), minutes, n.as_deref()))
+            .await
+            .map_err(|e| Problem::internal(format!("blocking pause: {e}")))??;
+    let mut detail = serde_json::json!({ "minutes": minutes, "node": node });
+    if let (Some(via), Some(o)) = (via, detail.as_object_mut()) {
+        o.insert("via".into(), via.into());
+    }
+    auth.record(actor, "blocking.pause", group.unwrap_or("*"), &detail);
+    // REQ: OBS-033 — a change marker on this node, naming where it applied.
+    let now_ms = backend.now_unix_seconds() * 1000;
+    let who = group.map_or_else(|| "everyone".to_owned(), |g| format!("group {g}"));
+    crate::annotations_api::mark(
+        backend,
+        crate::model::Annotation {
+            actor: Some(actor.name.clone()),
+            until: Some(crate::time::format_us(
+                (now_ms + u64::from(minutes) * 60_000) * 1000,
+            )),
+            nodes: items.iter().filter_map(|n| n.node.clone()).collect(),
+            ..crate::annotations_api::marker(
+                "blocking.paused",
+                now_ms,
+                format!("blocking paused for {who}, {minutes} min"),
+            )
+        },
+    )
+    .await;
+    Ok(items)
 }
 
 /// Resume blocking.
@@ -167,45 +185,58 @@ async fn resume(
         Err(e) => return e.into_response(),
     };
     let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
-    let r = req.clone();
-    let b2: Arc<dyn Backend> = Arc::clone(&backend);
-    let result = tokio::task::spawn_blocking(move || {
-        b2.blocking_resume(r.group.as_deref(), r.node.as_deref())
-    })
-    .await;
-    match result {
-        Ok(Ok(items)) => {
-            auth.record(
-                &actor,
-                "blocking.resume",
-                req.group.as_deref().unwrap_or("*"),
-                &serde_json::json!({ "node": req.node }),
-            );
-            // REQ: OBS-033 — a change marker on this node, naming where it applied.
-            let who = req
-                .group
-                .as_deref()
-                .map_or_else(|| "every pause".to_owned(), |g| format!("group {g}"));
-            crate::annotations_api::mark(
-                &backend,
-                crate::model::Annotation {
-                    actor: Some(actor.name.clone()),
-                    nodes: items.iter().filter_map(|n| n.node.clone()).collect(),
-                    ..crate::annotations_api::marker(
-                        "blocking.resumed",
-                        backend.now_unix_seconds() * 1000,
-                        format!("blocking resumed ({who})"),
-                    )
-                },
-            )
-            .await;
-            Json(Items {
-                missing_nodes: Vec::new(),
-                items,
-            })
-            .into_response()
-        }
-        Ok(Err(e)) => e.into_response(),
-        Err(e) => Problem::internal(format!("blocking resume: {e}")).into_response(),
+    match apply_resume(
+        &backend,
+        &auth,
+        &actor,
+        req.group.as_deref(),
+        req.node.as_deref(),
+        None,
+    )
+    .await
+    {
+        Ok(items) => Json(Items {
+            missing_nodes: Vec::new(),
+            items,
+        })
+        .into_response(),
+        Err(e) => e.into_response(),
     }
+}
+
+/// REQ: FLT-009, API-005 (T24.10, ADR-961 §5) — the one resume, shared like [`apply_pause`].
+pub(crate) async fn apply_resume(
+    backend: &Shared,
+    auth: &Auth,
+    actor: &crate::auth::Actor,
+    group: Option<&str>,
+    node: Option<&str>,
+    via: Option<&str>,
+) -> Result<Vec<BlockingNode>, Problem> {
+    let b2: Arc<dyn Backend> = Arc::clone(backend);
+    let (g, n) = (group.map(str::to_owned), node.map(str::to_owned));
+    let items = tokio::task::spawn_blocking(move || b2.blocking_resume(g.as_deref(), n.as_deref()))
+        .await
+        .map_err(|e| Problem::internal(format!("blocking resume: {e}")))??;
+    let mut detail = serde_json::json!({ "node": node });
+    if let (Some(via), Some(o)) = (via, detail.as_object_mut()) {
+        o.insert("via".into(), via.into());
+    }
+    auth.record(actor, "blocking.resume", group.unwrap_or("*"), &detail);
+    // REQ: OBS-033 — a change marker on this node, naming where it applied.
+    let who = group.map_or_else(|| "every pause".to_owned(), |g| format!("group {g}"));
+    crate::annotations_api::mark(
+        backend,
+        crate::model::Annotation {
+            actor: Some(actor.name.clone()),
+            nodes: items.iter().filter_map(|n| n.node.clone()).collect(),
+            ..crate::annotations_api::marker(
+                "blocking.resumed",
+                backend.now_unix_seconds() * 1000,
+                format!("blocking resumed ({who})"),
+            )
+        },
+    )
+    .await;
+    Ok(items)
 }

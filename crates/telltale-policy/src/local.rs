@@ -134,6 +134,33 @@ pub fn reverse_name(ip: IpAddr) -> NameBuf {
     NameBuf::from_presentation(&text).unwrap_or_default()
 }
 
+/// REQ: DNS-023 (T22.1) — a device's name as one DNS label: lowercase letters, digits, and
+/// hyphens, at most 63 bytes (`Kitchen Tablet` → `kitchen-tablet`, `Alex's iPhone` →
+/// `alexs-iphone`, `shelly1-ABC123.local` → `shelly1-abc123-local`). Apostrophes are dropped;
+/// anything else that isn't an ASCII letter or digit separates words. `None` when nothing is
+/// left.
+pub fn device_label(name: &str) -> Option<String> {
+    let mut out = String::with_capacity(name.len().min(63));
+    let mut gap = false;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            if gap && !out.is_empty() {
+                out.push('-');
+            }
+            gap = false;
+            out.push(c.to_ascii_lowercase());
+            if out.len() >= 63 {
+                break;
+            }
+        } else if !matches!(c, '\'' | '\u{2019}') {
+            gap = true;
+        }
+    }
+    out.truncate(63);
+    let label = out.trim_end_matches('-');
+    (!label.is_empty()).then(|| label.to_owned())
+}
+
 impl LocalData {
     /// Builds from `[[record]]` entries and `[local] hosts_files`.
     pub fn from_config(cfg: &Config) -> (Self, LoadReport) {
@@ -258,6 +285,23 @@ impl LocalData {
                 self.count += 1;
             }
         }
+    }
+
+    /// REQ: DNS-023 (T22.1, T24.8) — an A or AAAA record for each device address (the name is a
+    /// full DNS name, made with [`device_label`]) and a PTR (`in-addr.arpa` or `ip6.arpa`) for
+    /// each address. The caller settles collisions: at most one name per address and one device
+    /// per name; a name may list several addresses. A name that doesn't parse is skipped.
+    pub fn from_device_names<'a>(
+        names: impl IntoIterator<Item = (&'a str, IpAddr)>,
+        ttl: u32,
+    ) -> Self {
+        let mut d = Self::default();
+        for (name, ip) in names {
+            let rt = if ip.is_ipv4() { "A" } else { "AAAA" };
+            let _ = d.add(name, rt, &ip.to_string(), ttl);
+        }
+        d.generate_ptrs(ttl);
+        d
     }
 
     pub fn len(&self) -> usize {
@@ -398,6 +442,108 @@ mod tests {
             .map(|r| (r.rtype, r.rdata(resp).to_vec()))
             .collect();
         Some((s.rcode, ans, s.header.flags.aa()))
+    }
+
+    /// REQ: DNS-023 (T22.1) — device names become one label each.
+    #[test]
+    fn dns_023_device_label() {
+        let l = |s: &str| device_label(s);
+        assert_eq!(l("Kitchen Tablet").as_deref(), Some("kitchen-tablet"));
+        assert_eq!(l("Alex's iPhone").as_deref(), Some("alexs-iphone"));
+        assert_eq!(l("Alex\u{2019}s iPad").as_deref(), Some("alexs-ipad"));
+        assert_eq!(
+            l("  --Porch_Light (Shelly)--").as_deref(),
+            Some("porch-light-shelly")
+        );
+        assert_eq!(
+            l("shelly1-ABC123.local").as_deref(),
+            Some("shelly1-abc123-local")
+        );
+        assert_eq!(l("Café 2").as_deref(), Some("caf-2"));
+        assert_eq!(l("***"), None);
+        assert_eq!(l(""), None);
+        let long = "a".repeat(70) + " b";
+        assert_eq!(l(&long).map(|s| s.len()), Some(63));
+        let edge = "a".repeat(62) + " b";
+        assert_eq!(
+            l(&edge).as_deref(),
+            Some("a".repeat(62).as_str()),
+            "no trailing hyphen"
+        );
+    }
+
+    /// REQ: DNS-023 (T22.1) — device names answer A, a PTR for the address, NODATA for other
+    /// types, and nothing for names that aren't devices.
+    #[test]
+    fn dns_023_device_names_answer() {
+        let d = LocalData::from_device_names(
+            [
+                (
+                    "kitchen-tablet.home.arpa",
+                    IpAddr::V4(Ipv4Addr::new(192, 0, 2, 21)),
+                ),
+                (
+                    "porch-light.home.arpa",
+                    IpAddr::V4(Ipv4Addr::new(192, 0, 2, 22)),
+                ),
+            ],
+            60,
+        );
+        assert_eq!(d.len(), 4);
+        let (rc, ans, aa) = ask(&d, "Kitchen-Tablet.home.arpa", rtype::A).unwrap();
+        assert_eq!((rc, aa), (rcode::NOERROR, true));
+        assert_eq!(ans, vec![(rtype::A, vec![192, 0, 2, 21])]);
+        let (_, ans, _) = ask(&d, "22.2.0.192.in-addr.arpa", rtype::PTR).unwrap();
+        assert_eq!(
+            ans[0].1,
+            NameBuf::from_presentation("porch-light.home.arpa")
+                .unwrap()
+                .as_wire()
+        );
+        let (rc, ans, _) = ask(&d, "porch-light.home.arpa", rtype::AAAA).unwrap();
+        assert_eq!(rc, rcode::NOERROR);
+        assert!(ans.is_empty(), "NODATA for AAAA");
+        assert!(ask(&d, "nas.home.arpa", rtype::A).is_none());
+        assert!(LocalData::from_device_names([], 60).is_empty());
+    }
+
+    /// REQ: DNS-023 (T24.8) — a device's IPv6 address answers AAAA, its `ip6.arpa` PTR names the
+    /// device, and the device's A record is unaffected (NODATA for the other family).
+    #[test]
+    fn dns_023_device_names_ipv6() {
+        let v6: Ipv6Addr = "fd00:1234::21".parse().unwrap();
+        let d = LocalData::from_device_names(
+            [
+                (
+                    "kitchen-tablet.home.arpa",
+                    IpAddr::V4(Ipv4Addr::new(192, 0, 2, 21)),
+                ),
+                ("kitchen-tablet.home.arpa", IpAddr::V6(v6)),
+            ],
+            60,
+        );
+        // A, AAAA, and one PTR for each address.
+        assert_eq!(d.len(), 4);
+        let (rc, ans, aa) = ask(&d, "kitchen-tablet.home.arpa", rtype::AAAA).unwrap();
+        assert_eq!((rc, aa), (rcode::NOERROR, true));
+        assert_eq!(ans, vec![(rtype::AAAA, v6.octets().to_vec())]);
+        let (_, ans, _) = ask(&d, "kitchen-tablet.home.arpa", rtype::A).unwrap();
+        assert_eq!(ans, vec![(rtype::A, vec![192, 0, 2, 21])]);
+        let nibbles: Vec<String> = v6
+            .octets()
+            .iter()
+            .flat_map(|b| [b >> 4, b & 15])
+            .rev()
+            .map(|n| format!("{n:x}"))
+            .collect();
+        let rev = format!("{}.ip6.arpa", nibbles.join("."));
+        let (_, ans, _) = ask(&d, &rev, rtype::PTR).unwrap();
+        assert_eq!(
+            ans[0].1,
+            NameBuf::from_presentation("kitchen-tablet.home.arpa")
+                .unwrap()
+                .as_wire()
+        );
     }
 
     #[test]

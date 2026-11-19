@@ -13,11 +13,17 @@
 // REQ: NFR-003 — no unsafe outside telltale-net.
 #![forbid(unsafe_code)]
 
+pub mod categories;
+pub mod cmdb;
+pub mod credentials;
+pub mod discovery;
 mod env;
+pub mod guarded;
 pub mod mute;
 pub mod safesearch;
 pub mod schedule;
 pub mod schema;
+pub mod secret_refs;
 pub mod services;
 pub mod shared;
 mod types;
@@ -28,10 +34,18 @@ use std::path::Path;
 
 use toml::{Table, Value};
 
-pub use env::ENV_PREFIX;
+pub use cmdb::CmdbConfig;
+pub use discovery::{
+    CredentialRole, DiscoveryConfig, DiscoverySubnet, SnmpAgent, SnmpCredential, SnmpTable,
+    SnmpVersion, UnifiReads,
+};
+pub use env::{ENV_PREFIX, NEVER_INHERITED};
 pub use schema::*;
-pub use types::{ByteSize, Cidr, SafeString, parse_rfc3339};
-pub use validate::{MAX_LISTS, MatchKey, UPSTREAM_SCHEMES, probe_target, valid_list_name};
+pub use types::{ByteSize, Cidr, SafeString, SourceSpec, parse_rfc3339, parse_source};
+pub use validate::{
+    MAX_LISTS, MatchKey, UPSTREAM_SCHEMES, otlp_errors, probe_target,
+    provider_errors as oidc_provider_errors, sink_errors, valid_list_name,
+};
 
 /// A config problem located by its key path (e.g. `upstream[1].url`, `cache.bogus`).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -136,8 +150,12 @@ impl Loader {
             return Err(errors);
         }
 
-        let config: Config = match serde_path_to_error::deserialize(Value::Table(root)) {
-            Ok(c) => c,
+        let file_set = explicit_keys(&root);
+        let config = match serde_path_to_error::deserialize::<_, Config>(Value::Table(root)) {
+            Ok(mut c) => {
+                c.file_set = file_set;
+                c
+            }
             Err(e) => {
                 let path = e.path().to_string();
                 let path = if path == "." {
@@ -159,6 +177,48 @@ impl Loader {
             Err(errors)
         }
     }
+}
+
+/// REQ: API-010 (ADR-914) — the keys of the sections the API can change that the layers set
+/// explicitly (`special.ddr_name`, ...), so an API value for one of them can be refused or
+/// overridden by the file.
+fn explicit_keys(root: &Table) -> Vec<String> {
+    let mut keys = Vec::new();
+    // REQ: DNS-006, DNS-011, FLT-004, OPS-011, OPS-012, CLU-014 (T27.2, T27.11, ADR-1006) and
+    // OBS-016, OBS-020, OBS-019 (T27.5, ADR-1007) — the sections the API and UI edit: a field a
+    // file sets is read-only there (ADR-040).
+    for section in [
+        "special",
+        "local",
+        "clients",
+        "discovery",
+        "cmdb",
+        "cache",
+        "support",
+        "updates",
+        "dnssec",
+        "filter",
+        "drill",
+        "slo",
+        "probe",
+        "upstream_check",
+    ] {
+        if let Some(Value::Table(t)) = root.get(section) {
+            keys.extend(t.keys().map(|k| format!("{section}.{k}")));
+        }
+    }
+    // REQ: OBS-013, OBS-003, OBS-020 (T27.5, ADR-1007) — the node-managed parts of `[telemetry]`.
+    if let Some(Value::Table(tel)) = root.get("telemetry") {
+        for section in ["anomaly", "qlog", "metrics"] {
+            if let Some(Value::Table(t)) = tel.get(section) {
+                keys.extend(t.keys().map(|k| format!("telemetry.{section}.{k}")));
+            }
+        }
+    }
+    // REQ: API-902 (T27.13, ADR-956 §2) — the guarded settings a file sets: the file wins over a
+    // guarded entry, and the control is locked.
+    keys.extend(guarded::explicit_paths(root));
+    keys
 }
 
 /// Deep-merges `over` into `base`: tables merge recursively, everything else replaces.

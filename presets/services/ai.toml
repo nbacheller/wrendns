@@ -1,0 +1,89 @@
+# TelltaleDNS blocked-services catalog (REQ: FLT-012, FLT-901): AI services and chatbots.
+#
+# Data, not code: compiled into the binary, and offered as the "AI services and chatbots" entry
+# of the content categories (ADR-994 owner decision 6: an authored bundle, no crypto bundle).
+# Written for TelltaleDNS from each service's own public domains (ChatGPT is in messaging.toml);
+# a service's apps may use other names, so this is a good start, not a promise. Corrections welcome.
+
+[[service]]
+id = "claude"
+name = "Claude"
+category = "ai"
+rules = [
+  "||claude.ai^",
+  "||claude.com^",
+  "||anthropic.com^",
+  "||claudeusercontent.com^",
+]
+
+[[service]]
+id = "gemini"
+name = "Gemini"
+category = "ai"
+rules = [
+  "||gemini.google.com^",
+  "||bard.google.com^",
+  "||generativelanguage.googleapis.com^",
+  "||aistudio.google.com^",
+]
+
+[[service]]
+id = "copilot"
+name = "Microsoft Copilot"
+category = "ai"
+rules = [
+  "||copilot.microsoft.com^",
+  "||copilot.cloud.microsoft^",
+]
+
+[[service]]
+id = "perplexity"
+name = "Perplexity"
+category = "ai"
+rules = [
+  "||perplexity.ai^",
+  "||pplx.ai^",
+]
+
+[[service]]
+id = "grok"
+name = "Grok"
+category = "ai"
+rules = [
+  "||grok.com^",
+  "||x.ai^",
+]
+
+[[service]]
+id = "deepseek"
+name = "DeepSeek"
+category = "ai"
+rules = [
+  "||deepseek.com^",
+  "||chat.deepseek.com^",
+]
+
+[[service]]
+id = "mistral"
+name = "Mistral Le Chat"
+category = "ai"
+rules = [
+  "||mistral.ai^",
+]
+
+[[service]]
+id = "metaai"
+name = "Meta AI"
+category = "ai"
+rules = [
+  "||meta.ai^",
+]
+
+[[service]]
+id = "characterai"
+name = "Character.AI"
+category = "ai"
+rules = [
+  "||character.ai^",
+  "||beta.character.ai^",
+]

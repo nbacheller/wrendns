@@ -47,8 +47,10 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     routes(cfg, &groups, &mut r);
     lists(cfg, &mut r);
     clients(cfg, &mut r);
+    router_names(cfg, &mut r);
     rules(cfg, &mut r);
     services(cfg, &mut r);
+    categories(cfg, &mut r);
     schedules(cfg, &mut r);
     anomaly_mutes(cfg, &mut r);
     watchdog(cfg, &mut r);
@@ -65,23 +67,44 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     upstream_check(cfg, &mut r);
     sinks(cfg, &mut r);
     routers(cfg, &mut r);
+    device_names(cfg, &mut r);
+    special_names(cfg, &mut r);
     rewrites(cfg, &mut r);
     zones(cfg, &mut r);
     otlp(cfg, &mut r);
     exclusions(cfg, &mut r);
     simulate(cfg, &mut r);
+    map(cfg, &mut r);
     identify(cfg, &mut r);
     kubernetes(cfg, &mut r);
     drill(cfg, &mut r);
     rollout(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
+    dnssec(cfg, &mut r);
     auth(cfg, &mut r);
     cluster(cfg, &mut r);
+    secret_references(cfg, &mut r);
+    discovery(cfg, &mut r);
+    cmdb(cfg, &mut r);
     r.warnings
 }
 
 // REQ: UPS-011 (T7.16) — TLS settings only for TLS upstreams; both halves of a client
 // certificate; pins that look like base64 SHA-256.
+/// REQ: API-016 (review of T23.7, ADR-921) — whether `pem` holds at least one PEM certificate
+/// that decodes: the BEGIN marker alone isn't one (a body that isn't base64 fails at poll time).
+fn valid_pem_certificate(pem: &str) -> bool {
+    use rustls_pki_types::pem::PemObject;
+    let mut any = false;
+    for c in rustls_pki_types::CertificateDer::pem_slice_iter(pem.as_bytes()) {
+        if c.is_err() {
+            return false;
+        }
+        any = true;
+    }
+    any
+}
+
 fn upstream_tls(u: &crate::schema::Upstream, s: &str, p: &str, r: &mut Report<'_>) {
     let tls = matches!(s, "tls" | "https" | "h3" | "quic");
     for (set, what) in [
@@ -235,6 +258,93 @@ fn rewrites(cfg: &Config, r: &mut Report<'_>) {
     }
 }
 
+// REQ: DNS-023 (T22.1) — device names in DNS: a domain name of at least one label, not mDNS's
+// own `local`, and a TTL a DHCP change can outlive.
+fn device_names(cfg: &Config, r: &mut Report<'_>) {
+    let l = &cfg.local;
+    if let Some(d) = &l.device_domain {
+        let d = d.trim_end_matches('.');
+        if !host_name_ok(d, 200) {
+            r.err(
+                "local.device_domain",
+                "a domain name, e.g. home.arpa (RFC 8375) or lan",
+            );
+        } else if d.eq_ignore_ascii_case("local") {
+            r.err(
+                "local.device_domain",
+                "`local` belongs to mDNS (RFC 6762); use home.arpa",
+            );
+        }
+    }
+    if !(1..=86_400).contains(&l.device_ttl) {
+        r.err("local.device_ttl", "1 to 86400 seconds");
+    }
+    if l.device_mdns && !cfg.clients.mdns {
+        r.warn("local.device_mdns: no effect without [clients] mdns = true");
+    }
+}
+
+/// Letters, digits, and hyphens in labels of 1 to 63 bytes, at most `max` bytes in all.
+fn host_name_ok(d: &str, max: usize) -> bool {
+    !d.is_empty()
+        && d.len() <= max
+        && d.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+}
+
+// REQ: DNS-019 (ADR-904) — DDR's target is the host name the encrypted listeners' certificates
+// carry; without such a listener on this node there is nothing to advertise.
+fn special_names(cfg: &Config, r: &mut Report<'_>) {
+    let Some(name) = &cfg.special.ddr_name else {
+        return;
+    };
+    let name = name.trim_end_matches('.');
+    if !host_name_ok(name, 253) || !name.contains('.') {
+        r.err(
+            "special.ddr_name",
+            "the host name in the encrypted listeners' certificates, e.g. dns.example.com",
+        );
+    } else if !cfg.listen.iter().any(|l| l.proto.needs_tls()) {
+        r.warn(
+            "special.ddr_name: this node has no dot, doh, doh3, or doq listener to advertise; _dns.resolver.arpa gets no data",
+        );
+    }
+}
+
+// REQ: API-016 (T23.7, ADR-921) — the certificate as text: one source of trust, at most
+// 16 KiB, and a PEM certificate.
+fn router_pem(p: &str, x: &crate::schema::RouterConfig, r: &mut Report<'_>) {
+    if let Some(pem) = &x.tls_ca_pem {
+        if x.tls_ca.is_some() {
+            r.err(
+                format!("{p}.tls_ca_pem"),
+                "exclusive with tls_ca: give the certificate one way",
+            );
+        }
+        if pem.len() > 16 * 1024 {
+            r.err(format!("{p}.tls_ca_pem"), "at most 16 KiB");
+        } else if !valid_pem_certificate(pem) {
+            r.err(
+                format!("{p}.tls_ca_pem"),
+                "a PEM certificate (the text between -----BEGIN CERTIFICATE----- and -----END CERTIFICATE-----)",
+            );
+        }
+        if x.tls_insecure_skip_verify {
+            r.err(
+                format!("{p}.tls_ca_pem"),
+                "has no effect with tls_insecure_skip_verify (the certificate isn't checked)",
+            );
+        }
+    }
+}
+
 // REQ: T8.2 — router integrations: unique names, http(s) URLs, the credentials each kind needs.
 fn routers(cfg: &Config, r: &mut Report<'_>) {
     let mut names = HashSet::new();
@@ -249,23 +359,53 @@ fn routers(cfg: &Config, r: &mut Report<'_>) {
                 "an https:// URL, e.g. https://192.168.1.1",
             );
         }
+        // REQ: OPS-014 (ADR-903 §2) — each credential from a file or a stored secret.
+        let key = x.api_key_file.is_some() || x.api_key_ref.is_some();
+        let api_secret = x.api_secret_file.is_some() || x.api_secret_ref.is_some();
+        let password = x.password_file.is_some() || x.password_ref.is_some();
         match x.kind {
             crate::RouterKind::Unifi => {
-                if x.api_key_file.is_none() && (x.username.is_none() || x.password_file.is_none()) {
+                if !key && (x.username.is_none() || !password) {
                     r.err(
                         p.clone(),
-                        "UniFi needs api_key_file, or username and password_file",
+                        "UniFi needs api_key_file (or api_key_ref), or username and password_file (or password_ref)",
                     );
                 }
             }
             crate::RouterKind::Opnsense => {
-                if x.api_key_file.is_none() || x.api_secret_file.is_none() {
-                    r.err(p.clone(), "OPNsense needs api_key_file and api_secret_file");
+                if !key || !api_secret {
+                    r.err(
+                        p.clone(),
+                        "OPNsense needs api_key_file and api_secret_file (or their _ref)",
+                    );
+                }
+            }
+            // REQ: API-012 (T22.3) — a long-lived access token, and nothing UniFi- or
+            // OPNsense-only.
+            crate::RouterKind::HomeAssistant => {
+                if !key {
+                    r.err(
+                        p.clone(),
+                        "Home Assistant needs api_key_file (a file holding a long-lived access token) or api_key_ref",
+                    );
+                }
+                if x.username.is_some() || password || api_secret || x.site.is_some() {
+                    r.err(
+                        p.clone(),
+                        "Home Assistant takes api_key_file or api_key_ref only (not username, a password, an API secret, or site)",
+                    );
                 }
             }
         }
         if x.interval_secs < 30 {
             r.err(format!("{p}.interval_secs"), "at least 30 seconds");
+        }
+        router_pem(&p, x, r);
+        if x.offline_days > 365 {
+            r.err(
+                format!("{p}.offline_days"),
+                "at most 365 days (0: only the connected clients)",
+            );
         }
         if x.tls_insecure_skip_verify {
             r.warn(format!("{p}.tls_insecure_skip_verify: the router's certificate isn't checked (prefer tls_ca, with tls_server_name if the certificate doesn't name the address)"));
@@ -325,6 +465,38 @@ fn exclusions(cfg: &Config, r: &mut Report<'_>) {
     for (what, n) in [("names", x.names.len()), ("clients", x.clients.len())] {
         if n > 1000 {
             r.err(format!("exclusions.{what}"), "at most 1,000");
+        }
+    }
+    // REQ: OBS-903 (T24.35, ADR-1014) — what stays out of the query log only: domains (exact, or
+    // `*.` for everything under), clients as an address, a network, or a device name.
+    for (i, d) in x.log.domains.iter().enumerate() {
+        if !suffix_name_ok(d) {
+            r.err(
+                format!("exclusions.log.domains[{i}]"),
+                format!("`{d}` isn't a domain name (e.g. localhost or *.lan)"),
+            );
+        }
+    }
+    for (i, c) in x.log.clients.iter().enumerate() {
+        let c = c.trim();
+        let looks_numeric = c.contains('/') || c.parse::<std::net::IpAddr>().is_ok();
+        if (looks_numeric && crate::Cidr::parse(c).is_err())
+            || c.is_empty()
+            || c.len() > 128
+            || c.chars().any(char::is_control)
+        {
+            r.err(
+                format!("exclusions.log.clients[{i}]"),
+                format!("`{c}` isn't an address, a network, or a device name"),
+            );
+        }
+    }
+    for (what, n) in [
+        ("domains", x.log.domains.len()),
+        ("clients", x.log.clients.len()),
+    ] {
+        if n > 1000 {
+            r.err(format!("exclusions.log.{what}"), "at most 1,000");
         }
     }
     // REQ: OBS-037 — internal names are domain names too, at most 100.
@@ -531,7 +703,31 @@ fn identify(cfg: &Config, r: &mut Report<'_>) {
 
 // REQ: OBS-006 (T7.17) — OTLP: an http(s) endpoint, a sane interval.
 fn otlp(cfg: &Config, r: &mut Report<'_>) {
-    let o = &cfg.telemetry.otlp;
+    otlp_one(&cfg.telemetry.otlp, r);
+    // REQ: OBS-007 (T7.18)
+    let d = &cfg.telemetry.dnstap;
+    if d.socket.is_some() && d.address.is_some() {
+        r.err("telemetry.dnstap", "set socket or address, not both");
+    }
+    if let Some(a) = &d.address {
+        let hp = a.strip_prefix("tcp://").unwrap_or(a);
+        if !hp
+            .rsplit_once(':')
+            .is_some_and(|(h, p)| !h.is_empty() && p.parse::<u16>().is_ok())
+        {
+            r.err("telemetry.dnstap.address", "use tcp://host:port");
+        }
+    }
+    if d.sample_every == 0 {
+        r.err("telemetry.dnstap.sample_every", "at least 1 (every query)");
+    }
+    if d.buffer < 100 {
+        r.err("telemetry.dnstap.buffer", "at least 100");
+    }
+}
+
+/// The OTLP export's own rules (the endpoint, the interval, the trace settings).
+fn otlp_one(o: &crate::OtlpConfig, r: &mut Report<'_>) {
     if let Some(e) = &o.endpoint
         && !(e.starts_with("http://") || e.starts_with("https://"))
     {
@@ -557,29 +753,21 @@ fn otlp(cfg: &Config, r: &mut Report<'_>) {
             }
         }
     }
-    // REQ: OBS-007 (T7.18)
-    let d = &cfg.telemetry.dnstap;
-    if d.socket.is_some() && d.address.is_some() {
-        r.err("telemetry.dnstap", "set socket or address, not both");
-    }
-    if let Some(a) = &d.address {
-        let hp = a.strip_prefix("tcp://").unwrap_or(a);
-        if !hp
-            .rsplit_once(':')
-            .is_some_and(|(h, p)| !h.is_empty() && p.parse::<u16>().is_ok())
-        {
-            r.err("telemetry.dnstap.address", "use tcp://host:port");
-        }
-    }
-    if d.sample_every == 0 {
-        r.err("telemetry.dnstap.sample_every", "at least 1 (every query)");
-    }
-    if d.buffer < 100 {
-        r.err("telemetry.dnstap.buffer", "at least 100");
-    }
 }
 
 fn sinks(cfg: &Config, r: &mut Report<'_>) {
+    let mut names = HashSet::new();
+    for (i, s) in cfg.telemetry.sink.iter().enumerate() {
+        let p = format!("telemetry.sink[{i}]");
+        if s.name.is_empty() || !names.insert(s.name.as_str()) {
+            r.err(format!("{p}.name"), "must be unique and not empty");
+        }
+        sink_one(s, &p, r);
+    }
+}
+
+/// One sink's own settings (everything but the uniqueness of its name).
+fn sink_one(s: &crate::SinkConfig, p: &str, r: &mut Report<'_>) {
     use crate::SinkKind;
     const STATUSES: &[&str] = &[
         "cached",
@@ -595,85 +783,78 @@ fn sinks(cfg: &Config, r: &mut Report<'_>) {
         "servfail",
         "dropped",
     ];
-    let mut names = HashSet::new();
-    for (i, s) in cfg.telemetry.sink.iter().enumerate() {
-        let p = format!("telemetry.sink[{i}]");
-        if s.name.is_empty() || !names.insert(s.name.as_str()) {
-            r.err(format!("{p}.name"), "must be unique and not empty");
-        }
-        match s.kind {
-            SinkKind::File => {
-                if s.path.as_ref().is_none_or(|x| x.is_empty()) {
-                    r.err(format!("{p}.path"), "a file sink needs `path`");
-                }
-                if s.max_bytes.bytes() < 1024 * 1024 {
-                    r.err(format!("{p}.max_bytes"), "at least 1 MiB");
-                }
+    match s.kind {
+        SinkKind::File => {
+            if s.path.as_ref().is_none_or(|x| x.is_empty()) {
+                r.err(format!("{p}.path"), "a file sink needs `path`");
             }
-            SinkKind::Syslog => {
-                let a = s.address.as_ref().map_or("", |x| x.as_str());
-                let ok = a
-                    .strip_prefix("udp://")
-                    .or_else(|| a.strip_prefix("tcp://"))
-                    .or_else(|| a.strip_prefix("tls://"))
-                    .is_some_and(|hp| {
-                        hp.rsplit_once(':')
-                            .is_some_and(|(h, port)| !h.is_empty() && port.parse::<u16>().is_ok())
-                    });
-                if !ok {
-                    r.err(
-                        format!("{p}.address"),
-                        "use udp://host:port, tcp://host:port, or tls://host:port",
-                    );
-                }
-                // REQ: OBS-010 (T9.11)
-                if s.tls_ca.is_some() && !a.starts_with("tls://") {
-                    r.err(format!("{p}.tls_ca"), "only for tls:// syslog addresses");
-                }
-                if s.facility > 23 {
-                    r.err(format!("{p}.facility"), "a syslog facility from 0 to 23");
-                }
-            }
-            SinkKind::Webhook => {
-                let u = s.url.as_ref().map_or("", |x| x.as_str());
-                if !(u.starts_with("https://") || u.starts_with("http://")) {
-                    r.err(
-                        format!("{p}.url"),
-                        "a webhook sink needs an http:// or https:// `url`",
-                    );
-                }
-                if s.batch == 0 || s.batch > 10_000 {
-                    r.err(format!("{p}.batch"), "from 1 to 10000");
-                }
-                if s.flush_secs == 0 {
-                    r.err(format!("{p}.flush_secs"), "at least 1");
-                }
-                // REQ: OBS-010 (T9.11)
-                if s.spill_max_bytes.is_some_and(|b| b.bytes() < 1024 * 1024) {
-                    r.err(format!("{p}.spill_max_bytes"), "at least 1 MiB");
-                }
+            if s.max_bytes.bytes() < 1024 * 1024 {
+                r.err(format!("{p}.max_bytes"), "at least 1 MiB");
             }
         }
-        if s.spill_max_bytes.is_some() && s.kind != SinkKind::Webhook {
-            r.err(format!("{p}.spill_max_bytes"), "only for webhook sinks");
-        }
-        if s.format == crate::SinkFormat::OtlpLogs && s.kind != SinkKind::Webhook {
-            r.err(format!("{p}.format"), "otlp_logs is for webhook sinks");
-        }
-        if s.max_buffer < 100 {
-            r.err(format!("{p}.max_buffer"), "at least 100");
-        }
-        for (j, st) in s.statuses.iter().enumerate() {
-            if !STATUSES.contains(&st.as_str()) {
+        SinkKind::Syslog => {
+            let a = s.address.as_ref().map_or("", |x| x.as_str());
+            let ok = a
+                .strip_prefix("udp://")
+                .or_else(|| a.strip_prefix("tcp://"))
+                .or_else(|| a.strip_prefix("tls://"))
+                .is_some_and(|hp| {
+                    hp.rsplit_once(':')
+                        .is_some_and(|(h, port)| !h.is_empty() && port.parse::<u16>().is_ok())
+                });
+            if !ok {
                 r.err(
-                    format!("{p}.statuses[{j}]"),
-                    format!(
-                        "unknown status `{}` (one of {})",
-                        st.as_str(),
-                        STATUSES.join(", ")
-                    ),
+                    format!("{p}.address"),
+                    "use udp://host:port, tcp://host:port, or tls://host:port",
                 );
             }
+            // REQ: OBS-010 (T9.11)
+            if s.tls_ca.is_some() && !a.starts_with("tls://") {
+                r.err(format!("{p}.tls_ca"), "only for tls:// syslog addresses");
+            }
+            if s.facility > 23 {
+                r.err(format!("{p}.facility"), "a syslog facility from 0 to 23");
+            }
+        }
+        SinkKind::Webhook => {
+            let u = s.url.as_ref().map_or("", |x| x.as_str());
+            if !(u.starts_with("https://") || u.starts_with("http://")) {
+                r.err(
+                    format!("{p}.url"),
+                    "a webhook sink needs an http:// or https:// `url`",
+                );
+            }
+            if s.batch == 0 || s.batch > 10_000 {
+                r.err(format!("{p}.batch"), "from 1 to 10000");
+            }
+            if s.flush_secs == 0 {
+                r.err(format!("{p}.flush_secs"), "at least 1");
+            }
+            // REQ: OBS-010 (T9.11)
+            if s.spill_max_bytes.is_some_and(|b| b.bytes() < 1024 * 1024) {
+                r.err(format!("{p}.spill_max_bytes"), "at least 1 MiB");
+            }
+        }
+    }
+    if s.spill_max_bytes.is_some() && s.kind != SinkKind::Webhook {
+        r.err(format!("{p}.spill_max_bytes"), "only for webhook sinks");
+    }
+    if s.format == crate::SinkFormat::OtlpLogs && s.kind != SinkKind::Webhook {
+        r.err(format!("{p}.format"), "otlp_logs is for webhook sinks");
+    }
+    if s.max_buffer < 100 {
+        r.err(format!("{p}.max_buffer"), "at least 100");
+    }
+    for (j, st) in s.statuses.iter().enumerate() {
+        if !STATUSES.contains(&st.as_str()) {
+            r.err(
+                format!("{p}.statuses[{j}]"),
+                format!(
+                    "unknown status `{}` (one of {})",
+                    st.as_str(),
+                    STATUSES.join(", ")
+                ),
+            );
         }
     }
 }
@@ -709,10 +890,11 @@ fn alerts(cfg: &Config, r: &mut Report<'_>) {
             if d.to.is_empty() || d.to.iter().any(|t| !t.as_str().contains('@')) {
                 r.err(format!("{p}.to"), "one or more email addresses");
             }
-            if d.username.is_some() != d.password_file.is_some() {
+            // REQ: OPS-014 (ADR-903 §2) — the password from a file or a stored secret.
+            if d.username.is_some() != (d.password_file.is_some() || d.password_ref.is_some()) {
                 r.err(
                     format!("{p}.password_file"),
-                    "username and password_file go together",
+                    "username and password_file (or password_ref) go together",
                 );
             }
             if d.username.is_some() && u.starts_with("smtp+insecure://") {
@@ -748,6 +930,13 @@ fn alerts(cfg: &Config, r: &mut Report<'_>) {
                 && !(1.0..=365.0).contains(&t)
             {
                 r.err(format!("{p}.threshold"), "days from 1 to 365");
+            }
+        } else if x.when == crate::schema::AlertWhen::PrimaryUnreachable {
+            // REQ: OBS-010 (T24.5, fork #2) — seconds without reaching the primary.
+            if let Some(t) = x.threshold
+                && !(15.0..=86_400.0).contains(&t)
+            {
+                r.err(format!("{p}.threshold"), "seconds from 15 to 86400");
             }
         } else if let Some(t) = x.threshold
             && !(0.0..=100.0).contains(&t)
@@ -996,6 +1185,89 @@ fn services(cfg: &Config, r: &mut Report<'_>) {
     }
 }
 
+// REQ: FLT-901, FLT-902 (T24.29, ADR-994, ADR-995) — the `cat-` prefix is the catalog's, a group's
+// content and safe-search engines name things that exist. A category ID this version does not
+// know is not an error (a newer node may have written it: it is ignored and reported).
+fn categories(cfg: &Config, r: &mut Report<'_>) {
+    let cat = crate::categories::catalog();
+    for (i, l) in cfg.list.iter().enumerate() {
+        let name = l.name.as_str();
+        if !crate::categories::is_category_list(name) {
+            continue;
+        }
+        let p = format!("list[{i}]");
+        if l.url.is_some() || l.path.is_some() || !l.rules.is_empty() {
+            r.err(
+                format!("{p}.name"),
+                format!(
+                    "names starting with `{}` are kept for category lists, which take their source from the catalog (only `mode` can be set on one)",
+                    crate::categories::PREFIX
+                ),
+            );
+        } else if l.kind != crate::schema::ListKind::Block
+            || !l.enabled
+            || l.refresh_secs.is_some()
+            || l.max_bytes.is_some()
+            || l.stale_after_days.is_some()
+        {
+            r.err(
+                &p,
+                "a category list can only be set to `mode` (enforce or shadow)",
+            );
+        } else if cat.source_of_list(name).is_none() {
+            r.warn(format!(
+                "{p}: no catalog source for `{name}` in this version; ignored"
+            ));
+        }
+    }
+    let engines: Vec<&str> = crate::safesearch::engines()
+        .iter()
+        .map(|e| e.id.as_str())
+        .collect();
+    for (i, g) in cfg.group.iter().enumerate() {
+        let p = format!("group[{i}]");
+        for (j, e) in g.safe_search_engines.iter().enumerate() {
+            if !engines.contains(&e.as_str()) {
+                r.err(
+                    format!("{p}.safe_search_engines[{j}]"),
+                    format!("no engine `{e}` (use {})", engines.join(", ")),
+                );
+            }
+        }
+        let Some(c) = &g.content else { continue };
+        for (j, id) in c.categories.iter().enumerate() {
+            if let Some(known) = cat.category(id) {
+                if known.kind == crate::categories::CategoryKind::Service {
+                    r.err(
+                        format!("{p}.content.categories[{j}]"),
+                        format!("`{id}` is a bundle of services: use `blocked_services` instead"),
+                    );
+                }
+            } else {
+                r.warn(format!(
+                    "{p}.content.categories[{j}]: no category `{id}` in this version; ignored"
+                ));
+            }
+        }
+        for (id, tier) in &c.tiers {
+            match cat.category(id) {
+                Some(k) if k.tier_from.is_some() => r.err(
+                    format!("{p}.content.tiers.{id}"),
+                    "the size of Ad Block is `[filter] ads_tier`",
+                ),
+                Some(k) if !k.tier.iter().any(|t| t.id == *tier) => r.err(
+                    format!("{p}.content.tiers.{id}"),
+                    format!("`{id}` has no tier `{tier}`"),
+                ),
+                _ => {}
+            }
+        }
+    }
+    if cfg.filter.entry_budget == 0 {
+        r.err("filter.entry_budget", "must be at least 1");
+    }
+}
+
 // REQ: FLT-005 (T6.12, ADR-067) — quick rules: a real domain, known groups, devices that are
 // named devices or addresses, a readable expiry, unique IDs, and at most MAX_RULES.
 fn rules(cfg: &Config, r: &mut Report<'_>) {
@@ -1042,10 +1314,12 @@ fn rules(cfg: &Config, r: &mut Report<'_>) {
         for (j, dev) in rule.devices.iter().enumerate() {
             let known = devices.contains(&dev.to_ascii_lowercase());
             let address = crate::Cidr::parse(dev).is_ok();
-            if !known && !address {
+            // REQ: FLT-005 (T24.9, ADR-973) — a router's name for the device.
+            let router_name = matches!(MatchKey::parse(dev), Ok(MatchKey::Hostname(_)));
+            if !known && !address && !router_name {
                 r.err(
                     format!("{p}.devices[{j}]"),
-                    format!("`{dev}` is neither a device name nor an IP or CIDR"),
+                    format!("`{dev}` is neither a device name, an IP or CIDR, nor hostname:<router name>"),
                 );
             }
         }
@@ -1184,6 +1458,10 @@ fn auth(cfg: &Config, r: &mut Report<'_>) {
             ),
         }
     }
+    // REQ: API-902 (ADR-956 §3) — the confirmation window of a guarded address change.
+    if !(30..=600).contains(&cfg.api.confirm_window_secs) {
+        r.err("api.confirm_window_secs", "must be 30 to 600 seconds");
+    }
     oidc(&a.oidc, r);
 }
 
@@ -1223,44 +1501,123 @@ fn oidc(o: &crate::OidcConfig, r: &mut Report<'_>) {
     let mut ids = HashSet::new();
     for (n, p) in o.provider.iter().enumerate() {
         let at = format!("auth.oidc.provider[{n}]");
-        let id = p.id.as_str();
-        if id.is_empty()
-            || id.len() > 32
-            || !id
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        {
-            r.err(format!("{at}.id"), "1-32 lowercase letters, digits, or -");
-        }
-        if !ids.insert(id) {
-            r.err(format!("{at}.id"), format!("duplicate provider `{id}`"));
-        }
-        let issuer = p.issuer.as_str();
-        if !(issuer.starts_with("https://") || issuer.starts_with("http://")) {
-            r.err(format!("{at}.issuer"), "must be an http(s) URL");
-        } else if issuer.starts_with("http://") {
-            r.warn(format!(
-                "{at}.issuer: plain HTTP is only safe for local testing"
-            ));
-        }
-        if p.client_id.is_empty() {
-            r.err(format!("{at}.client_id"), "must not be empty");
-        }
-        if p.client_secret.is_some() && p.client_secret_file.is_some() {
+        provider(p, &at, r);
+        if !ids.insert(p.id.as_str()) {
             r.err(
-                format!("{at}.client_secret_file"),
-                "set client_secret or client_secret_file, not both",
+                format!("{at}.id"),
+                format!("duplicate provider `{}`", p.id.as_str()),
             );
         }
-        if !p.scopes.iter().any(|s| s.as_str() == "openid") {
-            r.err(format!("{at}.scopes"), "must include `openid`");
+    }
+}
+
+/// One provider's own settings (the checks that don't look at the rest of the configuration).
+fn provider(p: &crate::OidcProvider, at: &str, r: &mut Report<'_>) {
+    let id = p.id.as_str();
+    if id.is_empty()
+        || id.len() > 32
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        r.err(format!("{at}.id"), "1-32 lowercase letters, digits, or -");
+    }
+    let issuer = p.issuer.as_str();
+    if !(issuer.starts_with("https://") || issuer.starts_with("http://")) {
+        r.err(format!("{at}.issuer"), "must be an http(s) URL");
+    } else if issuer.starts_with("http://") {
+        r.warn(format!(
+            "{at}.issuer: plain HTTP is only safe for local testing"
+        ));
+    }
+    if p.client_id.is_empty() {
+        r.err(format!("{at}.client_id"), "must not be empty");
+    }
+    if !p.scopes.iter().any(|s| s.as_str() == "openid") {
+        r.err(format!("{at}.scopes"), "must include `openid`");
+    }
+    if p.role.is_empty() && p.default_role.is_none() {
+        r.warn(format!(
+            "{at}: no [[...role]] rules and no default_role: nobody can sign in with `{id}`"
+        ));
+    }
+}
+
+/// REQ: API-016 (T23.11) — the problems with one event sink on its own (a sink made in the UI),
+/// as messages: the rules `validate_config` applies to a file's sinks, minus the uniqueness of
+/// its name across the list.
+pub fn sink_errors(s: &crate::SinkConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut report = Report {
+        errors: &mut errors,
+        warnings: Vec::new(),
+    };
+    if s.name.is_empty() {
+        report.err("sink.name", "must not be empty");
+    }
+    sink_one(s, "sink", &mut report);
+    if let Some(n) = s.token_ref.as_ref()
+        && !crate::secret_refs::valid_name(n.as_str())
+    {
+        report.err("sink.token_ref", "not a valid stored secret name");
+    }
+    if s.token_ref.is_some() && s.token_file.is_some() {
+        report.err(
+            "sink.token_ref",
+            "set one of token_file, token_ref, not both",
+        );
+    }
+    errors.iter().map(ToString::to_string).collect()
+}
+
+/// REQ: API-016 (T23.11) — the problems with an OTLP export on its own (the one made in the UI),
+/// as messages.
+pub fn otlp_errors(o: &crate::OtlpConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut report = Report {
+        errors: &mut errors,
+        warnings: Vec::new(),
+    };
+    otlp_one(o, &mut report);
+    for (h, n) in &o.header_refs {
+        if o.headers.contains_key(h) {
+            report.err(
+                format!("telemetry.otlp.header_refs.{h}"),
+                "the header is in `headers` too: set it in one of them",
+            );
         }
-        if p.role.is_empty() && p.default_role.is_none() {
-            r.warn(format!(
-                "{at}: no [[...role]] rules and no default_role: nobody can sign in with `{id}`"
-            ));
+        if !crate::secret_refs::valid_name(n.as_str()) {
+            report.err(
+                format!("telemetry.otlp.header_refs.{h}"),
+                "not a valid stored secret name",
+            );
+        }
+        if h.is_empty()
+            || !h
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            report.err(
+                format!("telemetry.otlp.header_refs.{h}"),
+                "a header name: letters, digits, `-` or `_`",
+            );
         }
     }
+    errors.iter().map(ToString::to_string).collect()
+}
+
+/// REQ: API-016 (T23.10) — the problems with one OIDC provider on its own (a provider made in
+/// the UI), as messages; warnings are left out. The rules are the ones `validate_config`
+/// applies to a file's providers, minus `public_url` (a node without one shows the provider as
+/// inactive) and the duplicate check across the list.
+pub fn provider_errors(p: &crate::OidcProvider) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut report = Report {
+        errors: &mut errors,
+        warnings: Vec::new(),
+    };
+    provider(p, "provider", &mut report);
+    errors.iter().map(ToString::to_string).collect()
 }
 
 fn node(cfg: &Config, r: &mut Report<'_>) {
@@ -1376,6 +1733,25 @@ fn relay(u: &crate::schema::Upstream, scheme: &str, p: &str, r: &mut Report<'_>)
 }
 
 /// Validates upstreams and returns the set of their names.
+/// REQ: UPS-013 (T24.31, ADR-997) — `source` only where it binds, not through a proxy, and
+/// readable as an address or a network.
+fn source_errors(u: &crate::schema::Upstream, scheme: &str, p: &str, r: &mut Report<'_>) {
+    let Some(src) = &u.source else { return };
+    if !matches!(scheme, "udp" | "tcp" | "tls" | "https") {
+        r.err(
+            format!("{p}.source"),
+            "only for udp://, tcp://, tls://, and https:// upstreams",
+        );
+    } else if u.proxy.is_some() {
+        r.err(
+            format!("{p}.source"),
+            "not with a proxy (the proxy opens the connection, from its own address)",
+        );
+    } else if let Err(e) = crate::parse_source(src) {
+        r.err(format!("{p}.source"), e);
+    }
+}
+
 fn upstreams<'c>(cfg: &'c Config, r: &mut Report<'_>) -> HashSet<&'c str> {
     let mut names = HashSet::new();
     for (i, u) in cfg.upstream.iter().enumerate() {
@@ -1433,6 +1809,7 @@ fn upstreams<'c>(cfg: &'c Config, r: &mut Report<'_>) -> HashSet<&'c str> {
                     r.err(format!("{p}.proxy"), "only for tcp://, tls://, and https:// upstreams, or udp:// through a socks5:// proxy (use tcp:// with an HTTP proxy or Tor)");
                 }
                 relay(u, s, &p, r);
+                source_errors(u, s, &p, r);
                 // REQ: DNS-012 (T7.15)
                 if s != "recursive" && u.recursive != crate::schema::RecursiveConfig::default() {
                     r.err(
@@ -1619,7 +1996,9 @@ fn lists(cfg: &Config, r: &mut Report<'_>) {
         let sources = usize::from(l.url.is_some())
             + usize::from(l.path.is_some())
             + usize::from(!l.rules.is_empty());
-        if sources != 1 {
+        // REQ: FLT-901 (ADR-994 item 9) — `cat-` lists take their source from the catalog; an
+        // entry of that name can only set `mode`. Checked in `categories`.
+        if sources != 1 && !crate::categories::is_category_list(name) {
             r.err(&p, "set exactly one of `url`, `path`, or `rules`");
         }
         // REQ: OBS-018 (T11.5) — only a block list has blocks to count.
@@ -1703,6 +2082,19 @@ pub enum MatchKey {
     Cidr(crate::Cidr),
     Mac([u8; 6]),
     ClientId(String),
+    /// REQ: FLT-006 (T24.9, ADR-973) — the device name a router gave it (a label).
+    Hostname(String),
+}
+
+/// REQ: API-010 (T24.9, ADR-973) — a router name in label form: 1–63 of `a-z`, `0-9`, `-`,
+/// no leading or trailing `-` (`Kitchen Tablet` is `kitchen-tablet`).
+pub(crate) fn router_label_ok(label: &str) -> bool {
+    (1..=63).contains(&label.len())
+        && !label.starts_with('-')
+        && !label.ends_with('-')
+        && label
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 impl MatchKey {
@@ -1721,6 +2113,16 @@ impl MatchKey {
                 return Err(format!("client ID `{id}`: use 1-63 of a-z, 0-9, -"));
             }
             return Ok(Self::ClientId(id));
+        }
+        // REQ: FLT-006 (T24.9, ADR-973) — `hostname:<label>`: a router's name for the device.
+        if let Some(h) = s.strip_prefix("hostname:") {
+            let h = h.to_ascii_lowercase();
+            if !router_label_ok(&h) {
+                return Err(format!(
+                    "router name `{h}`: use the label form, 1-63 of a-z, 0-9 and -, as the name shows on the Clients page (Kitchen Tablet is kitchen-tablet)"
+                ));
+            }
+            return Ok(Self::Hostname(h));
         }
         if let Ok(ip) = s.parse::<std::net::IpAddr>() {
             return Ok(Self::Ip(ip));
@@ -1743,7 +2145,387 @@ impl MatchKey {
     }
 }
 
+// REQ: DSC-001 (T25.2, ADR-907) — `[discovery]`: private IPv4 subnets only (IPv6, 100.64/10 and
+// every other non-RFC 1918 range are refused), a worker memory limit in 32–128 MiB, a node name
+// when one is set, and no enable at privacy level 2 or more (the inventory names devices).
+fn discovery(cfg: &Config, r: &mut Report<'_>) {
+    let d = &cfg.discovery;
+    if let Some(n) = &d.node
+        && n.as_str().trim().is_empty()
+    {
+        r.err("discovery.node", "name a node, or leave it out");
+    }
+    if !(crate::discovery::WORKER_MEMORY_MIN_MIB..=crate::discovery::WORKER_MEMORY_MAX_MIB)
+        .contains(&d.worker_memory_mib)
+    {
+        r.err(
+            "discovery.worker_memory_mib",
+            "from 32 to 128 (MiB per discovery worker)",
+        );
+    }
+    // REQ: DSC-009 (ADR-912) — the `stat/alluser` window.
+    if !(crate::discovery::ALL_USERS_MIN_HOURS..=crate::discovery::ALL_USERS_MAX_HOURS)
+        .contains(&d.unifi_all_users_within_hours)
+    {
+        r.err(
+            "discovery.unifi_all_users_within_hours",
+            "from 1 to 8,760 (hours, up to one year)",
+        );
+    }
+    for (i, s) in d.subnets.iter().enumerate() {
+        let path = format!("discovery.subnet[{i}].cidr");
+        if !matches!(s.cidr.addr, std::net::IpAddr::V4(_)) {
+            r.err(
+                path,
+                format!("`{}`: IPv6 isn't read yet (M25 is IPv4 only)", s.cidr),
+            );
+            continue;
+        }
+        if !crate::discovery::is_rfc1918_network(&s.cidr) {
+            r.err(
+                path,
+                format!("`{}` isn't a private (RFC 1918) network: only 10/8, 172.16/12 and 192.168/16 are read", s.cidr),
+            );
+            continue;
+        }
+        if d.subnets[..i].iter().any(|o| o.cidr == s.cidr) {
+            r.warn(format!("discovery.subnet: `{}` is listed twice", s.cidr));
+        }
+        for (net, what) in crate::discovery::OVERLAP_WARNINGS {
+            if let Ok(n) = crate::Cidr::parse(net)
+                && crate::discovery::overlaps(&s.cidr, &n)
+            {
+                r.warn(format!(
+                    "discovery.subnet `{}` overlaps {what} ({net}): pod and service addresses would be read",
+                    s.cidr
+                ));
+            }
+        }
+    }
+    if d.enabled && cfg.telemetry.qlog.privacy_level >= 2 {
+        r.err(
+            "discovery.enabled",
+            "the network inventory needs client addresses, which telemetry.qlog.privacy_level 2 and 3 hide: set it to 0 or 1 first",
+        );
+    }
+    snmp_credentials(cfg, r);
+    snmp_agents(cfg, r);
+}
+
+// REQ: DSC-901, DSC-906 (T31.2, ADR-1005 sections 1 and 12) — `[cmdb]`: each threshold in its range,
+// and no enable at privacy level 2 or more (the CMDB names devices and holds their addresses, as
+// the network inventory does; at level 1 names are hashed).
+fn cmdb(cfg: &Config, r: &mut Report<'_>) {
+    use crate::cmdb as c;
+    let d = &cfg.cmdb;
+    let ranges: [(&str, u32, u32, u32, &str); 6] = [
+        (
+            "cmdb.disappear_after_days",
+            d.disappear_after_days,
+            c::DISAPPEAR_MIN_DAYS,
+            c::DISAPPEAR_MAX_DAYS,
+            "from 1 to 365 (days)",
+        ),
+        (
+            "cmdb.detect_settle_secs",
+            d.detect_settle_secs,
+            c::SETTLE_MIN_SECS,
+            c::SETTLE_MAX_SECS,
+            "from 60 to 86,400 (seconds)",
+        ),
+        (
+            "cmdb.unconfirmed_alert_hours",
+            d.unconfirmed_alert_hours,
+            c::ALERT_MIN_HOURS,
+            c::ALERT_MAX_HOURS,
+            "from 1 to 720 (hours)",
+        ),
+        (
+            "cmdb.plan_expiry_days",
+            d.plan_expiry_days,
+            c::PLAN_MIN_DAYS,
+            c::PLAN_MAX_DAYS,
+            "from 1 to 365 (days)",
+        ),
+        (
+            "cmdb.history_days",
+            d.history_days,
+            c::HISTORY_MIN_DAYS,
+            c::HISTORY_MAX_DAYS,
+            "from 1 to 730 (days)",
+        ),
+        (
+            "cmdb.macd_retention_days",
+            d.macd_retention_days,
+            c::MACD_MIN_DAYS,
+            c::MACD_MAX_DAYS,
+            "from 1 to 1,825 (days)",
+        ),
+    ];
+    for (path, value, lo, hi, text) in ranges {
+        if !(lo..=hi).contains(&value) {
+            r.err(path, text);
+        }
+    }
+    if d.enabled && cfg.telemetry.qlog.privacy_level >= 2 {
+        r.err(
+            "cmdb.enabled",
+            "the CMDB needs client addresses and names, which telemetry.qlog.privacy_level 2 and 3 hide: set it to 0 or 1 first",
+        );
+    }
+}
+
+// REQ: DSC-004, DSC-007 (T25.6, ADR-908, ADR-1001) — `[[discovery.snmp_credential]]`: a label name,
+// one version's fields, supported protocols only (the refused ones are named with their reason),
+// and secrets as files (an inline value is an unknown key, so it fails to load).
+#[allow(clippy::too_many_lines)] // one flat check of each credential field
+fn snmp_credentials(cfg: &Config, r: &mut Report<'_>) {
+    use crate::discovery::{CredentialRole, SnmpVersion, valid_label};
+    use telltale_snmp::usm::{AuthProto, PrivProto};
+    let d = &cfg.discovery;
+    if d.snmp_credentials.len() > crate::discovery::MAX_AGENTS {
+        r.err(
+            "discovery.snmp_credential",
+            format!("at most {} credentials", crate::discovery::MAX_AGENTS),
+        );
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    for (i, c) in d.snmp_credentials.iter().enumerate() {
+        let p = format!("discovery.snmp_credential[{i}]");
+        let name = c.name.as_str();
+        if !valid_label(name) {
+            r.err(
+                format!("{p}.name"),
+                "1 to 64 letters, digits, `.`, `_` or `-`, and not an IP address",
+            );
+        } else if seen.contains(&name) {
+            r.err(format!("{p}.name"), format!("`{name}` is listed twice"));
+        }
+        seen.push(name);
+        let blank = |v: &Option<crate::SafeString>| v.as_ref().is_none_or(|s| s.trim().is_empty());
+        let files = [
+            ("community_file", &c.community_file),
+            ("auth_password_file", &c.auth_password_file),
+            ("priv_password_file", &c.priv_password_file),
+        ];
+        for (field, v) in files {
+            if let Some(path) = v.as_ref().filter(|s| !s.trim().is_empty()) {
+                let dirs: Vec<&std::path::Path> = cfg
+                    .node
+                    .secret_file_dirs
+                    .iter()
+                    .map(|d| std::path::Path::new(d.as_str()))
+                    .collect();
+                let file = std::path::Path::new(path.as_str());
+                let inside = file.is_absolute()
+                    && !file
+                        .components()
+                        .any(|c| matches!(c, std::path::Component::ParentDir))
+                    && dirs.iter().any(|d| file.starts_with(d));
+                if !inside {
+                    r.warn(format!(
+                        "{p}.{field}: `{path}` isn't under [node] secret_file_dirs, so the poller will refuse to read it"
+                    ));
+                }
+            }
+        }
+        match c.version {
+            SnmpVersion::V2c => {
+                if blank(&c.community_file) {
+                    r.err(
+                        format!("{p}.community_file"),
+                        "a v2c credential names the file that holds its community",
+                    );
+                }
+                for (field, set) in [
+                    ("user", !blank(&c.user)),
+                    ("auth_protocol", !blank(&c.auth_protocol)),
+                    ("auth_password_file", !blank(&c.auth_password_file)),
+                    ("priv_protocol", !blank(&c.priv_protocol)),
+                    ("priv_password_file", !blank(&c.priv_password_file)),
+                ] {
+                    if set {
+                        r.err(format!("{p}.{field}"), "only a v3 credential has this");
+                    }
+                }
+                if c.role == CredentialRole::Host {
+                    r.warn(format!(
+                        "{p}: a v2c host credential sends its community in clear text to every host in the subnet"
+                    ));
+                } else {
+                    r.warn(format!(
+                        "{p}: SNMPv2c sends the community in clear text on the LAN; use v3 where the device has it"
+                    ));
+                }
+            }
+            SnmpVersion::V3 => {
+                if !blank(&c.community_file) {
+                    r.err(
+                        format!("{p}.community_file"),
+                        "only a v2c credential has this",
+                    );
+                }
+                if blank(&c.user) {
+                    r.err(format!("{p}.user"), "a v3 credential names its USM user");
+                }
+                match c.auth_protocol.as_ref().map(crate::SafeString::as_str) {
+                    None | Some("") => r.err(
+                        format!("{p}.auth_protocol"),
+                        "name `sha`, `sha-256`, `sha-384` or `sha-512` (noAuthNoPriv is refused)",
+                    ),
+                    Some(a) => {
+                        if let Err(why) = AuthProto::parse(a) {
+                            r.err(format!("{p}.auth_protocol"), why.reason());
+                        }
+                    }
+                }
+                if blank(&c.auth_password_file) {
+                    r.err(
+                        format!("{p}.auth_password_file"),
+                        "name the file that holds the authentication password",
+                    );
+                }
+                match c.priv_protocol.as_ref().map(crate::SafeString::as_str) {
+                    None | Some("") => {
+                        if !blank(&c.priv_password_file) {
+                            r.err(
+                                format!("{p}.priv_password_file"),
+                                "a privacy password needs `priv_protocol = \"aes-128\"`",
+                            );
+                        }
+                    }
+                    Some(a) => {
+                        if let Err(why) = PrivProto::parse(a) {
+                            r.err(format!("{p}.priv_protocol"), why.reason());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// REQ: DSC-004 (T25.6, ADR-907, ADR-908, ADR-1001) — `[[discovery.snmp_agent]]`: a label that is
+// not an address, an RFC 1918 IPv4 literal, a listed infrastructure credential, an interval of 60 s
+// or more, and 5 to 25 repetitions.
+fn snmp_agents(cfg: &Config, r: &mut Report<'_>) {
+    use crate::discovery::{CredentialRole, valid_label};
+    let d = &cfg.discovery;
+    if d.snmp_agents.len() > crate::discovery::MAX_AGENTS {
+        r.err(
+            "discovery.snmp_agent",
+            format!("at most {} agents", crate::discovery::MAX_AGENTS),
+        );
+    }
+    let mut names: Vec<&str> = Vec::new();
+    let mut addrs: Vec<(std::net::Ipv4Addr, u16)> = Vec::new();
+    for (i, a) in d.snmp_agents.iter().enumerate() {
+        let p = format!("discovery.snmp_agent[{i}]");
+        let name = a.name.as_str();
+        if !valid_label(name) {
+            r.err(
+                format!("{p}.name"),
+                "1 to 64 letters, digits, `.`, `_` or `-`, and not an IP address (the CLI and the API take a name only)",
+            );
+        } else if names.contains(&name) {
+            r.err(format!("{p}.name"), format!("`{name}` is listed twice"));
+        }
+        names.push(name);
+        match a.address.as_str().parse::<std::net::Ipv4Addr>() {
+            Ok(ip) if crate::discovery::is_rfc1918_addr(ip) => {
+                if addrs.contains(&(ip, a.port)) {
+                    r.warn(format!("{p}.address: `{ip}` is listed twice"));
+                }
+                addrs.push((ip, a.port));
+            }
+            Ok(ip) => r.err(
+                format!("{p}.address"),
+                format!("`{ip}` isn't a private (RFC 1918) address: only 10/8, 172.16/12 and 192.168/16 are polled"),
+            ),
+            Err(_) => r.err(
+                format!("{p}.address"),
+                "an IPv4 address as a literal (a host name or an IPv6 address is refused)",
+            ),
+        }
+        if a.port == 0 {
+            r.err(format!("{p}.port"), "1 to 65535");
+        }
+        match d
+            .snmp_credentials
+            .iter()
+            .find(|c| c.name.as_str() == a.credential.as_str())
+        {
+            None => r.warn(format!(
+                "{p}.credential: no `[[discovery.snmp_credential]]` named `{}`, so this agent is skipped",
+                a.credential
+            )),
+            Some(c) if c.role != CredentialRole::Infrastructure => r.err(
+                format!("{p}.credential"),
+                format!(
+                    "`{}` is a host credential: an agent takes an infrastructure credential, so a device on the LAN never receives the gateway's",
+                    a.credential
+                ),
+            ),
+            Some(_) => {}
+        }
+        if !(crate::discovery::AGENT_INTERVAL_MIN_SECS..=crate::discovery::AGENT_INTERVAL_MAX_SECS)
+            .contains(&a.interval_secs)
+        {
+            r.err(format!("{p}.interval_secs"), "from 60 to 86400 seconds");
+        }
+        if !(crate::discovery::MAX_REPETITIONS_MIN..=crate::discovery::MAX_REPETITIONS_MAX)
+            .contains(&a.max_repetitions)
+        {
+            r.err(format!("{p}.max_repetitions"), "from 5 to 25");
+        }
+        if a.tables.is_empty() {
+            r.err(
+                format!("{p}.tables"),
+                "name at least one of arp, ifmib, bridge, lldp",
+            );
+        }
+        let distinct: std::collections::HashSet<_> = a.tables.iter().collect();
+        if distinct.len() != a.tables.len() {
+            r.warn(format!("{p}.tables: a table is listed twice"));
+        }
+    }
+    // A host credential used by no subnet is allowed (T25.7 adds the subnets' side).
+}
+
+/// REQ: API-010 (T24.9, ADR-973) — the groups' router names: label form, and one group each.
+fn router_names(cfg: &Config, r: &mut Report<'_>) {
+    let mut seen = std::collections::HashMap::new();
+    for (i, g) in cfg.group.iter().enumerate() {
+        check_router_names(g, &format!("group[{i}]"), &mut seen, r);
+    }
+}
+
+/// REQ: API-010 (T24.9, ADR-973) — a group's router names: label form, and one group each.
+fn check_router_names<'a>(
+    g: &'a crate::GroupConfig,
+    p: &str,
+    seen: &mut std::collections::HashMap<String, &'a str>,
+    r: &mut Report<'_>,
+) {
+    // REQ: API-010 (ADR-973) — case doesn't matter, as in a `hostname:` key: `KIDS` is `kids`.
+    for (j, n) in g.router_names.iter().enumerate() {
+        let label = n.to_ascii_lowercase();
+        if !router_label_ok(&label) {
+            r.err(
+                format!("{p}.router_names[{j}]"),
+                format!("`{n}`: use the label form, 1-63 of a-z, 0-9 and - (Kitchen Tablet is kitchen-tablet)"),
+            );
+        } else if let Some(other) = seen.insert(label, g.name.as_str()) {
+            r.err(
+                format!("{p}.router_names[{j}]"),
+                format!("`{n}` is already a router name of group `{other}`"),
+            );
+        }
+    }
+}
+
 // REQ: FLT-005, FLT-006 — groups, clients, identification.
+#[allow(clippy::too_many_lines)] // one pass over the groups, one check after another
 fn clients(cfg: &Config, r: &mut Report<'_>) {
     let lists: HashSet<&str> = cfg.list.iter().map(|l| l.name.as_str()).collect();
     let mut groups = HashSet::from(["default"]);
@@ -1758,7 +2540,14 @@ fn clients(cfg: &Config, r: &mut Report<'_>) {
         }
         groups.insert(g.name.as_str());
         for (j, l) in g.lists.iter().flatten().enumerate() {
-            if !lists.contains(l.as_str()) {
+            if crate::categories::is_category_list(l.as_str()) {
+                r.err(
+                    format!("{p}.lists[{j}]"),
+                    format!(
+                        "`{l}` is a category list: use `content.categories` (or `content.ads`)"
+                    ),
+                );
+            } else if !lists.contains(l.as_str()) {
                 r.err(format!("{p}.lists[{j}]"), format!("unknown list `{l}`"));
             }
         }
@@ -1813,7 +2602,7 @@ fn clients(cfg: &Config, r: &mut Report<'_>) {
         if c.match_keys.is_empty() {
             r.err(
                 format!("{p}.match"),
-                "needs at least one IP, CIDR, MAC, or id:",
+                "needs at least one IP, CIDR, MAC, id:, or hostname:",
             );
         }
         for (j, k) in c.match_keys.iter().enumerate() {
@@ -1847,6 +2636,37 @@ fn clients(cfg: &Config, r: &mut Report<'_>) {
     if cfg.clients.neighbor_refresh_secs < 5 {
         r.err("clients.neighbor_refresh_secs", "must be at least 5");
     }
+}
+
+/// REQ: DNS-011 (T27.11, ADR-1006) — a negative trust anchor is a domain name. A malformed one would
+/// match no name, so the operator would think a domain is exempt when it isn't.
+fn dnssec(cfg: &Config, r: &mut Report<'_>) {
+    for (i, a) in cfg.dnssec.negative_trust_anchors.iter().enumerate() {
+        if !valid_domain_name(a.as_str()) {
+            r.err(
+                format!("dnssec.negative_trust_anchors[{i}]"),
+                "must be a domain name, such as lab.example",
+            );
+        }
+    }
+}
+
+/// A DNS name: labels of letters, digits, `-` and `_` (not at a label's edge for `-`), each at most
+/// 63 bytes, at most 253 in all, with an optional trailing dot. The root (empty) is not accepted.
+fn valid_domain_name(name: &str) -> bool {
+    let n = name.strip_suffix('.').unwrap_or(name);
+    if n.is_empty() || n.len() > 253 {
+        return false;
+    }
+    n.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    })
 }
 
 fn cache_and_telemetry(cfg: &Config, r: &mut Report<'_>) {
@@ -1890,6 +2710,16 @@ fn cache_and_telemetry(cfg: &Config, r: &mut Report<'_>) {
         r.warn("access.allowed_networks: allows every address; TelltaleDNS is an open resolver if reachable from the internet");
     }
 
+    if cfg
+        .auth
+        .oidc
+        .allowed_admin_networks
+        .as_ref()
+        .is_some_and(|v| v.iter().any(|n| n.prefix == 0))
+    {
+        r.warn("auth.oidc.allowed_admin_networks: allows every address to sign in with a password while disable_local_login is on");
+    }
+
     let t = &cfg.telemetry;
     if !t.ring_slots.is_power_of_two() || t.ring_slots < 1024 {
         r.err(
@@ -1911,5 +2741,223 @@ fn cache_and_telemetry(cfg: &Config, r: &mut Report<'_>) {
     }
     if t.qlog.flush_interval_secs == 0 {
         r.err("telemetry.qlog.flush_interval_secs", "must be at least 1");
+    }
+    // REQ: OBS-003 (T27.5) — the same upper bounds the settings form shows (tuning.ts), so a
+    // direct API write meets them too.
+    if t.qlog.retention_days > 3650 {
+        r.err("telemetry.qlog.retention_days", "at most 3650 days");
+    }
+    if t.qlog.flush_interval_secs > 3600 {
+        r.err("telemetry.qlog.flush_interval_secs", "at most 3600 seconds");
+    }
+    // REQ: OBS-013 (T27.5) — the anomaly settings and the per-client series' cap are bounded like
+    // the form's fields (tuning.ts): a zero or a huge value is refused, not stored.
+    let a = &t.anomaly;
+    if !(1..=90).contains(&a.learning_days) {
+        r.err("telemetry.anomaly.learning_days", "from 1 to 90 days");
+    }
+    if !(1..=100_000).contains(&a.max_clients) {
+        r.err("telemetry.anomaly.max_clients", "from 1 to 100000 devices");
+    }
+    if !(1..=100_000).contains(&a.nxdomain_per_minute) {
+        r.err(
+            "telemetry.anomaly.nxdomain_per_minute",
+            "from 1 to 100000 answers a minute",
+        );
+    }
+    if !(1..=100).contains(&a.nxdomain_percent) {
+        r.err(
+            "telemetry.anomaly.nxdomain_percent",
+            "from 1 to 100 percent",
+        );
+    }
+    if !(1..=10_000).contains(&t.metrics.per_client_cap) {
+        r.err(
+            "telemetry.metrics.per_client_cap",
+            "from 1 to 10000 devices",
+        );
+    }
+}
+
+/// REQ: OPS-014 (ADR-903 §2) — references to stored secrets: at most one of a credential's inline
+/// value, `_file` and `_ref`; the names a secret may have; a header in `headers` or `header_refs`,
+/// not both. And (REQ: API-014) no credential in the files reads `<redacted>`: that is what a
+/// redacted copy shows (`config check --print`, the TOML to keep in Git), never a value.
+fn secret_references(cfg: &Config, r: &mut Report<'_>) {
+    use crate::credentials::MARKER;
+    use crate::secret_refs::{fields_of, valid_name};
+    const NAME: &str = "a stored secret's name: lowercase letters, digits, `.`, `_` or `-`, starting with a letter or digit, at most 63";
+    fn set(v: &serde_json::Value, k: &str) -> bool {
+        match v.get(k) {
+            None | Some(serde_json::Value::Null) => false,
+            Some(serde_json::Value::String(s)) => !s.is_empty(),
+            Some(_) => true,
+        }
+    }
+    fn each<T: serde::Serialize>(list: &[T]) -> Vec<serde_json::Value> {
+        list.iter()
+            .filter_map(|x| serde_json::to_value(x).ok())
+            .collect()
+    }
+    let mut check = |kind: &str, at: &str, v: &serde_json::Value| {
+        for f in fields_of(kind) {
+            let keys: Vec<&str> = f.inline.into_iter().chain([f.file, f.reference]).collect();
+            if keys.iter().filter(|k| set(v, k)).count() > 1 {
+                r.err(
+                    format!("{at}.{}", f.reference),
+                    format!("set one of {}, not more", keys.join(", ")),
+                );
+            }
+            if let Some(n) = v.get(f.reference).and_then(serde_json::Value::as_str)
+                && !valid_name(n)
+            {
+                r.err(format!("{at}.{}", f.reference), NAME);
+            }
+        }
+    };
+    for (i, v) in each(&cfg.router).iter().enumerate() {
+        check("router", &format!("router[{i}]"), v);
+    }
+    for (i, v) in each(&cfg.alerts.destination).iter().enumerate() {
+        check("alert_destination", &format!("alerts.destination[{i}]"), v);
+    }
+    for (i, v) in each(&cfg.auth.oidc.provider).iter().enumerate() {
+        check("oidc_provider", &format!("auth.oidc.provider[{i}]"), v);
+    }
+    for (i, v) in each(&cfg.telemetry.sink).iter().enumerate() {
+        check("sink", &format!("telemetry.sink[{i}]"), v);
+    }
+    if let Some(g) = &cfg.cluster.git
+        && let Ok(v) = serde_json::to_value(g)
+    {
+        check("git", "cluster.git", &v);
+    }
+    let o = &cfg.telemetry.otlp;
+    for (h, n) in &o.header_refs {
+        if o.headers.contains_key(h) {
+            r.err(
+                format!("telemetry.otlp.header_refs.{h}"),
+                "the header is in `headers` too: set it in one of them",
+            );
+        }
+        if !valid_name(n) {
+            r.err(format!("telemetry.otlp.header_refs.{h}"), NAME);
+        }
+    }
+    // Every credential path (`credentials::PATHS`): values, headers, arguments and URL passwords.
+    if let Ok(v) = serde_json::to_value(cfg) {
+        for p in crate::credentials::marker_paths(&v) {
+            r.err(
+                p,
+                format!(
+                    "`{MARKER}` is what a redacted copy shows, not a value: set the credential itself"
+                ),
+            );
+        }
+    }
+}
+
+// REQ: OBS-901 (T26.2, ADR-958 section 4) — the map's bounds: a rate a Pi can keep up with, and
+// thresholds that are percentages in an order that means something.
+fn map(cfg: &Config, r: &mut Report<'_>) {
+    let m = &cfg.map;
+    if !(10..=2000).contains(&m.event_rate) {
+        r.err("map.event_rate", "from 10 to 2000 lookups per second");
+    }
+    if !(1..=1000).contains(&m.min_sample) {
+        r.err("map.min_sample", "from 1 to 1000 answers");
+    }
+    if let Some(ms) = m.warn_latency_ms
+        && !(1..=60_000).contains(&ms)
+    {
+        r.err("map.warn_latency_ms", "from 1 to 60000 milliseconds");
+    }
+    for (name, v) in [
+        ("warn_slow_pct", m.warn_slow_pct),
+        ("warn_error_pct", m.warn_error_pct),
+        ("error_pct", m.error_pct),
+        ("warn_blocked_pct", m.warn_blocked_pct),
+    ] {
+        if !(1..=100).contains(&v) {
+            r.err(format!("map.{name}"), "a percent from 1 to 100");
+        }
+    }
+    if m.error_pct < m.warn_error_pct {
+        r.err(
+            "map.error_pct",
+            "at least warn_error_pct (red can't come before yellow)",
+        );
+    }
+    map_geoip(&m.geoip, r);
+}
+
+// REQ: OBS-902 (T26.4, ADR-959) - the GeoIP source is HTTPS, a pin is a SHA-256, and the home
+// country is a two-letter code.
+fn map_geoip(g: &crate::MapGeoipConfig, r: &mut Report<'_>) {
+    if let Some(u) = &g.source_url {
+        let u = u.as_str();
+        let host_ok = u
+            .strip_prefix("https://")
+            .and_then(|rest| rest.split(['/', '?', '#']).next())
+            .is_some_and(|h| !h.is_empty() && !h.contains('@'));
+        // The URL is shown to every role: a query string or fragment could carry a token.
+        if !host_ok || u.contains('?') || u.contains('#') {
+            r.err(
+                "map.geoip.source_url",
+                "an https:// URL with a host, no credentials and no query string",
+            );
+        }
+    }
+    if let Some(d) = &g.sha256
+        && !(d.len() == 64 && d.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        r.err("map.geoip.sha256", "64 hexadecimal digits (a SHA-256)");
+    }
+    if let Some(c) = &g.home_country
+        && !(c.len() == 2 && c.bytes().all(|b| b.is_ascii_alphabetic()))
+    {
+        r.err(
+            "map.geoip.home_country",
+            "a two-letter country code such as NL",
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{valid_domain_name, valid_pem_certificate};
+
+    /// REQ: DNS-011 (T27.11) — negative trust anchors are domain names: a trailing dot is fine, a
+    /// label that starts or ends with `-`, an empty label, the root, and spaces are not.
+    #[test]
+    fn dns_011_trust_anchor_must_be_a_domain_name() {
+        assert!(valid_domain_name("lab.example"));
+        assert!(valid_domain_name("lab.example."));
+        assert!(valid_domain_name("my_host.internal"));
+        assert!(!valid_domain_name(""));
+        assert!(!valid_domain_name("."));
+        assert!(!valid_domain_name("lab..example"));
+        assert!(!valid_domain_name("-lab.example"));
+        assert!(!valid_domain_name("lab-.example"));
+        assert!(!valid_domain_name("lab example"));
+        assert!(!valid_domain_name(&format!("{}.example", "a".repeat(64))));
+    }
+
+    /// REQ: API-016 (review of T23.7, ADR-921) — a router's certificate must be PEM that decodes to
+    /// at least one certificate: the BEGIN marker alone, or a body that isn't base64, is refused.
+    #[test]
+    fn api_016_pem_check_needs_a_certificate() {
+        // The base64 of a small DER sequence: the PEM decodes, whatever the certificate inside.
+        assert!(valid_pem_certificate(
+            "-----BEGIN CERTIFICATE-----\nMAMCAQU=\n-----END CERTIFICATE-----\n"
+        ));
+        assert!(!valid_pem_certificate("MIIBfake"));
+        assert!(!valid_pem_certificate(
+            "-----BEGIN CERTIFICATE-----\nnot base64 !!\n-----END CERTIFICATE-----\n"
+        ));
+        assert!(!valid_pem_certificate(
+            "-----BEGIN CERTIFICATE-----\nMAMCAQU=\n"
+        ));
+        assert!(!valid_pem_certificate(""));
     }
 }
