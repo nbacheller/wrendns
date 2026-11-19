@@ -21,44 +21,77 @@ def read(*parts):
 
 
 class Support(unittest.TestCase):
-    page = read("download.html")
+    download = read("download.html")
+    support = read("support.html")
+    thanks = read("thanks.html")
+    full = {
+        "support": {
+            "one_time_url": "https://donate.stripe.com/aaa",
+            "monthly": [{"label": "$3 a month", "url": "https://buy.stripe.com/bbb"}, {"label": "$5 a month", "url": "https://buy.stripe.com/ccc"}],
+        }
+    }
 
-    def test_hidden_while_both_links_are_empty(self):
-        out = build.render_support(self.page, {"support": {"one_time_url": "", "monthly_url": ""}})
-        self.assertNotIn("Support WrenDNS", out.split("<!-- @footer -->")[0].split("<main")[1])
+    def test_hidden_while_no_link_is_set(self):
+        out = build.render_support(self.download, {"support": {"one_time_url": "", "monthly": []}})
+        main = out.split("<!-- @footer -->")[0].split("<main")[1]
+        self.assertNotIn("Support WrenDNS", main)
         self.assertNotIn("@support", out)
+        sup = build.render_support(self.support, {"support": {}})
+        self.assertIn("not set up yet", sup)
+        self.assertNotIn("buy.stripe.com", sup)
 
     def test_one_link_shows_only_that_card(self):
-        out = build.render_support(self.page, {"support": {"one_time_url": "https://buy.stripe.com/test_abc", "monthly_url": ""}})
+        out = build.render_support(self.download, {"support": {"one_time_url": "https://buy.stripe.com/test_abc", "monthly": []}})
         self.assertIn('id="support"', out)
         self.assertIn("https://buy.stripe.com/test_abc", out)
         self.assertIn("Give once", out)
         self.assertNotIn("Give monthly", out)
 
-    def test_both_links_show_both_cards_and_noopener(self):
-        cfg = {"support": {"one_time_url": "https://buy.stripe.com/aaa", "monthly_url": "https://buy.stripe.com/bbb"}}
-        out = build.render_support(self.page, cfg)
+    def test_every_tier_gets_a_button_and_noopener(self):
+        out = build.render_support(self.download, self.full)
         self.assertIn("Give once", out)
         self.assertIn("Give monthly", out)
-        self.assertEqual(out.count('rel="noopener noreferrer"'), 2 + self.page.count('rel="noopener noreferrer"'))
-        self.assertEqual(build.site_config_errors(cfg), [])
+        self.assertIn("$3 a month", out)
+        self.assertIn("$5 a month", out)
+        self.assertEqual(out.count('rel="noopener noreferrer"') - self.download.count('rel="noopener noreferrer"'), 3)
+        self.assertEqual(build.site_config_errors(self.full), [])
+
+    def test_the_tax_statement_is_said_wherever_a_gift_is_offered_and_on_the_thanks_page(self):
+        for page in (self.download, self.support):
+            out = build.render_support(page, self.full)
+            self.assertIn("not a tax-deductible donation", out)
+        self.assertIn("not a tax-deductible donation", build.render_support(self.thanks, self.full))
 
     def test_an_optional_note_is_shown_escaped(self):
-        cfg = {"support": {"one_time_url": "https://buy.stripe.com/aaa", "monthly_url": "", "note": "Paid to <Maker> & Co."}}
-        out = build.render_support(self.page, cfg)
+        cfg = {"support": {"one_time_url": "https://buy.stripe.com/aaa", "monthly": [], "note": "Paid to <Maker> & Co."}}
+        out = build.render_support(self.download, cfg)
         self.assertIn("Paid to &lt;Maker&gt; &amp; Co.", out)
-        out = build.render_support(self.page, {"support": {"one_time_url": "https://buy.stripe.com/aaa", "monthly_url": ""}})
+        out = build.render_support(self.download, {"support": {"one_time_url": "https://buy.stripe.com/aaa", "monthly": []}})
         self.assertNotIn("Paid to", out)
 
     def test_only_stripe_payment_links_are_accepted(self):
-        for bad in ("http://buy.stripe.com/x", "https://evil.example/x", "https://buy.stripe.com/", "https://buy.stripe.com/x y", 'https://buy.stripe.com/x"'):
-            errs = build.site_config_errors({"support": {"one_time_url": bad, "monthly_url": ""}})
+        for bad in ("http://buy.stripe.com/x", "https://evil.example/x", "https://buy.stripe.com/", "https://buy.stripe.com/x y", 'https://buy.stripe.com/x"', "https://donate.stripe.com/"):
+            errs = build.site_config_errors({"support": {"one_time_url": bad, "monthly": []}})
             self.assertTrue(any("Payment Link" in e for e in errs), bad)
+        errs = build.site_config_errors({"support": {"monthly": [{"label": "", "url": "https://buy.stripe.com/x"}]}})
+        self.assertTrue(errs)
+        errs = build.site_config_errors({"support": {"monthly": [{"label": "$3", "url": ""}]}})
+        self.assertTrue(errs)
+        self.assertEqual(build.site_config_errors({"support": {"one_time_url": "https://donate.stripe.com/x", "monthly": []}}), [])
 
-    def test_the_committed_value_is_valid_and_holds_no_key(self):
+    def test_the_committed_values_are_valid_stripe_links_and_hold_no_key(self):
         cfg = json.loads(read("data", "site.json"))
         self.assertEqual(build.site_config_errors(cfg), [])
         self.assertNotRegex(read("data", "site.json"), build.STRIPE_SECRET)
+        urls = [cfg["support"]["one_time_url"]] + [t["url"] for t in cfg["support"]["monthly"]]
+        self.assertTrue(all(u.startswith(build.STRIPE_HOSTS) for u in urls))
+
+    def test_the_pages_exist_and_the_footer_links_the_support_page(self):
+        self.assertIn('href="support.html"', read("partials", "footer.html"))
+        for name in ("support.html", "thanks.html", "download.html"):
+            self.assertIn(name, build.PAGES)
+        self.assertIn("support@wrendns.com", self.support)
+        self.assertIn('name="robots" content="noindex"', self.thanks)
 
     def test_a_stripe_key_anywhere_is_refused(self):
         self.assertTrue(build.STRIPE_SECRET.search("sk_live_" + "a" * 24))

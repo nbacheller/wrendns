@@ -26,7 +26,7 @@ ROOT = os.path.dirname(SITE)
 sys.path.insert(0, SITE)
 import brand  # noqa: E402  (the brand's tokens, fonts and logos, from brand/: checked on every build)
 
-PAGES = ["index.html", "start.html", "download.html", "faq.html", "kubernetes.html","install.html", "how-it-works.html", "groups.html", "agents.html", "monitoring.html", "map.html", "kubernetes-workloads.html", "failover-drills.html", "tour.html",
+PAGES = ["index.html", "start.html", "download.html", "support.html", "thanks.html", "faq.html", "kubernetes.html","install.html", "how-it-works.html", "groups.html", "agents.html", "monitoring.html", "map.html", "kubernetes-workloads.html", "failover-drills.html", "tour.html",
          # ADR-122 — the Guides menu.
          "guides.html", "guide-settings.html", "guide-cluster.html", "guide-kubernetes.html", "guide-upgrades.html",
          "guide-blocking.html", "guide-devices.html", "guide-encrypted.html", "guide-changes.html", "guide-monitoring.html",
@@ -43,23 +43,50 @@ def read(path):
         return f.read()
 
 
-# REQ: DOC-006 (T33.3, ADR-1030) — the Download page's optional "Support WrenDNS" section. The two Stripe
-# Payment Links come from site/data/site.json; the section is left out while both are empty. A payment link
-# is only a public address: the build refuses anything else, and any Stripe key or secret anywhere in site/.
-STRIPE_PREFIX = "https://buy.stripe.com/"
+# REQ: DOC-006 (T33.3, ADR-1030) — the optional "Support WrenDNS" links (the Download and Support pages). The
+# Stripe Payment Links come from site/data/site.json: one for a one-time gift (the donor chooses the amount) and
+# monthly supporter tiers. A section with no link is left out. A payment link is only a public address: the
+# build refuses anything else, and any Stripe key or secret anywhere in site/.
+STRIPE_HOSTS = ("https://buy.stripe.com/", "https://donate.stripe.com/")
 STRIPE_SECRET = re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]+|\bwhsec_[A-Za-z0-9]+")
+# Said wherever a gift is offered: the account belongs to a for-profit company.
+SUPPORT_TAX = (
+    "Support is a payment to MySummitKeep LLC, the company that makes WrenDNS. It is not a tax-deductible donation, "
+    "and no tax receipt is issued. WrenDNS stays free either way."
+)
+
+
+def _stripe_url_error(url):
+    if not isinstance(url, str):
+        return "must be a string"
+    if url and (
+        not url.startswith(STRIPE_HOSTS)
+        or url in STRIPE_HOSTS
+        or re.search(r"[\s\"'<>]", url)
+    ):
+        return "must be a Stripe Payment Link ({}), got {!r}".format(" or ".join(h + "..." for h in STRIPE_HOSTS), url)
+    return None
 
 
 def site_config_errors(cfg):
     errs = []
-    if not isinstance(cfg.get("support", {}).get("note", ""), str):
+    sup = cfg.get("support", {})
+    if not isinstance(sup.get("note", ""), str):
         errs.append("site.json: support.note must be a string")
-    for key in ("one_time_url", "monthly_url"):
-        url = cfg.get("support", {}).get(key, "")
-        if not isinstance(url, str):
-            errs.append("site.json: support.{} must be a string".format(key))
-        elif url and (not url.startswith(STRIPE_PREFIX) or len(url) <= len(STRIPE_PREFIX) or re.search(r"[\s\"'<>]", url)):
-            errs.append("site.json: support.{} must be a Stripe Payment Link ({}...), got {!r}".format(key, STRIPE_PREFIX, url))
+    e = _stripe_url_error(sup.get("one_time_url", ""))
+    if e:
+        errs.append("site.json: support.one_time_url " + e)
+    tiers = sup.get("monthly", [])
+    if not isinstance(tiers, list):
+        errs.append("site.json: support.monthly must be a list of {label, url}")
+        tiers = []
+    for i, t in enumerate(tiers):
+        label = t.get("label") if isinstance(t, dict) else None
+        if not isinstance(label, str) or not label.strip() or len(label) > 40:
+            errs.append("site.json: support.monthly[{}].label must be a short text".format(i))
+        e = _stripe_url_error(t.get("url", "") if isinstance(t, dict) else None)
+        if e or not (isinstance(t, dict) and t.get("url")):
+            errs.append("site.json: support.monthly[{}].url {}".format(i, e or "is empty"))
     for dirpath, _, names in os.walk(SITE):
         if "_site" in dirpath.split(os.sep) or "__pycache__" in dirpath:
             continue
@@ -72,31 +99,49 @@ def site_config_errors(cfg):
     return errs
 
 
-def render_support(page, cfg):
-    sup = cfg.get("support", {})
+def support_cards(sup):
+    """The two cards (one-time, monthly) for the links that are set; "" when none is."""
     cards = []
     if sup.get("one_time_url"):
         cards.append(
             '    <article class="card"><h3>Give once</h3><p>Choose your own amount, as small or as large as you like.</p>'
             '<p><a class="btn primary" href="{}" rel="noopener noreferrer">Give once</a></p></article>'.format(html.escape(sup["one_time_url"], quote=True))
         )
-    if sup.get("monthly_url"):
+    tiers = sup.get("monthly", [])
+    if tiers:
+        buttons = " ".join(
+            '<a class="btn primary" href="{}" rel="noopener noreferrer">{}</a>'.format(html.escape(t["url"], quote=True), html.escape(t["label"]))
+            for t in tiers
+        )
         cards.append(
             '    <article class="card"><h3>Give monthly</h3><p>Pick a supporter tier and give every month. Stop whenever you like.</p>'
-            '<p><a class="btn primary" href="{}" rel="noopener noreferrer">Give monthly</a></p></article>'.format(html.escape(sup["monthly_url"], quote=True))
+            '<p class="cta">{}</p></article>'.format(buttons)
         )
     if not cards:
-        return page.replace("<!-- @support -->\n\n", "").replace("<!-- @support -->", "")
+        return ""
     note = sup.get("note", "")
-    note_html = '  <p class="muted small">{}</p>\n'.format(html.escape(note)) if note else ""
-    section = (
-        '<section id="support">\n  <h2>Support WrenDNS</h2>\n'
-        "  <p class=\"lede\">WrenDNS is free and stays free. If it saves you time and you would like to help keep it going, you can chip in. "
-        "It is optional, and nothing changes if you don't.</p>\n  <div class=\"grid\">\n" + "\n".join(cards) + "\n  </div>\n"
+    return (
+        '  <div class="grid">\n' + "\n".join(cards) + "\n  </div>\n"
         '  <p class="muted small">Payments are made on Stripe\'s own page: this site never sees your card details, and WrenDNS keeps no record of who gave.</p>\n'
-        + note_html + "</section>"
+        '  <p class="muted small">' + html.escape(SUPPORT_TAX) + "</p>\n"
+        + ('  <p class="muted small">{}</p>\n'.format(html.escape(note)) if note else "")
     )
-    return page.replace("<!-- @support -->", section)
+
+
+def render_support(page, cfg):
+    """`<!-- @support -->` becomes a whole section (left out when no link is set); `<!-- @support-cards -->` the cards alone."""
+    cards = support_cards(cfg.get("support", {}))
+    section = ""
+    if cards:
+        section = (
+            '<section id="support">\n  <h2>Support WrenDNS</h2>\n'
+            '  <p class="lede">WrenDNS is free and stays free. If it saves you time and you would like to help keep it going, you can chip in. '
+            "It is optional, and nothing changes if you don't.</p>\n" + cards + "</section>"
+        )
+    page = page.replace("<!-- @support -->\n\n", "\n" if not section else section + "\n\n").replace("<!-- @support -->", section)
+    empty = '  <p class="muted">Supporter links are not set up yet. Everything here is free in the meantime.</p>\n'
+    page = page.replace("<!-- @support-cards -->", cards or empty)
+    return page.replace("<!-- @support-tax -->", html.escape(SUPPORT_TAX))
 
 
 # REQ: DOC-006 (T33.3) — the Content-Security-Policy in staticwebapp.config.json allows no inline script or style,
@@ -1205,7 +1250,7 @@ def main():
                 shutil.copy(os.path.join(BENCH_DIR, bf), os.path.join(out, "data", "bench", bf))
         if name == "standards.html":
             page = render_standards(page, data)
-        if name == "download.html":
+        if name in ("download.html", "support.html", "thanks.html"):
             page = render_support(page, site_cfg)
         if name == "nerds.html":
             page = render_nerds(page, arch, adrs, reqs)
