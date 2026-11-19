@@ -554,7 +554,7 @@
       "additionalProperties": false
     },
     "AdsTier": {
-      "description": "REQ: FLT-901 (T24.29) — which of HaGeZi's ad and tracker lists the `ads` category uses.",
+      "description": "REQ: FLT-901 (T24.29) — which of `HaGeZi`'s ad and tracker lists the `ads` category uses.",
       "type": "string",
       "enum": [
         "light",

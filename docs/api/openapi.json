@@ -2430,7 +2430,7 @@
           {
             "name": "group",
             "in": "query",
-            "description": "The group the proposal is for.",
+            "description": "The group the proposal is for (a name that does not exist yet is priced as a new group).",
             "required": false,
             "schema": {
               "type": "string"
@@ -2480,16 +2480,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BudgetView"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No such group.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -27761,9 +27751,19 @@
           "downloaded",
           "state",
           "bytes",
-          "lines"
+          "lines",
+          "snapshotEntries",
+          "uniqueEntries",
+          "alsoIn"
         ],
         "properties": {
+          "alsoIn": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListShare"
+            },
+            "description": "The lists that have the rest, most shared first (at most three)."
+          },
           "bytes": {
             "type": "integer",
             "format": "int64",
@@ -27803,9 +27803,20 @@
             ],
             "description": "A list the config files define has this source's URL, so nothing is downloaded twice and\nthe checkbox says \"provided by list X, set by file\"."
           },
+          "snapshotEntries": {
+            "type": "integer",
+            "format": "int64",
+            "description": "REQ: FLT-004 (T24.28, ADR-992) — names this source puts in the active snapshot, and how\nmany of them no other enabled list has (zero while it is not downloaded and compiled).",
+            "minimum": 0
+          },
           "state": {
             "type": "string",
             "description": "`unused` (no group selects it), `pending`, `ok` or `failed`."
+          },
+          "uniqueEntries": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },

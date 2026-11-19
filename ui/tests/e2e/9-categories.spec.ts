@@ -316,6 +316,12 @@ test('flt_901 a category on a profile makes an owned list the node downloads onc
   // The Categories tab shows the source as downloaded.
   await page.goto('/#/lists?tab=categories');
   await expect(row('adult')).toBeVisible();
+  // REQ: FLT-004 (T24.28): how much of the source the lists already in use cover.
+  await row('adult').getByTestId('cat-info').click();
+  await expect(row('adult').getByTestId('cat-overlap').first()).toContainText(/2 entries, \d+ also in the lists you already use/);
+  await page.getByTestId('cat-licences-open').click();
+  await expect(page.getByTestId('cat-licences').locator('[data-source="hagezi-nsfw"]').getByTestId('cat-licence-overlap')).toContainText('also in the lists you already use');
+  await page.keyboard.press('Escape');
   // A device of the lab profile shows the category in the policy panel.
   const pol = await (await r.get('/api/v1/clients/127.0.0.1/policy')).json();
   const cats = pol.sections.find((s: { id: string }) => s.id === 'categories');

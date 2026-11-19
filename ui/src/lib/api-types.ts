@@ -10658,6 +10658,8 @@ export interface components {
         };
         /** @description Where a source stands on this node. */
         SourceState: {
+            /** @description The lists that have the rest, most shared first (at most three). */
+            alsoIn: components["schemas"]["ListShare"][];
             /** Format: int64 */
             bytes: number;
             /** @description False until a group uses it and it has downloaded. */
@@ -10674,8 +10676,16 @@ export interface components {
              *     the checkbox says "provided by list X, set by file".
              */
             providedBy?: string | null;
+            /**
+             * Format: int64
+             * @description REQ: FLT-004 (T24.28, ADR-992) — names this source puts in the active snapshot, and how
+             *     many of them no other enabled list has (zero while it is not downloaded and compiled).
+             */
+            snapshotEntries: number;
             /** @description `unused` (no group selects it), `pending`, `ok` or `failed`. */
             state: string;
+            /** Format: int64 */
+            uniqueEntries: number;
         };
         /** @description One source, with its licence and size. */
         SourceView: {
@@ -13288,7 +13298,7 @@ export interface operations {
     categories_budget: {
         parameters: {
             query?: {
-                /** @description The group the proposal is for. */
+                /** @description The group the proposal is for (a name that does not exist yet is priced as a new group). */
                 group?: string;
                 /** @description `off`, `basic` or `enhanced`. */
                 level?: string;
@@ -13312,15 +13322,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BudgetView"];
-                };
-            };
-            /** @description No such group. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Problem"];
                 };
             };
             /** @description The proposal names something the catalog doesn't have. */

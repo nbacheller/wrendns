@@ -911,6 +911,16 @@ pub struct Budget {
     pub reasons: Vec<String>,
 }
 
+/// REQ: FLT-901 (ADR-994 item 5) — the memory the compile's sort may use: `compile_memory`, or a
+/// quarter of the node's memory limit when that is less (never under the 16 MiB the setting must
+/// have). A smaller sort budget makes more passes over the lists and gives the same snapshot.
+pub fn merge_budget(compile_memory: u64, memory_limit: Option<u64>) -> u64 {
+    const FLOOR: u64 = 16 * 1024 * 1024;
+    memory_limit
+        .map_or(compile_memory, |l| compile_memory.min(l / 4))
+        .max(FLOOR.min(compile_memory))
+}
+
 /// The cost of `sources` on a node with `memory_limit` bytes (`None`: unknown, then nothing is
 /// refused) and `compile_memory` bytes of merge budget configured, against `entry_budget`.
 pub fn budget(
@@ -931,7 +941,7 @@ pub fn budget(
     let entries: u64 = uniq.iter().map(|s| s.entries).sum();
     let bytes: u64 = uniq.iter().map(|s| s.bytes).sum();
     let snapshot = entries.saturating_mul(m.bytes_per_domain);
-    let merge_budget = memory_limit.map_or(compile_memory, |l| compile_memory.min(l / 4));
+    let merge_budget = merge_budget(compile_memory, memory_limit);
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,

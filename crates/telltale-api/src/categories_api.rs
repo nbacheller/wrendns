@@ -245,6 +245,12 @@ pub struct SourceState {
     /// the checkbox says "provided by list X, set by file".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provided_by: Option<String>,
+    /// REQ: FLT-004 (T24.28, ADR-992) — names this source puts in the active snapshot, and how
+    /// many of them no other enabled list has (zero while it is not downloaded and compiled).
+    pub snapshot_entries: u64,
+    pub unique_entries: u64,
+    /// The lists that have the rest, most shared first (at most three).
+    pub also_in: Vec<crate::model::ListShare>,
 }
 
 /// One source, with its licence and size.
@@ -531,6 +537,11 @@ pub fn catalog_view(b: &dyn Backend, env: &CategoryEnv) -> CategoriesView {
                 last_changed_unix_seconds: info.and_then(|l| l.last_changed_unix_seconds),
                 error: info.and_then(|l| l.error.clone()),
                 provided_by: provided,
+                snapshot_entries: info.map_or(0, |l| l.entries),
+                unique_entries: info.map_or(0, |l| l.unique),
+                also_in: info
+                    .map(|l| l.overlap.iter().take(3).cloned().collect())
+                    .unwrap_or_default(),
             };
             SourceView {
                 id: s.id.clone(),

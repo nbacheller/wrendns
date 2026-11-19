@@ -166,6 +166,13 @@
     } else set();
   }
 
+  // REQ: FLT-004 (T24.28, ADR-992) — how much of a downloaded source the lists already in use cover.
+  const overlapText = (s: S['SourceView']): string => {
+    if (!s.state.downloaded || s.state.snapshotEntries === 0) return `${entriesText(s.entries)} entries; not downloaded yet, so its overlap with your lists is not known`;
+    const shared = s.state.snapshotEntries - s.state.uniqueEntries;
+    const where = s.state.alsoIn.map((o) => o.list).join(', ');
+    return `${entriesText(s.state.snapshotEntries)} entries, ${entriesText(shared)} also in the lists you already use${where ? ` (${where})` : ''}`;
+  };
   let open = $state<string | null>(null);
   let licences = $state(false);
   const totals = $derived(total ? asBudget(total.total) : (asBudget(view.total) as Budget));
@@ -266,6 +273,9 @@
                 {:else}
                   <p class="muted small">Turns on these services: {c.services.join(', ')}.</p>
                 {/if}
+                {#each sourcesOf(c).map((id) => sources.get(id)).filter((s) => !!s) as s (s.id)}
+                  <p class="small" data-testid="cat-overlap" data-source={s.id}>{s.name}: {overlapText(s)}.</p>
+                {/each}
                 {#if c.warn}<p class="notice warn small">{c.warn}</p>{/if}
               </div>
             {/if}
@@ -302,7 +312,7 @@
       {#each view.attributions as a (a)}<p class="notice" data-testid="cat-attribution">{a}</p>{/each}
       <div class="table-wrap">
         <table class="compact">
-          <thead><tr><th>Source</th><th>Maintainer</th><th>Licence</th><th class="num">Entries</th><th>State</th></tr></thead>
+          <thead><tr><th>Source</th><th>Maintainer</th><th>Licence</th><th class="num">Entries</th><th>Overlap with your lists</th><th>State</th></tr></thead>
           <tbody>
             {#each view.sources as s (s.id)}
               <tr data-testid="cat-licence-row" data-source={s.id}>
@@ -310,6 +320,7 @@
                 <td class="small">{s.maintainer}</td>
                 <td class="small"><a href={s.licenceUrl} target="_blank" rel="noreferrer">{s.licence}</a></td>
                 <td class="num">{entriesText(s.entries)}{#if s.weight === 'heavy'} <span class="badge warn">heavy</span>{/if}</td>
+                <td class="small" data-testid="cat-licence-overlap">{overlapText(s)}</td>
                 <td class="small">{s.state.providedBy ? `provided by list ${s.state.providedBy} (set by file)` : s.state.state}</td>
               </tr>
             {/each}

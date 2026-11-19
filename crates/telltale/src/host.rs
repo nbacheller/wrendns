@@ -623,6 +623,30 @@ pub(crate) fn status_kib(text: &str, key: &str) -> Option<u64> {
         .and_then(|rest| rest.split_whitespace().next()?.parse().ok())
 }
 
+/// REQ: FLT-901 (T24.29, ADR-994 item 5) — the memory this node may use: `TELLTALE_MEMORY_LIMIT`
+/// (bytes; a test, or a measurement on a stand-in for a smaller node) wins, else the container's
+/// limit (cgroup v2, then v1), else the machine's RAM. `None` when none can be read.
+pub(crate) fn memory_limit() -> Option<u64> {
+    if let Some(v) = std::env::var("TELLTALE_MEMORY_LIMIT")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|v| *v > 0)
+    {
+        return Some(v);
+    }
+    let cg = |p: &str| std::fs::read_to_string(p).ok().and_then(|t| limit(&t));
+    // A cgroup with no limit reads "max" (v2) or a huge number (v1): the machine's RAM then.
+    let ram = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|t| meminfo(&t).total);
+    let grouped = cg("/sys/fs/cgroup/memory.max")
+        .or_else(|| cg("/sys/fs/cgroup/memory/memory.limit_in_bytes"));
+    match (grouped, ram) {
+        (Some(g), Some(r)) => Some(g.min(r)),
+        (g, r) => g.or(r),
+    }
+}
+
 /// `/proc/loadavg` → the three averages times 1000.
 pub(crate) fn loadavg(text: &str) -> Option<(u32, u32, u32)> {
     let mut it = text

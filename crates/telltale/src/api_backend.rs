@@ -2986,13 +2986,10 @@ impl Backend for ApiBackend {
         let host = self.src.host.latest();
         // `TELLTALE_MEMORY_LIMIT` (bytes) wins: a test, or a measurement on a stand-in for a
         // smaller node. Else the container's limit, else the machine's RAM.
-        let limit = std::env::var("TELLTALE_MEMORY_LIMIT")
-            .ok()
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .or_else(|| {
-                host.as_ref()
-                    .and_then(|h| h.cgroup_mem_limit.or(h.mem_total))
-            });
+        let limit = crate::host::memory_limit().or_else(|| {
+            host.as_ref()
+                .and_then(|h| h.cgroup_mem_limit.or(h.mem_total))
+        });
         telltale_api::categories_api::CategoryEnv {
             entry_budget: cfg.filter.entry_budget,
             ads_tier: match cfg.filter.ads_tier {

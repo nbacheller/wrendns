@@ -232,7 +232,14 @@ impl CompileSettings {
             snapshots: Path::new(cfg.node.data_dir.as_str()).join("snapshots"),
             threads: compile_threads(cfg.filter.compile_threads),
             live_threads: live_compile_threads(cfg.filter.compile_threads),
-            memory: usize::try_from(cfg.filter.compile_memory.bytes()).unwrap_or(usize::MAX),
+            // REQ: FLT-901 (ADR-994 item 5): the sort's memory is the configured amount, or a
+            // quarter of what the node may use when that is less (more passes, the same result), so a
+            // small node's compile peak stays inside what its category budget assumed.
+            memory: usize::try_from(telltale_config::categories::merge_budget(
+                cfg.filter.compile_memory.bytes(),
+                crate::host::memory_limit(),
+            ))
+            .unwrap_or(usize::MAX),
             sync: cfg.filter.fsync,
             max_regexes: usize::try_from(cfg.filter.max_regexes).unwrap_or(usize::MAX),
         }
