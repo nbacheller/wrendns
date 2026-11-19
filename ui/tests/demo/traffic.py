@@ -3,13 +3,20 @@
 names from its own loopback address, at a rate that rises and falls. 127.0.1.14 is left unnamed
 on purpose, to show how an unknown device looks. usage: traffic.py <seconds>"""
 import math
+import os
 import random
 import socket
 import struct
 import sys
 import time
 
-SERVER = ("127.0.0.1", 25353)
+# The cluster's DNS ports and how much of the traffic each gets (run.sh sets DEMO_SERVERS for the
+# three-node demo: "25353:6,25354:3,25355:1"); one node on 25353 when it is unset.
+SERVERS = []
+for part in os.environ.get("DEMO_SERVERS", "25353:1").split(","):
+    port, _, weight = part.partition(":")
+    SERVERS += [("127.0.0.1", int(port))] * int(weight or 1)
+SERVER = SERVERS[0]
 COMMON = ["www.google.com", "www.youtube.com", "i.ytimg.com", "www.apple.com", "github.com",
           "en.wikipedia.org", "api.spotify.com", "www.netflix.com", "fonts.gstatic.com",
           "cdn.jsdelivr.net", "www.bbc.co.uk", "news.ycombinator.com", "nas.home.arpa"]
@@ -63,7 +70,7 @@ while time.time() < end:
         k = int(n) + (1 if random.random() < n - int(n) else 0)
         for _ in range(k):
             name = random.choice(ads) if ads and random.random() < ad_share else random.choice(names)
-            socks[ip].sendto(query(name), SERVER)
+            socks[ip].sendto(query(name), random.choice(SERVERS))
             sent += 1
         try:
             while True:

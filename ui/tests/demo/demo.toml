@@ -1,8 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # The screenshot demo (run.sh): a made-up home network on loopback addresses. Nothing here is
-# real: devices, groups, and names are invented, and the upstreams are local stubs (stub.py).
+# real: devices, groups, and names are invented, the upstreams are local stubs (stub.py), and the
+# UniFi gateway is a stub too (unifi.py). This node, pi-01, creates the cluster that the two
+# replicas (demo-pi-02.toml, demo-k8s-a.toml) join, so the Cluster page shows three real nodes.
 [node]
 data_dir = "/tmp/wrendns-demo/data"
-name = "home-dns"
+name = "pi-01"
+# The stub gateway's made-up API key is written here by run.sh (it is not a real credential).
+secret_file_dirs = ["/tmp/wrendns-demo/secrets"]
 
 [[listen]]
 proto = "udp"
@@ -85,7 +90,7 @@ rules = [
 [[record]]
 name = "nas.home.arpa"
 type = "A"
-value = "192.168.1.10"
+value = "10.20.0.10"
 
 [telemetry.metrics]
 listen = "127.0.0.1:29154"
@@ -95,3 +100,25 @@ flush_interval_secs = 1
 
 [api]
 listen = "127.0.0.1:28053"
+
+# REQ: CLU-001 — the cluster, on loopback only (made by this node on its first start).
+[cluster]
+name = "home"
+site = "pi-01"
+eligible = true
+listen = "127.0.0.1:28443"
+
+[cluster.init]
+advertise = ["https://127.0.0.1:28443"]
+
+# REQ: API-013, DSC-901 — a made-up UniFi gateway (unifi.py): device names, MACs and the networks,
+# so the CMDB has more than one source to reconcile for each device.
+[[router]]
+name = "gateway"
+type = "unifi"
+url = "http://127.0.0.1:25480"
+api_key_file = "/tmp/wrendns-demo/secrets/unifi-key"
+interval_secs = 30
+
+[cmdb]
+enabled = true
