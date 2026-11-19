@@ -362,6 +362,38 @@ test('flt_901 Settings, Filtering: the entry budget and the ad block size, with 
   await expect(row).toContainText('entry budget 1,000,000, ad block size pro');
 });
 
+test('flt_902 saving a profile writes its content only when it changed, and a refused new profile leaves no group', async () => {
+  const writes: string[] = [];
+  const onRequest = (rq: { method: () => string; url: () => string }) => {
+    if (rq.method() === 'PUT' && /\/api\/v1\/groups\//.test(rq.url())) writes.push(new URL(rq.url()).pathname);
+  };
+  page.on('request', onRequest);
+  try {
+    // The lab profile as it is: nothing changed, so the group is written and its content is not.
+    await page.goto('/#/groups');
+    await page.locator('[data-testid="profile-row"][data-profile="lab"]').getByTestId('profile-edit').click();
+    const ed = page.getByTestId('profile-editor');
+    await expect(ed.getByTestId('level-off')).toBeChecked();
+    await ed.getByTestId('profile-save').click();
+    await expect(ed).toBeHidden();
+    expect(writes.filter((w) => w.endsWith('/content'))).toEqual([]);
+    expect(writes.some((w) => w.endsWith('/groups/lab/sources'))).toBe(true);
+    // A new profile whose heavy content waits for a confirmation is not left half-saved.
+    const nu = await newProfile('half-saved');
+    await nu.getByTestId('level-enhanced').check();
+    await row('nrd').getByTestId('cat-check').click();
+    await nu.getByTestId('cat-heavy-confirm').getByTestId('cat-heavy-yes').click();
+    await nu.getByTestId('profile-save').click();
+    await expect(nu.getByTestId('profile-confirm')).toBeVisible();
+    const groups = await (await page.request.get('/api/v1/groups')).json();
+    expect(groups.items.map((g: { name: string }) => g.name)).not.toContain('half-saved');
+    await nu.getByRole('button', { name: 'Cancel' }).click();
+    await expect(nu).toBeHidden();
+  } finally {
+    page.off('request', onRequest);
+  }
+});
+
 test('flt_901 clean up: the profile and the devices go', async () => {
   const r = page.request;
   for (const d of [DEVICE, 'Plain Pi', CONFIGURED]) {

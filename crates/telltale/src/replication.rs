@@ -2530,4 +2530,44 @@ mod tests {
         assert!(safe_name("subtree-0.fst") && safe_name("manifest.json"));
         assert!(!safe_name("../x") && !safe_name("a/b") && !safe_name(".hidden") && !safe_name(""));
     }
+
+    /// REQ: FLT-901, CLU-003 (T24.29, AC 13) - a replica that follows its primary never starts the list
+    /// fetcher (server start-up skips `Lists::start` for it), so the category lists of a group the
+    /// primary holds are downloaded by the primary only; a primary and a standalone node do.
+    #[test]
+    fn flt_901_replica_never_fetches_category_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg: Config = toml::from_str(&format!(
+            "[node]
+data_dir = {:?}
+[[group]]
+name = \"default\"
+content = {{ level = \"enhanced\", categories = [\"adult\"] }}
+",
+            dir.path().to_string_lossy()
+        ))
+        .unwrap();
+        assert!(
+            telltale_config::categories::expand_lists(&cfg)
+                .list
+                .iter()
+                .any(|l| telltale_config::categories::is_category_list(l.name.as_str())),
+            "the selection makes a category list"
+        );
+        assert!(!follows_primary(&cfg), "standalone: it fetches");
+        let mut id =
+            node::Identity::init(dir.path(), "home", vec!["https://127.0.0.1:1".into()], "n")
+                .unwrap();
+        assert!(!follows_primary(&cfg), "a primary: it fetches");
+        id.save_role(node::Role::Replica, 1).unwrap();
+        std::fs::write(
+            node::dir_of(dir.path()).join(APPLIED),
+            serde_json::to_vec(&ClusterManifest::default()).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            follows_primary(&cfg),
+            "a synced replica takes lists from the primary"
+        );
+    }
 }

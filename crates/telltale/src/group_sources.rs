@@ -467,7 +467,12 @@ match = ["10.0.9.9"]
             .unwrap();
         let list = serde_json::json!({"name": "hagezi-pro", "url": url}).to_string();
         state
-            .put_managed_batch(&[(crate::managed::LIST, "hagezi-pro", list.as_str())], None, 1, "t")
+            .put_managed_batch(
+                &[(crate::managed::LIST, "hagezi-pro", list.as_str())],
+                None,
+                1,
+                "t",
+            )
             .unwrap();
         // The effective kids group has the synthetic `content`; the stored entry must not.
         let entries = crate::managed::entries(&state);

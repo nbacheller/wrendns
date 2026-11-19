@@ -899,9 +899,10 @@ pub(crate) async fn guard_group_put(
     let (bk, n, nc) = (Arc::clone(backend), name.to_owned(), new.clone());
     let checked = crate::blocking(move || {
         let c = check_content(bk.as_ref(), &n, &nc, confirm, dry_run)?;
-        let file_sets = bk.config_entries(Some("group")).into_iter().any(|e| {
-            e.name == n && e.set_by_file.iter().any(|k| k == "content")
-        });
+        let file_sets = bk
+            .config_entries(Some("group"))
+            .into_iter()
+            .any(|e| e.name == n && e.set_by_file.iter().any(|k| k == "content"));
         Ok((c, file_sets))
     })
     .await?;

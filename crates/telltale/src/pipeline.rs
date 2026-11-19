@@ -3205,8 +3205,11 @@ name = "kids"
 networks = ["10.0.1.0/24"]
 content = { level = "enhanced", categories = ["adult"] }
 "#,
-            &[("my-nsfw", "||adult.example^
-")],
+            &[(
+                "my-nsfw",
+                "||adult.example^
+",
+            )],
         );
         let kid = ask_from(&p, "10.0.1.5", "www.adult.example", rtype::A);
         assert!(is_blocked(&kid));
@@ -3321,14 +3324,25 @@ content = { level = "enhanced", categories = ["adult"] }
         install_lists_allowing(
             &p,
             &[
-                ("cat-hagezi-nsfw", "||adult.example^
-"),
-                ("homework", "ok.adult.example
-"),
+                (
+                    "cat-hagezi-nsfw",
+                    "||adult.example^
+",
+                ),
+                (
+                    "homework",
+                    "ok.adult.example
+",
+                ),
             ],
             &["homework"],
         );
-        assert!(is_blocked(&ask_from(&p, "10.0.1.5", "www.adult.example", rtype::A)));
+        assert!(is_blocked(&ask_from(
+            &p,
+            "10.0.1.5",
+            "www.adult.example",
+            rtype::A
+        )));
         assert!(
             !is_blocked(&ask_from(&p, "10.0.1.5", "ok.adult.example", rtype::A)),
             "the allow list wins"

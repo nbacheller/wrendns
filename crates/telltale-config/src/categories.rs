@@ -203,8 +203,11 @@ pub struct Measured {
     pub baseline_rss_bytes: u64,
     /// Snapshot bytes per distinct domain.
     pub bytes_per_domain: u64,
-    /// Compile peak = `min(source bytes x factor, merge budget)`.
+    /// Compile peak = `min(source bytes x factor, merge budget) + compile_peak_fixed_bytes`.
     pub compile_peak_factor: f64,
+    /// The compile's part that does not scale with the sources (parser buffers, the compile
+    /// threads' stacks, the FST writers), added after the merge-budget cap.
+    pub compile_peak_fixed_bytes: u64,
     /// A source above this many entries is heavy.
     pub heavy_threshold: u64,
     pub light_refresh_secs: u32,
@@ -216,7 +219,8 @@ impl Default for Measured {
         Self {
             baseline_rss_bytes: 32 * 1024 * 1024,
             bytes_per_domain: 12,
-            compile_peak_factor: 4.0,
+            compile_peak_factor: 5.0,
+            compile_peak_fixed_bytes: 28 * 1024 * 1024,
             heavy_threshold: 500_000,
             light_refresh_secs: 28_800,
             heavy_refresh_secs: 86_400,
@@ -982,11 +986,18 @@ pub fn budget(
         clippy::cast_sign_loss
     )]
     let raw_peak = (bytes as f64 * m.compile_peak_factor) as u64;
-    let peak = raw_peak.min(merge_budget);
+    // Nothing selected, nothing compiled: no peak either.
+    let peak = if uniq.is_empty() {
+        0
+    } else {
+        raw_peak
+            .min(merge_budget)
+            .saturating_add(m.compile_peak_fixed_bytes)
+    };
     let needed = m
         .baseline_rss_bytes
         .saturating_add(snapshot)
-        .saturating_add(if uniq.is_empty() { 0 } else { peak });
+        .saturating_add(peak);
     let allowed = memory_limit.map(|l| l / 2);
     let heavy: Vec<String> = uniq
         .iter()
@@ -1470,31 +1481,38 @@ mod tests {
         assert!(basic.heavy.is_empty() && !basic.over_budget);
     }
 
-    /// REQ: FLT-901 — on a 128 MiB node Basic passes and NRD 7 days is refused, with the reason;
-    /// the merge budget scales to the node.
+    /// REQ: FLT-901 - on a 128 MiB node NRD 7 days is refused, with the reason, and so is Basic: it
+    /// ran there at a peak of 71 MiB (`bench/categories_rss.py`, design 2.4), over the half of the
+    /// node's memory the rule allows, and the estimate (about 85 MiB) is not below the measurement.
+    /// It passes from 192 MiB. The merge budget scales to the node.
     #[test]
     fn flt_901_over_budget_refused_on_small_node() {
-        let basic = budget(
-            &sel(&["adult", "malware", "phishing", "scam"]),
-            1_000_000,
-            Some(128 * MIB),
-            128 * MIB,
+        let basic_sel = sel(&["adult", "malware", "phishing", "scam"]);
+        let basic = budget(&basic_sel, 1_000_000, Some(128 * MIB), 128 * MIB);
+        assert!(basic.refused, "{basic:?}");
+        assert!(
+            basic.needed_bytes >= 71 * MIB,
+            "the estimate is not below the measured peak: {basic:?}"
         );
-        assert!(!basic.refused, "{basic:?}");
         assert_eq!(basic.merge_budget_bytes, 32 * MIB);
+        let basic = budget(&basic_sel, 1_000_000, Some(192 * MIB), 128 * MIB);
+        assert!(!basic.refused, "{basic:?}");
         let nrd = budget(&sel(&["nrd"]), 1_000_000, Some(128 * MIB), 128 * MIB);
         assert!(nrd.refused, "{nrd:?}");
         assert!(nrd.reasons[0].contains("128 MiB"), "{:?}", nrd.reasons);
     }
 
-    /// REQ: FLT-901 — the same selection on a 256 MiB node is allowed (with the entry-budget
-    /// warning).
+    /// REQ: FLT-901 - NRD 7 days is still refused on a 256 MiB node (measured peak 159 MiB, over the
+    /// 128 MiB the rule allows) and allowed on a 512 MiB node with the entry-budget warning.
     #[test]
-    fn flt_901_over_budget_allowed_with_warning_on_256_mib() {
+    fn flt_901_over_budget_allowed_with_warning_on_512_mib() {
         let nrd = budget(&sel(&["nrd"]), 1_000_000, Some(256 * MIB), 128 * MIB);
+        assert!(nrd.refused, "{nrd:?}");
+        assert_eq!(nrd.merge_budget_bytes, 64 * MIB);
+        let nrd = budget(&sel(&["nrd"]), 1_000_000, Some(512 * MIB), 128 * MIB);
         assert!(!nrd.refused, "{nrd:?}");
         assert!(nrd.over_budget);
-        assert_eq!(nrd.merge_budget_bytes, 64 * MIB);
+        assert_eq!(nrd.merge_budget_bytes, 128 * MIB);
         assert!(nrd.reasons[0].contains("entry budget"));
     }
 
@@ -1510,11 +1528,12 @@ mod tests {
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss
         )]
-        let expect = (tif.bytes as f64 * factor) as u64;
+        let expect =
+            (tif.bytes as f64 * factor) as u64 + catalog().measured.compile_peak_fixed_bytes;
         assert_eq!(small.compile_peak_bytes, expect);
         let tight = budget(&[tif], 1_000_000, Some(64 * MIB), 128 * MIB);
         assert_eq!(tight.merge_budget_bytes, 16 * MIB);
-        assert!(tight.compile_peak_bytes <= 16 * MIB);
+        assert!(tight.compile_peak_bytes <= 16 * MIB + catalog().measured.compile_peak_fixed_bytes);
         assert_eq!(
             budget(&[], 1_000_000, Some(128 * MIB), 128 * MIB).compile_peak_bytes,
             0

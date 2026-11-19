@@ -1436,7 +1436,7 @@
       "term": "Entry budget",
       "summary": "Each blocked name takes about 12 bytes in memory, and a big list also needs memory while it is compiled. The Categories view shows the entries and the memory a selection adds, counting a list shared by several categories once, against the entry budget (Settings, Filtering). A node too small for a selection refuses it and says why.",
       "when": "You are choosing categories on a Raspberry Pi or a small container, or choosing a heavy one (newly registered domains, the full threat feed).",
-      "example": "Basic is about 275,000 entries, about 3 MiB. Newly registered domains (7 days) is about 2.4 million entries and 40 MB to download every day: it passes the default budget by itself and is refused on a node with 128 MiB.",
+      "example": "Basic is about 275,000 entries, about 3 MiB. Newly registered domains (7 days) is about 2.4 million entries and 40 MB to download every day: it passes the default budget by itself and is refused on a node with 256 MiB or less. Basic needs about 85 MiB by the estimate: a node with 128 MiB refuses it and one with 192 MiB takes it.",
       "caution": "Heavy lists refresh once a day and ask for a confirmation that states the daily download. Raising the budget in Settings lets the view stop warning; it does not give the node more memory.",
       "docs": "content-categories-and-filter-profiles"
     },

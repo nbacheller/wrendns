@@ -6729,8 +6729,8 @@ export interface components {
             ads?: boolean;
             /** @description Category IDs (kept when the level is `off`). */
             categories?: string[];
-            /** @description `off`, `basic` or `enhanced`. */
-            level: string;
+            /** @description `off`, `basic` or `enhanced`; left out reads `off`, as in the TOML. */
+            level?: string;
             /** @description A tier per category. */
             tiers?: {
                 [key: string]: string;

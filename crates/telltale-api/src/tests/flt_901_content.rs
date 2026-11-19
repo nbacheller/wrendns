@@ -286,6 +286,8 @@ async fn flt_901_over_budget_refused_on_small_node() {
     with_groups(&fake);
     fake.cat_memory
         .store(128 * MIB, std::sync::atomic::Ordering::SeqCst);
+    // Basic ran on a 128 MiB container at a peak of 71 MiB (design 2.4): over the half the rule
+    // allows, so the node refuses it; from 192 MiB it passes.
     let (s, v) = put(
         &app,
         &app.bearer,
@@ -293,7 +295,20 @@ async fn flt_901_over_budget_refused_on_small_node() {
         json!({"level": "basic"}),
     )
     .await;
-    assert_eq!(s, StatusCode::OK, "Basic passes on 128 MiB: {v}");
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert_eq!(v["code"], "budget_refused");
+    fake.cat_memory
+        .store(192 * MIB, std::sync::atomic::Ordering::SeqCst);
+    let (s, v) = put(
+        &app,
+        &app.bearer,
+        "/api/v1/groups/kids/content",
+        json!({"level": "basic"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "Basic passes on 192 MiB: {v}");
+    fake.cat_memory
+        .store(128 * MIB, std::sync::atomic::Ordering::SeqCst);
     let (s, v) = put(
         &app,
         &app.bearer,
@@ -305,7 +320,7 @@ async fn flt_901_over_budget_refused_on_small_node() {
     assert_eq!(v["code"], "budget_refused");
     assert!(v["detail"].as_str().unwrap().contains("128 MiB"), "{v}");
     fake.cat_memory
-        .store(256 * MIB, std::sync::atomic::Ordering::SeqCst);
+        .store(512 * MIB, std::sync::atomic::Ordering::SeqCst);
     let (s, v) = put(
         &app,
         &app.bearer,
@@ -313,7 +328,7 @@ async fn flt_901_over_budget_refused_on_small_node() {
         json!({"categories": ["nrd"], "level": "enhanced"}),
     )
     .await;
-    assert_eq!(s, StatusCode::OK, "allowed with a warning on 256 MiB: {v}");
+    assert_eq!(s, StatusCode::OK, "allowed with a warning on 512 MiB: {v}");
     assert_eq!(v["budget"]["overBudget"], true);
     assert_eq!(v["budget"]["refused"], false);
 }
@@ -519,7 +534,9 @@ async fn flt_901_file_content_survives_an_override() {
         kind: "group".into(),
         name: "kids".into(),
         source: "override".into(),
-        definition: Some(json!({"name": "kids", "content": {"level": "enhanced", "categories": ["adult"]}})),
+        definition: Some(
+            json!({"name": "kids", "content": {"level": "enhanced", "categories": ["adult"]}}),
+        ),
         redacted: Vec::new(),
         credential_issues: Vec::new(),
         set_by_file: vec!["content".into()],
@@ -559,7 +576,11 @@ async fn flt_901_file_content_survives_an_override() {
         json!({"level": "enhanced"}),
     )
     .await;
-    assert_eq!(s, StatusCode::OK, "the file's own content is no change: {v}");
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "the file's own content is no change: {v}"
+    );
 }
 
 /// REQ: FLT-901 (T24.29) - a selection a node already refuses can be reduced: only a change that

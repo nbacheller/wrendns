@@ -6196,14 +6196,18 @@ fn plan_override(
     {
         let cat = telltale_config::categories::catalog();
         let want = telltale_config::categories::normalize_url(url);
-        if cat.sources.iter().any(|s| {
-            cat.is_heavy(s) && telltale_config::categories::normalize_url(&s.url) == want
-        }) {
+        if cat
+            .sources
+            .iter()
+            .any(|s| cat.is_heavy(s) && telltale_config::categories::normalize_url(&s.url) == want)
+        {
             return Err(Problem::new(
                 Code::AgentNotAllowed,
                 "this list is a heavy catalog source: an agent can't add it",
             )
-            .hint("A person adds it in the web UI (Groups, Categories), where the cost is confirmed."));
+            .hint(
+                "A person adds it in the web UI (Groups, Categories), where the cost is confirmed.",
+            ));
         }
     }
     let file = plan_files(src);
@@ -8790,10 +8794,10 @@ mod filter_budget_tests {
                 .is_empty(),
             "already over: nothing new"
         );
-        assert!(
+        assert_eq!(
             filter_budget_check(&src, &cfg(1_000_000_000, false), &cfg(1_000_000_000, true))
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            Vec::<String>::new()
         );
     }
 }
@@ -8825,7 +8829,7 @@ mod group_content_marker_tests {
         let entries = api.config_entries(Some("group"));
         let get = |n: &str| entries.iter().find(|e| e.name == n).unwrap();
         assert!(get("default").set_by_file.iter().any(|k| k == "content"));
-        assert!(get("kids").set_by_file.is_empty());
+        assert_eq!(get("kids").set_by_file, Vec::<String>::new());
     }
 
     /// REQ: FLT-901 (ADR-994 item 8) - an agent can't add a list that is a heavy catalog source (it
@@ -8847,7 +8851,9 @@ mod group_content_marker_tests {
             role: None,
             agent: agent.map(str::to_owned),
         };
-        let e = plan_override(&src, &state, &write(Some("bot"))).err().unwrap();
+        let e = plan_override(&src, &state, &write(Some("bot")))
+            .err()
+            .unwrap();
         assert_eq!(e.code, Code::AgentNotAllowed);
         assert!(plan_override(&src, &state, &write(None)).is_ok());
     }
