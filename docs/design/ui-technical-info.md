@@ -9,6 +9,8 @@ Owner request 2026-11-19: "Can we clean up the way these sorts of things are dis
 3. **Network names come from the CMDB's network CIs** (UniFi's name by default, a manual name if set), with the interface and subnet as secondary text; this lands with T31.7 (the CMDB names what the UI shows, DSC-901 as amended).
 4. **Names already imported with HTML codes are repaired once, automatically,** on upgrade, for API-managed entries (audited as a system change); names in configuration files are reported, never rewritten.
 
+**Status (2026-11-19):** A1 and A6 (T35.1, ADR-1032), A2 (T35.2) and A3 (T35.3) are built; the rest is T35.4 to T35.7.
+
 ## The proposal
 
 This is a read-only review: nothing was edited or run. Every point below was re-checked in the code on `feat/ipam-integrations`. Paths are relative to `C:/src/wrendns`.

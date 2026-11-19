@@ -308,7 +308,12 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
         summary: if group.lists.is_none() {
             format!("Group {} uses every enabled list.", group.name)
         } else {
-            format!("Group {} names the lists below.", group.name)
+            // REQ: AGT-001 (T35.2) — a summary stands alone (it is read in the API and by agents).
+            format!(
+                "Group {} uses the {} it names.",
+                group.name,
+                counted(lists.len(), "list")
+            )
         },
         items: lists,
         link: plain_link("/lists"),
@@ -358,7 +363,14 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
         summary: if services.is_empty() {
             "No service is blocked for this device.".into()
         } else {
-            format!("{} services are blocked.", services.len())
+            format!(
+                "{} blocked for this device.",
+                if services.len() == 1 {
+                    "1 service is".to_owned()
+                } else {
+                    format!("{} services are", services.len())
+                }
+            )
         },
         items: services,
         link: plain_link("/groups"),
@@ -449,7 +461,7 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
         summary: if answers.is_empty() {
             "Answers are passed on as the upstream gave them.".into()
         } else {
-            "Some answers are changed or refused.".into()
+            "This group changes or refuses some answers.".into()
         },
         items: answers,
         link: group_link(&group.name),
@@ -480,7 +492,14 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
         summary: if rewrites.is_empty() {
             "No name is rewritten.".into()
         } else {
-            format!("{} names are answered locally.", rewrites.len())
+            format!(
+                "{} answered locally instead of asking an upstream.",
+                if rewrites.len() == 1 {
+                    "1 name is".to_owned()
+                } else {
+                    format!("{} names are", rewrites.len())
+                }
+            )
         },
         items: rewrites,
         link: group_link(&group.name),
@@ -546,12 +565,12 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
             "No schedule applies.".into()
         } else {
             format!(
-                "{} of {} schedules are in effect now.",
+                "{} of {} in effect now.",
                 schedules
                     .iter()
                     .filter(|s| s.state.as_deref() == Some("in_effect"))
                     .count(),
-                schedules.len()
+                counted(schedules.len(), "schedule")
             )
         },
         items: schedules,
@@ -591,7 +610,10 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
         summary: if rules.is_empty() {
             "No quick rule applies.".into()
         } else {
-            "Quick rules decide before any list.".into()
+            format!(
+                "{} apply to this device and decide before any list.",
+                counted(rules.len(), "quick rule")
+            )
         },
         items: rules,
         link: plain_link("/rules"),
@@ -601,7 +623,7 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
     let mut upstream = Vec::new();
     if let Some((name, routed)) = default_upstream(st, clients.group_names(ident)) {
         upstream.push(PolicyItem {
-            label: name.clone(),
+            label: telltale_api::map::display_label(&name),
             detail: Some(
                 if routed {
                     "an explicit route matches every name for this device"
@@ -629,16 +651,38 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
                     .iter()
                     .map(telltale_config::SafeString::as_str),
             ),
-            detail: Some(format!("goes to {}", r.upstream_group)),
+            // REQ: API-013 (T35.3) — the group in words, as the map shows it.
+            detail: Some(format!(
+                "goes to {}",
+                telltale_api::map::display_label(r.upstream_group.as_str())
+            )),
             from: Some("a route".into()),
             link: link("/upstreams", "group", r.upstream_group.as_str()),
             ..PolicyItem::default()
         });
     }
+    // REQ: AGT-001, API-013 (T35.2, T35.3) — the sentence names the upstream group and the routes,
+    // and reads alone in the API and for agents.
+    let routes = upstream.iter().filter(|i| i.from.is_some()).count();
+    let summary = match upstream.first().filter(|i| i.from.is_none()) {
+        Some(first) => {
+            let base = format!("This device's queries go to upstream group {}", first.label);
+            if routes == 0 {
+                format!("{base}.")
+            } else {
+                format!("{base}, and {} some names elsewhere.", routes_send(routes))
+            }
+        }
+        None if routes > 0 => format!(
+            "{} some of this device's names to other upstreams.",
+            routes_send(routes)
+        ),
+        None => "No upstream group is set for this device.".to_owned(),
+    };
     sections.push(PolicySection {
         id: "upstream".into(),
         title: "Upstream".into(),
-        summary: "Where this device's queries are forwarded.".into(),
+        summary,
         items: upstream,
         link: plain_link("/upstreams"),
     });
@@ -671,6 +715,24 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
         at_unix_seconds: now,
         node: None,
         missing_nodes: Vec::new(),
+    }
+}
+
+/// `1 route sends`, `3 routes send`.
+fn routes_send(n: usize) -> String {
+    if n == 1 {
+        "1 route sends".to_owned()
+    } else {
+        format!("{n} routes send")
+    }
+}
+
+/// `1 list`, `3 lists`: a count with its noun.
+fn counted(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
     }
 }
 

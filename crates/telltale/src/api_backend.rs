@@ -2854,6 +2854,8 @@ impl Backend for ApiBackend {
         // REQ: API-902 (ADR-956 §4, ADR-957) — guarded entries ignored by the environment switch,
         // or a confirmed listener that fell back at this start: degraded, DNS unaffected.
         reasons.extend(crate::guarded::health_reasons());
+        // REQ: API-007 (T35.1) — names a configuration file defines with HTML codes in them.
+        reasons.extend(crate::names_repair::health_reasons());
         // REQ: OPS-010 — a standalone node in maintenance leaves its own conditions out (in a
         // cluster, the federated health does it from every node's heartbeats).
         let mut maintenance = Vec::new();
@@ -7251,7 +7253,7 @@ impl ApiBackend {
 
     /// REQ: CLU-003 — a replica that follows the primary takes configuration only from it;
     /// writes go to the primary (forwarded automatically once T5.7 lands).
-    fn replica_read_only(&self) -> Option<Problem> {
+    pub(crate) fn replica_read_only(&self) -> Option<Problem> {
         let cfg = self.src.config.load_full();
         // ADR-048 — under a GitOps authority, configuration changes go to Git on every node.
         if let Some(c) = &self.src.cluster

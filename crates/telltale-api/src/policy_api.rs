@@ -67,7 +67,8 @@ pub struct PolicySection {
     /// new sections get new ids.
     pub id: String,
     pub title: String,
-    /// One sentence: what this part of the policy does for this device.
+    /// One sentence that stands alone (T35.2): it names the group and the count, and never points at the page ("below", "these"), so the API and an agent read it as it is.
+    #[schema(example = "Group kids uses the 3 lists it names.")]
     pub summary: String,
     pub items: Vec<PolicyItem>,
     /// Where the whole section is edited.

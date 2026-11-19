@@ -534,6 +534,98 @@ pub fn classify(
     (h, reasons)
 }
 
+/// REQ: API-013, OBS-901 (T35.3) — what a person reads for an upstream or an upstream group's ID.
+///
+/// A forwarded domain makes the group `forward:<domain>` and one upstream per server,
+/// `forward:<domain>#1`, `#2`, ... (a stub zone's is `#stub`). Those internal IDs are not words:
+/// - `forward:home.example` reads "home.example names";
+/// - `forward:168.192.in-addr.arpa` reads "Reverse lookups, 192.168.x.x" (the reverse zone
+///   written the way an address is);
+/// - a stub zone adds "(stub zone)", and the second and later servers of one domain "server N".
+///
+/// Any other ID (a preset such as `cloudflare`, a group such as `default`) is its own name. The
+/// server's address is a field of the node, not part of the label. The server renders this, so
+/// the map, the policy route detail, the world view and MCP's `network_health` agree.
+pub fn display_label(id: &str) -> String {
+    let Some(rest) = id.strip_prefix("forward:") else {
+        return id.to_owned();
+    };
+    let (domain, suffix) = match rest.rsplit_once('#') {
+        Some((d, s)) => (d, Some(s)),
+        None => (rest, None),
+    };
+    if domain.is_empty() {
+        return id.to_owned();
+    }
+    let mut label = reverse_label(domain).unwrap_or_else(|| format!("{domain} names"));
+    match suffix {
+        Some("stub") => label.push_str(" (stub zone)"),
+        Some(n) => {
+            if let Ok(i) = n.parse::<u32>()
+                && i > 1
+            {
+                label = format!("{label}, server {i}");
+            }
+        }
+        None => {}
+    }
+    label
+}
+
+/// `192.168.x.x` for `168.192.in-addr.arpa`: "Reverse lookups, 192.168.x.x"; an IPv6 reverse zone
+/// reads "Reverse lookups, IPv6 <prefix>/<bits>" with the nibbles put back in order.
+fn reverse_label(domain: &str) -> Option<String> {
+    let lower = domain.to_ascii_lowercase();
+    if let Some(v4) = lower.strip_suffix(".in-addr.arpa") {
+        let mut octets: Vec<&str> = v4.split('.').collect();
+        if octets.is_empty()
+            || octets.len() > 4
+            || octets
+                .iter()
+                .any(|o| o.is_empty() || !o.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return None;
+        }
+        octets.reverse();
+        let mut shown: Vec<String> = octets.iter().map(|o| (*o).to_owned()).collect();
+        while shown.len() < 4 {
+            shown.push("x".to_owned());
+        }
+        return Some(format!("Reverse lookups, {}", shown.join(".")));
+    }
+    if let Some(v6) = lower.strip_suffix(".ip6.arpa") {
+        let nibbles: Vec<&str> = v6.split('.').collect();
+        if nibbles.is_empty()
+            || nibbles.len() > 32
+            || nibbles
+                .iter()
+                .any(|n| n.len() != 1 || !n.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return None;
+        }
+        let mut hex: Vec<&str> = nibbles.clone();
+        hex.reverse();
+        let groups: Vec<String> = hex
+            .chunks(4)
+            .map(|c| {
+                let g = c.concat();
+                let t = g.trim_start_matches('0');
+                if t.is_empty() {
+                    "0".to_owned()
+                } else {
+                    t.to_owned()
+                }
+            })
+            .collect();
+        return Some(format!(
+            "Reverse lookups, IPv6 {}::/{}",
+            groups.join(":"),
+            nibbles.len() * 4
+        ));
+    }
+    None
+}
+
 /// REQ: OBS-901 (fork #25, ADR-1012) — the resolver's view of its upstreams. An upstream that is
 /// red but belongs only to groups that have a member that is not red (the group still answers)
 /// counts as yellow for the resolver, and a reason names it and the member that answers. An
@@ -563,12 +655,14 @@ pub fn group_aware(ups: &[(&PartUpstream, MapHealth)]) -> (Vec<MapHealth>, Vec<M
         if covered {
             answering.sort_unstable();
             answering.dedup();
+            // REQ: API-013 (T35.3) — the sentence names the upstreams the way the map does.
+            let answering: Vec<String> = answering.into_iter().map(display_label).collect();
             out.push(MapHealth::Yellow);
             notes.push(reason(
                 "member_down",
                 format!(
                     "upstream {} is down; its group still answers through {}",
-                    u.name,
+                    display_label(&u.name),
                     answering.join(", ")
                 ),
             ));
@@ -1034,6 +1128,15 @@ pub fn build(parts: &MapParts, ctx: &Context<'_>, filter: &Filter) -> MapSnapsho
             }
         }
     }
+    // The address of each upstream whose endpoint is an IP literal (any node's part will do).
+    let mut server_ip: BTreeMap<&str, IpAddr> = BTreeMap::new();
+    for p in &parts.parts {
+        for u in &p.upstreams {
+            if let Some(ip) = u.ip {
+                server_ip.entry(u.name.as_str()).or_insert(ip);
+            }
+        }
+    }
     for (name, a) in &up_total {
         let b = breakers.get(name).copied().unwrap_or(Breaker::Closed);
         let (mut h, mut why) = classify(
@@ -1057,13 +1160,14 @@ pub fn build(parts: &MapParts, ctx: &Context<'_>, filter: &Filter) -> MapSnapsho
         nodes.push(MapNode {
             id: format!("up:{name}"),
             kind: MapNodeKind::Upstream,
-            label: name.clone(),
+            // REQ: API-013 (T35.3) — a person's words for the internal ID, and the server's address.
+            label: display_label(name),
             health: h,
             reasons: why,
             qps: qps_of(a.weighted),
             count: a.weighted,
             sampled: a.sampled,
-            address: None,
+            address: server_ip.get(name.as_str()).map(ToString::to_string),
             network: None,
             group: None,
             node: None,
@@ -1347,6 +1451,12 @@ pub struct HealthProblem {
 pub struct HealthFlow {
     pub from: String,
     pub to: String,
+    /// REQ: API-013 (T35.3) — `from` and `to` in words (a device's name, an upstream's display
+    /// label), for an agent that reads the answer to a person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_label: Option<String>,
     pub qps: f64,
     pub health: MapHealth,
 }
@@ -1385,6 +1495,11 @@ pub fn network_health(s: &MapSnapshot) -> NetworkHealth {
         .collect();
     problems.sort_by(|a, b| b.health.cmp(&a.health).then_with(|| a.id.cmp(&b.id)));
     problems.truncate(50);
+    let labels: BTreeMap<&str, &str> = s
+        .nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.label.as_str()))
+        .collect();
     let mut flows: Vec<&MapEdge> = s.edges.iter().filter(|e| !e.structural).collect();
     flows.sort_by(|a, b| {
         b.count
@@ -1403,6 +1518,8 @@ pub fn network_health(s: &MapSnapshot) -> NetworkHealth {
             .map(|e| HealthFlow {
                 from: e.from.clone(),
                 to: e.to.clone(),
+                from_label: labels.get(e.from.as_str()).map(|l| (*l).to_owned()),
+                to_label: labels.get(e.to.as_str()).map(|l| (*l).to_owned()),
                 qps: e.qps,
                 health: e.health,
             })
@@ -1659,7 +1776,7 @@ pub fn world(
             };
             let (health, _) = classify(&u.agg, th, Scope::Upstream, &facts);
             markers.push(WorldMarker {
-                name: name.clone(),
+                name: display_label(name),
                 cc: Some(cc),
                 qps: rate(u.agg.weighted, secs),
                 health,

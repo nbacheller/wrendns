@@ -3466,7 +3466,7 @@ pub struct HealthReason {
     /// `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
     /// `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,
     /// `discovery_agent_failing`,
-    /// `guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`.
+    /// `guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`, `names_in_files`.
     #[schema(example = "upstream_down")]
     pub code: String,
     /// In words, with the numbers.

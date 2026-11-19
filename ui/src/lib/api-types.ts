@@ -7773,10 +7773,16 @@ export interface components {
         /** @description One of the busiest flows. */
         HealthFlow: {
             from: string;
+            /**
+             * @description REQ: API-013 (T35.3) — `from` and `to` in words (a device's name, an upstream's display
+             *     label), for an agent that reads the answer to a person.
+             */
+            fromLabel?: string | null;
             health: components["schemas"]["MapHealth"];
             /** Format: double */
             qps: number;
             to: string;
+            toLabel?: string | null;
         };
         /** @description One node that isn't green, with why. */
         HealthProblem: {
@@ -7794,7 +7800,7 @@ export interface components {
              *     `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
              *     `rollout_stuck`, `discovery_worker_failing`, `discovery_worker_version_mismatch`,
              *     `discovery_agent_failing`,
-             *     `guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`.
+             *     `guarded_ignored`, `guarded_bind_fallback`, `secret_not_held`, `names_in_files`.
              * @example upstream_down
              */
             code: string;
@@ -10433,7 +10439,10 @@ export interface components {
             id: string;
             items: components["schemas"]["PolicyItem"][];
             link?: components["schemas"]["PolicyLink"] | null;
-            /** @description One sentence: what this part of the policy does for this device. */
+            /**
+             * @description One sentence that stands alone (T35.2): it names the group and the count, and never points at the page ("below", "these"), so the API and an agent read it as it is.
+             * @example Group kids uses the 3 lists it names.
+             */
             summary: string;
             title: string;
         };

@@ -869,6 +869,50 @@ fn flt_006_policy_names_the_group_and_key_and_agrees_with_explain() {
     }
 }
 
+/// REQ: AGT-001, FLT-006 (T35.2) — every summary the server sends stands alone: no "below", no
+/// "these", no "the items", and each names what it counts (the group, the number), so the API and
+/// the MCP tool read well without the panel around them.
+#[test]
+fn agt_001_t35_2_policy_summaries_stand_alone() {
+    let (p, _sources) = setup_with(POLICY_EXTRA);
+    for ip in ["10.7.1.9", "10.0.0.5", "203.0.113.9", "10.0.3.9"] {
+        let pol = policy_of(&p, ip, None, None, 1_795_035_000);
+        for s in &pol.sections {
+            let t = s.summary.to_ascii_lowercase();
+            for word in ["below", "above", "these", "those", "the items", "the lines"] {
+                assert!(
+                    !t.split(|c: char| !c.is_alphabetic()).any(|w| w == word)
+                        && !t.contains("the items")
+                        && !t.contains("the lines"),
+                    "{ip} {}: `{}` leans on the page ({word})",
+                    s.id,
+                    s.summary
+                );
+            }
+            assert!(
+                s.summary.ends_with('.') && s.summary.len() > 12,
+                "{ip} {}: `{}`",
+                s.id,
+                s.summary
+            );
+        }
+    }
+    let pol = policy_of(&p, "10.7.1.9", None, None, 1_795_035_000);
+    let lists = section(&pol, "lists");
+    assert!(lists.summary.starts_with("Group iot "), "{}", lists.summary);
+    let up = section(&pol, "upstream");
+    assert!(
+        up.summary.contains("upstream group"),
+        "the upstream sentence names the group: {}",
+        up.summary
+    );
+    assert!(
+        section(&pol, "services").summary.contains("1 service is"),
+        "{}",
+        section(&pol, "services").summary
+    );
+}
+
 /// REQ: FLT-006, API-010 (T24.30) — the network group's settings show as sections: its blocked
 /// services, safe search, the lists in use, and the default upstream group, each with a link.
 #[test]
@@ -917,6 +961,57 @@ fn flt_006_policy_sections_show_the_groups_settings() {
         up.items
             .iter()
             .any(|i| i.label == "corp.example" && i.detail.as_deref() == Some("goes to lan"))
+    );
+}
+
+/// REQ: API-013 (T35.3) — the policy's route detail says where a name goes in words, not as the
+/// internal ID of the forwarded domain's group.
+#[test]
+fn api_013_t35_3_policy_route_detail_uses_display_labels() {
+    let extra = r#"
+[[upstream]]
+name = "forward:168.192.in-addr.arpa#1"
+url = "udp://192.168.1.1"
+[[upstream_group]]
+name = "forward:168.192.in-addr.arpa"
+members = ["forward:168.192.in-addr.arpa#1"]
+[[route]]
+match_suffix = ["168.192.in-addr.arpa"]
+upstream_group = "forward:168.192.in-addr.arpa"
+"#;
+    let (p, _sources) = setup_with(extra);
+    let cfg = telltale_config::Loader::new()
+        .toml_str("t.toml", format!("{CONFIG}{extra}"))
+        .env(Vec::<(String, String)>::new())
+        .load()
+        .unwrap()
+        .config;
+    let subject = crate::policy_view::Subject {
+        asked: "10.0.0.5".to_owned(),
+        ip: "10.0.0.5".parse().unwrap(),
+        mac: None,
+        client_id: None,
+        wanted_device: None,
+        stand_in: false,
+        observed: false,
+    };
+    let pol =
+        p.with_explain_state(|st| crate::policy_view::build(st, &cfg, &subject, 1_795_035_000));
+    let up = section(&pol, "upstream");
+    let route = up
+        .items
+        .iter()
+        .find(|i| i.label == "168.192.in-addr.arpa")
+        .unwrap_or_else(|| panic!("{up:?}"));
+    assert_eq!(
+        route.detail.as_deref(),
+        Some("goes to Reverse lookups, 192.168.x.x")
+    );
+    assert!(!up.summary.contains("forward:"), "{}", up.summary);
+    assert!(
+        up.summary.contains("2 routes"),
+        "the sentence counts the routes: {}",
+        up.summary
     );
 }
 
