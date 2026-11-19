@@ -461,7 +461,11 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
         summary: if answers.is_empty() {
             "Answers are passed on as the upstream gave them.".into()
         } else {
-            "This group changes or refuses some answers.".into()
+            format!(
+                "Group {} changes or refuses {}.",
+                group.name,
+                counted(answers.len(), "answer rule")
+            )
         },
         items: answers,
         link: group_link(&group.name),
@@ -666,7 +670,7 @@ pub(crate) fn build(st: &State<'_>, cfg: &Config, subject: &Subject, now: u64) -
     let routes = upstream.iter().filter(|i| i.from.is_some()).count();
     let summary = match upstream.first().filter(|i| i.from.is_none()) {
         Some(first) => {
-            let base = format!("This device's queries go to upstream group {}", first.label);
+            let base = format!("This device's queries go to {}", first.label);
             if routes == 0 {
                 format!("{base}.")
             } else {

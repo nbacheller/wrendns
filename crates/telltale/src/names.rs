@@ -82,7 +82,7 @@ pub(crate) fn has_entities(s: &str) -> bool {
 }
 
 /// REQ: API-007 (A6) — whether a name lost characters on its way here: a control character was
-/// stripped, or the text holds `U+FFFD` or a `?` where a character was already replaced upstream
+/// stripped, or the text holds `U+FFFD` or a `?` standing where a character was already replaced upstream
 /// (Pi-hole's PHP stores a character it can't encode as `?`). Listed in the import report.
 pub(crate) fn lost_characters(raw: &str, cleaned: &str) -> bool {
     let controls = |s: &str| {
@@ -93,7 +93,20 @@ pub(crate) fn lost_characters(raw: &str, cleaned: &str) -> bool {
     controls(&decode_entities(raw)) > 0
         || controls(raw) > 0
         || cleaned.contains('\u{FFFD}')
-        || cleaned.contains('?')
+        || replaced_by_question_mark(cleaned)
+}
+
+/// A `?` that stands where a character was: at the start, or after a character that is not a
+/// letter or digit (`Google -?`, `??`). A `?` closing a word (`Who's there?`) is a question.
+fn replaced_by_question_mark(s: &str) -> bool {
+    let mut prev: Option<char> = None;
+    for c in s.chars() {
+        if c == '?' && prev.is_none_or(|p| !p.is_alphanumeric()) {
+            return true;
+        }
+        prev = Some(c);
+    }
+    false
 }
 
 /// The part of an address that tells two devices of one name apart: the last two octets of an

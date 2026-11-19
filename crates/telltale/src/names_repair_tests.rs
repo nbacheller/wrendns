@@ -303,3 +303,192 @@ fn api_007_t35_1_file_names_become_a_health_note() {
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].kind, "device");
 }
+
+// REQ: API-007 (T35.1, ADR-1032) — one-off: a name that keeps one escape layer after the pass, and
+// one typed after it, are never decoded again.
+#[tokio::test]
+async fn api_007_t35_1_repair_runs_once_and_keeps_one_layer() {
+    let h = harness("");
+    put(
+        &h,
+        CLIENT,
+        "&amp;amp;",
+        &json!({"name": "&amp;amp;", "match": ["192.168.1.50"]}),
+    );
+    put(
+        &h,
+        CLIENT,
+        "Double&amp;#039;d",
+        &json!({"name": "Double&amp;#039;d", "match": ["192.168.1.51"]}),
+    );
+    let file = file_of(&h);
+    let first = repair(h.auth.state(), &file, &[], NOW).unwrap();
+    assert_eq!(first.renamed.len(), 2, "{first:?}");
+    let mut clients = names(&h, CLIENT);
+    clients.sort();
+    assert_eq!(
+        clients,
+        vec!["&amp;".to_owned(), "Double&#039;d".to_owned()]
+    );
+    let audited = audits(&h);
+
+    // A name typed after the pass.
+    put(
+        &h,
+        CLIENT,
+        "R&amp;D lab",
+        &json!({"name": "R&amp;D lab", "match": ["192.168.1.52"]}),
+    );
+    let second = repair(h.auth.state(), &file, &[], NOW + 60).unwrap();
+    assert!(
+        second.version.is_none() && second.renamed.is_empty(),
+        "{second:?}"
+    );
+    let mut after = names(&h, CLIENT);
+    after.sort();
+    assert_eq!(
+        after,
+        vec![
+            "&amp;".to_owned(),
+            "Double&#039;d".to_owned(),
+            "R&amp;D lab".to_owned()
+        ]
+    );
+    assert_eq!(audits(&h), audited, "no second audit entry");
+}
+
+// REQ: API-007 (T35.1) — a pass that finds nothing marks the database too, so a name typed
+// later is not touched.
+#[tokio::test]
+async fn api_007_t35_1_a_pass_that_finds_nothing_still_marks_the_database() {
+    let h = harness("");
+    let file = file_of(&h);
+    let first = repair(h.auth.state(), &file, &[], NOW).unwrap();
+    assert!(first.version.is_none());
+    put(
+        &h,
+        CLIENT,
+        "R&amp;D lab",
+        &json!({"name": "R&amp;D lab", "match": ["192.168.1.52"]}),
+    );
+    let second = repair(h.auth.state(), &file, &[], NOW + 60).unwrap();
+    assert!(second.renamed.is_empty(), "{second:?}");
+    assert_eq!(names(&h, CLIENT), vec!["R&amp;D lab".to_owned()]);
+}
+
+// REQ: API-007 (T35.1) — a renamed device or group is followed in the log exclusions, the
+// anomaly mutes, the drill, the zones and the Kubernetes map; a group an agent token is limited
+// to is left as it is.
+#[tokio::test]
+async fn api_007_t35_1_repair_follows_every_stored_reference() {
+    use crate::managed::{ANOMALY_MUTE, DRILL, EXCLUSIONS, KUBERNETES_MAP, ZONE};
+    let h = harness("");
+    put(
+        &h,
+        CLIENT,
+        "Alex&#039;s PC",
+        &json!({"name": "Alex&#039;s PC", "match": ["192.168.1.20"], "groups": ["Kids &amp; Teens"]}),
+    );
+    put(
+        &h,
+        GROUP,
+        "Kids &amp; Teens",
+        &json!({"name": "Kids &amp; Teens"}),
+    );
+    put(
+        &h,
+        EXCLUSIONS,
+        "default",
+        &json!({"enabled": true, "log": {"clients": ["Alex&#039;s PC", "10.0.0.0/8"]}}),
+    );
+    put(
+        &h,
+        ANOMALY_MUTE,
+        "m1",
+        &json!({"name": "m1", "devices": ["Alex&#039;s PC"], "groups": ["Kids &amp; Teens"], "kinds": ["beacon"]}),
+    );
+    put(
+        &h,
+        DRILL,
+        "default",
+        &json!({"clients": ["Alex&#039;s PC"], "group": "Kids &amp; Teens"}),
+    );
+    put(
+        &h,
+        ZONE,
+        "home.example.com",
+        &json!({"name": "home.example.com", "groups": ["Kids &amp; Teens"],
+                "record": [{"name": "nas.home.example.com", "type": "A", "value": "10.0.0.9"}]}),
+    );
+    put(
+        &h,
+        KUBERNETES_MAP,
+        "k1",
+        &json!({"namespace": "kids", "group": "Kids &amp; Teens"}),
+    );
+    let why = crate::managed::merge(&file_of(&h), &crate::managed::entries(h.auth.state())).err();
+    assert!(why.is_none(), "{why:?}");
+    let r = repair(h.auth.state(), &file_of(&h), &[], NOW).unwrap();
+    assert_eq!(r.renamed.len(), 2, "{r:?} {:?}", r.skipped);
+    let body = |kind: &str, name: &str| -> Value {
+        let row = h
+            .auth
+            .state()
+            .managed(kind)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.name == name)
+            .unwrap_or_else(|| panic!("{kind} {name}"));
+        serde_json::from_str(&row.body).unwrap()
+    };
+    assert_eq!(
+        body(EXCLUSIONS, "default")["log"]["clients"],
+        json!(["Alex's PC", "10.0.0.0/8"])
+    );
+    let mute = body(ANOMALY_MUTE, "m1");
+    assert_eq!(mute["devices"], json!(["Alex's PC"]));
+    assert_eq!(mute["groups"], json!(["Kids & Teens"]));
+    let drill = body(DRILL, "default");
+    assert_eq!(drill["clients"], json!(["Alex's PC"]));
+    assert_eq!(drill["group"], "Kids & Teens");
+    assert_eq!(
+        body(ZONE, "home.example.com")["groups"],
+        json!(["Kids & Teens"])
+    );
+    assert_eq!(body(KUBERNETES_MAP, "k1")["group"], "Kids & Teens");
+}
+
+#[tokio::test]
+async fn api_007_t35_1_repair_leaves_a_group_an_agent_token_is_limited_to() {
+    let h = harness("");
+    put(
+        &h,
+        GROUP,
+        "Kids &amp; Teens",
+        &json!({"name": "Kids &amp; Teens"}),
+    );
+    let user = h
+        .auth
+        .state()
+        .create_user("agent-owner", "x", "admin", false, NOW)
+        .unwrap()
+        .id;
+    h.auth
+        .state()
+        .create_token("tok1", user, "t", &[1, 2, 3], "read", None, NOW)
+        .unwrap();
+    h.auth
+        .state()
+        .set_token_agent("tok1", "read", Some("Kids &amp; Teens"), None)
+        .unwrap();
+    let r = repair(h.auth.state(), &file_of(&h), &[], NOW).unwrap();
+    assert!(r.renamed.is_empty(), "{r:?}");
+    assert!(
+        r.skipped
+            .iter()
+            .any(|(_, _, why)| why.contains("agent token")),
+        "{:?}",
+        r.skipped
+    );
+    assert_eq!(names(&h, GROUP), vec!["Kids &amp; Teens".to_owned()]);
+}

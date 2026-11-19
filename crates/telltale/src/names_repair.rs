@@ -25,8 +25,17 @@ use telltale_config::Config;
 use telltale_store::state::{NewAudit, State};
 use tracing::{info, warn};
 
-use crate::managed::{self, CLIENT, Entries, FORWARD, GROUP, Ovr, RULE};
+use crate::managed::{
+    self, ANOMALY_MUTE, CLIENT, DRILL, EXCLUSIONS, Entries, FORWARD, GROUP, KUBERNETES_MAP, Ovr,
+    RULE, ZONE,
+};
 use crate::names::{clean_text, has_entities, tail};
+
+/// The node-local note that the repair has run on this database (its value: the configuration
+/// version then). The repair is one-off: once set, no later pass decodes anything, so a name
+/// typed after the upgrade (`R&amp;D lab`) and a name that kept one escape layer are never
+/// touched. Recorded in the write's own transaction, or on its own when the pass found nothing.
+pub(crate) const MARKER: &str = "names-repair-v1";
 
 /// The audit action of a repair.
 pub(crate) const ACTION: &str = "names.repair";
@@ -66,7 +75,18 @@ pub(crate) struct Report {
 /// The rows the repair reads: what is stored, by (kind, name).
 type Rows = BTreeMap<(&'static str, String), Value>;
 
-const KINDS: [&str; 4] = [CLIENT, GROUP, RULE, FORWARD];
+/// The kinds read: clients and groups (renamed), and every kind that names a device or a group.
+const KINDS: [&str; 9] = [
+    CLIENT,
+    GROUP,
+    RULE,
+    FORWARD,
+    ZONE,
+    KUBERNETES_MAP,
+    ANOMALY_MUTE,
+    EXCLUSIONS,
+    DRILL,
+];
 
 fn load(state: &State) -> Result<Rows, String> {
     let mut rows = Rows::new();
@@ -87,6 +107,11 @@ fn entries_of(mut base: Entries, rows: &Rows) -> Entries {
     base.groups = Vec::new();
     base.rules = Vec::new();
     base.forwards = Vec::new();
+    base.zones = Vec::new();
+    base.kubernetes_map = Vec::new();
+    base.anomaly_mutes = Vec::new();
+    base.exclusions = None;
+    base.drill = None;
     for ((kind, name), body) in rows {
         match *kind {
             CLIENT => {
@@ -106,11 +131,32 @@ fn entries_of(mut base: Entries, rows: &Rows) -> Entries {
                     base.rules.push(r);
                 }
             }
-            _ => {
+            FORWARD => {
                 if let Ok(f) = serde_json::from_value(body.clone()) {
                     base.forwards.push((name.clone(), f));
                 }
             }
+            ZONE => {
+                if let Ok(z) = serde_json::from_value(body.clone()) {
+                    base.zones.push((name.clone(), z));
+                }
+            }
+            KUBERNETES_MAP => {
+                if body.get("hidden").and_then(Value::as_bool) == Some(true) {
+                    base.kubernetes_map.push((name.clone(), Ovr::Hidden));
+                } else if let Ok(r) = serde_json::from_value(body.clone()) {
+                    base.kubernetes_map.push((name.clone(), Ovr::Set(r)));
+                }
+            }
+            ANOMALY_MUTE => {
+                if body.get("hidden").and_then(Value::as_bool) == Some(true) {
+                    base.anomaly_mutes.push((name.clone(), Ovr::Hidden));
+                } else if let Ok(m) = serde_json::from_value(body.clone()) {
+                    base.anomaly_mutes.push((name.clone(), Ovr::Set(m)));
+                }
+            }
+            EXCLUSIONS => base.exclusions = serde_json::from_value(body.clone()).ok(),
+            _ => base.drill = Some(body.clone()),
         }
     }
     base
@@ -124,6 +170,15 @@ fn rename_in(body: &mut Value, key: &str, from: &str, to: &str) {
                 *item = Value::String(to.to_owned());
             }
         }
+    }
+}
+
+/// Replaces the string at `body[key]` by `to` when it is `from`.
+fn rename_str(body: &mut Value, key: &str, from: &str, to: &str) {
+    if let Some(v) = body.get_mut(key)
+        && v.as_str() == Some(from)
+    {
+        *v = Value::String(to.to_owned());
     }
 }
 
@@ -203,20 +258,35 @@ pub(crate) fn repair(
         file_entries: file_findings(file, files),
         ..Report::default()
     };
+    // One-off: a database that has had its pass is never decoded again.
+    if state.meta_get(MARKER).map_err(|e| e.to_string())?.is_some() {
+        return Ok(report);
+    }
     let version = state.config_version().map_err(|e| e.to_string())?;
+    let mark = |state: &State| {
+        state
+            .meta_set(MARKER, Some(&version.to_string()))
+            .map_err(|e| e.to_string())
+    };
     let original = load(state)?;
     if !original
         .keys()
         .any(|(k, n)| matches!(*k, CLIENT | GROUP) && has_entities(n))
     {
+        mark(state)?;
         return Ok(report);
     }
     let base = managed::entries(state);
-    // A configuration that does not validate to begin with can't judge a repair: trust the
-    // renames then (they only ever make a name cleaner).
+    // A configuration that does not validate to begin with can't judge a repair: nothing is
+    // renamed then (a rename could dangle a reference that nothing can check).
     let judged = managed::merge(file, &entries_of(base.clone(), &original)).is_ok();
     let accept =
-        |trial: &Rows| !judged || managed::merge(file, &entries_of(base.clone(), trial)).is_ok();
+        |trial: &Rows| judged && managed::merge(file, &entries_of(base.clone(), trial)).is_ok();
+    let token_groups: BTreeSet<String> = state
+        .agent_token_groups()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .collect();
     let file_clients: BTreeSet<&str> = file.client.iter().map(|c| c.name.as_str()).collect();
     let file_groups: BTreeSet<&str> = file.group.iter().map(|g| g.name.as_str()).collect();
     let mut work = original.clone();
@@ -260,12 +330,13 @@ pub(crate) fn repair(
         trial.insert((GROUP, new.clone()), body);
         for ((kind, _), b) in &mut trial {
             match *kind {
-                CLIENT | RULE => rename_in(b, "groups", &old, &new),
+                CLIENT | RULE | ZONE | ANOMALY_MUTE => rename_in(b, "groups", &old, &new),
                 FORWARD => rename_in(b, "match_group", &old, &new),
+                KUBERNETES_MAP | DRILL => rename_str(b, "group", &old, &new),
                 _ => {}
             }
         }
-        // A file's rule or client that still names the group by its old name would dangle.
+        // A file's entry that still names the group by its old name would dangle.
         let named_by_file = file
             .client
             .iter()
@@ -273,9 +344,23 @@ pub(crate) fn repair(
             || file
                 .rule
                 .iter()
-                .any(|r| r.groups.iter().any(|g| g.as_str() == old));
+                .any(|r| r.groups.iter().any(|g| g.as_str() == old))
+            || file
+                .zone
+                .iter()
+                .any(|z| z.groups.iter().any(|g| g.as_str() == old))
+            || file
+                .anomaly_mute
+                .iter()
+                .any(|m| m.groups.iter().any(|g| g.as_str() == old))
+            || file.kubernetes.map.iter().any(|r| r.group.as_str() == old)
+            || file.drill.group.as_ref().is_some_and(|g| g.as_str() == old);
         if named_by_file {
             skip(&mut report, "a configuration file names this group");
+            continue;
+        }
+        if token_groups.contains(&old) {
+            skip(&mut report, "an agent token is limited to this group");
             continue;
         }
         if !accept(&trial) {
@@ -313,6 +398,17 @@ pub(crate) fn repair(
             .rule
             .iter()
             .any(|r| r.devices.iter().any(|d| d.as_str() == old))
+            || file
+                .anomaly_mute
+                .iter()
+                .any(|m| m.devices.iter().any(|d| d.as_str() == old))
+            || file
+                .exclusions
+                .log
+                .clients
+                .iter()
+                .any(|d| d.as_str() == old)
+            || file.drill.clients.iter().any(|d| d.as_str() == old)
         {
             skip(&mut report, "a configuration file names this device");
             continue;
@@ -329,7 +425,12 @@ pub(crate) fn repair(
         let mut new = new;
         if taken(&new, &work) {
             // REQ: API-007 (A6) — told apart by the device's own tail, then by a number.
-            let base_name = format!("{new} ({})", tail(&first_key));
+            let tail = tail(&first_key);
+            let base_name = if tail.is_empty() {
+                new.clone()
+            } else {
+                format!("{new} ({tail})")
+            };
             new.clone_from(&base_name);
             let mut i = 2;
             while taken(&new, &work) {
@@ -344,8 +445,15 @@ pub(crate) fn repair(
         body["name"] = Value::String(new.clone());
         trial.insert((CLIENT, new.clone()), body);
         for ((kind, _), b) in &mut trial {
-            if *kind == RULE {
-                rename_in(b, "devices", &old, &new);
+            match *kind {
+                RULE | ANOMALY_MUTE => rename_in(b, "devices", &old, &new),
+                DRILL => rename_in(b, "clients", &old, &new),
+                EXCLUSIONS => {
+                    if let Some(log) = b.get_mut("log") {
+                        rename_in(log, "clients", &old, &new);
+                    }
+                }
+                _ => {}
             }
         }
         if !accept(&trial) {
@@ -361,6 +469,7 @@ pub(crate) fn repair(
     }
 
     if report.renamed.is_empty() {
+        mark(state)?;
         return Ok(report);
     }
     // The write: what is new or changed, and what is gone, in one transaction.
@@ -380,7 +489,14 @@ pub(crate) fn repair(
         .collect();
     let remove_refs: Vec<(&str, &str)> = removes.iter().map(|(k, n)| (*k, n.as_str())).collect();
     let next = state
-        .put_and_remove_managed(&put_refs, &remove_refs, Some(version), now, ACTOR)
+        .put_and_remove_managed(
+            &put_refs,
+            &remove_refs,
+            Some(version),
+            now,
+            ACTOR,
+            Some((MARKER, &(version + 1).to_string())),
+        )
         .map_err(|e| e.to_string())?;
     report.version = Some(next);
     audit(state, &report, now);
@@ -465,6 +581,11 @@ fn now_secs() -> u64 {
 /// names it stored (the primary publishes the new version to the replicas as for any write).
 pub(crate) async fn run_once(src: &Arc<crate::http::Sources>) {
     let Some(auth) = src.auth.get() else { return };
+    // The health note covers every node, a replica too (it reads the same files).
+    set_file_entries(file_findings(
+        &crate::api_backend::plan_files(src),
+        &src.config_files,
+    ));
     let backend = crate::api_backend::ApiBackend {
         src: Arc::clone(src),
     };

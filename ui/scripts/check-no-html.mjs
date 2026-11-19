@@ -18,7 +18,10 @@ walk(root);
 
 const forbidden = [
   [/\{@html\b/, '{@html}'],
-  [/\.(innerHTML|outerHTML)\s*=/, 'innerHTML / outerHTML assignment'],
+  [/(\.|\[['"])(innerHTML|outerHTML)(['"]\])?\s*\+?=/, 'innerHTML / outerHTML assignment'],
+  [/document\.write(ln)?\s*\(/, 'document.write()'],
+  [/createContextualFragment\s*\(/, 'createContextualFragment()'],
+  [/srcdoc/, 'srcdoc'],
   [/\binsertAdjacentHTML\s*\(/, 'insertAdjacentHTML()'],
 ];
 const bad = [];

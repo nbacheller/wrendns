@@ -1,4 +1,6 @@
-// REQ: API-007, API-013, AGT-001, OBS-901 (T35.1, T35.2, T35.3) — names read as words: the compact Policy
+// REQ: API-007, API-013, AGT-001, OBS-901 (T35.1, T35.2, T35.3) — a Pi-hole comment stored escaped reads
+// decoded in the import preview, and the health panel says which file holds a name with HTML codes;
+// names read as words: the compact Policy
 // panel names up to three items per section as links and then "+N more", every server summary
 // stands alone, and the map, the policy route detail and the Upstreams of a forwarded domain say
 // "Reverse lookups, 192.168.x.x", not `forward:168.192.in-addr.arpa#1`. The policy and the map's
@@ -6,6 +8,10 @@
 // has no traffic). These tests sign in as the admin `1-ui.spec.ts` created, so run the whole suite,
 // not this file alone. The file is named `8-` so what it creates (rules, a forward) is gone before
 // it ends.
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 
 test.describe.configure({ mode: 'serial' });
@@ -82,7 +88,7 @@ test('api_013 a forwarded domain reads as words on the map, in the policy route 
   await expect(upstream).toContainText('goes to Reverse lookups, 192.168.x.x');
   await expect(upstream).not.toContainText('forward:');
   // The section's sentence stands alone.
-  await expect(upstream.locator('p.muted').first()).toContainText('upstream group');
+  await expect(upstream.locator('p.muted').first()).toContainText('queries go to');
 
   // The map page draws the label (the node is the real one; the device nodes are not needed).
   await page.goto('/#/map');
@@ -156,4 +162,68 @@ test('agt_001 the compact policy panel names up to three items as links, then "+
   await expect(compact.getByTestId('policy-more-block')).toHaveCount(0);
   await map.close();
   for (const id of ids) expect((await r.delete(`/api/v1/rules/${id}`, { headers: h() })).status()).toBe(200);
+});
+
+// REQ: API-007 (T35.1, ADR-1032) — a Pi-hole export stores a client's comment HTML-escaped
+// (`Alex&#039;s PC`); the import preview shows it decoded, as text, and writes nothing.
+test('api_007 t35_1 the import preview shows an escaped client comment decoded', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tt-names-'));
+  try {
+    writeFileSync(join(dir, 'group.json'), JSON.stringify([{ id: 0, enabled: 1, name: 'Default', description: 'The default group' }]));
+    writeFileSync(join(dir, 'client.json'), JSON.stringify([{ id: 1, ip: '192.168.77.20', comment: 'Alex&#039;s PC' }]));
+    writeFileSync(join(dir, 'client_by_group.json'), JSON.stringify([{ client_id: 1, group_id: 0 }]));
+    writeFileSync(join(dir, 'setupVars.conf'), 'PIHOLE_DNS_1=9.9.9.9\nDNSSEC=false\nDHCP_ACTIVE=false\n');
+    const tgz = join(dir, 'names.tar.gz');
+    execFileSync('tar', ['-czf', tgz, '-C', dir, 'group.json', 'client.json', 'client_by_group.json', 'setupVars.conf']);
+    await page.goto('/');
+    await page.goto('/#/settings?tab=pihole');
+    const panel = page.getByTestId('pihole-import');
+    await expect(panel).toBeVisible({ timeout: 20_000 });
+    await panel.getByTestId('pihole-file').setInputFiles({ name: 'names.tar.gz', mimeType: 'application/gzip', buffer: readFileSync(tgz) });
+    await panel.getByTestId('pihole-preview').click();
+    await expect(panel.getByTestId('pihole-summary')).toContainText('to add', { timeout: 20_000 });
+    const item = panel.getByTestId('pihole-item').filter({ hasText: "Alex's PC" });
+    await expect(item.first()).toBeVisible();
+    await expect(panel).not.toContainText('&#039;');
+    // Nothing was written by the preview.
+    const clients = JSON.stringify(await (await page.request.get('/api/v1/config/entries?kind=client')).json());
+    expect(clients).not.toContain('Alex');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// REQ: API-007 (T35.1) — a name a configuration file defines with HTML codes in it is never
+// rewritten; the health panel names the file and says DNS is unaffected. (The server's own text is
+// served here by a stub; the server side is covered by the names_repair unit tests.)
+test('api_007 t35_1 the health panel names a file that holds a name with HTML codes', async () => {
+  await page.route('**/api/v1/system/health', (route) =>
+    route.fulfill({
+      json: {
+        level: 'degraded',
+        checkedAt: '2026-11-19T12:00:00.000Z',
+        reasons: [
+          {
+            level: 'degraded',
+            code: 'names_in_files',
+            summary: '1 name(s) in a configuration file hold HTML codes: device `Alex&#039;s PC` in telltale.toml. TelltaleDNS never rewrites a file; change the name there. DNS is unaffected',
+            link: '#/clients',
+          },
+        ],
+      },
+    }),
+  );
+  try {
+    await page.goto('/#/');
+    await page.reload();
+    await expect(page.getByTestId('health-icon')).toHaveAttribute('data-level', 'degraded');
+    await page.getByTestId('health-icon').click();
+    const panel = page.getByTestId('health-panel');
+    await expect(panel).toContainText('hold HTML codes');
+    await expect(panel).toContainText('telltale.toml');
+    await expect(panel).toContainText('DNS is unaffected');
+    await expect(panel.getByRole('link', { name: 'Look' })).toHaveAttribute('href', '#/clients');
+  } finally {
+    await page.unroute('**/api/v1/system/health');
+  }
 });

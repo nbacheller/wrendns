@@ -879,6 +879,12 @@ fn agt_001_t35_2_policy_summaries_stand_alone() {
         let pol = policy_of(&p, ip, None, None, 1_795_035_000);
         for s in &pol.sections {
             let t = s.summary.to_ascii_lowercase();
+            assert!(
+                !t.contains("this group"),
+                "{ip} {}: `{}` doesn't name the group",
+                s.id,
+                s.summary
+            );
             for word in ["below", "above", "these", "those", "the items", "the lines"] {
                 assert!(
                     !t.split(|c: char| !c.is_alphabetic()).any(|w| w == word)
@@ -902,8 +908,8 @@ fn agt_001_t35_2_policy_summaries_stand_alone() {
     assert!(lists.summary.starts_with("Group iot "), "{}", lists.summary);
     let up = section(&pol, "upstream");
     assert!(
-        up.summary.contains("upstream group"),
-        "the upstream sentence names the group: {}",
+        up.summary.contains("queries go to "),
+        "the upstream sentence names where the queries go: {}",
         up.summary
     );
     assert!(
