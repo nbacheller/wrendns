@@ -157,7 +157,7 @@ function newKey(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'map-settings' | 'discovery-settings' | 'sinks' | 'cache-settings' | 'support-settings' | 'updates-settings' | 'dnssec-settings' | 'filter-settings' | 'drill-settings';
+export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'anomaly-mutes' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'map-settings' | 'discovery-settings' | 'sinks' | 'cache-settings' | 'support-settings' | 'updates-settings' | 'dnssec-settings' | 'filter-settings' | 'drill-settings' | 'slo-settings' | 'probe-settings' | 'upstream-check-settings' | 'anomaly-settings' | 'qlog-settings' | 'metrics-settings';
 
 /** REQ: API-007 (T23.9) — a backup made through the API. */
 export type BackupResult = { blob: Blob; name: string; secrets: 'included' | 'omitted'; count: number; warnings: string[] };
@@ -551,6 +551,15 @@ export const api = {
     }),
   deleteForward: (domain: string) =>
     call<S['ConfigChange']>('DELETE', `/forwards/${encodeURIComponent(domain)}`, { headers: { 'idempotency-key': newKey() } }),
+  // REQ: DNS-010 (T27.7) — an authoritative zone made in the UI or API.
+  putZone: (name: string, body: S['ZoneInput'], dryRun = false, simulate?: string) =>
+    call<S['ConfigChange']>('PUT', `/zones/${encodeURIComponent(name)}`, {
+      body,
+      query: { dryRun: dryRun || undefined, simulate: dryRun ? simulate : undefined },
+      headers: dryRun ? {} : { 'idempotency-key': newKey() },
+    }),
+  deleteZone: (name: string) =>
+    call<S['ConfigChange']>('DELETE', `/zones/${encodeURIComponent(name)}`, { headers: { 'idempotency-key': newKey() } }),
   // REQ: FLT-005 (T6.12) — quick rules.
   putRule: (id: string, body: S['RuleInput'], dryRun = false, simulate?: string) =>
     call<S['ConfigChange']>('PUT', `/rules/${encodeURIComponent(id)}`, {

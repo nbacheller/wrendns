@@ -240,6 +240,7 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
             let action = match kind {
                 ManagedKind::Record => "record",
                 ManagedKind::Forward => "forward",
+                ManagedKind::Zone => "zone",
                 ManagedKind::Rule => "rule",
                 ManagedKind::Upstream => "upstream",
                 ManagedKind::UpstreamGroup => "upstream_group",
@@ -270,6 +271,12 @@ async fn apply(src: &Sources, local: &Shared, peer: &str, via: &str, w: Write) -
                 ManagedKind::Dnssec => "dnssec",
                 ManagedKind::Filter => "filter",
                 ManagedKind::Drill => "drill",
+                ManagedKind::Slo => "slo",
+                ManagedKind::Probe => "probe",
+                ManagedKind::UpstreamCheck => "upstream_check",
+                ManagedKind::TelemetryAnomaly => "anomaly_settings",
+                ManagedKind::TelemetryQlog => "qlog_settings",
+                ManagedKind::TelemetryMetrics => "metrics_settings",
             };
             let deleting = body.is_none();
             let r = local
@@ -617,6 +624,12 @@ fn settings_kinds_understood(
             | ManagedKind::Local
             | ManagedKind::Clients
             | ManagedKind::Discovery
+            | ManagedKind::Slo
+            | ManagedKind::Probe
+            | ManagedKind::UpstreamCheck
+            | ManagedKind::TelemetryAnomaly
+            | ManagedKind::TelemetryQlog
+            | ManagedKind::TelemetryMetrics
             | ManagedKind::Map
             | ManagedKind::Filter
     ) {

@@ -182,8 +182,9 @@ impl Loader {
 /// overridden by the file.
 fn explicit_keys(root: &Table) -> Vec<String> {
     let mut keys = Vec::new();
-    // REQ: DNS-006, DNS-011, FLT-004, OPS-011, OPS-012, CLU-014 (T27.2, T27.11, ADR-1006) — the
-    // sections the API and UI edit: a field a file sets is read-only there (ADR-040).
+    // REQ: DNS-006, DNS-011, FLT-004, OPS-011, OPS-012, CLU-014 (T27.2, T27.11, ADR-1006) and
+    // OBS-016, OBS-020, OBS-019 (T27.5, ADR-1007) — the sections the API and UI edit: a field a
+    // file sets is read-only there (ADR-040).
     for section in [
         "special",
         "local",
@@ -195,20 +196,21 @@ fn explicit_keys(root: &Table) -> Vec<String> {
         "dnssec",
         "filter",
         "drill",
+        "slo",
+        "probe",
+        "upstream_check",
     ] {
         if let Some(Value::Table(t)) = root.get(section) {
             keys.extend(t.keys().map(|k| format!("{section}.{k}")));
         }
     }
-    // REQ: FLT-901 (T24.29) - only two of `[filter]`'s keys are the API's: the category budget and
-    // the ad block size.
-    if let Some(Value::Table(t)) = root.get("filter") {
-        keys.extend(
-            ["entry_budget", "ads_tier"]
-                .into_iter()
-                .filter(|k| t.contains_key(*k))
-                .map(|k| format!("filter.{k}")),
-        );
+    // REQ: OBS-013, OBS-003, OBS-020 (T27.5, ADR-1007) — the node-managed parts of `[telemetry]`.
+    if let Some(Value::Table(tel)) = root.get("telemetry") {
+        for section in ["anomaly", "qlog", "metrics"] {
+            if let Some(Value::Table(t)) = tel.get(section) {
+                keys.extend(t.keys().map(|k| format!("telemetry.{section}.{k}")));
+            }
+        }
     }
     // REQ: API-902 (T27.13, ADR-956 §2) — the guarded settings a file sets: the file wins over a
     // guarded entry, and the control is locked.

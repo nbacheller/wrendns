@@ -1087,7 +1087,7 @@ default_ttl = 300
 - CNAMEs are followed within local data; if the target is elsewhere, the client follows it.
 - Hosts files skip `0.0.0.0`, `::`, and loopback entries (those are blocklists or this machine, not network hosts).
 - `telltale config check` validates record values and reads the hosts files.
-- **In the web UI:** **Names on my network** lists every local name grouped by domain. Operators can add, edit, and remove names (A, AAAA, and CNAME in Simple; every type in Advanced), run **Set up my home domain** (home.arpa by default) for a first device, and **Send a domain to another server** (conditional forwarding). Each change is previewed in a sentence and a diagram before it's saved, and every name has a **Test** link to Explain. Names from the config files are shown read-only. Through the API: `GET /api/v1/records`, `PUT`/`DELETE /api/v1/records/{name}` with `{"records": [{"type": "A", "value": "192.168.1.10"}]}`, and `GET /api/v1/forwards`, `PUT`/`DELETE /api/v1/forwards/{domain}` with `{"servers": ["10.0.0.53"]}` (add `"stub": true` for a [stub zone](#stub-zones-the-zones-own-servers)); all take `?dryRun=true`, `If-Match`, and `Idempotency-Key` like devices.
+- **In the web UI:** **Names on my network** lists every local name grouped by domain. Operators can add, edit, and remove names (A, AAAA, and CNAME in Simple; every type in Advanced), each with an optional TTL and an **Only on this node** box (a cluster doesn't share that name), run **Set up my home domain** (home.arpa by default) for a first device, **Send a domain to another server** (conditional forwarding, optionally only for some client groups or query types, with the DNSSEC trust anchor and the node-only box), and **Add a zone** (an authoritative zone with its records, its groups and its negative TTL; see [local zones](#local-zones)). Each change is previewed in a sentence and a diagram before it's saved, and every name has a **Test** link to Explain. Names and zones from the config files are shown read-only. Through the API: `GET /api/v1/records`, `PUT`/`DELETE /api/v1/records/{name}` with `{"records": [{"type": "A", "value": "192.168.1.10", "ttl": 60, "nodeOnly": false}]}`, `GET /api/v1/forwards`, `PUT`/`DELETE /api/v1/forwards/{domain}` with `{"servers": ["10.0.0.53"]}` (add `"stub": true` for a [stub zone](#stub-zones-the-zones-own-servers), `"matchGroup": ["Kids"]`, `"matchQtype": ["PTR"]`, `"dnssecNta": false` or `"nodeOnly": true` as needed), and `GET /api/v1/zones`, `PUT`/`DELETE /api/v1/zones/{name}` with `{"groups": [], "negativeTtlSeconds": 300, "records": [{"name": "printer.lab.example.com", "type": "A", "value": "10.0.0.20"}]}`; all take `?dryRun=true`, `If-Match`, and `Idempotency-Key` like devices. Agents with `config:write:records` may write zones too.
 - **Moving from another DNS server:** `telltale import zone exported.zone > records.toml` converts a zone file (Technitium's Zones → Export Zone, BIND, PowerDNS) into `[[record]]` entries for your config. The header lists anything with no local equivalent (SOA and NS aren't needed: TelltaleDNS answers these names itself). Names under the zone that you don't import still resolve normally, so a split-horizon domain keeps working: internal names answer locally, everything else publicly.
 
 ### Device names in DNS
@@ -1124,6 +1124,7 @@ type = "A"
 value = "10.10.0.5"
 ```
 - Answers are authoritative (AA). The zone's apex and names that only have names below them exist (no data, not NXDOMAIN). Negative answers carry the zone's SOA, owned by its apex, with `negative_ttl`.
+- **Zones made in the UI.** **Names on my network** → **Add a zone** (or `PUT /api/v1/zones/{name}`) makes a zone with the same fields as the file (groups, negative TTL, records with their TTLs and node-only flags), kept in the state database and applied on every node without a restart. A zone the files define is read-only in the UI, and its `file` can only be set in the file.
 - **SOA and NS at the apex** (`dig SOA home.example`, `dig NS home.example`) answer with the zone file's own records. Without a file, or a file without them, they're made up as resolvers serving local zones do: `localhost.` as the name server, `hostmaster.<zone>` as the contact, and `negative_ttl` as the SOA minimum.
 - **Split horizon:** with `groups`, only those groups' devices see the zone; everyone else resolves the domain normally (the public answer). Several zones for the same domain can serve different groups.
 - The most specific zone wins (`a.corp.example.com` over `corp.example.com`). Zones are answered before filtering, like local records.
@@ -1988,7 +1989,7 @@ members = ["home-router"]
 match_suffix = ["home.arpa", "168.192.in-addr.arpa"]   # local names and reverse lookups
 upstream_group = "lan"
 ```
-The longest matching suffix wins; routes can also match `match_qtype = ["PTR"]`.
+The longest matching suffix wins; routes can also match `match_qtype = ["PTR"]`, and `match_group = ["kids"]` limits a route to some client groups. `dnssec_nta` (on by default for an API forward) adds a DNSSEC negative trust anchor for the suffixes, and `node_only = true` keeps a route, its group and its servers on the node that has them (CLU-006). In the UI, the **Send a domain to another server** form sets the same fields.
 
 ### Stub zones (the zone's own servers)
 Forwarding asks a server to look the name up for you (recursion desired). A zone's own
@@ -2354,6 +2355,13 @@ DNS keeps answering throughout if your clients have two DNS servers (each node i
 - A replica older than its primary keeps working, unless the primary starts using settings
   the older version doesn't know. Then the replica keeps serving its last version, and its
   sync status says to upgrade it.
+- Entries made through the API or UI (lists, groups, devices, local names, forwards, upstreams
+  and the rest) survive an upgrade and a failover on either side of it. A node that is primary
+  after taking over from an older version's primary, or that was already primary in that state
+  when it was upgraded, adopts the entries it serves that its own config files don't define as
+  its own on its first start or reload (the log says `it adopted them as its own`, with counts by
+  kind). Until that has happened it answers any change with 409 and the reason, and changes
+  nothing, rather than publish a version without them.
 
 **Certificates renew themselves.** Each node's cluster certificate lasts 90 days, and a node
 renews it when fewer than 30 days remain (checked every 6 hours). It keeps its key and node
@@ -2418,6 +2426,23 @@ telltale cluster set-failover auto
   "not serving", and the Health checks, rollouts and Compare leave it out for those. One that
   is unreachable still fails the "nodes up" check and raises the `node_down` health reason and
   alert, because automatic failover needs its vote.
+- **Every voter reaches every other voter** (REQ: CLU-005, T24.38). Voting needs a link
+  between each pair, so the nodes keep one beside the one a replica holds to the primary: a replica
+  that moves to another replica while the primary restarts, and back when the primary answers,
+  keeps its voter links. The Cluster page's Failover line counts the voters this node reaches, and
+  shows a warning (the **Voter links** check on the Health tab) when one voter's link has dropped
+  three or more times in ten minutes: it is up now but can't be counted on, so look at the network
+  between the nodes. A drop counts only when the link ended while both nodes' processes stayed
+  up: each node says which process it is (a random id, new at each start) when a link comes up,
+  so a voter that comes back as a restarted process, and this node's own restart, are not
+  counted, and a rolling upgrade raises no warning. A voter that is down and not back yet counts
+  one drop until it returns. A node on a version older than this check sends no id; its drops
+  count as before (a restart is one drop), and its upgrade is seen as a restart. The log's
+  `cluster: the main link ended` lines say how long a replica's link to its primary or fallback
+  lasted and why it ended. Before this fix a rolling restart (replicas, then the primary)
+  could leave two replicas with no usable link to each other for good: the Failover line then read
+  "2 of 3 voters reachable" and the replicas kept moving between the primary and each other; a
+  restart of the replica that shows it (or of the other) cleared it.
 - **Never two primaries writing:** a voter votes once per epoch and won't vote for anyone else
   while the lease it granted runs. A primary that loses its majority (for example, cut off by a
   network split) stops taking changes before anyone else can be elected. Proven by a simulator
@@ -2684,9 +2709,13 @@ version. A node that takes over as primary adopts them as its own (the primary's
 set, once per version it inherits), so afterwards you can edit or delete every one of them on
 the new primary, none comes back, and a node that returns with older entries of its own has them
 replaced by the cluster's. If the node that took over runs from a version published by an older
-primary (every node needs this release for its first hand-over), a change to an entry it serves
-but doesn't hold answers 409 with that reason instead of "not found": upgrade, then change it on
-the current primary.
+primary (a release before this hand-over existed), it holds nothing of the old primary's entries
+as its own. It adopts them from what it serves, once, when it takes over or starts as primary in
+that state: every entry of that version that its own config files don't define becomes its own
+(marked `adopted:<version>`), and it publishes them with the next version, so a later failover
+keeps them. An entry its config files define stays the file's: edit it in the file, or with an
+override through the API. A change that arrives before the adoption could happen (the data
+directory can't be written, say) is refused with 409 and nothing changes.
 
 ## Failover drills
 Your router hands devices two DNS servers, say the Pi and a second machine. On a healthy network
@@ -2924,6 +2953,8 @@ primary kept can't be pinned there.
 **Metrics:** `telltale_cluster_pinned` (0/1) and `telltale_cluster_pinned_to{version}`.
 
 ## Monitoring
+**Tuning in the UI (T27.5, ADR-1007).** The objectives (`[slo]`) are on the SLO card, and the listener checks (`[probe]`) on Settings → System, both for operators. Second opinions (`[upstream_check]`) are on the Upstreams page and device anomaly settings (`[telemetry.anomaly]`) on the Anomalies page, and the query log's store, retention and privacy level (`[telemetry.qlog]`) on the Query log page. The per-client metric series (`[telemetry.metrics]`) are on Settings → System. The last four are admin-only, since privacy and retention are at stake, and apply on every node: the privacy level and the anomaly and metric settings within a few seconds, the query log's store after a restart. The API: `PUT`/`DELETE /api/v1/slo-settings/default`, `/probe-settings/default`, `/upstream-check-settings/default`, `/anomaly-settings/default`, `/qlog-settings/default` and `/metrics-settings/default`, with the fields of the file's section as JSON.
+
 **The dashboard across restarts and upgrades.**
 - Charts over time come from `<data_dir>/rollups.db`, kept by minute (7 days), hour (400 days)
   and day. That includes traffic by group, which is stored by group name, so renaming or

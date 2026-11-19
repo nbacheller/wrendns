@@ -670,6 +670,9 @@ pub(crate) fn view(
     // ADR-056 — `auto` without enough voters is manual in practice: say so.
     if failover.mode == "auto" {
         checks.push(failover_check(&failover));
+        if failover.active {
+            checks.push(voter_links_check(&failover));
+        }
     }
     let events = events_view(c);
     ClusterView {
@@ -774,6 +777,52 @@ fn failover_check(f: &telltale_api::model::ClusterFailover) -> telltale_api::mod
     }
 }
 
+/// REQ: CLU-005 (T24.38, ADR-1018) — a voter's link that drops this many times within
+/// [`UNSTABLE_WINDOW`] is reported as reached only some of the time. A restart of either node
+/// (a rolling upgrade) is not a drop: the peer comes back as another process (`Hello.instance`).
+const UNSTABLE_DROPS: u32 = 3;
+const UNSTABLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
+
+fn unstable_voters(c: &Cluster, voters: &[String]) -> Vec<telltale_api::model::UnstableVoter> {
+    c.link_drops(UNSTABLE_WINDOW)
+        .into_iter()
+        .filter(|(id, (n, _))| *n >= UNSTABLE_DROPS && voters.contains(id))
+        .map(
+            |(node_id, (drops, last))| telltale_api::model::UnstableVoter {
+                node_id,
+                drops,
+                window_seconds: UNSTABLE_WINDOW.as_secs(),
+                last_drop_seconds_ago: last.as_secs(),
+            },
+        )
+        .collect()
+}
+
+/// REQ: CLU-005 (T24.38, ADR-1018) — the `voter_links` check: a voter that is up now but whose
+/// link keeps dropping can't be counted on for a vote (names the voters; passes when steady).
+fn voter_links_check(
+    f: &telltale_api::model::ClusterFailover,
+) -> telltale_api::model::ClusterCheck {
+    let ok = f.unstable_voters.is_empty();
+    telltale_api::model::ClusterCheck {
+        id: "voter_links".into(),
+        ok,
+        summary: if ok {
+            "Every voter's link is steady".into()
+        } else {
+            let list: Vec<String> = f
+                .unstable_voters
+                .iter()
+                .map(|v| format!("{} (dropped {} times in {} min)", v.node_id, v.drops, v.window_seconds / 60))
+                .collect();
+            format!("A voter's link comes and goes: {}", list.join(", "))
+        },
+        fix: (!ok).then(|| {
+            "A voter reached only some of the time can lose an election or a lease renewal. Check the network and cluster port between the nodes, and whether a node restarts; the log's \"the main link ended\" lines say how long each link lasted and why it ended.".to_owned()
+        }),
+    }
+}
+
 /// The election as the API reports it (ADR-056).
 fn failover_view(
     c: &Cluster,
@@ -796,6 +845,7 @@ fn failover_view(
         lease_seconds_left: v.leading.map(|_| v.lease_ms_left as f64 / 1000.0),
         voted_epoch: v.ballot_epoch,
         voted_for: (!v.ballot_for.is_empty()).then(|| v.ballot_for.clone()),
+        unstable_voters: unstable_voters(c, &voters),
     }
 }
 
@@ -1684,6 +1734,35 @@ pub(crate) fn parse_ttl(s: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ: CLU-005 (T24.38, ADR-1018) — the `voter_links` check names a voter whose link comes
+    /// and goes, and passes when every link is steady.
+    #[test]
+    fn clu_005_t24_38_voter_links_check_names_a_voter_that_comes_and_goes() {
+        let mut f = telltale_api::model::ClusterFailover {
+            mode: "auto".into(),
+            active: true,
+            voters: 3,
+            reachable_voters: 3,
+            lease_held: false,
+            lease_seconds_left: None,
+            voted_epoch: 1,
+            voted_for: None,
+            unstable_voters: Vec::new(),
+        };
+        let steady = voter_links_check(&f);
+        assert!(steady.ok && steady.id == "voter_links" && steady.fix.is_none());
+        f.unstable_voters.push(telltale_api::model::UnstableVoter {
+            node_id: "node-b".into(),
+            drops: 5,
+            window_seconds: 600,
+            last_drop_seconds_ago: 40,
+        });
+        let flaky = voter_links_check(&f);
+        assert!(!flaky.ok);
+        assert!(flaky.summary.contains("node-b") && flaky.summary.contains("5 times in 10 min"));
+        assert!(flaky.fix.is_some_and(|x| x.contains("the main link ended")));
+    }
 
     fn pod(site: &str, name: &str, qps: u32) -> telltale_api::model::ClusterNode {
         telltale_api::model::ClusterNode {

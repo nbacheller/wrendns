@@ -3486,6 +3486,7 @@ impl Backend for ApiBackend {
     // REQ: DNS-018 (T8.6) — the zones as loaded.
     fn zones(&self) -> Vec<telltale_api::model::ZoneInfo> {
         let cfg = self.src.config.load();
+        let api = self.managed_names_of(crate::managed::ZONE);
         let mut v: Vec<telltale_api::model::ZoneInfo> = self
             .src
             .pipeline
@@ -3510,11 +3511,39 @@ impl Backend for ApiBackend {
                             .eq_ignore_ascii_case(&name)
                     })
                     .and_then(|c| c.file.as_ref().map(ToString::to_string));
+                // REQ: DNS-010 (T27.7) — an API zone's records, for the zone editor (a file zone's
+                // are read-only, so they stay out of the answer).
+                let from_api = api.iter().any(|a| a.eq_ignore_ascii_case(&name));
+                let values = if from_api {
+                    cfg.zone
+                        .iter()
+                        .find(|c| c.name.as_str().eq_ignore_ascii_case(&name))
+                        .map(|c| {
+                            c.record
+                                .iter()
+                                .map(|r| telltale_api::model::ZoneRecordInput {
+                                    name: r.name.to_string(),
+                                    rtype: r.rtype.to_ascii_uppercase(),
+                                    value: r.value.to_string(),
+                                    ttl: r.ttl,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 telltale_api::model::ZoneInfo {
                     groups: z.groups.iter().map(ToString::to_string).collect(),
                     records: z.data.len() as u64,
                     file,
                     negative_ttl_seconds: z.negative_ttl,
+                    source: if from_api {
+                        "api".into()
+                    } else {
+                        "file".into()
+                    },
+                    values,
                     name,
                 }
             })
@@ -3758,6 +3787,29 @@ impl Backend for ApiBackend {
             (ManagedKind::Dnssec, "dnssec", e.dnssec.is_some()),
             (ManagedKind::Filter, "filter", e.filter.is_some()),
             (ManagedKind::Drill, "drill", e.drill.is_some()),
+            // REQ: OBS-016, OBS-020, OBS-019, OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007).
+            (ManagedKind::Slo, "slo", e.slo.is_some()),
+            (ManagedKind::Probe, "probe", e.probe.is_some()),
+            (
+                ManagedKind::UpstreamCheck,
+                "upstream_check",
+                e.upstream_check.is_some(),
+            ),
+            (
+                ManagedKind::TelemetryAnomaly,
+                "anomaly_settings",
+                e.telemetry_anomaly.is_some(),
+            ),
+            (
+                ManagedKind::TelemetryQlog,
+                "qlog_settings",
+                e.telemetry_qlog.is_some(),
+            ),
+            (
+                ManagedKind::TelemetryMetrics,
+                "metrics_settings",
+                e.telemetry_metrics.is_some(),
+            ),
         ] {
             if want(k) {
                 let sec = crate::settings_kinds::section(mk);
@@ -4784,6 +4836,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
     match k {
         ManagedKind::Record => crate::managed::RECORD,
         ManagedKind::Forward => crate::managed::FORWARD,
+        ManagedKind::Zone => crate::managed::ZONE,
         ManagedKind::Rule => crate::managed::RULE,
         ManagedKind::Upstream => crate::managed::UPSTREAM,
         ManagedKind::UpstreamGroup => crate::managed::UPSTREAM_GROUP,
@@ -4809,6 +4862,12 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Dnssec => crate::managed::DNSSEC,
         ManagedKind::Filter => crate::managed::FILTER,
         ManagedKind::Drill => crate::managed::DRILL,
+        ManagedKind::Slo => crate::managed::SLO,
+        ManagedKind::Probe => crate::managed::PROBE,
+        ManagedKind::UpstreamCheck => crate::managed::UPSTREAM_CHECK,
+        ManagedKind::TelemetryAnomaly => crate::managed::ANOMALY_SETTINGS,
+        ManagedKind::TelemetryQlog => crate::managed::QLOG_SETTINGS,
+        ManagedKind::TelemetryMetrics => crate::managed::METRICS_SETTINGS,
         ManagedKind::Router => crate::managed::ROUTER,
         ManagedKind::OidcProvider => crate::managed::OIDC_PROVIDER,
         ManagedKind::Sink => crate::managed::SINK,
@@ -5173,23 +5232,87 @@ fn record_values(
             rtype: r.rtype.trim().to_ascii_uppercase(),
             value: r.value.trim().to_owned(),
             ttl: r.ttl,
+            node_only: r.node_only,
         })
         .collect())
 }
 
-/// A forward as a change shows it: the domain, its servers, and (REQ: DNS-022) `stub` when set.
+/// A forward as a change shows it, and as it is stored without the domain: the servers, the
+/// stub flag (REQ: DNS-022), the groups and query types it is limited to, the trust anchor and
+/// the node-only flag (REQ: DNS-010, CLU-006, T27.7).
 fn forward_json(name: &str, f: &crate::managed::Forward) -> serde_json::Value {
-    let mut v = serde_json::json!({ "domain": name, "servers": f.servers });
-    if f.stub {
-        v["stub"] = true.into();
+    serde_json::json!({
+        "domain": name,
+        "servers": f.servers,
+        "stub": f.stub,
+        "match_group": f.match_group,
+        "match_qtype": f.match_qtype,
+        "dnssec_nta": f.dnssec_nta,
+        "node_only": f.node_only,
+    })
+}
+
+/// REQ: DNS-010 (T27.7) — an API zone's body as it is stored: a `[[zone]]` without a file (the
+/// zone file is set in the configuration file, T27.17). The apex is the entry's name.
+fn zone_of(v: &serde_json::Value, name: &str) -> Result<telltale_config::ZoneConfig, Problem> {
+    use telltale_config::{LocalRecord, SafeString, ZoneConfig};
+    let input: telltale_api::model::ZoneInput =
+        serde_json::from_value(v.clone()).map_err(|e| Problem::invalid(format!("body: {e}")))?;
+    let bad = |what: &str, text: &str, why: String| {
+        Problem::new(
+            Code::InvalidConfig,
+            format!("`{name}`: {what} `{text}`: {why}"),
+        )
+    };
+    let apex = SafeString::new(name).map_err(|e| bad("name", name, e))?;
+    let mut groups = Vec::new();
+    for g in &input.groups {
+        groups.push(SafeString::new(g.trim()).map_err(|e| bad("group", g, e))?);
     }
-    v
+    let mut record = Vec::new();
+    for r in &input.records {
+        record.push(LocalRecord {
+            name: SafeString::new(r.name.trim()).map_err(|e| bad("record name", &r.name, e))?,
+            rtype: SafeString::new(r.rtype.trim().to_ascii_uppercase())
+                .map_err(|e| bad("record type", &r.rtype, e))?,
+            value: SafeString::new(r.value.trim()).map_err(|e| bad("record value", &r.value, e))?,
+            ttl: r.ttl,
+            node_only: false,
+        });
+    }
+    Ok(ZoneConfig {
+        name: apex,
+        file: None,
+        record,
+        groups,
+        // REQ: DNS-018 — the same default as a `[[zone]]` without `negative_ttl`.
+        negative_ttl: input.negative_ttl_seconds.unwrap_or(300),
+    })
+}
+
+/// A zone as a change shows it, and as it is stored (a `[[zone]]` JSON without a file).
+fn zone_json(z: &telltale_config::ZoneConfig) -> serde_json::Value {
+    serde_json::to_value(z).unwrap_or(serde_json::Value::Null)
 }
 
 /// Parses a forward body into stored form.
 fn forward_of(v: &serde_json::Value, name: &str) -> Result<crate::managed::Forward, Problem> {
     let input: telltale_api::model::ForwardInput =
         serde_json::from_value(v.clone()).map_err(|e| Problem::invalid(format!("body: {e}")))?;
+    // REQ: DNS-010 (T27.7) — the groups and query types a route is limited to (trimmed; a
+    // query type in upper case).
+    let match_group: Vec<String> = input
+        .match_group
+        .iter()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let match_qtype: Vec<String> = input
+        .match_qtype
+        .iter()
+        .map(|s| s.trim().to_ascii_uppercase())
+        .filter(|s| !s.is_empty())
+        .collect();
     let servers: Vec<String> = input
         .servers
         .iter()
@@ -5217,6 +5340,10 @@ fn forward_of(v: &serde_json::Value, name: &str) -> Result<crate::managed::Forwa
     Ok(crate::managed::Forward {
         servers,
         stub: input.stub,
+        match_group,
+        match_qtype,
+        dnssec_nta: input.dnssec_nta,
+        node_only: input.node_only,
     })
 }
 
@@ -5231,7 +5358,9 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         .flat_map(|h| agg.top_names(telltale_telemetry::agg::TopKind::Domains, h, 1000))
         .filter(|t| match kind {
             ManagedKind::Record => t.key == name,
-            ManagedKind::Forward | ManagedKind::Rule => t.key == name || t.key.ends_with(&under),
+            ManagedKind::Forward | ManagedKind::Zone | ManagedKind::Rule => {
+                t.key == name || t.key.ends_with(&under)
+            }
             _ => false,
         })
         .map(|t| t.count)
@@ -5249,6 +5378,12 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         ),
         (ManagedKind::Forward, false) => format!(
             "Names under `{name}` go back to the default upstreams; {recent_queries} queries for them in the last two hours (at least)."
+        ),
+        (ManagedKind::Zone, true) => format!(
+            "Names under `{name}` are answered from the zone from the next query, on every node: a name it doesn't have gets no such name. {recent_queries} queries for them in the last two hours (at least)."
+        ),
+        (ManagedKind::Zone, false) => format!(
+            "Names under `{name}` go back to the upstreams (or the zone file, if the files define one); {recent_queries} queries for them in the last two hours (at least)."
         ),
         // The plans of the kinds added by T27.2 and T27.11 (ADR-1006) write their own impact.
         (ManagedKind::Rule | ManagedKind::Cache | ManagedKind::Support | ManagedKind::Updates | ManagedKind::Dnssec | ManagedKind::Filter | ManagedKind::Drill, _) => String::new(), // rule_impact says it better
@@ -5322,7 +5457,13 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
             ManagedKind::Special
             | ManagedKind::Local
             | ManagedKind::Clients
-            | ManagedKind::Discovery,
+            | ManagedKind::Discovery
+            | ManagedKind::Slo
+            | ManagedKind::Probe
+            | ManagedKind::UpstreamCheck
+            | ManagedKind::TelemetryAnomaly
+            | ManagedKind::TelemetryQlog
+            | ManagedKind::TelemetryMetrics,
             put,
         ) => crate::settings_kinds::impact(kind, put),
         (ManagedKind::KubernetesMap, true) => {
@@ -5343,6 +5484,7 @@ fn plan_managed(
     state: &telltale_store::state::State,
     w: &ManagedWrite,
 ) -> Result<ManagedPlan, Problem> {
+    refuse_unadopted(src, state)?;
     if matches!(
         w.kind,
         ManagedKind::RateLimit
@@ -5404,6 +5546,10 @@ fn plan_managed(
             .route
             .iter()
             .any(|r| r.match_suffix.iter().any(|s| s.eq_ignore_ascii_case(&name))),
+        ManagedKind::Zone => file
+            .zone
+            .iter()
+            .any(|z| z.name.as_str().eq_ignore_ascii_case(&name)),
         ManagedKind::Rule => file.rule.iter().any(|r| r.id.eq_ignore_ascii_case(&name)),
         _ => false,
     };
@@ -5470,6 +5616,24 @@ fn plan_managed(
                 after.map(|a| forward_json(&name, &a)),
             )
         }
+        // REQ: DNS-010 (T27.7) — a zone made through the API: the whole zone is replaced.
+        ManagedKind::Zone => {
+            let before = entries
+                .zones
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, z)| z.clone());
+            entries.zones.retain(|(n, _)| *n != name);
+            let after = match &w.body {
+                None => None,
+                Some(v) => {
+                    let z = zone_of(v, &name)?;
+                    entries.zones.push((name.clone(), z.clone()));
+                    Some(z)
+                }
+            };
+            (before.map(|b| zone_json(&b)), after.map(|a| zone_json(&a)))
+        }
         ManagedKind::Rule => {
             let before = entries
                 .rules
@@ -5506,11 +5670,11 @@ fn plan_managed(
     let body = match (w.kind, &after) {
         (_, None) => None,
         (ManagedKind::Record, Some(a)) => Some(a["records"].to_string()),
+        // The stored entry is the forward's JSON without the domain (which is its row name).
         (ManagedKind::Forward, Some(a)) => {
-            let mut b = serde_json::json!({ "servers": a["servers"] });
-            // REQ: DNS-022 — the stored entry keeps its stub flag.
-            if a["stub"] == true {
-                b["stub"] = true.into();
+            let mut b = a.clone();
+            if let Some(o) = b.as_object_mut() {
+                o.remove("domain");
             }
             Some(b.to_string())
         }
@@ -5853,6 +6017,38 @@ pub(crate) fn plan_files(src: &Sources) -> Arc<telltale_config::Config> {
         Some(base) => Arc::new(base),
         None => file,
     }
+}
+
+/// REQ: CLU-015 (T24.40, ADR-1019) — a promoted primary that could not adopt the entries it serves
+/// (its store can't be written, or the version can't be read) must not publish a write built on its
+/// config files: the candidate would drop every served entry its files don't define. `Ok` when
+/// there is nothing to lose.
+pub(crate) fn refuse_unadopted(
+    src: &Sources,
+    state: &telltale_store::state::State,
+) -> Result<(), Problem> {
+    let file = src.file_config.load_full();
+    if !matches!(
+        crate::replication::managed_base_state(&file),
+        crate::replication::Base::Unadopted
+    ) {
+        return Ok(());
+    }
+    let served = src.config.load();
+    let at_risk = crate::managed_adopt::derive(&served, &file)
+        .into_iter()
+        .filter(|e| !crate::managed_adopt::held(state, &e.kind, &e.name))
+        .count();
+    if at_risk == 0 {
+        return Ok(());
+    }
+    Err(Problem::new(
+        Code::Conflict,
+        format!(
+            "this node serves {at_risk} entries from the cluster's last published configuration that it does not hold as its own yet, so a change now would drop them from DNS"
+        ),
+    )
+    .hint("The node adopts them when it can write its store; check its logs (`adopted` or `can't be adopted`), fix the store, then retry. Nothing was changed."))
 }
 
 /// REQ: CLU-015 (T24.37, ADR-1016) — a write that finds no entry of that name to change, where
@@ -6970,6 +7166,7 @@ impl ApiBackend {
                 rtype: r.rtype.to_ascii_uppercase(),
                 value: r.value.to_string(),
                 ttl: r.ttl,
+                node_only: r.node_only,
             };
             match out
                 .iter_mut()
@@ -7009,8 +7206,14 @@ impl ApiBackend {
         };
         let mut out = Vec::new();
         for r in &cfg.route {
-            if !r.match_group.is_empty() || !r.match_qtype.is_empty() {
-                continue; // per-group or per-type routes aren't "send this domain" routes
+            // Per-group or per-type routes aren't "send this domain" routes, unless the API made
+            // them (REQ: DNS-010, T27.7: the forward form sets them).
+            let made_here = r
+                .match_suffix
+                .iter()
+                .any(|s| api.iter().any(|a| a.eq_ignore_ascii_case(s)));
+            if (!r.match_group.is_empty() || !r.match_qtype.is_empty()) && !made_here {
+                continue;
             }
             let members: Vec<(Vec<String>, bool)> = cfg
                 .upstream_group
@@ -7030,6 +7233,10 @@ impl ApiBackend {
                     } else {
                         "file".into()
                     },
+                    match_group: r.match_group.iter().map(ToString::to_string).collect(),
+                    match_qtype: r.match_qtype.iter().map(ToString::to_string).collect(),
+                    dnssec_nta: r.dnssec_nta,
+                    node_only: r.node_only,
                 });
             }
         }
@@ -7280,6 +7487,7 @@ fn keep_in_git(
     let section = match kind {
         ManagedKind::Record => "record",
         ManagedKind::Forward => "route",
+        ManagedKind::Zone => "zone",
         ManagedKind::Rule => "rule",
         ManagedKind::Upstream => "upstream",
         ManagedKind::UpstreamGroup => "upstream_group",
@@ -7309,6 +7517,12 @@ fn keep_in_git(
         ManagedKind::Dnssec => "dnssec",
         ManagedKind::Filter => "filter",
         ManagedKind::Drill => "drill",
+        ManagedKind::Slo => "slo",
+        ManagedKind::Probe => "probe",
+        ManagedKind::UpstreamCheck => "upstream_check",
+        ManagedKind::TelemetryAnomaly => "telemetry.anomaly",
+        ManagedKind::TelemetryQlog => "telemetry.qlog",
+        ManagedKind::TelemetryMetrics => "telemetry.metrics",
     };
     let head = "# Add to the configuration in Git (with the Helm chart: under `config:`).\n";
     // REQ: FLT-017 — a map rule: `[[kubernetes.map]]`, or a label on the namespace or pod.
@@ -7345,6 +7559,12 @@ fn keep_in_git(
             | ManagedKind::Local
             | ManagedKind::Clients
             | ManagedKind::Discovery
+            | ManagedKind::Slo
+            | ManagedKind::Probe
+            | ManagedKind::UpstreamCheck
+            | ManagedKind::TelemetryAnomaly
+            | ManagedKind::TelemetryQlog
+            | ManagedKind::TelemetryMetrics
             | ManagedKind::Filter
     ) {
         return singleton_in_git(head, section, body.is_some(), after);
@@ -7762,7 +7982,10 @@ mod keep_in_git_tests {
             "corp.example",
         )
         .unwrap();
-        assert!(forward_json("corp.example", &plain).get("stub").is_none());
+        assert_eq!(forward_json("corp.example", &plain)["stub"], false);
+        // REQ: DNS-010 (T27.7) — the limits a forward stores default to "all", on, off.
+        assert_eq!(plain.match_group.len() + plain.match_qtype.len(), 0);
+        assert!(plain.dnssec_nta && !plain.node_only);
         assert!(
             forward_of(
                 &serde_json::json!({ "servers": ["tls://10.0.0.53"], "stub": true }),

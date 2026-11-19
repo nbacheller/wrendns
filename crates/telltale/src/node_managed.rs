@@ -31,9 +31,14 @@ pub(crate) const KINDS: &[&str] = &[
     OIDC_PROVIDER,
     SINK,
     OTLP,
+    // REQ: DNS-006, OPS-011, OPS-012 (T27.2, T27.11, ADR-1006) — the per-node sections.
     CACHE,
     SUPPORT,
     UPDATES,
+    // REQ: OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — the node-local telemetry settings.
+    crate::managed::ANOMALY_SETTINGS,
+    crate::managed::QLOG_SETTINGS,
+    crate::managed::METRICS_SETTINGS,
     crate::guarded::KIND,
 ];
 /// REQ: CLU-015 (T24.37, ADR-1016) — the kinds of the shared configuration that the API stores:
@@ -64,6 +69,17 @@ pub(crate) const SHARED_KINDS: &[&str] = &[
     crate::managed::CLIENTS,
     crate::managed::DISCOVERY,
     crate::managed::ROUTER,
+    // REQ: DNS-011, FLT-004, CLU-014 (T27.11, ADR-1006) — the cluster-wide `[dnssec]`, `[filter]`
+    // and `[drill]` sections are shared configuration the API stores.
+    crate::managed::DNSSEC,
+    crate::managed::FILTER,
+    crate::managed::DRILL,
+    // REQ: DNS-010, OBS-016, OBS-020, OBS-019 (T27.5, T27.7, ADR-1007) — the zones and the SLO, probe
+    // and upstream-check sections are shared too.
+    crate::managed::ZONE,
+    crate::managed::SLO,
+    crate::managed::PROBE,
+    crate::managed::UPSTREAM_CHECK,
 ];
 /// The fields that hold or point at a secret outside the store: a provider's `client_secret` and
 /// its file, a sink's `token_file` (and `tls_ca`, a path), OTLP's inline `headers`. A blob never

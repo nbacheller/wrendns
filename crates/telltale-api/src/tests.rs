@@ -818,7 +818,7 @@ async fn send(
     let resp = app.router.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let headers = resp.headers().clone();
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+    let bytes = axum::body::to_bytes(resp.into_body(), 8 << 20)
         .await
         .unwrap();
     (
@@ -1960,9 +1960,13 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // FLT-006's /clients/{id}/policy (T24.30), which the merge of feat/ipam-integrations adds.
     // 171 with UPS-004's /upstream-presets (T24.36), from the same merge.
     // 172 with DSC-004's /discovery/snmp/test (T25.6).
-    // 177 with FLT-901's /categories, /categories/budget and /groups/{name}/content and FLT-902's
+    // 173 with DNS-010's /zones/{name} (T27.7), from the merge of feat/t27.5-t27.7-settings.
+    // 179 with the tuning sections' /slo-settings/default, /probe-settings/default,
+    // /upstream-check-settings/default, /anomaly-settings/default, /qlog-settings/default and
+    // /metrics-settings/default (T27.5), from the same merge.
+    // 184 with FLT-901's /categories, /categories/budget and /groups/{name}/content and FLT-902's
     // /groups/{name}/sources and /profiles/devices (T24.29; its /filter-settings/default is the one above).
-    assert_eq!(paths.len(), 177);
+    assert_eq!(paths.len(), 184);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

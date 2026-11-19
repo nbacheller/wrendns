@@ -49,6 +49,8 @@ mod maintenance;
 mod managed;
 mod managed_adopt;
 #[cfg(test)]
+mod managed_adopt_t2440_tests;
+#[cfg(test)]
 mod managed_adopt_tests;
 mod masking;
 mod mcp_stdio;

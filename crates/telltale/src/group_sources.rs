@@ -561,20 +561,35 @@ priority = 10
         let p = crate::api_backend::plan_override(
             &src,
             &state,
-            &group_write("default", serde_json::json!({"name": "default", "priority": 3})),
+            &group_write(
+                "default",
+                serde_json::json!({"name": "default", "priority": 3}),
+            ),
         )
         .unwrap();
         let stored = p.body.clone().unwrap();
         let g: telltale_config::GroupConfig = serde_json::from_str(&stored).unwrap();
-        assert!(g.content.as_ref().is_some_and(|c| c.ads), "the file's content is kept");
+        assert!(
+            g.content.as_ref().is_some_and(|c| c.ads),
+            "the file's content is kept"
+        );
         // The override is stored; then the file changes its content: the file's applies.
         state
-            .put_managed_batch(&[(crate::managed::GROUP, "default", stored.as_str())], None, 1, "t")
+            .put_managed_batch(
+                &[(crate::managed::GROUP, "default", stored.as_str())],
+                None,
+                1,
+                "t",
+            )
             .unwrap();
         let v2 = files(false);
         let entries = crate::managed::entries(&state);
         let merged = crate::managed::merge(&v2, &entries).unwrap();
-        let d = merged.group.iter().find(|g| g.name.as_str() == "default").unwrap();
+        let d = merged
+            .group
+            .iter()
+            .find(|g| g.name.as_str() == "default")
+            .unwrap();
         assert_eq!(d.priority, 3, "the override's other fields apply");
         assert!(
             d.content.as_ref().is_some_and(|c| !c.ads),

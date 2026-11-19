@@ -280,6 +280,10 @@ pub fn required(method: &Method, path: &str) -> Need {
         if under("/api/v1/forwards") {
             return Need::Scope("config:write:forwards");
         }
+        // REQ: DNS-010 (T27.7) — zones are local data: the records scope writes them too.
+        if under("/api/v1/zones") {
+            return Need::Scope("config:write:records");
+        }
         if under("/api/v1/rules") {
             return Need::Scope("config:write:rules");
         }

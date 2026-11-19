@@ -1973,6 +1973,75 @@ fn obs_010_alert_conditions_match_ui() {
     );
 }
 
+/// REQ: OBS-013 (T27.5, ADR-1007) — the anomaly settings, the per-client series' cap and the query
+/// log's upper bounds are checked by the server as the settings form shows them: a direct API
+/// write of 0 or a huge value is refused with the field's path.
+#[test]
+fn obs_013_anomaly_metrics_and_qlog_bounds_are_validated() {
+    let load = |toml: &str| {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+    };
+    assert!(load("").is_ok(), "the defaults are valid");
+    for (toml, path) in [
+        (
+            "[telemetry.anomaly]\nlearning_days = 0\n",
+            "telemetry.anomaly.learning_days",
+        ),
+        (
+            "[telemetry.anomaly]\nlearning_days = 91\n",
+            "telemetry.anomaly.learning_days",
+        ),
+        (
+            "[telemetry.anomaly]\nmax_clients = 0\n",
+            "telemetry.anomaly.max_clients",
+        ),
+        (
+            "[telemetry.anomaly]\nmax_clients = 100001\n",
+            "telemetry.anomaly.max_clients",
+        ),
+        (
+            "[telemetry.anomaly]\nnxdomain_per_minute = 0\n",
+            "telemetry.anomaly.nxdomain_per_minute",
+        ),
+        (
+            "[telemetry.anomaly]\nnxdomain_percent = 0\n",
+            "telemetry.anomaly.nxdomain_percent",
+        ),
+        (
+            "[telemetry.anomaly]\nnxdomain_percent = 500\n",
+            "telemetry.anomaly.nxdomain_percent",
+        ),
+        (
+            "[telemetry.metrics]\nper_client_cap = 0\n",
+            "telemetry.metrics.per_client_cap",
+        ),
+        (
+            "[telemetry.metrics]\nper_client_cap = 4294967295\n",
+            "telemetry.metrics.per_client_cap",
+        ),
+        (
+            "[telemetry.qlog]\nretention_days = 3651\n",
+            "telemetry.qlog.retention_days",
+        ),
+        (
+            "[telemetry.qlog]\nflush_interval_secs = 3601\n",
+            "telemetry.qlog.flush_interval_secs",
+        ),
+    ] {
+        let errs = load(toml).unwrap_err();
+        assert!(
+            paths(&errs).contains(&path),
+            "{toml}: expected {path}, got {:?}",
+            paths(&errs)
+        );
+    }
+    let ok = "[telemetry.anomaly]\nlearning_days = 90\nmax_clients = 100000\nnxdomain_per_minute = 1\nnxdomain_percent = 100\n[telemetry.metrics]\nper_client_cap = 10000\n[telemetry.qlog]\nretention_days = 3650\nflush_interval_secs = 3600\n";
+    assert!(load(ok).is_ok(), "the bounds themselves are accepted");
+}
+
 /// REQ: UPS-013 (T24.31, ADR-997) — an upstream's `source` reads as an address, `address:0`, or
 /// a network; a port, a wildcard and nonsense are refused.
 #[test]

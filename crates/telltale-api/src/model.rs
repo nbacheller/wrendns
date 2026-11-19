@@ -1043,6 +1043,46 @@ pub struct ZoneInfo {
     pub file: Option<String>,
     /// TTL of its NXDOMAIN and no-data answers.
     pub negative_ttl_seconds: u32,
+    /// REQ: DNS-010 (T27.7) — `file` (read-only here) or `api` (made in the UI or API).
+    pub source: String,
+    /// REQ: DNS-010 (T27.7) — an API zone's records, to edit them; empty for a file zone (its
+    /// records are read-only here, and only the count shows).
+    pub values: Vec<ZoneRecordInput>,
+}
+
+/// REQ: DNS-010 (T27.7) — one record of an API zone: the owner name, its type and value, and
+/// an optional TTL.
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ZoneRecordInput {
+    #[schema(example = "printer.home.example.com")]
+    pub name: String,
+    /// `A`, `AAAA`, `CNAME`, `PTR`, `TXT`, `MX` or `SRV`.
+    #[serde(rename = "type")]
+    #[schema(example = "A")]
+    pub rtype: String,
+    #[schema(example = "192.168.1.20")]
+    pub value: String,
+    /// TTL in seconds (default: `[local] default_ttl`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<u32>,
+}
+
+/// REQ: DNS-010 (T27.7) — an authoritative zone made through the API or UI
+/// (`PUT /api/v1/zones/{name}`). The zone file is set in the configuration file (guarded, T27.17),
+/// so a body that names one is refused.
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ZoneInput {
+    /// Groups that see the zone (split horizon); empty: everyone.
+    #[serde(default)]
+    pub groups: Vec<String>,
+    /// TTL of its NXDOMAIN and no-data answers (default 300).
+    #[serde(default)]
+    pub negative_ttl_seconds: Option<u32>,
+    /// The zone's records: names under the zone.
+    #[serde(default)]
+    pub records: Vec<ZoneRecordInput>,
 }
 
 /// REQ: FLT-012 (T7.9) — a blockable service.
@@ -1712,6 +1752,9 @@ pub struct RecordInput {
     /// TTL in seconds (default: `[local] default_ttl`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl: Option<u32>,
+    /// REQ: CLU-006 (T27.7) — keep this record on this node only (a cluster doesn't share it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub node_only: bool,
 }
 
 /// A local name's records (`PUT /api/v1/records/{name}`).
@@ -1745,6 +1788,23 @@ pub struct ForwardInput {
     /// followed, instead of forwarding with recursion desired. Default `false`.
     #[serde(default)]
     pub stub: bool,
+    /// REQ: DNS-010 (T27.7) — only these client groups are sent (empty: every client).
+    #[serde(default)]
+    pub match_group: Vec<String>,
+    /// REQ: DNS-010 (T27.7) — only these query types are sent, e.g. `["PTR"]` (empty: all).
+    #[serde(default)]
+    pub match_qtype: Vec<String>,
+    /// REQ: DNS-010 (T27.7) — add a DNSSEC negative trust anchor for the domain (default `true`:
+    /// local zones are usually unsigned).
+    #[serde(default = "default_true")]
+    pub dnssec_nta: bool,
+    /// REQ: CLU-006 (T27.7) — keep this route on this node only.
+    #[serde(default)]
+    pub node_only: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// REQ: DNS-006 (T6.13) — one node's cache counters.
@@ -2149,6 +2209,14 @@ pub struct ForwardInfo {
     pub stub: bool,
     /// `file` (read-only here) or `api`.
     pub source: String,
+    /// REQ: DNS-010 (T27.7) — the client groups the route applies to (empty: every client).
+    pub match_group: Vec<String>,
+    /// REQ: DNS-010 (T27.7) — the query types the route applies to (empty: all).
+    pub match_qtype: Vec<String>,
+    /// REQ: DNS-010 (T27.7) — a DNSSEC negative trust anchor is added for the domain.
+    pub dnssec_nta: bool,
+    /// REQ: CLU-006 (T27.7) — this route stays on this node.
+    pub node_only: bool,
 }
 
 /// What a change to local names or forwarded domains did (or would do, with `dryRun`).
@@ -3607,6 +3675,24 @@ pub struct ClusterFailover {
     /// The epoch and node this node last voted for.
     pub voted_epoch: u64,
     pub voted_for: Option<String>,
+    /// REQ: CLU-005 (T24.38, ADR-1018) — voters whose link to this node dropped three or more
+    /// times in the last ten minutes while both processes stayed up (a link that comes and goes;
+    /// a restart or an upgrade of either node is not counted). Empty when all are steady.
+    #[serde(default)]
+    pub unstable_voters: Vec<UnstableVoter>,
+}
+
+/// REQ: CLU-005 (T24.38, ADR-1018) — a voter this node reaches only some of the time.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UnstableVoter {
+    pub node_id: String,
+    /// How many times its link dropped within `windowSeconds` (not counting a drop the voter
+    /// came back from as a restarted process).
+    pub drops: u32,
+    pub window_seconds: u64,
+    /// Seconds since the last drop.
+    pub last_drop_seconds_ago: u64,
 }
 
 /// A version an old primary published after a newer primary took over: never applied
@@ -3818,7 +3904,8 @@ pub struct ClusterEvent {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ClusterCheck {
-    /// Stable ID: `peers_up`, `primary_present`, `in_sync`, `sync_errors`, `serving`, `certificate`.
+    /// Stable ID: `peers_up`, `primary_present`, `in_sync`, `sync_errors`, `serving`, `certificate`,
+    /// `failover`, `voter_links` (a voter reached only some of the time, T24.38).
     pub id: String,
     pub ok: bool,
     pub summary: String,

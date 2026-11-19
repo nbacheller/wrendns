@@ -398,7 +398,12 @@ async fn flt_901_agent_rest_put_content_403() {
         .rev()
         .find(|l| l.starts_with("managed Group kids"))
         .unwrap();
-    assert!(w.contains("\"adult\""), "the group keeps its content: {w}");
+    // The body goes on without `content`: the backend keeps the entry's own (the files' or the
+    // stored one), never the effective group's, which can be derived (recheck items 2 and 3).
+    assert!(
+        !w.contains("content"),
+        "content is left to the backend: {w}"
+    );
     // An operator's write is the same call as the agent's, and works.
     let (s, v) = put(
         &app,

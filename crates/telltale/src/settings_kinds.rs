@@ -1,3 +1,7 @@
+//! REQ: OBS-016, OBS-020, OBS-019 (T27.5, ADR-1007) — `slo`, `probe` and `upstream_check` (shared,
+//! operators), and `anomaly_settings`, `qlog_settings` and `metrics_settings` (node-managed, admin
+//! only: the whole kind, since privacy and retention are at stake).
+//!
 //! REQ: DNS-019 (T24.12, ADR-904, ADR-914), DNS-023 (T24.13, ADR-901, ADR-914) — the shared
 //! singleton kinds `special` (`[special]`), `local` (`[local]` without `hosts_files`), and
 //! `clients` (`[clients]`, `mdns` only in M24).
@@ -30,6 +34,12 @@ pub(crate) fn section(kind: ManagedKind) -> &'static str {
         ManagedKind::Dnssec => "dnssec",
         ManagedKind::Filter => "filter",
         ManagedKind::Drill => "drill",
+        ManagedKind::Slo => "slo",
+        ManagedKind::Probe => "probe",
+        ManagedKind::UpstreamCheck => "upstream_check",
+        ManagedKind::TelemetryAnomaly => "telemetry.anomaly",
+        ManagedKind::TelemetryQlog => "telemetry.qlog",
+        ManagedKind::TelemetryMetrics => "telemetry.metrics",
         _ => "clients",
     }
 }
@@ -62,7 +72,7 @@ pub(crate) fn is_node_kind(kind: ManagedKind) -> bool {
     )
 }
 
-/// True for the three kinds in this module.
+/// True for the kinds in this module.
 pub(crate) fn is_settings(kind: ManagedKind) -> bool {
     matches!(
         kind,
@@ -73,6 +83,21 @@ pub(crate) fn is_settings(kind: ManagedKind) -> bool {
             | ManagedKind::Dnssec
             | ManagedKind::Filter
             | ManagedKind::Drill
+            | ManagedKind::Slo
+            | ManagedKind::Probe
+            | ManagedKind::UpstreamCheck
+            | ManagedKind::TelemetryAnomaly
+            | ManagedKind::TelemetryQlog
+            | ManagedKind::TelemetryMetrics
+    )
+}
+
+/// REQ: OBS-016, OBS-020, OBS-019, OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — the telemetry
+/// sections are node-managed and admin-only: every field is an admin's (see `admin_keys`).
+pub(crate) fn is_node_telemetry(kind: ManagedKind) -> bool {
+    matches!(
+        kind,
+        ManagedKind::TelemetryAnomaly | ManagedKind::TelemetryQlog | ManagedKind::TelemetryMetrics
     )
 }
 
@@ -124,6 +149,39 @@ pub(crate) fn keys(kind: ManagedKind) -> &'static [&'static str] {
             "ads_tier",
         ],
         ManagedKind::Drill => &["schedule", "nodes"],
+        ManagedKind::Slo => &[
+            "enabled",
+            "availability_target",
+            "latency_target",
+            "latency_ms",
+            "window_days",
+        ],
+        ManagedKind::Probe => &[
+            "enabled",
+            "interval_secs",
+            "timeout_ms",
+            "targets",
+            "cert_warn_days",
+        ],
+        ManagedKind::UpstreamCheck => &["sample_every", "reference", "keep"],
+        ManagedKind::TelemetryAnomaly => &[
+            "enabled",
+            "learning_days",
+            "sensitivity",
+            "max_clients",
+            "ignore_domains",
+            "nxdomain_per_minute",
+            "nxdomain_percent",
+        ],
+        ManagedKind::TelemetryQlog => &[
+            "enabled",
+            "retention_days",
+            "retention_bytes",
+            "privacy_level",
+            "fsync",
+            "flush_interval_secs",
+        ],
+        ManagedKind::TelemetryMetrics => &["per_client", "per_client_cap"],
         _ => &["mdns"],
     }
 }
@@ -138,6 +196,10 @@ pub(crate) fn admin_keys(kind: ManagedKind) -> &'static [&'static str] {
         ManagedKind::Discovery => DISCOVERY_KEYS,
         // REQ: CLU-014 (T27.11, ADR-1006) - the drill schedule starts drills on the cluster's nodes.
         ManagedKind::Drill => &["schedule", "nodes"],
+        // REQ: OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — every field of the telemetry sections.
+        ManagedKind::TelemetryAnomaly
+        | ManagedKind::TelemetryQlog
+        | ManagedKind::TelemetryMetrics => keys(kind),
         _ => &[],
     }
 }
@@ -149,8 +211,9 @@ pub(crate) fn section_json(kind: ManagedKind, cfg: &Config) -> Value {
     let mut out = Map::new();
     for k in keys(kind) {
         // REQ: DSC-004 - the two lists are left out of a serialization while empty (a node that never
-        // set them sends nothing new, CLU-010); the entry shows them as empty lists.
-        let missing = if matches!(*k, "snmp_agent" | "snmp_credential") {
+        // set them sends nothing new, CLU-010); the entry shows them as empty lists. REQ: OBS-020
+        // (T27.5) - `[probe] targets` likewise: an empty list, not null, is what the field holds.
+        let missing = if matches!(*k, "snmp_agent" | "snmp_credential" | "targets") {
             Value::Array(Vec::new())
         } else {
             Value::Null
@@ -172,6 +235,12 @@ fn section_full(kind: ManagedKind, cfg: &Config) -> Value {
         ManagedKind::Dnssec => serde_json::to_value(&cfg.dnssec),
         ManagedKind::Filter => serde_json::to_value(&cfg.filter),
         ManagedKind::Drill => serde_json::to_value(&cfg.drill),
+        ManagedKind::Slo => serde_json::to_value(&cfg.slo),
+        ManagedKind::Probe => serde_json::to_value(&cfg.probe),
+        ManagedKind::UpstreamCheck => serde_json::to_value(&cfg.upstream_check),
+        ManagedKind::TelemetryAnomaly => serde_json::to_value(&cfg.telemetry.anomaly),
+        ManagedKind::TelemetryQlog => serde_json::to_value(&cfg.telemetry.qlog),
+        ManagedKind::TelemetryMetrics => serde_json::to_value(&cfg.telemetry.metrics),
         _ => serde_json::to_value(&cfg.clients),
     }
     .unwrap_or(Value::Null)
@@ -193,6 +262,54 @@ fn set_section(cfg: &mut Config, kind: ManagedKind, v: Value) -> Result<(), Stri
     Ok(())
 }
 
+/// REQ: CLU-015 (T24.40, ADR-1019) — puts the fields the API edits (`keys`) of a shared tuning
+/// section back as `own` (this node's files) has them, leaving its other fields as `cfg` has them
+/// (a field only the files set, such as `[dnssec] trust_anchors_file`, is never an API entry's). The
+/// kinds are `dnssec`, `filter`, `drill`, `slo`, `probe` and `upstream_check`; any other is left.
+pub(crate) fn restore_api_fields(cfg: &mut Config, own: &Config, kind: ManagedKind) {
+    let mut full = section_full(kind, cfg);
+    let theirs = section_full(kind, own);
+    if let (Value::Object(f), Value::Object(o)) = (&mut full, &theirs) {
+        for k in keys(kind) {
+            match o.get(*k) {
+                Some(v) => {
+                    f.insert((*k).to_owned(), v.clone());
+                }
+                None => {
+                    f.remove(*k);
+                }
+            }
+        }
+    }
+    let set = |cfg: &mut Config| -> Result<(), String> {
+        let bad = |e: serde_json::Error| e.to_string();
+        match kind {
+            ManagedKind::Slo => cfg.slo = serde_json::from_value(full.clone()).map_err(bad)?,
+            ManagedKind::Probe => cfg.probe = serde_json::from_value(full.clone()).map_err(bad)?,
+            ManagedKind::UpstreamCheck => {
+                cfg.upstream_check = serde_json::from_value(full.clone()).map_err(bad)?;
+            }
+            ManagedKind::Dnssec | ManagedKind::Filter | ManagedKind::Drill => {
+                set_section(cfg, kind, full.clone())?;
+            }
+            _ => {}
+        }
+        Ok(())
+    };
+    if set(cfg).is_err() {
+        // Not expected (both halves are valid sections): the files' section whole, then.
+        match kind {
+            ManagedKind::Slo => cfg.slo = own.slo.clone(),
+            ManagedKind::Probe => cfg.probe = own.probe.clone(),
+            ManagedKind::UpstreamCheck => cfg.upstream_check = own.upstream_check.clone(),
+            ManagedKind::Dnssec => cfg.dnssec = own.dnssec.clone(),
+            ManagedKind::Filter => cfg.filter = own.filter.clone(),
+            ManagedKind::Drill => cfg.drill = own.drill.clone(),
+            _ => {}
+        }
+    }
+}
+
 /// The dotted keys the files set for this kind's section (`special.ddr_name`), from
 /// [`Config::file_set`].
 fn file_set(kind: ManagedKind, own: &Config, k: &str) -> bool {
@@ -211,6 +328,40 @@ fn normalize(kind: ManagedKind, body: &Value) -> Result<Value, Problem> {
         }
         ManagedKind::Discovery => {
             cfg.discovery = serde_json::from_value::<DiscoveryConfig>(body.clone()).map_err(bad)?;
+        }
+        ManagedKind::Slo => {
+            cfg.slo =
+                serde_json::from_value::<telltale_config::SloConfig>(body.clone()).map_err(bad)?;
+        }
+        ManagedKind::Probe => {
+            cfg.probe = serde_json::from_value::<telltale_config::ProbeConfig>(body.clone())
+                .map_err(bad)?;
+        }
+        ManagedKind::UpstreamCheck => {
+            cfg.upstream_check =
+                serde_json::from_value::<telltale_config::UpstreamCheckConfig>(body.clone())
+                    .map_err(bad)?;
+        }
+        ManagedKind::TelemetryAnomaly => {
+            cfg.telemetry.anomaly =
+                serde_json::from_value::<telltale_config::AnomalyConfig>(body.clone())
+                    .map_err(bad)?;
+        }
+        ManagedKind::TelemetryQlog => {
+            cfg.telemetry.qlog =
+                serde_json::from_value::<telltale_config::QlogConfig>(body.clone()).map_err(bad)?;
+        }
+        ManagedKind::TelemetryMetrics => {
+            // The listener and the enabled switch are the files' (restart-only): only these two.
+            #[derive(Deserialize, Default)]
+            #[serde(deny_unknown_fields, default)]
+            struct PerClient {
+                per_client: bool,
+                per_client_cap: u32,
+            }
+            let p = serde_json::from_value::<PerClient>(body.clone()).map_err(bad)?;
+            cfg.telemetry.metrics.per_client = p.per_client;
+            cfg.telemetry.metrics.per_client_cap = p.per_client_cap;
         }
         ManagedKind::Local => {
             if body.get("hosts_files").is_some() {
@@ -327,6 +478,12 @@ pub(crate) fn apply_stored(cfg: &mut Config, own: &Config, e: &Entries) -> Vec<S
         (ManagedKind::Dnssec, &e.dnssec),
         (ManagedKind::Filter, &e.filter),
         (ManagedKind::Drill, &e.drill),
+        (ManagedKind::Slo, &e.slo),
+        (ManagedKind::Probe, &e.probe),
+        (ManagedKind::UpstreamCheck, &e.upstream_check),
+        (ManagedKind::TelemetryAnomaly, &e.telemetry_anomaly),
+        (ManagedKind::TelemetryQlog, &e.telemetry_qlog),
+        (ManagedKind::TelemetryMetrics, &e.telemetry_metrics),
     ] {
         let Some(stored) = stored else { continue };
         if let Err(why) = overlay(cfg, own, kind, stored) {
@@ -361,6 +518,33 @@ pub(crate) fn overlay(
         }
         ManagedKind::Discovery => {
             cfg.discovery = serde_json::from_value(cur).map_err(|e| e.to_string())?;
+        }
+        ManagedKind::Slo => {
+            cfg.slo = serde_json::from_value(cur).map_err(|e| e.to_string())?;
+        }
+        ManagedKind::Probe => {
+            cfg.probe = serde_json::from_value(cur).map_err(|e| e.to_string())?;
+        }
+        ManagedKind::UpstreamCheck => {
+            cfg.upstream_check = serde_json::from_value(cur).map_err(|e| e.to_string())?;
+        }
+        ManagedKind::TelemetryAnomaly => {
+            cfg.telemetry.anomaly = serde_json::from_value(cur).map_err(|e| e.to_string())?;
+        }
+        ManagedKind::TelemetryQlog => {
+            cfg.telemetry.qlog = serde_json::from_value(cur).map_err(|e| e.to_string())?;
+        }
+        ManagedKind::TelemetryMetrics => {
+            let c = cur.as_object().cloned().unwrap_or_default();
+            cfg.telemetry.metrics.per_client = c
+                .get("per_client")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            cfg.telemetry.metrics.per_client_cap = c
+                .get("per_client_cap")
+                .and_then(Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok())
+                .unwrap_or(100);
         }
         ManagedKind::Local => {
             let mut lj = serde_json::to_value(&cfg.local).map_err(|e| e.to_string())?;
@@ -420,6 +604,22 @@ pub(crate) fn check_admin_fields(
             format!("agents can't change [{}]", section(kind)),
         )
         .hint("Ask an admin to make this change in the UI."));
+    }
+    // REQ: OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — the node-managed telemetry sections are
+    // admin-only as a whole, so an operator's write is refused even when it changes no field.
+    if is_node_telemetry(kind) && agent.is_none() && role != Some(Role::Admin) {
+        return Err(match role {
+            None => Problem::new(
+                Code::UpgradeRequired,
+                format!("this change to the {} needs an admin, and the node it was made on is too old to say who made it", noun(kind)),
+            )
+            .hint("Upgrade that node first, or make the change on the primary."),
+            Some(_) => Problem::new(
+                Code::Forbidden,
+                format!("only an admin can change the {}: privacy and retention are at stake", noun(kind)),
+            )
+            .hint("Ask an admin to make this change in the UI."),
+        });
     }
     if kind == ManagedKind::Clients && agent.is_some() {
         return Err(Problem::new(
@@ -514,6 +714,12 @@ pub(crate) fn none_stored(entries: &Entries, kind: ManagedKind) -> bool {
         ManagedKind::Dnssec => entries.dnssec.is_none(),
         ManagedKind::Filter => entries.filter.is_none(),
         ManagedKind::Drill => entries.drill.is_none(),
+        ManagedKind::Slo => entries.slo.is_none(),
+        ManagedKind::Probe => entries.probe.is_none(),
+        ManagedKind::UpstreamCheck => entries.upstream_check.is_none(),
+        ManagedKind::TelemetryAnomaly => entries.telemetry_anomaly.is_none(),
+        ManagedKind::TelemetryQlog => entries.telemetry_qlog.is_none(),
+        ManagedKind::TelemetryMetrics => entries.telemetry_metrics.is_none(),
         _ => entries.clients_settings.is_none(),
     }
 }
@@ -527,6 +733,12 @@ pub(crate) fn set_stored(entries: &mut Entries, kind: ManagedKind, v: Option<Val
         ManagedKind::Dnssec => entries.dnssec = v,
         ManagedKind::Filter => entries.filter = v,
         ManagedKind::Drill => entries.drill = v,
+        ManagedKind::Slo => entries.slo = v,
+        ManagedKind::Probe => entries.probe = v,
+        ManagedKind::UpstreamCheck => entries.upstream_check = v,
+        ManagedKind::TelemetryAnomaly => entries.telemetry_anomaly = v,
+        ManagedKind::TelemetryQlog => entries.telemetry_qlog = v,
+        ManagedKind::TelemetryMetrics => entries.telemetry_metrics = v,
         _ => entries.clients_settings = v,
     }
 }
@@ -540,6 +752,12 @@ pub(crate) fn noun(kind: ManagedKind) -> &'static str {
         ManagedKind::Dnssec => "DNSSEC settings",
         ManagedKind::Filter => "list settings",
         ManagedKind::Drill => "drill schedule",
+        ManagedKind::Slo => "objectives",
+        ManagedKind::Probe => "listener checks",
+        ManagedKind::UpstreamCheck => "second opinions",
+        ManagedKind::TelemetryAnomaly => "anomaly settings",
+        ManagedKind::TelemetryQlog => "query log settings",
+        ManagedKind::TelemetryMetrics => "metric series settings",
         _ => "clients settings",
     }
 }
@@ -547,6 +765,21 @@ pub(crate) fn noun(kind: ManagedKind) -> &'static str {
 /// The sentence the dry run says for a change to the section.
 pub(crate) fn impact(kind: ManagedKind, put: bool) -> String {
     match (kind, put) {
+        // REQ: OBS-016, OBS-020, OBS-019, OBS-013, OBS-003, OBS-005 (T27.5, ADR-1007) — each applies
+        // on the reload every node runs when its configuration changes; privacy is the only query
+        // log setting that applies without a restart.
+        (ManagedKind::Slo, true) => "Applies on every node within a few seconds, with no restart: the objectives, the error budget and the burn-rate alerts follow. Answers already counted keep their place.".into(),
+        (ManagedKind::Slo, false) => "The config file's objectives (or the defaults) apply again on every node within a few seconds.".into(),
+        (ManagedKind::Probe, true) => "Applies on every node from the next round of listener checks, with no restart.".into(),
+        (ManagedKind::Probe, false) => "The config file's listener checks (or the defaults) apply again from the next round.".into(),
+        (ManagedKind::UpstreamCheck, true) => "Applies on every node within a few seconds: second opinions start, stop or change their sampling. Disagreements already kept stay until the history is full.".into(),
+        (ManagedKind::UpstreamCheck, false) => "The config file's second-opinion settings (or none: off) apply again within a few seconds.".into(),
+        (ManagedKind::TelemetryAnomaly, true) => "Applies on every node within a few seconds, with no restart. Findings already recorded stay as they are.".into(),
+        (ManagedKind::TelemetryAnomaly, false) => "The config file's anomaly settings (or the defaults) apply again on every node within a few seconds.".into(),
+        (ManagedKind::TelemetryQlog, true) => "The privacy level applies on every node within a few seconds. Turning the log on or off, its retention and its flush and fsync settings take effect after a restart of the node.".into(),
+        (ManagedKind::TelemetryQlog, false) => "The config file's query log settings (or the defaults) apply again: the privacy level within a few seconds, the rest after a restart.".into(),
+        (ManagedKind::TelemetryMetrics, true) => "Applies on every node within a few seconds, with no restart: per-client series appear or go, up to the cap.".into(),
+        (ManagedKind::TelemetryMetrics, false) => "The config file's per-client settings (or off) apply again within a few seconds.".into(),
         (ManagedKind::Special, true) => "Applies on the next query, on every node, with no restart. Names the switches turn on or off answer differently from then on; answers already cached stay until they expire.".into(),
         (ManagedKind::Special, false) => "The config file's special-name settings (or the defaults) apply again from the next query.".into(),
         // REQ: DSC-001 (T25.2) — the inventory starts or stops on the designated node at the reload.

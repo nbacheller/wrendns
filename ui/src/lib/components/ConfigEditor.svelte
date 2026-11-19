@@ -77,9 +77,10 @@
     draft = null,
     adminOnly,
     fileReadOnly = false,
+    validate,
   }: {
-    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit' | 'exclusions' | 'simulate' | 'rollout' | 'special' | 'local' | 'clients' | 'sink' | 'map';
-    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'map-settings' | 'sinks';
+    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit' | 'exclusions' | 'simulate' | 'rollout' | 'special' | 'local' | 'clients' | 'sink' | 'map' | 'slo' | 'probe' | 'upstream_check' | 'anomaly_settings' | 'qlog_settings' | 'metrics_settings';
+    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings' | 'special-names' | 'local-settings' | 'clients-settings' | 'map-settings' | 'sinks' | 'slo-settings' | 'probe-settings' | 'upstream-check-settings' | 'anomaly-settings' | 'qlog-settings' | 'metrics-settings';
     title: string;
     noun: string;
     fields: Field[];
@@ -100,6 +101,10 @@
      *  this network"). A new object each time it should open; operators only. `onused` runs once it
      *  has been taken (the page clears the URL so a reload or Back doesn't reopen it). */
     draft?: { name?: string; values: Record<string, unknown>; onused?: () => void } | null;
+    /** REQ: API-901 (T27.5) — the server's checks that a field's bound alone can't say (a timeout
+     *  shorter than the interval, a size string): the reason to refuse the draft, or null. The
+     *  server checks the same things, so this only shows the reason sooner. */
+    validate?: (values: Record<string, unknown>) => string | null;
     /** REQ: API-014 (T24.16, ADR-926 §1) — what a draft needs an admin for (a program address): the
      *  reason, for a non-admin, which holds Check and Apply; the server refuses it too. `saved` is the
      *  entry as it was read (null for a new entry), so a draft that leaves a saved program address
@@ -274,6 +279,12 @@
       preview = null;
       return;
     }
+    const why = validate?.(editing.values) ?? null;
+    if (why) {
+      formError = new Error(why);
+      preview = null;
+      return;
+    }
     busy = true;
     formError = null;
     try {
@@ -289,6 +300,11 @@
     if (!editing) return;
     if (nameTaken(editing.name)) {
       formError = sameNameError();
+      return;
+    }
+    const why = validate?.(editing.values) ?? null;
+    if (why) {
+      formError = new Error(why);
       return;
     }
     busy = true;
