@@ -5444,6 +5444,8 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 3. **Name.** TelltaleDNS stays the name internally for now. A new name, and the rename of the binary, paths, images, units, docs and site, is its own task, done before anything is published outside the owner's network (spec/10 M33).
 4. **GitHub.** The repository leaves upstream's fork network (Settings, Danger Zone, Leave fork network; the owner's click). Because that drops every issue and comment, they were exported first to `.github/issues-archive/` (29 issues, 27 comments, 12 labels) and are recreated in order afterwards so #1 to #29 keep their numbers, each comment noting its original author and date.
 
+**Addendum (owner, 2026-11-19):** the name is **WrenDNS**, the website **wrendns.com**; the rename covers crates too and runs on a clean main after the open branches merge (spec/10 T33.2). The repository left the fork network the same day, and GitHub kept every issue.
+
 **Consequences:** shared bugs are no longer reported upstream by comment unless the owner asks; the "Upstream watch" issue reports candidates for porting instead of a sync; the README's fork box says the project is independent.
 
 ## ADR-1027 — Every full member is shown for each stored secret, the same on every node; a member without a secret is a warning and a degraded reason, never a DNS fault (Proposed 2026-11-19)
