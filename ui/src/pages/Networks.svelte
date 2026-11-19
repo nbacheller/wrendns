@@ -15,6 +15,8 @@
   let networks = $state<Net[]>([]);
   let error = $state<unknown>(null);
   let loaded = $state(false);
+  // REQ: API-013 (T24.41) — a replica reads the routers through the primary; when it can't, it says so.
+  let missing = $state<string[]>([]);
   let leases = $state<S['DhcpLease'][]>([]);
   let leasesLoaded = $state(false);
   let leaseError = $state<unknown>(null);
@@ -26,6 +28,7 @@
       .networks()
       .then((r) => {
         networks = r.items;
+        missing = r.missingNodes ?? [];
         error = null;
       })
       .catch((e) => (error = e))
@@ -95,6 +98,13 @@
     interfaces), and any client group's networks nothing reported. Each shows the group that covers it and how many devices
     are in it, so you can see which networks are filling up.
   </p>
+
+  {#if missing.length}
+    <p class="notice warn small" role="status" data-testid="networks-missing">
+      {missing.join(', ')} didn't answer, and it reads the routers, so the router networks and their devices are missing here. This
+      list shows what this node knows itself.
+    </p>
+  {/if}
 
   <section class="card">
     {#if loaded && networks.length === 0 && !error}

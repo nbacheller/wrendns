@@ -1129,7 +1129,7 @@ impl Board {
             .clone()
     }
 
-    fn put(&self, name: &str, status: RouterStatus) {
+    pub(crate) fn put(&self, name: &str, status: RouterStatus) {
         self.statuses
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1498,6 +1498,7 @@ fn publish(slots: &HashMap<String, Slot>, board: &Board) {
                 devices: u32::try_from(devices).unwrap_or(u32::MAX),
                 networks: u32::try_from(networks).unwrap_or(u32::MAX),
                 interval_secs: s.config.interval_secs,
+                read_by: None,
             },
         );
     }

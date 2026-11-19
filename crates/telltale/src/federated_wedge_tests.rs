@@ -25,6 +25,23 @@ async fn replica_of_a_silent_primary() -> (
     tokio::sync::watch::Sender<bool>,
     (tempfile::TempDir, tempfile::TempDir),
 ) {
+    // Every read is accepted and never answered: the handler's future doesn't complete.
+    replica_of(Arc::new(move |_peer, _kind, _body| {
+        Box::pin(std::future::pending::<Result<Vec<u8>, String>>())
+    }))
+    .await
+}
+
+/// A two-node cluster whose primary answers peers' reads with `handler`, and a replica joined
+/// to it and connected.
+async fn replica_of(
+    handler: telltale_cluster::net::RpcHandler,
+) -> (
+    Arc<Cluster>,
+    Arc<Cluster>,
+    tokio::sync::watch::Sender<bool>,
+    (tempfile::TempDir, tempfile::TempDir),
+) {
     let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let addr = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -43,10 +60,7 @@ async fn replica_of_a_silent_primary() -> (
         )
         .unwrap();
     let primary = Cluster::new(pid, crate::build_info::VERSION);
-    // Every read is accepted and never answered: the handler's future doesn't complete.
-    primary.set_rpc_handler(Arc::new(move |_peer, _kind, _body| {
-        Box::pin(std::future::pending::<Result<Vec<u8>, String>>())
-    }));
+    primary.set_rpc_handler(handler);
     let (stop_tx, stop) = tokio::sync::watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
     // Wait until the listener accepts (a fixed sleep races the tests running in parallel).
@@ -298,4 +312,159 @@ fn clu_003_concurrent_requests_name_only_their_own_missing_nodes() {
         other.is_empty(),
         "a request that missed nothing names {other:?}, another request's missing node"
     );
+}
+
+/// The router read a primary answers, as JSON: the UniFi router's networks and clients, and its
+/// state. An older primary answers every read it doesn't know with an error.
+fn router_view_handler(old: bool) -> telltale_cluster::net::RpcHandler {
+    Arc::new(move |_peer, _kind, body| {
+        let known = !old && String::from_utf8_lossy(&body).contains("router_view");
+        Box::pin(async move {
+            if !known {
+                return Err("unknown read".to_owned());
+            }
+            let net = |name: &str, subnet: &str, vlan: Option<u16>| {
+                serde_json::json!({"name": name, "subnet": subnet, "vlan": vlan,
+                    "gateway": "192.168.1.1", "source": "router", "router": "udm",
+                    "addresses": 254, "devices": 2, "usedPercent": 0.8, "outsidePool": 0})
+            };
+            let view = serde_json::json!({
+                "networks": [net("LAN", "192.168.1.0/24", None),
+                    net("vlan-30", "192.168.30.0/24", Some(30)),
+                    net("vlan-40", "192.168.40.0/24", Some(40))],
+                "leases": [{"mac": "aa:bb:cc:00:00:01", "ip": "192.168.30.7",
+                    "hostname": "kids-tablet", "expiresUnixSeconds": 0, "source": "router",
+                    "router": "udm", "offline": false}],
+                "statuses": [["udm", {"polledBy": "this node", "state": "ok", "lastPoll": 1234,
+                    "devices": 12, "networks": 3, "intervalSecs": 300}]],
+            });
+            serde_json::to_vec(&view).map_err(|e| e.to_string())
+        })
+    })
+}
+
+/// A router with a stored credential, which a replica doesn't read.
+const STORED_ROUTER: &str = "[[router]]\nname = \"udm\"\ntype = \"home_assistant\"\nurl = \"http://127.0.0.1:9\"\napi_key_ref = \"ha\"\n";
+
+/// The replica's own status of it (what its poll loop writes).
+fn replica_status() -> telltale_api::model::RouterStatus {
+    telltale_api::model::RouterStatus {
+        polled_by: "the primary".into(),
+        state: "skipped".into(),
+        last_poll: None,
+        error: None,
+        devices: 0,
+        networks: 0,
+        interval_secs: 300,
+        read_by: None,
+    }
+}
+
+/// What a replica's Networks, DHCP and Routers reads answer: each the JSON body.
+fn router_reads(handler: telltale_cluster::net::RpcHandler) -> [serde_json::Value; 4] {
+    finish_within(move || {
+        let rt = multi_thread_runtime(2);
+        let (replica, primary, stop, dirs) = rt.block_on(replica_of(handler));
+        let h = rt.block_on(async { harness_in(STORED_ROUTER, Some(Arc::clone(&replica))) });
+        h.src.routers.put("udm", replica_status());
+        let out = rt.block_on(async {
+            let mut out = Vec::new();
+            for path in [
+                "/api/v1/networks",
+                "/api/v1/dhcp/leases",
+                "/api/v1/routers",
+                "/api/v1/profiles/devices",
+            ] {
+                let (status, _, text) = h.send(h.request("GET", path, None)).await;
+                assert_eq!(status, StatusCode::OK, "{path}: {text}");
+                out.push(serde_json::from_str::<serde_json::Value>(&text).unwrap());
+            }
+            out
+        });
+        let _ = stop.send(true);
+        rt.shutdown_background();
+        drop((h, replica, primary, dirs));
+        [
+            out[0].clone(),
+            out[1].clone(),
+            out[2].clone(),
+            out[3].clone(),
+        ]
+    })
+}
+
+fn names(v: &serde_json::Value) -> Vec<&str> {
+    v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["name"].as_str().unwrap_or_default())
+        .collect()
+}
+
+/// REQ: API-013, API-010, API-016 (T24.41) - a replica's Networks, DHCP clients and Routers reads
+/// come from the primary that reads the router: the router's networks (with VLANs), its clients,
+/// and its state, labelled as read by the primary. Nothing is missing.
+#[test]
+fn api_013_a_replica_shows_the_primarys_router_data() {
+    let [nets, leases, routers, picker] = router_reads(router_view_handler(false));
+    // The category picker lists the primary's router networks and clients too.
+    let p = picker.to_string();
+    assert!(p.contains("vlan-30") && p.contains("vlan-40"), "{p}");
+    assert!(p.contains("kids-tablet"), "{p}");
+    let n = names(&nets);
+    for want in ["LAN", "vlan-30", "vlan-40"] {
+        assert!(n.contains(&want), "{want} missing from {n:?}");
+    }
+    let kids = nets["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["name"] == "vlan-30")
+        .unwrap();
+    assert_eq!(kids["vlan"], 30);
+    assert_eq!(kids["gateway"], "192.168.1.1");
+    assert!(nets.get("missingNodes").is_none(), "{nets}");
+    assert!(
+        leases["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["hostname"] == "kids-tablet" && l["router"] == "udm"),
+        "{leases}"
+    );
+    let r = &routers["items"][0];
+    assert_eq!(r["status"]["state"], "ok");
+    assert_eq!(r["status"]["devices"], 12);
+    assert_eq!(r["status"]["networks"], 3);
+    assert_eq!(r["status"]["lastPoll"], 1234);
+    assert_eq!(r["status"]["polledBy"], "the primary");
+    assert!(r["status"]["readBy"].is_string(), "{r}");
+    assert!(routers.get("missingNodes").is_none(), "{routers}");
+}
+
+/// REQ: API-013, API-016 (T24.41, N-1) - a primary that is away (silent) or too old to know the
+/// read leaves the replica's own answer, with the primary named in `missingNodes`: no error, and
+/// the router shows as not read here.
+#[test]
+fn api_013_a_replica_answers_without_the_primarys_router_data() {
+    let silent: telltale_cluster::net::RpcHandler =
+        Arc::new(|_p, _k, _b| Box::pin(std::future::pending::<Result<Vec<u8>, String>>()));
+    for (label, handler) in [
+        ("older primary", router_view_handler(true)),
+        ("silent primary", silent),
+    ] {
+        let [nets, leases, routers, _] = router_reads(handler);
+        assert!(!names(&nets).contains(&"LAN"), "{label}: {nets}");
+        for v in [&nets, &leases, &routers] {
+            assert_eq!(
+                v["missingNodes"].as_array().map(Vec::len),
+                Some(1),
+                "{label}: {v}"
+            );
+        }
+        let r = &routers["items"][0];
+        assert_eq!(r["status"]["state"], "skipped", "{label}");
+        assert!(r["status"].get("readBy").is_none(), "{label}: {r}");
+    }
 }

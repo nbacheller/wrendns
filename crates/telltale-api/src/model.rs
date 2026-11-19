@@ -2363,7 +2363,7 @@ pub struct SimulateRequest {
 }
 
 /// A device named by a router's DHCP or by mDNS (REQ: API-010; T8.2, T8.3).
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DhcpLease {
     pub mac: String,
@@ -2400,7 +2400,7 @@ pub struct DhcpLease {
 
 /// REQ: API-013 (T22.2) — a network: a LAN or VLAN a router reported, or a client group's
 /// network that no router reported, with how many known devices are in it.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkInfo {
     #[schema(example = "IoT")]
@@ -4342,7 +4342,7 @@ pub struct KubernetesStatus {
 
 /// REQ: API-016 (T23.7, ADR-921) — one router integration as the API shows it: its settings
 /// (secrets as names, never values), where it comes from, and what this node's poll of it did.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RouterEntry {
     pub name: String,
@@ -4362,7 +4362,7 @@ pub struct RouterEntry {
 }
 
 /// REQ: API-016 (T23.7) — one credential field of a router and where it stands on this node.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RouterCredential {
     /// `api_key`, `api_secret`, or `password`.
@@ -4381,7 +4381,7 @@ pub struct RouterCredential {
 }
 
 /// REQ: API-016 (T23.7) — what this node's poll of a router last did.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RouterStatus {
     /// `this node`, `the primary` (a stored credential polls there only), or `skipped` with the
@@ -4398,6 +4398,10 @@ pub struct RouterStatus {
     pub devices: u32,
     pub networks: u32,
     pub interval_secs: u32,
+    /// REQ: API-016 (T24.41) - the node whose read this status is, when it is not the node that
+    /// answered: a replica shows the primary's state of a router only the primary reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_by: Option<String>,
 }
 
 /// REQ: API-016 (T23.8, ADR-903 §9) — `GET /api/v1/routers`.
@@ -4405,6 +4409,10 @@ pub struct RouterStatus {
 #[serde(rename_all = "camelCase")]
 pub struct RouterList {
     pub items: Vec<RouterEntry>,
+    /// REQ: API-016 (T24.41) - the primary, when this node reads routers through it and it
+    /// didn't answer (the statuses are this node's own then).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_nodes: Vec<String>,
 }
 
 /// REQ: API-016 (T23.8) — a read-only poll of a router as a draft (`POST /checks/router`).

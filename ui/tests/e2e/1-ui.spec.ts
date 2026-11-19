@@ -6557,6 +6557,81 @@ test('api_013 networks page says where networks come from when there are none', 
   }
 });
 
+// REQ: API-013, API-010, API-016 (T24.41) — what a replica answers when the primary reads the routers: the
+// router's networks and their devices (no note), then the same page with the primary away (a note naming it).
+test('api_013 a replica shows the primary router networks and says when the primary is away', async () => {
+  const net = (name: string, subnet: string, vlan?: number) => ({
+    name,
+    subnet,
+    vlan,
+    gateway: subnet.replace('0/24', '1'),
+    source: 'router',
+    router: 'udm',
+    addresses: 254,
+    devices: 1,
+    usedPercent: 0.4,
+    outsidePool: 0,
+  });
+  const nets = [net('LAN', '192.168.1.0/24'), net('vlan-30', '192.168.30.0/24', 30), net('vlan-40', '192.168.40.0/24', 40)];
+  const leases = [{ ip: '192.168.30.7', mac: 'aa:bb:cc:00:00:07', hostname: 'kids-tablet', source: 'router', router: 'udm', expiresUnixSeconds: 0, offline: false }];
+  let missingNodes: string[] = [];
+  await page.route('**/api/v1/networks', (route) => route.fulfill({ json: { items: nets, ...(missingNodes.length ? { missingNodes } : {}) } }));
+  await page.route('**/api/v1/dhcp/leases', (route) => route.fulfill({ json: { items: leases } }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/networks');
+    const row = page.getByRole('row').filter({ hasText: '192.168.30.0/24' });
+    await expect(row).toContainText('vlan-30');
+    await expect(row).toContainText('30');
+    await expect(page.getByTestId('networks-missing')).toHaveCount(0);
+    await row.getByTestId('network-open').click();
+    await expect(page.getByTestId('network-devices')).toContainText('kids-tablet');
+    await page.keyboard.press('Escape');
+    missingNodes = ['node-a'];
+    await page.reload();
+    await expect(page.getByTestId('networks-missing')).toContainText('node-a');
+  } finally {
+    await page.unroute('**/api/v1/networks');
+    await page.unroute('**/api/v1/dhcp/leases');
+  }
+});
+
+// REQ: API-016 (T24.41) — a replica's Routers page shows the primary's status of a router only the primary reads,
+// labelled as read by the primary; with the primary away it says so.
+test('api_016 a replica shows the primary status of a router', async () => {
+  const entry = (status: Record<string, unknown>) => ({
+    name: 'udm',
+    kind: 'unifi',
+    url: 'https://192.168.1.1',
+    source: 'api',
+    definition: { name: 'udm', type: 'unifi', url: 'https://192.168.1.1', api_key_ref: 'udm' },
+    setByFile: [],
+    credentials: [{ field: 'api_key', source: 'stored', secret: 'udm', readable: true }],
+    status,
+  });
+  let body: Record<string, unknown> = {
+    items: [entry({ polledBy: 'the primary', state: 'ok', lastPoll: 1700000000, devices: 12, networks: 3, intervalSecs: 300, readBy: 'node-a' })],
+  };
+  await page.route('**/api/v1/routers', (route) => route.fulfill({ json: body }));
+  try {
+    await page.goto('/#/');
+    await page.goto('/#/routers');
+    const card = page.getByTestId('router-card').filter({ hasText: 'udm' });
+    await expect(card.getByTestId('router-read-by')).toContainText('Read by the primary (node-a)');
+    await expect(card.getByTestId('router-state')).toContainText('12 devices, 3 networks');
+    await expect(page.getByTestId('routers-primary-missing')).toHaveCount(0);
+    body = {
+      items: [entry({ polledBy: 'the primary', state: 'skipped', devices: 0, networks: 0, intervalSecs: 300 })],
+      missingNodes: ['node-a'],
+    };
+    await page.reload();
+    await expect(page.getByTestId('routers-primary-missing')).toContainText('node-a');
+    await expect(page.getByTestId('router-read-by')).toHaveCount(0);
+  } finally {
+    await page.unroute('**/api/v1/routers');
+  }
+});
+
 // REQ: API-013 (T24.15) — the real node lists the networks its client groups name, as group only.
 test('api_013 the node lists its group networks as group only', async () => {
   await page.goto('/#/');

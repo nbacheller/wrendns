@@ -5452,3 +5452,32 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 **Deviations:** `Federated` delegates the CMDB reads to the local backend, so a node that does not run the CMDB answers 503 naming the designated node. The `learning` and `mac_is_randomized` helpers are kept for T31.4's detector.
 
 **Open:** none.
+
+## ADR-1025 — A replica shows the primary's router data, read through the cluster (Accepted 2026-11-19)
+
+**Context:** T24.41 (owner report, live 3-node cluster). ADR-903 section 1 says a router with a stored credential is read by the primary only, and ADR-125 says a replica gets its names through the peer leases. That left the replica's Networks page without the router's networks (it listed its own interfaces), the network drawer without devices, and the Routers page with "Not read on this node (the primary)", 0 devices and no last read. The spec says (API-013, T22.2) that the networks are read where the routers are read, but the federated backend did not do that. The owner's browser can land on any node behind the VIP, so the three nodes must show the same router data.
+
+**Decision (the most conservative option, no spec text contradicted):**
+1. A new federated read, `router_view`, answered by the node that reads the routers: its router networks (`source` `router`), its router clients (`source` `router`) and each router's status. Results only: no credential, no secret value, and the status already carried only a state, a time, counts and an error message with the address's password removed (API-014).
+2. A replica asks its **reachable primary** (not every peer: a replica that reads a router itself keeps its own rows, and resolver pods read none). It merges: its own router rows first, then the primary's rows for subnets or addresses it has none for, then its own non-router rows (the networks it is directly on, a group's networks, its mDNS names) for subnets and addresses no router reported. A replica's status of a router is replaced by the primary's only when the replica itself skipped the router as "the primary's" (`polledBy` "the primary"); the status then carries `readBy`, the primary's node label, so the page can say who read it.
+3. A primary that cannot answer (away, a stream that times out within the federated 2 s deadline, or an older build that does not know the read: N-1) leaves the replica's own answer and is recorded as a missing node (`missingNodes`), so the UI shows a note. It is never an error and never blocks anything else (CLU-004). Nothing is polled from a replica, and no credential or secret travels.
+4. The API additions are `RouterStatus.readBy` and `RouterList.missingNodes`, both optional and omitted when empty (a client that does not know them is unaffected).
+5. Not changed: the group list's Source column and the category picker (T24.29) still use this node's own networks (T24.41, Open).
+
+**Consequences:** the three nodes show the same networks and router state, with the replica's own interface rows added. A page load on a replica makes up to three small reads of the primary (one per call: networks, leases, routers), each bounded by 2 s. Nothing is added to the DNS path. A cluster with an older primary behaves as before, with a note.
+
+**Test plan:** `api_013_a_replica_shows_the_primarys_router_data`, `api_013_a_replica_answers_without_the_primarys_router_data`, `api_013_replica_networks_are_the_primarys_plus_its_own`, `api_013_own_router_rows_win`, `api_010_replica_leases_merge`, `api_016_replica_shows_the_primarys_router_status`, `clu_002_router_view_wire_form`; Playwright `api_013 a replica shows the primary router networks...` and `api_016 a replica shows the primary status of a router`; `deploy/cluster3/e2e.sh` step e2.
+
+## ADR-1026 — The fork goes its own way: no more upstream syncs, a watch for fixes only, its own name before any public release (Accepted 2026-11-19, owner decision)
+
+**Context:** On 2026-11-19 the fork was 612 commits ahead of `paimonsoror/telltaledns` and 80 behind since the last shared commit (`095b77f`, 2026-11-17): about 198,000 lines added in 566 files against upstream's 8,600 in 69, its own milestones M22 to M32 and about 120 fork ADRs. Each sync cost hours of conflict resolution. Upstream is dual-licensed Apache-2.0 or MIT, which permits a permanent independent fork; neither licence grants use of the project's name (Apache-2.0 section 6).
+
+**Decision (the owner, through AskUserQuestion):**
+1. **Independent, with a watch for fixes.** No more full upstream merges; `spec/upstream.md`'s sync procedure is retired. The daily upstream watch stays, but only to find security and bug fixes in code the fork still shares; such a fix is ported by cherry-pick or by hand on its own branch, citing the upstream commit. Upstream ADR and task numbers already taken keep their meaning; new work uses the fork's numbering only.
+2. **Licence.** The fork keeps both licence texts and the upstream copyright line; fork additions may carry their own. Distribution uses the MIT option or keeps Apache-2.0's notices, whichever the release says.
+3. **Name.** TelltaleDNS stays the name internally for now. A new name, and the rename of the binary, paths, images, units, docs and site, is its own task, done before anything is published outside the owner's network (spec/10 M33).
+4. **GitHub.** The repository leaves upstream's fork network (Settings, Danger Zone, Leave fork network; the owner's click). Because that drops every issue and comment, they were exported first to `.github/issues-archive/` (29 issues, 27 comments, 12 labels) and are recreated in order afterwards so #1 to #29 keep their numbers, each comment noting its original author and date.
+
+**Addendum (owner, 2026-11-19):** the name is **WrenDNS**, the website **wrendns.com**; the rename covers crates too and runs on a clean main after the open branches merge (spec/10 T33.2). The repository left the fork network the same day, and GitHub kept every issue.
+
+**Consequences:** shared bugs are no longer reported upstream by comment unless the owner asks; the "Upstream watch" issue reports candidates for porting instead of a sync; the README's fork box says the project is independent.

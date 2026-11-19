@@ -18,6 +18,8 @@
   type Entry = S['RouterEntry'];
 
   let items = $state<Entry[]>([]);
+  // REQ: API-016 (T24.41) — the primary, when this node reads routers through it and it didn't answer.
+  let missing = $state<string[]>([]);
   let error = $state<unknown>(null);
   let notice = $state('');
   const isAdmin = $derived(session.user?.role === 'admin');
@@ -39,6 +41,7 @@
     try {
       const r = await api.routers();
       items = r.items;
+      missing = r.missingNodes ?? [];
       error = null;
     } catch (e) {
       error = e;
@@ -373,6 +376,12 @@
     </section>
   {/if}
 
+  {#if missing.length && items.some((i) => i.status.polledBy === 'the primary' && !i.status.readBy)}
+    <p class="notice warn small" role="status" data-testid="routers-primary-missing">
+      {missing.join(', ')} didn't answer. It reads the routers that store their credential, so their state isn't shown here until it does.
+    </p>
+  {/if}
+
   {#if items.length === 0 && !error}
     <p class="empty" data-testid="routers-empty">No routers yet. Add UniFi, OPNsense, or Home Assistant to name your devices.</p>
   {/if}
@@ -388,6 +397,7 @@
       <p data-testid="router-state">
         <span class={e.status.state === 'ok' ? 'badge ok' : e.status.state === 'failing' ? 'badge bad' : 'badge'}>{stateLabel[e.status.state] ?? e.status.state}</span>
         {#if e.status.state === 'skipped'}<span class="small muted">({e.status.polledBy})</span>{/if}
+        {#if e.status.readBy}<span class="badge info" data-testid="router-read-by" title="Only the primary reads this router (it stores the credential); this is its last read">Read by the primary ({e.status.readBy})</span>{/if}
         {#if e.status.lastPoll}<span class="small muted">Last read {when(e.status.lastPoll)}: {e.status.devices} devices{e.status.networks ? `, ${e.status.networks} networks` : ''}.</span>{/if}
       </p>
       {#if e.status.error}<p class="small bad-text" data-testid="router-error">{e.status.error}</p>{/if}

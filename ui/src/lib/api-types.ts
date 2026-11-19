@@ -3262,7 +3262,8 @@ export interface paths {
          *     domain), then any client group's `networks` that no router reported. Each with the group
          *     that covers it and how many known devices are in it (the routers' DHCP clients, Home
          *     Assistant's devices, and mDNS names), so you can see which networks are filling up. Read
-         *     on this node (the one that reads the routers).
+         *     where the routers are read: a replica asks the primary and adds the networks it is directly
+         *     on; with the primary away it answers from its own data and `missingNodes` names the primary.
          */
         get: operations["networks"];
         put?: never;
@@ -3853,8 +3854,10 @@ export interface paths {
         /**
          * The routers in the configuration, with their status.
          * @description Each router comes with its settings (secrets as names, never values), where it comes from (the
-         *     files or the API), and what this node's last read did (API-016, T23.8). A replica answers with
-         *     its own reads: the primary is the one that reads a router that stores its credential.
+         *     files or the API), and what this node's last read did (API-016, T23.8). The primary is the one
+         *     that reads a router that stores its credential, so a replica shows the primary's status of
+         *     such a router (`status.readBy` names the node); with the primary away it shows its own, and
+         *     `missingNodes` names the primary (API-016, T24.41).
          */
         get: operations["list_routers"];
         put?: never;
@@ -11451,6 +11454,11 @@ export interface components {
         /** @description REQ: API-016 (T23.8, ADR-903 §9) — `GET /api/v1/routers`. */
         RouterList: {
             items: components["schemas"]["RouterEntry"][];
+            /**
+             * @description REQ: API-016 (T24.41) - the primary, when this node reads routers through it and it
+             *     didn't answer (the statuses are this node's own then).
+             */
+            missingNodes?: string[];
         };
         /** @description REQ: API-016 (T23.7) — what this node's poll of a router last did. */
         RouterStatus: {
@@ -11472,6 +11480,11 @@ export interface components {
              *     reason (a resolver pod).
              */
             polledBy: string;
+            /**
+             * @description REQ: API-016 (T24.41) - the node whose read this status is, when it is not the node that
+             *     answered: a replica shows the primary's state of a router only the primary reads.
+             */
+            readBy?: string | null;
             /** @description `waiting` (not read yet), `ok`, `failing` (keeping the last answer), or `skipped`. */
             state: string;
         };
