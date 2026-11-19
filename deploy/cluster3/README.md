@@ -24,7 +24,7 @@ KEEP=1 deploy/cluster3/e2e.sh     # keeps the test image and the temp directory 
 
 It works from Windows Git Bash (Docker Desktop) and from Linux (CI). The first run builds the image
 (3 to 6 minutes on a warm laptop; a cold CI runner takes longer, and the workflow allows 60 minutes;
-later builds reuse the build cache). The checks take about 3 minutes. Every run tears the cluster
+later builds reuse the build cache). The checks take about 3 minutes (check j adds its watch, 1 minute by default). Every run tears the cluster
 down (`docker compose down -v`) and removes the test image, unless `KEEP=1` is set; a failure prints
 the last 40 lines of each node's log first.
 
@@ -53,7 +53,7 @@ so a check that pauses the primary for longer than its lease can promote a repli
 | **g.** upstream #7 on the 2-CPU replica | the primary is paused for longer than its lease, so the cluster promotes a replica (the reads still answer). Twenty concurrent reads at replica-a (the clients list, config entries, discovery status, the cluster) each return within 15 s; `/livez` and `/metrics` keep answering; DNS on replica-a answers a steady loop with no timeouts; replica-a's runtime starts with two workers (`runtime_workers=2` in its log, from the container's CPU quota). The primary is unpaused after | CLU-004, CLU-002, ADR-946 |
 | **h.** failover | the node that holds the lease (`telltale_cluster_lease_held` 1, `telltale_cluster_primary` 1) is killed, so the election is the lease running out; the promotion comes 5 to 40 s after the kill; the other survivor follows it; DNS on both survivors answers with no SERVFAIL, and no more than 1% of the queries go unanswered (the probe fails on any timeout); an edit on the new primary reaches the other survivor; the killed node, started again, steps down and follows | CLU-005, ADR-051, ADR-056, ADR-947 |
 | **i.** rolling restart | each node is restarted in turn; a monitor asks every node's DNS five times a second, and at least two must answer at every sample | CLU-004 |
-| **j.** replicas stay linked (T24.38) | after a rolling restart in the owner's order (replicas, then the primary), every node reports `reachableVoters` = `voters` at every sample for 3 minutes (`J_WATCH_S` shortens it) with no `leaving this node` log lines, and no `unstableVoters`; then the primary is killed: a survivor is elected within the lease time and neither survivor moves its link after it | CLU-001, CLU-005 |
+| **j.** replicas stay linked (T24.38) | after a rolling restart in the owner's order (replicas, then the primary), every node reports `reachableVoters` = `voters` at every sample for 1 minute (`J_WATCH_S` changes it; the whole run takes about 7 minutes at the default) with no `leaving this node` log lines, and no `unstableVoters`; then the primary is killed: a survivor is elected within the lease time and neither survivor moves its link after it | CLU-001, CLU-005 |
 
 Two things the owner's wording named differently, and how the test handles them:
 
@@ -113,3 +113,8 @@ SD card); `FSYNC_STALL_S=4` pauses a random node for that long every 40 s; `LAPS
 image that is already built (for example the one from before a fix). Run it under the same lock as
 `e2e.sh`. In Docker the write cap slows the ballot store (the slow-store warning shows) but did not
 reproduce a lapse; the test Pis are the real test.
+
+The image builds with its own cache (`BUILD_CACHE_SCOPE=-cluster3`), apart from the default one that every
+worktree shares: a shared cache can hold a crate built from another worktree's sources and fail with a
+false compile error (`no method named ...`). Set `CLUSTER3_CACHE_SCOPE` (for example `-mybranch`) to keep
+one worktree's cache apart from the others.

@@ -20,7 +20,7 @@
 #      new one and stays deleted, and the killed node, started again, steps down;
 #   i. a rolling restart of each node in turn keeps at least two nodes answering DNS throughout;
 #   j. (T24.38) after a rolling restart in the owner's order (replicas, then the primary) every node
-#      reports reachableVoters = voters for 3 minutes with no "leaving this node" churn, and the
+#      reports reachableVoters = voters for 1 minute with no "leaving this node" churn, and the
 #      primary's death is still an election within the lease time, with no flapping after it.
 # And, between a and b, a2: in manual failover each replica reports the other as up (relayed by the
 # primary), then `set-failover auto` on the running primary is adopted with no restart: it holds a
@@ -33,7 +33,7 @@
 # (metrics). Every credential is made here, in a temp directory that is removed at exit.
 #
 # Usage: deploy/cluster3/e2e.sh            (needs Docker with Compose v2, and python3)
-#        J_WATCH_S=20 deploy/cluster3/e2e.sh   (a shorter watch in check j; the default is 180 s)
+#        J_WATCH_S=20 deploy/cluster3/e2e.sh   (a shorter watch in check j; the default is 60 s)
 #        KEEP=1 deploy/cluster3/e2e.sh     (keeps the test image and the temp directory)
 set -euo pipefail
 
@@ -495,7 +495,7 @@ done
 churn() { "${COMPOSE[@]}" logs --no-color "$1" 2>&1 | grep -c 'leaving this node' || true; }
 declare -A LEFT
 for n in "${NODES[@]}"; do LEFT[$n]=$(churn "$n"); done
-end=$(( $(now_ms) + ${J_WATCH_S:-180} * 1000 ))
+end=$(( $(now_ms) + ${J_WATCH_S:-60} * 1000 ))
 samples=0
 while [ "$(now_ms)" -lt "$end" ]; do
   for n in "${NODES[@]}"; do

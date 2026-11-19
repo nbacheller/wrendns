@@ -2951,6 +2951,135 @@ mod voters_linked {
         rolling([0, 1, 2]).await;
     }
 
+    // REQ: CLU-001, CLU-005 (T24.38) — one drop of a replica's main link to the primary is
+    // followed by a redial of the primary, not a detour through the other replica (which
+    // `primary_is_back` would have to undo: the owner's "linked, leaving this node, linked").
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clu_005_t24_38_one_drop_of_the_primary_link_does_not_detour_through_a_replica() {
+        let mut nodes = three();
+        for n in &mut nodes {
+            n.start();
+        }
+        settled(&nodes).await;
+        // Past the "up for a while" threshold.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let replica_url = nodes[2].c().identity.meta.advertise[0].clone();
+        for round in 0..3 {
+            // The main link to the primary ends once (cut at node 1's end).
+            nodes[1].c().sever_main.notify_one();
+            for _ in 0..80 {
+                let to = nodes[1].c().connected_primary();
+                assert_ne!(
+                    to.as_deref(),
+                    Some(replica_url.as_str()),
+                    "round {round}: node 1 detoured through the other replica"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert_eq!(
+                nodes[1]
+                    .c()
+                    .severed
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                round + 1,
+                "round {round}: the cut never took effect"
+            );
+            wait_until("node 1 is linked to the primary again", || {
+                nodes[1].c().main_link_to_primary()
+            })
+            .await;
+            tokio::time::sleep(Duration::from_secs(4)).await;
+        }
+    }
+
+    // REQ: CLU-005 (T24.38, ADR-1018) — a stream that never got a Hello accepted (a peer refused
+    // for its protocol) is not a link that dropped, and a heartbeat marks its peer connected.
+    #[test]
+    fn clu_005_t24_38_a_refused_hello_records_no_drop_and_heartbeat_reconnects() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = Identity::init(
+            dir.path(),
+            "home",
+            vec!["https://127.0.0.1:1".into()],
+            "k8s",
+        )
+        .unwrap();
+        let c = Cluster::new(id, "0.1.0");
+        let mut peer = Some("peer".to_owned());
+        let refused = c.on_frame(
+            &mut peer,
+            Frame {
+                body: Some(Body::Hello(Hello {
+                    protocol: PROTOCOL + 50,
+                    cluster_id: c.identity.meta.cluster_id.clone(),
+                    node_id: "peer".into(),
+                    ..Hello::default()
+                })),
+            },
+            "inbound",
+            &EchoSlot::default(),
+        );
+        assert!(refused.is_err());
+        drop(StreamCount::new(&c));
+        assert_eq!(c.link_drops(Duration::from_secs(60)).len(), 0);
+        // Accepted, then a stale end of an older stream clears `connected`: a heartbeat sets it.
+        let mut peer = None;
+        c.on_frame(
+            &mut peer,
+            Frame {
+                body: Some(Body::Hello(Hello {
+                    protocol: PROTOCOL,
+                    cluster_id: c.identity.meta.cluster_id.clone(),
+                    node_id: "peer".into(),
+                    ..Hello::default()
+                })),
+            },
+            "inbound",
+            &EchoSlot::default(),
+        )
+        .unwrap();
+        c.members.lock().unwrap().get_mut("peer").unwrap().connected = false;
+        c.on_frame(
+            &mut peer,
+            Frame {
+                body: Some(Body::Heartbeat(Heartbeat::default())),
+            },
+            "inbound",
+            &EchoSlot::default(),
+        )
+        .unwrap();
+        assert!(c.members().iter().all(|m| m.connected));
+    }
+
+    // REQ: CLU-005 (T24.38) — the drop record forgets peers whose newest drop is old, and a
+    // removed node's record goes with it.
+    #[test]
+    fn clu_005_t24_38_link_drops_are_pruned() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = Identity::init(
+            dir.path(),
+            "home",
+            vec!["https://127.0.0.1:1".into()],
+            "k8s",
+        )
+        .unwrap();
+        let c = Cluster::new(id, "0.1.0");
+        let old = std::time::Instant::now()
+            .checked_sub(Duration::from_hours(2))
+            .unwrap();
+        c.link_drops
+            .lock()
+            .unwrap()
+            .insert("stale".into(), std::collections::VecDeque::from([old]));
+        c.note_link_drop("fresh");
+        let map = c.link_drops.lock().unwrap();
+        assert!(!map.contains_key("stale"));
+        assert!(map.contains_key("fresh"));
+        drop(map);
+        c.adopt_removed(&["fresh".to_owned()]);
+        assert!(c.link_drops.lock().unwrap().is_empty());
+    }
+
     // REQ: CLU-005 (T24.38, ADR-1018) — a peer's streams are listed side by side: one ending
     // leaves the peer reachable and connected, and only the last one's end disconnects it and
     // counts as a link drop.
@@ -2999,8 +3128,8 @@ mod voters_linked {
             )
         };
         let ((a, _ra), (b, _rb)) = (listed(&c), listed(&c));
-        let mut ca = StreamCount::new(&c, Some("peer"));
-        let mut cb = StreamCount::new(&c, Some("peer"));
+        let mut ca = StreamCount::new(&c);
+        let mut cb = StreamCount::new(&c);
         ca.count("peer");
         cb.count("peer");
         // The newer stream ends: the older one still carries the peer.

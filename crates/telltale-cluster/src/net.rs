@@ -82,7 +82,11 @@ const REPROBE_MIN: Duration = Duration::from_millis(100);
 #[cfg(test)]
 const REPROBE_MAX: Duration = Duration::from_millis(400);
 /// REQ: CLU-005 (T24.38, ADR-1018) — how many link drops are remembered per peer.
+/// A main link to the primary that was up at least this long is redialed before any replica.
+const PRIMARY_REDIAL_MIN_UP: Duration = Duration::from_secs(3);
 const LINK_DROPS_KEPT: usize = 16;
+/// Link-drop records older than this are forgotten (a peer that comes and goes is current).
+const LINK_DROPS_MAX_AGE: Duration = Duration::from_hours(1);
 /// A look at the primary that takes longer than this counts as no answer.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -794,6 +798,9 @@ pub struct Cluster {
     /// This node's own stream to the primary (or to the node it fell back to), while it's up.
     /// Blobs are fetched over it only while it's to the primary ([`Cluster::fetch_urls`]).
     connected: Mutex<Option<MainLink>>,
+    /// How long the last main link stayed up, in ms (0 when it never got linked): `dial` reads
+    /// it after the stream ends.
+    main_up_ms: std::sync::atomic::AtomicU64,
     /// Replication state, for the API and the Cluster page.
     sync: Mutex<SyncStatus>,
     /// Bumped when the applied version changes, so the next heartbeat goes out at once.
@@ -819,6 +826,11 @@ pub struct Cluster {
     /// REQ: CLU-005 (T24.38, ADR-1018) — when each peer last lost its last stream (newest last,
     /// at most [`LINK_DROPS_KEPT`]): a voter whose link comes and goes shows on the Cluster page.
     link_drops: Mutex<HashMap<String, VecDeque<std::time::Instant>>>,
+    /// Test hook: ends this node's main link (one drop), once per `notify_one`.
+    #[cfg(test)]
+    sever_main: Notify,
+    #[cfg(test)]
+    severed: std::sync::atomic::AtomicUsize,
     /// RPCs awaiting an answer, by request ID.
     pending: Mutex<PendingCalls>,
     next_rpc: std::sync::atomic::AtomicU64,
@@ -927,6 +939,7 @@ impl Cluster {
             served: Mutex::new(HashMap::new()),
             incoming: watch::Sender::new(None),
             connected: Mutex::new(None),
+            main_up_ms: std::sync::atomic::AtomicU64::new(0),
             sync: Mutex::new(SyncStatus::default()),
             local_changed: watch::Sender::new(0),
             events: Mutex::new(VecDeque::new()),
@@ -938,6 +951,10 @@ impl Cluster {
             outbox: Mutex::new(HashMap::new()),
             live_streams: Mutex::new(HashMap::new()),
             link_drops: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            sever_main: Notify::new(),
+            #[cfg(test)]
+            severed: std::sync::atomic::AtomicUsize::new(0),
             withheld: Mutex::new(std::collections::HashSet::new()),
             ephemeral: std::sync::atomic::AtomicBool::new(false),
             joins: Mutex::new(std::collections::VecDeque::new()),
@@ -1415,8 +1432,13 @@ impl Cluster {
             }
         }
         let mut outbox = self.outbox.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut drops = self
+            .link_drops
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         for id in ids {
             outbox.remove(id);
+            drops.remove(id);
         }
     }
 
@@ -1492,6 +1514,10 @@ impl Cluster {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(node);
         self.outbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(node);
+        self.link_drops
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(node);
@@ -1589,6 +1615,12 @@ impl Cluster {
         while q.len() > LINK_DROPS_KEPT {
             q.pop_front();
         }
+        // Peers (resolver pods come and go) whose newest drop is old are forgotten.
+        let now = std::time::Instant::now();
+        drops.retain(|_, q| {
+            q.back()
+                .is_some_and(|t| now.duration_since(*t) <= LINK_DROPS_MAX_AGE)
+        });
     }
 
     /// REQ: CLU-005 (T24.38, ADR-1018) — for each peer that lost its link within `window`: how
@@ -2583,6 +2615,8 @@ impl Cluster {
                 let mut restarted = false;
                 let mut maintenance_changed = None;
                 if let Some(m) = members.get_mut(id) {
+                    // REQ: CLU-005 (T24.38) — a heartbeat proves a live stream.
+                    m.connected = true;
                     // REQ: OPS-010 — its maintenance window (an older node sends none).
                     let window = (hb.maintenance_until_ms > 0).then(|| MaintenanceWindow {
                         until_ms: hb.maintenance_until_ms,
@@ -2791,7 +2825,7 @@ async fn read_frames(
     // REQ: CLU-001, CLU-005 (T24.38, ADR-1018) — the guard ends this stream's part in the peer's
     // connected state wherever the stream stops, even when the caller drops this future (a
     // replica moving back to the primary leaves its stream to another replica that way).
-    let mut count = StreamCount::new(cluster, peer.as_deref());
+    let mut count = StreamCount::new(cluster);
     let result = read_loop(cluster, body, &mut peer, via, echo, &mut count).await;
     count.why = result
         .as_ref()
@@ -2810,16 +2844,14 @@ struct StreamCount {
 }
 
 impl StreamCount {
-    fn new(cluster: &Arc<Cluster>, peer: Option<&str>) -> Self {
-        let mut c = Self {
+    fn new(cluster: &Arc<Cluster>) -> Self {
+        // Counted from the first frame the cluster accepts (a Hello), not from the
+        // certificate: a peer refused at Hello is not a link that dropped.
+        Self {
             cluster: Arc::clone(cluster),
             counted: None,
             why: "stream closed".to_owned(),
-        };
-        if let Some(p) = peer {
-            c.count(p);
         }
-        c
     }
 
     /// Counts this stream for `peer`, once.
@@ -2851,6 +2883,13 @@ impl Drop for StreamCount {
         let Some(id) = self.counted.take() else {
             return;
         };
+        // The members lock is taken first and the count is changed under it, so a new stream's
+        // Hello (which sets `connected` under the same lock) can't be overwritten by this one's
+        // end (heartbeats also set it, as a second guard).
+        let mut members = cluster
+            .members
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let last = {
             let mut live = cluster
                 .live_streams
@@ -2867,10 +2906,6 @@ impl Drop for StreamCount {
         if !last {
             return;
         }
-        let mut members = cluster
-            .members
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
         if let Some(m) = members.get_mut(&id) {
             m.connected = false;
         }
@@ -3475,6 +3510,7 @@ pub async fn dial(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
         }
         // The candidates change: a promotion names a new primary, the registry grows.
         let mut moved = false;
+        let mut retry_primary = false;
         for url in cluster.candidate_urls() {
             let started = tokio::time::Instant::now();
             // REQ: CLU-001 (GitHub issue #4) — a stream to a node that isn't the primary (the
@@ -3514,6 +3550,27 @@ pub async fn dial(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
             if started.elapsed() > Duration::from_secs(60) {
                 backoff = Duration::from_secs(1); // it was up for a while
             }
+            // REQ: CLU-001, CLU-005 (T24.38) — a main link to the primary that was up for a
+            // while and then ended is one drop, not a reason to detour through a replica (which
+            // `primary_is_back` would then have to undo): the primary's URLs are tried first
+            // again after a short wait. A primary that is really gone fails the first dial
+            // quickly, and the loop falls through to the replicas as before.
+            if Duration::from_millis(cluster.main_up_ms.load(std::sync::atomic::Ordering::SeqCst))
+                > PRIMARY_REDIAL_MIN_UP
+                && cluster.primary_urls().contains(&url)
+            {
+                retry_primary = true;
+                break;
+            }
+        }
+        if retry_primary {
+            backoff = Duration::from_secs(1);
+            let wait = Duration::from_millis(200 + u64::from(rand::random::<u16>() % 800));
+            tokio::select! {
+                _ = stop.changed() => return,
+                () = tokio::time::sleep(wait) => {}
+            }
+            continue;
         }
         if moved {
             // Not a failure: try the candidates again at once, the primary's URLs first.
@@ -3569,6 +3626,11 @@ async fn stream_once(
     main: bool,
     switch: Arc<Notify>,
 ) -> Result<(), String> {
+    if main {
+        cluster
+            .main_up_ms
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+    }
     let tls = tls_connect(url, cfg).await?;
     let server_id = tls
         .get_ref()
@@ -3625,10 +3687,15 @@ async fn stream_once(
     let result = tokio::select! {
         done = read_frames(&cluster, r.into_body(), server_id, "outbound", &echo) => done,
         () = switch.notified() => { switched = true; Ok(()) },
+        () = test_sever(&cluster, main) => Err("test: the link was cut".to_owned()),
     };
     // REQ: CLU-005 (T24.38, ADR-1018) — the end of a main link is said at info level with how
     // long it lasted and why, so a link that comes and goes can be read from the log.
     if main {
+        cluster.main_up_ms.store(
+            u64::try_from(linked_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::SeqCst,
+        );
         info!(
             %url,
             node = node_for_log.as_deref().unwrap_or("unknown"),
@@ -3639,12 +3706,34 @@ async fn stream_once(
         );
     }
     writer.abort();
-    cluster
-        .connected
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take_if(|l| l.url == url);
+    // REQ: CLU-005 (T24.38) — only the main link owns the main-link record: a voter-mesh
+    // stream to the same URL ending must not clear it.
+    if main {
+        cluster
+            .connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take_if(|l| l.url == url);
+    }
     result
+}
+
+/// Test hook: resolves when the test cuts this node's main link.
+#[cfg(test)]
+async fn test_sever(cluster: &Cluster, main: bool) {
+    if main {
+        cluster.sever_main.notified().await;
+        cluster
+            .severed
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    } else {
+        std::future::pending::<()>().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn test_sever(_cluster: &Cluster, _main: bool) {
+    std::future::pending::<()>().await;
 }
 
 /// Runs futures concurrently and returns their outputs in order (no `futures` dependency).
