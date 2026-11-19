@@ -911,6 +911,13 @@ def parse_adrs():
     return adrs
 
 
+# REQ: DOC-006 — the decision records are off the public site while they are rewritten to remove
+# details of the owner's own network (owner, 2026-11-19). Set True to publish them again.
+PUBLISH_DECISIONS = False
+DECISIONS_PAUSED = ('<p class="legend">The decision records are being edited and will be back soon. '
+                    'The design is described in the guides and on the For nerds page.</p>')
+
+
 def render_decisions(page, reqs):
     """The index page (decisions.html) and the part pages, as `{name: html}`."""
     adrs = parse_adrs()
@@ -1440,7 +1447,10 @@ def main():
         if name == "nerds.html":
             page = render_nerds(page, arch, adrs, reqs)
         # The decisions index and its part pages come from one template.
-        generated = render_decisions(page, reqs) if name == "decisions.html" else {name: page}
+        if name == "decisions.html" and not PUBLISH_DECISIONS:
+            generated = {name: page.replace("<!-- @decisions-summary -->", DECISIONS_PAUSED).replace("<!-- @decisions -->", "")}
+        else:
+            generated = render_decisions(page, reqs) if name == "decisions.html" else {name: page}
         for gname, gpage in generated.items():
             if "[confirm" in gpage and gname in LEGAL:
                 sys.exit("{}: a [confirm] marker reached the public page".format(gname))
