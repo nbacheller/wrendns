@@ -824,9 +824,13 @@ pub struct Cluster {
     /// REQ: CLU-001, CLU-005 (T24.38, ADR-1018) — how many streams are open to each peer (counted
     /// from its Hello to the end of the stream): a peer is `connected` while there is one.
     live_streams: Mutex<HashMap<String, u32>>,
-    /// REQ: CLU-005 (T24.38, ADR-1018) — when each peer last lost its last stream (newest last,
-    /// at most [`LINK_DROPS_KEPT`]): a voter whose link comes and goes shows on the Cluster page.
-    link_drops: Mutex<HashMap<String, VecDeque<std::time::Instant>>>,
+    /// REQ: CLU-005 (T24.38, ADR-1018) — when each peer lost its last stream (newest last, at
+    /// most [`LINK_DROPS_KEPT`]) and which process it was: a voter whose link comes and goes
+    /// shows on the Cluster page; a drop the peer comes back from as another process (a restart,
+    /// an upgrade, a graceful shutdown) is forgotten at its Hello.
+    link_drops: Mutex<LinkLog>,
+    /// REQ: CLU-005 (T24.38, ADR-1018) — this process's [`Hello::instance`].
+    instance: String,
     /// Test hook: ends this node's main link (one drop), once per `notify_one`.
     #[cfg(test)]
     sever_main: Notify,
@@ -908,6 +912,102 @@ pub(crate) fn peer_health(members: &[Member], now_ms: u64) -> Vec<crate::wire::P
         .collect()
 }
 
+/// REQ: CLU-005 (T24.38, ADR-1018) — one end of a peer's last stream.
+#[derive(Debug, Clone)]
+pub(crate) struct LinkDrop {
+    pub(crate) at: std::time::Instant,
+    /// The peer's [`Hello::instance`] on the link that ended ("" from an older peer).
+    pub(crate) instance: String,
+    /// The peer came back as the same process: the link itself dropped.
+    pub(crate) settled: bool,
+}
+
+/// REQ: CLU-005 (T24.38, ADR-1018) — the link drops this node saw, and the process each linked
+/// peer is now. Rules (the conservative side of each case):
+/// - a drop the peer comes back from with the same instance counts (the link failed while both
+///   processes stayed up);
+/// - with another instance it is forgotten (the peer restarted, was upgraded or shut down);
+/// - an older peer sends no instance: "" again counts (as before the field); "" to an id, or an
+///   id to "", is an upgrade or a downgrade, so a restart;
+/// - a drop the peer hasn't come back from yet counts until it does;
+/// - this node's own restart starts the log empty (its peers see it come back as another
+///   process and forget the drop).
+#[derive(Debug, Default)]
+pub(crate) struct LinkLog {
+    /// Each linked peer's instance, from its Hello (moved into the drop when the link ends).
+    pub(crate) instance: HashMap<String, String>,
+    pub(crate) drops: HashMap<String, VecDeque<LinkDrop>>,
+}
+
+impl LinkLog {
+    /// `peer` lost its last stream at `at`.
+    pub(crate) fn dropped(&mut self, peer: &str, at: std::time::Instant) {
+        let instance = self.instance.remove(peer).unwrap_or_default();
+        let q = self.drops.entry(peer.to_owned()).or_default();
+        q.push_back(LinkDrop {
+            at,
+            instance,
+            settled: false,
+        });
+        while q.len() > LINK_DROPS_KEPT {
+            q.pop_front();
+        }
+        // Peers (resolver pods come and go) whose newest drop is old are forgotten.
+        self.drops.retain(|_, q| {
+            q.back()
+                .is_some_and(|d| at.saturating_duration_since(d.at) <= LINK_DROPS_MAX_AGE)
+        });
+    }
+
+    /// `peer` said Hello as process `instance`: its unsettled drops are settled (the same
+    /// process) or forgotten (another one).
+    pub(crate) fn hello(&mut self, peer: &str, instance: &str) {
+        self.instance.insert(peer.to_owned(), instance.to_owned());
+        if let Some(q) = self.drops.get_mut(peer) {
+            q.retain_mut(|d| {
+                if d.settled {
+                    return true;
+                }
+                d.settled = true;
+                d.instance == instance
+            });
+            if q.is_empty() {
+                self.drops.remove(peer);
+            }
+        }
+    }
+
+    pub(crate) fn forget(&mut self, peer: &str) {
+        self.instance.remove(peer);
+        self.drops.remove(peer);
+    }
+
+    /// For each peer with drops within `window` of `now`: how many, and how long ago the last.
+    pub(crate) fn counts(
+        &self,
+        now: std::time::Instant,
+        window: Duration,
+    ) -> BTreeMap<String, (u32, Duration)> {
+        self.drops
+            .iter()
+            .filter_map(|(id, q)| {
+                let recent: Vec<_> = q
+                    .iter()
+                    .filter(|d| now.saturating_duration_since(d.at) <= window)
+                    .collect();
+                let last = recent.last()?;
+                Some((
+                    id.clone(),
+                    (
+                        u32::try_from(recent.len()).unwrap_or(u32::MAX),
+                        now.saturating_duration_since(last.at),
+                    ),
+                ))
+            })
+            .collect()
+    }
+}
+
 /// What this node has applied from the primary (replica) or published (primary).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncStatus {
@@ -954,7 +1054,8 @@ impl Cluster {
             config_source: Mutex::new("file".into()),
             outbox: Mutex::new(HashMap::new()),
             live_streams: Mutex::new(HashMap::new()),
-            link_drops: Mutex::new(HashMap::new()),
+            link_drops: Mutex::new(LinkLog::default()),
+            instance: format!("{:016x}", rand::random::<u64>()),
             #[cfg(test)]
             sever_main: Notify::new(),
             #[cfg(test)]
@@ -1444,7 +1545,7 @@ impl Cluster {
             .unwrap_or_else(PoisonError::into_inner);
         for id in ids {
             outbox.remove(id);
-            drops.remove(id);
+            drops.forget(id);
         }
     }
 
@@ -1526,7 +1627,7 @@ impl Cluster {
         self.link_drops
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .remove(node);
+            .forget(node);
         self.event(
             "removed",
             node,
@@ -1612,48 +1713,20 @@ impl Cluster {
 
     /// REQ: CLU-005 (T24.38, ADR-1018) — remembers that `peer` lost its last stream.
     fn note_link_drop(&self, peer: &str) {
-        let mut drops = self
-            .link_drops
+        self.link_drops
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let q = drops.entry(peer.to_owned()).or_default();
-        q.push_back(std::time::Instant::now());
-        while q.len() > LINK_DROPS_KEPT {
-            q.pop_front();
-        }
-        // Peers (resolver pods come and go) whose newest drop is old are forgotten.
-        let now = std::time::Instant::now();
-        drops.retain(|_, q| {
-            q.back()
-                .is_some_and(|t| now.duration_since(*t) <= LINK_DROPS_MAX_AGE)
-        });
+            .unwrap_or_else(PoisonError::into_inner)
+            .dropped(peer, std::time::Instant::now());
     }
 
-    /// REQ: CLU-005 (T24.38, ADR-1018) — for each peer that lost its link within `window`: how
-    /// many times, and how long ago the last time was.
+    /// REQ: CLU-005 (T24.38, ADR-1018) — for each peer that lost its link within `window` while
+    /// both processes stayed up: how many times, and how long ago the last time was. A drop the
+    /// peer came back from as another process is not counted; one it hasn't come back from yet is.
     pub fn link_drops(&self, window: Duration) -> BTreeMap<String, (u32, Duration)> {
-        let now = std::time::Instant::now();
-        let drops = self
-            .link_drops
+        self.link_drops
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        drops
-            .iter()
-            .filter_map(|(id, q)| {
-                let recent: Vec<_> = q
-                    .iter()
-                    .filter(|t| now.duration_since(**t) <= window)
-                    .collect();
-                let last = recent.last()?;
-                Some((
-                    id.clone(),
-                    (
-                        u32::try_from(recent.len()).unwrap_or(u32::MAX),
-                        now.duration_since(**last),
-                    ),
-                ))
-            })
-            .collect()
+            .unwrap_or_else(PoisonError::into_inner)
+            .counts(std::time::Instant::now(), window)
     }
 
     /// Drops the senders of streams that ended, and the peers left with none.
@@ -2407,6 +2480,7 @@ impl Cluster {
                 applied_seq: l.applied_seq,
                 primary: self.is_primary(),
                 config_source: self.config_source(),
+                instance: self.instance.clone(),
             })),
         }
     }
@@ -2595,6 +2669,12 @@ impl Cluster {
                     },
                 );
                 drop(members);
+                // REQ: CLU-005 (T24.38, ADR-1018) — a drop it comes back from as another process
+                // was a restart, not a link that comes and goes.
+                self.link_drops
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .hello(&h.node_id, &h.instance);
                 self.event("connected", &h.node_id, detail);
                 self.observe_epoch(h.epoch, &h.node_id);
                 // ADR-051 — the primary keeps the registry current: nodes that joined before it

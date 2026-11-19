@@ -2404,7 +2404,12 @@ telltale cluster set-failover auto
   keeps its voter links. The Cluster page's Failover line counts the voters this node reaches, and
   shows a warning (the **Voter links** check on the Health tab) when one voter's link has dropped
   three or more times in ten minutes: it is up now but can't be counted on, so look at the network
-  between the nodes. One restart is one drop and is not a warning. The log's
+  between the nodes. A drop counts only when the link ended while both nodes' processes stayed
+  up: each node says which process it is (a random id, new at each start) when a link comes up,
+  so a voter that comes back as a restarted process, and this node's own restart, are not
+  counted, and a rolling upgrade raises no warning. A voter that is down and not back yet counts
+  one drop until it returns. A node on a version older than this check sends no id; its drops
+  count as before (a restart is one drop), and its upgrade is seen as a restart. The log's
   `cluster: the main link ended` lines say how long a replica's link to its primary or fallback
   lasted and why it ended. Before this fix a rolling restart (replicas, then the primary)
   could leave two replicas with no usable link to each other for good: the Failover line then read

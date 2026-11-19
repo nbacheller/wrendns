@@ -3644,7 +3644,8 @@ pub struct ClusterFailover {
     pub voted_epoch: u64,
     pub voted_for: Option<String>,
     /// REQ: CLU-005 (T24.38, ADR-1018) — voters whose link to this node dropped three or more
-    /// times in the last ten minutes (a link that comes and goes). Empty when all are steady.
+    /// times in the last ten minutes while both processes stayed up (a link that comes and goes;
+    /// a restart or an upgrade of either node is not counted). Empty when all are steady.
     #[serde(default)]
     pub unstable_voters: Vec<UnstableVoter>,
 }
@@ -3654,7 +3655,8 @@ pub struct ClusterFailover {
 #[serde(rename_all = "camelCase")]
 pub struct UnstableVoter {
     pub node_id: String,
-    /// How many times its link dropped within `windowSeconds`.
+    /// How many times its link dropped within `windowSeconds` (not counting a drop the voter
+    /// came back from as a restarted process).
     pub drops: u32,
     pub window_seconds: u64,
     /// Seconds since the last drop.
