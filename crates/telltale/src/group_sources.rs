@@ -495,6 +495,93 @@ match = ["10.0.9.9"]
         assert_eq!(body["networks"], serde_json::json!(["10.0.2.0/24"]));
     }
 
+    fn group_write(name: &str, body: serde_json::Value) -> ManagedWrite {
+        ManagedWrite {
+            kind: ManagedKind::Group,
+            ..write(name, body)
+        }
+    }
+
+    /// REQ: FLT-901 (T24.29, recheck item 3) - `PUT /groups/{name}` without `content` on a group
+    /// that never set it stores none: the synthetic `content.ads` of an adopted ad list is derived.
+    #[test]
+    fn flt_901_group_put_stores_no_derived_content() {
+        let (src, state) = setup();
+        let url = telltale_config::categories::catalog()
+            .source("hagezi-ads-pro")
+            .map(|s| s.url.clone())
+            .unwrap();
+        let list = serde_json::json!({"name": "hagezi-pro", "url": url}).to_string();
+        state
+            .put_managed_batch(
+                &[(crate::managed::LIST, "hagezi-pro", list.as_str())],
+                None,
+                1,
+                "t",
+            )
+            .unwrap();
+        let p = crate::api_backend::plan_override(
+            &src,
+            &state,
+            &group_write("kids", serde_json::json!({"name": "kids", "priority": 11})),
+        )
+        .unwrap();
+        let body: serde_json::Value = serde_json::from_str(p.body.as_deref().unwrap()).unwrap();
+        assert!(body.get("content").is_none(), "no derived content: {body}");
+    }
+
+    /// REQ: FLT-901 (T24.29, recheck item 2) - a group whose file sets `content` is not frozen by
+    /// an override: a body that leaves it out stores the file's, and a stale stored copy loses to
+    /// the file's current value on merge.
+    #[test]
+    fn flt_901_file_content_is_not_frozen_by_an_override() {
+        let src = Arc::new(crate::http::tests::sources());
+        let files = |ads: bool| {
+            let t = format!(
+                "[[group]]
+name = \"default\"
+[group.content]
+ads = {ads}
+[[group]]
+name = \"kids\"
+priority = 10
+"
+            );
+            telltale_config::Loader::new()
+                .toml_str("t.toml", &t)
+                .env(Vec::<(String, String)>::new())
+                .load()
+                .unwrap()
+                .config
+        };
+        let state = Arc::new(telltale_store::state::State::in_memory().unwrap());
+        let v1 = files(true);
+        src.file_config.store(Arc::new(v1.clone()));
+        src.config.store(Arc::new(v1));
+        let p = crate::api_backend::plan_override(
+            &src,
+            &state,
+            &group_write("default", serde_json::json!({"name": "default", "priority": 3})),
+        )
+        .unwrap();
+        let stored = p.body.clone().unwrap();
+        let g: telltale_config::GroupConfig = serde_json::from_str(&stored).unwrap();
+        assert!(g.content.as_ref().is_some_and(|c| c.ads), "the file's content is kept");
+        // The override is stored; then the file changes its content: the file's applies.
+        state
+            .put_managed_batch(&[(crate::managed::GROUP, "default", stored.as_str())], None, 1, "t")
+            .unwrap();
+        let v2 = files(false);
+        let entries = crate::managed::entries(&state);
+        let merged = crate::managed::merge(&v2, &entries).unwrap();
+        let d = merged.group.iter().find(|g| g.name.as_str() == "default").unwrap();
+        assert_eq!(d.priority, 3, "the override's other fields apply");
+        assert!(
+            d.content.as_ref().is_some_and(|c| !c.ads),
+            "the file's current content wins over the stored copy"
+        );
+    }
+
     /// REQ: FLT-902, API-010 (T24.29) - the group and its devices are one change: one plan holds the
     /// group and the clients, they are stored in one transaction (the version moves once), and the
     /// plan says what moves.

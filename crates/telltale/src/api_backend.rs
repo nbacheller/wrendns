@@ -6225,7 +6225,7 @@ fn restore_markers(
 /// removes what the API stored (so the files' entry, if any, is back), or else hides the
 /// files' entry. The merged configuration must validate.
 #[allow(clippy::too_many_lines)] // one branch per kind of entry
-fn plan_override(
+pub(crate) fn plan_override(
     src: &Sources,
     state: &telltale_store::state::State,
     w: &ManagedWrite,
@@ -6235,6 +6235,41 @@ fn plan_override(
     if name.is_empty() {
         return Err(Problem::invalid("the name is empty"));
     }
+    // REQ: FLT-901 (T24.29) - a group body that leaves `content` out keeps the content the group
+    // has *in its own entry*: the files' when they set it (the file wins), else what is stored.
+    // Never the effective group's, whose `content` can be the legacy ad list adopted into a
+    // synthetic one (managed.rs: derived values are never written back).
+    let mut filled_w: Option<ManagedWrite> = None;
+    if w.kind == ManagedKind::Group
+        && let Some(serde_json::Value::Object(o)) = &w.body
+        && o.get("content").is_none_or(serde_json::Value::is_null)
+    {
+        let file = plan_files(src);
+        let stored = crate::managed::entries(state)
+            .groups
+            .into_iter()
+            .find_map(|(n, o)| match o {
+                crate::managed::Ovr::Set(g) if n == name => Some(g),
+                _ => None,
+            })
+            .and_then(|g| g.content);
+        let keep = file
+            .group
+            .iter()
+            .find(|g| g.name.as_str() == name)
+            .and_then(|g| g.content.clone())
+            .or(stored);
+        if let Some(c) = keep
+            && let Ok(cv) = serde_json::to_value(&c)
+        {
+            let mut nb = o.clone();
+            nb.insert("content".to_owned(), cv);
+            let mut nw = w.clone();
+            nw.body = Some(serde_json::Value::Object(nb));
+            filled_w = Some(nw);
+        }
+    }
+    let w = filled_w.as_ref().unwrap_or(w);
     // REQ: FLT-901, FLT-902 (ADR-994 item 7, CLU-010) — a group entry with `content` waits until
     // every member can read it.
     if w.kind == ManagedKind::Group

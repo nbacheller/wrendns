@@ -876,10 +876,8 @@ pub(crate) async fn guard_group_put(
     })
     .await?;
     if !has_content {
-        // Left out: the group keeps what it has.
-        if let (Some(c), Some(o)) = (&current, body.as_object_mut()) {
-            o.insert("content".to_owned(), content_for_config(c));
-        }
+        // Left out: the backend keeps the content in the group's own entry (the files' when they
+        // set it, else the stored one), never the effective group's, which can be derived.
         return Ok(body);
     }
     let new: GroupContentInfo = serde_json::from_value(body["content"].clone())
@@ -893,6 +891,11 @@ pub(crate) async fn guard_group_put(
         c
     };
     if norm(&new) == norm(&before) {
+        // The same content sent back (a GET then PUT): left out, so the backend keeps the entry's
+        // own and a derived or file-set value isn't frozen into the override.
+        if let Some(o) = body.as_object_mut() {
+            o.remove("content");
+        }
         return Ok(body);
     }
     agent_gate(&p, ext, dry_run, None)?;

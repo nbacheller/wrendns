@@ -589,6 +589,19 @@ pub(crate) fn merge_on(file: &Config, own: &Config, e: &Entries) -> Result<Confi
     apply_ovr(&mut cfg.upstream_group, &e.upstream_groups);
     apply_ovr(&mut cfg.list, &e.lists);
     apply_ovr(&mut cfg.group, &e.groups);
+    // REQ: FLT-901 (T24.29) - a group whose config file sets `content` keeps the file's: an
+    // override (one stored before the file set it, or by a client that sent the whole group)
+    // never freezes it, so a later edit to the file takes effect.
+    for g in &mut cfg.group {
+        if let Some(fc) = own
+            .group
+            .iter()
+            .find(|f| f.name == g.name)
+            .and_then(|f| f.content.clone())
+        {
+            g.content = Some(fc);
+        }
+    }
     adopt_ad_list(&mut cfg, file, e);
     apply_ovr(&mut cfg.alerts.destination, &e.alert_destinations);
     // REQ: OPS-014 (ADR-903 §2, decision 4) — a credential this node's files set (inline or by
