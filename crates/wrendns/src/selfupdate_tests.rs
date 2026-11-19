@@ -6,7 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::*;
 
-const TEST_KEY: &str = "RWTneV9LVAQJrjA/SfPCf+XrSUZd+K+8weGanksjMDJn6FQlPL4Gfwwp";
+const TEST_KEY: &str = "RWTRNE3PSsWfDEbTtCmcuxYmShAhY25OYtSamBom0GJ8iw+4uTaUF2tU";
 const ASSET: &str = "wrendns-x86_64-linux";
 
 fn fixture(name: &str) -> Vec<u8> {
