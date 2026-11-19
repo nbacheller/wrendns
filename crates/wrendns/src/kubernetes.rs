@@ -559,13 +559,13 @@ fn group_of(
         None
     };
     if let Some(g) = pod_labels
-        .and_then(|l| l.get(label))
+        .and_then(|l| crate::legacy::group_label(l, label))
         .and_then(|v| check(v, "a pod"))
     {
         return (Some(g), GroupOrigin::PodLabel);
     }
     if let Some(g) = ns_labels
-        .and_then(|l| l.get(label))
+        .and_then(|l| crate::legacy::group_label(l, label))
         .and_then(|v| check(v, "a namespace"))
     {
         return (Some(g), GroupOrigin::NamespaceLabel);

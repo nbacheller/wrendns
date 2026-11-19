@@ -606,7 +606,10 @@ impl Api {
             .header("authorization", format!("Bearer {}", self.token))
             .header("accept", "application/json");
         if let Some(r) = reason.map(str::trim).filter(|r| !r.is_empty()) {
-            req = req.header(wrendns_api::auth::routes::REASON, r);
+            // REQ: AGT-005 (ADR-1028) — both spellings, for a node not yet upgraded.
+            req = req
+                .header(wrendns_api::auth::routes::REASON, r)
+                .header(wrendns_api::legacy::REASON, r);
         }
         let bytes = match body {
             Some(b) => {

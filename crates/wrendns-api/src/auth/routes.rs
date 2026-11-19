@@ -24,6 +24,7 @@ pub const REASON: &str = "x-wrendns-reason";
 pub(crate) fn reason(headers: &HeaderMap) -> Option<String> {
     headers
         .get(REASON)
+        .or_else(|| headers.get(crate::legacy::REASON))
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|r| !r.is_empty())
@@ -223,7 +224,9 @@ pub(crate) fn is_https(auth: &Auth, req_ext: &axum::http::Extensions, headers: &
 }
 
 fn presented(headers: &HeaderMap) -> (Option<String>, Option<String>, Option<(String, String)>) {
-    let session = cookie(headers, COOKIE).map(str::to_owned);
+    let session = cookie(headers, COOKIE)
+        .or_else(|| cookie(headers, crate::legacy::SESSION_COOKIE))
+        .map(str::to_owned);
     let authz = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -344,6 +347,7 @@ pub async fn authenticate(
     if let (Some(grant), Via::Token { id }) = (principal.agent.as_mut(), &principal.via) {
         grant.client = headers
             .get("x-wrendns-client")
+            .or_else(|| headers.get(crate::legacy::CLIENT))
             .and_then(|v| v.to_str().ok())
             .map(|c| {
                 c.chars()
@@ -1468,7 +1472,10 @@ pub(crate) async fn logout(
         Ok(provider.and_then(|id| auth.oidc()?.logout_url(&id)))
     })
     .await?;
-    let cookie = [(header::SET_COOKIE, clear_cookie())];
+    let cookie = axum::response::AppendHeaders([
+        (header::SET_COOKIE, clear_cookie()),
+        (header::SET_COOKIE, crate::legacy::clear_session_cookie()),
+    ]);
     Ok(match logout_url {
         // REQ: API-004 — RP-initiated logout: the UI sends the browser on to the provider.
         Some(url) => (
@@ -1573,7 +1580,9 @@ pub(crate) async fn oidc_callback(
     let (Some(code), Some(state)) = (q.code.as_deref(), q.state.as_deref()) else {
         return login_error("the provider's answer was incomplete");
     };
-    let browser = cookie(&headers, super::oidc::FLOW_COOKIE).map(str::to_owned);
+    let browser = cookie(&headers, super::oidc::FLOW_COOKIE)
+        .or_else(|| cookie(&headers, crate::legacy::FLOW_COOKIE))
+        .map(str::to_owned);
     let (who, back) = match oidc.finish(&id, code, state, browser.as_deref()).await {
         Ok(v) => v,
         Err(p) => return login_error(&p.detail),
@@ -2344,5 +2353,58 @@ mod api_004_proxy_tests {
             &ext([127, 0, 0, 1]),
             &xff("203.0.113.9")
         ));
+    }
+}
+
+#[cfg(test)]
+mod legacy_tests {
+    use super::*;
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.append(
+                header::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        h
+    }
+
+    /// REQ: API-003 (ADR-1028) — an open session survives the rename: the old cookie name is
+    /// still read, and the new one wins when both arrive.
+    #[test]
+    fn api_003_the_pre_rename_session_cookie_is_still_read() {
+        let old = format!("{}=abc; other=1", crate::legacy::SESSION_COOKIE);
+        let (s, _, _) = presented(&headers(&[("cookie", old.as_str())]));
+        assert_eq!(s.as_deref(), Some("abc"));
+        let both = format!("{}=old; {COOKIE}=new", crate::legacy::SESSION_COOKIE);
+        let (s, _, _) = presented(&headers(&[("cookie", both.as_str())]));
+        assert_eq!(s.as_deref(), Some("new"));
+        let (s, _, _) = presented(&headers(&[]));
+        assert_eq!(s, None);
+    }
+
+    /// REQ: AGT-005 (ADR-1028) — an agent's reason header in either spelling reaches the audit log.
+    #[test]
+    fn agt_005_the_pre_rename_reason_header_is_still_read() {
+        assert_eq!(
+            reason(&headers(&[(crate::legacy::REASON, "tidy up")])).as_deref(),
+            Some("tidy up")
+        );
+        assert_eq!(
+            reason(&headers(&[(REASON, "new"), (crate::legacy::REASON, "old")])).as_deref(),
+            Some("new")
+        );
+        assert_eq!(reason(&headers(&[])), None);
+    }
+
+    /// REQ: API-003 (ADR-1028) — signing out expires both cookie names.
+    #[test]
+    fn api_003_sign_out_expires_the_old_cookie_too() {
+        let v = crate::legacy::clear_session_cookie();
+        let v = v.to_str().unwrap();
+        assert!(v.starts_with(crate::legacy::SESSION_COOKIE) && v.contains("Max-Age=0"));
+        assert!(clear_cookie().to_str().unwrap().starts_with(COOKIE));
     }
 }

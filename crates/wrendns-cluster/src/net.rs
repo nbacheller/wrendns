@@ -36,7 +36,7 @@ use tokio::sync::{Notify, watch};
 use tracing::{debug, info, warn};
 
 use crate::node::{Identity, JoinRequest, JoinResponse, Role};
-use crate::pki::CLUSTER_NAME;
+use crate::pki::{CLUSTER_NAME, CLUSTER_NAME_NEXT};
 use crate::sync::{BlobRef, BlobStore, ClusterManifest, Signed};
 use crate::token::Token;
 use crate::wire::{
@@ -396,9 +396,10 @@ pub fn peer_node_id(cert: &CertificateDer<'_>) -> Option<String> {
     let (_, c) = x509_parser::parse_x509_certificate(cert).ok()?;
     let san = c.subject_alternative_name().ok()??;
     san.value.general_names.iter().find_map(|n| match n {
-        x509_parser::extensions::GeneralName::DNSName(d) => {
-            d.strip_suffix(".node.telltale.invalid").map(str::to_owned) // rebrand:keep
-        }
+        x509_parser::extensions::GeneralName::DNSName(d) => crate::pki::NODE_NAME_SUFFIXES
+            .iter()
+            .find_map(|s| d.strip_suffix(s))
+            .map(str::to_owned),
         _ => None,
     })
 }
@@ -3443,14 +3444,33 @@ async fn tls_connect(
         .await
         .map_err(|_| format!("{a}: timed out"))?
         .map_err(|e| format!("{a}: {e}"))?;
-    let name = ServerName::try_from(CLUSTER_NAME).map_err(|e| e.to_string())?;
-    tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        tokio_rustls::TlsConnector::from(cfg).connect(name, tcp),
-    )
-    .await
-    .map_err(|_| format!("{a}: TLS timed out"))?
-    .map_err(|e| format!("{a}: {e}"))
+    // REQ: CLU-001 (ADR-1028) — a peer's certificate carries the cluster name in one of its two
+    // spellings; try the one issued today, then the one a later release will issue.
+    let mut first_error = None;
+    let mut tcp = Some(tcp);
+    for n in [CLUSTER_NAME, CLUSTER_NAME_NEXT] {
+        let stream = match tcp.take() {
+            Some(t) => t,
+            None => tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&a))
+                .await
+                .map_err(|_| format!("{a}: timed out"))?
+                .map_err(|e| format!("{a}: {e}"))?,
+        };
+        let name = ServerName::try_from(n).map_err(|e| e.to_string())?;
+        match tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            tokio_rustls::TlsConnector::from(Arc::clone(&cfg)).connect(name, stream),
+        )
+        .await
+        .map_err(|_| format!("{a}: TLS timed out"))?
+        {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                first_error.get_or_insert_with(|| format!("{a}: {e}"));
+            }
+        }
+    }
+    Err(first_error.unwrap_or_else(|| format!("{a}: TLS failed")))
 }
 
 /// Joins the cluster in `token`: tries each URL, pins the CA, proves the secret.

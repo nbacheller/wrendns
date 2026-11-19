@@ -33,6 +33,7 @@ pub mod heatmap;
 pub mod identify_api;
 pub mod kubernetes_api;
 pub mod latency_heatmap;
+pub mod legacy;
 pub mod lists_api;
 pub mod lists_overlap;
 pub mod maintenance_api;

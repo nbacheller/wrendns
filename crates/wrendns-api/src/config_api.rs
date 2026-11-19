@@ -907,11 +907,13 @@ async fn backup_response(
                 "omitted"
             };
             if let Ok(v) = HeaderValue::from_str(&format!("{word}; count={}", out.secrets_count)) {
+                h.insert(crate::legacy::BACKUP_SECRETS, v.clone());
                 h.insert("x-wrendns-backup-secrets", v);
             }
             if !out.warnings.is_empty()
                 && let Ok(v) = HeaderValue::from_str(&out.warnings.join(" | "))
             {
+                h.insert(crate::legacy::BACKUP_WARNINGS, v.clone());
                 h.insert("x-wrendns-backup-warnings", v);
             }
             resp

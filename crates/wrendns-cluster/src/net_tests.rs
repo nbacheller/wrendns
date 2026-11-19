@@ -3234,3 +3234,41 @@ mod voters_linked {
         assert_eq!(c.link_drops(Duration::from_secs(600))["peer"].0, 3);
     }
 }
+
+// REQ: CLU-001 (ADR-1028) — a peer whose certificate carries the cluster name in its new
+// spelling is accepted: the client tries the name issued today, then the next one.
+#[tokio::test]
+async fn clu_001_a_certificate_with_the_next_cluster_name_is_accepted() {
+    let ck = rcgen::generate_simple_self_signed(vec![pki::CLUSTER_NAME_NEXT.to_owned()]).unwrap();
+    let der = ck.cert.der().clone();
+    let key = PrivateKeyDer::try_from(ck.signing_key.serialize_der()).unwrap();
+    let p = provider();
+    let server = rustls::ServerConfig::builder_with_provider(Arc::clone(&p))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![der.clone()], key)
+        .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+    let (listener, addr) = bound_port().await;
+    tokio::spawn(async move {
+        // The first handshake (the name issued today) fails; the second succeeds.
+        for _ in 0..2 {
+            if let Ok((tcp, _)) = listener.accept().await {
+                if let Ok(s) = acceptor.accept(tcp).await {
+                    let _keep = s;
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+        }
+    });
+    let mut roots = RootCertStore::empty();
+    roots.add(der).unwrap();
+    let client = ClientConfig::builder_with_provider(p)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let s = tls_connect(&format!("https://{addr}"), Arc::new(client)).await;
+    assert!(s.is_ok(), "{:?}", s.err());
+}

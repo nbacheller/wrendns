@@ -16,6 +16,13 @@ use time::{Duration, OffsetDateTime};
 
 /// The name every node certificate carries and every peer verifies.
 pub const CLUSTER_NAME: &str = "cluster.telltale.invalid"; // rebrand:keep
+/// REQ: CLU-001 (ADR-1028) — the name a later release issues and verifies instead. Accepted
+/// already, so a rolling upgrade can start issuing it once every node knows it; nothing issues it
+/// yet, because a node that doesn't know it would refuse the certificate.
+pub const CLUSTER_NAME_NEXT: &str = "cluster.wrendns.invalid";
+/// REQ: CLU-001 (ADR-1028) — the suffix of a node certificate's own name, both spellings. The
+/// first is what is issued today.
+pub const NODE_NAME_SUFFIXES: [&str; 2] = [".node.telltale.invalid", ".node.wrendns.invalid"]; // rebrand:keep
 /// Node certificates last this long; nodes renew at two thirds of it.
 pub const NODE_CERT_DAYS: i64 = 90;
 /// The CA lasts this long.
