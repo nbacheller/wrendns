@@ -57,7 +57,7 @@ resolvers:
   resources:
     requests:
       cpu: 50m
-      memory: 64Mi
+      memory: 128Mi  # the loaded working-set gate (ADR-1031)
     limits:
       cpu: "1"
       memory: 256Mi

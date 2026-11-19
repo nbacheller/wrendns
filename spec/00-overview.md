@@ -39,8 +39,8 @@ All performance gates are measured with the harness in `09`.
 | Cache-hit throughput, 4-core x86-64 | ≥ 150k qps at < 1% loss |
 | Cache-hit throughput, Raspberry Pi 4 | ≥ 25k qps |
 | Added latency for cache hit / blocked answer (p99, at 50% of max load) | ≤ 250 µs |
-| Idle RSS, no lists | ≤ 20 MiB |
-| RSS with 1M blocklist domains + 100k cache entries + telemetry on | ≤ 64 MiB |
+| Idle RSS, no lists | ≤ 32 MiB (fork, ADR-1031; upstream ≤ 20 MiB) |
+| RSS with 1M blocklist domains + 100k cache entries + telemetry on | ≤ 128 MiB (fork, ADR-1031; upstream ≤ 64 MiB) |
 | Compressed container image | ≤ 25 MiB per arch (fork, ADR-916; upstream ≤ 15 MiB) |
 | List recompile (2M domains, Pi 4) | ≤ 8 s, with p99 query-latency regression ≤ 10% during compile |
 | Cold start to serving (with compiled snapshot on disk) | ≤ 500 ms |
