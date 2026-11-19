@@ -13,7 +13,8 @@
 //! it is dropped when the node follows a primary again), and builds on the inherited
 //! configuration with those entries taken out ([`strip`]), so what its rows say is what
 //! applies and an entry it deletes stays deleted. A blob from a build that does not publish the
-//! rows changes nothing.
+//! rows (an older primary) is adopted from what the node serves instead ([`adopt_served`], T24.40,
+//! ADR-1019).
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -50,10 +51,29 @@ pub(crate) fn forget(state_path: &Path) {
     }
 }
 
+/// Forgets the process's memory of an adoption, as a restart does (the tests' restart).
+#[cfg(test)]
+pub(crate) fn reset_cache() {
+    *ADOPTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// What [`adopt`] found in the inherited blob.
+pub(crate) enum Outcome {
+    /// The rows the node's store is now the source of.
+    Entries(Vec<Entry>),
+    /// The blob is from a build that does not publish the rows (an older primary), REQ: CLU-015
+    /// (T24.40, ADR-1019): the served entries are the only record of them.
+    NoRows,
+    /// The blob can't be read or the store can't be written: nothing was adopted.
+    Failed,
 }
 
 /// Adopts the shared rows of the inherited blob (`hash`, read with `read`) into this node's
@@ -66,7 +86,7 @@ pub(crate) fn adopt(
     state_path: &Path,
     hash: &str,
     read: impl FnOnce() -> Option<Vec<u8>>,
-) -> Option<Vec<Entry>> {
+) -> Outcome {
     let mut held = ADOPTED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -74,22 +94,24 @@ pub(crate) fn adopt(
         && p == state_path
         && h == hash
     {
-        return Some(entries.clone());
+        return Outcome::Entries(entries.clone());
     }
-    let bytes = read()?;
+    let Some(bytes) = read() else {
+        return Outcome::Failed;
+    };
     let entries = match parse_shared(&bytes) {
         Ok(Some(e)) => e,
-        Ok(None) => return None,
+        Ok(None) => return Outcome::NoRows,
         Err(why) => {
             warn!("the inherited cluster entries can't be adopted: {why}");
-            return None;
+            return Outcome::Failed;
         }
     };
     let state = match State::open(state_path) {
         Ok(s) => s,
         Err(e) => {
             warn!("the inherited cluster entries can't be adopted: state.db: {e}");
-            return None;
+            return Outcome::Failed;
         }
     };
     let rows: Vec<(String, String, String)> = entries
@@ -121,11 +143,336 @@ pub(crate) fn adopt(
         Ok(None) => {}
         Err(e) => {
             warn!("the inherited cluster entries can't be adopted: {e}");
-            return None;
+            return Outcome::Failed;
         }
     }
     *held = Some((state_path.to_path_buf(), hash.to_owned(), entries.clone()));
+    Outcome::Entries(entries)
+}
+
+/// REQ: CLU-015, CLU-004 (T24.40, ADR-1019) — a node promoted from replica whose inherited
+/// version came from a primary that did not publish its rows (a build before ADR-1016, or a
+/// version with no blob) adopts the entries it *serves* that its own files do not define, as its
+/// own rows: once (a marker in `state.db`, `served:<key>`, written in the same transaction), in
+/// one transaction, recorded with `updated_by` `adopted:<seq>`. A row the node already holds stays
+/// as it is, and `node_only` rows are not touched. `served` is the version the node built from
+/// (the shared configuration with its blob overlaid), `own` its files. Returns the entries to
+/// [`strip`] from `served`: the derived ones and the rows the node holds, or `None` when the
+/// store can't be written (the node then refuses writes that would drop served entries).
+pub(crate) fn adopt_served(
+    state_path: &Path,
+    key: &str,
+    seq: u64,
+    served: &Config,
+    own: &Config,
+) -> Option<Vec<Entry>> {
+    let mut held = ADOPTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((p, h, entries)) = held.as_ref()
+        && p == state_path
+        && h == key
+    {
+        return Some(entries.clone());
+    }
+    let derived = derive(served, own);
+    let state = match State::open(state_path) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("the served cluster entries can't be adopted: state.db: {e}");
+            return None;
+        }
+    };
+    let rows: Vec<(String, String, String)> = derived
+        .iter()
+        .filter_map(|e| {
+            Some((
+                e.kind.clone(),
+                e.name.clone(),
+                serde_json::to_string(&e.body).ok()?,
+            ))
+        })
+        .collect();
+    let refs: Vec<(&str, &str, &str)> = rows
+        .iter()
+        .map(|(k, n, b)| (k.as_str(), n.as_str(), b.as_str()))
+        .collect();
+    let marker = format!("served:{key}");
+    match state.insert_missing_managed_noted(
+        &refs,
+        now_secs(),
+        &format!("adopted:{seq}"),
+        (SEEDED, &marker),
+    ) {
+        Ok(Some(added)) => {
+            let mut counts: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
+            for k in added {
+                *counts.entry(k).or_default() += 1;
+            }
+            let by_kind = counts
+                .iter()
+                .map(|(k, n)| format!("{k} {n}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            info!(
+                seq,
+                kinds = %by_kind,
+                "this node serves entries from a primary that did not hand over its API entries: it adopted them as its own"
+            );
+        }
+        Ok(None) => {}
+        Err(e) => {
+            warn!("the served cluster entries can't be adopted: {e}");
+            return None;
+        }
+    }
+    // What the version no longer provides: the entries it was derived from (so a row deleted
+    // since stays deleted, after a restart too) and every row the node holds.
+    let mut entries = derived;
+    for kind in SHARED_KINDS {
+        for m in state.managed(kind).unwrap_or_default() {
+            if entries.iter().any(|e| e.kind == *kind && e.name == m.name) {
+                continue;
+            }
+            if let Ok(body) = serde_json::from_str(&m.body) {
+                entries.push(Entry {
+                    kind: (*kind).to_owned(),
+                    name: m.name,
+                    body,
+                });
+            }
+        }
+    }
+    *held = Some((state_path.to_path_buf(), key.to_owned(), entries.clone()));
     Some(entries)
+}
+
+/// Whether `state` holds a row `kind`/`name`.
+pub(crate) fn held(state: &State, kind: &str, name: &str) -> bool {
+    state
+        .managed(kind)
+        .is_ok_and(|rows| rows.iter().any(|m| m.name == name))
+}
+
+/// The upstream group and upstream name prefix of a forwarded domain (`managed::forward_group`).
+const FORWARD_PREFIX: &str = "forward:";
+
+/// REQ: CLU-015 (T24.40, ADR-1019) — the entries `served` (a cluster version) has that `own` (this
+/// node's files) does not define, as the rows the API would have stored for them: every kind
+/// ADR-1016 publishes. A name the files define stays a file entry. `node_only` entries are left
+/// out (they never travelled). Forwarded domains are rebuilt from their route, group and
+/// upstreams.
+#[allow(clippy::too_many_lines)] // one block per kind of entry
+pub(crate) fn derive(served: &Config, own: &Config) -> Vec<Entry> {
+    use serde::Serialize;
+    use serde_json::Value;
+    fn push(out: &mut Vec<Entry>, kind: &str, name: &str, body: Value) {
+        if body.get("node_only") == Some(&Value::Bool(true)) {
+            return;
+        }
+        out.push(Entry {
+            kind: kind.to_owned(),
+            name: name.to_owned(),
+            body,
+        });
+    }
+    fn named<T: Named + Serialize>(
+        out: &mut Vec<Entry>,
+        kind: &str,
+        served: &[T],
+        own: &[T],
+        generated: bool,
+    ) {
+        for i in served {
+            if own.iter().any(|o| o.name() == i.name()) {
+                continue;
+            }
+            if generated && i.name().starts_with(FORWARD_PREFIX) {
+                continue;
+            }
+            if let Ok(b) = serde_json::to_value(i) {
+                push(out, kind, i.name(), b);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    named(
+        &mut out,
+        managed::UPSTREAM,
+        &served.upstream,
+        &own.upstream,
+        true,
+    );
+    named(
+        &mut out,
+        managed::UPSTREAM_GROUP,
+        &served.upstream_group,
+        &own.upstream_group,
+        true,
+    );
+    named(&mut out, managed::LIST, &served.list, &own.list, false);
+    named(&mut out, managed::GROUP, &served.group, &own.group, false);
+    named(
+        &mut out,
+        managed::ALERT_DESTINATION,
+        &served.alerts.destination,
+        &own.alerts.destination,
+        false,
+    );
+    named(
+        &mut out,
+        managed::ALERT_RULE,
+        &served.alerts.rule,
+        &own.alerts.rule,
+        false,
+    );
+    named(
+        &mut out,
+        managed::SCHEDULE,
+        &served.schedule,
+        &own.schedule,
+        false,
+    );
+    named(
+        &mut out,
+        managed::ANOMALY_MUTE,
+        &served.anomaly_mute,
+        &own.anomaly_mute,
+        false,
+    );
+    named(
+        &mut out,
+        managed::ROUTER,
+        &served.router,
+        &own.router,
+        false,
+    );
+    for r in &served.kubernetes.map {
+        if own.kubernetes.map.iter().any(|o| o.key() == r.key()) {
+            continue;
+        }
+        if let Ok(b) = serde_json::to_value(r) {
+            push(&mut out, managed::KUBERNETES_MAP, &r.key(), b);
+        }
+    }
+    for c in &served.client {
+        if own.client.iter().any(|o| o.name == c.name) {
+            continue;
+        }
+        if let Ok(b) = serde_json::to_value(c) {
+            push(&mut out, managed::CLIENT, c.name.as_str(), b);
+        }
+    }
+    for r in &served.rule {
+        if own.rule.iter().any(|o| o.id == r.id) {
+            continue;
+        }
+        if let Ok(b) = serde_json::to_value(r) {
+            push(&mut out, managed::RULE, r.id.as_str(), b);
+        }
+    }
+    // Local names: one row per name, its records together.
+    let key = |n: &str| n.trim_end_matches('.').to_ascii_lowercase();
+    let mut names: Vec<String> = Vec::new();
+    for r in &served.record {
+        let n = key(r.name.as_str());
+        if r.node_only
+            || own
+                .record
+                .iter()
+                .any(|o| o.name.eq_ignore_ascii_case(r.name.as_str()))
+            || names.contains(&n)
+        {
+            continue;
+        }
+        names.push(n);
+    }
+    for n in names {
+        let vals: Vec<managed::RecordValue> = served
+            .record
+            .iter()
+            .filter(|r| key(r.name.as_str()) == n && !r.node_only)
+            .map(|r| managed::RecordValue {
+                rtype: r.rtype.to_string(),
+                value: r.value.to_string(),
+                ttl: r.ttl,
+            })
+            .collect();
+        if let Ok(b) = serde_json::to_value(vals) {
+            push(&mut out, managed::RECORD, &n, b);
+        }
+    }
+    // Forwarded domains: a route to `forward:<domain>`, whose members are the servers.
+    for r in &served.route {
+        let Some(domain) = r.upstream_group.as_str().strip_prefix(FORWARD_PREFIX) else {
+            continue;
+        };
+        if own.route.iter().any(|o| {
+            o.match_suffix
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(domain))
+        }) {
+            continue;
+        }
+        let Some(g) = served
+            .upstream_group
+            .iter()
+            .find(|g| g.name == r.upstream_group)
+        else {
+            continue;
+        };
+        let mut servers = Vec::new();
+        let mut stub = false;
+        for m in &g.members {
+            let Some(u) = served.upstream.iter().find(|u| u.name == *m) else {
+                continue;
+            };
+            if u.recursive.stub_zone.is_some() {
+                stub = true;
+                servers.extend(u.recursive.stub_servers.iter().map(ToString::to_string));
+            } else {
+                servers.push(u.url.to_string());
+            }
+        }
+        if servers.is_empty() {
+            continue;
+        }
+        if let Ok(b) = serde_json::to_value(managed::Forward { servers, stub }) {
+            push(&mut out, managed::FORWARD, domain, b);
+        }
+    }
+    // Sections the API replaces whole.
+    macro_rules! whole {
+        ($kind:expr, $a:expr, $b:expr) => {
+            if $a != $b
+                && let Ok(b) = serde_json::to_value(&$a)
+            {
+                push(&mut out, $kind, "default", b);
+            }
+        };
+    }
+    whole!(managed::RATELIMIT, served.ratelimit, own.ratelimit);
+    whole!(managed::EXCLUSIONS, served.exclusions, own.exclusions);
+    whole!(managed::SIMULATE, served.simulate, own.simulate);
+    whole!(managed::MAP, served.map, own.map);
+    whole!(
+        managed::ROLLOUT,
+        served.cluster.rollout,
+        own.cluster.rollout
+    );
+    for (kind, k) in [
+        (managed::SPECIAL, telltale_api::ManagedKind::Special),
+        (managed::LOCAL, telltale_api::ManagedKind::Local),
+        (managed::CLIENTS, telltale_api::ManagedKind::Clients),
+        (managed::DISCOVERY, telltale_api::ManagedKind::Discovery),
+    ] {
+        let a = crate::settings_kinds::section_json(k, served);
+        if a != crate::settings_kinds::section_json(k, own) {
+            push(&mut out, kind, "default", a);
+        }
+    }
+    out
 }
 
 /// Removes from `cfg` (a cluster version, with the API's entries merged in) what `entries` name,

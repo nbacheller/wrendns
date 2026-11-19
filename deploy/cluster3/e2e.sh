@@ -18,7 +18,13 @@
 #      40 s later, the other follows, DNS on both survivors keeps answering (0 SERVFAIL), an edit on
 #      the new primary reaches the other survivor, the upstream added through the old primary is deleted on the
 #      new one and stays deleted, and the killed node, started again, steps down;
-#   i. a rolling restart of each node in turn keeps at least two nodes answering DNS throughout.
+#   i. a rolling restart of each node in turn keeps at least two nodes answering DNS throughout;
+#   j. (T24.40, ADR-1019) a cluster upgraded from an older version keeps its API entries: nodes on an
+#      older image (OLD_IMAGE, default telltale:lapse-base, a build before ADR-1016) take entries
+#      through the API and fail over once, every node is then upgraded, and after two more failovers
+#      the new primary dry-runs, edits and deletes the entries the old primary's API added, the others
+#      stay served, and the edit and the delete stick. Skipped when OLD_IMAGE isn't there
+#      (REQUIRE_UPGRADE=1 makes that a failure). ONLY=upgrade runs the bring-up, (a) and (j) alone.
 # And, between a and b, a2: in manual failover each replica reports the other as up (relayed by the
 # primary), then `set-failover auto` on the running primary is adopted with no restart: it holds a
 # lease, keeps its role and its epoch, and no replica stands for 45 s.
@@ -194,6 +200,7 @@ done
 [ "$(connected_count primary)" = 3 ] || bad "the primary doesn't list three connected nodes"
 pass "$(connected_count primary) connected nodes"
 
+if [ "${ONLY:-}" != upgrade ]; then
 step "a2. automatic failover is turned on under the running cluster: no restart, no deposition"
 # Manual mode first: a replica has a stream only to its primary, and reports the other replica up
 # from the heartbeats the primary relays (T21.5 open (1)).
@@ -458,5 +465,150 @@ step "i. rolling restart: each node in turn, at least two nodes answer DNS throu
   || { cat "$E/rolling.json"; bad "fewer than two nodes answered during the rolling restart"; }
 cat "$E/rolling.json"
 pass
+
+fi
+
+# ---------------------------------------------------------------------------------------------
+# T24.40 (ADR-1019): the owner's upgrade. Entries added through the API while every node ran a build
+# without ADR-1016, a failover in that state, then every node upgraded: the primary then holds
+# entries it serves but has no rows for, and used to answer a dry-run write with before: null and to
+# publish a candidate without the other entries.
+OLD_IMAGE=${OLD_IMAGE:-telltale:lapse-base}
+
+# Recreates one node on an image (its data volume stays) and waits until it is healthy.
+at_image() { # image node
+  TT_IMAGE=$1 "${COMPOSE[@]}" up -d --no-deps --no-build --force-recreate --wait "$2" >/dev/null 2>&1
+}
+
+# Signs in to a node again (a recreated node's session may be gone).
+relogin() { # node
+  local _
+  for _ in $(seq 90); do login "$1" && return 0; sleep 1; done
+  return 1
+}
+
+# The node that is primary and holds its lease, waiting up to budget seconds; nodes named after the
+# budget are skipped (a killed one).
+wait_primary() { # budget [excluded-node...]
+  local budget=$1 n end
+  shift
+  end=$(( $(date +%s) + budget ))
+  while [ "$(date +%s)" -lt "$end" ]; do
+    for n in "${NODES[@]}"; do
+      case " $* " in *" $n "*) continue ;; esac
+      if [ "$(metric "${MET[$n]}" telltale_cluster_primary)" = 1 ] \
+        && [ "$(metric "${MET[$n]}" telltale_cluster_lease_held)" = 1 ]; then
+        echo "$n"
+        return 0
+      fi
+    done
+    sleep 1
+  done
+  return 1
+}
+
+# 0 once a node lists a list by name (present) or stops listing it (absent), within 30 s.
+list_is() { # node present|absent name
+  local _
+  for _ in $(seq 60); do
+    call "$1" GET /api/v1/lists
+    if has "\"$3\""; then [ "$2" = present ] && return 0; else [ "$2" = absent ] && return 0; fi
+    sleep 0.5
+  done
+  return 1
+}
+
+step "j. a cluster upgraded from an older version keeps its API entries (T24.40)"
+if ! docker image inspect "$OLD_IMAGE" >/dev/null 2>&1; then
+  if [ "${REQUIRE_UPGRADE:-}" = 1 ]; then bad "the older image $OLD_IMAGE is not here (build one from a commit before ADR-1016)"; fi
+  echo "SKIP: the older image $OLD_IMAGE is not here (set OLD_IMAGE, or build telltale:lapse-base from a commit before ADR-1016)"
+else
+  # Automatic failover on (check a2 did it in a full run; ONLY=upgrade skips a2): the failovers below
+  # are leases running out.
+  if [ "$(metric "${MET[primary]}" telltale_cluster_failover_auto)" != 1 ]; then
+    "${COMPOSE[@]}" exec -T primary /usr/local/bin/telltale cluster set-failover auto -c /etc/telltale/telltale.toml >/dev/null       || bad "couldn't turn automatic failover on"
+    for _ in $(seq 60); do
+      [ "$(metric "${MET[primary]}" telltale_cluster_lease_held)" = 1 ] && break
+      sleep 0.5
+    done
+  fi
+  # Every node on the older build, one at a time.
+  for n in "${NODES[@]}"; do at_image "$OLD_IMAGE" "$n" || bad "$n didn't come up on $OLD_IMAGE"; done
+  for n in "${NODES[@]}"; do relogin "$n" || bad "$n's administrator can't sign in on the older image"; done
+  P=$(wait_primary 120) || bad "no primary on the older image"
+  for _ in $(seq 120); do sees_connected "$P" 3 && break; sleep 0.5; done
+  sees_connected "$P" 3 || bad "the older cluster isn't whole (primary $P)"
+  # Entries added through the older primary's API: they replicate as part of the shared configuration
+  # and the older build publishes no rows of them.
+  put_json l-keep.json '{"url":"https://lists.example/keep.txt"}'
+  put_json l-edit.json '{"url":"https://lists.example/before.txt"}'
+  put_json l-gone.json '{"url":"https://lists.example/gone.txt"}'
+  put_json rec-up.json '{"records":[{"type":"A","value":"10.0.0.40"}]}'
+  for l in keep edit gone; do
+    call "$P" PUT "/api/v1/lists/t2440-$l" "$E/l-$l.json"
+    [ "$RS" = 200 ] || bad "adding list t2440-$l on the older primary $P answered $RS: $RB"
+  done
+  call "$P" PUT /api/v1/records/t2440.cluster3.test "$E/rec-up.json"
+  [ "$RS" = 200 ] || bad "adding a record on the older primary $P answered $RS: $RB"
+  for n in "${NODES[@]}"; do
+    for l in keep edit gone; do list_is "$n" present "t2440-$l" || bad "$n doesn't list t2440-$l (older image)"; done
+  done
+  # A failover while every node is older: the survivor is promoted from replica with an older blob.
+  docker kill "$(container "$P")" >/dev/null
+  S=$(wait_primary 90 "$P") || bad "no survivor was promoted on the older image"
+  for l in keep edit gone; do list_is "$S" present "t2440-$l" || bad "$S doesn't serve t2440-$l after the older failover"; done
+  at_image "$OLD_IMAGE" "$P" || bad "$P didn't come back on the older image"
+  # Now every node is upgraded, replicas first and the older failover's primary $S last.
+  for n in "${NODES[@]}"; do
+    [ "$n" = "$S" ] || at_image "$IMAGE" "$n" || bad "$n didn't come up on the new image"
+  done
+  at_image "$IMAGE" "$S" || bad "$S didn't come up on the new image"
+  for n in "${NODES[@]}"; do relogin "$n" || bad "$n's administrator can't sign in after the upgrade"; done
+  N1=$(wait_primary 120) || bad "no primary after the upgrade"
+  # The first failover after the upgrade: the new primary must not lose what it serves.
+  for l in keep edit gone; do list_is "$N1" present "t2440-$l" || bad "$N1 doesn't serve t2440-$l after the upgrade"; done
+  call "$N1" PUT "/api/v1/lists/t2440-edit?dryRun=true" "$E/l-edit.json"
+  [ "$RS" = 200 ] || bad "a dry-run write of an inherited list on $N1 answered $RS: $RB"
+  [ "$(jget 'd["before"] is None')" = False ] || bad "the dry run on $N1 shows no 'before' for an entry it serves: $RB"
+  docker kill "$(container "$N1")" >/dev/null
+  N2=$(wait_primary 90 "$N1") || bad "no survivor was promoted after the upgrade"
+  for n in "${NODES[@]}"; do
+    [ "$n" = "$N1" ] || relogin "$n" || bad "$n's administrator can't sign in"
+  done
+  put_json l-edit2.json '{"url":"https://lists.example/after.txt"}'
+  call "$N2" PUT "/api/v1/lists/t2440-edit?dryRun=true" "$E/l-edit2.json"
+  [ "$RS" = 200 ] || bad "a dry-run write of an inherited list on the new primary $N2 answered $RS: $RB"
+  [ "$(jget 'd["before"] is None')" = False ] || bad "the dry run on $N2 shows no 'before': $RB"
+  call "$N2" PUT /api/v1/lists/t2440-edit "$E/l-edit2.json"
+  [ "$RS" = 200 ] || bad "editing an inherited list on $N2 answered $RS: $RB"
+  call "$N2" DELETE /api/v1/lists/t2440-gone
+  [ "$RS" = 200 ] || bad "deleting an inherited list on $N2 answered $RS: $RB"
+  T=
+  for n in "${NODES[@]}"; do
+    [ "$n" = "$N1" ] || [ "$n" = "$N2" ] || T=$n
+  done
+  for n in "$N2" "$T"; do
+    list_is "$n" absent t2440-gone || bad "$n still lists the deleted t2440-gone"
+    list_is "$n" present t2440-keep || bad "$n lost t2440-keep (another entry) after the edit and the delete"
+    call "$n" GET /api/v1/lists
+    has "after.txt" || bad "$n doesn't show the edit of t2440-edit"
+  done
+  call "$N2" GET /api/v1/records
+  has "t2440.cluster3.test" || bad "$N2 lost the record added through the older primary"
+  await_dns 10000 "$N2" t2440.cluster3.test 10.0.0.40 || bad "$N2 doesn't answer the inherited record"
+  # The edit and the delete stick across another failover.
+  at_image "$IMAGE" "$N1" || bad "$N1 didn't come back"
+  relogin "$N1" || bad "$N1's administrator can't sign in"
+  docker kill "$(container "$N2")" >/dev/null
+  N3=$(wait_primary 90 "$N2") || bad "no survivor was promoted after the second failover"
+  relogin "$N3" || bad "$N3's administrator can't sign in"
+  list_is "$N3" absent t2440-gone || bad "$N3 brought the deleted t2440-gone back"
+  list_is "$N3" present t2440-keep || bad "$N3 lost t2440-keep"
+  call "$N3" GET /api/v1/lists
+  has "after.txt" || bad "$N3 lost the edit"
+  ! has "before.txt" || bad "$N3 serves the old value of the edited list"
+  at_image "$IMAGE" "$N2" || bad "$N2 didn't come back"
+  pass "older primary $P, older failover to $S, upgraded; $N1 then $N2 then $N3 primary; dry run, edit and delete kept"
+fi
 
 echo "== all checks passed"

@@ -5140,6 +5140,7 @@ fn plan_managed(
     state: &telltale_store::state::State,
     w: &ManagedWrite,
 ) -> Result<ManagedPlan, Problem> {
+    refuse_unadopted(src, state)?;
     if matches!(
         w.kind,
         ManagedKind::RateLimit
@@ -5573,6 +5574,38 @@ pub(crate) fn plan_files(src: &Sources) -> Arc<telltale_config::Config> {
         Some(base) => Arc::new(base),
         None => file,
     }
+}
+
+/// REQ: CLU-015 (T24.40, ADR-1019) — a promoted primary that could not adopt the entries it serves
+/// (its store can't be written, or the version can't be read) must not publish a write built on its
+/// config files: the candidate would drop every served entry its files don't define. `Ok` when
+/// there is nothing to lose.
+pub(crate) fn refuse_unadopted(
+    src: &Sources,
+    state: &telltale_store::state::State,
+) -> Result<(), Problem> {
+    let file = src.file_config.load_full();
+    if !matches!(
+        crate::replication::managed_base_state(&file),
+        crate::replication::Base::Unadopted
+    ) {
+        return Ok(());
+    }
+    let served = src.config.load();
+    let at_risk = crate::managed_adopt::derive(&served, &file)
+        .into_iter()
+        .filter(|e| !crate::managed_adopt::held(state, &e.kind, &e.name))
+        .count();
+    if at_risk == 0 {
+        return Ok(());
+    }
+    Err(Problem::new(
+        Code::Conflict,
+        format!(
+            "this node serves {at_risk} entries from the cluster's last published configuration that it does not hold as its own yet, so a change now would drop them from DNS"
+        ),
+    )
+    .hint("The node adopts them when it can write its store; check its logs (`adopted` or `can't be adopted`), fix the store, then retry. Nothing was changed."))
 }
 
 /// REQ: CLU-015 (T24.37, ADR-1016) — a write that finds no entry of that name to change, where

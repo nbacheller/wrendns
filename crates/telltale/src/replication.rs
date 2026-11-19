@@ -241,14 +241,23 @@ fn seed_node_managed(file: &Config, m: &ClusterManifest) -> bool {
 /// configuration it builds on. Returns whether it did; a blob without the rows, or a store it
 /// can't write, leaves `cfg` as it was.
 fn adopt_shared(file: &Config, m: &ClusterManifest, cfg: &mut Config) -> bool {
-    let Some(b) = &m.node_managed else {
-        return false;
+    use crate::managed_adopt::Outcome;
+    let adopted = match &m.node_managed {
+        Some(b) => {
+            match crate::managed_adopt::adopt(&crate::managed::state_path(file), &b.hash, || {
+                BlobStore::open(data_dir(file))
+                    .ok()
+                    .and_then(|store| store.read(b).ok())
+            }) {
+                Outcome::Entries(e) => Some(e),
+                Outcome::NoRows => adopt_served(file, &b.hash, m, cfg),
+                Outcome::Failed => None,
+            }
+        }
+        // REQ: CLU-015 (T24.40, ADR-1019) — a version with no blob at all (an older primary with
+        // no node-managed rows) is just as silent about its API entries.
+        None => adopt_served(file, "none", m, cfg),
     };
-    let adopted = crate::managed_adopt::adopt(&crate::managed::state_path(file), &b.hash, || {
-        BlobStore::open(data_dir(file))
-            .ok()
-            .and_then(|store| store.read(b).ok())
-    });
     match adopted {
         Some(entries) => {
             crate::managed_adopt::strip(cfg, &entries, file);
@@ -258,21 +267,66 @@ fn adopt_shared(file: &Config, m: &ClusterManifest, cfg: &mut Config) -> bool {
     }
 }
 
-/// REQ: CLU-015 (T24.37, ADR-1016) — what the API's entries are written onto on a primary promoted
-/// from replica: the cluster version it builds on, without the entries it adopted. `None` on any
-/// other node (the config files are the base), and when nothing was adopted.
+/// REQ: CLU-015 (T24.40, ADR-1019) — adopts what `cfg` (the version this node serves) has that the
+/// node's own files don't, for a version whose primary did not publish its rows.
+fn adopt_served(
+    file: &Config,
+    key: &str,
+    m: &ClusterManifest,
+    cfg: &Config,
+) -> Option<Vec<crate::node_managed::Entry>> {
+    crate::managed_adopt::adopt_served(
+        &crate::managed::state_path(file),
+        &format!("{key}:{}", m.seq),
+        m.seq,
+        cfg,
+        file,
+    )
+}
+
+/// REQ: CLU-015 (T24.37, T24.40, ADR-1016, ADR-1019) — what the API's entries are written onto on a
+/// primary promoted from replica: the cluster version it builds on, without the entries it adopted.
+/// `None` on any other node (the config files are the base), and when nothing could be adopted.
 pub(crate) fn managed_base(file: &Config) -> Option<Config> {
-    let id = identity(file)?;
+    match managed_base_state(file) {
+        Base::Adopted(c) => Some(*c),
+        Base::NotApplicable | Base::Unadopted => None,
+    }
+}
+
+/// The base a write plan builds on (see [`managed_base`]).
+pub(crate) enum Base {
+    /// Not a primary promoted from replica: the config files are the base.
+    NotApplicable,
+    /// The version the node builds on, without the entries it holds as rows.
+    Adopted(Box<Config>),
+    /// A promoted primary that could not adopt what it serves: the files are not a safe base.
+    Unadopted,
+}
+
+/// [`managed_base`] that says why there is none.
+pub(crate) fn managed_base_state(file: &Config) -> Base {
+    let Some(id) = identity(file) else {
+        return Base::NotApplicable;
+    };
     if !matches!(id.meta.role, Some(node::Role::Primary)) || file.cluster.git.is_some() {
-        return None;
+        return Base::NotApplicable;
     }
     if id.meta.config_authority == "gitops" && gitops_capable(file) {
-        return None;
+        return Base::NotApplicable;
     }
-    let m = last_applied(file)?;
+    let Some(m) = last_applied(file) else {
+        return Base::NotApplicable;
+    };
     let overlay = !seed_node_managed(file, &m);
-    let mut c = merged_with(file, &m, overlay).ok()?;
-    adopt_shared(file, &m, &mut c).then_some(c)
+    let Ok(mut c) = merged_with(file, &m, overlay) else {
+        return Base::Unadopted;
+    };
+    if adopt_shared(file, &m, &mut c) {
+        Base::Adopted(Box::new(c))
+    } else {
+        Base::Unadopted
+    }
 }
 
 /// Whether this node is a primary that was promoted from replica (it has applied a cluster

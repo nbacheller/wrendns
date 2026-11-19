@@ -11,7 +11,8 @@
 name: telltale-cluster3
 
 x-telltale: &telltale
-  image: telltale:cluster3-test
+  # TT_IMAGE: e2e.sh's upgrade step (j) runs nodes on an older image, one at a time.
+  image: ${TT_IMAGE:-telltale:cluster3-test}
   pull_policy: never
   restart: "no"
   # The image's unprivileged user; the same hardening as the Docker Desktop bundle.
