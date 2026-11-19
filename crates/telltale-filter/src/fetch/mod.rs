@@ -696,7 +696,8 @@ impl Fetcher {
         let ok = url.strip_prefix(prefix).is_some_and(|r| {
             !r.is_empty()
                 && !r.contains("..")
-                && !r.contains(['\\', '?', '#', '@'])
+                // A percent sign could spell a dot segment (`%2e%2e`) that the HTTP client resolves.
+                && !r.contains(['\\', '?', '#', '@', '%'])
                 && !r.starts_with('/')
         });
         if ok {

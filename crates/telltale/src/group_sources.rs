@@ -90,8 +90,25 @@ pub(crate) fn plan(
     let file = src.file_config.load_full();
     let mut entries: Entries = crate::managed::entries(state);
     let before_cfg = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
-    let mut group: GroupConfig = match before_cfg.group.iter().find(|g| g.name.as_str() == name) {
-        Some(g) => g.clone(),
+    // The entry to store starts from what is stored (else the files' group), never from the merged
+    // group: `merge` has adopted the legacy ad list into a synthetic `content` and trimmed `lists`,
+    // and those derived values are never written back (managed.rs).
+    let base = entries
+        .groups
+        .iter()
+        .find_map(|(n, o)| match o {
+            crate::managed::Ovr::Set(g) if *n == name => Some(g.clone()),
+            _ => None,
+        })
+        .or_else(|| file.group.iter().find(|g| g.name.as_str() == name).cloned());
+    let mut group: GroupConfig = match base.or_else(|| {
+        before_cfg
+            .group
+            .iter()
+            .find(|g| g.name.as_str() == name)
+            .cloned()
+    }) {
+        Some(g) => g,
         None if name == "default" => {
             toml::from_str("name = \"default\"").map_err(|e| Problem::internal(e.to_string()))?
         }
@@ -235,6 +252,12 @@ pub(crate) fn plan(
     entries
         .groups
         .push((name.clone(), crate::managed::Ovr::Set(group.clone())));
+    if let Some(p) = cluster_content_gate(
+        src,
+        &serde_json::to_value(&group).map_err(|e| Problem::internal(e.to_string()))?,
+    ) {
+        return Err(p);
+    }
     let merged = crate::managed::merge(&file, &entries).map_err(|errs| invalid(errs.join("; ")))?;
     warnings.extend(telltale_config::validate_config(&merged).unwrap_or_default());
     let after_group = merged
@@ -304,6 +327,23 @@ pub(crate) fn plan(
         candidate: merged,
         redirect: None,
     })
+}
+
+/// REQ: FLT-901, FLT-902 (ADR-994 item 7, CLU-010) - the version gate for a group entry `body`, on
+/// every route that stores one (a group write, a sources write): members are the cluster's plus
+/// this node.
+pub(crate) fn cluster_content_gate(src: &Sources, body: &serde_json::Value) -> Option<Problem> {
+    let c = src.cluster.as_ref()?;
+    let mut members: Vec<(String, String)> = c
+        .members()
+        .into_iter()
+        .map(|m| (m.node_id, m.version))
+        .collect();
+    members.push((
+        c.identity.meta.node_id.clone(),
+        crate::build_info::VERSION.to_owned(),
+    ));
+    content_members_too_old(&members, crate::forward::GROUP_CONTENT_SINCE, body)
 }
 
 /// REQ: FLT-901, FLT-902 (T24.29, ADR-994 item 7, CLU-010) - a group entry that carries `content` or
@@ -413,6 +453,41 @@ match = ["10.0.9.9"]
             role: None,
             agent: None,
         }
+    }
+
+    /// REQ: FLT-901, FLT-902 (T24.29) - a sources write stores the group as it is stored or in the
+    /// files, never the effective one: the `content.ads` the merge makes for an adopted ad list
+    /// is derived and is not written back.
+    #[test]
+    fn flt_902_source_write_stores_no_derived_content() {
+        let (src, state) = setup();
+        let url = telltale_config::categories::catalog()
+            .source("hagezi-ads-pro")
+            .map(|s| s.url.clone())
+            .unwrap();
+        let list = serde_json::json!({"name": "hagezi-pro", "url": url}).to_string();
+        state
+            .put_managed_batch(&[(crate::managed::LIST, "hagezi-pro", list.as_str())], None, 1, "t")
+            .unwrap();
+        // The effective kids group has the synthetic `content`; the stored entry must not.
+        let entries = crate::managed::entries(&state);
+        let merged = crate::managed::merge(&src.file_config.load_full(), &entries).unwrap();
+        assert!(
+            merged
+                .group
+                .iter()
+                .any(|g| g.name.as_str() == "kids" && g.content.is_some()),
+            "the merge adopts the ad list"
+        );
+        let plan = plan(
+            &src,
+            &state,
+            &write("kids", serde_json::json!({"networks": ["10.0.2.0/24"]})),
+        )
+        .unwrap();
+        let body: serde_json::Value = serde_json::from_str(plan.body.as_deref().unwrap()).unwrap();
+        assert!(body.get("content").is_none(), "no derived content: {body}");
+        assert_eq!(body["networks"], serde_json::json!(["10.0.2.0/24"]));
     }
 
     /// REQ: FLT-902, API-010 (T24.29) - the group and its devices are one change: one plan holds the

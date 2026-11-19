@@ -506,3 +506,103 @@ async fn flt_901_agent_heavy_refused() {
     assert_eq!(r["isError"], true, "{r}");
     assert!(r.to_string().contains("agent_not_allowed"), "{r}");
 }
+
+/// REQ: FLT-901 (T24.29) - a group whose config file sets `content` keeps it, whatever the entry's
+/// source reads: saving the group's other fields stores an override (`source: "override"`), and
+/// the content is still the file's (409 `set_by_file`, on both routes). The same content is not a
+/// change.
+#[tokio::test]
+async fn flt_901_file_content_survives_an_override() {
+    let (app, fake) = app();
+    with_groups(&fake);
+    *fake.cat_entries.lock().unwrap() = vec![crate::model::ConfigEntry {
+        kind: "group".into(),
+        name: "kids".into(),
+        source: "override".into(),
+        definition: Some(json!({"name": "kids", "content": {"level": "enhanced", "categories": ["adult"]}})),
+        redacted: Vec::new(),
+        credential_issues: Vec::new(),
+        set_by_file: vec!["content".into()],
+        answering: None,
+    }];
+    let (s, v) = put(
+        &app,
+        &app.bearer,
+        "/api/v1/groups/kids/content",
+        json!({"level": "basic"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], "set_by_file");
+    let (s, v) = put(
+        &app,
+        &app.bearer,
+        "/api/v1/groups/kids",
+        json!({"content": {"level": "basic"}}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], "set_by_file");
+    // What the file says, sent back, is no change.
+    let (s, v) = put(
+        &app,
+        &app.bearer,
+        "/api/v1/groups/kids",
+        json!({"block_mode": "nxdomain", "content": {"level": "enhanced", "categories": ["adult"]}}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = put(
+        &app,
+        &app.bearer,
+        "/api/v1/groups/kids/content",
+        json!({"level": "enhanced"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "the file's own content is no change: {v}");
+}
+
+/// REQ: FLT-901 (T24.29) - a selection a node already refuses can be reduced: only a change that
+/// asks for more is refused.
+#[tokio::test]
+async fn flt_901_refused_selection_can_be_reduced() {
+    let (app, fake) = app();
+    *fake.cat_groups.lock().unwrap() = vec![
+        group("default", None),
+        group("kids", Some(level("enhanced", &["adult", "nrd"]))),
+        group("teens", Some(level("enhanced", &["adult"]))),
+    ];
+    fake.cat_memory
+        .store(128 * MIB, std::sync::atomic::Ordering::SeqCst);
+    let (s, v) = put(
+        &app,
+        &app.bearer,
+        "/api/v1/groups/teens/content?confirm=true",
+        json!({"level": "off"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "reducing is allowed: {v}");
+    let (s, v) = put(
+        &app,
+        &app.bearer,
+        "/api/v1/groups/teens/content?confirm=true",
+        json!({"categories": ["adult", "gambling", "social"], "tiers": {"adult": "extended"}}),
+    )
+    .await;
+    assert_ne!(s, StatusCode::OK, "asking for more stays refused: {v}");
+}
+
+/// REQ: FLT-902 - `level` left out of a group's content reads `off`, as in the TOML.
+#[tokio::test]
+async fn flt_902_content_level_defaults_to_off() {
+    let (app, fake) = app();
+    with_groups(&fake);
+    let (s, v) = put(
+        &app,
+        &app.bearer,
+        "/api/v1/groups/default",
+        json!({"content": {"categories": ["adult"]}}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}

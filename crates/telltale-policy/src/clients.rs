@@ -35,6 +35,9 @@ pub struct Group {
     /// REQ: FLT-901 (T24.29) — the lists this group wants because of its categories and ad
     /// block: `cat-<source>` names, or the name of a list that provides the source already.
     pub cat_lists: Vec<Box<str>>,
+    /// REQ: FLT-901 - for each provider list in `cat_lists` (not a `cat-` name), the category names
+    /// it stands for, so a block reason names the category.
+    pub cat_labels: Vec<(Box<str>, Box<str>)>,
     /// REQ: FLT-902 — what the group filters by category, in words ("Off", "Basic",
     /// "Enhanced (3 of 20), Ad block"), for the device policy panel.
     pub content_summary: Box<str>,
@@ -494,6 +497,7 @@ impl Group {
                 .then_some(g.youtube_restrict),
             safe_search_engines: effective_engines(g),
             cat_lists: Vec::new(),
+            cat_labels: Vec::new(),
             content_summary: telltale_config::categories::summary(g.content.as_ref()).into(),
             answers: (g.rebinding_protection || !g.block_answer_ips.is_empty()).then(|| {
                 AnswerFilter {
@@ -554,6 +558,10 @@ impl ClientTable {
                 .into_iter()
                 .map(String::into_boxed_str)
                 .collect();
+            g.cat_labels = telltale_config::categories::provider_labels(cfg, c)
+                .into_iter()
+                .map(|(n, l)| (n.into_boxed_str(), l.into_boxed_str()))
+                .collect();
         }
         let default_idx = if let Some(i) = groups.iter().position(|g| &*g.name == "default") {
             i
@@ -569,6 +577,7 @@ impl ClientTable {
                 safe_search: None,
                 safe_search_engines: Vec::new(),
                 cat_lists: Vec::new(),
+                cat_labels: Vec::new(),
                 content_summary: "Off".into(),
                 answers: None,
                 rewrites: Vec::new(),

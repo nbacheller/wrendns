@@ -18166,9 +18166,6 @@
       "GroupContentInfo": {
         "type": "object",
         "description": "A group's content as the API shows it.",
-        "required": [
-          "level"
-        ],
         "properties": {
           "ads": {
             "type": "boolean",
@@ -18183,7 +18180,7 @@
           },
           "level": {
             "type": "string",
-            "description": "`off`, `basic` or `enhanced`."
+            "description": "`off`, `basic` or `enhanced`; left out reads `off`, as in the TOML."
           },
           "tiers": {
             "type": "object",

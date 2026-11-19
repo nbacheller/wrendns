@@ -1836,7 +1836,7 @@ impl Backend for ApiBackend {
             special: e.special.map(str::to_owned),
             summary: e.summary,
             block: e.block.map(|b| ExplainBlock {
-                category: telltale_config::categories::label_of_list(&b.list),
+                category: telltale_config::categories::label_of_list_in(&cfg, &b.list),
                 list: b.list,
                 mode: label(&b.mode),
                 ttl_seconds: b.ttl,
@@ -3540,22 +3540,31 @@ impl Backend for ApiBackend {
                 let api = stored.iter().any(|(s, _)| s == n);
                 // REQ: API-015 (T23.6, ADR-903 §2) — the credential fields the files set for this
                 // entry (`token_file`, an inline secret): the UI shows them read-only.
-                let set_by_file = file
+                let mut set_by_file: Vec<String> = file
                     .iter()
                     .find(|f| f.name() == n)
                     .and_then(|f| serde_json::to_value(f).ok())
                     .map(|v| {
-                        telltale_config::secret_refs::set_by_file(kind, &v)
-                            .into_iter()
-                            .flat_map(|s| s.inline.into_iter().chain([s.file]))
-                            .filter(|k| {
-                                v.get(*k)
-                                    .is_some_and(|x| !x.is_null() && x.as_str() != Some(""))
-                            })
-                            .map(str::to_owned)
-                            .collect()
+                        let mut keys: Vec<String> =
+                            telltale_config::secret_refs::set_by_file(kind, &v)
+                                .into_iter()
+                                .flat_map(|s| s.inline.into_iter().chain([s.file]))
+                                .filter(|k| {
+                                    v.get(*k)
+                                        .is_some_and(|x| !x.is_null() && x.as_str() != Some(""))
+                                })
+                                .map(str::to_owned)
+                                .collect();
+                        // REQ: FLT-901 (T24.29): a group whose file sets `content` keeps it; the
+                        // API can't override it, however the entry's source reads (an override of
+                        // the group's other fields leaves the source `override`).
+                        if kind == "group" && v.get("content").is_some_and(|c| !c.is_null()) {
+                            keys.push("content".to_owned());
+                        }
+                        keys
                     })
                     .unwrap_or_default();
+                set_by_file.dedup();
                 out.push(telltale_api::model::ConfigEntry {
                     kind: kind.to_owned(),
                     name: n.to_owned(),
@@ -5661,6 +5670,9 @@ fn plan_settings(
     let after = crate::settings_kinds::section_json(w.kind, &merged);
     crate::settings_kinds::check_admin_fields(w.kind, &before, &after, w.role, w.agent.as_deref())?;
     let mut warnings = telltale_config::validate_config(&merged).unwrap_or_default();
+    if w.kind == ManagedKind::Filter {
+        warnings.extend(filter_budget_check(src, &before_cfg, &merged)?);
+    }
     // REQ: DNS-023 (H1) — the mDNS listener starts once, at start-up: a change to `[clients]`
     // says so here, as the dry run's answer does.
     if w.kind == ManagedKind::Clients && before != after {
@@ -5681,6 +5693,65 @@ fn plan_settings(
         candidate: merged,
         redirect: None,
     })
+}
+
+/// REQ: FLT-901 (T24.29, ADR-994 item 5) — the budget check a change to `[filter] ads_tier` or
+/// `entry_budget` gets, as a content change does: the ad block size changes what every group with
+/// ad block on selects. Refused (422 `budget_refused`) when the new selection needs more memory
+/// than the node may use; a selection already refused can still be reduced. A selection that newly
+/// passes `entry_budget` is a warning (the confirmation a content write asks for has no place in a
+/// settings write; the warning says what it costs).
+fn filter_budget_check(
+    src: &Sources,
+    before: &telltale_config::Config,
+    after: &telltale_config::Config,
+) -> Result<Vec<String>, Problem> {
+    use telltale_config::categories as cat;
+    let host = src.host.latest();
+    let limit = crate::host::memory_limit().or_else(|| {
+        host.as_ref()
+            .and_then(|h| h.cgroup_mem_limit.or(h.mem_total))
+    });
+    let of = |c: &telltale_config::Config| {
+        let mut ids = std::collections::BTreeSet::new();
+        for g in &c.group {
+            if let Some(content) = &g.content {
+                for s in cat::selection(content, c.filter.ads_tier).sources {
+                    ids.insert(s.id.clone());
+                }
+            }
+        }
+        let sources: Vec<&cat::Source> = cat::catalog()
+            .sources
+            .iter()
+            .filter(|s| ids.contains(&s.id))
+            .collect();
+        cat::budget(
+            &sources,
+            c.filter.entry_budget,
+            limit,
+            c.filter.compile_memory.bytes(),
+        )
+    };
+    let (b, a) = (of(before), of(after));
+    if a.refused && a.needed_bytes > b.needed_bytes {
+        return Err(Problem::new(
+            Code::BudgetRefused,
+            a.reasons
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "this node is too small for that selection".to_owned()),
+        )
+        .hint("Pick a smaller ad block size or use a node with more memory."));
+    }
+    let mut warnings = Vec::new();
+    if a.over_budget && !b.over_budget {
+        warnings.push(format!(
+            "the groups' selections now total {} entries, more than [filter] entry_budget ({})",
+            a.entries, a.entry_budget
+        ));
+    }
+    Ok(warnings)
 }
 
 /// REQ: DNS-014, OBS-022 — plans a write to a one-of section (see [`singleton_change`]).
@@ -6108,23 +6179,31 @@ fn plan_override(
     // REQ: FLT-901, FLT-902 (ADR-994 item 7, CLU-010) — a group entry with `content` waits until
     // every member can read it.
     if w.kind == ManagedKind::Group
-        && let (Some(body), Some(c)) = (&w.body, &src.cluster)
+        && let Some(body) = &w.body
+        && let Some(p) = crate::group_sources::cluster_content_gate(src, body)
     {
-        let mut members: Vec<(String, String)> = c
-            .members()
-            .into_iter()
-            .map(|m| (m.node_id, m.version))
-            .collect();
-        members.push((
-            c.identity.meta.node_id.clone(),
-            crate::build_info::VERSION.to_owned(),
-        ));
-        if let Some(p) = crate::group_sources::content_members_too_old(
-            &members,
-            crate::forward::GROUP_CONTENT_SINCE,
-            body,
-        ) {
-            return Err(p);
+        return Err(p);
+    }
+    // REQ: FLT-901 (ADR-994 item 8) - an agent never starts a heavy download, however it asks: a
+    // list whose URL is a heavy catalog source is a person's to add.
+    if w.kind == ManagedKind::List
+        && w.agent.is_some()
+        && let Some(url) = w
+            .body
+            .as_ref()
+            .and_then(|b| b.get("url"))
+            .and_then(serde_json::Value::as_str)
+    {
+        let cat = telltale_config::categories::catalog();
+        let want = telltale_config::categories::normalize_url(url);
+        if cat.sources.iter().any(|s| {
+            cat.is_heavy(s) && telltale_config::categories::normalize_url(&s.url) == want
+        }) {
+            return Err(Problem::new(
+                Code::AgentNotAllowed,
+                "this list is a heavy catalog source: an agent can't add it",
+            )
+            .hint("A person adds it in the web UI (Groups, Categories), where the cost is confirmed."));
         }
     }
     let file = plan_files(src);
@@ -8675,5 +8754,101 @@ groups = ["iot"]
         // An address that is no device, and a name that is nothing.
         assert_eq!(api.client_policy("203.0.113.9").unwrap().group, "default");
         assert!(api.client_policy("nobody").is_err());
+    }
+}
+
+#[cfg(test)]
+mod filter_budget_tests {
+    use super::*;
+
+    fn cfg(budget: u64, content: bool) -> telltale_config::Config {
+        let mut c: telltale_config::Config = toml::from_str(&format!(
+            "[filter]\nentry_budget = {budget}\n[[group]]\nname = \"default\"\n"
+        ))
+        .unwrap();
+        if content {
+            c.group[0].content = Some(telltale_config::GroupContent {
+                ads: true,
+                ..telltale_config::GroupContent::default()
+            });
+        }
+        c
+    }
+
+    /// REQ: FLT-901 (T24.29) - a change to the `[filter]` settings gets the budget check a content
+    /// change gets: a selection that newly passes `entry_budget` is a warning, and a change that
+    /// stays inside it, or was over already, says nothing.
+    #[test]
+    fn flt_901_filter_settings_change_is_budget_checked() {
+        let src = Arc::new(crate::http::tests::sources());
+        let w = filter_budget_check(&src, &cfg(1, false), &cfg(1, true)).unwrap();
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("entry_budget"), "{w:?}");
+        assert!(
+            filter_budget_check(&src, &cfg(1, true), &cfg(1, true))
+                .unwrap()
+                .is_empty(),
+            "already over: nothing new"
+        );
+        assert!(
+            filter_budget_check(&src, &cfg(1_000_000_000, false), &cfg(1_000_000_000, true))
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[cfg(test)]
+mod group_content_marker_tests {
+    use super::*;
+    use telltale_api::Backend;
+
+    /// REQ: FLT-901 (T24.29) - a group whose config file sets `content` says so in `set_by_file`
+    /// (the content write refuses it from this, not from the entry's `source`, which reads
+    /// `override` once the group has been saved through the API).
+    #[test]
+    fn flt_901_group_entry_marks_content_set_by_file() {
+        let src = crate::http::tests::sources();
+        let conf = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                "[[group]]\nname = \"default\"\ncontent = { ads = true }\n[[group]]\nname = \"kids\"\n",
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .map_err(|e| format!("{e:?}"))
+            .unwrap()
+            .config;
+        src.file_config.store(Arc::new(conf.clone()));
+        src.config.store(Arc::new(conf));
+        let api = ApiBackend { src: Arc::new(src) };
+        let entries = api.config_entries(Some("group"));
+        let get = |n: &str| entries.iter().find(|e| e.name == n).unwrap();
+        assert!(get("default").set_by_file.iter().any(|k| k == "content"));
+        assert!(get("kids").set_by_file.is_empty());
+    }
+
+    /// REQ: FLT-901 (ADR-994 item 8) - an agent can't add a list that is a heavy catalog source (it
+    /// would start the download the budget rules exist to confirm); a person can.
+    #[test]
+    fn flt_901_agent_cannot_add_heavy_catalog_list() {
+        let src = crate::http::tests::sources();
+        let state = telltale_store::state::State::in_memory().unwrap();
+        let cat = telltale_config::categories::catalog();
+        let heavy = cat.sources.iter().find(|s| cat.is_heavy(s)).unwrap();
+        let write = |agent: Option<&str>| ManagedWrite {
+            kind: ManagedKind::List,
+            name: "mine".into(),
+            body: Some(serde_json::json!({"name": "mine", "url": heavy.url})),
+            dry_run: true,
+            expect: None,
+            by: "t".into(),
+            simulate: None,
+            role: None,
+            agent: agent.map(str::to_owned),
+        };
+        let e = plan_override(&src, &state, &write(Some("bot"))).err().unwrap();
+        assert_eq!(e.code, Code::AgentNotAllowed);
+        assert!(plan_override(&src, &state, &write(None)).is_ok());
     }
 }

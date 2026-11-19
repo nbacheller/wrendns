@@ -622,7 +622,12 @@ pub fn categories_of_source(source_id: &str) -> Vec<&'static Category> {
 
 /// The category names a `cat-` list stands for, for a block reason ("Malware, Phishing or Scam").
 pub fn label_of_list(list: &str) -> Option<String> {
-    let src = source_of_list(list)?;
+    label_of_source(source_of_list(list)?)
+}
+
+/// The category names a source stands for ("Malware, Phishing or Scam"); `None` for one no
+/// category uses (an ad block list).
+pub fn label_of_source(src: &Source) -> Option<String> {
     let names: Vec<&str> = categories_of_source(&src.id)
         .iter()
         .map(|c| c.name.as_str())
@@ -632,6 +637,35 @@ pub fn label_of_list(list: &str) -> Option<String> {
         (*tail).to_owned()
     } else {
         format!("{} or {tail}", init.join(", "))
+    })
+}
+
+/// REQ: FLT-901 - the lists that provide a source to group `g` (a list a file defines with the
+/// source's URL, not a `cat-` list) with the category names each stands for, so Explain and a block
+/// reason name the category whichever list carries it.
+pub fn provider_labels(cfg: &Config, g: &GroupConfig) -> Vec<(String, String)> {
+    group_selection(g, cfg.filter.ads_tier)
+        .sources
+        .into_iter()
+        .filter_map(|s| {
+            let name = list_for(cfg, s);
+            if is_category_list(&name) {
+                return None;
+            }
+            Some((name, label_of_source(s)?))
+        })
+        .collect()
+}
+
+/// The category names list `name` stands for under `cfg`: a `cat-` list, or a provider list of
+/// some group's categories.
+pub fn label_of_list_in(cfg: &Config, name: &str) -> Option<String> {
+    label_of_list(name).or_else(|| {
+        cfg.group
+            .iter()
+            .flat_map(|g| provider_labels(cfg, g))
+            .find(|(n, _)| n == name)
+            .map(|(_, l)| l)
     })
 }
 

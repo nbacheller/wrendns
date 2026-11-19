@@ -382,6 +382,18 @@ impl FilterState {
             }
             m
         };
+        // REQ: FLT-901 - the category a list stands for: a `cat-` list, or the list a file defines
+        // that provides a catalog source to some group.
+        let label_of = |n: &str| {
+            telltale_config::categories::label_of_list(n).or_else(|| {
+                clients
+                    .groups()
+                    .iter()
+                    .flat_map(|g| g.cat_labels.iter())
+                    .find(|(l, _)| **l == *n)
+                    .map(|(_, c)| c.to_string())
+            })
+        };
         let unknown = Identity {
             client: None,
             source: telltale_policy::IdSource::Default,
@@ -398,7 +410,7 @@ impl FilterState {
                 .map(|n| match telltale_config::services::of_list(n) {
                     Some(s) => format!("blocked service {}", s.name),
                     // REQ: FLT-901 — a category list names the category it stands for.
-                    None => match telltale_config::categories::label_of_list(n) {
+                    None => match label_of(n) {
                         Some(c) => format!("blocked by category {c} (list {n})"),
                         None => format!("blocked by list {n}"),
                     },
@@ -408,7 +420,7 @@ impl FilterState {
                 .iter()
                 .map(|n| match telltale_config::services::of_list(n) {
                     Some(s) => format!("CNAME target blocked: service {}", s.name),
-                    None => match telltale_config::categories::label_of_list(n) {
+                    None => match label_of(n) {
                         Some(c) => format!("CNAME target blocked by category {c} (list {n})"),
                         None => format!("CNAME target blocked by list {n}"),
                     },
@@ -2988,6 +3000,11 @@ mod tests {
 
     /// Compiles several named lists into one snapshot and installs it.
     fn install_lists(p: &Pipeline, lists: &[(&str, &str)]) {
+        install_lists_allowing(p, lists, &[]);
+    }
+
+    /// `install_lists`, with the lists named in `allow` compiled as allow-kind lists.
+    fn install_lists_allowing(p: &Pipeline, lists: &[(&str, &str)], allow: &[&str]) {
         use telltale_filter::compile::{CompileOptions, ListData, ListInput, compile};
         use telltale_filter::matcher::Lookup;
         let tmp = tempfile::tempdir().unwrap();
@@ -2996,7 +3013,14 @@ mod tests {
             .iter()
             .map(|(name, rules)| ListInput {
                 name: (*name).into(),
-                options: telltale_filter::parse::ListOptions::default(),
+                options: telltale_filter::parse::ListOptions {
+                    kind: if allow.contains(name) {
+                        telltale_config::ListKind::Allow
+                    } else {
+                        telltale_config::ListKind::Block
+                    },
+                    ..telltale_filter::parse::ListOptions::default()
+                },
                 data: ListData::Bytes(rules.as_bytes().to_vec()),
                 source_hash: telltale_filter::fetch::content_hash(rules.as_bytes()),
                 size: rules.len() as u64,
@@ -3167,6 +3191,31 @@ content = { level = "enhanced", categories = ["adult"] }
         )));
     }
 
+    /// REQ: FLT-901 (T24.29) - a list a file defines with a source's URL provides it, and the block
+    /// still names the category.
+    #[test]
+    fn flt_901_provider_list_names_the_category() {
+        let p = category_pipeline(
+            r#"
+[[list]]
+name = "my-nsfw"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/nsfw-onlydomains.txt"
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+content = { level = "enhanced", categories = ["adult"] }
+"#,
+            &[("my-nsfw", "||adult.example^
+")],
+        );
+        let kid = ask_from(&p, "10.0.1.5", "www.adult.example", rtype::A);
+        assert!(is_blocked(&kid));
+        assert!(
+            contains(&kid, b"blocked by category Adult content (list my-nsfw)"),
+            "the provider list is named by its category"
+        );
+    }
+
     /// REQ: FLT-902 (T24.29) — `basic` blocks adult content and threats and not gambling; `off`
     /// blocks none and keeps the selection; `enhanced` follows the selection.
     #[test]
@@ -3251,6 +3300,38 @@ groups = ["kids"]
         assert!(
             !is_blocked(&ask_from(&p, "10.0.1.5", "ok.adult.example", rtype::A)),
             "the allow rule wins"
+        );
+    }
+
+    /// REQ: FLT-901 (T24.29, AC 4) - an allow-kind list the group uses beats a category too.
+    #[test]
+    fn flt_901_allow_list_beats_category() {
+        let cfg_toml = r#"
+[[list]]
+name = "homework"
+kind = "allow"
+rules = ["ok.adult.example"]
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+lists = ["homework"]
+content = { level = "enhanced", categories = ["adult"] }
+"#;
+        let p = category_pipeline(cfg_toml, &[]);
+        install_lists_allowing(
+            &p,
+            &[
+                ("cat-hagezi-nsfw", "||adult.example^
+"),
+                ("homework", "ok.adult.example
+"),
+            ],
+            &["homework"],
+        );
+        assert!(is_blocked(&ask_from(&p, "10.0.1.5", "www.adult.example", rtype::A)));
+        assert!(
+            !is_blocked(&ask_from(&p, "10.0.1.5", "ok.adult.example", rtype::A)),
+            "the allow list wins"
         );
     }
 

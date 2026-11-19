@@ -30,6 +30,8 @@ struct Fake {
     /// reports (0: unknown). Group writes succeed while there are groups.
     cat_groups: Mutex<Vec<GroupInfo>>,
     cat_memory: std::sync::atomic::AtomicU64,
+    /// REQ: FLT-901 - the group entries `config_entries("group")` answers (when not empty).
+    cat_entries: Mutex<Vec<crate::model::ConfigEntry>>,
 }
 
 /// The one finding the fake reports.
@@ -67,6 +69,9 @@ impl Backend for Fake {
                     answering: None,
                 })
                 .collect();
+        }
+        if kind == Some("group") {
+            return self.cat_entries.lock().unwrap().clone();
         }
         if kind != Some("map") {
             return Vec::new();

@@ -1164,6 +1164,9 @@ async fn flt_901_meta_json_url_outside_prefix_refused() {
                 "/dots/meta.json" => ok(&format!(
                     "{{\"blocklist\": {{\"raw_url\": \"http://{host}/files/../other/block.txt\"}}}}"
                 )),
+                "/encoded/meta.json" => ok(&format!(
+                    "{{\"blocklist\": {{\"raw_url\": \"http://{host}/files/%2e%2e/other/block.txt\"}}}}"
+                )),
                 "/other/block.txt" | "/files/abc123/block.txt" => ok(body),
                 _ => status(404),
             }
@@ -1188,7 +1191,7 @@ async fn flt_901_meta_json_url_outside_prefix_refused() {
     );
     assert_eq!(f.store().read_source("m").unwrap(), body.as_bytes());
     // Outside the prefix, or climbing out of it: refused, the stored copy kept.
-    for path in ["/evil/meta.json", "/dots/meta.json"] {
+    for path in ["/evil/meta.json", "/dots/meta.json", "/encoded/meta.json"] {
         match f.refresh_one(&meta_spec(path)).await {
             Outcome::Failed(why) => assert!(why.contains("resolve_refused"), "{path}: {why}"),
             other => panic!("{path}: {other:?}"),

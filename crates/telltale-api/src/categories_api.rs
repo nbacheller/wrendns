@@ -82,7 +82,8 @@ impl CategoryEnv {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupContentInfo {
-    /// `off`, `basic` or `enhanced`.
+    /// `off`, `basic` or `enhanced`; left out reads `off`, as in the TOML.
+    #[serde(default = "off_level")]
     pub level: String,
     /// Category IDs (kept when the level is `off`).
     #[serde(default)]
@@ -119,6 +120,10 @@ impl GroupContentInfo {
             ads: self.ads,
         })
     }
+}
+
+fn off_level() -> String {
+    "off".to_owned()
 }
 
 fn level_word(l: ContentLevel) -> &'static str {
@@ -809,7 +814,9 @@ pub(crate) fn check_content(
     let env = backend.category_env();
     let contents = group_contents(backend);
     let budget = proposal_budget(&contents, group, &content, &env);
-    if budget.total.refused {
+    // A selection already refused can still be reduced: refuse only a change that asks for more.
+    let raises = budget.total.needed_bytes > budget_of(&contents, &env).0.needed_bytes;
+    if budget.total.refused && raises {
         return Err(Problem::new(
             Code::BudgetRefused,
             budget
@@ -893,9 +900,7 @@ pub(crate) async fn guard_group_put(
     let checked = crate::blocking(move || {
         let c = check_content(bk.as_ref(), &n, &nc, confirm, dry_run)?;
         let file_sets = bk.config_entries(Some("group")).into_iter().any(|e| {
-            e.name == n
-                && e.source == "file"
-                && e.definition.is_some_and(|d| d.get("content").is_some())
+            e.name == n && e.set_by_file.iter().any(|k| k == "content")
         });
         Ok((c, file_sets))
     })
@@ -1254,26 +1259,26 @@ pub(crate) async fn put_group_content(
             .map(|(_, c)| GroupContentInfo::from_config(&c))
             .ok_or_else(|| Problem::not_found(format!("no group `{gname}`")))?;
         let info = input.applied_to(&current);
+        let unchanged = info == current;
         let checked = check_content(bk.as_ref(), &gname, &info, confirm, dry_run)?;
         let entry = bk
             .config_entries(Some("group"))
             .into_iter()
             .find(|e| e.name == gname);
-        Ok((info, checked, entry))
+        Ok((info, checked, entry, unchanged))
     })
     .await;
-    let (info, checked, entry) = match prepared {
+    let (info, checked, entry, unchanged) = match prepared {
         Ok(v) => v,
         Err(e) => return e.into_response(),
     };
     if let Err(e) = agent_gate(&p, &ext, dry_run, Some(&checked.budget)) {
         return e.into_response();
     }
+    // What the file already says is no change: only a different content is refused.
     if let Some(e) = &entry
-        && e.source == "file"
-        && e.definition
-            .as_ref()
-            .is_some_and(|d| d.get("content").is_some())
+        && !unchanged
+        && e.set_by_file.iter().any(|k| k == "content")
     {
         return Problem::new(
             Code::SetByFile,

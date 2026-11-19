@@ -222,7 +222,7 @@
     needConfirm = null;
     const nm = (editing ?? nameInput).trim();
     try {
-      // 1. The group itself: safe search, schedules, blocked services (everything else it has is kept).
+      // The group's own fields: safe search, schedules, blocked services (everything else it has is kept).
       const body: Record<string, unknown> = { ...definition };
       delete body.name;
       delete body.content;
@@ -233,12 +233,38 @@
       // The services other than the bundles a category turns on are kept as they were.
       const keepSvc = ((definition.blocked_services as string[] | undefined) ?? []).filter((s) => !serviceCategoryIds.has(s));
       body.blocked_services = [...new Set([...keepSvc, ...services.filter((s) => serviceCategoryIds.has(s))])];
+      const content = { level, categories: cats, tiers, ads };
+      // The content is written only when it changed: a group whose config file sets it can't be
+      // overridden (409 `set_by_file`), and saving the other fields must not touch it.
+      const was = group?.content;
+      const contentChanged =
+        isNew ||
+        (was?.level ?? 'off') !== level ||
+        JSON.stringify([...(was?.categories ?? [])].sort()) !== JSON.stringify([...cats].sort()) ||
+        JSON.stringify(was?.tiers ?? {}) !== JSON.stringify(tiers) ||
+        (was?.ads ?? false) !== ads;
+      const sourcesChanged = sourceSel.length > 0 || (group?.sources ?? []).length > 0 || !isNew;
+      // 1. Check the writes that can be refused before the first real one (an existing profile; a
+      // new one doesn't exist yet to ask about, so it is removed again if a later step fails).
+      if (!isNew) {
+        if (contentChanged) {
+          const r = await api.putGroupContent(nm, content, { dryRun: true, confirm });
+          if (r.confirmationRequired && !confirm) {
+            const mb = Math.round((r.heavyDailyDownloadBytes ?? 0) / 1_000_000);
+            needConfirm = `This selection is heavy${mb ? `: about ${mb} MB a day to download` : ''}.`;
+            return;
+          }
+        }
+        if (sourcesChanged) await api.putGroupSources(nm, sourcesBody(), true);
+      }
+      // 2. The group itself, then what it filters by category and who it applies to.
       await api.putEntry('groups', nm, body);
-      // 2. What it filters by category.
-      await api.putGroupContent(nm, { level, categories: cats, tiers, ads }, { confirm });
-      // 3. Who it applies to.
-      if (sourceSel.length || (group?.sources ?? []).length || !isNew) {
-        await api.putGroupSources(nm, sourcesBody());
+      try {
+        if (contentChanged) await api.putGroupContent(nm, content, { confirm });
+        if (sourcesChanged) await api.putGroupSources(nm, sourcesBody());
+      } catch (e) {
+        if (isNew) await api.deleteEntry('groups', nm).catch(() => {});
+        throw e;
       }
       onsaved();
       onclose();
