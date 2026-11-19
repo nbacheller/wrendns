@@ -62,6 +62,12 @@ are listed with their SBOM and their debug file (`wrendns-<arch>-linux.debug.zst
 that make a stack from the stripped binary readable); `releases/latest` points at `vX.Y.Z`; `:X.Y.Z`, `:X.Y`, `:X`, and `:latest` are
 the same multi-arch image (amd64, arm64, arm/v7); chart `X.Y.Z` has appVersion `X.Y.Z`.
 
+## The rename window (T33.2)
+
+<!-- rebrand:keep-start -->
+For the first release after the rename, `deploy/release/legacy-assets.sh` also copies each binary to its pre-rename name (`telltale-<arch>-linux`, the same bytes) before the checksums are made, so `SHA256SUMS` and the release carry both names. A node still running the old `self-update` looks for the old name and would otherwise find nothing. The release after that drops the script and the step in `.github/workflows/image.yml` (ADR-1028 lists everything that goes), and `deploy/release/tests/legacy-assets-test.sh` with them.
+<!-- rebrand:keep-end -->
+
 ## When something fails
 
 - **Preflight fails:** nothing was published. Fix what it names (often: CI hasn't finished,
