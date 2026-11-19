@@ -13,6 +13,9 @@
   type Status = S['GeoipStatus'];
   type Geo = { enabled?: boolean; source_url?: string | null; sha256?: string | null; home_country?: string | null };
 
+  // REQ: OBS-902, OBS-901 — `onsaved` tells the page the `[map]` entry changed, so the Network
+  // map card beside this one (T26.6) re-reads it instead of saving a stale copy over `geoip`.
+  let { onsaved }: { onsaved?: () => void } = $props();
   let status = $state<Status | null>(null);
   let map = $state<Record<string, unknown> | null>(null);
   let error = $state<unknown>(null);
@@ -71,8 +74,12 @@
       if (url.trim()) geoip.source_url = url.trim();
       if (sha.trim()) geoip.sha256 = sha.trim().toLowerCase();
       if (home.trim()) geoip.home_country = home.trim().toUpperCase();
-      await api.putGeoipSettings({ ...map, geoip });
+      // The rest of `[map]` is re-read first: the Network map card may have changed the thresholds
+      // since the last poll, and this write must not put the old ones back.
+      const fresh = ((await api.geoipSettings()).definition as Record<string, unknown> | null) ?? {};
+      await api.putGeoipSettings({ ...fresh, geoip });
       dirty = false;
+      onsaved?.();
       notice = enabled ? 'Saved. This node starts fetching the database in the background.' : 'Saved. Nothing is fetched while this is off.';
       error = null;
       await load();

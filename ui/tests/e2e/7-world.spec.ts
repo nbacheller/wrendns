@@ -475,6 +475,39 @@ test('obs_902 admin deletes the database', async ({ browser }) => {
   await o.ctx.close();
 });
 
+test('obs_902_obs_901 the GeoIP and Network map cards never save over each other', async ({ browser }) => {
+  // Both cards write the one `[map]` entry, side by side on Query handling: each save keeps what the other just saved.
+  const o = await card(browser);
+  const p = o.page;
+  const slow = (v: string) => p.getByRole('spinbutton', { name: 'Warning when this % of answers are slow', exact: true }).fill(v);
+  const apply = async () => {
+    await p.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(p.getByTestId('entry-preview')).toBeVisible();
+    await p.getByRole('button', { name: 'Apply' }).click();
+  };
+  const entry = async () => (await (await p.request.get('/api/v1/map-settings/default')).json()).definition;
+  const mapCard = p.getByTestId('editor-map');
+  await mapCard.getByRole('button', { name: 'Edit' }).click();
+  await slow('13');
+  await apply();
+  await expect(mapCard.getByTestId('entry-row')).toContainText('13% slow');
+  // A GeoIP save right after (well inside the card's 10 s poll) keeps the new threshold.
+  await p.getByTestId('geoip-home').fill('de');
+  await p.getByTestId('geoip-save').click();
+  await expect(p.getByTestId('geoip-notice')).toContainText('Saved');
+  expect(await entry()).toMatchObject({ warn_slow_pct: 13, geoip: { home_country: 'DE' } });
+  // And the map card, read again after that save, keeps the GeoIP settings.
+  await mapCard.getByRole('button', { name: 'Edit' }).click();
+  await slow('14');
+  await apply();
+  await expect(mapCard.getByTestId('entry-row')).toContainText('14% slow');
+  expect(await entry()).toMatchObject({ warn_slow_pct: 14, geoip: { home_country: 'DE' } });
+  const csrf = (await (await p.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+  expect((await p.request.delete('/api/v1/map-settings/default', { headers: { 'x-csrf-token': csrf } })).status()).toBe(200);
+  expect(o.problems).toEqual([]);
+  await o.ctx.close();
+});
+
 // ================================================================== sizes
 
 test('obs_902 the world chunk is at most 30 KiB and dist at most 512 KiB gzipped', () => {
