@@ -407,8 +407,13 @@ mod tests {
             1_000_000,
         )
         .unwrap();
-        e.ingest(batch("config", vec![client], true, 1_000_000), 1_000_000)
-            .unwrap();
+        let mut keyless = host("config", "client:secret-keyless", "", 1_000_000);
+        keyless.text("name", "secret-keyless");
+        e.ingest(
+            batch("config", vec![client, keyless], true, 1_000_000),
+            1_000_000,
+        )
+        .unwrap();
         let everything = |level: u8| -> String {
             let page = list(
                 e.db(),
@@ -452,7 +457,12 @@ mod tests {
             .items
             .len()
         };
-        assert_eq!(by("secret", 0), 3);
+        assert_eq!(by("secret", 0), 4);
+        assert_eq!(
+            by("keyless", 1),
+            0,
+            "a key that holds a name is not searched"
+        );
         assert_eq!(by("secret", 1), 0, "a search cannot confirm a name");
         assert_eq!(by("00:00:01", 1), 1, "a MAC is still found");
     }

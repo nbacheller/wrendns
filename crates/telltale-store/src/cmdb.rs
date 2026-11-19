@@ -820,9 +820,9 @@ impl Ops<'_> {
             } else {
                 sql.push_str(
                     " AND (c.id LIKE ? ESCAPE '\\'
-                   OR EXISTS (SELECT 1 FROM ci_key k WHERE k.ci = c.id AND k.value LIKE ? ESCAPE '\\')
+                   OR EXISTS (SELECT 1 FROM ci_key k WHERE k.ci = c.id AND k.kind IN ('mac', 'serial', 'devkey') AND k.value LIKE ? ESCAPE '\\')
                    OR EXISTS (SELECT 1 FROM ci i JOIN ci_key k ON k.ci = i.id
-                      WHERE i.parent = c.id AND k.value LIKE ? ESCAPE '\\')
+                      WHERE i.parent = c.id AND k.kind IN ('mac', 'serial', 'devkey') AND k.value LIKE ? ESCAPE '\\')
                    OR EXISTS (SELECT 1 FROM record r JOIN addr a ON a.rid = r.rid
                       WHERE (r.dci = c.id OR r.ici = c.id) AND a.ip LIKE ? ESCAPE '\\'))",
                 );

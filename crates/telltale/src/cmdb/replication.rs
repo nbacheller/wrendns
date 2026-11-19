@@ -198,6 +198,9 @@ pub(crate) async fn pull_once(src: &Arc<Sources>, cluster: &Arc<Cluster>) -> usi
             .await
             .unwrap_or((0, 0))
     };
+    // The floor is checked once per pass, against the head the pass started from: after a reset,
+    // later pages start below the floor by construction and must not reset again.
+    let mut floor_checked = false;
     loop {
         let body = serde_json::to_vec(&FetchReq { after }).unwrap_or_default();
         let answers = cluster.call_all(KIND_FETCH, &body, DEADLINE).await;
@@ -214,7 +217,9 @@ pub(crate) async fn pull_once(src: &Arc<Sources>, cluster: &Arc<Cluster>) -> usi
         };
         // The standby is older than the newest swept tombstone: it missed a deletion it can no
         // longer be told about, so it starts again from nothing.
-        if after != (0, 0) && ans.floor > after {
+        let first_look = !floor_checked;
+        floor_checked = true;
+        if needs_reset(first_look, after, ans.floor) {
             let s = Arc::clone(&standby);
             let reset = tokio::task::spawn_blocking(move || s.write(|o| o.reset_replica()))
                 .await
@@ -253,6 +258,12 @@ pub(crate) async fn pull_once(src: &Arc<Sources>, cluster: &Arc<Cluster>) -> usi
             _ => return total,
         }
     }
+}
+
+/// Whether the standby must start again: only on the first page of a pass, and only when its head
+/// is behind the writer's swept floor (after a reset the pages start below the floor by design).
+fn needs_reset(first_look: bool, after: (i64, i64), floor: (i64, i64)) -> bool {
+    first_look && after != (0, 0) && floor > after
 }
 
 /// The standby task: on a full member that is not running the CMDB, while `[cmdb]` is on, a pass
@@ -457,6 +468,27 @@ mod tests {
                 .iter()
                 .all(|(_, n)| *n == 0)
         );
+    }
+
+    /// REQ: DSC-906 (ADR-1021) - a resync resets at most once per pass: paging from the start with
+    /// a floor above page 1 does not reset again.
+    #[test]
+    fn dsc_906_resync_resets_once_per_pass() {
+        let floor = (3, 900);
+        let mut checked = false;
+        let mut after = (2, 10);
+        let mut resets = 0;
+        for page in 0..5i64 {
+            let first = !checked;
+            checked = true;
+            if needs_reset(first, after, floor) {
+                resets += 1;
+                after = (0, 0);
+                continue;
+            }
+            after = (3, 10 + page);
+        }
+        assert_eq!(resets, 1);
     }
 
     /// REQ: DSC-906 (ADR-1021) - a node that becomes designated starts a new epoch even when it holds
