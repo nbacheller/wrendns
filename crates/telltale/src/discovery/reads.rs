@@ -24,7 +24,9 @@ use tokio::sync::mpsc;
 
 use super::inventory::{Inventory, NameKind, Observation, Source};
 use super::sources::{ha_observations, parse_mac};
-use crate::routers::{Shared, SharedHa, SharedUnifi, call_capped, first_str, http_client, mac_key};
+use crate::routers::{
+    Shared, SharedHa, SharedUnifi, call_capped, first_name, first_str, http_client, mac_key,
+};
 
 /// Most bytes a UniFi read may answer with (ADR-912).
 pub(crate) const MAX_ANSWER: u64 = 4 << 20;
@@ -246,7 +248,7 @@ pub(crate) fn all_users(v: &Value, router: &str, now: u64, within_hours: u32) ->
         let mut o = Observation::new(Source::History, seen);
         o.mac = Some(mac);
         o.ip = v4_of(r, &["last_ip", "ip"]).map(IpAddr::V4);
-        o.name = first_str(r, &["name", "hostname"]).map(|n| (NameKind::History, n));
+        o.name = first_name(r, &["name", "hostname"]).map(|n| (NameKind::History, n));
         o.name_origin = Some(router.to_owned());
         o.first_seen = num(r, "first_seen").filter(|t| *t > 0);
         out.observations.push(o);
@@ -278,7 +280,8 @@ pub(crate) fn devices(v: &Value, router: &str, now: u64) -> Parsed {
     // The names first: a switch's and an access point's name is how a place is spelled.
     for d in &all {
         if let Some(mac) = d.get("mac").and_then(Value::as_str) {
-            let name = first_str(d, &["name", "hostname", "model"]).unwrap_or_else(|| mac_key(mac));
+            let name =
+                first_name(d, &["name", "hostname", "model"]).unwrap_or_else(|| mac_key(mac));
             out.device_names.insert(mac_key(mac), name);
         }
     }

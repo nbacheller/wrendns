@@ -835,6 +835,20 @@ pub(crate) fn unique(name: &str, taken: &mut HashSet<String>) -> String {
     n
 }
 
+/// REQ: API-007 (T35.1, A6) — like [`unique`], but a name already taken is told apart by the
+/// device's own tail (`Laptop (10.23)`, `Laptop (ee:0f)`) before a number is, so two devices
+/// named alike stay recognisable. A still-taken name takes the number after the tail.
+pub(crate) fn unique_tail(name: &str, taken: &mut HashSet<String>, tail: &str) -> String {
+    if taken.insert(name.to_ascii_lowercase()) {
+        return name.to_owned();
+    }
+    let tail = tail.trim();
+    if tail.is_empty() {
+        return unique(name, taken);
+    }
+    unique(&format!("{name} ({tail})"), taken)
+}
+
 /// A MAC in `aa:bb:cc:dd:ee:ff` form.
 pub(crate) fn mac(s: &str) -> Option<String> {
     let parts: Vec<&str> = s.split([':', '-']).collect();
@@ -1273,6 +1287,19 @@ impl<'a> Builder<'a> {
         kept
     }
 
+    /// REQ: API-007 (T35.1, A1, A6) — a human-text column (a comment, a group name): HTML
+    /// entities decoded once, control characters stripped. A name that lost characters, here or
+    /// before it reached the export, is listed in the report (`what` says which column).
+    fn human(&mut self, what: &str, raw: &str) -> String {
+        let cleaned = crate::names::clean_text(raw);
+        if crate::names::lost_characters(raw, &cleaned) {
+            self.notes.push(format!(
+                "The {what} name `{cleaned}` lost characters (a `?`, a replacement character or a control character is in it); check how it reads."
+            ));
+        }
+        cleaned
+    }
+
     fn groups(&mut self) {
         for g in self.src.rows("group") {
             let Some(id) = int(g, "id") else { continue };
@@ -1280,7 +1307,7 @@ impl<'a> Builder<'a> {
                 self.group_off.insert(id);
             }
             if id != 0 {
-                let n = one_line(&text(g, "name"));
+                let n = self.human("group", &text(g, "name"));
                 let n = if n.is_empty() {
                     format!("group {id}")
                 } else {
@@ -1355,7 +1382,7 @@ impl<'a> Builder<'a> {
                 format!("pihole-{id}-{tail}")
             };
             self.assign(&name, groups);
-            let comment = one_line(&text(a, "comment"));
+            let comment = self.human("adlist comment", &text(a, "comment"));
             self.lists.push(List {
                 name,
                 note: if comment.is_empty() {
@@ -1599,10 +1626,12 @@ impl<'a> Builder<'a> {
             if !self.keys_seen.insert(key.clone()) {
                 continue;
             }
-            let comment = one_line(&text(c, "comment"));
-            let name = unique(
+            // REQ: API-007 (T35.1, A1) — Pi-hole stores the comment HTML-escaped.
+            let comment = self.human("client", &text(c, "comment"));
+            let name = unique_tail(
                 if comment.is_empty() { &raw } else { &comment },
                 &mut self.client_names,
+                &crate::names::tail(&key),
             );
             let mut groups: Vec<String> = client_groups
                 .get(&id)
@@ -1651,9 +1680,10 @@ impl<'a> Builder<'a> {
                 .filter(|k| self.keys_seen.insert(k.clone()))
                 .collect();
             let Some(first) = fresh.first() else { continue };
-            let name = unique(
+            let name = unique_tail(
                 &one_line(host.as_deref().unwrap_or(first)),
                 &mut self.client_names,
+                &crate::names::tail(first),
             );
             self.clients.push(Client {
                 name,
