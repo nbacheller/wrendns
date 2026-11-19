@@ -166,6 +166,7 @@ fn run(args: Args) {
         }
         for c in taken.cmds {
             match c {
+                Cmd::Tick => next_tick = 0,
                 Cmd::Manual {
                     op,
                     by,

@@ -133,6 +133,9 @@ impl Runtime {
             && want
             && r.section == cfg.cmdb
         {
+            // The configuration may have changed under it (a client, a subnet, an upstream): read
+            // the feeds now, not at the next minute.
+            r.inbox.command(Cmd::Tick);
             return;
         }
         if let Some(r) = running.take() {

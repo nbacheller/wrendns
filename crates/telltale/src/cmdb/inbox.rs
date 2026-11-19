@@ -17,6 +17,8 @@ use super::model::{SINK_BATCHES, SourceBatch};
 
 /// A command for the CMDB's thread.
 pub(crate) enum Cmd {
+    /// Read the in-process feeds now (the configuration changed): the next tick is not a minute away.
+    Tick,
     /// A manual link, unlink, merge or split (or its dry run).
     Manual {
         op: ManualOp,

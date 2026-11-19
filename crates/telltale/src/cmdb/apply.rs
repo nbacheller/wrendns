@@ -372,7 +372,11 @@ pub(crate) fn merge_ci(cx: &mut Cx<'_>, loser: &str, survivor: &str) -> Result<(
         })?;
     }
     for (kind, value) in ops.keys_of(loser)? {
-        ops.key_add(&kind, &value, survivor)?;
+        // The key that names a keyless record's own CI goes with the CI: it is not an identity the
+        // survivor takes over (an unlink of that record must be able to make a new one).
+        if kind != "recdev" {
+            ops.key_add(&kind, &value, survivor)?;
+        }
         ops.key_del(&kind, &value, loser)?;
     }
     if let (Some(l), Some(s)) = (ops.ci_get(loser)?, ops.ci_get(survivor)?)

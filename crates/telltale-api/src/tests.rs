@@ -2029,7 +2029,10 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // feat/ipam-integrations into feat/t26.4-t26.5-world.
     // 186 with FLT-901's /categories, /categories/budget and /groups/{name}/content and FLT-902's
     // /groups/{name}/sources and /profiles/devices (T24.29; its /filter-settings/default is the one above).
-    assert_eq!(paths.len(), 186);
+    // 195 with DSC-901's /cmdb-settings/default and DSC-902's /cmdb/status, /cmdb/cis,
+    // /cmdb/cis/{id}, /cmdb/proposals and DSC-903's /cmdb/cis/{id}/link, /unlink, /merge and /split
+    // (T31.2).
+    assert_eq!(paths.len(), 195);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

@@ -126,6 +126,11 @@ enabled = true
 # REQ: FLT-017 — Kubernetes workloads, from the fixture below (no API server).
 [kubernetes]
 enabled = true
+
+# REQ: DSC-906 (T31.2) — the CMDB's settings: one field set here shows "set by file" and is locked in the
+# UI; the test turns the CMDB itself on and off through the settings panel.
+[cmdb]
+history_days = 120
 `,
 );
 

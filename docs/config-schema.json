@@ -142,6 +142,10 @@
         "site": "default"
       }
     },
+    "cmdb": {
+      "description": "REQ: DSC-901, DSC-906 (T31.2, ADR-1005) — the CMDB (`[cmdb]`): off by default, runs on the\nnode `[discovery]` designates, admin-only writes. Serialized only when set (CLU-010).",
+      "$ref": "#/$defs/CmdbConfig"
+    },
     "config_version": {
       "description": "Schema version of this file (currently 1).",
       "type": "integer",
@@ -1547,6 +1551,65 @@
       "required": [
         "advertise"
       ]
+    },
+    "CmdbConfig": {
+      "description": "REQ: DSC-901, DSC-906 — the CMDB section (`[cmdb]`).",
+      "type": "object",
+      "properties": {
+        "detect_settle_secs": {
+          "description": "How long a changed value must hold (and across two batches) before a change is raised,\nin seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 600,
+          "minimum": 0
+        },
+        "disappear_after_days": {
+          "description": "How many days a device with a class 1 to 3 presence source must have been gone before a\n`delete` change is raised (it must also have been seen on at least 3 different days).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 14,
+          "minimum": 0
+        },
+        "enabled": {
+          "description": "Turn the CMDB on. Off by default: nothing starts, nothing is stored. It needs client\naddresses and names, so it cannot be on at `telemetry.qlog.privacy_level` 2 or 3.",
+          "type": "boolean",
+          "default": false
+        },
+        "history_days": {
+          "description": "How long merged-value history is kept, in days.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 90,
+          "minimum": 0
+        },
+        "macd_retention_days": {
+          "description": "How long change records are kept, in days.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 365,
+          "minimum": 0
+        },
+        "plan_expiry_days": {
+          "description": "How long an approved planned change waits to be seen at its source before it expires,\nin days.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 30,
+          "minimum": 0
+        },
+        "require_second_approver": {
+          "description": "Forbid approving your own request.",
+          "type": "boolean",
+          "default": false
+        },
+        "unconfirmed_alert_hours": {
+          "description": "How long a change may stay unconfirmed before one alert is raised through the event\nsinks, in hours. Off at privacy level 1 and above.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 24,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
     },
     "ContentLevel": {
       "description": "REQ: FLT-902 (ADR-994) — a group's filtering level.",
