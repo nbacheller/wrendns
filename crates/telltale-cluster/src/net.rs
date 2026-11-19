@@ -81,9 +81,10 @@ const REPROBE_MAX: Duration = Duration::from_secs(30);
 const REPROBE_MIN: Duration = Duration::from_millis(100);
 #[cfg(test)]
 const REPROBE_MAX: Duration = Duration::from_millis(400);
-/// REQ: CLU-005 (T24.38, ADR-1018) — how many link drops are remembered per peer.
-/// A main link to the primary that was up at least this long is redialed before any replica.
+/// REQ: CLU-005 (T24.38, ADR-1018) — a main link to the primary that was up at least this long
+/// is redialed before any replica.
 const PRIMARY_REDIAL_MIN_UP: Duration = Duration::from_secs(3);
+/// REQ: CLU-005 (T24.38, ADR-1018) — how many link drops are remembered per peer.
 const LINK_DROPS_KEPT: usize = 16;
 /// Link-drop records older than this are forgotten (a peer that comes and goes is current).
 const LINK_DROPS_MAX_AGE: Duration = Duration::from_hours(1);
@@ -831,6 +832,9 @@ pub struct Cluster {
     sever_main: Notify,
     #[cfg(test)]
     severed: std::sync::atomic::AtomicUsize,
+    /// Test hook: main-link dials made to a node that is not the primary (a detour).
+    #[cfg(test)]
+    detours: std::sync::atomic::AtomicUsize,
     /// RPCs awaiting an answer, by request ID.
     pending: Mutex<PendingCalls>,
     next_rpc: std::sync::atomic::AtomicU64,
@@ -955,6 +959,8 @@ impl Cluster {
             sever_main: Notify::new(),
             #[cfg(test)]
             severed: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            detours: std::sync::atomic::AtomicUsize::new(0),
             withheld: Mutex::new(std::collections::HashSet::new()),
             ephemeral: std::sync::atomic::AtomicBool::new(false),
             joins: Mutex::new(std::collections::VecDeque::new()),
@@ -3513,6 +3519,12 @@ pub async fn dial(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
         let mut retry_primary = false;
         for url in cluster.candidate_urls() {
             let started = tokio::time::Instant::now();
+            #[cfg(test)]
+            if !cluster.primary_urls().contains(&url) {
+                cluster
+                    .detours
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             // REQ: CLU-001 (GitHub issue #4) — a stream to a node that isn't the primary (the
             // primary's URLs failed, a replica answered) is not the end of the search: while
             // it's open, look for the primary now and then, and move back when it answers.

@@ -2963,19 +2963,23 @@ mod voters_linked {
         settled(&nodes).await;
         // Past the "up for a while" threshold.
         tokio::time::sleep(Duration::from_secs(5)).await;
-        let replica_url = nodes[2].c().identity.meta.advertise[0].clone();
+        let detours_before = nodes[1]
+            .c()
+            .detours
+            .load(std::sync::atomic::Ordering::SeqCst);
         for round in 0..3 {
             // The main link to the primary ends once (cut at node 1's end).
             nodes[1].c().sever_main.notify_one();
-            for _ in 0..80 {
-                let to = nodes[1].c().connected_primary();
-                assert_ne!(
-                    to.as_deref(),
-                    Some(replica_url.as_str()),
-                    "round {round}: node 1 detoured through the other replica"
-                );
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            // Counted, not sampled: a detour is undone within ~100 ms in test builds.
+            assert_eq!(
+                nodes[1]
+                    .c()
+                    .detours
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                detours_before,
+                "round {round}: node 1 dialed a replica after one drop of the primary link"
+            );
             assert_eq!(
                 nodes[1]
                     .c()
