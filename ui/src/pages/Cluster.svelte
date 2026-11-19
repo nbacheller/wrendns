@@ -537,7 +537,7 @@ wrendns cluster join tt_join_…</pre>
                     {#if canaries.includes(n.nodeId) || (n.thisNode && n.role === 'primary' && canaries.length)}<span class="badge warn" data-testid="cluster-node-canary">canary</span>{/if}
                     {#if n.sourceCommit}<span class="mono muted small" title={n.sourceCommit}> · {n.sourceCommit.slice(0, 7)}</span>{/if}
                     <div class="small {n.configLag ? 'warn-text' : 'muted'}">
-                      {#if n.configLag}{n.configLag} behind{#if n.behindSeconds != null} for {duration(n.behindSeconds)}{/if}{:else}in sync{/if}
+                      {#if n.configLag}{n.configLag} behind{#if n.behindSeconds != null}{' '}for {duration(n.behindSeconds)}{/if}{:else}in sync{/if}
                     </div>
                     {/if}
                   </td>

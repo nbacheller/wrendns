@@ -1,4 +1,4 @@
-"""REQ: DOC-001, DOC-006 (T33.3, ADR-1030) — the site's brand, support section and headers.
+"""REQ: DOC-001, DOC-006 (T33.3, T33.5, ADR-1030, ADR-1033) — the site's brand, support section, licence and headers.
 
 Run: python3 -m unittest site/test_site.py   (or python3 site/test_site.py)
 Standard library only. The full build (links, partials, generated pages) is `python3 site/build.py --check`.
@@ -138,6 +138,39 @@ class Legal(unittest.TestCase):
         self.assertIn("support@wrendns.com", support)
         self.assertIn("Stopping a monthly payment", support)
         self.assertIn("no service level", support)
+
+
+class Licence(unittest.TestCase):
+    """REQ: DOC-006 (T33.5, ADR-1033) — AGPL-3.0-or-later with a commercial licence, said the same way everywhere."""
+
+    footer = read("partials", "footer.html")
+
+    def test_the_footer_faq_and_download_say_agpl_commercial_and_the_baseline(self):
+        pages = {n: read(n) for n in build.LICENCE_PAGES}
+        self.assertEqual(build.licence_errors(self.footer, pages), [])
+        self.assertIn("https://github.com/nbacheller/wrendns/blob/main/LICENSING.md", self.footer)
+        self.assertIn("https://github.com/nbacheller/wrendns/releases/tag/permissive-final", self.footer)
+        self.assertIn("support@wrendns.com", read("faq.html"))
+
+    def test_a_missing_licence_word_is_found(self):
+        pages = {n: read(n) for n in build.LICENCE_PAGES}
+        errs = build.licence_errors(self.footer.replace("AGPL-3.0-or-later", "GPL"), pages)
+        self.assertTrue(any(e.startswith("footer:") for e in errs), errs)
+        pages["faq.html"] = pages["faq.html"].replace("permissive-final", "the old tag")
+        self.assertTrue(any(e.startswith("faq.html:") for e in build.licence_errors(self.footer, pages)))
+
+    def test_the_old_licence_alone_and_an_ai_note_are_refused(self):
+        errs = build.licence_errors(self.footer, {"x.html": "<p>Licensed under Apache-2.0 OR MIT.</p>", "faq.html": read("faq.html"), "download.html": read("download.html")})
+        self.assertTrue(any("x.html" in e and "permissive-final" in e for e in errs), errs)
+        errs = build.licence_errors(self.footer, {"y.html": "<h3>Built with Claude</h3>", "faq.html": read("faq.html"), "download.html": read("download.html")})
+        self.assertTrue(any("y.html" in e for e in errs), errs)
+        # The ADR pages are a record and may say what the licence was.
+        self.assertEqual(build.licence_errors(self.footer, {"decisions-2.html": "Apache-2.0 OR MIT", "faq.html": read("faq.html"), "download.html": read("download.html")}), [])
+
+    def test_no_page_source_carries_the_old_built_with_claude_entry(self):
+        for name in build.PAGES:
+            self.assertNotIn("built-with-claude", read(name).lower(), name)
+            self.assertNotIn("Co-Authored-By: Claude", read(name), name)
 
 
 class Headers(unittest.TestCase):

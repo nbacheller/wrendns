@@ -609,7 +609,7 @@
           <div class="row">
             <strong>{s.list}</strong>
             <span class="muted small">
-              {num(s.hits)} {s.hits === 1 ? 'query' : 'queries'} from {num(s.devices)} {s.devices === 1 ? 'device' : 'devices'}{#if s.since} since {ago(Date.parse(s.since) / 1000)}{/if}{#if s.lastHitAt} · last {ago(Date.parse(s.lastHitAt) / 1000)}{/if}
+              {num(s.hits)} {s.hits === 1 ? 'query' : 'queries'} from {num(s.devices)} {s.devices === 1 ? 'device' : 'devices'}{#if s.since}{' '}since {ago(Date.parse(s.since) / 1000)}{/if}{#if s.lastHitAt}{' '}· last {ago(Date.parse(s.lastHitAt) / 1000)}{/if}
             </span>
           </div>
           {#if s.topNames.length}

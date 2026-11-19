@@ -19,7 +19,7 @@ The Site provides information about WrenDNS, its documentation, and links to dow
 
 ## 3. The Software and its licence
 
-The Software is free to download and use. It is licensed under the GNU Affero General Public License, version 3 or (at your option) any later version ("AGPL-3.0-or-later"). Portions that came from the WrenDNS project remain available under the MIT License or the Apache License 2.0, as stated in the `NOTICE` file distributed with the Software. Your rights and obligations in the Software are set by those licences. These Terms do not limit them, and nothing in these Terms adds any obligation to them.
+The Software is free to download and use. It is licensed under the GNU Affero General Public License, version 3 or (at your option) any later version ("AGPL-3.0-or-later"). Portions that came from the upstream project `paimonsoror/telltaledns` remain available under the Apache License 2.0 or the MIT License, at your option, as stated in the `NOTICE` file distributed with the Software. The last version of the Software released entirely under those licences is tagged `permissive-final`. Your rights and obligations in the Software are set by those licences. These Terms do not limit them, and nothing in these Terms adds any obligation to them.
 
 If your organisation cannot accept the AGPL's terms, a commercial licence may be available from MySummitKeep LLC. Ask at support@wrendns.com.
 

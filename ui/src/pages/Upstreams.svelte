@@ -279,7 +279,7 @@
       </p>
     {/if}
     {#each checks.filter((c) => c.recent.length) as c (c.node ?? '')}
-      <h3 class="small">Latest disagreements{#if multiNode} on {c.node}{/if}</h3>
+      <h3 class="small">Latest disagreements{#if multiNode}{' '}on {c.node}{/if}</h3>
       <ul class="disagreements small">
         {#each c.recent.slice(0, 10) as d (`${d.at}|${d.name}`)}
           <li>

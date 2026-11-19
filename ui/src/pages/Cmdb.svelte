@@ -527,7 +527,7 @@
       <section class="card" data-testid="cmdb-ci" data-ci={detail.ci.id}>
         <h2>{detail.ci.name ?? detail.ci.id}</h2>
         <p class="small">
-          <code>{detail.ci.id}</code> · {detail.ci.ty}{#if detail.ci.kind} ({detail.ci.kind}){/if} · first seen {when(detail.ci.firstSeen)}{#if detail.ci.lastSeen}, last seen {when(detail.ci.lastSeen)}{/if}{#if detail.ci.daysSeen} on {detail.ci.daysSeen} day{detail.ci.daysSeen === 1 ? '' : 's'}{/if}
+          <code>{detail.ci.id}</code> · {detail.ci.ty}{#if detail.ci.kind} ({detail.ci.kind}){/if} · first seen {when(detail.ci.firstSeen)}{#if detail.ci.lastSeen}, last seen {when(detail.ci.lastSeen)}{/if}{#if detail.ci.daysSeen}{' '}on {detail.ci.daysSeen} day{detail.ci.daysSeen === 1 ? '' : 's'}{/if}
         </p>
         {#if detail.ci.unconfirmed}<p class="small">No source confirms this yet: it was made from a record with no key that matched no device.</p>{/if}
         {#each detail.aliases as a (a.id)}

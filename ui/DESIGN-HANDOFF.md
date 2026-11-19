@@ -264,8 +264,8 @@ needs different names, update the spec file in the same commit and run the suite
    Also check 360 px by eye (Chrome devtools or a Playwright viewport).
 4. If you change user-visible behavior, update `docs/running.md` (section "Web UI") and, if it's
    a headline feature, `site/how-it-works.html` (then `python3 site/build.py --check`).
-5. Commit messages: `feat(ui): ... [API-005]` with the trailers the owner requires (see the most
-   recent commits in `git log` and copy their `Co-Authored-By` / `Claude-Session` format).
+5. Commit messages: `feat(ui): ... [API-005]`, with the requirement IDs in brackets. Add no
+   assistant or tool attribution: no `Co-Authored-By` naming an AI assistant, no session links.
 6. Never commit `ui/dist`, `ui/.e2e`, `ui/test-results`, `ui/node_modules` (gitignored).
 
 **Things not to change** (ask the owner first): the API client contract and generated types,

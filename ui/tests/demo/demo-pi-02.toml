@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# A replica of the screenshot demo's cluster (run.sh): it joins pi-01 with a token, and its
+# configuration then comes from pi-01, so the shared sections are left out here. Loopback only.
+[node]
+data_dir = "/tmp/wrendns-demo/pi-02"
+name = "pi-02"
+secret_file_dirs = ["/tmp/wrendns-demo/secrets"]
+
+[[listen]]
+proto = "udp"
+addr = "127.0.0.1:25354"
+
+[telemetry.metrics]
+listen = "127.0.0.1:29155"
+
+[telemetry.qlog]
+flush_interval_secs = 1
+
+[api]
+listen = "127.0.0.1:28054"
+
+[cluster]
+name = "home"
+site = "pi-02"
+eligible = true
+listen = "127.0.0.1:28444"
