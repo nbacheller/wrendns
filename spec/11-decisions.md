@@ -5419,7 +5419,7 @@ Checked: the correct group passes 20 of 20 parallel runs; a group that waits for
 
 **Consequences:** the build and `obs_901` check 512 KiB; `spec/02` and `spec/07` say so. A first page load on a Pi-served LAN grows by a few milliseconds at most. When the UI nears 512 KiB, the next step is to load help topics from the API on demand and to split the brand icons, not another raise without an ADR.
 
-## ADR-1025 — A replica shows the primary's router data, read through the cluster (Proposed 2026-11-19)
+## ADR-1025 — A replica shows the primary's router data, read through the cluster (Accepted 2026-11-19)
 
 **Context:** T24.41 (owner report, live 3-node cluster). ADR-903 section 1 says a router with a stored credential is read by the primary only, and ADR-125 says a replica gets its names through the peer leases. That left the replica's Networks page without the router's networks (it listed its own interfaces), the network drawer without devices, and the Routers page with "Not read on this node (the primary)", 0 devices and no last read. The spec says (API-013, T22.2) that the networks are read where the routers are read, but the federated backend did not do that. The owner's browser can land on any node behind the VIP, so the three nodes must show the same router data.
 
