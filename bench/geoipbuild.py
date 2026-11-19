@@ -308,7 +308,9 @@ def main():
     r["settled_above_idle_mib"] = round(r["settled_by_build"][-1] - r["idle_mib"], 1)
     # The absolute gate only means something with the real lists (synthetic names compile larger)
     # and the full cache: then it is checked; otherwise only what the build adds is.
-    real_gate = args.names >= 1_000_000 and r["cache_entries"] and r["cache_entries"] >= 100_000 and not synthetic
+    # The miss-heavy corpus repeats a few names: 100,000 misses leave 99,908 entries, so 99 % counts as full.
+    real_gate = (args.names >= 1_000_000 and args.fill >= 100_000 and r["cache_entries"]
+                 and r["cache_entries"] >= 0.99 * args.fill and not synthetic)
     r["gate_mib"] = args.gate if real_gate else None
     ok = r["settled_above_idle_mib"] <= 1.5 and (not real_gate or r["settled_by_build"][-1] <= args.gate)
     r["pass"] = ok
