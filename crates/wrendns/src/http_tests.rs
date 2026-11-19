@@ -515,3 +515,36 @@ async fn ops_901_readyz_asks_the_listener() {
     assert_eq!(status, 503);
     assert_eq!(body, "{\"ready\":false,\"reason\":\"dns_unanswered\"}\n");
 }
+
+// rebrand:keep-start
+/// REQ: OBS-005 (ADR-1028) — `/metrics` answers each family under both the new `wrendns_*` and
+/// the pre-rename `telltale_*` name for one release.
+#[tokio::test]
+async fn obs_005_metrics_endpoint_exports_both_names() {
+    use tower::ServiceExt as _;
+    let mut src = sources();
+    src.allowed = vec![wrendns_config::Cidr::parse("127.0.0.0/8").unwrap()];
+    let app = router(Arc::new(src));
+    let req = axum::http::Request::builder()
+        .uri("/metrics")
+        .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            40000,
+        ))))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let r = app.oneshot(req).await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        text.contains("\n# TYPE wrendns_queries_total counter\n"),
+        "{text}"
+    );
+    assert!(text.contains("\n# TYPE telltale_queries_total counter\n"));
+    assert!(text.contains("\nwrendns_node_maintenance 0\n"));
+    assert!(text.contains("\ntelltale_node_maintenance 0\n"));
+}
+// rebrand:keep-end

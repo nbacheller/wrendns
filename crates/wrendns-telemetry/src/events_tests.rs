@@ -1180,3 +1180,32 @@ fn obs_903_log_exclusions_keep_queries_out_of_the_log_only() {
     assert_eq!(seen.lock().unwrap().len(), 2);
     drop(agg);
 }
+
+// rebrand:keep-start
+/// REQ: OBS-020 (ADR-1028) — a probe from a node still running the pre-rename name stays out of
+/// the analytics too, in any case.
+#[test]
+fn obs_020_legacy_probe_name_stays_out_of_the_analytics() {
+    let hub = Hub::new(1 << 16);
+    let ts = 1_700_000_000_000_000;
+    let legacy = wire("Probe.telltale.invalid"); // rebrand:keep
+    assert_eq!(
+        event::LEGACY_PROBE_NAME,
+        &wire("probe.telltale.invalid")[..]
+    ); // rebrand:keep
+    hub.emit_query(&query(ts, ipv4(127, 0, 0, 1), Status::Special, 20), &legacy);
+    hub.emit_query(
+        &query(ts, ipv4(127, 0, 0, 1), Status::Special, 20),
+        &wire("other.invalid"),
+    );
+    let mut drainer = hub.drainer();
+    hub.drain_once(&mut drainer);
+    let names: Vec<String> = hub
+        .aggregates()
+        .top_names(TopKind::Domains, HourSel::Current, 10)
+        .into_iter()
+        .map(|t| t.key)
+        .collect();
+    assert_eq!(names, ["other.invalid"]);
+}
+// rebrand:keep-end

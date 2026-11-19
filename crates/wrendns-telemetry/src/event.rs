@@ -116,13 +116,16 @@ pub struct UpstreamEvent {
 
 /// REQ: OBS-020 (T11.3) — the name WrenDNS's own listener probes ask (wire format,
 /// lowercase): under `.invalid` (RFC 6761), so it's answered NXDOMAIN without an upstream.
-pub const PROBE_NAME: &[u8] = b"\x05probe\x08telltale\x07invalid\x00"; // rebrand:keep
+pub const PROBE_NAME: &[u8] = b"\x05probe\x07wrendns\x07invalid\x00";
+/// REQ: OBS-020 (ADR-1028) — the name before the rename, still recognised while nodes of both
+/// versions run: a node not yet upgraded probes with it, and its queries stay out of the stats.
+pub const LEGACY_PROBE_NAME: &[u8] = b"\x05probe\x08telltale\x07invalid\x00"; // rebrand:keep
 
 impl Record {
     /// REQ: OBS-020 — one of WrenDNS's own listener probes: counted in the metrics like
     /// any query, but kept out of the query log, analytics, and exports.
     pub fn is_probe(&self) -> bool {
-        matches!(self, Self::Query(_, n) if n.as_wire() == PROBE_NAME)
+        matches!(self, Self::Query(_, n) if n.as_wire() == PROBE_NAME || n.as_wire() == LEGACY_PROBE_NAME)
     }
 }
 

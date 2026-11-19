@@ -301,7 +301,8 @@ async fn dns_answers(src: &Sources) -> bool {
 }
 
 async fn metrics(State(src): State<Arc<Sources>>, headers: header::HeaderMap) -> Response {
-    let text = render(&src);
+    // REQ: OBS-005 (ADR-1028) — the pre-rename names too, for one release.
+    let text = wrendns_telemetry::legacy_metrics::with_legacy_names(&render(&src));
     // REQ: OBS-017 (T11.6) — OpenMetrics with exemplars for a scraper that asks for it.
     let accept = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok());
     if src.config.load().telemetry.metrics.exemplars && crate::traces::wants_openmetrics(accept) {

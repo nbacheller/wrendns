@@ -24,6 +24,7 @@ pub mod exclude;
 pub mod export;
 pub mod internal;
 pub mod last_hour;
+pub mod legacy_metrics;
 pub mod map;
 pub mod prom;
 pub mod recent;
