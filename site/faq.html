@@ -68,7 +68,7 @@
 
     <dt id="q-licence">Which licence is it under? Can my company use it?</dt>
     <dd>
-      <p>WrenDNS is under the <a href="https://github.com/nbacheller/wrendns/blob/main/LICENSING.md">GNU Affero General Public License, version 3 or later</a> (AGPL-3.0-or-later). Running it on your own network, at home or at work, is free and asks nothing of you. If you change it and let other people use your changed version over a network, or you distribute it, the AGPL asks you to share that source under the same licence.</p>
+      <p>WrenDNS is under the <a href="https://github.com/nbacheller/wrendns/blob/main/LICENSING.md">GNU Affero General Public License, version 3 or later</a> (AGPL-3.0-or-later). Running it unchanged on your own network, at home or at work, is free and asks nothing of you. If you change it and let other people use your changed version over a network, or you distribute it, the AGPL asks you to share that source under the same licence.</p>
       <p>A commercial licence is available from MySummitKeep LLC for anyone who cannot accept the AGPL's terms: ask at <a href="mailto:support@wrendns.com">support@wrendns.com</a>. The last version released entirely under Apache-2.0 OR MIT is the <a href="https://github.com/nbacheller/wrendns/releases/tag/permissive-final">permissive-final</a> release, which stays under those licences. <a href="https://github.com/nbacheller/wrendns/blob/main/LICENSING.md">Licensing</a> explains it all in plain language.</p>
     </dd>
   </dl>
@@ -233,7 +233,7 @@ upstream_group = "lan"</code></pre>
 
     <dt id="q-breaker">Why do upstream health labels say "open", "closed", and "half_open"?</dt>
     <dd>
-      <p>They come from the circuit-breaker pattern, named after an electrical circuit: <b>closed</b> means current flows, so requests go through and the upstream is healthy. After enough failures the breaker trips <b>open</b> and the upstream is benched for a while. <b>Half-open</b> lets a trial query through to see whether it has recovered. The same names appear in the API and in the <code>wrendns_upstream_breaker_state</code> metric. Plainer labels for the web UI are <a href="https://github.com/paimonsoror/telltaledns/issues/9">planned</a>.</p>
+      <p>They come from the circuit-breaker pattern, named after an electrical circuit: <b>closed</b> means current flows, so requests go through and the upstream is healthy. After enough failures the breaker trips <b>open</b> and the upstream is benched for a while. <b>Half-open</b> lets a trial query through to see whether it has recovered. The same names appear in the API and in the <code>wrendns_upstream_breaker_state</code> metric. Plainer labels for the web UI are planned.</p>
     </dd>
   </dl>
 </section>

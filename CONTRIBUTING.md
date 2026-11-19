@@ -22,11 +22,11 @@ What that means for a pull request:
 - **Trace it.** Name the requirement IDs you implement in a comment where the code does it (`// REQ: FLT-003`), in test names (`flt_003_...`) and in the commit message (`feat(filter): FST snapshot compiler [FLT-003]`).
 - **A gap in the spec** is not filled silently: propose an ADR in `spec/11-decisions.md` with status `Proposed`, or ask in the pull request.
 - **Performance is a feature.** No allocation, locking or I/O on the DNS hot path without a benchmark (`make bench-smoke`). DNS never depends on telemetry, storage, the API or the cluster.
-- **Clean room.** Never copy code from Pi-hole, Technitium, AdGuard Home or any other copyleft project. Their public docs, RFCs and data formats are fine. New dependencies must pass `cargo deny` (permissive licences only; see [LICENSING.md](LICENSING.md)).
+- **Clean room.** Never copy code from Pi-hole, Technitium, AdGuard Home or any other copyleft project. Their public docs, RFCs and data formats are fine. New Rust dependencies must pass `cargo deny` (permissive licences, plus MPL-2.0 per file; no GPL, LGPL or AGPL; see [LICENSING.md](LICENSING.md)), and new UI (npm) dependencies must have a permissive licence too.
 - **Safety.** `unsafe` only in `wrendns-net`, with a `// SAFETY:` note; no `unwrap()` or `expect()` on runtime paths.
 - **Every feature gets a UI control**, and every API operation is ready for agents (and an MCP tool where it fits, `spec/13`).
 - **Docs.** User-visible behaviour is documented in `docs/` and on the site (`site/`).
-- **New source files** start with an SPDX line, for example `// SPDX-License-Identifier: AGPL-3.0-or-later` (CI checks it with `scripts/check-spdx.py`). Files under `integrations/home-assistant/` are Apache-2.0 instead.
+- **New source files** start with an SPDX line, for example `// SPDX-License-Identifier: AGPL-3.0-or-later` (CI checks it with `scripts/check-spdx.py`). Files under `integrations/home-assistant/` are Apache-2.0 instead. A file taken from another project keeps its own licence line and goes under a `vendor/` or `third_party/` directory, which the check skips; say where it came from in the pull request.
 
 Before you push, run the checks CI runs:
 

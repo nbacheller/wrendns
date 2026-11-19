@@ -139,7 +139,7 @@ WrenDNS is developed spec first: the requirements, the architecture and every de
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/queries-night.jpg">
-    <img alt="The query log in the Night theme: filters for name, client, type, response code, group and status; and rows with the time, the node that answered, the device and its group, the name with its icon, the status (blocked, cached, forwarded), the list that blocked it, the time taken and a Why? link" src="docs/images/queries-day.jpg" width="900">
+    <img alt="The query log: filters for name, client, type, response code, group and status; and rows with the time, the node that answered, the device and its group, the name with its icon, the status (blocked, cached, forwarded), the list that blocked it, the time taken and a Why? link" src="docs/images/queries-day.jpg" width="900">
   </picture>
   <br>
   <sub>The query log: every lookup with its device, its node, its answer and a Why?.</sub>
@@ -279,6 +279,7 @@ Precedence, lowest to highest: built-in defaults, the files in order, `WRENDNS_<
 | `[auth]` | sessions, two-factor sign-in, OIDC providers (`[auth.oidc]`) |
 | `[agents]` | agent tokens on or off, their rate limit |
 | `[updates]` | the daily update check and its index |
+| `[support]`, `[watchdog]` | the support package's log files; the watchdog that dumps and restarts a node that stops answering |
 
 **Answering**
 
@@ -290,6 +291,8 @@ Precedence, lowest to highest: built-in defaults, the files in order, `WRENDNS_<
 | `[[record]]`, `[local]` | local records, hosts files, automatic reverse names |
 | `[cache]` | memory budget, TTL clamps, serve-stale, prefetch |
 | `[dns]`, `[special]` | EDNS size, NSID, special names |
+| `[[zone]]` | authoritative zones, for everyone or only some groups (split horizon) |
+| `[dnssec]` | DNSSEC validation of forwarded answers, trust anchors, negative trust anchors |
 | `[access]`, `[ratelimit]` | who may query, and how often |
 
 **Filtering and devices**
@@ -298,6 +301,8 @@ Precedence, lowest to highest: built-in defaults, the files in order, `WRENDNS_<
 |---|---|
 | `[[list]]`, `[filter]` | block and allow lists, their refresh, size limits, shadow mode, the category budget |
 | `[[group]]` | groups: networks, lists, content categories, safe search, schedules, services, rewrites, DNS64 |
+| `[[schedule]]` | weekly schedules that groups use: block everything, or add lists or blocked services, in their windows |
+| `[[rule]]` | quick rules: allow or block a domain for some devices, groups or everyone, optionally until a time |
 | `[[client]]`, `[clients]` | known devices and how to recognise them, the neighbour table, mDNS |
 | `[[router]]` | UniFi, OPNsense and Home Assistant sources, with their credentials in files or the secrets store |
 | `[identify]` | device identification |
@@ -309,6 +314,7 @@ Precedence, lowest to highest: built-in defaults, the files in order, `WRENDNS_<
 | Section | What it sets |
 |---|---|
 | `[telemetry]` | query-log retention and privacy level, Prometheus metrics, OTLP export, device anomalies |
+| `[[anomaly_mute]]` | device-anomaly kinds muted for some devices or groups |
 | `[map]` | the network map's sampler, thresholds and the optional GeoIP database |
 | `[slo]`, `[probe]`, `[upstream_check]` | service-level objectives, listener probes, upstream second opinions |
 | `[exclusions]` | names and devices kept out of the query log |
@@ -320,11 +326,18 @@ Precedence, lowest to highest: built-in defaults, the files in order, `WRENDNS_<
 A cluster is one primary that publishes signed, versioned configuration snapshots and replicas that follow it; every node answers from its last snapshot, so DNS keeps going if the primary is unreachable. Any node's UI manages the whole cluster.
 
 ```sh
-wrendns cluster init --name home --advertise https://pi-01.home.arpa:8443   # on the first node
-wrendns cluster token create --ttl 30m --eligible                     # a join token
-wrendns cluster join <token> --site pi-02 --eligible --advertise https://pi-02.home.arpa:8443
-wrendns cluster set-failover auto                                     # with three voters
+# On the first node, as the user wrendns runs as, then restart it:
+sudo -u wrendns wrendns cluster init --name home --advertise https://pi-01.home.arpa:8443
+sudo systemctl restart wrendns
+sudo -u wrendns wrendns cluster token create --ttl 30m --eligible   # a join token
+# On the second node, then restart it:
+sudo -u wrendns wrendns cluster join <token> --site pi-02 --eligible --advertise https://pi-02.home.arpa:8443
+sudo systemctl restart wrendns
+# On the primary, once there are three voters:
+sudo -u wrendns wrendns cluster set-failover auto
 ```
+
+These are for the native systemd install; in Docker or Kubernetes, run them inside the container and restart it. The full walk-through is in [Clusters](docs/running.md#clusters).
 
 - **Failover:** with two nodes, promotion is manual (a third vote is needed to be safe); add a witness or a third node for automatic failover. A Pi pair can also share one address with keepalived.
 - **Kubernetes:** the chart's controller creates the cluster and resolver pods join as ephemeral members; a Pi joins the same cluster.

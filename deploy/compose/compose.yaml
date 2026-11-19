@@ -5,7 +5,7 @@
 #
 # Host networking: queries keep the real client addresses and the neighbor table shows
 # MAC addresses, so per-device statistics and rules work. Nothing else may use port 53 on
-# the host (see README.md for systemd-resolved).
+# the host (see docs/running.md#raspberry-pi-and-linux for systemd-resolved).
 name: wrendns
 services:
   wrendns:
@@ -15,7 +15,7 @@ services:
     restart: unless-stopped
     # Port 53 needs NET_BIND_SERVICE: run as root with only that capability. To run as the
     # image's unprivileged user instead, set the host sysctl net.ipv4.ip_unprivileged_port_start=53
-    # (README.md) and uncomment `user`.
+    # (docs/running.md#raspberry-pi-and-linux) and uncomment `user`.
     user: "0:0"
     # user: "65532:65532"
     cap_drop: [ALL]

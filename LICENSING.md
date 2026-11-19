@@ -8,8 +8,8 @@ WrenDNS is free and open-source software under the [GNU Affero General Public Li
 
 In practice:
 
-- **Running it on your own network is free**, at home or at work, on as many nodes as you like. Nothing in the licence asks you to publish anything for that.
-- **If you change WrenDNS and let other people use your changed version over a network** (for example, you host a resolver or its web UI for customers), the AGPL asks you to offer those users the source of your changed version, under the same licence.
+- **Running it unchanged on your own network is free**, at home or at work, on as many nodes as you like. Nothing in the licence asks you to publish anything for that.
+- **If you change WrenDNS and let other people use your changed version over a network** (for example, you host a resolver or its web UI for customers, or your employees use a changed copy at work), the AGPL asks you to offer those users the source of your changed version, under the same licence.
 - **If you distribute WrenDNS** (a binary, an image, a device with it installed), changed or not, you pass on the same rights: the source, the licence and the notices.
 - There is no warranty (sections 15 and 16 of the licence).
 
@@ -27,7 +27,7 @@ WrenDNS started from [TelltaleDNS](https://github.com/paimonsoror/telltaledns) b
 - the GitHub release [permissive-final](https://github.com/nbacheller/wrendns/releases/tag/permissive-final) (source only), published 2026-11-19;
 - an archive copy at [Software Heritage](https://www.softwareheritage.org/) has been requested (a save of `https://github.com/nbacheller/wrendns`).
 
-Everything in that version stays available under Apache-2.0 OR MIT for good: a licence once granted cannot be taken back. The AGPL applies from the commits after the tag.
+Everything in that version stays available under Apache-2.0 OR MIT for good: a licence once granted cannot be taken back. Changes made after the tag are licensed under AGPL-3.0-or-later, except for the parts listed under [What stays Apache-2.0](#what-stays-apache-20); the TelltaleDNS portions keep Apache-2.0 OR MIT.
 
 ## What stays Apache-2.0
 
@@ -40,7 +40,7 @@ The parts of WrenDNS that came from TelltaleDNS are copyright The TelltaleDNS Au
 
 ## Third-party components
 
-Dependencies keep their own licences. `cargo deny` allows only licences that work with both the AGPL and a commercial licence: permissive ones (MIT, Apache-2.0, BSD, ISC, Zlib and similar) and MPL-2.0 per file; no GPL, LGPL or AGPL dependency ([`deny.toml`](deny.toml)). The fonts, icons and data sets bundled with WrenDNS are listed with their licences in [`docs/third-party-notices.md`](docs/third-party-notices.md).
+Dependencies keep their own licences. For the Rust dependencies, `cargo deny` allows only licences that work with both the AGPL and a commercial licence: permissive ones (MIT, Apache-2.0, BSD, ISC, Zlib and similar) and MPL-2.0 per file; no GPL, LGPL or AGPL dependency ([`deny.toml`](deny.toml)). The web UI's npm packages, which are built into the binary, are held to the same rule by review; no automated check covers them yet. The fonts, icons and data sets bundled with WrenDNS are listed with their licences in [`docs/third-party-notices.md`](docs/third-party-notices.md).
 
 ## Source file headers
 
